@@ -1789,6 +1789,33 @@ it.effect("a default due while Kin or its asker is paused is taken on resume", (
   ),
 );
 
+// Finance only helps on Rhea's task, so its own default can't close it: at its day nothing
+// closes and nothing is retried; Rhea is asked once, at the raise time, as for any default.
+it.effect("a default that would close a task its asker only helps on asks the person instead", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { orgId, sql } = kin;
+      const deck = yield* kin.task("Review the Apex deck");
+      yield* sql`UPDATE kin_records SET fields_json = json_object('alsoOn', json('["agent:finance"]'))
+        WHERE org_id = ${orgId} AND record_id = ${deck.recordId}`;
+      const asked = yield* askToClose(kin, deck, kin.chatOf("finance"));
+      assert.strictEqual(yield* settleAt(kin, asked.due), 1);
+      assert.deepStrictEqual(yield* kin.stateOf(deck.key), { state: "open", rev: deck.rev });
+      const back = (yield* Questions.readQuestion(orgId, asked.question))!;
+      assert.deepInclude(back, { state: "open", safe: false, raiseWidgetId: null });
+      assert.strictEqual(yield* settleAt(kin, back.actAt), 1);
+      assert.strictEqual(yield* settleAt(kin, back.actAt + 3 * 86_400_000), 0);
+      const raised = (yield* Questions.readQuestion(orgId, asked.question))!;
+      assert.strictEqual(raised.state, "open");
+      assert.isNotNull(raised.raiseWidgetId);
+      assert.strictEqual((yield* kin.stateOf(deck.key)).state, "open");
+      assert.lengthOf(yield* noticesOf(kin, asked.question), 0);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 // Dev's defaults close two of his tasks while he's away. Before he's back Rhea takes one as her
 // own, private, and renames it: his note on it names neither, only his question and its choice.
 // The one he still sees is named as ever. Both keep Undo.

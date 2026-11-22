@@ -893,16 +893,16 @@ export const KinEvent = Schema.Union([
     // The one mail that woke it, as `kin_arrivals` keeps it (`arrivals/ArrivalStore.ts`).
     arrivalId: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
   }),
-  // Someone else gives this lead an entry (`assigned`), its owner closes or takes back one it
-  // holds (`withdrawn`), it comes back (`handed_back`), or a person comments on one it holds
-  // (`commented`); `note` holds their words. Its provenance is the human whose authority the
-  // entry carries, the only authority the turn has; the entry's text is data.
+  // An entry given to this lead (`assigned`), closed or taken back (`withdrawn`), come back
+  // (`handed_back`), commented on (`commented`, `note` their words), or someone else's it is put on
+  // to help (`joined`). Its provenance is the human whose authority the entry carries, the only
+  // authority the turn has; the entry's text is data.
   Schema.TaggedStruct("record.changed", {
     ...EventBase,
     recordId: KinRecordId,
     key: KinRecordKey,
     seq: NonNegativeInt,
-    reason: Schema.Literals(["assigned", "withdrawn", "handed_back", "commented"]),
+    reason: Schema.Literals(["assigned", "withdrawn", "handed_back", "commented", "joined"]),
     note: Schema.optional(Schema.String.check(Schema.isMaxLength(280))),
     // Given by a teammate: their direct chat with the lead, where it reports, and `origin` naming
     // them, so the turn is theirs and never the owner's. From stored rows.
