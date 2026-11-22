@@ -578,8 +578,8 @@ function KinChoiceCard(props: {
 
   if (phase === "dismissed" && dismissed !== null)
     return (
-      <CardFrame label={kinSentences([dismissed.text, choice.question])}>
-        <div className="flex items-center gap-2">
+      <section aria-label={kinSentences([dismissed.text, choice.question])} className="px-1">
+        <div className="flex min-h-6 items-center gap-2">
           <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
             <span className="font-medium">{dismissed.text}</span> · {choice.question}
           </p>
@@ -597,7 +597,7 @@ function KinChoiceCard(props: {
           ) : null}
         </div>
         <CardNotice notice={status?.notice} />
-      </CardFrame>
+      </section>
     );
 
   return (

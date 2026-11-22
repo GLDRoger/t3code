@@ -681,7 +681,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
 
   if (phase === "dismissed" && dismissed !== null)
     return (
-      <View className="gap-1 rounded-[20px] border border-border bg-card-alt px-4 py-1">
+      <View className="gap-1 px-1">
         <View className="flex-row items-center gap-3">
           <Text
             textRole="footnote"
