@@ -534,10 +534,18 @@ it.effect("a successful turn releases untouched space failures but not work stop
       { state: "queued", notBefore: DAY_START },
     ]);
     assert.deepInclude((yield* cards)[0], { open: true, stopped: 1 });
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`UPDATE kin_agents SET retired_at = ${DateTime.formatIso(DateTime.makeUnsafe(DAY_START))}
+          WHERE org_id = ${orgId} AND agent_id = ${finance}`;
+        yield* KinHostCare.closeRetiredTroubles(orgId, finance, DAY_START);
+      }),
+    );
+    assert.isTrue(yield* care.troubleOpen(orgId, "space"));
     assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 1 });
     assert.deepStrictEqual(yield* events, [
       { state: "queued", notBefore: DAY_START },
-      { state: "queued", notBefore: DAY_START },
+      { state: "expired", notBefore: DAY_START },
     ]);
   }).pipe(Effect.provide(services)),
 );

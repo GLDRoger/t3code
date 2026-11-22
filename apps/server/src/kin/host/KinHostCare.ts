@@ -221,6 +221,10 @@ const unavailable = new KinChatError({
   message: "Kin couldn't read its computer just now. Try again.",
 });
 
+// Only finish's partway branch leaves a failed event attached to its wake-up.
+const strandedEvent = (sql: SqlClient.SqlClient) =>
+  sql`e.state = 'failed' AND e.wakeup_id IS NOT NULL`;
+
 /** In the retirement transaction, close troubles with no other agent still stopped. */
 export const closeRetiredTroubles = Effect.fn("KinHostCare.closeRetiredTroubles")(function* (
   orgId: KinOrgId,
@@ -234,7 +238,9 @@ export const closeRetiredTroubles = Effect.fn("KinHostCare.closeRetiredTroubles"
         AND a.trouble_id = t.trouble_id AND a.agent_id = ${agentId})
       AND NOT EXISTS (SELECT 1 FROM kin_trouble_agents a JOIN kin_agents l
         ON l.org_id = a.org_id AND l.agent_id = a.agent_id AND l.retired_at IS NULL
-        WHERE a.org_id = t.org_id AND a.trouble_id = t.trouble_id AND a.worked_at IS NULL)`;
+        WHERE a.org_id = t.org_id AND a.trouble_id = t.trouble_id AND a.worked_at IS NULL)
+      AND NOT EXISTS (SELECT 1 FROM kin_events e
+        WHERE e.org_id = t.org_id AND e.held_by = t.trouble_id AND ${strandedEvent(sql)})`;
 });
 
 const make = Effect.gen(function* () {
@@ -433,10 +439,9 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${orgId} AND trouble_id = ${troubleId} ORDER BY trouble_id`.pipe(
       Effect.map((rows) => rows[0]),
     );
-  // Only finish's partway branch leaves a failed event attached to its wake-up.
-  const stranded = sql`state = 'failed' AND wakeup_id IS NOT NULL`;
+  const stranded = strandedEvent(sql);
   const heldIds = (orgId: KinOrgId, troubleId: string, automatic: boolean, agentId?: KinAgentId) =>
-    sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+    sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events e
       WHERE org_id = ${orgId} AND held_by = ${troubleId} AND state IN ('queued', 'failed')
         AND (${agentId ?? null} IS NULL OR agent_id = ${agentId ?? null})
         AND (NOT ${automatic} OR NOT (${stranded}))
@@ -828,7 +833,7 @@ const make = Effect.gen(function* () {
     const [open] = yield* sql`SELECT 1 FROM kin_troubles
       WHERE org_id = ${orgId} AND trouble_id = ${troubleId} AND closed_at IS NULL`;
     if (open === undefined) return false;
-    const [manual] = yield* sql`SELECT 1 FROM kin_events
+    const [manual] = yield* sql`SELECT 1 FROM kin_events e
       WHERE org_id = ${orgId} AND held_by = ${troubleId} AND ${stranded} LIMIT 1`;
     if (manual === undefined)
       yield* sql`UPDATE kin_troubles SET closed_at = ${now}

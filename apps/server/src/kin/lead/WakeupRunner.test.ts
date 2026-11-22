@@ -1186,9 +1186,7 @@ describe("WakeupRunner", () => {
       using _space = vi
         .spyOn(HostBackup, "readSpace")
         .mockImplementation((folder) =>
-          Effect.succeed(
-            Option.some({ folder, freeBytes: 128 * 1024 ** 2, totalBytes: 1024 ** 3 }),
-          ),
+          Effect.succeedSome({ folder, freeBytes: 128 * 1024 ** 2, totalBytes: 1024 ** 3 }),
         );
       const cleaning = yield* Deferred.make<void>();
       const finishClean = yield* Deferred.make<void>();
