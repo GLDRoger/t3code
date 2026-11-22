@@ -66,6 +66,7 @@ import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinDealPage, useKinDealSend } from "./state/useKinDeals";
 import { useKinInvoiceFromQuote } from "./state/useKinMoneyAnswers";
 import { useKinWorkDirectory, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import { KinWatchLine } from "./KinWatchLine";
 
 export type KinDealParams = {
   readonly environmentId: string;
@@ -240,6 +241,7 @@ function KinDealBody(
         )}
       </View>
       <KinAsideNote {...target} record={deal.key} names={names} />
+      <KinWatchLine {...target} recordKey={deal.key} />
 
       {deal.state !== "open" ? null : <DealStrip deal={deal} stages={stages} />}
 

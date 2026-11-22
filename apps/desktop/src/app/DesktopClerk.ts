@@ -23,6 +23,8 @@ import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { openClerkTokenStorage } from "./ClerkTokenStore.ts";
 import * as DesktopWebLinks from "./DesktopWebLinks.ts";
+import { KIN_DESKTOP_ONLY } from "../kin/KinDesktopOnly.ts";
+import * as KinOsLinks from "../kin/KinOsLinks.ts";
 
 declare const __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: string | undefined;
 
@@ -121,6 +123,8 @@ export const make = Effect.gen(function* () {
     userDataPath,
     electronVersion: process.versions.electron,
   });
+  // Kin's build takes only its own join links, and has no T3 Code sign-in bridge to remove.
+  if (KIN_DESKTOP_ONLY) return DesktopClerk.of(yield* KinOsLinks.make(environment.isDevelopment));
 
   const pendingSecondInstances: Array<readonly string[]> = [];
   let handleSecondInstance = (argv: readonly string[]) => {

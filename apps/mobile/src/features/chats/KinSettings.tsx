@@ -44,8 +44,8 @@ const COMPANY_ROWS: Partial<
   Record<
     KinPhoneSettingsRow,
     {
-      readonly icon: "person.2" | "robot" | "doc.text";
-      readonly route: "KinTeam" | "KinAgents" | "KinCompany";
+      readonly icon: "person.2" | "robot" | "doc.text" | "eye";
+      readonly route: "KinTeam" | "KinAgents" | "KinCompany" | "KinWatchLog";
       readonly title: string;
     }
   >
@@ -53,6 +53,7 @@ const COMPANY_ROWS: Partial<
   team: { icon: "person.2", route: "KinTeam", title: KIN_SETTINGS_PAGE_TITLES.team },
   agents: { icon: "robot", route: "KinAgents", title: KIN_SETTINGS_PAGE_TITLES.agents },
   company: { icon: "doc.text", route: "KinCompany", title: KIN_SETTINGS_PAGE_TITLES.company },
+  watches: { icon: "eye", route: "KinWatchLog", title: KIN_SETTINGS_PAGE_TITLES.watches },
 };
 
 export function KinSettings(props: {
@@ -90,6 +91,9 @@ export function KinSettings(props: {
       ? { environmentId: host.environmentId, orgId }
       : null;
   const rows = kinPhoneSettingsRows({ ownerLevel: company !== null });
+  // What Kin checked is everyone's: a teammate's holds the watches on their own things.
+  const here =
+    host._tag === "host" && orgId !== null ? { environmentId: host.environmentId, orgId } : null;
   const { environments } = useEnvironments();
   const hostComputer =
     host._tag === "host"
@@ -173,23 +177,25 @@ export function KinSettings(props: {
               checkIns={company !== null}
             />
           )}
+          {here === null || rows.company.length === 0 ? null : (
+            <SettingsSection title="Company">
+              {rows.company.map((page) => {
+                const row = COMPANY_ROWS[page];
+                if (row === undefined) return null;
+                return (
+                  <SettingsRow
+                    labelWholeWords
+                    key={page}
+                    icon={row.icon}
+                    label={row.title}
+                    onPress={() => navigation.navigate(row.route, here)}
+                  />
+                );
+              })}
+            </SettingsSection>
+          )}
           {company === null ? null : (
             <>
-              <SettingsSection title="Company">
-                {rows.company.map((page) => {
-                  const row = COMPANY_ROWS[page];
-                  if (row === undefined) return null;
-                  return (
-                    <SettingsRow
-                      labelWholeWords
-                      key={page}
-                      icon={row.icon}
-                      label={row.title}
-                      onPress={() => navigation.navigate(row.route, company)}
-                    />
-                  );
-                })}
-              </SettingsSection>
               {rows.company.includes("stop") ? <KinStopRows {...company} /> : null}
               <Text textRole="footnote" className="px-4 text-foreground-muted">
                 {KIN_SET_UP_ON_COMPUTER.line}

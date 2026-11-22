@@ -31,6 +31,7 @@ import { startGuideRunNotifications } from "./components/pullRequest/guide/PullR
 import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "./branding";
 import { resolveServerBackedAppDisplayName, resolveWindowTitle } from "./branding.logic";
 import { isElectron } from "./env";
+import { inKinDesktopWindow } from "./kin/kinDesktopWindow";
 import {
   subscribeComposerDraftModelReconciliation,
   subscribeDraftThreadPromotion,
@@ -262,7 +263,7 @@ export function startAppServices(): AppRouter {
   // Electron loads the app from a file-backed shell, so hash history avoids path resolution issues.
   const router = getRouter(isElectron ? createHashHistory() : createBrowserHistory());
 
-  if (isElectron) {
+  if (isElectron || inKinDesktopWindow) {
     syncDocumentElectronPlatformClasses(navigator.platform);
     syncDocumentWindowControlsOverlayClass();
   }
