@@ -360,6 +360,50 @@ describe("kinWorkItemView", () => {
         reason: "You know the auth flow best",
         changes: [
           {
+            seq: 8,
+            at,
+            by: priya,
+            via: "owner",
+            kind: "updated",
+            fields: [{ field: "alsoOn", from: `person:${me.personId}`, to: null }],
+          },
+          {
+            seq: 7,
+            at,
+            by: priya,
+            via: "owner",
+            kind: "updated",
+            fields: [
+              {
+                field: "alsoOn",
+                from: `agent:${lead.agentId}, person:${priya.personId}`,
+                to: `agent:${lead.agentId}`,
+              },
+            ],
+          },
+          {
+            seq: 6.5,
+            at,
+            by: priya,
+            via: "owner",
+            kind: "updated",
+            fields: [{ field: "alsoOn", from: null, to: `person:${priya.personId}` }],
+          },
+          {
+            seq: 6,
+            at,
+            by: priya,
+            via: "owner",
+            kind: "updated",
+            fields: [
+              {
+                field: "alsoOn",
+                from: null,
+                to: `agent:${lead.agentId}, person:${me.personId}`,
+              },
+            ],
+          },
+          {
             seq: 5,
             at,
             by: priya,
@@ -419,6 +463,17 @@ describe("kinWorkItemView", () => {
             ],
           },
           {
+            seq: 1.6,
+            at,
+            by: me,
+            via: "owner",
+            kind: "updated",
+            fields: [
+              { field: "owner", from: `agent:${lead.agentId}`, to: `person:${priya.personId}` },
+              { field: "alsoOn", from: `person:${priya.personId}`, to: null },
+            ],
+          },
+          {
             seq: 1.5,
             at,
             by: me,
@@ -437,12 +492,17 @@ describe("kinWorkItemView", () => {
     expect(view.given).toMatch(/^Priya handed this back · /);
     expect(view.reason).toBe("On the release");
     expect(view.history.map((line) => line.text)).toEqual([
+      "Priya took you off it",
+      "Priya left it",
+      "Priya joined it",
+      "Priya put Tech lead and you on it",
       "Priya handed it back to Tech lead: “On the release”",
       "Tech lead marked it waiting on Priya",
       "You gave it to Tech lead",
       "Tech lead updated it",
       "Tech lead told Priya",
       "Tech lead gave it to Priya, not told yet",
+      "You gave it to Priya",
       "You set it to repeat every month",
       "You added this",
     ]);

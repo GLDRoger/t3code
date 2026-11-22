@@ -1026,6 +1026,7 @@ type Sample = {
   backgroundWait?: BackgroundWait;
   /** Calls so far per mocked tool, for mocks that answer in sequence. */
   readonly mockCalls: Map<string, number>;
+  readonly mockHistory: Map<string, ReadonlyArray<{ input: unknown; output: unknown }>>;
   /** The case's `attachments` as Kin hands them to the turn, once `kinTurnFiles` built them. */
   kinFiles?: KinTurnFiles | undefined;
 };
@@ -1086,24 +1087,41 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     responses: [],
     priorErrors: new Set(),
     mockCalls: new Map(),
+    mockHistory: new Map(),
   };
 };
 
 /**
  * A `{"$when": [{"args", "result"}], "$else"}` mock answers with the first rule whose args match the
  * call's, as `calls` matches them, else `$else`. A `{"$sequence": [...]}` mock answers its nth call
- * with the nth result, then repeats the last.
+ * with the nth result, then repeats the last. An optional rule `after` matches an earlier
+ * successful mocked call; its input and result can be echoed through `ARG:prior`.
  */
-const nextMock = (sample: Sample, name: string, given: unknown, input: unknown) => {
+export const nextMock = (
+  sample: Pick<Sample, "mockCalls" | "mockHistory">,
+  name: string,
+  given: unknown,
+  input: unknown,
+) => {
+  let prior: { input: unknown; output: unknown } | undefined;
   const mock =
     isRecord(given) && Array.isArray(given.$when)
-      ? (given.$when.find((rule) => isRecord(rule) && matches(rule.args ?? {}, input))?.result ??
-        given.$else)
+      ? (given.$when.find((rule) => {
+          if (!isRecord(rule) || !matches(rule.args ?? {}, input)) return false;
+          if (!isRecord(rule.after)) return true;
+          if (typeof rule.after.tool !== "string") return false;
+          const expected = rule.after.args ?? {};
+          prior = sample.mockHistory
+            .get(rule.after.tool)
+            ?.findLast((call) => matches(expected, call.input));
+          return prior !== undefined;
+        })?.result ?? given.$else)
       : given;
-  if (!isRecord(mock) || !Array.isArray(mock.$sequence) || mock.$sequence.length === 0) return mock;
+  if (!isRecord(mock) || !Array.isArray(mock.$sequence) || mock.$sequence.length === 0)
+    return { mock, prior };
   const n = sample.mockCalls.get(name) ?? 0;
   sample.mockCalls.set(name, n + 1);
-  return mock.$sequence[Math.min(n, mock.$sequence.length - 1)];
+  return { mock: mock.$sequence[Math.min(n, mock.$sequence.length - 1)], prior };
 };
 
 /**
@@ -2168,13 +2186,19 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   if (isPageTool(name) && typeof input.path === "string" && !input.path.startsWith("/")) {
     return failed(`${input.path} is not a readable HTML document. Pass an absolute path.`);
   }
+  const selected = nextMock(sample, name, testCase.setup.mocks?.[name], input);
   const mock = kinAnswer(
     name,
-    nextMock(sample, name, testCase.setup.mocks?.[name], input),
-    input,
+    selected.mock,
+    selected.prior === undefined ? input : { ...input, prior: selected.prior },
     testCase.setup.world,
   );
   if (isRecord(mock) && mock.$error !== undefined) return failed(valueText(mock.$error));
+  if (mock !== undefined && mock !== "default")
+    sample.mockHistory.set(name, [
+      ...(sample.mockHistory.get(name) ?? []),
+      { input, output: mock },
+    ]);
   if (isT3Name(call.name) && PREVIEW_TOOLS.has(name)) {
     if (testCase.setup.world?.browserAgentAccess === false)
       return failed(
@@ -2284,7 +2308,11 @@ const matches = (expected: unknown, actual: unknown): boolean => {
   const at = (path: string) =>
     path
       .split(".")
-      .reduce<unknown>((value, key) => (isRecord(value) ? value[key] : undefined), actual);
+      .reduce<unknown>(
+        (value, key) =>
+          isRecord(value) || Array.isArray(value) ? Reflect.get(value, key) : undefined,
+        actual,
+      );
   return Object.entries(expected).every(([path, value]) => matches(value, at(path)));
 };
 
