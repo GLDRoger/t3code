@@ -160,7 +160,7 @@ import { withArticle } from "../article.ts";
 
 export const Who = KinToolText(
   120,
-  '"you" for yourself; "me" for the person who asked in this turn; "owner" for the owner; an agent\'s agentId from kin_leads or people_read; or a teammate\'s name exactly as people_read lists it (or its personId when two share a name).',
+  '"you" for yourself; "me" for the person who asked in this turn; "owner" for the owner (in someone else\'s turn, only with reason saying why only the owner can do it); an agent\'s agentId from kin_leads or people_read; or a teammate\'s name exactly as people_read lists it (or its personId when two share a name).',
 );
 const Due = Schema.NullOr(
   Schema.String.check(
@@ -584,6 +584,7 @@ export const CreateResult = Schema.Struct({
       created: Schema.Boolean,
       /** A meeting whose start has passed: recorded as held, not booked. */
       past: Schema.optional(Schema.Literal(true)),
+      routed: Schema.optional(Schema.String),
       /** On a suggestion or an invoice draft only: the state it was stored in, whatever was asked. */
       state: Schema.optional(KinRecordState),
       stateLabel: Schema.optional(Schema.String),
@@ -645,6 +646,12 @@ export const UpdateInput = Schema.Struct({
   }),
   expectedRev: Schema.optional(Schema.Int),
   tell: Tell,
+  leftover: Schema.optional(
+    KinToolText(
+      2_000,
+      "With state done, what is still to do: Kin files it as a follow-up task linked to this one. Never leave it only in a comment.",
+    ),
+  ),
   next: Schema.optional(DealNext),
   ...SpineInputs,
   ...GoalInputs,
@@ -656,6 +663,10 @@ const Updated = Schema.Struct({
   /** On an invoice an agent asked to issue or settle by its state: still a draft. */
   stateLabel: Schema.optional(Schema.String),
   changed: Schema.Array(Schema.String),
+  /** Kin moved an owner-held task to the asker, or kept it the owner's with its reason. */
+  routed: Schema.optional(Schema.String),
+  /** Asked done while an open question is about it: it waits on that question's person. */
+  waitsOnCard: Schema.optional(Schema.String),
   ...Marks.fields,
   /** Other contacts with the same email. */
   sameEmail: Schema.optional(Schema.Array(Named)),
@@ -685,6 +696,8 @@ export const UpdateResult = Schema.Struct({
   state: Schema.optional(Updated.fields.state),
   stateLabel: Updated.fields.stateLabel,
   changed: Schema.optional(Updated.fields.changed),
+  routed: Updated.fields.routed,
+  waitsOnCard: Updated.fields.waitsOnCard,
   ...Marks.fields,
   sameEmail: Updated.fields.sameEmail,
   projectLeft: Updated.fields.projectLeft,
@@ -849,6 +862,13 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (
   return { _tag: "agent", agentId: KinAgentId.make(who) } satisfies KinWorkPrincipal;
 });
 
+const ROUTED_TO_ASKER =
+  "Kin gave it to the person who asked, not the owner: in someone else's chat a task is the owner's only with a reason only the owner can do it.";
+const NEEDS_OWNER =
+  "It stays the owner's, with your reason on it: say in one line it waits on the owner and why.";
+const WAITS_ON_CARD =
+  "Not done: an open question of yours is about it, so it waits on that person's answer. Say so in one line.";
+
 /**
  * Who a task is for, or waits on, in a turn someone other than the agent's owner asked where he
  * isn't in the chat: put on him with no reason, it is the asker's; with one, it stays his and says
@@ -859,7 +879,7 @@ const routedTo = Effect.fn("KinWorkTools.routedTo")(function* (
   who: KinWorkPrincipal,
   reason: string | null | undefined,
 ) {
-  const kept = { who, reason: undefined, routed: false };
+  const kept = { who, reason: undefined, note: undefined };
   if (who._tag !== "person") return kept;
   const behind = yield* peopleBehind(lead);
   const asker = yield* turnAsker(lead);
@@ -876,13 +896,17 @@ const routedTo = Effect.fn("KinWorkTools.routedTo")(function* (
     return {
       who: { _tag: "person", personId: asker } satisfies KinWorkPrincipal,
       reason: undefined,
-      routed: true,
+      note: ROUTED_TO_ASKER,
     };
   const sql = yield* SqlClient.SqlClient;
   const [owner] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
     WHERE org_id = ${lead.orgId} AND person_id = ${behind.owner}`;
   const name = owner?.name.trim() || "the owner";
-  return { who, reason: /^needs\b/i.test(why) ? why : `Needs ${name}: ${why}`, routed: false };
+  return {
+    who,
+    reason: /^needs\b/i.test(why) ? why : `Needs ${name}: ${why}`,
+    note: NEEDS_OWNER,
+  };
 });
 
 /** A task set waiting on nobody named, in a turn a co-owner or teammate asked: it waits on them. */
@@ -2426,7 +2450,9 @@ const createRow = Effect.fnUntraced(function* (
       (crmFor !== undefined ? "me" : list === "clients" || list === "contacts" ? "owner" : "you"),
   ).pipe(asField("owner"));
   const holder =
-    list === "work" ? yield* routedTo(lead, named, row.reason) : { who: named, reason: undefined };
+    list === "work"
+      ? yield* routedTo(lead, named, row.reason)
+      : { who: named, reason: undefined, note: undefined };
   const owner = holder.who;
   if (prospectFor !== undefined)
     yield* memberAdds(lead.orgId, prospectFor, {
@@ -2447,7 +2473,7 @@ const createRow = Effect.fnUntraced(function* (
       : yield* resolveWho(lead, row.waitingOn).pipe(asField("waitingOn"));
   const waitRoute =
     waitsOn === undefined || list !== "work"
-      ? { who: waitsOn, reason: undefined }
+      ? { who: waitsOn, reason: undefined, note: undefined }
       : yield* routedTo(lead, waitsOn, row.reason);
   const waitingOn = waitRoute.who;
   const routedReason = holder.reason ?? waitRoute.reason;
@@ -2639,6 +2665,9 @@ const createRow = Effect.fnUntraced(function* (
     key: stored.key,
     title: stored.title,
     created,
+    ...((holder.note ?? waitRoute.note) === undefined
+      ? {}
+      : { routed: holder.note ?? waitRoute.note }),
     ...(past ? { past: true as const } : {}),
     ...(isSuggestion(stored) && stored.state !== "dropped"
       ? {
@@ -3435,7 +3464,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   const route = (who: KinWorkPrincipal) =>
     work
       ? routedTo(lead, who, input.reason)
-      : Effect.succeed({ who, reason: undefined, routed: false });
+      : Effect.succeed({ who, reason: undefined, note: undefined });
   const holder =
     input.owner === undefined ? undefined : yield* route(yield* resolveWho(lead, input.owner));
   const waitsOn =
@@ -3443,7 +3472,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
       ? yield* route(yield* resolveWho(lead, input.waitingOn))
       : work && input.state === "waiting" && before.waitingOnId === null
         ? yield* Effect.map(waitsOnAsker(lead), (who) =>
-            who === undefined ? undefined : { who, reason: undefined, routed: false },
+            who === undefined ? undefined : { who, reason: undefined, note: undefined },
           )
         : undefined;
   const routedReason = holder?.reason ?? waitsOn?.reason;
@@ -3463,6 +3492,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...(input.sensitive === undefined ? {} : { sensitive: true }),
     ...stepsIn(input.steps),
     ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
+    ...(input.leftover === undefined ? {} : { leftover: input.leftover }),
   };
   if (patch.owner !== undefined) yield* notBouncedBack(lead, before, patch.owner);
   // tell false holds the new holder's notice on the task; giving it to them again tells them.
@@ -3558,6 +3588,12 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
         ? { stateLabel: UNISSUED_INVOICE }
         : {}),
       changed,
+      ...((holder?.note ?? waitsOn?.note) === undefined
+        ? {}
+        : { routed: holder?.note ?? waitsOn?.note }),
+      ...(input.state === "done" && after.state === "waiting"
+        ? { waitsOnCard: WAITS_ON_CARD }
+        : {}),
       ...marksOf(lists, after),
       ...(hiddenFrom.length === 0 ? {} : { noLongerSeenBy: hiddenFrom }),
       ...(sameEmail === undefined ? {} : { sameEmail }),

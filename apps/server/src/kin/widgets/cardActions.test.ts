@@ -706,7 +706,7 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
       assert.isNull(without.raiseWidgetId);
       assert.deepStrictEqual(card(yield* kin.widget(gone.value.widgetId)).outcome, {
         title: "Closed with its task",
-        text: `Closed: ${shut.key} is done now.`,
+        text: `Closed with its task: ${shut.key} is done now.`,
       });
       assert.deepStrictEqual(
         card(yield* kin.widget((yield* question(reworded.value.question))!.raiseWidgetId)).options,
@@ -1410,7 +1410,7 @@ it.effect("closing a task closes what hangs off it, and reopening brings none ba
       assert.isNotNull(about.closedAt);
       assert.deepStrictEqual(card(about).outcome, {
         title: "Closed with its task",
-        text: `Closed: ${form.key} is done now.`,
+        text: `Closed with its task: ${form.key} is done now.`,
       });
       const states = (id: unknown) =>
         Questions.readQuestion(orgId, id as string).pipe(Effect.map((row) => row?.state));
@@ -1432,6 +1432,7 @@ it.effect("closing a task closes what hangs off it, and reopening brings none ba
       const done = yield* callAs("finance", "record_update", { key: signage.key, state: "done" });
       assert.isTrue(done.ok, JSON.stringify(done.value));
       assert.include(done.value, { state: "waiting" });
+      assert.property(done.value, "waitsOnCard");
       assert.deepInclude(yield* kin.records.get(orgId, signage.key), {
         waitingOnKind: "person",
         waitingOnId: owner.personId,
@@ -1446,7 +1447,7 @@ it.effect("closing a task closes what hangs off it, and reopening brings none ba
       const shut = yield* kin.widget(later.value.widgetId);
       assert.deepStrictEqual(card(shut).outcome, {
         title: "Closed with its task",
-        text: `Closed: ${signage.key} is done now.`,
+        text: `Closed with its task: ${signage.key} is done now.`,
       });
       assert.strictEqual(yield* states(later.value.question), "withdrawn");
       assert.isFalse(yield* waitingOn(later.value.widgetId));
@@ -1489,7 +1490,7 @@ it.effect("closing a task closes what hangs off it, and reopening brings none ba
       assert.strictEqual((yield* kin.stateOf(signage.key)).state, "open");
       assert.deepStrictEqual(card(yield* kin.widget(later.value.widgetId)).outcome, {
         title: "Closed with its task",
-        text: `Closed: ${signage.key} is done now.`,
+        text: `Closed with its task: ${signage.key} is done now.`,
       });
       assert.strictEqual(yield* states(later.value.question), "withdrawn");
 
