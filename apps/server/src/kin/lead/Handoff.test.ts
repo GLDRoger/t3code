@@ -257,6 +257,29 @@ it.effect.each([true, false, "legacy"] as const)(
         // Chief of staff, shown as from Tech lead in its chat with the owner, and wakes it, once.
         yield* sql`UPDATE kin_events SET wakeup_id = 'tech-wake', state = 'claimed'
           WHERE org_id = ${orgId} AND event_id = ${passed!.event.eventId}`;
+        // Its answer carries a choice for the owner, which lives in Tech lead's chat: open, the
+        // copy says where it is; once closed ("legacy" here), it says nothing of it.
+        if (wantsAnswer !== false) {
+          const card = yield* ctx.chats.ask(
+            {
+              _tag: "agent",
+              hostPosted: true,
+              orgId,
+              agentId: tech,
+              ownerPersonId: ctx.owner.personId,
+              threadId: ThreadId.make("tech-thread"),
+            },
+            {
+              chatId: ctx.techChat,
+              clientMessageId: "tech-choice",
+              question: "Quarantine the flaky test, or fix it today?",
+              options: [{ label: "Quarantine" }, { label: "Fix today" }],
+            },
+          );
+          if (wantsAnswer === "legacy")
+            yield* sql`UPDATE kin_widgets SET closed_at = ${at}
+              WHERE org_id = ${orgId} AND widget_id = ${card.widgetId}`;
+        }
         const [member] = yield* sql<{ id: string }>`SELECT member_id AS id FROM kin_chat_members
           WHERE org_id = ${orgId} AND chat_id = ${ctx.techChat} AND agent_id = ${tech}`;
         yield* sql`UPDATE kin_chats SET last_seq = last_seq + 1
@@ -278,7 +301,10 @@ it.effect.each([true, false, "legacy"] as const)(
           WHERE org_id = ${orgId} AND chat_id = ${ctx.chiefChat} AND relay_json IS NOT NULL`;
         assert.deepStrictEqual(back, [
           {
-            body: "A flaky e2e test on main; I reran it and it passes.",
+            body:
+              wantsAnswer === true
+                ? "A flaky e2e test on main; I reran it and it passes.\n\nAnswer on the card in your chat with Tech lead."
+                : "A flaky e2e test on main; I reran it and it passes.",
             relay: JSON.stringify({ kind: "reply_from", agentId: tech }),
             silent: 1,
           },
