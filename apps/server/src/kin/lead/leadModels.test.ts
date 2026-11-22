@@ -3,7 +3,13 @@ import { ProviderInstanceId, type ServerProvider, ServerSettings } from "@t3tool
 import * as Schema from "effect/Schema";
 
 import { matchModel } from "./agentUpdate.ts";
-import { chooseLeadModel, leadModelProblem, leadProviderProblem } from "./leadModels.ts";
+import {
+  chooseLeadModel,
+  helperModelRefusal,
+  kinHelperProviders,
+  leadModelProblem,
+  leadProviderProblem,
+} from "./leadModels.ts";
 
 const settings = Schema.decodeSync(ServerSettings)({
   providerInstances: {
@@ -152,5 +158,127 @@ describe("matchModel", () => {
       /no Claude model called gpt/,
     );
     assert.match(String(matchModel(providers, "sonnet", "turbo", current)), /no turbo effort/);
+  });
+});
+
+const host = Schema.decodeSync(ServerSettings)({
+  providerModelPreferences: { claudeAgent: { hiddenModels: ["invented-moth"] } },
+});
+
+describe("helperModelRefusal", () => {
+  const model = (slug: string, name: string, extra: object = {}) => ({
+    slug,
+    name,
+    isCustom: false,
+    ...extra,
+  });
+  const provider = (instanceId: string, driver: string, models: ReadonlyArray<object>) =>
+    ({
+      instanceId: ProviderInstanceId.make(instanceId),
+      driver,
+      enabled: true,
+      installed: true,
+      models,
+    }) as unknown as ServerProvider;
+  const providers = [
+    provider("claudeAgent", "claudeAgent", [
+      model("invented-quill", "Invented Quill", { aliases: ["quill"] }),
+      model("invented-ember", "Invented Ember", { isLegacy: true }),
+      model("invented-moth", "Invented Moth"),
+    ]),
+    provider("codex", "codex", [model("invented-lark", "Invented Lark")]),
+  ];
+  const own = ProviderInstanceId.make("claudeAgent");
+  const refusal = (
+    target: Parameters<typeof helperModelRefusal>[0]["target"],
+    known: ReadonlyArray<ServerProvider> | null = providers,
+  ) =>
+    helperModelRefusal({
+      settings: host,
+      providers: known,
+      devServer: false,
+      callerInstanceId: own,
+      target,
+    });
+  const ALLOWED = "invented-quill (Invented Quill), invented-ember (Invented Ember) on claudeAgent";
+
+  it.each([
+    ["no target", undefined],
+    ["no model named", { isolation: "worktree" } as never],
+    ["its own provider, no model", { providerInstanceId: own }],
+    ["a listed model", { model: "invented-quill" }],
+    ["a listed older model", { model: "invented-ember" }],
+    ["an alias the provider lists", { model: "quill" }],
+  ] as const)("starts the task on %s", (_name, target) => {
+    assert.isUndefined(refusal(target));
+  });
+
+  it.each([
+    [
+      "an id the provider doesn't list",
+      { model: "invented-sparrow" },
+      "claudeAgent doesn't offer it",
+    ],
+    [
+      "a model the owner hid",
+      { model: "invented-moth" },
+      "it's switched off in this server's model list",
+    ],
+    [
+      "a listed model on a provider agents may not use",
+      { providerInstanceId: ProviderInstanceId.make("codex"), model: "invented-lark" },
+      "Kin's agents don't run on codex",
+    ],
+    [
+      "another provider with no model named",
+      { providerInstanceId: ProviderInstanceId.make("codex") },
+      "Kin's agents don't run on codex",
+    ],
+    [
+      "a provider this server doesn't have",
+      { providerInstanceId: ProviderInstanceId.make("claudeSpare"), model: "invented-quill" },
+      "Kin's agents don't run on claudeSpare",
+    ],
+  ] as const)("refuses %s, naming what it may use", (_name, target, why) => {
+    const text = refusal(target) ?? "";
+    assert.include(text, why);
+    assert.include(text, ALLOWED);
+    const offered = text.split("Models you may use")[1] ?? "";
+    assert.notInclude(offered, "invented-moth");
+    assert.notInclude(offered, "invented-lark");
+    assert.include(text, "leave target.model and target.providerInstanceId out");
+  });
+
+  it("says the exact refusal an agent reads", () => {
+    assert.strictEqual(
+      refusal({ model: "invented-sparrow" }),
+      `Kin didn't start this task on invented-sparrow: claudeAgent doesn't offer it. Models you may use, as target.model with its target.providerInstanceId: ${ALLOWED}. Or leave target.model and target.providerInstanceId out, and it runs on your own model.`,
+    );
+  });
+
+  it("refuses a named model while the providers can't be read, and runs one named none", () => {
+    for (const known of [null, [provider("claudeAgent", "claudeAgent", [])]]) {
+      const text = refusal({ model: "invented-quill" }, known) ?? "";
+      assert.include(text, "Kin can't read claudeAgent's model list right now");
+      assert.include(text, "runs on your own model");
+      assert.isUndefined(refusal(undefined, known));
+      assert.isUndefined(refusal({ providerInstanceId: own }, known));
+    }
+  });
+
+  it("offers orchestrator_capabilities only what a helper may run on", () => {
+    assert.deepStrictEqual(
+      kinHelperProviders(host, providers).map((one) => [
+        one.instanceId,
+        one.models.map((listed) => listed.slug),
+      ]),
+      [["claudeAgent", ["invented-quill", "invented-ember"]]],
+    );
+    assert.deepStrictEqual(
+      kinHelperProviders({ ...host, kinNonClaudeAgents: true }, providers).map(
+        (one) => one.instanceId,
+      ),
+      ["claudeAgent", "codex"],
+    );
   });
 });

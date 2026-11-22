@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { McpSchema, McpServer } from "effect/ai";
+import type { ServerProvider, ServerSettings } from "@t3tools/contracts";
 
 /** A tool call a gate refused before its handler ran; the message is what the caller reads. */
 export class ToolCallRefused extends Schema.Error<ToolCallRefused>("t3/mcp/ToolCallRefused")({
@@ -47,6 +48,38 @@ export const toolCallGate = <R>(
   );
 
 /**
+ * As `toolCallGate`, for a refusal that depends on the call: `undefined` lets it through. `make`
+ * runs once, when the server is built.
+ */
+export const toolCallRefusal = <R>(
+  make: Effect.Effect<(name: string, args: unknown) => Effect.Effect<string | undefined>, never, R>,
+) => McpServer.middleware()(Effect.map(make, toolCallGateFn), { global: true });
+
+type ProvidersOffered = (
+  settings: ServerSettings,
+  providers: ReadonlyArray<ServerProvider>,
+) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+/**
+ * The providers and models `orchestrator_capabilities` offers its caller, of the host's own. T3
+ * offers them all; Kin narrows what its agents see to what their helper tasks may run on.
+ */
+export const McpProvidersOffered = Context.Reference<ProvidersOffered>(
+  "t3/mcp/McpProvidersOffered",
+  { defaultValue: () => (_settings, providers) => Effect.succeed(providers) },
+);
+
+/** Every tool call on the server this joins reads `offered` as its `McpProvidersOffered`. */
+export const providersOffered = (offered: ProvidersOffered) =>
+  McpServer.middleware()(
+    (effect, { method }) =>
+      method === "tools/call"
+        ? Effect.provideService(effect, McpProvidersOffered, offered)
+        : effect,
+    { global: true },
+  );
+
+/**
  * Which tools the server this joins lists and lets a request call; a hidden one answers as if it
  * weren't registered. `visible` sees the tool name and the request's services.
  */
@@ -82,10 +115,12 @@ export const toolCallPrepare = <R>(
 export const McpToolPolicy = Context.Reference<{
   readonly visible: (name: string) => Effect.Effect<boolean>;
   readonly refusal: (name: string, args: unknown) => Effect.Effect<string | undefined>;
+  readonly offered: ProvidersOffered;
 }>("t3/mcp/McpToolPolicy", {
   defaultValue: () => ({
     visible: () => Effect.succeed(true),
     refusal: () => Effect.undefined,
+    offered: (_settings, providers) => Effect.succeed(providers),
   }),
 });
 
@@ -98,7 +133,11 @@ export const layerToolPolicy = Layer.mergeAll(
     { global: true },
   ),
   McpServer.middleware()(
-    Effect.map(Effect.service(McpToolPolicy), (policy) => toolCallGateFn(policy.refusal)),
+    Effect.map(Effect.service(McpToolPolicy), (policy) => {
+      const gate = toolCallGateFn(policy.refusal);
+      return (effect: Parameters<typeof gate>[0], options: Parameters<typeof gate>[1]) =>
+        gate(Effect.provideService(effect, McpProvidersOffered, policy.offered), options);
+    }),
     { global: true },
   ),
 );

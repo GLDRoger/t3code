@@ -668,6 +668,15 @@ export const KinWidget = Schema.Struct({
 });
 export type KinWidget = typeof KinWidget.Type;
 
+/** A failed task's cause the server can tell from its provider's failure. */
+export const KinTaskFailure = Schema.Literals([
+  "model_not_offered",
+  "signed_out",
+  "unreachable",
+  "usage_limit",
+]);
+export type KinTaskFailure = typeof KinTaskFailure.Type;
+
 export const KinTaskCardState = Schema.Struct({
   taskId: NodeId,
   environmentId: EnvironmentId,
@@ -686,6 +695,8 @@ export const KinTaskCardState = Schema.Struct({
   ]),
   pullRequests: Schema.Array(Schema.Struct({ url: Schema.String, number: Schema.Int })),
   lastError: Schema.NullOr(KinText),
+  /** Why a failed task stopped, where the server can tell; null when it can't, absent from older servers. */
+  failure: Schema.optional(Schema.NullOr(KinTaskFailure)),
   /** The docs a document job filed; the card opens them once it is done. */
   documents: Schema.optional(
     Schema.Array(

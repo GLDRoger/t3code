@@ -67,6 +67,8 @@ export interface KinTaskCardView {
   /** True only while the task runs; drives the static working bar. */
   readonly working: boolean;
   readonly detail: string | null;
+  /** The provider's own words under a failure Kin can't name, smaller than `detail`. */
+  readonly detailNote: string | null;
   readonly model: string | null;
   /** Null when there is no thread, or this phone doesn't know its environment. */
   readonly open: { readonly environmentId: string; readonly threadId: string } | null;
@@ -117,6 +119,19 @@ const clamp = (text: string, max: number) => {
 
 const OPENS_THREAD = "Opens the thread";
 
+/** A failed task's line, by the cause the server told; `stopped` leads anything else. */
+export const KIN_TASK_FAILURE_COPY = {
+  model_not_offered:
+    "This server's AI provider doesn't offer the model this task asked for. Ask the agent to start it again on its own model.",
+  signed_out:
+    "This server's AI provider is signed out. Sign it in again in Settings, then ask the agent to start the task again.",
+  unreachable:
+    "This server couldn't reach its AI provider. Ask the agent to start the task again in a few minutes.",
+  usage_limit:
+    "The AI provider's usage limit is reached. Ask the agent to start the task again once it resets.",
+  stopped: "The helper stopped with an error.",
+} as const;
+
 /** A model id as Settings names it (`kinListedModelName`); null shows no model at all. */
 export type KinModelName = (model: string) => string | null;
 
@@ -141,7 +156,10 @@ function kinTaskCardView(
   const title = clamp(state.title, 200);
   const named = state.model === null ? null : modelName(state.model);
   const model = named === null ? null : clamp(named, 60) || null;
-  const detail = state.lastError === null ? null : clamp(state.lastError, 280) || null;
+  const raw = state.lastError === null ? null : clamp(state.lastError, 280) || null;
+  const cause = state.status === "failed" ? (state.failure ?? null) : null;
+  const detail = state.status !== "failed" ? raw : KIN_TASK_FAILURE_COPY[cause ?? "stopped"];
+  const detailNote = state.status === "failed" && cause === null ? raw : null;
   const environmentId = state.remoteEnvironmentId ?? state.environmentId;
   const known =
     (state.remoteEnvironmentId !== null || state.environmentId === hostEnvironmentId) &&
@@ -159,6 +177,7 @@ function kinTaskCardView(
     `Task: ${title}`,
     label,
     detail,
+    detailNote,
     model,
     ...pullRequests.map((pr) => pr.label),
     open === null ? null : OPENS_THREAD,
@@ -170,6 +189,7 @@ function kinTaskCardView(
     tone,
     working: state.status === "working",
     detail,
+    detailNote,
     model,
     open,
     unknownEnvironment: state.threadId !== null && !known,
