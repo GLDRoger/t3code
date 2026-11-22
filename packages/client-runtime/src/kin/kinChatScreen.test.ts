@@ -18,7 +18,7 @@ import {
   KIN_FIXTURE_OWNER,
   makeKinFixtureMessages,
 } from "./kinChatFixtures.ts";
-import type { KinFeedViewer } from "./kinChatFeed.ts";
+import { KIN_HISTORY_PAGE_SIZE, type KinFeedViewer } from "./kinChatFeed.ts";
 import {
   kinChatFeedFollow,
   kinChatFeedRows,
@@ -246,6 +246,16 @@ describe("kinChatFeedView", () => {
     );
     expect(feed({ landOn: "fixture-3" }).landIndex).toBeGreaterThan(-1);
     expect(feed({ landOn: "fixture-99" }).landIndex).toBe(-1);
+    // Older than what has loaded: the chat reads back to it instead of opening at the end.
+    const later = { ...emptyKinChat, messages: messages.map((m) => ({ ...m, seq: m.seq + 50 })) };
+    expect(feed({ live: later, exhausted: false, landOn: "fixture-99" }).landPage).toEqual({
+      chatId: KIN_FIXTURE_CHAT_ID,
+      beforeSeq: messages[0]!.seq + 50,
+      limit: KIN_HISTORY_PAGE_SIZE,
+    });
+    expect(feed({ live: later, exhausted: false, landOn: "fixture-3" }).landPage).toBeNull();
+    expect(feed({ live: later, exhausted: true, landOn: "fixture-99" }).landPage).toBeNull();
+    expect(feed({ live: later, exhausted: false }).landPage).toBeNull();
   });
 
   it("follows the end until the reader scrolls away, then counts what they have not seen", () => {

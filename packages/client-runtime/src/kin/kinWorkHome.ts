@@ -2,6 +2,7 @@ import type {
   KinChatId,
   KinChatSummary,
   KinListDefinition,
+  KinMessageId,
   KinMoneySummary,
   KinRecord,
   KinRecordKey,
@@ -126,7 +127,12 @@ export type KinNeedsYouOpen =
   | { readonly type: "task"; readonly key: KinRecordKey }
   | { readonly type: "list"; readonly open: KinListOpen }
   | { readonly type: "money" }
-  | { readonly type: "chat"; readonly chatId: KinChatId };
+  | {
+      readonly type: "chat";
+      readonly chatId: KinChatId;
+      /** The card's message, for the chat to open on; null for a row with none. */
+      readonly messageId: KinMessageId | null;
+    };
 
 export interface KinNeedsYouRow {
   readonly id: string;
@@ -195,7 +201,7 @@ export function kinNeedsYou(input: {
         title: `${row.label} · ${row.chatTitle}`,
         detail: row.text ?? `Open the chat with ${row.chatTitle}`,
         late: false,
-        open: { type: "chat", chatId: item.chatId },
+        open: { type: "chat", chatId: item.chatId, messageId: item.messageId },
       };
     });
   return [...late, ...owed, ...waiting, ...today];

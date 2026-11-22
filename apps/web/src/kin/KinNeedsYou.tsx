@@ -180,6 +180,7 @@ function KinNeedsBlock(
       void navigate({
         to: "/kin/$environmentId/$orgId/$chatId",
         params: { environmentId, orgId, chatId: to.chatId },
+        search: to.messageId === null ? {} : { message: to.messageId },
       });
   };
   // The rows come already cut to what shows (`kinTasksBlock`); the money row leads.

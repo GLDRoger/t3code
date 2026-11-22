@@ -228,7 +228,7 @@ describe("kinAttention", () => {
       title: "Draft to approve · Chief of staff",
       detail: "Approve it to go as a proposal?",
       late: false,
-      open: { type: "chat", chatId: KinChatId.make("chat-1") },
+      open: { type: "chat", chatId: KinChatId.make("chat-1"), messageId: null },
     };
     const lateTask: KinNeedsYouRow = {
       id: "task:W-9",
