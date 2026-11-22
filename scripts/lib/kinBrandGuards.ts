@@ -173,6 +173,15 @@ export const GUARDS: ReadonlyArray<Guard> = [
       "open Kin's kin:// pairing links.",
     function: "PhoneSection",
   },
+  {
+    file: "scripts/build-desktop-artifact.ts",
+    reason:
+      "Kin's Windows payload is 109 files, over upstream's cap of 80: Kin keeps the bundled " +
+      "server (with its 41-entry compile cache) so a later version can make this computer the " +
+      "team's host. The cap still catches a payload that balloons.",
+    pattern: "export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 80;",
+    replace: "export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 128;",
+  },
 ];
 
 /** Where the guard goes: after a function body's `{`, or after an Effect.fn's last argument. */

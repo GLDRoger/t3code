@@ -438,7 +438,24 @@ text:
       Kin is an open-source desktop app for coding agents. Work with your existing agent subscriptions,
       review code changes, and run commands in your projects. Connect from desktop, web, or mobile to
       continue working remotely.
-    to: "Kin: AI team leads in chat, built on T3 Code."
+    to: "Kin: AI team leads in chat."
+  # Windows' file properties (CompanyName, copyright) and the uninstall entry's publisher; Kin's
+  # name, as the .deb maintainer above.
+  - files: [scripts/build-desktop-artifact.ts]
+    from: T3 Tools
+    to: Kin
+    exact: true
+  # The launcher's StartupWMClass, read from the running Linux app's window (WM_CLASS
+  # "com.gldroger.kin", "com.gldroger.Kin"), so docks match the window to Kin's launcher.
+  - files: [scripts/build-desktop-artifact.ts]
+    from: com.t3tools.T3Code
+    to: com.gldroger.Kin
+    exact: true
+  # Windows' uninstall entry shows this as its support and "more info" links; Kin's source.
+  - files: [scripts/build-desktop-artifact.ts]
+    from: https://t3.codes
+    to: https://github.com/GLDRoger/t3code
+    exact: true
   - files: [scripts/build-desktop-artifact.ts]
     from: T3-Code-
     to: Kin-
