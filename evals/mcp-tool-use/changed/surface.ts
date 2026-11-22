@@ -24,6 +24,7 @@ import { PreviewToolkit } from "../../../apps/server/src/mcp/toolkits/preview/to
 import { TURN_EVENT_TOOLS } from "../../../apps/server/src/kin/lead/eventIds.ts";
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../../apps/server/src/kin/reply/classify.ts";
 import { fillKinRules, kinDated, kinSessionOf, kinTurnFiles } from "../kin.ts";
+import { filledKinMocks } from "../kin-checks.ts";
 import { rubricRequest } from "../rubric.ts";
 import {
   type Base,
@@ -32,6 +33,7 @@ import {
   makeSample,
   McpToolUseCase,
   normalizeToolName,
+  NOT_GRADER,
   type RunConfig,
   t3SubagentContext,
   withBackgroundWait,
@@ -39,14 +41,6 @@ import {
 } from "../run.ts";
 
 const RUNNER_DIR = NodePath.join(import.meta.dirname, "..");
-/** run.ts's NOT_GRADER: files that are not part of the runner and graders. */
-const NOT_RUNNER = new Set([
-  "gate.ts",
-  "compare.ts",
-  "regrade.ts",
-  "trim-capture.ts",
-  "estimate.ts",
-]);
 
 const hash = (value: string | Uint8Array) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex").slice(0, 16);
@@ -58,7 +52,7 @@ export const runnerHash = () =>
     NodeFS.readdirSync(RUNNER_DIR)
       .filter(
         (name) =>
-          (name.endsWith(".ts") && !name.endsWith(".test.ts") && !NOT_RUNNER.has(name)) ||
+          (name.endsWith(".ts") && !name.endsWith(".test.ts") && !NOT_GRADER.has(name)) ||
           name.endsWith(".txt"),
       )
       .toSorted()
@@ -67,7 +61,7 @@ export const runnerHash = () =>
   );
 
 /** The runner this file's part list was checked against. */
-export const REVIEWED_RUNNER = "94c980304e6a5a1b";
+export const REVIEWED_RUNNER = "ff6ba126fcdebcea";
 
 export const CaseSurface = Schema.Struct({
   /** The case as run.json hashes it, and its first request as run.json hashes it. */
@@ -176,6 +170,9 @@ export const laterParts = (testCase: McpToolUseCase, tools: ReadonlySet<string>)
     TURN_EVENT_TOOLS: hashJson([...TURN_EVENT_TOOLS].toSorted()),
   };
   const pinned: Array<string> = [];
+  // A Kin mock's answer is filled in by Kin's own builders, so it moves when they do.
+  const kinMocks = filledKinMocks(setup);
+  if (kinMocks.length > 0) later.kinMocks = hashJson(kinMocks);
   if (setup.world?.kinLead === true && QUOTED_MESSAGE.test(testCase.prompt)) {
     later.RESCUE_PROMPT = hash(RESCUE_PROMPT);
     later.CAPTION_PROMPT = hash(CAPTION_PROMPT);
