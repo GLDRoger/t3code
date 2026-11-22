@@ -1,3 +1,4 @@
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
@@ -159,6 +160,8 @@ export function KinTasksList(
   const hostEdits = kinWorkHostEdits(live.summary);
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) && hostEdits;
   const now = new Date(useNowMinuteMs());
+  const viewer =
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId))?.personId ?? null;
   const [kept] = useState(() =>
     kinTaskLists.take(
       `${environmentId}\u0000${orgId}\u0000${JSON.stringify(props.initial)}`,
@@ -185,6 +188,7 @@ export function KinTasksList(
               .get(kinWorkLiveAtom({ environmentId, orgId }))
               .pipe(AsyncResult.value, Option.getOrNull)?.rows ?? null,
         }),
+      viewer,
     ),
   );
   const list = kept.list;
