@@ -170,4 +170,24 @@ describe("adding a connection with a key", () => {
       .toHaveValue("Ambermill errors");
     await expect.element(dialog.getByLabelText("Key")).toHaveValue(KEY);
   });
+
+  it("asks before throwing away what was typed, and closes at once when nothing was", async () => {
+    setup(null);
+    await using _screen = await render(screen());
+    await userEvent.click(page.getByRole("button", { name: "Add service" }));
+    await userEvent.keyboard("{Escape}");
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+
+    const dialog = await addWithKey();
+    await userEvent.keyboard("{Escape}");
+    const ask = page.getByRole("alertdialog");
+    await expect.element(ask.getByText("Discard what you typed?")).toBeVisible();
+    await userEvent.click(ask.getByRole("button", { name: "Keep editing" }));
+    await expect.element(dialog.getByLabelText("Key")).toHaveValue(KEY);
+
+    await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(page.getByRole("alertdialog").getByRole("button", { name: "Discard" }));
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+    expect(host.adds).toHaveLength(0);
+  });
 });

@@ -45,6 +45,7 @@ import {
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { kinClient } from "./kinClient";
+import { useKinFormDiscard } from "./KinFormDiscard";
 import { KinSettingsFormDialog } from "./settings/KinSettingsControls";
 import {
   KinSettingsEmpty,
@@ -264,6 +265,7 @@ function ConnectDialog(props: {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const keyId = useId();
+  const discard = useKinFormDiscard(done === null && key.trim() !== "", props.onClose);
   const chosen = rekey === null ? choices[pick] : undefined;
   const label = rekey?.title ?? chosen?.label ?? "";
 
@@ -295,7 +297,7 @@ function ConnectDialog(props: {
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open && !busy) props.onClose();
+        if (!open && !busy) discard.close();
       }}
     >
       <DialogPopup className="max-w-lg">
@@ -407,7 +409,7 @@ function ConnectDialog(props: {
               <Button type="submit">{COPY.done}</Button>
             ) : (
               <>
-                <Button type="button" variant="outline" disabled={busy} onClick={props.onClose}>
+                <Button type="button" variant="outline" disabled={busy} onClick={discard.close}>
                   {COPY.cancel}
                 </Button>
                 <Button
@@ -427,6 +429,7 @@ function ConnectDialog(props: {
             )}
           </DialogFooter>
         </form>
+        {discard.ask}
       </DialogPopup>
     </Dialog>
   );
