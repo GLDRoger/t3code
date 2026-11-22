@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
 import type {
   KinAgentId,
   KinChatId,
