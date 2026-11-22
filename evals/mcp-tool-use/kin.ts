@@ -1,11 +1,31 @@
+// @effect-diagnostics nodeBuiltinImport:off
 /**
  * Kin's part of the MCP tool-use runner: its toolkits, which of them a lead's seat lists, the rule
  * lines its cases write as placeholders, and what Kin's bridge shows or asks after a turn. run.ts
  * reaches each through one call. Runs no `./run.ts` code, only its types, so either loads first.
  */
+import * as NodeFS from "node:fs";
+import * as NodeURL from "node:url";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import type * as Contracts from "@t3tools/contracts";
+import {
+  isProviderNativeImageAttachment,
+  providerMessageTextWithAttachmentPaths,
+} from "@t3tools/provider-core/server/attachmentPrompt";
+import * as Effect from "effect/Effect";
+import { Base64 } from "effect/encoding";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+
+import {
+  createDeterministicAttachmentId,
+  resolveAttachmentPath,
+} from "../../apps/server/src/attachmentStore.ts";
+import * as ServerConfig from "../../apps/server/src/config.ts";
+import * as DocumentText from "../../apps/server/src/provider/DocumentText.ts";
+import { KinTurnContent } from "../../apps/server/src/kin/lead/turn/content.ts";
 
 import {
   groupRules as kinGroupRules,
@@ -460,3 +480,204 @@ export const modelCallLines = (
     `- Most model calls: ${top.map((one) => `\`${one.id}\` (largest ${one.largest}, mean ${one.mean.toFixed(1)})`).join(", ")}.`,
   ];
 };
+
+/** A file on the turn's message (`setup.attachments`): its name in the chat and a fixture. */
+export const KinCaseAttachment = Schema.Struct({
+  /** As the chat shows it and the quoted event's `attachments` name it. */
+  name: Schema.String,
+  /** Repository-relative path of the invented fixture whose bytes are the file. */
+  file: Schema.String,
+  /** Defaults from the name's extension. */
+  mimeType: Schema.optional(Schema.String),
+});
+type KinCaseAttachment = typeof KinCaseAttachment.Type;
+/** What a turn with files carries beside its prompt, as Kin and the provider adapters build it. */
+export type KinTurnFiles = {
+  /** Appended to the prompt: Kin's file lines and the adapter's saved-at lines. */
+  readonly text: string;
+  readonly images: ReadonlyArray<{ readonly mimeType: string; readonly data: string }>;
+};
+
+const REPO = new URL("../../", import.meta.url);
+const MIME_TYPES: Readonly<Record<string, string>> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  pdf: "application/pdf",
+  csv: "text/csv",
+  txt: "text/plain",
+};
+// The turn's text names where files are saved; a fixed place keeps every request the same.
+const SHOWN_ATTACHMENTS_DIR = "/home/user/.t3/userdata/attachments";
+const PROMPT_MARK = "\u0000";
+// Office files get no text here: the eval starts no extraction process. No fixture is one.
+const noExtraction = Layer.succeed(
+  DocumentText.DocumentText,
+  DocumentText.DocumentText.of({
+    ensure: Effect.fn("DocumentText.ensure")(() => Effect.undefined),
+  }),
+);
+
+const storedAttachment = (caseId: string, given: KinCaseAttachment, sizeBytes: number) => {
+  const mimeType =
+    given.mimeType ?? MIME_TYPES[given.name.split(".").at(-1)?.toLowerCase() ?? ""] ?? "";
+  const id = createDeterministicAttachmentId("kin-chat", `${caseId}:${given.name}`);
+  if (id === null || mimeType === "") throw new Error(`${caseId}: can't attach ${given.name}.`);
+  return mimeType.startsWith("image/")
+    ? ({ type: "image", id, name: given.name, mimeType, sizeBytes } as const)
+    : ({ type: "file", id, name: given.name, mimeType, sizeBytes } as const);
+};
+
+/**
+ * The case's files handed to its turn as a wake-up hands a message's files (`WakeupRunner`):
+ * `KinTurnContent.prepare` turns each into text and pictures, then the provider adapter names
+ * every file it passes and sends the pictures (`providerMessageTextWithAttachmentPaths`).
+ */
+export const kinTurnFiles = Effect.fn("evaluateMcpToolUse.kinTurnFiles")(function* (
+  testCase: McpToolUseCase,
+) {
+  const given = testCase.setup.attachments ?? [];
+  if (given.length === 0) return undefined;
+  return yield* Effect.gen(function* () {
+    const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    const stored = yield* Effect.forEach(given, (one) =>
+      Effect.gen(function* () {
+        const bytes = yield* fs.readFile(NodeURL.fileURLToPath(new URL(one.file, REPO)));
+        const attachment = storedAttachment(testCase.id, one, bytes.byteLength);
+        const path = resolveAttachmentPath({ attachmentsDir, attachment });
+        if (path === null) return yield* Effect.die(new Error(`${testCase.id}: ${one.name}`));
+        yield* fs.writeFile(path, bytes);
+        return attachment;
+      }),
+    );
+    const prepared = yield* (yield* KinTurnContent).prepare({
+      text: PROMPT_MARK,
+      attachments: stored,
+    });
+    const text = yield* providerMessageTextWithAttachmentPaths({
+      text: prepared.text,
+      attachments: prepared.attachments,
+      resolveAttachmentPath: (attachment) => resolveAttachmentPath({ attachmentsDir, attachment }),
+      resolveExtractedTextPath: (path) =>
+        DocumentText.resolveExtractedTextPath(path).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+        ),
+    });
+    const images = yield* Effect.forEach(
+      prepared.attachments.filter(isProviderNativeImageAttachment),
+      (attachment) =>
+        fs
+          .readFile(resolveAttachmentPath({ attachmentsDir, attachment }) ?? "")
+          .pipe(
+            Effect.map((bytes) => ({ mimeType: attachment.mimeType, data: Base64.encode(bytes) })),
+          ),
+    );
+    const files: KinTurnFiles = {
+      text: text.slice(PROMPT_MARK.length).replaceAll(attachmentsDir, SHOWN_ATTACHMENTS_DIR),
+      images,
+    };
+    return files;
+  }).pipe(
+    Effect.provide(
+      KinTurnContent.layer.pipe(
+        Layer.provideMerge(noExtraction),
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-eval-files-" })),
+        Layer.provideMerge(NodeServices.layer),
+      ),
+    ),
+    Effect.scoped,
+  );
+});
+
+/** The turn's first user message: Claude's adapter puts its pictures ahead of the text. */
+export const kinTurnBlocks = (files: KinTurnFiles | undefined, prompt: string, codex: boolean) =>
+  files === undefined
+    ? [text(prompt)]
+    : [
+        ...(codex
+          ? []
+          : files.images.map((image): Block => ({
+              type: "image",
+              source: { type: "base64", media_type: image.mimeType, data: image.data },
+            }))),
+        text(`${prompt}${files.text}`),
+      ];
+
+/** Kin's tools, by bare name. */
+export const KIN_TOOLS = names(...KIN_TOOLKITS);
+/**
+ * Each Kin tool's access as its handlers declare it (`McpToolAccess.reads`, `actsAsCaller`, ...).
+ * The declarations live inside the handler layers, which build only with the server's services,
+ * so they are read from that source.
+ */
+export const KIN_TOOL_ACCESS: ReadonlyMap<string, string> = new Map(
+  NodeFS.readdirSync(new URL("apps/server/src/kin/", REPO), { recursive: true, encoding: "utf8" })
+    .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+    .map((file) => NodeFS.readFileSync(new URL(`apps/server/src/kin/${file}`, REPO), "utf8"))
+    .filter((source) => source.includes("McpToolAccess.toLayer("))
+    .flatMap((source) =>
+      [...source.matchAll(/^\s*"?(\w+)"?:\s*McpToolAccess\.(\w+)\(/gm)].map(
+        (match) => [match[1]!, match[2]!] as const,
+      ),
+    ),
+);
+const READ_ACCESS = new Set(["reads", "readsAsCaller"]);
+
+const unmocked = (testCase: McpToolUseCase, tool: string) => {
+  const mock = testCase.setup.mocks?.[tool];
+  return KIN_TOOLS.has(tool) && (mock === undefined || mock === "default");
+};
+/** A Kin read a case has no mock for answers this, as a failed call, never an invented result. */
+export const kinUnmockedRead = (testCase: McpToolUseCase, tool: string) =>
+  unmocked(testCase, tool) && READ_ACCESS.has(KIN_TOOL_ACCESS.get(tool) ?? "")
+    ? `No mock for ${tool} in this case.`
+    : undefined;
+/** The Kin tools a sample called that its case has no mock for, each once. */
+export const kinUnmocked = (
+  testCase: McpToolUseCase,
+  calls: ReadonlyArray<{ readonly tool: string }>,
+) => [...new Set(calls.map((call) => call.tool).filter((tool) => unmocked(testCase, tool)))];
+/** The summary's list, per case, of Kin tools called with no mock and in how many samples. */
+export const unmockedLines = (
+  rows: ReadonlyArray<{ readonly id: string; readonly unmocked?: ReadonlyArray<string> }>,
+) => {
+  const byCase = [...Map.groupBy(rows, (row) => row.id)]
+    .map(([id, members]) => {
+      const counts = new Map<string, number>();
+      for (const tool of members.flatMap((row) => row.unmocked ?? []))
+        counts.set(tool, (counts.get(tool) ?? 0) + 1);
+      return { id, counts: [...counts].toSorted(([left], [right]) => left.localeCompare(right)) };
+    })
+    .filter((one) => one.counts.length > 0)
+    .toSorted((left, right) => left.id.localeCompare(right.id));
+  if (byCase.length === 0) return [];
+  return [
+    "## Kin tools called with no mock\n",
+    `A read here answered "No mock for <tool> in this case." as a failed call; any other Kin tool answered {"ok":true}. Give the case a mock for each.\n`,
+    "| Case | Tool: samples |",
+    "| --- | --- |",
+    ...byCase.map(
+      ({ id, counts }) =>
+        `| ${id} | ${counts.map(([tool, samples]) => `${tool}: ${samples}`).join(", ")} |`,
+    ),
+    "",
+  ];
+};
+
+/** How much of one call a Kin rubric's judge reads, in UTF-8 bytes. */
+export const JUDGED_CALL_BYTES = 16_384;
+const encoder = new TextEncoder();
+/** A Kin call as the judge reads it: whole, up to the bound, and then marked cut. */
+export const kinJudgedCall = (call: { readonly tool: string; readonly input: unknown }) => {
+  const line = `${call.tool} ${typeof call.input === "string" ? call.input : (JSON.stringify(call.input) ?? "")}`;
+  const bytes = encoder.encode(line);
+  if (bytes.byteLength <= JUDGED_CALL_BYTES) return line;
+  const kept = new TextDecoder()
+    .decode(bytes.subarray(0, JUDGED_CALL_BYTES))
+    .replace(/\uFFFD$/, "");
+  return `${kept} [cut: this call is ${bytes.byteLength} bytes; only its first ${JUDGED_CALL_BYTES} are shown]`;
+};
+export const isKinCase = ({ setup }: McpToolUseCase) =>
+  setup.world?.kinAgent === true || setup.world?.kinLead === true;

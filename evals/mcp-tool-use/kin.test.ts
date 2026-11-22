@@ -11,10 +11,24 @@ import { assert, it } from "@effect/vitest";
 
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
 import { EVENING_RULE, MORNING_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
-import { filledEvent, kinSessionOf, rescuePrompt, shownText } from "./kin.ts";
 import {
+  filledEvent,
+  JUDGED_CALL_BYTES,
+  KIN_TOOL_ACCESS,
+  KIN_TOOLS,
+  kinSessionOf,
+  kinTurnBlocks,
+  kinTurnFiles,
+  rescuePrompt,
+  shownText,
+} from "./kin.ts";
+import {
+  answerToolCall,
   buildBase,
+  buildMessages,
   gradeSample,
+  judged,
+  makeSample,
   McpToolUseCase,
   normalizeToolInput,
   normalizeToolName,
@@ -437,3 +451,220 @@ it("reports a no-limit run's model calls and never a step-limit cut-off", () => 
   assert.notInclude(summary, "cut off");
   assert.notInclude(summarize(rows, options), "Model calls per sample");
 });
+
+const kinCase = (setup: Partial<McpToolUseCase["setup"]> = {}): McpToolUseCase => ({
+  id: "kin-receipt",
+  area: "kin",
+  kind: "guard",
+  pattern: "a receipt photo",
+  experience: "The owner sends a receipt photo.",
+  setup: { role: "top", world: { kinAgent: true, kinLead: true }, ...setup },
+  prompt:
+    '# Events\n\n> {"event":"event-1","body":"Taxi, receipt attached","attachments":["receipt-taxi.jpg"]}',
+  expect: {},
+});
+const kinBase = () =>
+  buildBase(template, {
+    model: "claude-sonnet-5-5",
+    keepUserInstructions: false,
+    kinAgent: true,
+    kinLead: true,
+  });
+const attached = {
+  attachments: [
+    { name: "receipt-taxi.jpg", file: "evals/mcp-tool-use/cases/files/receipt-taxi.jpg" },
+    { name: "remittance.txt", file: "evals/mcp-tool-use/cases/files/remittance.txt" },
+  ],
+};
+
+it.effect("hands a Kin case's files to the turn as Kin and the provider adapters do", () =>
+  Effect.gen(function* () {
+    const turn = (testCase: McpToolUseCase) =>
+      Effect.gen(function* () {
+        const sample = makeSample(testCase, kinBase());
+        sample.kinFiles = yield* kinTurnFiles(testCase);
+        return buildMessages(sample).at(-1)?.content ?? [];
+      });
+    const photo = NodeFS.readFileSync(new URL("./cases/files/receipt-taxi.jpg", import.meta.url));
+    const [image, prompt] = (yield* turn(kinCase(attached))).slice(-2);
+    // Claude: the picture itself, ahead of the text, as ClaudeAdapterV2 sends it.
+    assert.deepEqual(image, {
+      type: "image",
+      source: { type: "base64", media_type: "image/jpeg", data: photo.toString("base64") },
+    });
+    const text = String(prompt?.text);
+    assert.isTrue(text.startsWith(kinCase().prompt));
+    assert.match(
+      text,
+      /\[Attached image "receipt-taxi\.jpg" is saved at: \/home\/user\/\.t3\/userdata\/attachments\/kin-chat-[\w-]+\.jpg\]/,
+    );
+    // KinTurnContent reads a text file into the turn; the adapter names every file it passes.
+    assert.include(text, '[Text of "remittance.txt"]\nRemittance advice. Paid against INV-12');
+    assert.match(
+      text,
+      /\[Attached file "remittance\.txt" is saved at: \/home\/user\/[^\]]+\.txt\]/,
+    );
+    // Codex gets the same text; its picture goes as an input item (kinAppServer), not a block.
+    const files = yield* kinTurnFiles(kinCase(attached));
+    assert.deepEqual(kinTurnBlocks(files, "Hi", true), [
+      { type: "text", text: `Hi${files?.text}` },
+    ]);
+    assert.deepEqual(files?.images, [{ mimeType: "image/jpeg", data: photo.toString("base64") }]);
+    // A case without files, Kin's or T3's, builds the message it always did.
+    const plain = yield* turn(kinCase());
+    assert.deepEqual(plain.at(-1), { type: "text", text: kinCase().prompt });
+    const t3 = makeSample(
+      childCase,
+      buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false }),
+    );
+    assert.isUndefined(yield* kinTurnFiles(childCase));
+    assert.deepEqual(buildMessages(t3).at(-1)?.content.at(-1)?.type, "text");
+  }),
+);
+
+it("reads every Kin tool's access from the server's declarations", () => {
+  for (const tool of KIN_TOOLS) assert.isTrue(KIN_TOOL_ACCESS.has(tool), tool);
+  assert.strictEqual(KIN_TOOL_ACCESS.get("record_get"), "reads");
+  assert.strictEqual(KIN_TOOL_ACCESS.get("record_create"), "actsAsCaller");
+});
+
+it.effect(
+  "answers an unmocked Kin read with No mock, and lists unmocked Kin calls in the summary",
+  () =>
+    Effect.gen(function* () {
+      const config = {
+        apiKey: "key",
+        model: "claude-sonnet-5-5",
+        effort: "high",
+        maxSteps: 0,
+        shellModel: "claude-haiku-5-5",
+      } as const;
+      const answer = (testCase: McpToolUseCase, tool: string) => {
+        const base = kinBase();
+        const sample = { ...makeSample(testCase, base), tools: [...base.nativeTools, ...base.t3] };
+        return answerToolCall(sample, config, {
+          type: "tool_use",
+          id: "t1",
+          name: `mcp__t3-code__${tool}`,
+          input: {},
+        });
+      };
+      const read = yield* answer(kinCase(), "record_get");
+      assert.isTrue(read.is_error);
+      assert.deepEqual(read.content, "No mock for record_get in this case.");
+      // A write still answers as it did, and a mock still answers a read.
+      assert.isUndefined((yield* answer(kinCase(), "record_create")).is_error);
+      assert.deepEqual((yield* answer(kinCase(), "record_create")).content, '{"ok":true}');
+      const mocked = kinCase({ mocks: { record_get: { key: "EXP-1" } } });
+      assert.deepEqual((yield* answer(mocked, "record_get")).content, '{"key":"EXP-1"}');
+      // A T3 tool with no mock answers as before.
+      const t3Base = buildBase(template, {
+        model: "claude-sonnet-5-5",
+        keepUserInstructions: false,
+      });
+      const t3 = yield* answerToolCall(
+        { ...makeSample(childCase, t3Base), tools: [...t3Base.nativeTools, ...t3Base.t3] },
+        config,
+        { type: "tool_use", id: "t2", name: "mcp__t3-code__schedule_task", input: {} },
+      );
+      assert.deepEqual([t3.is_error, t3.content], [undefined, '{"ok":true}']);
+
+      const tokens = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+      const row = (id: string, unmocked?: ReadonlyArray<string>) => ({
+        id,
+        kind: "guard" as const,
+        pattern: "p",
+        role: "top",
+        pass: true,
+        usage: tokens,
+        shellUsage: tokens,
+        ...(unmocked === undefined ? {} : { unmocked }),
+      });
+      const options = {
+        header: "run",
+        shellModel: "claude-haiku-5-5",
+        model: "claude-haiku-5-5",
+      } as const;
+      const summary = summarize(
+        [
+          row("b", ["records_query"]),
+          row("a", ["record_get", "records_query"]),
+          row("a", ["record_get"]),
+          row("c"),
+        ],
+        options,
+      );
+      const section = summary.slice(summary.indexOf("## Kin tools called with no mock"));
+      assert.include(section, "| a | record_get: 2, records_query: 1 |\n| b | records_query: 1 |");
+      assert.notInclude(section, "| c |");
+      // T3's runs, which call no Kin tool, keep their summary.
+      assert.notInclude(summarize([row("c")], options), "no mock");
+    }),
+);
+
+it.effect("gives a Kin rubric's judge each call whole up to its bound, and says where it cut", () =>
+  Effect.gen(function* () {
+    const bodies: Array<string> = [];
+    const judge = Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make((request) => {
+        if (request.body._tag === "Uint8Array")
+          bodies.push(new TextDecoder().decode(request.body.body));
+        const verdicts = JSON.stringify({ verdicts: [{ answer: true, why: "ok" }] });
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(
+              JSON.stringify({
+                content: [{ type: "text", text: verdicts }],
+                stop_reason: "end_turn",
+                usage: { input_tokens: 1, output_tokens: 1 },
+              }),
+            ),
+          ),
+        );
+      }),
+    );
+    const config = {
+      apiKey: "key",
+      model: "claude-sonnet-5-5",
+      effort: "high",
+      maxSteps: 0,
+      shellModel: "claude-haiku-5-5",
+    } as const;
+    const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+    const rubric = { checks: ["Does the draft carry Zoya's 250,000?"] };
+    const detail = `${"Scope: one site for eight weeks. ".repeat(20)}Price: 250000 a month, as Zoya gave it.`;
+    const huge = "x".repeat(JUDGED_CALL_BYTES * 2);
+    const run = {
+      text: "Sent up to Rhea.",
+      stopReason: "end_turn",
+      calls: [
+        { step: 0, tool: "kin_ask_person", input: { question: "Price this?", detail } },
+        { step: 1, tool: "doc_create", input: { body: huge } },
+      ],
+    };
+    const shown = (testCase: McpToolUseCase) =>
+      judged({ ...testCase, expect: { rubric } }, run, config, usage).pipe(
+        Effect.provide(judge),
+        Effect.map(() => {
+          const sent = JSON.parse(bodies.at(-1) ?? "{}") as {
+            messages: Array<{ content: Array<{ text: string }> }>;
+          };
+          return sent.messages[0]!.content.map((part) => part.text).join("\n\n");
+        }),
+      );
+    const kin = yield* shown(kinCase());
+    assert.include(kin, `"detail":"${detail}"`);
+    const bytes = new TextEncoder().encode(`doc_create ${JSON.stringify({ body: huge })}`);
+    assert.include(
+      kin,
+      `[cut: this call is ${bytes.byteLength} bytes; only its first ${JUDGED_CALL_BYTES} are shown]`,
+    );
+    assert.notInclude(kin, "x".repeat(JUDGED_CALL_BYTES));
+    // A T3 case's judge still reads 600 characters of each call.
+    const t3 = yield* shown(childCase);
+    assert.notInclude(t3, "as Zoya gave it");
+    assert.notInclude(t3, "[cut:");
+  }),
+);
