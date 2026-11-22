@@ -64,6 +64,7 @@ import {
   type State,
 } from "./margin.ts";
 import { needsTopUp, refusals, RunManifest, tallies, tally } from "./gate.ts";
+import { casePattern } from "./pattern.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, openAppServer } from "./appServer.ts";
 import {
@@ -2040,7 +2041,7 @@ export const shellOutput = (content: ReadonlyArray<Block>) => {
 export const mockOutput = (sample: Sample, command: string) =>
   /&&|\|\||[;|\n]/.test(command.trim())
     ? undefined
-    : sample.testCase.setup.shellMocks?.find((mock) => new RegExp(mock.match).test(command))
+    : sample.testCase.setup.shellMocks?.find((mock) => casePattern(mock.match).test(command))
         ?.output;
 
 type Config = {
@@ -2246,7 +2247,7 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
 /** GPT models write ’ ‘ “ ” where cases write ' and ": text is matched with them made plain. */
 const plainQuotes = (text: string) => text.replaceAll(/[‘’]/g, "'").replaceAll(/[“”]/g, '"');
 const matchesPattern = (pattern: string, value: string) =>
-  new RegExp(plainQuotes(pattern)).test(plainQuotes(value));
+  casePattern(plainQuotes(pattern)).test(plainQuotes(value));
 
 const BOUND = /^([<>]=)(-?\d+(?:\.\d+)?)$/;
 /**
