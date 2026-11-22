@@ -217,6 +217,9 @@ type Made = {
 const PICTURE_INPUTS = { images: 8, bytes: 24 * 1024 * 1024 };
 export const TOO_MANY_INPUTS = `A picture can use at most ${PICTURE_INPUTS.images} of the chat's images, ${PICTURE_INPUTS.bytes / 1024 / 1024} MB together, so nothing was made. Use fewer or smaller ones, or put one in the page as a data: URL.`;
 const CANT_MAKE = "Kin can't make pictures right now, so nothing was made.";
+/** A batch trimmed to the room left on the reply. */
+export const REPLY_ROOM = (count: number) =>
+  `The reply had room for ${count} more, so Kin made ${count}.`;
 
 /** Where a picture is placed in the chat, and its retry: one per picture of the call. */
 const placeOf = (wakeupId: string, one: string) => `kin-picture:${wakeupId}:${one}`;
@@ -294,17 +297,17 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
       });
     const store = stores.value;
     const gate = yield* KinLevelGate;
-    const count = input.html === undefined ? (input.count ?? 1) : 1;
+    const asked = input.html === undefined ? (input.count ?? 1) : 1;
     const oneOf = (index: number) => (index === 0 ? key : `${key}-${index + 1}`);
     const placing = { ...lead, wakeupId };
     const page =
       input.html === undefined
         ? undefined
         : yield* visualPage({ title: input.title, html: input.html });
-    // Where it goes, what it shows and room for all of it, before anything is drawn or paid for.
-    yield* gate.pictureRoom(placing, {
+    // Where it goes, what it shows and how many fit, before anything is drawn or paid for.
+    const room = yield* gate.pictureRoom(placing, {
       chatId,
-      clientMessageIds: Array.from({ length: count }, (_, index) =>
+      clientMessageIds: Array.from({ length: asked }, (_, index) =>
         placeOf(wakeupId, oneOf(index)),
       ),
       seen:
@@ -313,8 +316,9 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
           : `${page.title}\n${page.html.replace(/<[^>]*>/g, " ")}`,
     });
 
+    const count = Math.min(asked, room);
     const pictures: Array<Made> = [];
-    let note: string | null = null;
+    let note: string | null = count < asked ? REPLY_ROOM(count) : null;
     if (page !== undefined) {
       const named = [...new Set(kinVisualFileReferences(page.html).map((id) => id.toLowerCase()))];
       if (named.length > PICTURE_INPUTS.images) return yield* invalid(TOO_MANY_INPUTS);
@@ -368,7 +372,7 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
           reason: SENTENCE_REASONS[generated.reason],
           message: generated.sentence,
         });
-      note = generated.note;
+      note = [note, generated.note].filter((one) => one !== null).join(" ") || null;
       const fs = yield* FileSystem.FileSystem;
       const { attachmentsDir } = yield* ServerConfig;
       for (const file of generated.files) {

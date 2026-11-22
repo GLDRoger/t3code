@@ -57,6 +57,7 @@ import {
   COUNT_RANGE,
   KEPT,
   makePicture,
+  REPLY_ROOM,
   type PictureInput,
   TOO_MANY_INPUTS,
   UNASKED_AFTER_OUTSIDE,
@@ -106,14 +107,9 @@ const gate = Layer.unwrap(
   Effect.map(SqlClient.SqlClient, (sql) =>
     Layer.mock(KinLevelGate)({
       pictureRoom: (_agent, input) =>
-        input.clientMessageIds.length <= reply.room
-          ? Effect.void
-          : Effect.fail(
-              new KinChatError({
-                reason: "limit",
-                message: `This reply has room for ${reply.room}.`,
-              }),
-            ),
+        reply.room > 0
+          ? Effect.succeed(Math.min(input.clientMessageIds.length, reply.room))
+          : Effect.fail(new KinChatError({ reason: "limit", message: "This reply is full." })),
       picture: (_agent, input) =>
         Effect.gen(function* () {
           if (input.clientMessageId === reply.failOn)
@@ -956,11 +952,11 @@ describe("kin_picture", () => {
         } as const;
         const counted = sql<{ count: number }>`SELECT count FROM kin_picture_counts
           WHERE org_id = ${orgId} ORDER BY count_id`;
-        // Room for two: the service is never asked, and nothing is counted.
-        reply.room = 2;
+        // No room left: the service is never asked, and nothing is counted.
+        reply.room = 0;
         assert.include(yield* Effect.flip(makePicture(scope, ask)), {
           reason: "limit",
-          message: "This reply has room for 2.",
+          message: "This reply is full.",
         });
         assert.deepStrictEqual([fake.calls.length, yield* counted, placed], [0, [], []]);
         // Room for all three; the third can't be placed, so none of them is filed or placed.
@@ -1039,6 +1035,53 @@ describe("kin_picture", () => {
         assert.deepStrictEqual(
           yield* sql`SELECT count_id FROM kin_picture_counts WHERE org_id = ${orgId} ORDER BY count_id`,
           [{ count_id: "earlier" }],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "trims a batch to what both the limit and the reply's room allow, before the service is asked",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* (yield* KinPictures).set([person(ownerId)], {
+          orgId,
+          key: Redacted.make("sk-invented-ambermill"),
+          monthlyLimit: 10,
+        });
+        // Eight of this month's ten are used.
+        yield* TestClock.setTime(Date.parse(at));
+        const month = "2026-11";
+        yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, count, state, at)
+          VALUES (${orgId}, 'earlier', ${month}, ${lead}, 4, 'made', 0),
+            (${orgId}, 'earlier-2', ${month}, ${lead}, 4, 'made', 0)`;
+        const ask = {
+          title: "Mill",
+          size: "square",
+          prompt: "The mill at dawn",
+          count: 4,
+        } as const;
+        // Two places on the reply and two pictures left: two are made, not none.
+        yield* turn(1);
+        reply.room = 2;
+        const made = yield* makePicture(scope, ask);
+        assert.lengthOf(made.files, 2);
+        assert.include(made.next, REPLY_ROOM(2));
+        assert.deepStrictEqual(
+          fake.calls.map((call) => call.count),
+          [2],
+        );
+        // Room for three, one picture left: one is made, and the limit says why.
+        yield* sql`DELETE FROM kin_picture_counts WHERE count_id = 'earlier-2'`;
+        yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, count, state, at)
+          VALUES (${orgId}, 'earlier-3', ${month}, ${lead}, 3, 'made', 0)`;
+        yield* turn(50);
+        reply.room = 3;
+        assert.lengthOf((yield* makePicture(scope, ask)).files, 1);
+        assert.deepStrictEqual(
+          fake.calls.map((call) => call.count),
+          [2, 1],
         );
       }).pipe(Effect.provide(layer)),
   );

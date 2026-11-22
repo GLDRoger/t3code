@@ -177,7 +177,7 @@ export class KinLevelGate extends Context.Service<
     readonly pictureRoom: (
       agent: AgentIdentity,
       input: Parameters<KinChatService["Service"]["pictureRoom"]>[1] & { readonly seen: string },
-    ) => Effect.Effect<void, KinChatError>;
+    ) => Effect.Effect<number, KinChatError>;
     readonly settleFigures: (
       ...args: Parameters<KinChatService["Service"]["settleFigures"]>
     ) => Effect.Effect<void, KinChatError>;
