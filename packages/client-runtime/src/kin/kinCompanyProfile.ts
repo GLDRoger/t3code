@@ -124,6 +124,8 @@ interface FieldSpec {
   readonly invoice?: true;
   /** A yes-or-no choice: the draft holds "yes" or "". */
   readonly choice?: true;
+  /** Means something only for a company registered for its tax: no gap and no field without it. */
+  readonly registered?: true;
 }
 
 /** The form in the order an invoice needs it. */
@@ -191,16 +193,24 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         code: true,
         problem: "A PAN is 10 characters, like ABCDE1234F.",
       },
-      { id: "placeOfSupply", india: true, label: "Place of supply", invoice: true },
+      {
+        id: "placeOfSupply",
+        india: true,
+        label: "Place of supply",
+        invoice: true,
+        registered: true,
+      },
       {
         id: "sac",
         india: true,
+        registered: true,
         label: "Usual SAC code",
         problem: "A SAC code is 4 to 8 digits.",
       },
       {
         id: "lutNumber",
         india: true,
+        registered: true,
         label: "LUT ARN, for exports",
         code: true,
         problem: "An LUT ARN is 8 to 20 letters and digits.",
@@ -208,6 +218,7 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
       {
         id: "lutDate",
         india: true,
+        registered: true,
         label: "LUT filed on",
         day: true,
         problem: "Write the day as YYYY-MM-DD, like 2026-04-01.",
@@ -407,7 +418,7 @@ export const kinCompanyDraftEdit = (
 /** The sections while editing: they follow the country typed, once it is a whole code. */
 export const kinCompanyEditSections = (profile: KinCompanyProfile, draft: KinCompanyDraft) => {
   const typed = draft.country.trim().toUpperCase();
-  return kinCompanySections(
+  const sections = kinCompanySections(
     profile.country === undefined
       ? undefined
       : typed === ""
@@ -416,6 +427,11 @@ export const kinCompanyEditSections = (profile: KinCompanyProfile, draft: KinCom
           ? typed
           : profile.country,
   );
+  if (draft.notRegistered === "") return sections;
+  return sections.map((section) => ({
+    ...section,
+    fields: section.fields.filter((field) => field.registered !== true),
+  }));
 };
 
 /** Nothing has been filled in yet. */
@@ -511,6 +527,7 @@ export function kinCompanyRead(profile: KinCompanyProfile): ReadonlyArray<{
           { id: field.id, label: field.label, value: KIN_COMPANY.notRegistered, missing: false },
         ];
       const value = stored(profile, field.id);
+      if (value === null && field.registered === true && profile.taxRegistered === false) return [];
       const missing = value === null && field.invoice === true && !(paid && isBank(field.id));
       if (value === null && !missing) return [];
       const shown = value === null ? KIN_COMPANY.notSet : field.day ? readDay(value) : value;
