@@ -73,13 +73,37 @@ describe("backupProblem", () => {
   });
 });
 
+/**
+ * The host's commands, answered without running anything: `du` reads invented sizes (no test walks
+ * a real folder), and the clean script isn't there. `seen` gets each command and its arguments.
+ */
+const fakeRunner = (seen: Array<ReadonlyArray<string>> = []) =>
+  Layer.succeed(
+    ProcessRunner.ProcessRunner,
+    ProcessRunner.ProcessRunner.of({
+      run: (input) =>
+        Effect.sync(() => {
+          seen.push([input.command, ...(input.args ?? [])]);
+          const du = input.command === "du";
+          return {
+            stdout: du ? `1024\t${input.args?.at(-1) ?? ""}\n` : "",
+            stderr: du ? "" : "not here",
+            code: (du ? 0 : 127) as never,
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            stdoutInvalidUtf8: false,
+            stderrInvalidUtf8: false,
+          };
+        }),
+    }),
+  );
+
 const config = (fields: Record<string, unknown>) =>
   ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true, ...fields }));
 const servicesWith = (
   fields: Record<string, unknown>,
-  runner: Layer.Layer<ProcessRunner.ProcessRunner> = ProcessRunner.layer.pipe(
-    Layer.provide(NodeServices.layer),
-  ),
+  runner: Layer.Layer<ProcessRunner.ProcessRunner> = fakeRunner(),
 ) =>
   KinHostCare.layerWithoutRunner.pipe(
     Layer.provide(runner),
@@ -192,6 +216,32 @@ it.effect(
       );
       assert.lengthOf(yield* notices, 1);
     }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "measures Kin's folders once an hour of use, not once for every hour the clock passed",
+  () => {
+    const seen: Array<ReadonlyArray<string>> = [];
+    const walks = () => seen.filter(([command]) => command === "du").length;
+    return Effect.gen(function* () {
+      const care = yield* KinHostCare.KinHostCare;
+      // Starting up measures (data, temporary files, builds, update backups), and so does the first
+      // look once the clock is a day on.
+      yield* TestClock.setTime(NOW);
+      yield* care.status(orgId);
+      yield* TestClock.adjust("1 minute");
+      const looked = walks();
+      assert.isAtMost(looked, 8);
+      // A day passes with nobody looking: nothing walks.
+      yield* TestClock.adjust(24 * HOUR);
+      assert.strictEqual(walks(), looked);
+      // Two looks an hour on measure once between them.
+      yield* care.status(orgId);
+      yield* care.status(orgId);
+      yield* TestClock.adjust("1 minute");
+      assert.strictEqual(walks(), looked + 4);
+    }).pipe(Effect.provide(servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, fakeRunner(seen))));
+  },
 );
 
 // The shape a wake-up failed with on a host whose /tmp quota was full.

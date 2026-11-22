@@ -285,15 +285,33 @@ const make = Effect.gen(function* () {
         }),
         Effect.orElseSucceed(() => null),
       );
-  // Walks the folders in the background, never on a request: Settings shows the last measure.
-  const measure = Effect.fn("KinHostCare.measure")(function* () {
-    if (!host) return;
+  let measuredAt: number | undefined;
+  let measuring = false;
+  const walk = Effect.gen(function* () {
     const temporary = yield* duBytes(tmp);
     const data = yield* duBytes(config.baseDir);
     const builds = devCheckout === undefined ? yield* duBytes(path.join(home, "kin-builds")) : null;
     const backups =
       devCheckout === undefined ? yield* duBytes(path.join(home, "kin-update-backups")) : null;
-    usage = { temporary, data, builds, backups, measuredAt: iso(yield* Clock.currentTimeMillis) };
+    const at = yield* Clock.currentTimeMillis;
+    usage = { temporary, data, builds, backups, measuredAt: iso(at) };
+    measuredAt = at;
+  });
+  /**
+   * Walks only Kin's own folders, in the background and one walk at a time; a request reads the
+   * last measure. It walks at start, after a clean, and when something reads it an hour on: never
+   * on a timer, so an idle Kin walks nothing and a clock that jumps can't make it walk per hour.
+   */
+  const measure = Effect.fn("KinHostCare.measure")(function* (when: "stale" | "now" = "stale") {
+    if (!host || measuring) return;
+    const now = yield* Clock.currentTimeMillis;
+    if (when === "stale" && measuredAt !== undefined && now - measuredAt < 60 * 60_000) return;
+    measuring = true;
+    yield* walk.pipe(
+      Effect.catchCause((cause) => Effect.logWarning("Kin disk measure failed", { cause })),
+      Effect.ensuring(Effect.sync(() => (measuring = false))),
+      Effect.forkDetach,
+    );
   });
 
   let lastCleanAt = 0;
@@ -325,7 +343,7 @@ const make = Effect.gen(function* () {
         why,
         line: out.stdout.split("\n")[0],
       });
-      yield* measure().pipe(Effect.forkDetach);
+      yield* measure("now");
       return summary === undefined ? nothing : { ran: true, ...summary };
     },
     Effect.catchCause((cause) =>
@@ -421,6 +439,7 @@ const make = Effect.gen(function* () {
           WHERE d.org_id = e.org_id AND d.event_id = e.event_id AND d.status = 'pending')
           THEN 1 ELSE 0 END) AS expiring
       FROM kin_events e WHERE e.org_id = ${orgId} AND e.held_by = ${trouble.troubleId}`;
+    if (trouble.cause === "space") yield* measure();
     const using =
       trouble.cause === "space"
         ? usingText(usage, Option.getOrUndefined(yield* readSpace()))
@@ -839,6 +858,7 @@ const make = Effect.gen(function* () {
 
   const status = Effect.fn("KinHostCare.status")(
     function* (orgId: KinOrgId) {
+      yield* measure();
       const space = yield* readSpace();
       const [counts] = yield* sql<{ running: number; held: number }>`SELECT
           (SELECT COUNT(*) FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running') AS running,
@@ -957,15 +977,7 @@ const make = Effect.gen(function* () {
     Effect.mapError(() => unavailable),
   );
 
-  if (host)
-    yield* Effect.gen(function* () {
-      yield* measure();
-      yield* Effect.sleep("1 hour");
-    }).pipe(
-      Effect.catchCause((cause) => Effect.logWarning("Kin disk measure failed", { cause })),
-      Effect.forever,
-      Effect.forkScoped,
-    );
+  yield* measure("now");
 
   return KinHostCare.of({
     host,
