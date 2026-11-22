@@ -955,6 +955,27 @@ const totalsOf = (rows: ReadonlyArray<Summed>) => {
   };
 };
 
+const openPipelineRows = Effect.fn("KinDeals.openPipelineRows")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const where = pipelineWhere(sql, orgId, viewer);
+  return yield* sql<Summed & { stage: string | null }>`SELECT
+      json_extract(r.fields_json, '$.stage') AS stage,
+      json_extract(r.fields_json, '$.value.currency') AS currency,
+      SUM(json_extract(r.fields_json, '$.value.minor')) AS minor, COUNT(*) AS count
+    FROM kin_records r WHERE ${sql.and([...where, sql`r.state = 'open'`])}
+    GROUP BY stage, json_extract(r.fields_json, '$.value.currency')
+    ORDER BY stage, json_extract(r.fields_json, '$.value.currency')`;
+});
+
+export const openPipelineValue = Effect.fn("KinDeals.openPipelineValue")(function* (
+  orgId: KinOrgId,
+) {
+  return totalsOf(yield* openPipelineRows(orgId, KIN_OWNER_LEVEL)).values;
+});
+
 /**
  * The pipeline as `viewer` sees it, counted here: open deals by stage, in the company's order,
  * and won and lost, each per currency; a deal with no value counts only in its count.
@@ -965,13 +986,7 @@ export const pipelineTotals = Effect.fn("KinDeals.pipelineTotals")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const where = pipelineWhere(sql, orgId, viewer);
-  const open = yield* sql<Summed & { stage: string | null }>`SELECT
-      json_extract(r.fields_json, '$.stage') AS stage,
-      json_extract(r.fields_json, '$.value.currency') AS currency,
-      SUM(json_extract(r.fields_json, '$.value.minor')) AS minor, COUNT(*) AS count
-    FROM kin_records r WHERE ${sql.and([...where, sql`r.state = 'open'`])}
-    GROUP BY stage, json_extract(r.fields_json, '$.value.currency')
-    ORDER BY stage, json_extract(r.fields_json, '$.value.currency')`;
+  const open = yield* openPipelineRows(orgId, viewer);
   const closed = yield* sql<Summed & { state: string }>`SELECT r.state,
       json_extract(r.fields_json, '$.value.currency') AS currency,
       SUM(json_extract(r.fields_json, '$.value.minor')) AS minor, COUNT(*) AS count

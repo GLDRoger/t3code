@@ -130,6 +130,7 @@ import CompanyShell from "./migrations/K206_CompanyShell.ts";
 import HostTroubles from "./migrations/K207_HostTroubles.ts";
 import QuietDelivery from "./migrations/K208_QuietDelivery.ts";
 import Pictures from "./migrations/K209_Pictures.ts";
+import NumberValues from "./migrations/K210_NumberValues.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -340,6 +341,7 @@ const migrations = {
   "207_HostTroubles": HostTroubles,
   "208_QuietDelivery": QuietDelivery,
   "209_Pictures": Pictures,
+  "210_NumberValues": NumberValues,
 };
 const loader = Migrator.fromRecord(migrations);
 

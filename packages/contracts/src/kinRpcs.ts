@@ -37,6 +37,7 @@ import { KinWorkRpcs, KIN_WORK_RPC_SCOPES } from "./kinWork.ts";
 import { KinDocsRpcs, KIN_DOCS_RPC_SCOPES } from "./kinDocs.ts";
 import { KinDealRpcs, KIN_DEAL_RPC_SCOPES } from "./kinDeals.ts";
 import { KinImportRpcs, KIN_IMPORT_RPC_SCOPES } from "./kinImport.ts";
+import { KinNumbersRpcs, KIN_NUMBERS_RPC_SCOPES } from "./kinNumbers.ts";
 import { KinFinanceRpcs, KIN_FINANCE_RPC_SCOPES } from "./kinFinance.ts";
 import { KinStatementRpcs, KIN_STATEMENT_RPC_SCOPES } from "./kinStatements.ts";
 import { KinMoneyAnswerRpcs, KIN_MONEY_ANSWER_RPC_SCOPES } from "./kinMoneyAnswers.ts";
@@ -207,6 +208,7 @@ export const KinRpcs = [
   ...KinImportRpcs,
   ...KinDocsRpcs,
   ...KinFinanceRpcs,
+  ...KinNumbersRpcs,
   ...KinMoneyAnswerRpcs,
   ...KinMoneyLiveRpcs,
   ...KinStatementRpcs,
@@ -234,6 +236,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_IMPORT_RPC_SCOPES,
   ...KIN_DOCS_RPC_SCOPES,
   ...KIN_FINANCE_RPC_SCOPES,
+  ...KIN_NUMBERS_RPC_SCOPES,
   ...KIN_MONEY_ANSWER_RPC_SCOPES,
   ...KIN_MONEY_LIVE_RPC_SCOPES,
   ...KIN_STATEMENT_RPC_SCOPES,
@@ -525,6 +528,9 @@ const KIN_RPC_ACCESS = {
   "kin.watches.again": "person",
   "kin.goals.list": "person",
   "kin.goals.save": "owner_level",
+  "kin.numbers.list": "person",
+  "kin.numbers.values": "person",
+  "kin.numbers.record": "person",
   "kin.checkIns.list": "owner_level",
   "kin.checkIns.save": "owner_level",
   "kin.checkIns.act": "owner_level",
@@ -625,6 +631,9 @@ export const KIN_RPC_AGGREGATES = {
   "kin.watches.again": "kin-watches",
   "kin.goals.list": "kin-pulse",
   "kin.goals.save": "kin-pulse",
+  "kin.numbers.list": "kin-pulse",
+  "kin.numbers.values": "kin-pulse",
+  "kin.numbers.record": "kin-pulse",
   "kin.checkIns.list": "kin-pulse",
   "kin.checkIns.save": "kin-pulse",
   "kin.checkIns.act": "kin-pulse",

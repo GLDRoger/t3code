@@ -623,6 +623,7 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_people: "person_id",
   kin_people_invites: "made_by_person_id person_id sees_by_person_id",
   // Kept in the leaver's and the retired agent's names: billing and audit history.
+  kin_number_values: "agent_id person_id",
   kin_picture_counts: "agent_id person_id",
   kin_picture_settings: "updated_by",
   kin_ping_deliveries: "person",
