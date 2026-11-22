@@ -116,7 +116,8 @@ function Steps(props: { readonly at: number }) {
 export function KinImportView(
   props: KinWorkTarget & {
     readonly directory: KinWorkNames;
-    readonly onOpenDeals: () => void;
+    /** Null while Deals is off, or not this person's. */
+    readonly onOpenDeals: (() => void) | null;
   },
 ) {
   const host = useKinImportSend(props);
@@ -669,7 +670,7 @@ export function KinImportView(
         {problemLine}
         {undoneBlock}
         <div className="flex flex-wrap gap-2">
-          {applied.added.deals === 0 ? null : (
+          {applied.added.deals === 0 || props.onOpenDeals === null ? null : (
             <Button onClick={props.onOpenDeals}>{KIN_IMPORT.openDeals}</Button>
           )}
           {undone === null ? (

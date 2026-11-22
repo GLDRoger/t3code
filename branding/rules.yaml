@@ -511,6 +511,44 @@ text:
       - apps/web/src/components/settings/DatabaseStorageNotice.tsx
     from: T3 Code
     to: Kin
+  # The app's Settings pages Kin keeps (General, Maintenance, About, Environments, Sharing &
+  # access, Secrets, Labs) name the app as Kin, and their kept rows speak of agents' work, not
+  # threads; rows that only serve coding threads are hidden (KIN_CODING_SETTING_ROWS).
+  - files:
+      - apps/web/src/components/settings/SettingsPanels.tsx
+      - apps/web/src/components/settings/ConnectionsSettings.tsx
+      - apps/web/src/components/settings/SecretsSettings.tsx
+      - apps/web/src/components/settings/LinkedEnvironmentsSettings.tsx
+    from: T3 Code
+    to: Kin
+  - files:
+      - apps/web/src/components/settings/SettingsPanels.tsx
+      - apps/web/src/components/settings/settingsSearch.ts
+    from: Continue threads after restarts
+    to: Continue agents' work after restarts
+  - files: [apps/web/src/components/settings/SettingsPanels.tsx]
+    from: continue threads after restarts
+    to: continue agents' work after restarts
+  - files: [apps/web/src/components/settings/SettingsPanels.tsx]
+    from: resume interrupted threads after
+    to: resume agents' interrupted work after
+  - files:
+      - apps/web/src/components/settings/SettingsPanels.tsx
+      - apps/web/src/components/settings/settingsSearch.ts
+    from: Compact idle threads
+    to: Compact idle agent chats
+  - files: [apps/web/src/components/settings/SettingsPanels.tsx]
+    from: compact idle threads
+    to: compact idle agent chats
+  - files: [apps/web/src/components/settings/SettingsPanels.tsx]
+    from: an idle Claude thread
+    to: an idle Claude agent chat
+  - files: [apps/web/src/components/settings/LinkedEnvironmentsSettings.tsx]
+    from: launch and drive threads there
+    to: start and drive work there
+  - files: [apps/web/src/components/settings/LinkedEnvironmentsSettings.tsx]
+    from: wait on threads there
+    to: wait on work there
   # The wordmark itself is an asset (assets/apps/web/src/components/T3Wordmark.tsx).
   - files: [apps/web/src/components/sidebar/SidebarChrome.tsx]
     from: T3
@@ -691,6 +729,11 @@ scopes:
       - apps/web/src/components/ui/standalone-page.tsx
       - apps/web/src/components/mcp/UseInAnotherAppDialog.tsx
       - apps/web/src/components/settings/DatabaseStorageNotice.tsx
+      - apps/web/src/components/settings/SettingsPanels.tsx
+      - apps/web/src/components/settings/settingsSearch.ts
+      - apps/web/src/components/settings/ConnectionsSettings.tsx
+      - apps/web/src/components/settings/SecretsSettings.tsx
+      - apps/web/src/components/settings/LinkedEnvironmentsSettings.tsx
       - apps/web/src/kin/kinWebOnly.ts
       # The server build copies these over the client's icons (applyDevelopmentIconOverrides).
       - assets/dev/blueprint-web-*

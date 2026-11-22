@@ -37,6 +37,7 @@ import { KinHostCare } from "../host/KinHostCare.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
+import * as Retirement from "../lead/Retirement.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import type { Services } from "../KinServer.ts";
 import * as Shell from "../shell/KinShell.ts";
@@ -306,6 +307,8 @@ it.effect(
           VALUES ('zoya-held', ${ctx.orgId}, ${chief}, 'chat.message', 'P1',
             ${JSON.stringify({ chatId: zoyasChat.chatId })}, 0, 0, 'queued', 72000000),
             ('zoya-spent', ${ctx.orgId}, ${chief}, 'chat.message', 'P1',
+              ${JSON.stringify({ chatId: zoyasChat.chatId })}, 0, 0, 'failed', 72000000),
+            ('zoya-finished-before-hold', ${ctx.orgId}, ${chief}, 'chat.message', 'P1',
               ${JSON.stringify({ chatId: zoyasChat.chatId })}, 0, 0, 'failed', 72000000)`;
         yield* care.failed({
           orgId: ctx.orgId,
@@ -314,9 +317,17 @@ it.effect(
           eventIds: [KinEventId.make("zoya-held"), KinEventId.make("zoya-spent")],
         });
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: zoyaId });
+        yield* care.failed({
+          orgId: ctx.orgId,
+          agentId: chief,
+          cause: "signin",
+          eventIds: [KinEventId.make("zoya-finished-before-hold")],
+        });
+        assert.deepStrictEqual(yield* care.retry(ctx.orgId), { requeued: 0 });
         const departingEvents = ctx.sql`SELECT state, not_before FROM kin_events
-          WHERE org_id = ${ctx.orgId} AND event_id IN ('zoya-held', 'zoya-spent') ORDER BY event_id`;
+          WHERE org_id = ${ctx.orgId} AND event_id IN ('zoya-held', 'zoya-spent', 'zoya-finished-before-hold') ORDER BY event_id`;
         assert.deepStrictEqual(yield* departingEvents, [
+          { state: "expired", not_before: 72000000 },
           { state: "expired", not_before: 72000000 },
           { state: "expired", not_before: 72000000 },
         ]);
@@ -331,6 +342,7 @@ it.effect(
         );
         yield* care.succeeded(ctx.orgId, chief);
         assert.deepStrictEqual(yield* departingEvents, [
+          { state: "expired", not_before: 72000000 },
           { state: "expired", not_before: 72000000 },
           { state: "expired", not_before: 72000000 },
         ]);
@@ -634,6 +646,34 @@ it.effect(
     ),
 );
 
+it.effect(
+  "picture counts and settings keep the leaver's and the retired agent's names: they are the company's billing and audit history",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const { sql, orgId } = ctx;
+        yield* sql`INSERT INTO kin_picture_settings (org_id, monthly_limit, updated_at, updated_by)
+          VALUES (${orgId}, 50, 1, ${zoyaId})`;
+        yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, person_id,
+            count, state, at)
+          VALUES (${orgId}, 'pic-zoya', '1970-01', ${chief}, ${zoyaId}, 2, 'made', 1)`;
+        const kept = Effect.all([
+          sql`SELECT agent_id, person_id, count FROM kin_picture_counts WHERE org_id = ${orgId}`,
+          sql`SELECT updated_by FROM kin_picture_settings WHERE org_id = ${orgId}`,
+        ]);
+        const before = yield* kept;
+        yield* ctx.people.removeAccess(ownerSession, { orgId, personId: zoyaId });
+        yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId} AND agent_id = ${chief}`;
+        yield* Retirement.retire({ orgId, agentId: chief, retiredAt: at, now: 1 }, ctx.chats);
+        assert.deepStrictEqual(yield* kept, before);
+        assert.deepStrictEqual(before, [
+          [{ agent_id: chief, person_id: zoyaId, count: 2 }],
+          [{ updated_by: zoyaId }],
+        ]);
+      }),
+    ),
+);
+
 // Every column that holds a person or an agent, as last reviewed. A new one fails here until
 // someone decides what removing the person (`KinPeople.removeAccess`) and retiring the agent
 // (`lead/Retirement.ts`) do to it, tests that, and lists it.
@@ -674,6 +714,9 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_pending_actions: "requested_by_agent_id",
   kin_people: "person_id",
   kin_people_invites: "made_by_person_id person_id sees_by_person_id",
+  // Kept in the leaver's and the retired agent's names: billing and audit history.
+  kin_picture_counts: "agent_id person_id",
+  kin_picture_settings: "updated_by",
   kin_ping_deliveries: "person",
   kin_ping_items: "person",
   kin_ping_ledger: "person",

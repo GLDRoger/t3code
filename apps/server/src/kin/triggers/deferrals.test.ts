@@ -431,8 +431,10 @@ it.effect(
         chatId: "team",
         messageId: "message",
       };
-      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state)
-      VALUES ('asked', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0, 'done')`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+      VALUES ('set-turn', ${orgId}, ${lead}, 'model', 0, 'completed', '["asked"]')`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+      VALUES ('asked', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0, 'done', 'set-turn')`;
       yield* (yield* TriggerService.KinTriggerService).syncItem(asked);
       yield* tick(headsUpAt);
       assert.equal((yield* runOf("def-1"))?.state, "asked");
@@ -440,7 +442,10 @@ it.effect(
       const start = yield* tap("start_now", "owner", []);
       assert.equal(start._tag === "Success" && start.success.action, "start_now");
       yield* tick(dueAt);
-      assert.lengthOf(yield* starts(), 1);
+      const [started, ...more] = yield* starts();
+      assert.lengthOf(more, 0);
+      // The turn that set it up: what the lead does now answers whoever asked there.
+      assert.deepStrictEqual(JSON.parse(started!.json).askedIn, ["set-turn"]);
     }).pipe(openGates(new Map()), Effect.provide(layerFor([asked])));
   },
 );

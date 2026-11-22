@@ -21,6 +21,7 @@ import type { EnvironmentId, KinMemoryItemId, KinOrgId } from "@t3tools/contract
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { GlobeIcon, MessageSquareIcon, BrainIcon } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { Button } from "../components/ui/button";
@@ -224,6 +225,8 @@ function KinMemoryBody({
       />
       {open === undefined ? null : (
         <KinMemoryItemDialog
+          environmentId={environmentId}
+          orgId={orgId}
           item={open}
           hint={KIN_MEMORY_SETTINGS.whoKnows(open.state, team?.on === false)}
           onChange={(to) => {
@@ -262,13 +265,15 @@ function KinMemoryBody({
  * One memory in full: its words, where it came from, and who may know it. The first way it can
  * go is the button; the other sits beside Cancel, and Forget asks first.
  */
-function KinMemoryItemDialog(props: {
-  readonly item: KinMemoryItemView;
-  readonly hint: string;
-  readonly onChange: (to: "team" | "only_owner") => void;
-  readonly onForget: () => void;
-  readonly onClose: () => void;
-}) {
+function KinMemoryItemDialog(
+  props: KinMemoryTarget & {
+    readonly item: KinMemoryItemView;
+    readonly hint: string;
+    readonly onChange: (to: "team" | "only_owner") => void;
+    readonly onForget: () => void;
+    readonly onClose: () => void;
+  },
+) {
   const { item } = props;
   const [first, second] = item.actions;
   return (
@@ -298,7 +303,13 @@ function KinMemoryItemDialog(props: {
         <p className="whitespace-pre-wrap text-pretty text-sm text-foreground">{item.preview}</p>
       )}
       {item.from === null ? null : <p className="text-xs text-muted-foreground">{item.from}</p>}
-      {item.origin === null ? null : <KinMemoryOrigin origin={item.origin} />}
+      {item.origin === null ? null : (
+        <KinMemoryOrigin
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          origin={item.origin}
+        />
+      )}
     </KinSettingsFormDialog>
   );
 }
@@ -361,14 +372,29 @@ function KinMemoryForgotten(props: KinMemoryTarget & { readonly onRestored: () =
 const ORIGIN_ICON = { said: MessageSquareIcon, worked_out: BrainIcon, outside: GlobeIcon };
 
 /** Who said it or which agent worked it out, when, and their words in full. */
-function KinMemoryOrigin(props: { readonly origin: KinMemoryOriginView }) {
+function KinMemoryOrigin(props: KinMemoryTarget & { readonly origin: KinMemoryOriginView }) {
   const { origin } = props;
   const Icon = ORIGIN_ICON[origin.kind];
   return (
     <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
       <Icon aria-hidden className="mt-0.5 size-3 shrink-0" />
       <span>
-        {origin.line}
+        {origin.opens === null ? (
+          origin.line
+        ) : (
+          <Link
+            to="/kin/$environmentId/$orgId/$chatId"
+            params={{
+              environmentId: props.environmentId,
+              orgId: props.orgId,
+              chatId: origin.opens.chatId,
+            }}
+            search={{ message: origin.opens.messageId }}
+            className="rounded-sm underline underline-offset-2 outline-none ring-ring hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset"
+          >
+            {origin.line}
+          </Link>
+        )}
         {origin.quote === null ? null : (
           <>
             {" "}

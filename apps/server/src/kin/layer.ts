@@ -38,6 +38,7 @@ import {
 } from "./work/cardAnswers.ts";
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 import { KinIdentity, KinNewCompanyCountryUnset } from "./chat/KinIdentity.ts";
+import { indexStoredSteps } from "./work/searchIndex.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
 import { seedCharacters, splitCharacters } from "./lead/characters.ts";
 import { closeSubject } from "./open/closeSubject.ts";
@@ -60,6 +61,7 @@ import * as KinGitHubHook from "./github/appHook.ts";
 import * as KinGitHubAppSetup from "./github/appSetup.ts";
 import * as Keychain from "./github/Keychain.ts";
 import * as AgentSession from "./lead/AgentSession.ts";
+import * as KinRefusedModels from "./lead/refusedModels.ts";
 import * as Workspace from "./gendocs/workspace.ts";
 import * as Vcs from "../vcs/VcsProcess.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -70,6 +72,7 @@ import * as DevFakeMail from "./connections/DevFakeMail.ts";
 import * as DevClock from "./DevClock.ts";
 import * as McpGateway from "./connections/McpGateway.ts";
 import * as DevFakeSocial from "./social/DevFakeSocial.ts";
+import * as DevFakeImages from "./pictures/DevFakeImages.ts";
 
 import * as KinShell from "./shell/KinShell.ts";
 
@@ -86,6 +89,10 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
       const { owner } = yield* KinIdentity;
       yield* HostPolicy.check();
       yield* checkPublicUrl();
+      yield* indexStoredSteps(owner.orgId).pipe(
+        Effect.provide(services),
+        Effect.catch((error) => Effect.logWarning("Kin could not index saved task steps", error)),
+      );
       // A failed seed leaves Kin running; the next start tries the missing ones again.
       yield* seedPlaybooks(owner.orgId, owner.personId).pipe(
         Effect.provide(services),
@@ -155,6 +162,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
             Layer.mergeAll(
               KinPush.layer,
               KinHostCare.layer,
+              KinRefusedModels.layer,
               LevelControl.layer,
               MemoryChanges.layer,
               KinImport.layer.pipe(Layer.provideMerge(KinRecords.layer)),
@@ -226,6 +234,12 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           DevFakeSocial.layer.pipe(
             Layer.provide(ConnectionSecrets.layer),
             Layer.provideMerge(core),
+          ),
+        // Pictures read the secret store, chats for the 80% notice, and the document store.
+        (withSocial) =>
+          DevFakeImages.layer.pipe(
+            Layer.provide(ConnectionSecrets.layer),
+            Layer.provideMerge(withSocial),
           ),
       ),
     ),

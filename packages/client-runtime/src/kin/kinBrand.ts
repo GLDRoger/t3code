@@ -10,7 +10,7 @@ import {
 
 export const KIN_BRAND = {
   title: "Brand",
-  detail: "How the company's invoices and receipts look.",
+  detail: "How the company's invoices, receipts and pictures look.",
   logo: "Logo",
   noLogo: "No logo yet.",
   addLogo: "To add one, send the image to an agent in a chat and ask it to use it as the logo.",

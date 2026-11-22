@@ -1423,6 +1423,55 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     ),
   );
 
+  it.effect("a picture Kin drew goes by its doc's key, as the PNG it is", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fs = yield* FileSystem.FileSystem;
+        const { attachmentsDir } = yield* ServerConfig;
+        const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        const attachmentId = "kin-00000000-0000-4000-8000-0000000000aa-png";
+        yield* fs.writeFile(`${attachmentsDir}/${attachmentId}.png`, png);
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at)
+          VALUES (${orgId}, 'rec_pic', 'docs', 'DOC-2', 'Lumen launch', 'agent', ${lead}, 'agent',
+            'picture:lead:launch', 0, 0)`;
+        const file = {
+          attachmentId,
+          name: "lumen-launch.png",
+          mimeType: "image/png",
+          bytes: png.length,
+          sha256: NodeCrypto.createHash("sha256").update(png).digest("hex"),
+          pages: null,
+          recipe: null,
+          inputsHash: "launch",
+          workerId: "pic-launch",
+          number: null,
+          draft: false,
+        };
+        yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body_kind, file_json,
+            title, kind, summary, operations_json, actor_kind, actor_id, via, origin_key, created_at)
+          VALUES (${orgId}, 'rec_pic', 1, 'file', ${JSON.stringify(file)}, 'Lumen launch', 'created',
+            'Picture, 1080×1080', '[]', 'agent', ${lead}, 'lead', 'kin-picture:launch', 0)`;
+        yield* connect(fake, "google", ACCOUNTS);
+        yield* wake({ person: owner });
+        yield* callTool(ACCOUNTS, "mail_send", {
+          to: ["ravi@lumen.example"],
+          subject: "Our launch post",
+          body: "Hi Ravi,\n\nThe launch picture is attached.\n\nArjun",
+          attachments: ["DOC-2"],
+        });
+        const card = cards.at(-1)!;
+        assert.strictEqual(card.send?.attachments[0]?.name, "lumen-launch.png");
+        assert.deepStrictEqual(yield* tap(card.widgetId, owner), { state: "sent", reason: null });
+        const sent = fake.sent()[0]!;
+        assert.deepInclude(sent, { attachments: ["lumen-launch.png"] });
+        const thread = yield* callTool(ACCOUNTS, "mail_read_thread", { threadId: sent.threadId });
+        assert.include(thread.quoted ?? "", "image/png");
+      }),
+    ),
+  );
+
   it.effect("a person's edit on a mail card sends exactly the edited mail, once", () =>
     setUp((fake, cards) =>
       Effect.gen(function* () {

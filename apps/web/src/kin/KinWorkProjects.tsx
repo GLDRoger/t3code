@@ -53,6 +53,7 @@ import { KinProjectPeopleSection } from "./KinProjectPeople";
 import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
 import { KinCampaignDealsDialog } from "./KinDeals";
 import { KinCampaignResultsSection, KinContactListDialog } from "./KinMarketing";
+import { useKinSectionOn } from "./useKinShell";
 import { KinWorkClientsList } from "./KinWorkClients";
 import {
   KinWorkHealthBadge,
@@ -133,6 +134,7 @@ function ProjectPage(
   const { names } = props.directory;
   const canChange = useAtomValue(kinClient.workProjectUpdate.permissionAtom(environmentId));
   const canNote = useAtomValue(kinClient.workProjectNote.permissionAtom(environmentId));
+  const dealsOn = useKinSectionOn(environmentId, "deals");
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const now = new Date(useNowMinuteMs());
   const [editing, setEditing] = useState(false);
@@ -292,6 +294,7 @@ function ProjectPage(
         <KinCampaignResultsSection
           results={page.results}
           audience={view.audience}
+          deals={dealsOn}
           onOpen={setOpenResult}
         />
       )}

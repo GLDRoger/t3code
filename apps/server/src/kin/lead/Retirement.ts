@@ -96,8 +96,7 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (
     RETURNING wakeup_id AS "wakeupId"`;
   // Waiting, or held by a turn just aborted (whose finish would requeue it): never runs.
   const expired = yield* sql`UPDATE kin_events AS e SET state = 'expired'
-    WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND (e.state = 'queued'
-      OR (e.state = 'failed' AND e.held_by IS NOT NULL)
+    WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND (e.state IN ('queued', 'failed')
       OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = e.org_id
         AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
     RETURNING event_id`;

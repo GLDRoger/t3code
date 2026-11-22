@@ -2,7 +2,9 @@
 import { KIN_BUSY, KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
 import {
   KinChatError,
+  KinChatId,
   KinMemoryItemId,
+  KinMessageId,
   KinOrgId,
   type KinMemoryConfirmSuggestionsInput,
   type KinMemoryListItem,
@@ -126,7 +128,8 @@ describe("what the owner's leads remember", () => {
       }).format(new Date(iso));
     const recordedAt = "2026-11-09T10:00:00.000Z";
     const saidAt = "2026-11-08T10:00:00.000Z";
-    const told = { recordedAt, saidAt, quote: " Invoices go out on the first. " };
+    const opens = { chatId: KinChatId.make("chat-1"), messageId: KinMessageId.make("message-1") };
+    const told = { recordedAt, saidAt, quote: " Invoices go out on the first. ", message: opens };
     const untold = { recordedAt, saidAt: null, quote: null };
     const heard = { name: "Invented Priya", chatName: "Invented room" };
     const list = listOf([
@@ -169,15 +172,31 @@ describe("what the owner's leads remember", () => {
     );
     const quote = "Invoices go out on the first.";
     expect(shown).toEqual({
-      mine: [{ kind: "said", line: `You said, ${day(saidAt)}`, quote }, null],
-      theirs: [{ kind: "said", line: `Priya said in Invented room, ${day(saidAt)}`, quote }, null],
-      old: [{ kind: "said", line: `From you, saved ${day(recordedAt)}`, quote: null }, null],
+      mine: [{ kind: "said", line: `You said, ${day(saidAt)}`, quote, opens }, null],
+      theirs: [
+        { kind: "said", line: `Priya said in Invented room, ${day(saidAt)}`, quote, opens },
+        null,
+      ],
+      old: [
+        { kind: "said", line: `From you, saved ${day(recordedAt)}`, quote: null, opens: null },
+        null,
+      ],
       gone: [
-        { kind: "said", line: `From a teammate, saved ${day(recordedAt)}`, quote: null },
+        {
+          kind: "said",
+          line: `From a teammate, saved ${day(recordedAt)}`,
+          quote: null,
+          opens: null,
+        },
         null,
       ],
       guess: [
-        { kind: "worked_out", line: `Worked out by Tech lead, ${day(recordedAt)}`, quote: null },
+        {
+          kind: "worked_out",
+          line: `Worked out by Tech lead, ${day(recordedAt)}`,
+          quote: null,
+          opens: null,
+        },
         null,
       ],
       retired: [
@@ -185,11 +204,17 @@ describe("what the owner's leads remember", () => {
           kind: "worked_out",
           line: `Worked out by an agent, ${day("2025-03-02T12:00:00", true)}`,
           quote: null,
+          opens: null,
         },
         null,
       ],
       outside: [
-        { kind: "outside", line: `From outside your chats, saved ${day(recordedAt)}`, quote: null },
+        {
+          kind: "outside",
+          line: `From outside your chats, saved ${day(recordedAt)}`,
+          quote: null,
+          opens: null,
+        },
         null,
       ],
       "older-host": [null, "Invented Priya said this in Invented room"],

@@ -323,11 +323,14 @@ it.effect.each([true, false, "legacy"] as const)(
         const woke = yield* sql<{ json: string }>`SELECT json FROM kin_events
           WHERE org_id = ${orgId} AND agent_id = ${chief} AND dedupe_key LIKE 'handoff-back:%'`;
         assert.lengthOf(woke, wantsAnswer === false ? 0 : 1);
-        if (wantsAnswer !== false)
+        if (wantsAnswer !== false) {
           assert.deepInclude(JSON.parse(woke[0]!.json).origin, {
             agentId: chief,
             chatId: ctx.chiefChat,
           });
+          // The turn the owner asked in: what the Chief of staff says next answers him.
+          assert.deepStrictEqual(JSON.parse(woke[0]!.json).askedIn, [`${chief}-wake`]);
+        }
       }),
     ),
 );

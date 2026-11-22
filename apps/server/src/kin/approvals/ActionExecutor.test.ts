@@ -1275,6 +1275,8 @@ describe("KinActionExecutor", () => {
     const opaqueImports = new Map([
       // Inside the speech worker's source text, which a separate Node process runs.
       ["speech/native.ts", ["import(moduleUrl)"]],
+      // Inside the hostile test page's text, which only a sealed browser page runs.
+      ["kin/visualSeal.testkit.ts", ['import("${http}/dynamic-import")']],
     ]);
     const unfollowable: Array<string> = [];
     const imports = (file: string) => {

@@ -56,7 +56,13 @@ import {
 import { iso, type RecordRow, unavailable } from "./recordRows.ts";
 import { DRAFT_TEXT_MAX, docCardId, draftCardOf } from "./draftCards.ts";
 import { search } from "./search.ts";
-import { DRAFT_OWN_CHAT_ONLY, KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
+import {
+  DRAFT_OWN_CHAT_ONLY,
+  KIN_OWNER_LEVEL,
+  PICTURE_DOC_ORIGIN,
+  viewSees,
+  viewerOfPeople,
+} from "./teamView.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
@@ -168,6 +174,10 @@ export const ReadResult = Schema.Struct({
     ),
   ),
   note: Schema.optional(Schema.String),
+  /** A drawn picture's page, as kin_picture took it. */
+  page: Schema.optional(Schema.String),
+  /** A generated picture's whole prompt, as kin_picture took it. */
+  prompt: Schema.optional(Schema.String),
   owner: Schema.String,
   client: Schema.optional(Schema.String),
   project: Schema.optional(Schema.String),
@@ -742,20 +752,27 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
 });
 export const create = leadTool("KinDocTools.create", runCreate);
 
-/** A doc this turn may read: in one others read, only one they all see, else none at all. */
+/**
+ * A doc this turn may read, and which of its versions: in one others read, only one they all see,
+ * else none at all.
+ */
 const readable = Effect.fn("KinDocTools.readable")(function* (lead: Lead, key: string) {
   const team = yield* viewOf(lead);
-  return yield* Docs.docRow(
-    lead.orgId,
-    { key },
-    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
-  );
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const row = yield* Docs.docRow(lead.orgId, { key }, viewer);
+  return { row, seen: yield* Docs.versionsSeen(lead.orgId, viewer, row) };
 });
 
+/** What a picture's doc is and how to change it: from its page when drawn, else its prompt. */
+export const pictureNote = (key: string, drawn: boolean) =>
+  drawn
+    ? `${key} is a picture, and page is the page it was drawn from. To change it, call kin_picture with doc ${key} and that page, changed.`
+    : `${key} is a generated picture, and prompt is the prompt it was made from. To change it, call kin_picture with doc ${key} and that prompt, changed.`;
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
-  const row = yield* readable(lead, input.key);
+  const { row, seen } = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
-  const version = yield* Docs.versionOf(lead.orgId, row.recordId, input.version);
+  const found = yield* Docs.versionOf(lead.orgId, row.recordId, input.version);
+  const version = found !== undefined && seen(found.version) ? found : undefined;
   if (latest === undefined) return yield* Docs.docNotFound(input.key);
   if (version === undefined)
     return yield* invalid(
@@ -775,6 +792,16 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
         });
   const whole = asked === undefined && version.body.length <= WHOLE_DOC;
   const by = Docs.toVersion(version).provenance.by;
+  const sql = yield* SqlClient.SqlClient;
+  const pages = row.originKey.startsWith(PICTURE_DOC_ORIGIN)
+    ? yield* sql<{
+        page: string | null;
+        prompt: string | null;
+      }>`SELECT page, prompt FROM kin_picture_images
+        WHERE org_id = ${lead.orgId} AND record_id = ${row.recordId}
+          AND version = ${version.version} ORDER BY version`
+    : undefined;
+  const picture = pages === undefined ? undefined : (pages[0] ?? { page: null, prompt: null });
   return {
     key: row.key,
     title: row.title,
@@ -789,9 +816,15 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
     outline: [...outlineOf(version.body)],
     ...(whole ? { body: version.body } : {}),
     ...(asked === undefined ? {} : { sections: asked }),
-    ...(whole || asked !== undefined
-      ? {}
-      : { note: "A long doc: read the sections you need by id." }),
+    ...(picture !== undefined
+      ? {
+          ...(picture.page === null ? {} : { page: picture.page }),
+          ...(picture.prompt === null ? {} : { prompt: picture.prompt }),
+          note: pictureNote(row.key, picture.page !== null),
+        }
+      : whole || asked !== undefined
+        ? {}
+        : { note: "A long doc: read the sections you need by id." }),
     owner: name(ownerOf(row)) ?? "someone",
     ...(row.partyKey === null || unseen.has(row.partyId ?? "")
       ? {}
@@ -955,7 +988,7 @@ const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchI
 export const searchTool = leadTool("KinDocTools.search", runSearch);
 
 const runHistory = Effect.fnUntraced(function* (lead: Lead, input: typeof HistoryInput.Type) {
-  const row = yield* readable(lead, input.key);
+  const { row, seen } = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
   if (latest === undefined) return yield* Docs.docNotFound(input.key);
   const rows = yield* Docs.history(lead.orgId, row.recordId, {
@@ -966,24 +999,26 @@ const runHistory = Effect.fnUntraced(function* (lead: Lead, input: typeof Histor
   return {
     key: row.key,
     latestVersion: latest.version,
-    versions: rows.map((one) => {
-      const version = Docs.toVersion(one);
-      const sections = version.operations.flatMap((op) =>
-        op.section === undefined ? [] : [op.section],
-      );
-      return {
-        version: version.version,
-        at: version.at,
-        by:
-          version.provenance.by._tag === "system"
-            ? "Kin"
-            : (name(version.provenance.by) ?? "someone"),
-        kind: version.kind,
-        summary: version.summary,
-        ...(version.restoredFrom === null ? {} : { restoredFrom: version.restoredFrom }),
-        ...(sections.length === 0 ? {} : { sections: [...new Set(sections)] }),
-      };
-    }),
+    versions: rows
+      .filter((one) => seen(one.version))
+      .map((one) => {
+        const version = Docs.toVersion(one);
+        const sections = version.operations.flatMap((op) =>
+          op.section === undefined ? [] : [op.section],
+        );
+        return {
+          version: version.version,
+          at: version.at,
+          by:
+            version.provenance.by._tag === "system"
+              ? "Kin"
+              : (name(version.provenance.by) ?? "someone"),
+          kind: version.kind,
+          summary: version.summary,
+          ...(version.restoredFrom === null ? {} : { restoredFrom: version.restoredFrom }),
+          ...(sections.length === 0 ? {} : { sections: [...new Set(sections)] }),
+        };
+      }),
     ...(sensitiveOf(row) ? { sensitive: true as const } : {}),
   };
 });

@@ -7,7 +7,7 @@ import * as DocumentText from "../../provider/DocumentText.ts";
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
 import {
   CommandId,
   EventId,
@@ -31,12 +31,14 @@ import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
 import * as Presence from "../reply/KinPresence.ts";
+import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import * as LevelGate from "./LevelGate.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Floor from "../floor/KinFloor.ts";
 import { FLOOR_GRANT_TTL_MS } from "../floor/FloorManager.ts";
 import * as Clock from "effect/Clock";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -65,7 +67,19 @@ import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import * as HostCare from "../host/KinHostCare.ts";
+import { KinRefusedModels } from "./refusedModels.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
+import * as ClaudeAdapter from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { makeFakeClaudeCli } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.testkit.ts";
+import * as PortScanner from "../../preview/PortScanner.ts";
+import * as ProcessRunner from "../../processRunner.ts";
+import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import {
+  ProviderAdapterTurnStartError,
+  type ProviderAdapterV2TurnInput,
+} from "@t3tools/provider-core/server/ProviderAdapter";
+import * as HostBackup from "../hostBackup.ts";
 import * as PlatformError from "effect/PlatformError";
 import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -80,11 +94,13 @@ import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
 import {
   harness,
+  harnessWith,
   orchestrationHarness,
   seed,
   orgId,
   agentId,
   event,
+  selection,
   toolCall,
 } from "./WakeupRunner.testkit.ts";
 import { ProviderAdapterSteerRunError } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -172,6 +188,42 @@ const sessions = Effect.fn("test.sessions")(function* () {
       return numbers.get(run.providerThreadId);
     });
 });
+
+const privateRequest = Effect.fn("test.privateRequest")(function* (id: string) {
+  yield* seed;
+  yield* seedDirectChats;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_leads SET owner_chat_id = 'direct' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+    VALUES ('direct-agent', ${orgId}, 'direct', 'agent', ${agentId}, 'member', '2026-11-08T00:00:00.000Z')`;
+  const message = yield* ownerSays(id, "direct");
+  yield* sql`UPDATE kin_chats SET last_seq = 1, direct_key = 'owner:lead'
+    WHERE org_id = ${orgId} AND chat_id = 'direct'`;
+  const repo = yield* KinChatRepository.KinChatRepository;
+  const chat = Option.getOrThrow(yield* repo.getChat({ orgId, chatId: KinChatId.make("direct") }));
+  const posted = Option.getOrThrow(
+    yield* repo.getMessage({ orgId, messageId: KinMessageId.make(id) }),
+  );
+  yield* (yield* Floor.KinFloor).open(posted, chat);
+  yield* (yield* KinEventQueue.KinEventQueue).enqueue(message);
+});
+
+const chatLayers = Layer.mergeAll(
+  LevelGate.layer.pipe(Layer.provideMerge(ChatService.layer)),
+  Presence.layer,
+).pipe(Layer.provideMerge(ChatHub.layer), Layer.provideMerge(KinChatRepository.layer));
+
+const hostCare = HostCare.layerWithoutRunner.pipe(
+  Layer.provide(
+    Layer.mock(ProcessRunner.ProcessRunner)({
+      run: () => Effect.die("This fixture is not a managed Kin host"),
+    }),
+  ),
+  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-wakeup-host-" })),
+  Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
+  Layer.provide(NodeServices.layer),
+  Layer.provideMerge(chatLayers),
+);
 
 describe("WakeupRunner", () => {
   it.effect("does not spin the org loop while a lead with queued events is still finishing", () =>
@@ -1047,6 +1099,37 @@ describe("WakeupRunner", () => {
       }).pipe(provideDeterministicTestRuntime),
   );
   it.effect(
+    "asks Kin to stop offering the model a provider turned an agent's own turn away on",
+    () =>
+      Effect.gen(function* () {
+        const refused: Array<Parameters<KinRefusedModels["Service"]["refused"]>[0]> = [];
+        const refusals = Layer.succeed(KinRefusedModels, {
+          refused: (input) => Effect.sync(() => refused.push(input)).pipe(Effect.as(true)),
+        });
+        yield* Effect.gen(function* () {
+          yield* seed;
+          yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("refused-model"));
+          yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(
+            refused.map((input) => [
+              input.orgId,
+              input.selection.instanceId,
+              input.selection.model,
+            ]),
+            [[orgId, "claudeAgent", "claude-opus-4-6"]],
+          );
+        }).pipe(
+          Effect.provide(
+            harness({
+              failed: true,
+              failureCode: "api_error_400",
+              failureMessage: `API Error: 400 unknown provider for model ${selection.model}`,
+            }).pipe(Layer.provide(refusals)),
+          ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect(
     "retries a failed batch one at a time and gives up only on the event that cannot start",
     () =>
       Effect.gen(function* () {
@@ -1180,8 +1263,60 @@ describe("WakeupRunner", () => {
         }).pipe(Effect.provide(harness({ failed: true }).pipe(Layer.provide(bridge))));
       }).pipe(provideDeterministicTestRuntime),
   );
+  it.effect("claims a runnable turn while the low-space cleanup is still running", () =>
+    Effect.gen(function* () {
+      using _space = vi
+        .spyOn(HostBackup, "readSpace")
+        .mockImplementation((folder) =>
+          Effect.succeedSome({ folder, freeBytes: 128 * 1024 ** 2, totalBytes: 1024 ** 3 }),
+        );
+      const cleaning = yield* Deferred.make<void>();
+      const finishClean = yield* Deferred.make<void>();
+      const startProvider = yield* Deferred.make<void>();
+      const care = Layer.mock(KinHostCare)({
+        host: true,
+        troubleOpen: () => Effect.succeed(false),
+        clean: () =>
+          Deferred.succeed(cleaning, undefined).pipe(
+            Effect.andThen(Deferred.await(finishClean)),
+            Effect.as({ ran: true, removed: 0, freedBytes: 0, failed: 0 }),
+          ),
+        storageRecovered: () => Effect.void,
+        devFullDisk: Deferred.await(startProvider),
+        succeeded: () => Effect.void,
+      });
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("runnable"));
+        const turn = yield* run();
+        yield* Deferred.await(cleaning);
+        yield* TestClock.adjust(0);
+        const [beforeCleanup] = yield* sql<{ state: string }>`SELECT state FROM kin_events
+          WHERE org_id = ${orgId} AND event_id = 'runnable'`;
+        yield* Deferred.succeed(finishClean, undefined);
+        yield* Deferred.succeed(startProvider, undefined);
+        yield* Fiber.join(turn);
+        assert.strictEqual(beforeCleanup?.state, "claimed");
+      }).pipe(
+        Effect.provide(
+          harness().pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                care,
+                Layer.mock(ChatService.KinChatService)({}),
+                ServerConfig.layerTest(process.cwd(), { prefix: "kin-low-space-" }).pipe(
+                  Layer.provide(NodeServices.layer),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).pipe(provideDeterministicTestRuntime),
+  );
   it.effect(
-    "a database too full to claim a turn leaves the queue as it was, cleans once, and is told once writes work",
+    "dispatches storage failure and recovery hooks without consuming the unclaimed event",
     () =>
       Effect.gen(function* () {
         const told: Array<string> = [];
@@ -1415,6 +1550,16 @@ describe("WakeupRunner", () => {
           const identity = yield* resolveAgent(ThreadId.make(lead!.thread_id));
           // The renewed grant lasts as long as the wake-up, so a reply 10 minutes in still lands.
           yield* TestClock.adjust("10 minutes");
+          if (kind === "team_group") {
+            yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+              VALUES ('other-group', ${orgId}, 'team_group', 0, ${at})`;
+            const other = Option.getOrThrow(
+              yield* repo.getChat({ orgId, chatId: KinChatId.make("other-group") }),
+            );
+            assert.include(yield* floor.authorize(identity, other, "answer").pipe(Effect.flip), {
+              reason: "floor_not_granted",
+            });
+          }
           const { runId } = yield* floor.authorize(identity, chat, "answer");
           assert.isNotNull(runId);
           // The wake-up keeps the grant for its run: its next post is the same agent turn.
@@ -2633,6 +2778,146 @@ describe("WakeupRunner", () => {
       yield* Fiber.join(yield* run());
       assert.lengthOf(yield* sql`SELECT 1 FROM kin_wakeups`, 2);
     }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  );
+
+  it.effect(
+    "holds a memory failure behind one notice and runs the held turn after memory returns",
+    () =>
+      Effect.gen(function* () {
+        let blocked = true;
+        const invalid = new Memory.MemoryCheckoutInvalid({
+          orgId,
+          operation: "sync",
+          reason: "Unfinished Git operation",
+        });
+        const program = Effect.gen(function* () {
+          yield* privateRequest("memory-held");
+          const sql = yield* SqlClient.SqlClient;
+          for (const _attempt of [1, 2, 3]) {
+            assert.strictEqual((yield* Fiber.await(yield* run()))._tag, "Failure");
+            assert.deepStrictEqual(
+              yield* sql`SELECT state, attempts FROM kin_events WHERE org_id = ${orgId}`,
+              [{ state: "queued", attempts: 0 }],
+            );
+          }
+          const notices = sql`SELECT m.body FROM kin_messages m JOIN kin_widgets w
+          ON w.org_id = m.org_id AND w.message_id = m.message_id
+          WHERE m.org_id = ${orgId} AND w.type = 'host_trouble' ORDER BY m.message_id`;
+          assert.deepStrictEqual(yield* notices, [
+            { body: "Kin couldn't load saved memory, so Lead couldn't work." },
+          ]);
+          assert.deepStrictEqual(
+            yield* sql`SELECT cause FROM kin_troubles WHERE org_id = ${orgId} AND closed_at IS NULL`,
+            [{ cause: "memory" }],
+          );
+          blocked = false;
+          yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events WHERE org_id = ${orgId}`, [
+            { state: "done" },
+          ]);
+          assert.lengthOf(yield* notices, 1);
+          assert.deepStrictEqual(
+            yield* sql`SELECT cause FROM kin_troubles WHERE org_id = ${orgId} AND closed_at IS NOT NULL`,
+            [{ cause: "memory" }],
+          );
+        });
+        yield* program.pipe(
+          Effect.provide(
+            harnessWith(
+              {
+                prepare: () =>
+                  blocked
+                    ? Effect.fail(invalid)
+                    : Effect.succeed({
+                        head: "abc",
+                        indexAsOf: DateTime.makeUnsafe(0),
+                        read: "/private/tmp",
+                      }),
+              },
+              hostCare,
+            ),
+          ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect(
+    "answers a cold Claude wake-up once when its first CLI exits before prompt delivery",
+    () =>
+      Effect.gen(function* () {
+        const cli = makeFakeClaudeCli(true, true);
+        const query = yield* ClaudeAdapter.ClaudeAgentSdkQueryRunner;
+        const beforeTurn = Effect.fn("test.coldClaudeStart")(
+          function* (input: ProviderAdapterV2TurnInput) {
+            const opened = yield* query.open({
+              threadId: input.threadId,
+              providerSessionId: input.providerThread.providerSessionId!,
+              options: {
+                ...ClaudeAdapter.makeClaudeQueryOptions({
+                  modelSelection: input.modelSelection,
+                  nativeThreadId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                  title: "Lead",
+                  resume: false,
+                  cwd: null,
+                  environment: { PATH: "/usr/bin" },
+                  mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1:43123/mcp" } },
+                }),
+                pathToClaudeCodeExecutable: "/opt/claude/cli.js",
+                spawnClaudeCodeProcess: cli.spawn,
+              },
+            });
+            yield* opened
+              .setModel(input.modelSelection.model)
+              .pipe(Effect.ensuring(opened.close.pipe(Effect.ignore)));
+          },
+          (effect, input) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterTurnStartError({
+                    cause,
+                    driver: ProviderDriverKind.make("claudeAgent"),
+                    runId: input.runId,
+                    threadId: input.threadId,
+                    providerThreadId: input.providerThread.id,
+                  }),
+              ),
+            ),
+        );
+        yield* Effect.gen(function* () {
+          yield* privateRequest("cold");
+          const sql = yield* SqlClient.SqlClient;
+          yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(
+            yield* sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId}`,
+            [{ status: "completed" }],
+          );
+          assert.deepStrictEqual(
+            yield* sql`SELECT author_kind, body FROM kin_messages WHERE org_id = ${orgId} AND author_kind IN ('agent', 'system') ORDER BY seq`,
+            [{ author_kind: "agent", body: "The fixture is ready." }],
+          );
+          assert.deepStrictEqual(
+            yield* sql`SELECT cause FROM kin_troubles WHERE org_id = ${orgId}`,
+            [],
+          );
+          assert.lengthOf(cli.spawns, 2);
+        }).pipe(
+          Effect.provide(
+            harnessWith(
+              { beforeTurn, replyText: "The fixture is ready." },
+              ReplyBridge.layer.pipe(Layer.provide(chatLayers), Layer.provideMerge(hostCare)),
+            ),
+          ),
+        );
+      }).pipe(
+        Effect.provide(ClaudeAdapter.layerQueryRunner.pipe(Layer.provide(PortScanner.layerTest))),
+        Effect.provideService(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+        Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        provideDeterministicTestRuntime,
+      ),
   );
 
   it.effect.each(["MemorySyncConflict", "MemoryCheckoutInvalid"] as const)(

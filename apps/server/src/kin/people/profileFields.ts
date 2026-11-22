@@ -24,6 +24,7 @@ export type ProfileFields = Pick<
   | "talkStyle"
   | "quietHours"
   | "holdOutsideHours"
+  | "answersRing"
   | "awayUntil"
 >;
 
@@ -58,6 +59,7 @@ export const profileSets = Effect.fn("KinPeople.profileSets")(function* (
     fields.holdOutsideHours === undefined
       ? null
       : sql`hold_outside_hours = ${fields.holdOutsideHours ? 1 : 0}`,
+    fields.answersRing === undefined ? null : sql`answers_ring = ${fields.answersRing ? 1 : 0}`,
     fields.awayUntil === undefined ? null : sql`away_until = ${fields.awayUntil}`,
     sql`profile_updated_at = ${now}`,
   ].filter((part) => part !== null);

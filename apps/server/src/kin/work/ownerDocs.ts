@@ -66,7 +66,9 @@ import { docKindWords, searchIndexed } from "./searchIndex.ts";
 import {
   clientMoneySeen,
   KIN_OWNER_LEVEL,
+  PICTURE_DOC_ORIGIN,
   seenBy,
+  keyedViewer,
   teamSeq,
   linkedFromOf,
   teamVisible,
@@ -176,7 +178,9 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
   const records = yield* KinRecords;
   const row = yield* Docs.docRow(orgId, ref, viewer);
   const latest = yield* Docs.versionOf(orgId, row.recordId);
-  const shown = yield* Docs.versionOf(orgId, row.recordId, version);
+  const found = yield* Docs.versionOf(orgId, row.recordId, version);
+  const seen = yield* Docs.versionsSeen(orgId, viewer, row);
+  const shown = found !== undefined && seen(found.version) ? found : undefined;
   if (latest === undefined) return yield* unavailable;
   if (shown === undefined)
     return yield* new KinChatError({
@@ -268,8 +272,10 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
     ...(input.files === undefined
       ? []
       : [
-          sql`${input.files ? sql`` : sql`NOT `}EXISTS (SELECT 1 FROM kin_doc_versions f
-              WHERE f.org_id = r.org_id AND f.record_id = r.record_id AND f.body_kind = 'file')`,
+          // A picture is a file with no other record to live on, so it stays on the shelf.
+          sql`(${input.files ? sql`` : sql`NOT `}EXISTS (SELECT 1 FROM kin_doc_versions f
+              WHERE f.org_id = r.org_id AND f.record_id = r.record_id AND f.body_kind = 'file')
+            OR r.origin_key LIKE ${`${PICTURE_DOC_ORIGIN}%`})`,
         ]),
     ...(text === ""
       ? []
@@ -289,15 +295,19 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
 });
 
 export const list = Effect.fn("KinDocs.list")(
-  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocsListInput) {
+  function* (
+    people: ReadonlyArray<PersonIdentity>,
+    input: KinDocsListInput,
+    /** A coding agent's key reads it: nothing a key never carries (`keyedViewer`). */
+    options: { readonly keyed?: boolean } = {},
+  ) {
     const team = yield* reader(people, input.orgId);
     const sql = yield* SqlClient.SqlClient;
     const records = yield* KinRecords;
     const offset = yield* offsetOf(input.cursor);
-    const where = yield* listWhere(
-      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
-      input,
-    );
+    const base = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]);
+    const viewer = options.keyed === true ? keyedViewer(base) : base;
+    const where = yield* listWhere(viewer, input);
     const limit = input.limit ?? 50;
     const [count] = yield* sql<{
       total: number;
@@ -312,7 +322,6 @@ export const list = Effect.fn("KinDocs.list")(
     );
     const now = yield* Clock.currentTimeMillis;
     const next = offset + rows.length;
-    const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]);
     const hidden = yield* unseenClients(input.orgId, viewer, rows);
     // Only Deleted's rows say who deleted them and offer Restore; the doc's page offers Delete.
     const marks = input.archived === true ? yield* marksOf(input.orgId, viewer, rows) : undefined;
@@ -333,12 +342,17 @@ export const list = Effect.fn("KinDocs.list")(
 );
 
 export const get = Effect.fn("KinDocs.get")(
-  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocGetInput) {
+  function* (
+    people: ReadonlyArray<PersonIdentity>,
+    input: KinDocGetInput,
+    options: { readonly keyed?: boolean } = {},
+  ) {
     const { personId, team } = yield* readerOf(people, input.orgId);
+    const base = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]);
     return yield* detailOf(
       input.orgId,
       "key" in input ? { key: input.key } : { recordId: input.recordId },
-      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+      options.keyed === true ? keyedViewer(base) : base,
       personId,
       input.version,
     );
@@ -361,9 +375,14 @@ export const history = Effect.fn("KinDocs.history")(
       ...(before === undefined ? {} : { before: Number.parseInt(before, 10) }),
       limit,
     });
+    const seen = yield* Docs.versionsSeen(
+      input.orgId,
+      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+      row,
+    );
     const last = rows.at(-1);
     return {
-      versions: rows.map(Docs.toVersion),
+      versions: rows.filter((one) => seen(one.version)).map(Docs.toVersion),
       nextCursor:
         rows.length === limit && last !== undefined && last.version > 1
           ? `v:${last.version}`
@@ -377,19 +396,19 @@ export const history = Effect.fn("KinDocs.history")(
 export const diff = Effect.fn("KinDocs.diff")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinDocDiffInput) {
     const team = yield* reader(people, input.orgId);
-    const row = yield* Docs.docRow(
-      input.orgId,
-      { key: input.key },
-      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
-    );
-    const to = yield* Docs.versionOf(input.orgId, row.recordId, input.to);
+    const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]);
+    const row = yield* Docs.docRow(input.orgId, { key: input.key }, viewer);
+    const seen = yield* Docs.versionsSeen(input.orgId, viewer, row);
+    const seenOf = (version: Effect.Success<ReturnType<typeof Docs.versionOf>>) =>
+      version !== undefined && seen(version.version) ? version : undefined;
+    const to = seenOf(yield* Docs.versionOf(input.orgId, row.recordId, input.to));
     if (to === undefined)
       return yield* new KinChatError({
         reason: "not_found",
         message: `${row.key} has no version ${input.to}.`,
       });
     const fromVersion = input.from ?? Math.max(1, to.version - 1);
-    const from = yield* Docs.versionOf(input.orgId, row.recordId, fromVersion);
+    const from = seenOf(yield* Docs.versionOf(input.orgId, row.recordId, fromVersion));
     if (from === undefined)
       return yield* new KinChatError({
         reason: "not_found",

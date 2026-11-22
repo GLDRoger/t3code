@@ -223,6 +223,26 @@ export function kinQuietLine(profile: KinPersonProfile, holding: KinProfileHoldi
     .join(" · ");
 }
 
+/** Settings › Notifications: the quiet hours that apply to someone, and the one switch for them. */
+export const KIN_QUIET_NOTIFICATIONS = {
+  title: "Quiet hours",
+  arrive: "Notifications in them arrive quietly: no sound, and they wait in your notifications.",
+  answers: "Replies to what I asked still ring",
+  answersDetail:
+    "When you asked during these quiet hours or in the three hours before. Off, quiet hours keep everything quiet.",
+  failed: "Couldn't save that.",
+} as const;
+
+/** "The company's quiet hours, 22:00 to 07:00", or "Your own quiet hours, …" when they set some. */
+export function kinQuietSource(profile: KinPersonProfile, holding: KinProfileHolding): string {
+  const { quiet } = kinProfileHolding(profile, holding);
+  const whose = profile.quietHours === undefined ? "The company's" : "Your own";
+  return `${whose} quiet hours, ${quiet.from} to ${quiet.to}`;
+}
+
+/** Whether a reply to what they asked rings in their quiet hours: on unless they turned it off. */
+export const kinAnswersRing = (profile: KinPersonProfile) => profile.answersRing ?? true;
+
 /** Where the platform can't list its zones (Hermes), the ones most teams are in. */
 const COMMON_TIME_ZONES = [
   "Asia/Kolkata",

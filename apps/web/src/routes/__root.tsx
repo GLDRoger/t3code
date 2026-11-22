@@ -64,6 +64,8 @@ import { readProject } from "../state/entities";
 
 import { getDesktopSnapShotBridge } from "../lib/desktopSnapShot";
 import { isChunkLoadError } from "../lib/chunkReloadGuard";
+import { KinUpdatedPage } from "../kin/KinUpdatedLine";
+import { KIN_WEB_ONLY } from "../kin/kinWebOnly";
 import { shouldResumeSnapShotSetupOnStartup } from "../lib/snapShotSetupResume";
 
 export const Route = createRootRoute({
@@ -261,6 +263,7 @@ function RootRouteErrorView({ error }: ErrorComponentProps) {
   const pathname = useLocation({ select: (location) => location.pathname });
   const report = errorReport(error, pathname);
 
+  if (KIN_WEB_ONLY && isChunkLoadError(error)) return <KinUpdatedPage />;
   return (
     <StandalonePage>
       <StandalonePageHeader title={gt("Something went wrong.")} description={message} />

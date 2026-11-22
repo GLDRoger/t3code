@@ -122,20 +122,29 @@ export interface KinCampaignResultRow {
 const counted = (count: number, values: KinCampaignResults["open"]["values"]) =>
   [String(count), ...values.map((money) => kinMoneyText(money))].join(" · ");
 
-/** A campaign's results as rows; each opens the list it counts. */
+/** A campaign's results as rows; each opens the list it counts. Deals only while they are on. */
 export function kinCampaignResultRows(
   results: KinCampaignResults,
   audience: string | null | undefined,
+  deals: boolean,
 ): ReadonlyArray<KinCampaignResultRow> {
   return [
     { id: "prospects", label: KIN_MARKETING.prospects, value: String(results.prospects) },
     { id: "clients", label: KIN_MARKETING.clients, value: String(results.clients) },
-    {
-      id: "deals",
-      label: KIN_MARKETING.deals,
-      value: counted(results.open.count, results.open.values),
-    },
-    { id: "won", label: KIN_MARKETING.won, value: counted(results.won.count, results.won.values) },
+    ...(deals
+      ? [
+          {
+            id: "deals" as const,
+            label: KIN_MARKETING.deals,
+            value: counted(results.open.count, results.open.values),
+          },
+          {
+            id: "won" as const,
+            label: KIN_MARKETING.won,
+            value: counted(results.won.count, results.won.values),
+          },
+        ]
+      : []),
     ...(audience == null
       ? []
       : [
@@ -155,12 +164,13 @@ const counting = (n: number, one: string, many: string) =>
 export function kinCampaignResultsSummary(
   results: KinCampaignResults,
   audience: string | null | undefined,
+  deals: boolean,
 ): string {
   const parts = [
     ...counting(results.prospects, "prospect", "prospects"),
     ...counting(results.clients, "client", "clients"),
-    ...counting(results.open.count, "deal", "deals"),
-    ...counting(results.won.count, "won", "won"),
+    ...(deals ? counting(results.open.count, "deal", "deals") : []),
+    ...(deals ? counting(results.won.count, "won", "won") : []),
     ...(audience == null ? [] : counting(results.audience, "contact", "contacts")),
   ];
   return parts.length === 0 ? KIN_MARKETING.resultsNone : parts.join(" · ");

@@ -24,6 +24,7 @@ import {
   KinPersonId,
   KinReactionEmoji,
   KinRoleTags,
+  KinWakeupId,
   KinWidgetId,
 } from "./kinChat.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
@@ -702,6 +703,11 @@ export const KinEventOrigin = Schema.Struct({
   chatId: KinChatId,
   personId: Schema.optional(KinPersonId),
 });
+/**
+ * The turns whose work this event carries on (the one that delegated the finished tasks, set up the
+ * deferral, or handed the request on): what follows answers whoever asked in them. Server-set.
+ */
+const KinEventAskedIn = Schema.optional(Schema.Array(KinWakeupId).check(Schema.isMaxLength(50)));
 const OutsideText = (max: number) => Schema.NullOr(Schema.String.check(Schema.isMaxLength(max)));
 /** One new item at a connection, as metadata: who, what, when and where. Never a body. */
 export const KinPulseOutsideLine = Schema.Struct({
@@ -781,6 +787,8 @@ export const KinEvent = Schema.Union([
     // Set when another lead passed the request on: the chat it was first asked in and the lead
     // asked there. The server sets it; the wake-up works at no more than that chat's level.
     origin: Schema.optional(KinEventOrigin),
+    // Set on another lead's answer coming back to the lead that asked it.
+    askedIn: KinEventAskedIn,
   }),
   Schema.TaggedStruct("widget.action", {
     ...EventBase,
@@ -855,6 +863,7 @@ export const KinEvent = Schema.Union([
     // The chat its turn answers in, else the owner chat: set only on an answer to a question
     // asked for another chat, which is that chat.
     chatId: Schema.optional(KinChatId),
+    askedIn: KinEventAskedIn,
   }),
   Schema.TaggedStruct("routine", {
     ...EventBase,
@@ -934,6 +943,7 @@ export const KinEvent = Schema.Union([
     messageId: MessageId,
     taskIds: Schema.Array(NodeId).check(Schema.isMaxLength(50)),
     chatId: KinChatId,
+    askedIn: KinEventAskedIn,
   }),
   Schema.TaggedStruct("action.resolved", {
     ...EventBase,

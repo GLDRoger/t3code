@@ -8,6 +8,7 @@ import {
   KinMessageId,
   KinOrgId,
   KinTriggerId,
+  type KinWakeupId,
   KinWidgetId,
   type MemoryItemHead,
   kinDeferralWidgetId,
@@ -347,6 +348,13 @@ export const makeDeferralStarter = Effect.gen(function* () {
     });
     if (lead === undefined) return false;
     const origin = yield* firingOrigin(sql, orgId, input.item, lead);
+    // The turn that set it up: what it does when due answers whoever asked there.
+    const asked =
+      input.item?.source_event === undefined
+        ? []
+        : yield* sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId" FROM kin_events
+            WHERE org_id = ${orgId} AND event_id = ${input.item.source_event}
+              AND wakeup_id IS NOT NULL ORDER BY event_id`;
     const moved = yield* sql`UPDATE kin_deferral_runs SET state = 'started', updated_at = ${now}
       WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
         AND state = ${input.from} RETURNING item_id`;
@@ -365,6 +373,7 @@ export const makeDeferralStarter = Effect.gen(function* () {
           subject: { type: "deferral", itemId, phase: "due" },
           lateByMs: Math.max(0, at - dueAt),
           ...(origin === undefined ? {} : { origin }),
+          ...(asked.length === 0 ? {} : { askedIn: asked.map((row) => row.wakeupId) }),
         }),
       )
       .pipe(
