@@ -35,6 +35,7 @@ import * as NodeOS from "node:os";
 import packageJson from "../../../package.json" with { type: "json" };
 import { ServerConfig } from "../../config.ts";
 import * as ProcessRunner from "../../processRunner.ts";
+import { ownerPrivateChat } from "../chat/executionNotices.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as HostBackup from "../hostBackup.ts";
@@ -147,8 +148,11 @@ export class KinHostCare extends Context.Service<
     readonly spaceFailed: (orgId: KinOrgId, agentId: KinAgentId) => Effect.Effect<boolean>;
     /** Dev stand-in only: fails as a full disk would while `$TMPDIR/kin-dev-disk-full` exists. */
     readonly devFullDisk: Effect.Effect<void, KinHostSpaceFull>;
-    /** A turn failed for `cause`: opens that cause's notice, or counts its turns on the open one. */
-    readonly failed: (input: TroubleInput) => Effect.Effect<void>;
+    /**
+     * A turn failed for `cause`: opens that cause's trouble, or counts its turns on the open one.
+     * True when the owner has been told of it in a chat only they read.
+     */
+    readonly failed: (input: TroubleInput) => Effect.Effect<boolean>;
     /** A turn of `agentId` ran: the notices it proves cleared close, and their held turns run. */
     readonly succeeded: (orgId: KinOrgId, agentId: KinAgentId) => Effect.Effect<void>;
     /** Whether a notice for `cause` is open in the org. */
@@ -411,10 +415,10 @@ const make = Effect.gen(function* () {
     return kinTroubleWords(card, at).what;
   });
 
-  /** Where the owner is told: the lead's chat with them. */
+  /** Where the owner is told: a chat only they read, else nowhere (Settings still shows it). */
   const noticeChat = Effect.fn("KinHostCare.noticeChat")(function* (orgId: KinOrgId) {
     const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
-    return lead?.ownerChatId;
+    return lead === undefined ? undefined : yield* ownerPrivateChat(sql, orgId, lead.ownerPersonId);
   });
 
   /**
@@ -580,8 +584,12 @@ const make = Effect.gen(function* () {
         ),
       );
       yield* projectQuietly(orgId, troubleId, true);
+      const trouble = yield* troubleById(orgId, troubleId);
+      return trouble?.toldAt != null;
     },
-    Effect.catchCause((cause) => Effect.logWarning("Kin trouble not recorded", { cause })),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin trouble not recorded", { cause }).pipe(Effect.as(false)),
+    ),
   );
 
   /** Closes the trouble and runs what it held; its notice says so. */

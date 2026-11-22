@@ -1712,25 +1712,32 @@ it.effect("keeps a provider's error text out of the chat when its run failed", (
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("tells a shared chat only that the lead is unavailable when its account fails", () =>
-  Effect.gen(function* () {
-    const { bridge, owner, wakeupId, posted, chatId } = yield* setup({
-      ask: "Who owns launch?",
-      lane: "shared-group",
-    });
-    yield* bridge.failed({
-      orgId: owner.orgId,
-      wakeupId,
-      lane: { chatId, mode: "reply", owed: true, leadName: "Ada" },
-      outcome: "access",
-    });
-    assert.deepStrictEqual(
-      (yield* posted).map((row) => row.body),
-      [
-        "Ada is unavailable right now. Kin has told the owner, and will run this as soon as it can.",
-      ],
-    );
-  }).pipe(Effect.provide(layer)),
+it.effect.each([
+  {
+    told: true,
+    line: "Ada is unavailable right now. Kin has told the owner, and will run this as soon as it can.",
+  },
+  { told: false, line: "Ada is unavailable right now. Kin will run this as soon as it can." },
+])(
+  "tells a shared chat only that the lead is unavailable, and that the owner knows only if told (told $told)",
+  ({ told, line }) =>
+    Effect.gen(function* () {
+      const { bridge, owner, wakeupId, posted, chatId } = yield* setup({
+        ask: "Who owns launch?",
+        lane: "shared-group",
+      });
+      yield* bridge.failed({
+        orgId: owner.orgId,
+        wakeupId,
+        lane: { chatId, mode: "reply", owed: true, leadName: "Ada" },
+        outcome: "access",
+        told,
+      });
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => row.body),
+        [line],
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("posts nothing for an L0 lead's reply in a chat its owner didn't place it in", () =>

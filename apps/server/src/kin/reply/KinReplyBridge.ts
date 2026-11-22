@@ -178,12 +178,14 @@ const failedNotices: Record<
 };
 /**
  * Only the owner level can fix the cause, so only an owner-only chat hears which; everyone else
- * hears that the owner was told. The request waits either way.
+ * hears that the owner was told, when a notice reached them. The request waits either way.
  */
-const heldNotice = (lead: string, cause: KinTroubleCause, ownerOnly: boolean) =>
+const heldNotice = (lead: string, cause: KinTroubleCause, ownerOnly: boolean, told: boolean) =>
   ownerOnly
     ? `${couldnt(lead, cause)}. Kin is keeping this and will run it as soon as it can.`
-    : `${lead} is unavailable right now. Kin has told the owner, and will run this as soon as it can.`;
+    : told
+      ? `${lead} is unavailable right now. Kin has told the owner, and will run this as soon as it can.`
+      : `${lead} is unavailable right now. Kin will run this as soon as it can.`;
 
 type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow" | "dropped";
 
@@ -325,6 +327,8 @@ export class KinReplyBridge extends Context.Service<
       readonly lane: Lane;
       readonly outcome: FailedOutcome;
       readonly cause?: KinTroubleCause;
+      /** The owner was told of the cause in a chat only they read. */
+      readonly told?: boolean;
     }) => Effect.Effect<void>;
     /**
      * The wake-up was aborted for its audience: its line goes and its drafts end without the
@@ -1444,6 +1448,7 @@ const make = Effect.gen(function* () {
       readonly lane: Lane;
       readonly outcome: FailedOutcome;
       readonly cause?: KinTroubleCause;
+      readonly told?: boolean;
     }) {
       if (
         input.outcome === "signin" ||
@@ -1522,6 +1527,7 @@ const make = Effect.gen(function* () {
     readonly wakeupId: KinWakeupId;
     readonly lane: Lane;
     readonly cause: KinTroubleCause;
+    readonly told?: boolean;
   }) {
     const { orgId, wakeupId, lane } = input;
     const agentId = yield* agentOf(orgId, wakeupId);
@@ -1536,7 +1542,7 @@ const make = Effect.gen(function* () {
         orgId,
         chatId: lane.chatId,
         audience: ownerOnly ? "owner" : "chat",
-        body: heldNotice(lane.leadName, input.cause, ownerOnly),
+        body: heldNotice(lane.leadName, input.cause, ownerOnly, input.told === true),
         silent: true,
       });
     // Someone may join after `ownerOnly` was read: then they get the line anyone may read.

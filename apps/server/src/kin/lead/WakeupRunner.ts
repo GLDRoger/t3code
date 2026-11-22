@@ -246,6 +246,7 @@ const make = Effect.gen(function* () {
     // Quiet only when the turn really went back to wait, untouched: after something visible,
     // its unanswered events stopped instead, and that is said.
     if (quiet && (finished.stranded > 0 || finished.replied > 0)) quiet = false;
+    let told = false;
     if (Option.isSome(care)) {
       if (status === "completed") yield* care.value.succeeded(row.orgId, row.agentId);
       const held = finished.heldEventIds ?? [];
@@ -258,7 +259,7 @@ const make = Effect.gen(function* () {
           : finished.failedEventIds.length > 0 ||
             finished.retryInMs > KinEventQueue.FIRST_RETRY_MS);
       if (tell)
-        yield* care.value.failed({
+        told = yield* care.value.failed({
           orgId: row.orgId,
           agentId: row.agentId,
           cause,
@@ -303,6 +304,7 @@ const make = Effect.gen(function* () {
         wakeupId: row.wakeupId,
         lane: lane.value,
         outcome,
+        told,
         ...(cause === undefined ? {} : { cause }),
       });
   });

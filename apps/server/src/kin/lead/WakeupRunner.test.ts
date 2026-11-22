@@ -1114,7 +1114,9 @@ describe("WakeupRunner", () => {
             spaceFailed: () => Effect.sync(() => (told.push("clean"), true)),
             devFullDisk: Effect.void,
             failed: (input) =>
-              Effect.sync(() => void told.push(`notice ${input.cause} ${input.eventIds.length}`)),
+              Effect.sync(
+                () => (told.push(`notice ${input.cause} ${input.eventIds.length}`), true),
+              ),
             succeeded: () => Effect.void,
             troubleOpen: () => Effect.succeed(false),
             causeFor: () => Effect.undefined,
@@ -2527,6 +2529,7 @@ describe("WakeupRunner", () => {
             failed: (input) =>
               Effect.sync(() => {
                 told.push(`notice ${input.cause} ${input.eventIds.join(",")}`);
+                return true;
               }),
             succeeded: () => Effect.void,
             troubleOpen: () => Effect.succeed(false),

@@ -505,6 +505,55 @@ it.effect(
   },
 );
 
+it.effect(
+  "tells the owner in a chat only they read, and keeps the trouble when there is none",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const care = yield* KinHostCare.KinHostCare;
+      const sql = yield* SqlClient.SqlClient;
+      const at = DateTime.formatIso(DateTime.makeUnsafe(NOW));
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at})`;
+      const share = (chat: string) =>
+        sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES (${`meera-${chat}`}, ${orgId}, ${chat}, 'person', 'meera', 'member', ${at})`;
+      const told = sql<{ chatId: string }>`SELECT chat_id AS "chatId" FROM kin_messages
+      WHERE org_id = ${orgId} AND author_kind = 'system' ORDER BY seq`;
+      // Rhea shared her chat with Chief of staff: the notice goes to her private chat with Finance.
+      yield* share("rhea-chief");
+      const chief = KinAgentId.make("chief");
+      assert.isTrue(
+        yield* care.failed({
+          orgId,
+          agentId: chief,
+          cause: "signin",
+          eventIds: [yield* queued("c1", "chief")],
+        }),
+      );
+      assert.deepStrictEqual(yield* told, [{ chatId: "rhea-finance" }]);
+      // Every chat of hers is shared: nobody is told, but the trouble stands and Settings shows it.
+      yield* share("rhea-finance");
+      assert.isFalse(
+        yield* care.failed({
+          orgId,
+          agentId: chief,
+          cause: "model",
+          eventIds: [yield* queued("c2", "chief")],
+        }),
+      );
+      assert.lengthOf(yield* told, 1);
+      assert.deepStrictEqual(
+        (yield* care.status(orgId)).agents.troubles.map(({ card }) => [card.cause, card.count]),
+        [
+          ["model", 1],
+          ["signin", 1],
+        ],
+      );
+    }).pipe(Effect.provide(services)),
+);
+
 const space =
   (left: Record<string, number>) =>
   (folder: string): Effect.Effect<Option.Option<HostBackup.SpaceReading>> =>
