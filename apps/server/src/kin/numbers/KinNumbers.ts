@@ -322,6 +322,8 @@ export const values = Effect.fn("KinNumbers.values")(
 );
 
 const validValue = Schema.is(KinNumberValueInput);
+const normalizeDecimal = (value: string) =>
+  value.replace(/^(-?)0+(?=\d)/, "$1").replace(/^-(?=0(?:\.0+)?$)/, "");
 
 export const record = Effect.fn("KinNumbers.record")(
   function* (by: Viewer, entries: ReadonlyArray<KinNumberValueInput>, clientRequestId?: string) {
@@ -386,6 +388,7 @@ export const record = Effect.fn("KinNumbers.record")(
             (entry.value.split(".")[1]?.length ?? 0) > kinCurrency(currency).decimals
           )
             return yield* invalid("Use the precision of the number's currency.");
+          const value = normalizeDecimal(entry.value);
           const source = entry.source ?? null;
           const writeKey = request === undefined ? null : `${request}:${index}`;
           const written =
@@ -412,7 +415,7 @@ export const record = Effect.fn("KinNumbers.record")(
         ORDER BY seq DESC LIMIT 1`;
           if (
             writeKey === null &&
-            last?.value === entry.value &&
+            last?.value === value &&
             last.source === source &&
             last.personId === personId &&
             last.agentId === agentId
@@ -420,7 +423,7 @@ export const record = Effect.fn("KinNumbers.record")(
             continue;
           yield* sql`INSERT INTO kin_number_values (org_id, record_id, as_of, seq, value, person_id,
           agent_id, recorder_name, source, created_at, write_key, request_hash)
-        VALUES (${orgId}, ${row.recordId}, ${entry.asOf}, ${(last?.seq ?? 0) + 1}, ${entry.value},
+        VALUES (${orgId}, ${row.recordId}, ${entry.asOf}, ${(last?.seq ?? 0) + 1}, ${value},
           ${personId}, ${agentId}, ${author.name}, ${source}, ${now}, ${writeKey}, ${hash})`;
           changed = true;
         }

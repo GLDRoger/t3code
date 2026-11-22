@@ -102,6 +102,14 @@ it.effect("keeps watched numbers off Goals and reads both corrections, moving nu
       rows.map((row) => row.by.name),
       ["Rhea", "Rhea"],
     );
+    yield* Numbers.record(
+      owner,
+      ["007", "000.50", "-0", "-0.0", "-000.100"].map((text) => value("G-1", text)),
+    );
+    assert.deepStrictEqual(
+      (yield* Numbers.values(owner, "G-1", day, day)).values.slice(2).map((row) => row.value),
+      ["7", "0.50", "0", "0.0", "-0.100"],
+    );
   }).pipe(Effect.provide(layer)),
 );
 
