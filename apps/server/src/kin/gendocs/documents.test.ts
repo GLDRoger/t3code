@@ -537,7 +537,10 @@ describe("recipe documents", () => {
       const broken = yield* LeadDocuments.make(scope, invoice({ title: "Invoice again" })).pipe(
         Effect.flip,
       );
-      assert.match(broken.message, /^Nothing was made\. The invoice recipe didn't render: .*totl/);
+      assert.match(
+        broken.message,
+        /^Nothing was made\. The invoice recipe didn't render because .*totl/,
+      );
       failing.reason = undefined;
       const jobs = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_doc_jobs
         WHERE org_id = ${orgId}`;
@@ -2772,7 +2775,7 @@ describe("files the agent makes", () => {
       const refused = yield* writeRecipe("quote").pipe(Effect.flip);
       assert.match(
         refused.message,
-        /didn't keep the quote recipe: its sample didn't render.*blcks/,
+        /didn't keep the quote recipe: its sample didn't render because .*blcks/,
       );
       assert.isUndefined((yield* workspace.recipes(orgId)).find((one) => one.name === "quote"));
       failing.reason = undefined;
@@ -2870,7 +2873,7 @@ describe("files the agent makes", () => {
       yield* fs.remove(`${folder}/old.pdf`);
       failing.reason = "letterhead.pdf: template.typ:1:1: error: unknown variable: oops";
       const broken = yield* letterhead().pipe(Effect.flip);
-      assert.match(broken.message, /its sample didn't render: .*unknown variable: oops/);
+      assert.match(broken.message, /its sample didn't render because .*unknown variable: oops/);
       // Rendered, its first page goes back once to set beside the references.
       failing.reason = undefined;
       const look = yield* letterhead();

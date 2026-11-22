@@ -272,9 +272,9 @@ const gst = (args: {
   const client = stateOf(args.clientGstin, args.clientPlace);
   const exported = client === undefined;
   if (registered && client === null)
-    fail("the client has no place of supply: give it a GSTIN or a place of supply");
+    fail("the client has no place of supply and needs a GSTIN or a place of supply");
   if (registered && (supplier === null || supplier === undefined))
-    fail("the company's state isn't known: set its GSTIN or place of supply");
+    fail("the company's state isn't known and it needs a GSTIN or place of supply");
   const rate = fraction(args.rate);
   const half = { num: rate.num, den: rate.den * 2n };
   const components: ReadonlyArray<{

@@ -472,6 +472,33 @@ describe("KinImport", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("refuses impossible entry days like malformed dates", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const dates = ["2026-02-31", "2026-02-31T12:00Z", "not a date", "2028-02-29"];
+      const report = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf(
+          header,
+          dates.map((due, i) => ({
+            entry: { source: `date-${i}`, list: "work", title: `Invented date ${i}`, due },
+          })),
+        ),
+      );
+      assert.deepStrictEqual(
+        report.problems.map(({ line, kind }) => [line, kind]),
+        [
+          [2, "file"],
+          [3, "file"],
+          [4, "file"],
+        ],
+      );
+      assert.strictEqual(report.entries.create, 1);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("refuses a file without a header, or past its limits, before writing anything", () =>
     Effect.gen(function* () {
       yield* seed;
