@@ -40,6 +40,7 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import type * as Routines from "../triggers/routines.ts";
+import { laneFor } from "../reply/replyLane.ts";
 import * as Queue from "./KinEventQueue.ts";
 import { hashedEventId } from "./eventIds.ts";
 import { isOrgOwner, isOrgPaused, STOP_REASON } from "./orgState.ts";
@@ -225,6 +226,52 @@ const make = Effect.gen(function* () {
       }),
     );
   });
+  /** Where a wake-up answers, and as whom, for the line saying it was stopped. */
+  const stoppedLane = Effect.fn("KinStop.stoppedLane")(function* (
+    orgId: KinOrgId,
+    wakeupId: KinWakeupId,
+  ) {
+    const [wake] = yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_wakeups
+      WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
+      ORDER BY wakeup_id`;
+    if (wake === undefined) return undefined;
+    const lane = yield* laneFor({ orgId, agentId: KinAgentId.make(wake.agentId), wakeupId }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    return Option.getOrUndefined(lane);
+  });
+  /** One quiet line where the stopped turn would have answered: who stopped which agent. */
+  const tellStopped = Effect.fn("KinStop.tellStopped")(function* (
+    orgId: KinOrgId,
+    wakeupId: KinWakeupId,
+    lane: { readonly chatId: KinChatId; readonly leadName: string },
+    person: PersonIdentity,
+  ) {
+    const [who] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+      WHERE org_id = ${orgId} AND person_id = ${person.personId} ORDER BY person_id`;
+    if (who === undefined) return;
+    const message = yield* chat.insertMessage({
+      orgId,
+      chatId: lane.chatId,
+      audience: "chat",
+      messageId: KinMessageId.make(`kin-stopped:${wakeupId}`),
+      author: { _tag: "system" },
+      kind: "text",
+      body: `${who.name} stopped ${lane.leadName}.`,
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      clientMessageId: null,
+      createdAt: iso(yield* Clock.currentTimeMillis),
+      editedAt: null,
+    });
+    yield* publish(orgId, [message]);
+  });
+
   const fanOut = Effect.fn("KinStop.fanOut")(function* (orgId: KinOrgId, pausedAt: number) {
     if (attached === undefined) return;
     yield* attached.pause(orgId, pausedAt).pipe(
@@ -396,13 +443,18 @@ const make = Effect.gen(function* () {
       );
     }),
     interrupt: Effect.fn("KinStop.interrupt")(function* (people, input) {
-      yield* owner(people, input.orgId);
+      const person = yield* owner(people, input.orgId);
       if (attached?.interrupt === undefined) return yield* unavailable;
-      return {
-        interrupted: yield* attached
-          .interrupt(input.orgId, input.wakeupId)
-          .pipe(Effect.mapError(() => unavailable)),
-      };
+      // Read before the stop marks the wake-up's events done.
+      const lane = yield* stoppedLane(input.orgId, input.wakeupId);
+      const interrupted = yield* attached
+        .interrupt(input.orgId, input.wakeupId)
+        .pipe(Effect.mapError(() => unavailable));
+      if (interrupted && lane !== undefined)
+        yield* tellStopped(input.orgId, input.wakeupId, lane, person).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("Kin stop line failed", { cause })),
+        );
+      return { interrupted };
     }, Effect.mapError(mapError)),
     attach: Effect.fn("KinStop.attach")(function* (next) {
       yield* Effect.acquireRelease(

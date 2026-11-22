@@ -70,7 +70,7 @@ const ReleaseInput = Schema.Union([
 const FinishInput = Schema.Struct({
   orgId: KinOrgId,
   wakeupId: KinWakeupId,
-  status: Schema.Literals(["completed", "failed", "timed_out"]),
+  status: Schema.Literals(["completed", "failed", "interrupted", "timed_out"]),
 });
 
 const SteerInput = Schema.Struct({
@@ -850,7 +850,7 @@ const make = Effect.gen(function* () {
           }
           // Read before the row closes; every subquery stays inside this wake-up's org.
           const [visible] =
-            input.status === "completed"
+            input.status === "completed" || input.status === "interrupted"
               ? [undefined]
               : yield* sql`SELECT 1 FROM kin_wakeups w
             WHERE w.org_id = ${input.orgId} AND w.wakeup_id = ${input.wakeupId} AND w.status = 'running' AND (
@@ -874,7 +874,8 @@ const make = Effect.gen(function* () {
               input.orgId,
               ended.map((row) => row.event_id),
             );
-          if (input.status === "completed") {
+          // Stopped by a person: what it was asked is over, never retried or told as failed.
+          if (input.status === "completed" || input.status === "interrupted") {
             yield* settle(
               yield* sql<{ event_id: string }>`UPDATE kin_events SET state = 'done'
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'

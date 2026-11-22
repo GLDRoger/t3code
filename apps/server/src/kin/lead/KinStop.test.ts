@@ -194,6 +194,15 @@ describe("KinStop", () => {
         yield* worker.drain();
         yield* Fiber.join(run);
         assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: false });
+        // A deliberate stop is no failure, and the chat says who stopped it, once.
+        assert.deepStrictEqual(
+          yield* sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`,
+          [{ status: "interrupted" }],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT chat_id, body FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`,
+          [{ chat_id: "owner-chat", body: "Owner stopped Lead." }],
+        );
       }).pipe(
         Effect.provide(
           harness({
