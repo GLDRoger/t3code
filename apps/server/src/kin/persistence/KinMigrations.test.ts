@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- each case copies one migrated database file.
+import K021PushDevices from "./migrations/K021_PushDevices.ts";
 import PeopleInvitesMigration from "./migrations/K038_PeopleInvites.ts";
 import ChatGrantsLapse from "./migrations/K055_ChatGrantsLapse.ts";
 import K058Work from "./migrations/K058_Work.ts";
@@ -1871,7 +1872,7 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 201, and runs again",
+    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 202, and runs again",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -1901,7 +1902,7 @@ describe("Kin migrations", () => {
         // Later branches' migrations run after these too; only these three are this test's.
         assert.deepStrictEqual(
           (yield* runKinMigrations()).map(([id]) => id),
-          [196, 197, 198, 199, 200, 201],
+          [196, 197, 198, 199, 200, 201, 202],
         );
         assert.deepStrictEqual(yield* receipts, [
           { trigger_key: "review:ambermill/shop#7", review_url: null },
@@ -1928,7 +1929,7 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("a host on K196 migrates through 197, 198, 199, 200 and 201, and again", () =>
+  it.effect("a host on K196 migrates through 197, 198, 199, 200, 201 and 202, and again", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const added = sql<{ name: string }>`
@@ -1950,7 +1951,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* added, []);
       assert.deepStrictEqual(
         (yield* runKinMigrations()).map(([id]) => id),
-        [197, 198, 199, 200, 201],
+        [197, 198, 199, 200, 201, 202],
       );
       const all = [
         "approved_at",
@@ -1966,7 +1967,7 @@ describe("Kin migrations", () => {
         (yield* added).map(({ name }) => name),
         all,
       );
-      for (const from of [197, 198, 199, 200, 201]) {
+      for (const from of [197, 198, 199, 200, 201, 202]) {
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
         assert.deepStrictEqual(
@@ -2052,6 +2053,54 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect(
+    "K202 lets a push device be an Android phone, keeps every column of a host's iPhone rows, and reruns",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const shape = sql`SELECT cid, name, type, "notnull", dflt_value, pk
+          FROM pragma_table_info('kin_push_devices') ORDER BY cid`;
+        const indexes = sql`SELECT name, sql FROM sqlite_master
+          WHERE type = 'index' AND tbl_name = 'kin_push_devices' ORDER BY name`;
+        const rows = sql`SELECT * FROM kin_push_devices ORDER BY org_id, token`;
+        yield* runKinMigrations();
+        // A host on K201: the table as K021 made it, holding iPhones with every column filled.
+        yield* sql`DROP TABLE kin_push_devices`;
+        yield* K021PushDevices;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 202`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('rhea', 'org', 'rhea', 'Rhea', 1), ('meera', 'org', 'meera', 'Meera', 1)`;
+        const device = (token: string, platform: string) =>
+          sql`INSERT INTO kin_push_devices (org_id, token, person_id, platform, aps_environment,
+              device_label, session_id, proof_key_thumbprint, created_at, updated_at)
+            VALUES ('org', ${token}, 'rhea', ${platform}, 'production', 'Rhea phone', 's1',
+              'thumb-1', 1, 2)`;
+        yield* device("a".repeat(64), "ios");
+        yield* sql`INSERT INTO kin_push_devices VALUES ('org', ${"b".repeat(64)}, 'meera', 'ios',
+          'development', 'Meera phone', 's2', 'thumb-2', 3, 4)`;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(device("fcm:token", "android"))));
+        const before = { shape: yield* shape, indexes: yield* indexes, rows: yield* rows };
+        assert.lengthOf(before.rows, 2);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(202));
+        assert.deepStrictEqual(
+          { shape: yield* shape, indexes: yield* indexes, rows: yield* rows },
+          before,
+        );
+        yield* device("fcm:token", "android");
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(device("other", "windows"))));
+        const after = yield* rows;
+        assert.deepStrictEqual(after.slice(0, 2), before.rows);
+        assert.lengthOf(after, 3);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 202`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(202));
+        assert.deepStrictEqual(
+          { shape: yield* shape, indexes: yield* indexes, rows: yield* rows },
+          { ...before, rows: after },
+        );
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -2062,7 +2111,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 201");
+      assert.include(String(exit), "below the latest applied migration 202");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

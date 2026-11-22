@@ -19,19 +19,36 @@ import {
 } from "./kinChat.ts";
 import { KinRecordKey } from "./kinWork.ts";
 
-/** A native APNs device token in hex. Apple says not to fix the length; today it is 32 bytes. */
+/**
+ * A native APNs device token in lowercase hex (Apple says not to fix the length; today it is 32
+ * bytes), or an FCM registration token, which is case-sensitive and unspecified in length.
+ */
 export const KinPushToken = Schema.String.check(
-  Schema.makeFilter((value: string) => /^[0-9a-f]{64,400}$/.test(value), {
-    expected: "a lowercase hex APNs device token",
-  }),
+  Schema.makeFilter(
+    (value: string) => /^[0-9a-f]{64,400}$/.test(value) || /^[A-Za-z0-9_:-]{32,4096}$/.test(value),
+    { expected: "a lowercase hex APNs device token or an FCM registration token" },
+  ),
 );
 export type KinPushToken = typeof KinPushToken.Type;
 
-/** Android (FCM) waits until someone uses Android (mobile spec, open questions). */
-export const KinPushPlatform = Schema.Literals(["ios"]);
+/** `ios` goes through APNs, `android` through FCM. */
+export const KinPushPlatform = Schema.Literals(["ios", "android"]);
 export type KinPushPlatform = typeof KinPushPlatform.Type;
+/** APNs' environment; an Android phone sends `production`, since FCM has only the one. */
 export const KinApsEnvironment = Schema.Literals(["development", "production"]);
 export type KinApsEnvironment = typeof KinApsEnvironment.Type;
+
+/**
+ * The Android notification channel a push shows in, so a person can silence one kind in the
+ * phone's settings. The phone creates each with its name; the server picks one per push.
+ */
+export const KinPushChannel = Schema.Literals([
+  "kin.messages",
+  "kin.questions",
+  "kin.briefs",
+  "kin.account",
+]);
+export type KinPushChannel = typeof KinPushChannel.Type;
 
 /**
  * `aps.category`; the phone registers the matching buttons (mobile spec, notifications). A build

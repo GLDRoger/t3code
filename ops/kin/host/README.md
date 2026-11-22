@@ -120,6 +120,13 @@ Level raises need your signature from a phone's approval key. Any phone paired a
 
 The host must recognise the Kin app: set `KIN_IOS_APP_ID` (`<teamId>.<bundleId>`) and, for Android, `KIN_ANDROID_PACKAGE` and `KIN_ANDROID_SIGNING_CERT_SHA256` in `~/.t3/service.env`. Without them every phone is refused. `KIN_IOS_APP_ATTEST_DEVELOPMENT=true` also accepts development builds of the iPhone app; leave it unset on a real host. Simulators are always refused.
 
+## Phone notifications
+
+iPhones are notified through Apple (the `KIN_APNS_*` lines in `~/.t3/service.env`; see [the mobile spec](../../../docs/kin/specs/mobile.md)). Android phones are notified through Firebase Cloud Messaging:
+
+1. Download a service-account key (JSON) for the Firebase project the Android app is registered in (Project settings, Service accounts), copy it to the host as `~/.config/kin/fcm-service-account.json`, owned by kin with `chmod 600`, outside any checkout. The nightly backup doesn't copy it; a lost key is replaced by downloading a new one.
+2. Add `KIN_FCM_SERVICE_ACCOUNT_FILE=/home/kin/.config/kin/fcm-service-account.json` (its full path) to `~/.t3/service.env`, then `systemctl --user restart kin-server`. The log says `Kin push to Android is on.`; without the line it says Android push is off once, and Android phones get nothing.
+
 ## Reply latency
 
 Each wake-up logs one `Kin wake-up latency` line with every stage's ms since its first message was queued: claimed, memory prepared, provider launched, first token, reply posted. Wake-ups from before warm sessions were removed still group as `warm`. For p50 and p90 over the last 20 owner-message wake-ups, read the database without writing to it:

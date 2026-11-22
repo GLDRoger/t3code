@@ -254,6 +254,23 @@ describe("kinNotificationRoute", () => {
           `push:note-1:${action}`,
         ),
       });
+    // On Android the app draws the banner from FCM's data: the same answer, under FCM's id.
+    expect(
+      kinNotificationRoute(
+        response({
+          data: question,
+          action: "answer_2",
+          category: "kin.choice",
+          identifier: "0:1794096000%fcm",
+        }),
+      )?.act,
+    ).toEqual(
+      kinChoiceActInput(
+        { widgetId: KinWidgetId.make("w-ask"), revision: 1 },
+        "option-2",
+        "push:0:1794096000%fcm:answer_2",
+      ),
+    );
     // The banner itself, or a push without its choices, opens the card and answers nothing.
     expect(answer(KIN_DEFAULT_ACTION_IDENTIFIER)?.act).toBeNull();
     expect(answer("answer_2", { ...question, choices: undefined })?.act).toBeNull();
@@ -358,6 +375,13 @@ describe("kinClearedChat", () => {
     const cleared = kinClearedChat({ data: { dataString: JSON.stringify(body) }, aps: {} });
     expect(cleared?.chatId ?? null).toBe(chatId);
     if (chatId !== null) expect(cleared?.environmentId).toBe("env-1");
+    // Android's background task gets FCM's message, its data map holding the same body.
+    const android = kinClearedChat({
+      messageId: "0:1794096000%fcm",
+      data: { body: JSON.stringify(body), dataString: JSON.stringify(body) },
+      notification: null,
+    });
+    expect(android).toEqual(cleared);
   });
 });
 
