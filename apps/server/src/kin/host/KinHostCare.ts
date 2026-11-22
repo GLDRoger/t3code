@@ -164,11 +164,13 @@ export class KinHostCare extends Context.Service<
     readonly succeeded: (orgId: KinOrgId, agentId: KinAgentId) => Effect.Effect<void>;
     /** Whether a notice for `cause` is open in the org. */
     readonly troubleOpen: (orgId: KinOrgId, cause: KinTroubleCause) => Effect.Effect<boolean>;
-    /** The open notice's cause that stops `agentId` now, if one does. */
+    /** The open trouble that stops `agentId` now, if one does, and whether the owner was told. */
     readonly causeFor: (
       orgId: KinOrgId,
       agentId: KinAgentId,
-    ) => Effect.Effect<KinTroubleCause | undefined>;
+    ) => Effect.Effect<{ readonly cause: KinTroubleCause; readonly told: boolean } | undefined>;
+    /** Redraws the org's open notices from what their turns' rows say now. */
+    readonly refresh: (orgId: KinOrgId) => Effect.Effect<void>;
     /** The hourly backup check: one notice while there is no recent good backup, closed after. */
     readonly checkBackup: (
       orgId: KinOrgId,
@@ -382,10 +384,17 @@ const make = Effect.gen(function* () {
     }>`SELECT agent_id AS "agentId", name FROM kin_trouble_agents
       WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId}
         AND (worked_at IS NULL OR ${trouble.closedAt} IS NOT NULL) ORDER BY rowid`;
-    const [counts] = yield* sql<{ held: number | null; done: number | null }>`SELECT
-        SUM(CASE WHEN state = 'queued' THEN 1 ELSE 0 END) AS held,
-        SUM(CASE WHEN state = 'done' THEN 1 ELSE 0 END) AS done
-      FROM kin_events WHERE org_id = ${orgId} AND held_by = ${trouble.troubleId}`;
+    const [counts] = yield* sql<{
+      held: number | null;
+      done: number | null;
+      expiring: number | null;
+    }>`SELECT
+        SUM(CASE WHEN e.state = 'queued' THEN 1 ELSE 0 END) AS held,
+        SUM(CASE WHEN e.state = 'done' THEN 1 ELSE 0 END) AS done,
+        SUM(CASE WHEN e.state = 'queued' AND EXISTS (SELECT 1 FROM kin_lead_deliveries d
+          WHERE d.org_id = e.org_id AND d.event_id = e.event_id AND d.status = 'pending')
+          THEN 1 ELSE 0 END) AS expiring
+      FROM kin_events e WHERE e.org_id = ${orgId} AND e.held_by = ${trouble.troubleId}`;
     const using = trouble.cause === "space" ? usingText(usage) : undefined;
     return {
       cause: trouble.cause,
@@ -402,6 +411,9 @@ const make = Effect.gen(function* () {
         : { backupConfigured: trouble.backupConfigured === 1 }),
       ...(trouble.lastGoodAt === null ? {} : { lastGoodAt: trouble.lastGoodAt }),
       ...(trouble.detail === null ? {} : { detail: trouble.detail }),
+      ...((counts?.expiring ?? 0) > 0 && trouble.closedAt === null
+        ? { expiring: counts!.expiring! }
+        : {}),
       closed:
         trouble.closedAt === null ? null : { at: iso(trouble.closedAt), ran: counts?.done ?? 0 },
     } satisfies KinHostTroubleCard;
@@ -718,15 +730,24 @@ const make = Effect.gen(function* () {
     function* (orgId: KinOrgId, agentId: KinAgentId) {
       for (const trouble of yield* openTroubles(orgId)) {
         if (trouble.cause === "backup") continue;
-        if (HOST_WIDE.has(trouble.cause)) return trouble.cause;
+        const found = { cause: trouble.cause, told: trouble.toldAt !== null };
+        if (HOST_WIDE.has(trouble.cause)) return found;
         const [affected] = yield* sql`SELECT 1 FROM kin_trouble_agents
           WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} AND agent_id = ${agentId}
             AND worked_at IS NULL`;
-        if (affected !== undefined) return trouble.cause;
+        if (affected !== undefined) return found;
       }
       return undefined;
     },
     Effect.orElseSucceed(() => undefined),
+  );
+
+  const refresh = Effect.fn("KinHostCare.refresh")(
+    function* (orgId: KinOrgId) {
+      for (const trouble of yield* openTroubles(orgId))
+        yield* projectQuietly(orgId, trouble.troubleId, false);
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin trouble redraw failed", { cause })),
   );
 
   const backupConfigured = fs.exists(backupEnv).pipe(Effect.orElseSucceed(() => false));
@@ -882,6 +903,7 @@ const make = Effect.gen(function* () {
     succeeded,
     troubleOpen,
     causeFor,
+    refresh,
     checkBackup,
     status,
     freeSpace,

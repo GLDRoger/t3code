@@ -71,6 +71,8 @@ export const KinHostTroubleCard = Schema.Struct({
   /** Backups only: when the last good one ran; absent when none ever did. */
   lastGoodAt: Schema.optionalKey(IsoDateTime),
   detail: Schema.optionalKey(KinText.check(Schema.isMaxLength(600))),
+  /** Of the held turns, those with a time (a reminder, a scheduled run) that pass it unrun. */
+  expiring: Schema.optionalKey(NonNegativeInt),
   /** The held turns' events, so Try again and the cause clearing run exactly those. */
   held: Schema.optionalKey(
     Schema.Array(KinTrimmedText.check(Schema.isMaxLength(200))).check(Schema.isMaxLength(500)),

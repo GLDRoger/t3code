@@ -342,7 +342,7 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
     ]);
     assert.isTrue(yield* care.troubleOpen(orgId, "space"));
     // A scheduled task's "couldn't finish" line says why, from the open notice.
-    assert.strictEqual(yield* care.causeFor(orgId, chief), "space");
+    assert.strictEqual((yield* care.causeFor(orgId, chief))?.cause, "space");
     // Chief of staff ran a turn: space is back for everyone, but Finance is still signed out.
     yield* care.succeeded(orgId, chief);
     assert.isUndefined(yield* care.causeFor(orgId, chief));
@@ -409,6 +409,24 @@ it.effect(
       assert.deepStrictEqual(held, [{ n: 600 }]);
       yield* sql`UPDATE kin_events SET not_before = ${DAY_START + HOUR}`;
       assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 600 });
+      // A reminder among them has a time: the notice says so, and once it passes unrun the
+      // reminder leaves the held count.
+      yield* sql`INSERT INTO kin_lead_deliveries (org_id, event_id, kind, agent_id, chat_id,
+          widget_id, widget_type, state_json, fallback_body, deadline_at, status, created_at, updated_at)
+        VALUES (${orgId}, 'e000', 'reminder', 'chief', 'rhea-chief', 'w', 'reminder', '{}', 'Call Dev',
+          ${DAY_START + HOUR}, 'pending', ${DAY_START}, ${DAY_START})`;
+      yield* care.refresh(orgId);
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.count, card.expiring]),
+        [[600, 1]],
+      );
+      yield* sql`UPDATE kin_events SET state = 'expired' WHERE event_id = 'e000'`;
+      yield* sql`UPDATE kin_lead_deliveries SET status = 'fallback' WHERE event_id = 'e000'`;
+      yield* care.refresh(orgId);
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.count, card.expiring]),
+        [[599, undefined]],
+      );
     }).pipe(Effect.provide(services)),
 );
 
@@ -438,7 +456,7 @@ it.effect(
         { eventId: "c1", notBefore: NOW + 5 * 60_000 },
         { eventId: "f1", notBefore: DAY_START },
       ]);
-      assert.strictEqual(yield* care.causeFor(orgId, chief), "signin");
+      assert.strictEqual((yield* care.causeFor(orgId, chief))?.cause, "signin");
       assert.isUndefined(yield* care.causeFor(orgId, finance));
       // An agent the trouble never stopped proves nothing about it, even for the provider.
       yield* care.failed({ orgId, agentId: chief, cause: "unreachable", eventIds: [] });

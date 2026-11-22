@@ -260,14 +260,18 @@ const make = Effect.gen(function* () {
   ) {
     const { orgId } = delivery;
     if (delivery.kind === "scheduled_task") {
-      // Why the run didn't finish, when an open notice knows it.
+      // Why the run didn't happen, when an open trouble knows it; once the owner was told of
+      // that trouble, this line rings no one.
       const why = Option.isSome(care)
         ? yield* care.value.causeFor(orgId, delivery.agentId)
         : undefined;
+      const title = /"(.*)"/.exec(delivery.fallbackBody)?.[1];
       const body =
         why === undefined
           ? delivery.fallbackBody
-          : `${delivery.fallbackBody.replace(/\.$/, "")}: ${KIN_TROUBLE_WHY[why]}.`;
+          : title === undefined
+            ? `${delivery.fallbackBody.replace(/\.$/, "")}: ${KIN_TROUBLE_WHY[why.cause]}.`
+            : `"${title}" didn't run: ${KIN_TROUBLE_WHY[why.cause]}.`;
       yield* repo
         .insertMessage({
           orgId,
@@ -287,6 +291,7 @@ const make = Effect.gen(function* () {
           clientMessageId: null,
           createdAt: iso(now),
           editedAt: null,
+          ...(why?.told === true ? { silent: true as const } : {}),
         })
         .pipe(
           Effect.tap((message) =>
@@ -348,6 +353,8 @@ const make = Effect.gen(function* () {
       fallbackBody: row.fallbackBody,
       deadlineAt: row.deadlineAt,
     };
+    // A held turn that passed its time leaves its trouble's count.
+    let lapsed = false;
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const [pending] = yield* sql`SELECT 1 FROM kin_lead_deliveries
@@ -381,6 +388,7 @@ const make = Effect.gen(function* () {
             WHERE org_id = ${orgId} AND event_id = ${row.eventId} AND state = 'queued'
             RETURNING event_id`;
           if (expired.length === 0) return;
+          lapsed = true;
           return yield* fallback;
         }
         // Done: the lead's last message in its lane during that wake-up carries the card.
@@ -424,6 +432,7 @@ const make = Effect.gen(function* () {
         yield* finish("delivered", message.messageId);
       }),
     );
+    if (lapsed && Option.isSome(care)) yield* care.value.refresh(orgId);
   });
 
   const settle = Effect.fn("KinLeadDelivery.settle")(
