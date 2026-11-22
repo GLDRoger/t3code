@@ -56,21 +56,26 @@ export const connectionLive = Effect.fn("KinCodingAgent.live")(function* (
   return bound.length > 0;
 });
 
+/** A coding agent's change to a task its person is only on: they read it and comment. */
+export const onlyOnIt = (key: string) =>
+  `${key} is held by someone else: comment on it instead. Only whoever holds it changes it.`;
+
 /**
  * In the caller's transaction: what the key adds to the screen's own check for one entry. A Work
- * task this person holds or is on, nobody dropped, and neither it nor its client or project
- * labelled now.
+ * task this person holds, or is on to read and comment (`changes` false), nobody dropped, and
+ * neither it nor its client or project labelled now.
  */
 export const connectionReaches = Effect.fn("KinCodingAgent.reaches")(function* (
   connection: CodingAgentConnection,
   recordId: string,
+  changes = false,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const found = yield* sql`SELECT 1 FROM kin_records r
     WHERE r.org_id = ${connection.orgId} AND r.record_id = ${recordId}
       AND r.register_id = 'work' AND r.state <> 'dropped'
       AND ((r.owner_kind = 'person' AND r.owner_id = ${connection.personId})
-        OR ${alsoOnIt(sql, connection.personId)})
+        OR (${changes ? sql`0` : sql`1`} AND ${alsoOnIt(sql, connection.personId)}))
       AND NOT ${keySensitive(sql)}`;
   return found.length > 0;
 });

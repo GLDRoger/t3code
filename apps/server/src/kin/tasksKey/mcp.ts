@@ -87,7 +87,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("set_task_state", {
     ...shared,
     description:
-      "Set one of that person's tasks to doing (started), done, or open (not started). The change is theirs, marked as from their coding agent.",
+      "Set a task that person holds to doing (started), done, or open (not started). The change is theirs, marked as from their coding agent. A task they are only on is theirs to read and comment on, not to change.",
     parameters: Schema.Struct({
       key: TaskKey,
       state: Schema.Literals(["open", "doing", "done"]),

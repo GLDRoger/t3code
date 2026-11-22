@@ -41,6 +41,7 @@ import {
   connectionEnded,
   connectionLive,
   connectionReaches,
+  onlyOnIt,
 } from "./codingAgent.ts";
 import { summaryGroups } from "./crm.ts";
 import {
@@ -1418,11 +1419,11 @@ const change = Effect.fn("KinWork.change")(function* (
     Effect.gen(function* () {
       if (connection !== undefined) {
         const held = yield* records.get(orgId, key);
-        if (
-          held === undefined ||
-          !(yield* connectionReaches(connection, held.recordId).pipe(workFailure))
-        )
-          return yield* notFound(key);
+        if (held === undefined) return yield* notFound(key);
+        if (!(yield* connectionReaches(connection, held.recordId, true).pipe(workFailure)))
+          return yield* (yield* connectionReaches(connection, held.recordId).pipe(workFailure))
+            ? new KinChatError({ reason: "not_allowed", message: onlyOnIt(key) })
+            : notFound(key);
       }
       const writer = writerOf(viewer);
       const row = yield* records.update(
