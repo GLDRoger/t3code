@@ -43,6 +43,7 @@ import { findBankList } from "./statements/bankList.ts";
 import { allLists, isBuiltIn, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 import { DAY_MS } from "../durations.ts";
+import type { SetAsideInvoice } from "../pulse/invoiceAsides.ts";
 
 /**
  * Read views over every list: the dates view and the Money summary, computed from stored
@@ -640,8 +641,13 @@ const SUGGESTED_NOTE =
 /**
  * The Money summary as a short block for an owner-only prompt, built by code: figures already
  * added up, so an agent quotes them and never sums. `undefined` when there is nothing to say.
+ * `setAside`: overdue invoices someone set aside until a day (`setAsideOverdue`), marked as such.
  */
-export const moneySection = (summary: KinMoneySummary, zone: string) => {
+export const moneySection = (
+  summary: KinMoneySummary,
+  zone: string,
+  setAside: ReadonlyArray<SetAsideInvoice> = [],
+) => {
   const nothing =
     summary.owed.invoices === 0 &&
     summary.received.thisMonth.length === 0 &&
@@ -659,6 +665,9 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
     asOf: summary.asOf,
     owedToUs: shown(summary.owed.total),
     overdue: shown(summary.owed.overdue),
+    ...(setAside.length === 0
+      ? {}
+      : { overdueSetAside: setAside.map((one) => ({ ...one, owed: shown([one.owed]) })) }),
     byClient: summary.owed.byClient.slice(0, SECTION_CLIENTS).map((client) => ({
       client: client.party === null ? "no client" : `${client.party.title} (${client.party.key})`,
       owed: shown(client.owed),
