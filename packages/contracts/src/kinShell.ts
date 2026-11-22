@@ -2,7 +2,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
-import { KinTrimmedText, NonNegativeInt, TrimmedString } from "./baseSchemas.ts";
+import { KinTrimmedText, NonNegativeInt } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId } from "./kinChat.ts";
 
 const Name = KinTrimmedText.check(Schema.isMaxLength(40));
@@ -17,11 +17,10 @@ export const KinShellSection = Schema.Struct({
 export type KinShellSection = typeof KinShellSection.Type;
 
 const Sections = Schema.Array(KinShellSection);
-const SetName = Schema.Union([Name, TrimmedString.check(Schema.isMaxLength(0))]);
 const SetSection = Schema.Struct({
   ...KinShellSection.fields,
-  name: Schema.optional(SetName),
-  noun: Schema.optional(SetName),
+  name: Schema.optional(Schema.String),
+  noun: Schema.optional(Schema.String),
 });
 export const KinShell = Schema.Struct({
   rev: NonNegativeInt,

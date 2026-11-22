@@ -53,9 +53,13 @@ export const sectionName = (shell: Shell, id: SectionId) =>
     docs: "Docs",
   }[id];
 
+const hasControl = (label: string) => /\p{Cc}/u.test(label);
+const cleanLabel = (label: string | undefined) =>
+  label === undefined || hasControl(label) ? undefined : label.trim();
+
 const labelsOf = ({ id, on, name, noun, dock }: KinShellSection): KinShellSection => {
-  const plural = name?.trim();
-  const singular = noun?.trim();
+  const plural = cleanLabel(name);
+  const singular = cleanLabel(noun);
   return {
     id,
     on,
@@ -152,22 +156,31 @@ const set = Effect.fn("KinShell.set")(function* (
           shellJson: string;
         }>`SELECT rev, shell_json AS "shellJson" FROM kin_company_shell WHERE org_id = ${orgId}`;
         if (rev !== (stored?.rev ?? 0)) return yield* conflict;
-        const sections = ordered(input).map(labelsOf);
-        for (const { id, on } of sections) {
+        const requested = ordered(input);
+        for (const { id, on, name, noun } of requested) {
           if (input.filter((section) => section.id === id).length > 1)
             return yield* invalid("A section can only be set once.");
           if (id === "docs" && !on) return yield* invalid("Docs can't be turned off.");
+          for (const label of [name, noun]) {
+            if (label === undefined) continue;
+            if (hasControl(label)) return yield* invalid("A name is one line of plain text.");
+            if (label.trim().length > 40)
+              return yield* invalid("A name can be at most 40 characters.");
+          }
         }
+        const sections = requested.map(labelsOf);
         const proposed = { rev, sections };
         if (!storedOn(proposed, "clients") && storedOn(proposed, "invoices")) {
           const previous =
             stored === undefined
               ? undefined
               : Option.getOrUndefined(yield* Effect.option(decode(stored.shellJson)));
+          const before = { rev, sections: (previous ?? []).map(labelsOf) };
+          const name = sectionName(before, "clients");
           return yield* invalid(
-            previous?.some(({ id, on }) => id === "clients" && !on) === true
-              ? "Turn on Clients first: an invoice needs a client."
-              : "Turn off Invoices and quotes first: an invoice needs a client.",
+            !storedOn(before, "clients")
+              ? `Turn on ${name} first: invoices need it.`
+              : `Turn off Invoices and quotes first: invoices need ${name}.`,
           );
         }
         const next = rev + 1;
