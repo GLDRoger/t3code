@@ -92,8 +92,8 @@ describe("OpenAI's Images API", () => {
     ],
     [400, { error: { code: "invalid_value", message: "Invalid size." } }, "declined"],
     [429, { error: { code: "rate_limit_exceeded", message: "Rate limit reached." } }, "declined"],
-    // A 4xx with no stable code, a 5xx or an empty answer settles nothing: it may be made.
-    [429, { error: { message: "Rate limit reached." } }, "lost"],
+    // A 4xx with no stable code is still turned down; a 5xx or an empty answer may be made.
+    [429, { error: { message: "Rate limit reached." } }, "declined"],
     [500, { error: { message: "The server had an error." } }, "lost"],
     [200, { data: [] }, "lost"],
   ] as const)("answers HTTP %i, %j, as %s", ([status, body, kind]) => {

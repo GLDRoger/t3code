@@ -15,6 +15,10 @@ import { kinFailureText } from "./kinAnswers.ts";
 import { KIN_DAILY_LIMIT } from "./kinBudget.ts";
 
 /** Settings → Connections → Pictures: the picture service's key, the monthly limit, the count. */
+/** Pictures the service may have made but never sent back: counted, since they may cost. */
+const unclearPart = (unclear: number) =>
+  unclear === 0 ? "" : `, ${unclear} of them never came back`;
+
 export const KIN_PICTURES_COPY = {
   title: "Pictures",
   intro:
@@ -34,9 +38,10 @@ export const KIN_PICTURES_COPY = {
   perMonth: (count: number) => `${count} a month`,
   // The same words as the daily limit's No limit.
   noLimit: KIN_DAILY_LIMIT.none,
-  used: (used: number, limit: number, resetsOn: string) =>
-    `${used} of ${limit} this month, resets on ${resetsOn}`,
-  usedNoLimit: (used: number) => `${used} this month · No limit`,
+  used: (used: number, limit: number, resetsOn: string, unclear = 0) =>
+    `${used} of ${limit} this month${unclearPart(unclear)}, resets on ${resetsOn}`,
+  usedNoLimit: (used: number, unclear = 0) =>
+    `${used} this month${unclearPart(unclear)} · No limit`,
   noLimitTitle: "Set no monthly limit?",
   noLimitDetail:
     "With no limit, Kin never stops pictures for cost. You can see this month's count here and set a limit again any time.",
@@ -112,8 +117,13 @@ export function kinPicturesRows(
           ),
     usage:
       view.monthlyLimit === null
-        ? KIN_PICTURES_COPY.usedNoLimit(view.usedThisMonth)
-        : KIN_PICTURES_COPY.used(view.usedThisMonth, view.monthlyLimit, resetsOn),
+        ? KIN_PICTURES_COPY.usedNoLimit(view.usedThisMonth, view.unclearThisMonth)
+        : KIN_PICTURES_COPY.used(
+            view.usedThisMonth,
+            view.monthlyLimit,
+            resetsOn,
+            view.unclearThisMonth,
+          ),
     limit: view.monthlyLimit,
     limitLabel: limitLabel(view.monthlyLimit),
     choices: kinPicturesChoices(view.monthlyLimit),

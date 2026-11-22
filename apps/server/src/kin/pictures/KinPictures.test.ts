@@ -279,6 +279,10 @@ describe("KinPictures", () => {
           assert.deepStrictEqual(yield* ask(), lost);
           storage.fails = false;
           assert.strictEqual(yield* used, 5);
+          assert.strictEqual(
+            (yield* (yield* KinPictures).get(asOwner, { orgId })).unclearThisMonth,
+            5,
+          );
           // A turn stopped while the service has it keeps its count too.
           fake.control.mode = "silent";
           const sent = yield* Deferred.make<void>();
@@ -290,7 +294,7 @@ describe("KinPictures", () => {
           assert.strictEqual(yield* used, 6);
           assert.deepStrictEqual(
             (yield* counts).map((row) => `${row.count} ${row.state}`).toSorted(),
-            ["1 made", "1 made", "1 made", "1 reserved", "2 made"],
+            ["1 reserved", "1 unclear", "1 unclear", "1 unclear", "2 unclear"],
           );
           // An agent or a person from another org looks unknown, and nothing is asked or counted.
           const calls = fake.calls.length;
@@ -451,6 +455,48 @@ describe("KinPictures", () => {
       }),
     );
   });
+
+  it.effect(
+    "says the limit by the setting now and what is settled, once a month however it is raised",
+    () => {
+      const { fake, run } = harness();
+      return run(
+        Effect.gen(function* () {
+          const sql = yield* setUp;
+          const pictures = yield* KinPictures;
+          yield* connect(2);
+          // A call is with the service when the owner chooses No limit: nothing is said.
+          const sent = yield* Deferred.make<void>();
+          const go = yield* Deferred.make<void>();
+          fake.control.before = Deferred.succeed(sent, undefined).pipe(
+            Effect.andThen(Deferred.await(go)),
+          );
+          const held = yield* Effect.forkChild(ask({ count: 2 }));
+          yield* Deferred.await(sent);
+          yield* pictures.set(asOwner, { orgId, monthlyLimit: null });
+          yield* Deferred.succeed(go, undefined);
+          assert.strictEqual((yield* Fiber.join(held))._tag, "made");
+          fake.control.before = Effect.void;
+          assert.deepStrictEqual(yield* notices, []);
+          // Back on a limit of 5 and reaching it: one notice.
+          yield* sql`DELETE FROM kin_picture_counts`;
+          yield* pictures.set(asOwner, { orgId, monthlyLimit: 5 });
+          yield* ask({ count: 3 });
+          yield* ask({ count: 2 });
+          const said = (yield* notices).map((notice) => notice.body);
+          assert.lengthOf(said, 1);
+          // Raised to 10 and reached again the same month: nothing more.
+          yield* pictures.set(asOwner, { orgId, monthlyLimit: 10 });
+          yield* ask({ count: 4 });
+          yield* ask({ count: 1 });
+          assert.deepStrictEqual(
+            (yield* notices).map((notice) => notice.body),
+            said,
+          );
+        }),
+      );
+    },
+  );
 
   it.effect("tells the owner only of the limit when one call goes from under 80% to it", () => {
     const { run } = harness();

@@ -15,6 +15,7 @@ const view = (overrides: Partial<KinPicturesView> = {}): KinPicturesView => ({
   model: "gpt-image-2.5-flare",
   monthlyLimit: 50,
   usedThisMonth: 12,
+  unclearThisMonth: 0,
   resetsOn: "2026-12-01",
   ...overrides,
 });
@@ -35,6 +36,15 @@ describe("kinPicturesRows", () => {
     expect(kinPicturesRows(view({ monthlyLimit: null }), options).usage).toBe(
       "12 this month · No limit",
     );
+    // Ones the service may have made but never sent back count, and the row says how many.
+    expect(
+      [view({ unclearThisMonth: 2 }), view({ unclearThisMonth: 2, monthlyLimit: null })].map(
+        (one) => kinPicturesRows(one, options).usage,
+      ),
+    ).toEqual([
+      "12 of 50 this month, 2 of them never came back, resets on 1 Dec",
+      "12 this month, 2 of them never came back · No limit",
+    ]);
     const choices = kinPicturesRows(view({ monthlyLimit: 75 }), options).choices;
     expect(choices.map((choice) => choice.label)).toEqual([
       "No limit",

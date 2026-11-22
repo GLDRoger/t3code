@@ -33,7 +33,7 @@ export default Effect.gen(function* () {
       person_id TEXT,
       count INTEGER NOT NULL CHECK (count BETWEEN 1 AND 4),
       -- 'reserved' before the vendor call, 'made' after; a failed call's row is deleted
-      state TEXT NOT NULL CHECK (state IN ('reserved', 'made')),
+      state TEXT NOT NULL CHECK (state IN ('reserved', 'made', 'unclear')),
       at INTEGER NOT NULL,
       -- what a made generation returned (its stored files), so a retried call returns it again
       made_json TEXT,

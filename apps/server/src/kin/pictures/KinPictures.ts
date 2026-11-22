@@ -309,6 +309,13 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
     return row?.used ?? 0;
   });
 
+  /** What may have been made but never came back: counted, and said so in Settings. */
+  const unclear = Effect.fn("KinPictures.unclear")(function* (orgId: KinOrgId, month: string) {
+    const [row] = yield* sql<{ unclear: number | null }>`SELECT SUM(count) AS unclear
+      FROM kin_picture_counts WHERE org_id = ${orgId} AND month = ${month} AND state = 'unclear'`;
+    return row?.unclear ?? 0;
+  });
+
   const view = Effect.fn("KinPictures.view")(function* (orgId: KinOrgId) {
     const { month, resetsOn } = yield* monthNow(orgId);
     const settings = yield* settingsOf(orgId);
@@ -322,6 +329,7 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
       model: settings?.model ?? vendor.defaultModel,
       monthlyLimit: settings === undefined ? KIN_PICTURES_PROPOSED_LIMIT : settings.monthlyLimit,
       usedThisMonth: yield* used(orgId, month),
+      unclearThisMonth: yield* unclear(orgId, month),
       resetsOn,
     } satisfies KinPicturesView;
   });
@@ -452,29 +460,33 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
       Effect.ignore,
     );
   /**
-   * Sent, and nothing usable came back: it may have been made and billed, so the count stays,
-   * under an id of its own so the same call can be asked again.
+   * Sent, and nothing usable came back: it may have been made and billed, so the count stays as
+   * unclear, under an id of its own so the same call can be asked again.
    */
   const keepLost = (orgId: KinOrgId, countId: string, count: number) =>
     sql`UPDATE kin_picture_counts SET count_id = ${`lost_${NodeCrypto.randomBytes(10).toString("hex")}`},
-        state = 'made', count = ${count}
+        state = 'unclear', count = ${count}
       WHERE org_id = ${orgId} AND count_id = ${countId} AND state = 'reserved'`.pipe(
       Effect.tapError((cause) => Effect.logWarning("Kin couldn't keep a picture count", { cause })),
       Effect.ignore,
     );
 
   /**
-   * The owner notice line, in the Chief of staff's chat: once a month as a set limit passes 80%,
-   * and once it is reached. A call that goes from under 80% to the limit sends only the second.
+   * The owner notice line, in the Chief of staff's chat, by the limit set now and what is settled:
+   * once a month as it passes 80%, and once a month as it is reached, whatever the limit then.
+   * A call that goes from under 80% to the limit sends only the second.
    */
   const warnIfNear = Effect.fn("KinPictures.warnIfNear")(function* (
     orgId: KinOrgId,
-    held: { readonly limit: number | null; readonly month: string; readonly resetsOn: string },
+    held: { readonly month: string; readonly resetsOn: string },
   ) {
-    const limit = held.limit;
-    if (limit === null) return;
     yield* Effect.gen(function* () {
-      const count = yield* used(orgId, held.month);
+      const limit = (yield* settingsOf(orgId))?.monthlyLimit ?? null;
+      if (limit === null) return;
+      const [row] = yield* sql<{ settled: number | null }>`SELECT SUM(count) AS settled
+        FROM kin_picture_counts WHERE org_id = ${orgId} AND month = ${held.month}
+          AND state IN ('made', 'unclear')`;
+      const count = row?.settled ?? 0;
       if (count * 100 < limit * WARN_PERCENT) return;
       const full = count >= limit;
       const claimed = yield* sql`UPDATE kin_picture_settings SET warned_month = ${held.month}
@@ -487,10 +499,10 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
       yield* chat.notice({
         orgId,
         chatId: KinChatId.make(lead.ownerChatId),
-        // The limit's own id: one notice for it, even should a later call reach it again.
+        // One id a month for each: a raised limit reached again says nothing new.
         messageId: KinMessageId.make(
           full
-            ? `kin-pictures-full:${orgId}:${held.month}:${limit}`
+            ? `kin-pictures-full:${orgId}:${held.month}`
             : `kin-pictures-near:${orgId}:${held.month}`,
         ),
         audience: "owner",

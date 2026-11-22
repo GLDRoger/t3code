@@ -42,6 +42,8 @@ export const KinPicturesView = Schema.Struct({
   monthlyLimit: KinPicturesLimit,
   /** Counted in the company's time zone, and kept with No limit too. */
   usedThisMonth: NonNegativeInt,
+  /** Of those, ones the service may have made but never sent back: counted, since they may cost. */
+  unclearThisMonth: NonNegativeInt,
   /** The first day of next month, in the company's time zone. */
   resetsOn: KinDay,
 });

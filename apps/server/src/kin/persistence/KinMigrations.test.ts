@@ -2267,7 +2267,7 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "K208 keeps one picture setting per org, only reserved or made counts of 1 to 4, and one image per picture version",
+    "K208 keeps one picture setting per org, only reserved, made or unclear counts of 1 to 4, and one image per picture version",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -2296,13 +2296,17 @@ describe("Kin migrations", () => {
         for (const query of refused) assert.isTrue(Exit.isFailure(yield* Effect.exit(query)));
         yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, person_id,
             count, state, at)
-          VALUES ('org', 'c1', '2026-11', 'growth', NULL, 4, 'reserved', 1)`;
+          VALUES ('org', 'c1', '2026-11', 'growth', NULL, 4, 'reserved', 1),
+            ('org', 'c2', '2026-11', 'growth', NULL, 1, 'unclear', 1)`;
         // Run again, it changes nothing.
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(208));
         assert.deepStrictEqual(
           yield* sql`SELECT count_id, count FROM kin_picture_counts ORDER BY count_id`,
-          [{ count_id: "c1", count: 4 }],
+          [
+            { count_id: "c1", count: 4 },
+            { count_id: "c2", count: 1 },
+          ],
         );
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

@@ -121,7 +121,8 @@ export const makeOpenAiImages = (maxResponseBytes = MAX_RESPONSE_BYTES): KinImag
     const code = text(field(body, "error", "code"));
     if (status === 401 || status === 403) return yield* fail("key_rejected");
     if (status === 400 && code === "moderation_blocked") return yield* fail("refused");
-    if (status >= 400 && status < 500 && code !== null) return yield* fail("declined");
+    // Any other 4xx is the service turning the request down: nothing was made.
+    if (status >= 400 && status < 500) return yield* fail("declined");
     if (status < 200 || status >= 300) return yield* fail("lost");
     const format = text(field(body, "output_format")) ?? "png";
     const data = field(body, "data");
