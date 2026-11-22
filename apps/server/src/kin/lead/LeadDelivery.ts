@@ -99,6 +99,13 @@ const excerpt = (body: string) => {
     : chars.join("");
 };
 
+/** A shared chat's own card (`askedBy`) is written for everyone there; any other, for the owner. */
+export const cardAudience = (
+  state: unknown,
+  otherwise: Repository.WriteAudience = "owner",
+): Repository.WriteAudience =>
+  typeof state === "object" && state !== null && "askedBy" in state ? "chat" : otherwise;
+
 /** Server card writes shared by deliveries and the cards they settle. Runs in the caller's transaction. */
 export const makeCardWriter = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -138,7 +145,7 @@ export const makeCardWriter = Effect.gen(function* () {
     now: number,
   ) {
     const row = widgetRow(orgId, chatId, messageId, widget, iso(now));
-    yield* repo.insertWidget({ ...row, audience: "owner" });
+    yield* repo.insertWidget({ ...row, audience: cardAudience(widget.state) });
     const message = yield* repo.getMessage({ orgId, messageId });
     if (Option.isSome(message))
       yield* publish({ type: "message.posted", orgId, message: message.value });
@@ -153,8 +160,9 @@ export const makeCardWriter = Effect.gen(function* () {
     body: string,
     widget: Delivery["widget"],
     now: number,
-    audience: Repository.WriteAudience = "owner",
+    given: Repository.WriteAudience = "owner",
   ) {
+    const audience = cardAudience(widget.state, given);
     const existing = yield* repo.getWidget({ orgId, widgetId: widget.widgetId });
     if (Option.isSome(existing)) return existing.value;
     const at = iso(now);
@@ -198,7 +206,7 @@ export const makeCardWriter = Effect.gen(function* () {
     const at = iso(now);
     const updated = yield* repo.updateWidget({
       ...widget,
-      audience: "owner",
+      audience: cardAudience(state),
       state,
       expectedRevision: widget.revision,
       closedAt: closed === undefined ? widget.closedAt : closed ? at : null,
@@ -276,7 +284,7 @@ const make = Effect.gen(function* () {
         .insertMessage({
           orgId,
           chatId: delivery.chatId,
-          audience: "owner",
+          audience: cardAudience(delivery.widget.state),
           messageId: KinMessageId.make(`kin-run-failed:${delivery.eventId}`),
           author: { _tag: "system" },
           kind: "system",

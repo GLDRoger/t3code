@@ -1,4 +1,5 @@
 import {
+  KinChatId,
   KinMessageId,
   KinWidgetId,
   ThreadId,
@@ -16,6 +17,7 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { historyFloor } from "../chat/sharing.ts";
 import { abortChatTurns } from "./Audience.ts";
+import { cardAudience } from "./LeadDelivery.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 
 /** Chat events that answer a person's message, tap or reaction in its chat. */
@@ -170,7 +172,7 @@ export const freezeMovedCard = Effect.fn("KinChatSharing.freezeMovedCard")(funct
   }
 });
 
-/** Cards of reminders, deferrals and scheduled tasks: only owner-only turns set those up. */
+/** Cards of reminders, deferrals and scheduled tasks: the owner's, or a shared chat's own. */
 const OWNER_CARDS = ["deferral", "reminder", "scheduled_task"];
 
 /**
@@ -207,10 +209,13 @@ export const settleCards = Effect.fn("KinChatSharing.settleCards")(function* (in
     if (Option.isNone(found)) continue;
     const widget = found.value;
     if (lead !== undefined && OWNER_CARDS.includes(row.type)) {
+      // A shared chat's own (`askedBy`) is everyone's there: it moves to a new line in the chat.
+      const audience = cardAudience(widget.state);
+      const to = audience === "chat" ? KinChatId.make(input.chatId) : lead.ownerChatId;
       const line = yield* repo.insertMessage({
         orgId: input.orgId,
-        chatId: lead.ownerChatId,
-        audience: "owner",
+        chatId: to,
+        audience,
         messageId: KinMessageId.make(`${row.widgetId}:moved`),
         author: { _tag: "system" },
         kind: "system",
@@ -226,9 +231,9 @@ export const settleCards = Effect.fn("KinChatSharing.settleCards")(function* (in
         createdAt: at,
         editedAt: null,
       });
-      yield* sql`UPDATE kin_widgets SET chat_id = ${lead.ownerChatId}, message_id = ${line.messageId}
+      yield* sql`UPDATE kin_widgets SET chat_id = ${to}, message_id = ${line.messageId}
         WHERE org_id = ${input.orgId} AND widget_id = ${widgetId}`;
-      yield* sql`UPDATE kin_waiting SET chat_id = ${lead.ownerChatId}
+      yield* sql`UPDATE kin_waiting SET chat_id = ${to}
         WHERE org_id = ${input.orgId} AND widget_id = ${widgetId} AND resolved_at IS NULL`;
       const moved = yield* repo.getWidget({ orgId: input.orgId, widgetId });
       yield* hub.publish({ type: "message.posted", orgId: input.orgId, message: line });

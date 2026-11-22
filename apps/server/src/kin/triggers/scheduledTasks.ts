@@ -52,7 +52,13 @@ import { missedCheckIns } from "../pulse/checkInCatchUp.ts";
 import { followOwnerZone, seedCheckIns } from "../pulse/checkInSeeds.ts";
 import { fromConnections, noOutside } from "../pulse/outside.ts";
 import { alertsOnMail } from "../work/statements/alertMail.ts";
-import { cardChatFor, firingOrigin } from "./deferralOrigin.ts";
+import {
+  askerOf,
+  cardChatFor,
+  directChatWith,
+  firingOrigin,
+  sharedChatOf,
+} from "./deferralOrigin.ts";
 import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinSchedules from "./kinSchedules.ts";
@@ -92,6 +98,11 @@ const triggerNext = (sql: SqlClient.SqlClient, orgId: KinOrgId, itemId: string) 
     WHERE org_id = ${orgId} AND trigger_id = ${scheduledTaskTriggerId(itemId)} ORDER BY trigger_id`.pipe(
     Effect.map((rows) => rows[0]?.nextRunAt ?? null),
   );
+
+const sourceOf = (row: Pick<KinSchedules.KinSchedule, "chatId" | "sourceEvent">) => ({
+  chat: row.chatId,
+  source_event: KinEventId.make(row.sourceEvent),
+});
 
 /** Writes the standing card: in place when it exists, else posted to `chatId`. */
 const writeCard = Effect.fn("KinScheduledTasks.writeCard")(function* (input: {
@@ -320,12 +331,19 @@ const make = Effect.gen(function* () {
     ? noOutside
     : fromConnections(connections.value, sql, yield* alertsOnMail(connections.value));
 
-  const notice = (orgId: KinOrgId, chatId: KinChatId, runId: string, body: string, now: number) =>
+  const notice = (
+    orgId: KinOrgId,
+    chatId: KinChatId,
+    runId: string,
+    body: string,
+    now: number,
+    audience: Repository.WriteAudience = "owner",
+  ) =>
     repo
       .insertMessage({
         orgId,
         chatId,
-        audience: "owner",
+        audience,
         messageId: KinMessageId.make(`kin-run-skipped:${hex(runId)}`),
         author: { _tag: "system" },
         kind: "system",
@@ -379,6 +397,11 @@ const make = Effect.gen(function* () {
     const lead = yield* scheduleLead(orgId, schedule.agentId);
     const hash = task === undefined ? undefined : yield* KinSchedules.promptSha256(task.prompt);
     const confirmed = hash === schedule.contentSha256;
+    // A shared chat's own routine runs there, as its lead; an unconfirmed wording never does.
+    const chatOwn =
+      lead === undefined || !confirmed
+        ? undefined
+        : yield* sharedChatOf(sql, orgId, sourceOf(schedule));
     // An unconfirmed wording is asked about in the owner's chat, as an owner-only turn.
     const origin =
       lead === undefined || !confirmed
@@ -449,6 +472,7 @@ const make = Effect.gen(function* () {
           nextRunAt: task.nextRunAt,
           around: KinSchedules.isAround(task, row.looseAt),
           lastRun: card?.lastRun ?? null,
+          ...(card?.askedBy === undefined ? {} : { askedBy: card.askedBy }),
         };
         const at = fire.dueAt;
         const settleCard = (lastRun: KinScheduledTaskCard["lastRun"]) =>
@@ -518,6 +542,27 @@ const make = Effect.gen(function* () {
           );
           return yield* consume;
         }
+        if (chatOwn !== undefined && !chatOwn.open) {
+          // Paused until someone resumes it, so whoever set it is told once.
+          yield* sql`UPDATE kin_schedules SET pending_enabled = 0, updated_at = ${now}
+            WHERE task_id = ${row.taskId}`;
+          const why = `it was for ${chatOwn.name}, which ${lead.name} can no longer post in.`;
+          yield* settleCard({ at, status: "skipped", note: `Paused: ${why}` });
+          const setter = yield* askerOf(sql, orgId, row.saidBy);
+          const to =
+            setter === undefined || setter.left === true
+              ? undefined
+              : yield* directChatWith(sql, orgId, setter.personId, lead.agentId);
+          yield* notice(
+            orgId,
+            to ?? lead.ownerChatId,
+            fire.fireId,
+            `Paused "${title}": ${why}`,
+            now,
+            "chat",
+          );
+          return yield* consume;
+        }
         if (!confirmed) {
           if (row.askedSha256 === hash) {
             yield* settleCard({
@@ -543,7 +588,14 @@ const make = Effect.gen(function* () {
           dedupeKey,
           subject: { type: "scheduled_task", itemId, runId },
           lateByMs: fire.lateByMs,
-          ...(origin === undefined ? {} : { origin }),
+          ...(chatOwn === undefined
+            ? origin === undefined
+              ? {}
+              : { origin }
+            : {
+                origin: { agentId: lead.agentId, chatId: chatOwn.chatId },
+                chatId: chatOwn.chatId,
+              }),
         });
         const running = { ...base, lastRun: { at, status: "running" as const } };
         yield* deliveries.handOff(event, {
@@ -551,7 +603,7 @@ const make = Effect.gen(function* () {
           eventId,
           kind: "scheduled_task",
           agentId: lead.agentId,
-          chatId: lead.ownerChatId,
+          chatId: chatOwn?.chatId ?? lead.ownerChatId,
           widget: {
             widgetId: scheduledTaskWidgetId(orgId, itemId),
             type: "scheduled_task",
@@ -608,6 +660,8 @@ const make = Effect.gen(function* () {
       // A check-in has no card to post (`writeCard`).
       if (Option.isNone(widget) && row.checkIn === 1) continue;
       const enabled = row.pendingEnabled === null ? task.enabled === 1 : row.pendingEnabled === 1;
+      const chatOwn = yield* sharedChatOf(sql, orgId, sourceOf(row));
+      const askedBy = chatOwn === undefined ? undefined : yield* askerOf(sql, orgId, row.saidBy);
       const state = {
         itemId: row.scheduleId,
         title: task.title,
@@ -617,6 +671,7 @@ const make = Effect.gen(function* () {
         nextRunAt: enabled ? task.nextRunAt : null,
         around: KinSchedules.isAround(task, row.looseAt),
         lastRun: card?.lastRun ?? null,
+        ...(askedBy === undefined ? {} : { askedBy }),
       };
       // Most passes change nothing: an open card that already reads so is left without a write.
       if (
@@ -629,7 +684,9 @@ const make = Effect.gen(function* () {
       const lead = Option.isSome(widget) ? undefined : yield* scheduleLead(orgId, row.agentId);
       const chatId = Option.isSome(widget)
         ? null
-        : yield* cardChatFor(sql, orgId, row.chatId, lead?.ownerChatId ?? null);
+        : chatOwn?.open === true
+          ? chatOwn.chatId
+          : yield* cardChatFor(sql, orgId, row.chatId, lead?.ownerChatId ?? null);
       yield* sql.withTransaction(
         write({ orgId, itemId: row.scheduleId, chatId, state, closed: false, now }),
       );

@@ -30,6 +30,7 @@ import type { TextClock } from "../work/companyProfile.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
+import { cardAudience } from "../lead/LeadDelivery.ts";
 import { type DeferralSource, firingOrigin } from "./deferralOrigin.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -258,7 +259,7 @@ export const makeDeferralCards = Effect.gen(function* () {
     if (Option.isSome(existing)) {
       const widget = yield* repo.updateWidget({
         ...existing.value,
-        audience: "owner",
+        audience: cardAudience(state),
         expectedRevision: existing.value.revision,
         state,
         closedAt: null,
@@ -271,7 +272,7 @@ export const makeDeferralCards = Effect.gen(function* () {
     const message = yield* repo.insertMessage({
       orgId,
       chatId: input.chatId,
-      audience: "owner",
+      audience: cardAudience(state),
       messageId: KinMessageId.make(widgetId),
       author: { _tag: "system" },
       kind: "system",
@@ -302,7 +303,7 @@ export const makeDeferralCards = Effect.gen(function* () {
       closedAt: null,
       updatedAt: at,
     };
-    yield* repo.insertWidget({ ...widget, audience: "owner" });
+    yield* repo.insertWidget({ ...widget, audience: cardAudience(state) });
     // The insert links the message to the card; clients only attach a card through that link.
     yield* publish({ type: "message.posted", orgId, message: { ...message, widgetId } });
     yield* publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } });

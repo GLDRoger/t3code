@@ -590,7 +590,9 @@ it.effect(
   },
 );
 
-const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* () {
+const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* (
+  audience: "owner_only" | "shared" = "owner_only",
+) {
   yield* seed();
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:30', '18:30', '03:00', 0, 1, '09:00', '{"from":"21:00","to":"08:00"}')`;
@@ -603,7 +605,7 @@ const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* () {
   yield* sql`UPDATE kin_leads SET models_json = ${MODELS} WHERE org_id = ${orgId}`;
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
       event_ids, audience) VALUES ('set-wake', ${orgId}, 'lead-a', 'test', 0, 'completed',
-      '["set-event"]', 'owner_only')`;
+      '["set-event"]', ${audience})`;
   const asked = {
     _tag: "chat.message",
     orgId,
@@ -621,6 +623,38 @@ const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* () {
       'done', 'set-wake')`;
   yield* save({ chatId: "group-a" });
   yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
+});
+
+it.effect("a group's own routine runs in the group, and pauses once its agent left it", () => {
+  const { layer } = harness();
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* TestClock.setTime(start);
+    // Set in the group by a turn its people read: it is the group's, shown there with who asked.
+    yield* nativeSetupInGroup("shared");
+    const shown = yield* nativeCard();
+    assert.equal(shown.widget.chatId, "group-a");
+    assert.equal(shown.state.askedBy?.personId, "owner-a");
+    yield* runNow();
+    const runIn = yield* sql<{ chatId: string | null; lane: string }>`SELECT
+        json_extract(e.json, '$.chatId') AS "chatId", d.chat_id AS lane
+      FROM kin_events e JOIN kin_lead_deliveries d ON d.org_id = e.org_id AND d.event_id = e.event_id
+      WHERE e.org_id = ${orgId} AND json_extract(e.json, '$.subject.itemId') = ${scheduleId}
+      ORDER BY e.received_at`;
+    assert.deepStrictEqual(runIn, [{ chatId: "group-a", lane: "group-a" }]);
+
+    yield* sql`UPDATE kin_chat_members SET left_at = '2026-11-10T00:00:00.000Z'
+      WHERE org_id = ${orgId} AND member_id = 'group-lead'`;
+    yield* runNow();
+    assert.lengthOf(yield* nativeRuns(), 1);
+    const told = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE org_id = ${orgId} AND kind = 'system' AND body LIKE 'Paused %' ORDER BY seq`;
+    assert.lengthOf(told, 1);
+    assert.include(told[0]!.body, 'Paused "Stuck PRs": it was for Plans, which');
+    const [row] = yield* sql<{ pending: number | null }>`SELECT pending_enabled AS pending
+      FROM kin_schedules WHERE org_id = ${orgId}`;
+    assert.equal(row?.pending, 0);
+  }).pipe(Effect.provide(layer));
 });
 
 it.effect("an edited prompt is put to the owner once and runs only after he confirms it", () => {

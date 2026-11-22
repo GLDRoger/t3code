@@ -526,6 +526,20 @@ export const MemoryItemHead = Schema.Struct({
 });
 export type MemoryItemHead = typeof MemoryItemHead.Type;
 
+/**
+ * Who asked for a shared chat's own reminder or routine: set only on those, which fire back into
+ * the chat. `left` once they left the company. Only they, the owner and co-owners change it.
+ */
+export const KinCardAsker = Schema.Struct({
+  personId: KinPersonId,
+  name: Schema.String,
+  left: Schema.optional(Schema.Literal(true)),
+});
+export type KinCardAsker = typeof KinCardAsker.Type;
+/** What a tap on a shared chat's reminder or routine by anyone else is refused with. */
+export const KIN_ASKER_ONLY_REFUSAL =
+  "Only the person who asked for it, the owner or a co-owner can change this.";
+
 export const KinDeferralCard = Schema.Struct({
   itemId: KinMemoryItemId,
   title: Schema.String,
@@ -536,6 +550,7 @@ export const KinDeferralCard = Schema.Struct({
   // [Start now] [Monday] [Cancel]; started offers nothing.
   phase: Schema.optional(Schema.Literals(["heads_up", "asked", "started"])),
   graceEndsAt: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
+  askedBy: Schema.optional(KinCardAsker),
 });
 export type KinDeferralCard = typeof KinDeferralCard.Type;
 
@@ -572,6 +587,7 @@ export const KinReminderCard = Schema.Struct({
   fallback: Schema.optional(Schema.Boolean),
   // Set only in someone's own chat with an agent: whether they set it, so may Change it there.
   theirs: Schema.optional(Schema.Boolean),
+  askedBy: Schema.optional(KinCardAsker),
 });
 export type KinReminderCard = typeof KinReminderCard.Type;
 export const KIN_REMINDER_CARD_ACTIONS = [
@@ -604,6 +620,7 @@ export const KinScheduledTaskCard = Schema.Struct({
       messageId: Schema.optional(KinMessageId),
     }),
   ),
+  askedBy: Schema.optional(KinCardAsker),
 });
 export type KinScheduledTaskCard = typeof KinScheduledTaskCard.Type;
 export const KIN_SCHEDULED_TASK_CARD_ACTIONS = [

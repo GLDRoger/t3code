@@ -88,7 +88,7 @@ import { ownerZone } from "../work/recordRows.ts";
 import { closeHeldQuestions } from "../questions/openQuestions.ts";
 import { live as liveKey } from "../tasksKey/TasksKeys.ts";
 import { staleAsksStranded } from "../connections/strandedAsks.ts";
-import { leaverBack, leaverCards } from "./leaver.ts";
+import { leaverBack, leaverCards, leaverChatOwn } from "./leaver.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -1103,6 +1103,12 @@ export const make = Effect.gen(function* () {
                   }),
                 ),
               );
+            yield* leaverChatOwn({ orgId: input.orgId, gone, removedAt: now }).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.provideService(KinChatRepository, repo),
+              Effect.provideService(KinChatHub, hub),
+              Effect.mapError(sqlError("KinPeople.removeAccessChatOwn")),
+            );
           }
           // An unused link would let them straight back in.
           yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}

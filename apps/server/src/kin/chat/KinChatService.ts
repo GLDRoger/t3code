@@ -70,6 +70,8 @@ import {
   type KinReactionEmoji,
   type KinWaitingItem,
   type KinWidget,
+  KinCardAsker,
+  KIN_ASKER_ONLY_REFUSAL,
 } from "@t3tools/contracts";
 import {
   KIN_VISUAL_CARD_TYPE,
@@ -534,6 +536,12 @@ const decodeReact = Schema.decodeEffect(KinMessagesReactInput);
 const decodeChoice = Schema.decodeUnknownEffect(KinChoiceCardState);
 /** Cards a reaction may land on; every other type (approval, level, review, deferral) refuses. */
 const REACTABLE_WIDGETS = new Set(["choice", "task", "routine"]);
+const decodeAsker = Schema.decodeUnknownOption(Schema.Struct({ askedBy: KinCardAsker }));
+/** Who asked for a shared chat's own reminder or routine, from its card (`KinCardAsker`). */
+const chatOwnAsker = (widget: KinWidget) =>
+  widget.type === "reminder" || widget.type === "scheduled_task" || widget.type === "deferral"
+    ? Option.getOrUndefined(decodeAsker(widget.state))?.askedBy
+    : undefined;
 /** Matches the choice card's window and the wake-up catch-up: older messages are not worth a wake. */
 const SOFT_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const encodeAction = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -3443,6 +3451,10 @@ const make = Effect.gen(function* () {
         )
           return yield* invalidState;
       }
+      // A shared chat's own reminder or routine is its asker's, the owner's or a co-owner's.
+      const asker = chatOwnAsker(widget);
+      if (asker !== undefined && !owning && asker.personId !== identity.personId)
+        return yield* new KinChatError({ reason: "not_allowed", message: KIN_ASKER_ONLY_REFUSAL });
       // Reminders and scheduled tasks act for the owner, so only the owner taps them, except a
       // reminder in someone's own direct chat: theirs to finish or snooze.
       if (
@@ -3451,6 +3463,7 @@ const make = Effect.gen(function* () {
           widget.type === KIN_SOCIAL_WEEK_CARD ||
           widget.type === KIN_SOCIAL_PACK_CARD) &&
         !owning &&
+        asker === undefined &&
         !(widget.type === "reminder" && (yield* ownDirectChat(identity, widget.chatId)))
       )
         return yield* notAllowed;

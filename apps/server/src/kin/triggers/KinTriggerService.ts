@@ -36,7 +36,7 @@ import {
   type DeferralPlan,
 } from "./deferrals.ts";
 import { type GithubLinkState, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
-import { cardChatFor } from "./deferralOrigin.ts";
+import { askerOf, cardChatFor, sharedChatOf } from "./deferralOrigin.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isScheduledTask, syncScheduledTasks } from "./scheduledTasks.ts";
 import { pauseTriggers } from "./KinTriggerStore.ts";
@@ -231,7 +231,11 @@ const make = Effect.gen(function* () {
       });
       return yield* publish({ type: "widget.updated", orgId, widget });
     }
+    // A shared chat's own reminder shows there, with who asked, so its people can see and stop it.
+    const own = plan.onDue === "remind" ? yield* sharedChatOf(sql, orgId, item) : undefined;
+    const askedBy = own === undefined ? undefined : yield* askerOf(sql, orgId, item.said_by);
     const state: KinDeferralCard = {
+      ...(askedBy === undefined ? {} : { askedBy }),
       itemId,
       title: item.title,
       dueAt: iso(plan.dueAt),
@@ -241,9 +245,9 @@ const make = Effect.gen(function* () {
         locale: yield* textLocale(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       }),
     };
-    // Only kin_defer items name a chat; other deferrals arm without a card. A remind or ask
-    // only ever messages whoever set it, and the lead's own reply already said when, so no card.
-    let chatId: KinChatId | null = null;
+    // Only kin_defer items name a chat; other deferrals arm without a card. A remind or ask for
+    // one person needs none: the lead's own reply already said when. A shared chat's has one.
+    let chatId: KinChatId | null = own?.open === true ? own.chatId : null;
     if (item.chat !== undefined && (plan.onDue === "start" || plan.onDue === "chase")) {
       // Once its chat was shared, the card goes to the owner chat of the lead it fires with.
       const lead = yield* liveLead(sql, orgId, {

@@ -1463,6 +1463,39 @@ describe("KinPushSender", () => {
         yield* notify({ _tag: "message", orgId, messageId });
         assert.deepStrictEqual(sound(), ["default", "default"], messageId);
       }
+      // A group's own reminder is for everyone there, each on their own quiet hours: the owner's
+      // hold it now; Priya's, in Kolkata, are over.
+      yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata' WHERE person_id = ${member}`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id)
+        VALUES ('ev_2', 'org_01', 'lead_fin', 'deferral.due', 'P1', '{}', ${NOW}, ${NOW},
+          'claimed', 'wk_1')`;
+      yield* sql`INSERT INTO kin_lead_deliveries (org_id, event_id, kind, agent_id, chat_id,
+          widget_id, widget_type, state_json, fallback_body, deadline_at, status, created_at,
+          updated_at)
+        VALUES ('org_01', 'ev_2', 'reminder', 'lead_fin', 'chat_team', 'w_group', 'reminder',
+          '{}', 'Reminder: send the report.', ${NOW}, 'pending', ${NOW}, ${NOW})`;
+      apns.sent.length = 0;
+      yield* notify({
+        _tag: "message",
+        orgId,
+        messageId: yield* postMessage(sql, { agentMemberId: "m_fin" }, "posted", {
+          body: "Time to send the report.",
+        }),
+      });
+      assert.deepStrictEqual(
+        apns.sent
+          .map((push) => [
+            push.token,
+            (push.payload as { aps: { sound?: string } }).aps.sound ?? null,
+          ])
+          .toSorted(),
+        [
+          [memberPhone, "default"],
+          [ownerPhone, null],
+          [ownerTablet, null],
+        ].toSorted(),
+      );
       // Once that wake-up ends, the lead's next line is quiet again.
       yield* sql`UPDATE kin_wakeups SET status = 'completed', ended_at = ${NOW}`;
       apns.sent.length = 0;

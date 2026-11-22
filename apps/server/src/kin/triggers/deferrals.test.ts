@@ -13,6 +13,7 @@ import {
   KinWakeupId,
   KinWidgetId,
   kinReminderWidgetId,
+  KIN_ASKER_ONLY_REFUSAL,
   type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -971,6 +972,138 @@ it.effect("a reminder set privately in a group later shared fires into the owner
       WHERE m.chat_id = 'group-a' AND m.seq >= c.shared_from_seq`;
     assert.lengthOf(inGroup, 0);
   }).pipe(Effect.provide(layerFor([remind])));
+});
+
+it.effect("a group's own reminder fires into the group as its agent, else to whoever asked", () => {
+  const here = makeDeferral("def-s", {
+    on_due: "remind",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-event"),
+    said_by: "teammate",
+  });
+  const gone = makeDeferral("def-m", {
+    on_due: "remind",
+    due: "2026-11-13T10:00+05:30",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-event"),
+    said_by: "teammate",
+  });
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Repository.KinChatRepository;
+    const lead = KinAgentId.make(`lead-${orgId}`);
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES
+      ('teammate', ${orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z'),
+      ('bystander', ${orgId}, 'bystander', 'Bystander', '1970-01-01T00:00:00.000Z')`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at, direct_key)
+      VALUES ('group-a', ${orgId}, 'team_group', 'Plans', 0, '1970-01-01T00:00:00.000Z', NULL),
+        ('teammate-direct', ${orgId}, 'direct', NULL, 0, '1970-01-01T00:00:00.000Z',
+          ${`teammate:${lead}`})`;
+    const join = (
+      chatId: string,
+      memberId: string,
+      principal: Parameters<typeof repo.addMember>[0]["principal"],
+      role: "owner" | "member" = "member",
+    ) =>
+      repo.addMember({
+        orgId,
+        chatId: KinChatId.make(chatId),
+        memberId: KinMemberId.make(memberId),
+        principal,
+        role,
+        joinedAt: "1970-01-01T00:00:00.000Z",
+        leftAt: null,
+        mutedUntil: null,
+      });
+    const person = (id: string) => ({ _tag: "person", personId: KinPersonId.make(id) }) as const;
+    yield* join("group-a", "group-owner", person(`owner-${orgId}`), "owner");
+    yield* join("group-a", "group-lead", { _tag: "agent", agentId: lead });
+    yield* join("group-a", "group-teammate", person("teammate"));
+    yield* join("group-a", "group-bystander", person("bystander"));
+    yield* join("teammate-direct", "direct-teammate", person("teammate"));
+    yield* join("teammate-direct", "direct-lead", { _tag: "agent", agentId: lead });
+    // The teammate asked in the group, which everyone there read: a shared turn.
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
+        event_ids, audience) VALUES ('set-wake', ${orgId}, ${lead}, 'test', 0, 'completed',
+        '["set-event"]', 'shared')`;
+    const asked = {
+      _tag: "chat.message",
+      orgId,
+      agentId: lead,
+      eventId: "set-event",
+      receivedAt: "1970-01-01T00:00:00.000Z",
+      dedupeKey: null,
+      provenance: { _tag: "human", personId: "teammate", memberId: "group-teammate" },
+      chatId: "group-a",
+      messageId: "set-message",
+    };
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+        queued_at, state, wakeup_id)
+      VALUES ('set-event', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(asked)}, 0, 0,
+        'done', 'set-wake')`;
+    const triggers = yield* TriggerService.KinTriggerService;
+    yield* triggers.syncItem(here);
+    yield* triggers.syncItem(gone);
+
+    // Everyone there sees it, with who asked; only they, the owner or a co-owner stop it.
+    const set = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: widgetFor("def-s") }));
+    assert.equal(set.chatId, "group-a");
+    assert.deepStrictEqual((yield* cardOf("def-s")).askedBy, {
+      personId: KinPersonId.make("teammate"),
+      name: "Teammate",
+    });
+    const chat = yield* Chat.KinChatService;
+    const undo = (personId: string) =>
+      chat.act(
+        { _tag: "person", orgId, personId: KinPersonId.make(personId) },
+        {
+          widgetId: widgetFor("def-m"),
+          revision: 1,
+          actionId: "undo",
+          value: "def-m",
+          clientActionId: `undo-${personId}`,
+        },
+      );
+    const refused = yield* undo("bystander").pipe(Effect.flip);
+    assert.deepInclude(refused, { reason: "not_allowed", message: KIN_ASKER_ONLY_REFUSAL });
+
+    yield* tick(dueAt);
+    const eventId = yield* reminderEvent();
+    const [due] = yield* sql<{
+      json: string;
+    }>`SELECT json FROM kin_events WHERE event_id = ${eventId}`;
+    assert.deepInclude(JSON.parse(due!.json), {
+      chatId: "group-a",
+      origin: { agentId: lead, chatId: "group-a" },
+    });
+    // Read by who is in the group when it fires, not when it was set.
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
+        event_ids) VALUES ('fire-wake', ${orgId}, ${lead}, 'test', 0, 'running', json_array(${eventId}))`;
+    yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'fire-wake' WHERE event_id = ${eventId}`;
+    const turn = { orgId, agentId: lead, wakeupId: KinWakeupId.make("fire-wake") };
+    assert.equal(yield* turnAudience(turn), "shared");
+    assert.deepInclude(Option.getOrThrow(yield* laneFor(turn)), {
+      chatId: KinChatId.make("group-a"),
+    });
+    yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL WHERE event_id = ${eventId}`;
+    yield* sql`DELETE FROM kin_wakeups WHERE wakeup_id = 'fire-wake'`;
+    yield* leadWakeup({ orgId, eventId, chatId: "group-a", body: "Time to send the report." });
+    yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+    const fired = yield* reminderCard("def-s", dueAt);
+    assert.equal(fired.chatId, "group-a");
+    assert.deepInclude(fired.state, { askedBy: { personId: "teammate", name: "Teammate" } });
+
+    // Its agent left the group: Kin tells whoever asked, in their own chat, where it was for.
+    yield* sql`UPDATE kin_chat_members SET left_at = '1970-01-02T00:00:00.000Z'
+      WHERE org_id = ${orgId} AND member_id = 'group-lead'`;
+    yield* tick(dueAt + 60 * 60_000);
+    assert.lengthOf(yield* handedReminders(), 1);
+    const [moved] = yield* sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+      FROM kin_messages WHERE org_id = ${orgId} AND body LIKE 'Reminder: def-m.%' ORDER BY seq`;
+    assert.equal(moved?.chatId, "teammate-direct");
+    assert.include(moved?.body ?? "", "It was for Plans, which");
+  }).pipe(Effect.provide(layerFor([here, gone])));
 });
 
 it.effect("a teammate's own reminder comes to them in their chat, never the owner's", () => {

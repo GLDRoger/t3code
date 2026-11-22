@@ -39,6 +39,7 @@ import {
 } from "../memory/sensitivity.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
+import { OUTSIDE_REFUSAL } from "./OutsideContent.ts";
 import * as Lead from "./LeadMemory.ts";
 import { recordingSchedules } from "../triggers/kinSchedules.testkit.ts";
 
@@ -85,8 +86,15 @@ const state: {
   items: ReadonlyArray<MemoryItem>;
   /** Runs once, right after the next load of items with their bodies. */
   afterLoad: (() => void) | undefined;
-  stage: (wakeupId: string) => Effect.Effect<void>;
-} = { items: [], afterLoad: undefined, stage: () => Effect.void };
+  stage: (wakeupId: string, content?: string) => Effect.Effect<void>;
+  /** Cited messages besides the member's own in her direct chat. */
+  sources: ReadonlyArray<
+    readonly [
+      string,
+      { readonly saidBy: string; readonly trust: "member"; readonly source: string },
+    ]
+  >;
+} = { items: [], afterLoad: undefined, stage: () => Effect.void, sources: [] };
 const loaded = () => {
   const items = state.items;
   const after = state.afterLoad;
@@ -121,7 +129,7 @@ const identity = Layer.mock(KinIdentity)({
     }),
 });
 const writer = Layer.mock(Writer.MemoryWriter)({
-  stage: (_org, wakeupId) => Effect.suspend(() => state.stage(wakeupId)),
+  stage: (_org, wakeupId, change) => Effect.suspend(() => state.stage(wakeupId, change.content)),
 });
 const decodeWrite = Schema.decodeUnknownEffect(Lead.WriteInput);
 const decodeDefer = Schema.decodeEffect(Lead.DeferInput);
@@ -151,6 +159,7 @@ const withTeamMemory = (env: Record<string, string>) =>
                   source: "kin:chat:member-direct:message:member-message",
                 },
               ],
+              ...state.sources,
             ]),
           }),
       }),
@@ -166,6 +175,7 @@ const setup = Effect.gen(function* () {
   state.items = [];
   state.afterLoad = undefined;
   state.stage = () => Effect.void;
+  state.sources = [];
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES (${orgId}, 'Fixture', ${at})`;
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES
@@ -581,7 +591,6 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
     assert.isString((yield* defer({})).itemId);
     assert.deepStrictEqual(staged, [`wake-${leads.a}`]);
     const others: ReadonlyArray<Partial<typeof Lead.DeferInput.Encoded>> = [
-      { chatId: "group-chat", sourceEventId: `event-${leads.a}` },
       { chatId: "owner-chat" },
       { onDue: "start" },
     ];
@@ -686,4 +695,103 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
     // Her replacement and her two cancels, nothing for anyone else.
     assert.lengthOf(staged, 5);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "in a group, a reminder is for the group, or the asker alone; a routine only on an owner-level word",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const sql = yield* SqlClient.SqlClient;
+      state.sources = [
+        [
+          `event-${leads.a}`,
+          {
+            saidBy: "fixture-member",
+            trust: "member",
+            source: `kin:chat:group-chat:message:message-${leads.a}`,
+          },
+        ],
+      ];
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('fixture-other', ${orgId}, 'fixture-other', 'Other', ${at})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
+        VALUES ('member-direct', ${orgId}, 'direct', 0, ${at}, ${`fixture-member:${leads.a}`})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('member-in-direct', ${orgId}, 'member-direct', 'person', 'fixture-member', 'member', ${at})`;
+      const staged: Array<string> = [];
+      state.stage = (_wakeupId, content) => Effect.sync(() => void staged.push(content ?? ""));
+      const service = yield* Lead.LeadMemory;
+      const defer = (fields: Partial<typeof Lead.DeferInput.Encoded> = {}) =>
+        decodeDefer({
+          what: "Invented: send the report",
+          due: "2026-11-20T10:00:00+00:00",
+          onDue: "remind",
+          chatId: "group-chat",
+          sourceEventId: `event-${leads.a}`,
+          ...fields,
+        }).pipe(Effect.flatMap((input) => service.defer(scopeOf(leads.a), input)));
+      assert.isString((yield* defer()).itemId);
+      assert.include(staged[0], "chat: group-chat");
+      // Only a reminder: a start from a chat others read stays refused.
+      assert.strictEqual(
+        (yield* defer({ what: "Invented: start it", onDue: "start" }).pipe(Effect.flip)).message,
+        SHARED_REFUSAL,
+      );
+      // Who may set a routine is unchanged: an owner-level person's own message.
+      const routine = yield* Schema.decodeEffect(Lead.ScheduleInput)({
+        what: "Invented: post what is open here",
+        at: "09:00",
+        days: [1],
+        chatId: KinChatId.make("group-chat"),
+        sourceEventId: `event-${leads.a}`,
+      }).pipe(
+        Effect.flatMap((input) => service.schedule(scopeOf(leads.a), input)),
+        Effect.flip,
+      );
+      assert.strictEqual(
+        routine.message,
+        "Only the owner's own message can set up a scheduled task. Ask the owner to say what to run and when.",
+      );
+
+      // Cancelling the group's: whoever asked, the owner or a co-owner; anyone else is told who.
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+        VALUES ('set-in-group', ${orgId}, ${leads.a}, 'chat.message', 'P0',
+          ${JSON.stringify({ chatId: "group-chat" })}, 0, 0, 'done', NULL)`;
+      const groups = (id: string, saidBy: string): MemoryItem => ({
+        head: head(id, {
+          kind: "deferral",
+          due: "2026-11-19T10:00:00+00:00",
+          on_due: "remind",
+          chat: KinChatId.make("group-chat"),
+          source_event: KinEventId.make("set-in-group"),
+          said_by: saidBy,
+          trust: "member",
+          source: "kin:chat:group-chat:message:set-message",
+          path: `deferrals/${id}.md`,
+        }),
+        body,
+      });
+      state.items = [groups("def-hers", "fixture-member"), groups("def-others", "fixture-other")];
+      yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
+        VALUES (${orgId}, 'def-hers', 'armed', ${Date.parse("2026-11-19T10:00:00Z")}, 'remind', '{}', 0)`;
+      const cancel = (itemId: string) =>
+        service.cancel(scopeOf(leads.a), {
+          itemId: KinMemoryItemId.make(itemId),
+          sourceEventId: `event-${leads.a}`,
+        });
+      assert.strictEqual((yield* cancel("def-hers")).outcome, "stopped");
+      assert.strictEqual(
+        (yield* Effect.flip(cancel("def-others"))).message,
+        "Only Other who asked for it, the owner or a co-owner can change it.",
+      );
+
+      // After an outside read it didn't make, a turn sets nothing for the group.
+      yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
+        VALUES (${orgId}, ${`follows:wake-${leads.a}`}, 'mail:invented')`;
+      assert.strictEqual(
+        (yield* defer({ what: "Invented: after the mail" }).pipe(Effect.flip)).message,
+        OUTSIDE_REFUSAL,
+      );
+    }).pipe(Effect.provide(layer)),
 );

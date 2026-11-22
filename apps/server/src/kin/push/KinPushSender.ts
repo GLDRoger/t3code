@@ -706,14 +706,16 @@ const make = Effect.gen(function* () {
           person.personId !== row.author_person_id &&
           person.memberId !== row.author_member_id &&
           kinPushConcerns({
-            direct: chat.direct,
+            // A timed line in a chat with other people is for everyone there (a shared chat's own).
+            direct: chat.direct || ownerTimed,
             mentioned: mentions.has(person.memberId),
             repliesToThem: row.reply_author === person.personId || asked.has(person.personId),
           }),
       )
       .map((person) => ({ personId: person.personId, silent: person.muted }));
-    // On their own clock: what someone timed rings whatever the hour; in quiet hours nothing else
-    // does (a teammate's word rings at their end, `later`); off hours, only a person or an answer.
+    // On their own clock: what someone timed rings whatever the hour in their direct chat, and in a
+    // chat with others outside each reader's quiet hours; in quiet hours nothing else does (a
+    // teammate's word rings at their end, `later`); off hours, only a person or an answer.
     // Kin's word on their own work or a default it took for them rings past the half hour cap
     // that holds anything else from Kin or an agent.
     const recipients: Array<Recipient> = [];
@@ -723,10 +725,13 @@ const make = Effect.gen(function* () {
       const answers = row.reply_author === recipient.personId || asked.has(recipient.personId);
       answersAnyone ||= answers;
       const direct = chat.people && row.author_kind === "human";
-      const hold = ownerTimed ? undefined : yield* holdNow(orgId, recipient.personId);
+      const hold =
+        ownerTimed && chat.direct ? undefined : yield* holdNow(orgId, recipient.personId);
       if (direct && hold === "quiet" && !recipient.silent) later.push(recipient.personId);
       const silent =
-        recipient.silent || hold === "quiet" || (hold === "off" && !fromPerson && !answers);
+        recipient.silent ||
+        hold === "quiet" ||
+        (hold === "off" && !fromPerson && !answers && !ownerTimed);
       // A brief opens at itself; a reply whose turn left a card waiting on them, at the card.
       const card = turnCards.find((one) => one.awaiting.includes(recipient.personId));
       const subject =
