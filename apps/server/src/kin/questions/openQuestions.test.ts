@@ -1862,6 +1862,16 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       assert.deepStrictEqual(yield* team.kinLines(arjun.chatId), [
         "Rhea Rao wants changes first; the new proposal goes back to Rhea Rao to approve.",
       ]);
+      // Her card tells her the decision is still hers.
+      assert.deepInclude(
+        (yield* team.widgetOf((yield* team.cardOf(arjun.questionId)).widgetId!)).state,
+        {
+          outcome: {
+            title: "Answered",
+            text: "Say here what to change; the new draft comes back to you to approve.",
+          },
+        },
+      );
       assert.deepStrictEqual((yield* draftWakes).slice(1), []);
       const drainedBut = (keep: string) => sql`UPDATE kin_events SET state = 'done'
         WHERE org_id = ${orgId} AND state = 'queued' AND dedupe_key IS NOT ${keep}`;

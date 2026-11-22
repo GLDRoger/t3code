@@ -437,8 +437,9 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
     queue,
     approved,
   );
+  const changesFirst = !approved && row.draft !== null && input.label === CHANGES_FIRST;
   // Her own card that sent it up may send it again, as it now says.
-  if (!approved && row.draft !== null && input.label === CHANGES_FIRST)
+  if (changesFirst)
     for (const widgetId of yield* draftCardsAbout(input.orgId, row.forChatId, row.about, "sent"))
       yield* chat.setDocCardChangesFirst({
         orgId: input.orgId,
@@ -450,7 +451,12 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
         title: "Approved",
         text: `Sent to ${asker}. ${row.agentName} is making it now.`,
       } satisfies KinChoiceOutcome)
-    : ({ title: "Answered", text: `Sent to ${asker}.` } satisfies KinChoiceOutcome);
+    : ({
+        title: "Answered",
+        text: changesFirst
+          ? "Say here what to change; the new draft comes back to you to approve."
+          : `Sent to ${asker}.`,
+      } satisfies KinChoiceOutcome);
 });
 
 /**
