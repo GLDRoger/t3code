@@ -46,7 +46,9 @@ export const NumbersWatchInput = Schema.Struct({
     Schema.Struct({
       name: KinToolText(80),
       unit: Schema.optional(KinToolText(20)),
-      direction: Schema.optional(KinNumberDirection),
+      direction: Schema.optional(KinNumberDirection).annotate({
+        description: "up when a higher value is better, down when a lower one is.",
+      }),
       above: Schema.optional(KinNumberDecimal),
       below: Schema.optional(KinNumberDecimal),
       compute: Schema.optional(NumberSpec).annotate({
@@ -56,7 +58,9 @@ export const NumbersWatchInput = Schema.Struct({
   ).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
   feed: Schema.optional(
     Schema.Struct({
-      source: KinNumberSource,
+      source: KinNumberSource.annotate({
+        description: "Where it comes from, in words the owner reads on the card, never an id.",
+      }),
       every: KinNumberCadence,
       at: MemoryItemEvery.fields.at.annotate({ description: "HH:MM, the owner's time." }),
       how: Schema.optional(KinToolText(240)),
