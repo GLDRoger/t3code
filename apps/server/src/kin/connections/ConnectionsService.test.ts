@@ -2525,6 +2525,42 @@ const withGoogle = <A, E>(
   }).pipe(Effect.scoped);
 
 describe("KinConnections sending", () => {
+  it.effect("drafts the same mail card for single addresses and lists", () =>
+    withGoogle((vendor, cards) =>
+      Effect.gen(function* () {
+        yield* connectGoogle(vendor);
+        const to = "ana@client.example";
+        const cc = "meera@invented.example";
+        for (const [tool, draft] of [
+          ["mail_send", { subject: "November update", body: "Here is the latest." }],
+          ["mail_reply", { threadId: "t1", body: "Here is the latest." }],
+        ] as const) {
+          const list = yield* sendCall(tool, { ...draft, to: [to], cc: [cc] });
+          assert.strictEqual(list.note, ASKED);
+          const card = cards.at(-1)!;
+          const before = JSON.stringify(card);
+          const count = cards.length;
+          const singleTo = yield* sendCall(tool, { ...draft, to, cc: [cc] });
+          const singleCc = yield* sendCall(tool, { ...draft, to: [to], cc });
+          assert.deepStrictEqual([singleTo, singleCc], [list, list]);
+          assert.lengthOf(cards, count);
+          assert.strictEqual(JSON.stringify(cards.at(-1)), before);
+          assert.deepStrictEqual([card.send?.to, card.send?.cc], [[to], [cc]]);
+
+          const emptyList = yield* sendCall(tool, { ...draft, to: [] }).pipe(Effect.flip);
+          const emptyText = yield* sendCall(tool, { ...draft, to: "" }).pipe(Effect.flip);
+          assert.strictEqual(emptyText.message, emptyList.message);
+          for (const recipients of ["a@x.example, b@x.example", "a@x.example; b@x.example"]) {
+            const bad = yield* sendCall(tool, { ...draft, to: recipients }).pipe(Effect.flip);
+            assert.include(bad.message, "isn't a plain address");
+          }
+          assert.lengthOf(cards, count);
+        }
+        assert.lengthOf(vendor.vendor.sent, 0);
+      }),
+    ),
+  );
+
   it.effect("sends an email only on the owner's Confirm, with exactly what the card showed", () =>
     withGoogle((vendor, cards) =>
       Effect.gen(function* () {

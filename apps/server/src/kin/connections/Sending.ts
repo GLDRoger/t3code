@@ -132,6 +132,8 @@ const strings = (value: unknown) =>
   Array.isArray(value)
     ? value.filter((one) => typeof one === "string").map((one) => one.trim())
     : [];
+const recipients = (value: unknown) =>
+  typeof value === "string" && value.trim() !== "" ? strings([value]) : strings(value);
 const optional = (args: Readonly<Record<string, unknown>>, name: string) => {
   const value = args[name];
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
@@ -439,10 +441,16 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
   const body = typeof args.body === "string" ? args.body : "";
   if (body.trim() === "") return yield* refused(`${input.tool} needs body.`);
   if (body.length > MAX_BODY) return yield* refused(`The body is at most ${MAX_BODY} characters.`);
-  const cc = strings(args.cc);
+  const cc = recipients(args.cc);
   const badCc = checkAddresses(cc, "cc", MAX_RECIPIENTS);
   if (badCc !== undefined) return yield* badCc;
   const attachments = yield* attachmentsOf(input.orgId, strings(args.attachments));
+  const to = recipients(args.to);
+  if (input.tool === MAIL_TOOL.send || (input.tool === MAIL_TOOL.reply && args.to !== undefined)) {
+    if (to.length === 0) return yield* refused(`${input.tool} needs to.`);
+    const badTo = checkAddresses(to, "to", MAX_RECIPIENTS);
+    if (badTo !== undefined) return yield* badTo;
+  }
   if (input.tool === MAIL_TOOL.reply) {
     const threadId = optional(args, "threadId");
     if (threadId === null) return yield* refused(`${MAIL_TOOL.reply} needs threadId.`);
@@ -475,10 +483,6 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
   }
   if (input.tool !== MAIL_TOOL.send)
     return yield* refused(`${input.provider.name} has no tool named ${input.tool}.`);
-  const to = strings(args.to);
-  if (to.length === 0) return yield* refused(`${MAIL_TOOL.send} needs to.`);
-  const badTo = checkAddresses(to, "to", MAX_RECIPIENTS);
-  if (badTo !== undefined) return yield* badTo;
   const subject = optional(args, "subject");
   if (subject === null) return yield* refused(`${MAIL_TOOL.send} needs subject.`);
   if (LINE_BREAK.test(subject) || subject.length > 300)
