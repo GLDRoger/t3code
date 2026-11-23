@@ -306,8 +306,16 @@ export class MemoryWriter extends Context.Service<
      * so it runs after a clear and at every sync, which also finishes one a crash cut short.
      */
     readonly stripQuotes: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
+    /**
+     * Once per live lead, lands the items its shadow branch holds that the default branch lacks:
+     * notes written at L0 before leads worked on the default branch. Where both changed an
+     * item, the default branch's stays and the shadow branch keeps its own.
+     */
+    readonly landShadows: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
+// No table of its own: a `kin_memory_heads` row no branch uses, holding the shadow head landed.
+const shadowLanded = (agentId: string) => `kin/shadow-landed/${agentId}`;
 const isRepoSlug = Schema.is(RepoSlug);
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
 const folders = [
@@ -1880,6 +1888,83 @@ const make = Effect.gen(function* () {
                   }),
               ),
             );
+        }),
+      ),
+    ),
+    landShadows: Effect.fn("MemoryWriter.landShadows")((orgId) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const toSql = Effect.mapError(toPersistenceSqlError("MemoryWriter.landShadows"));
+          const pending = yield* sql<{ agentId: string; branch: string }>`SELECT
+              l.agent_id AS "agentId", h.branch FROM kin_memory_heads h
+            JOIN kin_leads l ON l.org_id = h.org_id AND h.branch = 'kin/shadow/' || l.agent_id
+            JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+              AND a.retired_at IS NULL
+            WHERE h.org_id = ${orgId} AND NOT EXISTS (SELECT 1 FROM kin_memory_heads m
+              WHERE m.org_id = h.org_id AND m.branch = 'kin/shadow-landed/' || l.agent_id)
+            ORDER BY l.agent_id`.pipe(toSql);
+          // Tried again at the next sync once the default branch takes writes.
+          if (pending.length === 0 || mainWrites === "refused") return;
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
+          const same = (a: Buffer | undefined, b: Buffer | undefined) =>
+            a === undefined ? b === undefined : b !== undefined && a.equals(b);
+          for (const { agentId, branch } of pending) {
+            const shadowHead = yield* branchHead(orgId, writer, branch);
+            const shadowFiles = yield* filesAt(orgId, writer, shadowHead);
+            const head = yield* branchHead(orgId, writer, main);
+            const headFiles = yield* filesAt(orgId, writer, head);
+            const base = yield* git(orgId, writer, ["merge-base", head, shadowHead]).pipe(
+              Effect.orElseSucceed(() => ""),
+            );
+            const baseFiles: ReadonlyMap<string, Buffer> =
+              base === "" ? new Map() : yield* filesAt(orgId, writer, base);
+            const files = new Map<string, string>();
+            const kept: Array<string> = [];
+            const ending: Array<string> = [];
+            for (const [path, bytes] of shadowFiles) {
+              if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
+              const now = headFiles.get(path);
+              if (same(baseFiles.get(path), bytes) || same(now, bytes)) continue;
+              if (now !== undefined && !same(now, baseFiles.get(path))) {
+                kept.push(path);
+                continue;
+              }
+              const text = bytes.toString("utf8");
+              const parsed = yield* parseFrontMatter(orgId, path, text).pipe(Effect.option);
+              if (Option.isNone(parsed)) continue;
+              if (retired(parsed.value.frontMatter)) ending.push(parsed.value.frontMatter.id);
+              files.set(path, text);
+            }
+            const mark = sql`INSERT INTO kin_memory_heads (org_id, branch, head)
+              VALUES (${orgId}, ${shadowLanded(agentId)}, ${shadowHead})
+              ON CONFLICT DO NOTHING`.pipe(toSql, Effect.asVoid);
+            if (kept.length > 0)
+              yield* recovery.notify({
+                orgId,
+                branch,
+                reason: `Kept the default branch's ${kept.join(", ")} over this shadow branch's, which still holds its own`,
+              });
+            if (files.size === 0) {
+              yield* mark;
+              continue;
+            }
+            yield* endSharing(orgId, ending);
+            yield* ownerCommit(orgId, {
+              writer,
+              repoUrl: repo.repoUrl,
+              branch: main,
+              head,
+              headFiles,
+              files,
+              message: `kin(${agentId}): land notes kept at L0\n\nKin-Shadow-Landed: ${shadowHead}\n`,
+              landed: () => mark,
+            });
+          }
         }),
       ),
     ),

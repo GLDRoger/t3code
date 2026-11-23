@@ -201,6 +201,19 @@ const memorySync = Effect.fn("KinMemory.syncDue")(function* (
                     }),
                   ),
                   Effect.andThen(stripQuotes(writer.value, orgId)),
+                  Effect.andThen(
+                    writer.value.landShadows(orgId).pipe(
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning(
+                          "Kin could not land shadow memory on the default branch",
+                          {
+                            orgId,
+                            cause: Cause.pretty(cause),
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
           ),
         ),

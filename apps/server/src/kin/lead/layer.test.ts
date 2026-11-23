@@ -244,6 +244,7 @@ it.effect("a cleared chat and each memory sync sweep deleted messages' quotes", 
     const writer = Layer.mock(Writer.MemoryWriter)({
       reconcileSharing: () => Effect.void,
       stripQuotes: (org) => Deferred.succeed(org === clearedOrg ? cleared : synced, undefined),
+      landShadows: () => Effect.void,
     });
     const hub = Layer.mock(ChatHub.KinChatHub)({
       subscribeAll: Effect.succeed(

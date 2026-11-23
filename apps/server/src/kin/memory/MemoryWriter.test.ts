@@ -9,6 +9,7 @@ import {
   KinMemoryItemId,
   KinOrgId,
   type MemoryItemHead,
+  type VcsError,
   VcsProcessSpawnError,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -1952,4 +1953,194 @@ it.effect(
       ),
       Effect.scoped,
     ),
+);
+
+// A lead that wrote at L0 before leads worked on the default branch kept its notes on its shadow
+// branch, and nothing landed them.
+const landingFixture = <E>(
+  run: (input: {
+    readonly setLevel: (level: "L0" | "L2") => void;
+    readonly bare: (args: ReadonlyArray<string>) => Effect.Effect<string, VcsError>;
+    readonly notices: ReadonlyArray<{ readonly branch: string; readonly reason: string }>;
+  }) => Effect.Effect<
+    void,
+    E,
+    Memory.Memory | Writer.MemoryWriter | SqlClient.SqlClient | FileSystem.FileSystem
+  >,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const vcs = yield* Vcs.VcsProcess;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const source = `${root}/seed`;
+    const remote = `${root}/remote.git`;
+    const git = (cwd: string, args: ReadonlyArray<string>) =>
+      vcs
+        .run({ operation: "test.writer", command: "git", cwd, args })
+        .pipe(Effect.map((r) => r.stdout.trim()));
+    yield* fs.makeDirectory(`${source}/people`, { recursive: true });
+    yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
+    yield* fs.writeFileString(`${source}/INDEX.md`, "# Memory index\n");
+    yield* git(source, ["init", "-b", "main"]);
+    yield* git(source, ["add", "--", "."]);
+    yield* git(source, [
+      "-c",
+      "user.name=Fixture Bot",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-m",
+      "fixture",
+    ]);
+    yield* git(root, ["clone", "--bare", "--", source, remote]);
+    let level: "L0" | "L2" = "L0";
+    const notices: Array<{ branch: string; reason: string }> = [];
+    const config = Layer.succeed(MemoryConfig, {
+      baseDirectory: root,
+      directMainPush: true,
+      repositories: [{ orgId, repoUrl: remote, path: "state" }],
+    });
+    const layer = Writer.layer.pipe(
+      Layer.provideMerge(
+        Memory.layer.pipe(
+          Layer.provide(config),
+          Layer.provide(Layer.succeed(Memory.MemorySyncHooks, { syncItems: () => Effect.void })),
+        ),
+      ),
+      Layer.provideMerge(Repository.layer),
+      Layer.provide(
+        Layer.succeed(Memory.MemoryRecoveryHooks, {
+          notify: (notice) => Effect.sync(() => void notices.push(notice)),
+        }),
+      ),
+      Layer.provide(config),
+      Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
+      Layer.provide(
+        Layer.succeed(Writer.MemoryWriterAuthority, {
+          resolve: (_org: KinOrgId, wakeupId: string) =>
+            Effect.succeed({
+              orgId,
+              wakeupId,
+              agentId,
+              level,
+              timeZone: "UTC",
+              startedAt: "2026-11-08T00:00:00.000Z",
+              eventIds: [],
+              sources: new Map(),
+            }),
+        }),
+      ),
+      Layer.provide(Scan.layer),
+    );
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const sql = yield* SqlClient.SqlClient;
+      const at = "2026-11-08T00:00:00.000Z";
+      yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Org', ${at})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('owner', ${orgId}, 'owner', 'Owner', ${at})`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES (${agentId}, ${orgId}, 'Lead', 'lead', 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('owner-chat', ${orgId}, 'team_group', 0, ${at})`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Lead', 'L0', 0, '{}', '[]', 'owner-chat')`;
+      yield* memory.ensureCheckouts(orgId);
+      yield* memory.prepareWakeup(orgId);
+      yield* run({
+        setLevel: (next) => {
+          level = next;
+        },
+        bare: (args) => git(root, [`--git-dir=${remote}`, ...args]),
+        notices,
+      });
+    }).pipe(Effect.provide(layer));
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        gitLayer,
+        NodeServices.layer,
+        Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+      ),
+    ),
+    Effect.scoped,
+  );
+const personNote = (id: string, title: string) => ({
+  path: `people/${id}.md`,
+  content: fixtureItem({
+    id,
+    kind: "person",
+    title,
+    due: null,
+    on_due: undefined,
+    review_by: null,
+    links: [`person:${id}`],
+  }),
+});
+
+it.effect("an L0 lead's shadow notes land on the default branch and its index, once", () =>
+  landingFixture(({ bare, setLevel }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const shadow = Memory.shadowBranch(agentId);
+      const main = () => bare(["rev-parse", "main"]);
+      // No shadow branch yet: nothing to land.
+      const untouched = yield* main();
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* main(), untouched);
+
+      yield* writer.stage(orgId, "wake0", personNote("owner-repos", "The owner's two main repos"));
+      yield* writer.commitWakeup(orgId, "wake0", "completed");
+      assert.include(yield* bare(["show", `${shadow}:INDEX.md`]), "owner-repos");
+      assert.notInclude(yield* bare(["show", "main:INDEX.md"]), "owner-repos");
+
+      yield* writer.landShadows(orgId);
+      const landed = yield* main();
+      assert.notStrictEqual(landed, untouched);
+      assert.strictEqual(
+        yield* bare(["show", "main:people/owner-repos.md"]),
+        yield* bare(["show", `${shadow}:people/owner-repos.md`]),
+      );
+      assert.include(yield* bare(["show", "main:INDEX.md"]), "owner-repos");
+      assert.notInclude(yield* bare(["ls-tree", "-r", "--name-only", "main"]), "journal/");
+
+      // Later shadow writes (a chat the owner didn't place the lead in) stay off the default branch.
+      yield* writer.stage(orgId, "wake1", personNote("teammate-only", "Said in someone's group"));
+      yield* writer.commitWakeup(orgId, "wake1", "completed");
+      yield* writer.landShadows(orgId);
+      assert.strictEqual(yield* main(), landed);
+
+      // A lead now on the default branch reads what it wrote at L0.
+      setLevel("L2");
+      yield* writer.stage(orgId, "wake2", personNote("sam", "Sam runs billing"));
+      const index = yield* bare([
+        "show",
+        `${(yield* writer.commitWakeup(orgId, "wake2", "completed")).commit}:INDEX.md`,
+      ]);
+      assert.include(index, "owner-repos");
+    }),
+  ),
+);
+
+it.effect("a shadow note the default branch also changed keeps the default branch's", () =>
+  landingFixture(({ bare, setLevel, notices }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const shadow = Memory.shadowBranch(agentId);
+      yield* writer.stage(orgId, "wake0", personNote("sam", "Sam, as the shadow has it"));
+      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
+      yield* writer.commitWakeup(orgId, "wake0", "completed");
+      setLevel("L2");
+      yield* writer.stage(orgId, "wake1", personNote("sam", "Sam, as the default branch has it"));
+      yield* writer.commitWakeup(orgId, "wake1", "completed");
+
+      yield* writer.landShadows(orgId);
+      assert.include(yield* bare(["show", "main:people/sam.md"]), "as the default branch has it");
+      assert.include(yield* bare(["show", `${shadow}:people/sam.md`]), "as the shadow has it");
+      assert.include(yield* bare(["show", "main:people/alex.md"]), "Alex leads design");
+      assert.deepStrictEqual(
+        notices.filter((notice) => notice.branch === shadow).map((notice) => notice.reason),
+        [
+          "Kept the default branch's people/sam.md over this shadow branch's, which still holds its own",
+        ],
+      );
+    }),
+  ),
 );
