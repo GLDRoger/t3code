@@ -329,19 +329,10 @@ const make = Effect.gen(function* () {
                 });
                 continue;
               }
-              const batch = batches.get(r.person) ?? [];
-              if (batch[0] && batch[0].request.chatId !== r.chatId) {
-                yield* stop(r, now, false, "closed");
-                yield* Effect.logWarning("Kin ping chat mismatch", {
-                  orgId,
-                  person: r.person,
-                  itemId: r.itemId,
-                  reason: "chat_mismatch",
-                });
-                continue;
-              }
+              const key = JSON.stringify([r.person, r.chatId]);
+              const batch = batches.get(key) ?? [];
               batch.push({ ...candidate, audience: shared ? "chat" : "owner" });
-              batches.set(r.person, batch);
+              batches.set(key, batch);
             }
             for (const candidates of batches.values()) {
               const batch = [];
