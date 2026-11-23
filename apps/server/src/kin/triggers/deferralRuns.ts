@@ -24,10 +24,7 @@ export type DeferralHead<H extends MemoryItemHead = MemoryItemHead> = H & {
   readonly started?: true;
 };
 
-function withRun<H extends MemoryItemHead>(
-  head: H,
-  run: DeferralRun | undefined,
-): DeferralHead<H> {
+function withRun<H extends MemoryItemHead>(head: H, run: DeferralRun | undefined): DeferralHead<H> {
   if (run === undefined || head.kind !== "deferral" || head.status !== "open") return head;
   const due = memoryDateMillis(head.due);
   const current = run.dueAt === due || (run.movedFrom !== null && run.movedFrom === due);
