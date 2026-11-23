@@ -3802,7 +3802,8 @@ describe("who keeps a suggestion", () => {
       });
 
       // One approval makes one kept entry: its list, for its party, as a Draft whatever state it
-      // was given; a different party, or a second entry, is ordinary; a retry is the same one.
+      // was given; a different party is refused before it; a second entry is ordinary; a retry is
+      // the same one.
       const [harbour] = yield* asAgent([ownerId], [{ list: "clients", title: "Invented Harbour" }]);
       yield* asAgent([ownerId], [{ list: "clients", title: "Invented Tide" }]);
       const harbourId = (yield* records.get(orgId, harbour!))!.recordId;
@@ -3814,8 +3815,13 @@ describe("who keeps a suggestion", () => {
         partyId: harbourId,
       };
       const approval = yield* woken("approved");
+      const wrongParty = {
+        list: "invoices",
+        title: "Invented wrong party",
+        client: "Invented Tide",
+        amount: "1",
+      };
       const rows = [
-        { list: "invoices", title: "Invented wrong party", client: "Invented Tide", amount: "1" },
         {
           list: "invoices",
           title: "Invented approved one",
@@ -3825,12 +3831,18 @@ describe("who keeps a suggestion", () => {
         },
         { list: "invoices", title: "Invented second", client: "Invented Harbour", amount: "2" },
       ];
+      assert.include(
+        (yield* LeadWork.create(scope, {
+          sourceEventId: approval,
+          records: [wrongParty, ...rows] as never,
+        }).pipe(Effect.flip)).message,
+        "Nothing was made: the approved draft is for Invented Harbour, so make the entry for that client.",
+      );
       const underApproval = (yield* LeadWork.create(scope, {
         sourceEventId: approval,
         records: rows as never,
       })).records.map((one) => one.key);
       assert.deepStrictEqual(yield* Effect.forEach(underApproval, startedAs), [
-        [0, "open", null],
         [1, "open", null],
         [0, "open", null],
       ]);
