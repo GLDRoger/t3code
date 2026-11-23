@@ -50,8 +50,9 @@ const amount = (plain: RegExp) =>
   );
 const Amount = amount(/^\d{1,15}(?:\.\d{1,6})?$/);
 const EntryAmount = amount(/^-?\d{1,15}(?:\.\d{1,6})?$/);
-/** Text, a choice or a day; `owner` for a person field; a client's or project's source id for a link. */
+/** Text, a choice or a day; an active teammate’s id or `owner` for a person field; a client's or project's source id for a link. */
 const FieldValue = Schema.Union([Line, Schema.Struct({ amount: Amount, currency: KinCurrency })]);
+const Fields = Schema.Record(Schema.String, FieldValue).check(Schema.isMaxProperties(20));
 
 export const ImportList = Schema.Struct({
   list: KinListId,
@@ -157,6 +158,7 @@ export const ImportEntry = Schema.Struct({
   source: SourceId,
   list: KinListId,
   title: Title,
+  match: Schema.optional(Schema.Never),
   state: Schema.optional(KinRecordState),
   category: Schema.optional(Label),
   client: Schema.optional(SourceId),
@@ -166,9 +168,7 @@ export const ImportEntry = Schema.Struct({
   amount: Schema.optional(EntryAmount),
   currency: Schema.optional(KinCurrency),
   notes: Schema.optional(Notes),
-  fields: Schema.optional(
-    Schema.Record(Schema.String, FieldValue).check(Schema.isMaxProperties(20)),
-  ),
+  fields: Schema.optional(Fields),
   sensitive: Schema.optional(Schema.Boolean),
   steps: Schema.optional(
     Schema.Array(Schema.Struct({ title: Schema.String, done: Schema.Boolean })),
@@ -186,6 +186,27 @@ export const ImportEntry = Schema.Struct({
   suggested: Schema.optional(Schema.Boolean),
 });
 export type ImportEntry = typeof ImportEntry.Type;
+
+const ImportEntryMatch = Schema.Struct({
+  source: SourceId,
+  list: KinListId,
+  match: Key,
+  fields: Schema.optional(Fields),
+  notes: Schema.optional(Notes),
+});
+export type ImportEntryMatch = typeof ImportEntryMatch.Type;
+
+const entryObject = Schema.is(
+  Schema.Struct({ entry: Schema.Record(Schema.String, Schema.Unknown) }),
+);
+const sourceId = Schema.is(SourceId);
+export const entryMatchWithExtraKeys = (raw: unknown) =>
+  entryObject(raw) &&
+  Object.hasOwn(raw.entry, "match") &&
+  (Object.keys(raw).length !== 1 ||
+    Object.keys(raw.entry).some((key) => !Object.hasOwn(ImportEntryMatch.fields, key)))
+    ? { source: sourceId(raw.entry.source) ? raw.entry.source : null }
+    : undefined;
 
 /** A person at a client above it or imported before; `match` fills one Kin has. */
 export const ImportContact = Schema.Struct({
@@ -219,7 +240,7 @@ export type ImportDeal = typeof ImportDeal.Type;
 export const ImportRow = Schema.Union([
   Schema.Struct({ client: ImportClient }),
   Schema.Struct({ project: ImportProject }),
-  Schema.Struct({ entry: ImportEntry }),
+  Schema.Struct({ entry: Schema.Union([ImportEntryMatch, ImportEntry]) }),
   Schema.Struct({ contact: ImportContact }),
   Schema.Struct({ deal: ImportDeal }),
 ]);
