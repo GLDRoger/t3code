@@ -31,6 +31,7 @@ import { findBankList } from "./statements/bankList.ts";
 import { reviewOf } from "./statements/statementReview.ts";
 import type { Statement } from "./statements/statementTable.ts";
 import { DAY_MS } from "../durations.ts";
+import * as KinShell from "../shell/KinShell.ts";
 
 /**
  * The owner's money questions, answered by code from what Kin stores: cash from the statements
@@ -428,7 +429,9 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND r.state = 'waiting'
       AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
     ORDER BY r.due_at, r.key`;
-  const open = invoices
+  // With Invoices and quotes off, no invoice is expected in, overdue or not.
+  const invoicesOn = yield* KinShell.sectionOnFor(orgId, "invoices");
+  const open = (invoicesOn ? invoices : [])
     .map((one) => ({ ...one, balance: one.minor - one.paid }))
     .filter((one) => one.balance > 0);
   const incoming: Array<Expected> = open.flatMap((one) =>

@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
 import * as NodeZlib from "node:zlib";
@@ -1521,6 +1522,21 @@ describe("invoices", () => {
           suggested: ["INV-2", "INV-3", "INV-4"],
           late: ["INV-1", "INV-2", "INV-3", "INV-4"],
         });
+        // With Invoices and quotes off, the outlook counts no invoice, overdue or coming in.
+        const invoicesOn = (on: boolean) =>
+          KinShell.KinShell.use((shell) =>
+            shell
+              .get(orgId)
+              .pipe(
+                Effect.flatMap(({ rev }) =>
+                  shell.set(orgId, ownerId, rev, [{ id: "invoices", on }]),
+                ),
+              ),
+          ).pipe(Effect.provide(KinShell.layer));
+        yield* invoicesOn(false);
+        assert.deepStrictEqual(outlookAnswer(yield* outlook(orgId, NOW)).overdueNotCounted, []);
+        yield* invoicesOn(true);
+        assert.lengthOf(outlookAnswer(yield* outlook(orgId, NOW)).overdueNotCounted, 1);
         // The agent reads it as a suggestion, and it waits on a person with the right.
         assert.include(yield* LeadWork.get(scope, { key: "INV-2" }), {
           suggested: true,
