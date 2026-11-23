@@ -166,7 +166,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               KinRefusedModels.layer,
               LevelControl.layer,
               MemoryChanges.layer,
-              KinImport.layer.pipe(Layer.provideMerge(KinRecords.layer)),
+              KinImport.layer,
               Render.layer.pipe(
                 Layer.provideMerge(Workspace.layer),
                 Layer.provide(
@@ -230,7 +230,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
       ).pipe(
         Layer.merge(KinShell.layer),
         Layer.merge(KinNumbers.layer),
-        Layer.provideMerge(KinChat.layer),
+        Layer.provideMerge(KinChat.layerWithWork),
         // Social's posting service sits on top: it reads cards, chats and the document renderer.
         (core) =>
           DevFakeSocial.layer.pipe(
