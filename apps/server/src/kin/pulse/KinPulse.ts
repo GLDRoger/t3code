@@ -10,6 +10,7 @@ import {
   type KinPulseHandled,
   type KinPulseScope,
   type KinShell as Shell,
+  type KinWakeupId,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -51,7 +52,14 @@ import { alertsOnMail } from "../work/statements/alertMail.ts";
 import { DAY_MS } from "./thresholds.ts";
 import { tellHolder } from "./holderNotice.ts";
 import { morningPages, pageMinuteSince } from "./personMorning.ts";
-import { agentParty, forHolder, markTold, SHELL_QUIET_EVENT_PREFIX, untold } from "./told.ts";
+import {
+  agentParty,
+  checkInHandling,
+  forHolder,
+  markTold,
+  SHELL_QUIET_EVENT_PREFIX,
+  untold,
+} from "./told.ts";
 import { draftWakes } from "./draftWake.ts";
 import {
   asideOf,
@@ -408,6 +416,7 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
   /** The person reading, for "by you" and "on your word". */
   readonly personId?: string | undefined;
   readonly limit?: number | undefined;
+  readonly factKeys?: ReadonlySet<string> | undefined;
   /** What a tick already sensed (`lastTick`), instead of sensing again. */
   readonly sensed?: ReadonlyArray<SensedFact> | undefined;
   readonly shell?: Shell | undefined;
@@ -426,6 +435,7 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
   const visible = yield* visibleTo(orgId, input.viewer, sensed, shell);
   const scoped = visible.filter(
     (fact) =>
+      (input.factKeys === undefined || input.factKeys.has(fact.key)) &&
       (scope?.family === undefined || fact.family === scope.family) &&
       (scope?.project === undefined ||
         matches(fact.scope.projectTitle, fact.scope.projectKey, scope.project)) &&
@@ -881,6 +891,7 @@ export const handle = Effect.fn("KinPulse.handle")(function* (input: {
   readonly viewer: Viewer;
   readonly by: KinWorkPrincipal;
   readonly factKey: string;
+  readonly wakeupId?: KinWakeupId;
   readonly action: KinPulseHandleAction;
   readonly until?: number | undefined;
   readonly note?: string | undefined;
@@ -973,8 +984,18 @@ export const handle = Effect.fn("KinPulse.handle")(function* (input: {
             handled_by_id = ${byId}, handled_at = ${at}, handled_until = ${until},
             handled_note = ${input.note ?? null}
           WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
+        const checks =
+          input.wakeupId !== undefined && input.by._tag === "agent" && input.viewer._tag === "owner"
+            ? yield* checkInHandling({
+                orgId,
+                wakeupId: input.wakeupId,
+                agentId: input.by.agentId,
+                factKey: fact.key,
+              })
+            : [];
         // Told again once when it is back, as after a hold: a teammate's own is theirs alone.
         yield* sql`DELETE FROM kin_pulse_told WHERE org_id = ${orgId} AND fact_key = ${fact.key}
+          ${checks.length === 0 ? sql`` : sql`AND event_id NOT IN ${sql.in(checks.map((row) => row.event_id))}`}
           AND (${input.viewer._tag === "owner" ? 1 : 0} = 1 OR person_id IN ${sql.in(
             input.viewer._tag === "owner" ? [""] : input.viewer.people,
           )})`;

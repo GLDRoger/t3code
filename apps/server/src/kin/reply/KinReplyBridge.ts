@@ -19,6 +19,7 @@ import {
   type KinPresenceState,
   type KinWakeupId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ProviderFailure,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   type ProjectId,
@@ -76,7 +77,6 @@ import {
   normalized,
   repeats,
   RESCUE_PROMPT,
-  setupFailureIn,
   stripTrailingSilenceMarker,
   toolLabel,
   type SegmentNext,
@@ -87,6 +87,8 @@ import { KinHostCare } from "../host/KinHostCare.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
 import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
 import { morningMoneyFor } from "../pulse/morningMoney.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
+import { settleCheckInTold } from "../pulse/told.ts";
 import { weeklyFigures } from "../pulse/weekly.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -1018,7 +1020,10 @@ const make = Effect.gen(function* () {
         return;
       }
       segment.complete = true;
-      return yield* decide(wake, segment, nextAfter(wake, segment.ordinal));
+      // The final transcript item can be the terminal diagnostic, even when it is structured.
+      const next = nextAfter(wake, segment.ordinal);
+      if (next !== null) return yield* decide(wake, segment, next);
+      return;
     }
     if (item.type === "reasoning" || item.type === "assistant_message")
       return yield* show(wake, "thinking", PHASE_LABELS.thinking);
@@ -1103,37 +1108,39 @@ const make = Effect.gen(function* () {
     const projection = yield* turnRecords(threads, wake.threadId, rootRunId);
     const root = projection.runs.find((run) => run.id === rootRunId);
     if (root === undefined) return;
-    // What a run that could not sign in "said" is the provider's, never the lead's.
-    if (setupFailureIn(projection, rootRunId) !== null) {
-      wake.notes.length = 0;
-      for (const segment of wake.segments.values()) {
-        if (segment.outcome !== null) continue;
-        segment.outcome = "dropped";
-        if (segment.drafting)
-          yield* presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, null);
-      }
-      return;
-    }
     const runs = new Set(
       projection.runs.filter((run) => run.ordinal >= root.ordinal).map((run) => run.id),
     );
     const items = projection.turnItems
       .filter((item) => item.runId !== null && runs.has(item.runId))
       .toSorted((a, b) => a.ordinal - b.ordinal);
-    const failedRuns = new Set(
-      items.flatMap((item) =>
-        item.type === "error" && item.status === "failed" ? [item.runId] : [],
-      ),
-    );
+    const failures = new Map<RunId, OrchestrationV2ProviderFailure>();
+    const lastAnswers = new Map<RunId, TurnItemId>();
+    for (const item of items) {
+      if (item.runId === null) continue;
+      if (item.type === "error" && item.status === "failed") failures.set(item.runId, item.failure);
+      if (isAnswer(item)) lastAnswers.set(item.runId, item.id);
+    }
     const now = yield* Clock.currentTimeMillis;
     for (const [index, item] of items.entries()) {
       reopen(wake, item);
-      if (item.type !== "assistant_message" || !isAnswer(item) || item.streaming) continue;
+      if (
+        item.type !== "assistant_message" ||
+        item.runId === null ||
+        !isAnswer(item) ||
+        item.streaming
+      )
+        continue;
       const segment = segmentFor(wake, item.id, item.ordinal, now);
       if (segment.outcome !== null) continue;
       segment.text = textOf(item, projection);
       segment.complete = true;
-      if (failedRuns.has(item.runId) && isProviderErrorText(segment.text)) {
+      const failure = failures.get(item.runId);
+      if (
+        failure !== undefined &&
+        lastAnswers.get(item.runId) === item.id &&
+        isProviderErrorText(segment.text, failure)
+      ) {
         segment.outcome = "dropped";
         if (segment.drafting)
           yield* presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, null);
@@ -1382,7 +1389,33 @@ const make = Effect.gen(function* () {
         }),
       );
       // What follows, such as the memory commit, isn't work on the owner's message.
-      const settled = settleLine(wake);
+      const settled = settleLine(wake).pipe(
+        Effect.andThen(
+          settleCheckInTold({
+            orgId: wake.orgId,
+            wakeupId: wake.wakeupId,
+            chatId: wake.lane.chatId,
+            completed: input.rescue,
+            readFacts: (factKeys) =>
+              Effect.flatMap(Clock.currentTimeMillis, (at) =>
+                KinPulse.read({
+                  orgId: wake.orgId,
+                  at,
+                  viewer: { _tag: "owner" },
+                  includeHandled: true,
+                  factKeys,
+                  limit: 200,
+                }),
+              ).pipe(Effect.map((read) => read.facts)),
+          }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            // The reply stands; a fact left reserved is only offered a check-in late.
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin check-in ledger failed", { cause }),
+            ),
+          ),
+        ),
+      );
       // A failed or stopped run is retried or was the owner's choice; only a finished one is owed.
       if ((yield* finish) || !input.rescue) return yield* settled;
       const shown = yield* showed(wake).pipe(Effect.orElseSucceed(() => false));
