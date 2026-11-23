@@ -436,9 +436,9 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
     .replace(
-      /\{\{REVIEW_WAKE:([^|}]+)\|(\d+)\|([^}]+)\}\}/g,
-      (_, who: string, count: string, changed: string) =>
-        REVIEW_WAKE_TEXT({ who: who.split(", "), count: Number(count), changed }),
+      /\{\{REVIEW_WAKE:([^|}]+)\|(\d+)\}\}/g,
+      (_, who: string, count: string) =>
+        REVIEW_WAKE_TEXT({ who: who.split(", "), count: Number(count) }),
     )
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names))
     .replace(/\{\{JOINED_WORK:([^|}]+)\|([^}]+)\}\}/g, (_, adder: string, holder: string) =>
@@ -515,14 +515,17 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     },
   }),
   // message_withdraw or message_replace refused, as `chat/ownMessages.ts` says it.
-  ownMessageRefusal: (input: { readonly why: "read" | "otherAuthor"; readonly name?: string }) => ({
+  ownMessageRefusal: (input: {
+    readonly why: "read" | "otherAuthor" | "outside" | "moreThanWords";
+    readonly name?: string;
+  }) => ({
     $error: {
       _tag: "KinChatError",
       reason: "not_allowed",
       message:
         input.why === "read"
           ? OWN_MESSAGE_REFUSALS.read(input.name ?? "")
-          : OWN_MESSAGE_REFUSALS.otherAuthor,
+          : OWN_MESSAGE_REFUSALS[input.why],
     },
   }),
   // An agent with no person asking in its turn, refused a change to who is on a task.
