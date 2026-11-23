@@ -201,15 +201,26 @@ export function kinSectionListed(shell: KinShell | null | undefined, list: strin
   return id === null || kinSectionOn(shell, id);
 }
 
-/** A change to one section from Settings: its switch, or its name (blank for Kin's own). */
+/**
+ * A change to one section from Settings: its switch, or its name (blank for Kin's own); for a
+ * list section also its place in the phone's dock, or leaving the sidebar. A list section not
+ * held yet is added by switching it on.
+ */
 export type KinSectionChange =
-  | { readonly id: KinSectionId; readonly on: boolean }
-  | { readonly id: "clients"; readonly name: string; readonly noun: string };
+  | { readonly id: KinSectionId | KinListSectionId; readonly on: boolean }
+  | { readonly id: "clients"; readonly name: string; readonly noun: string }
+  | { readonly id: KinListSectionId; readonly dock: boolean }
+  | { readonly id: KinListSectionId; readonly remove: true };
 
 /** What `kin.shell.set` takes for one change: every section as held, that one changed. */
 export function kinShellChanged(shell: KinShell, change: KinSectionChange) {
   const changed = (section: KinShell["sections"][number]) => {
     if ("on" in change) return { ...section, on: change.on };
+    if ("dock" in change) {
+      const { dock: _dock, ...rest } = section;
+      return change.dock ? { ...rest, dock: true } : rest;
+    }
+    if ("remove" in change) return section;
     const { name: _name, noun: _noun, ...rest } = section;
     const name = change.name.trim();
     return name === "" ? rest : { ...rest, name, noun: change.noun.trim() };
@@ -218,12 +229,126 @@ export function kinShellChanged(shell: KinShell, change: KinSectionChange) {
   return {
     rev: shell.rev,
     shell: {
-      sections: named
-        ? shell.sections.map((section) => (section.id === change.id ? changed(section) : section))
-        : [...shell.sections, changed({ id: change.id, on: true })],
+      sections:
+        "remove" in change
+          ? shell.sections.filter((section) => section.id !== change.id)
+          : named
+            ? shell.sections.map((section) =>
+                section.id === change.id ? changed(section) : section,
+              )
+            : [...shell.sections, changed({ id: change.id, on: true })],
     },
   };
 }
+
+// A company's own lists as sections: `list:<list id>` in the shell, after Kin's own.
+
+/** A list section's id in the shell. */
+export type KinListSectionId = `list:${string}`;
+
+const LIST_SECTION = /^list:([a-z][a-z0-9_]{1,39})$/;
+
+export const kinListSectionId = (list: string): KinListSectionId => `list:${list}`;
+
+/** The list a section shows, or null for one of Kin's own sections (or an id this build can't read). */
+export function kinListOfSection(id: string): string | null {
+  return LIST_SECTION.exec(id)?.[1] ?? null;
+}
+
+export interface KinListSection {
+  readonly id: KinListSectionId;
+  readonly list: string;
+  readonly on: boolean;
+  /** In the phone's dock, when there is room for it. */
+  readonly dock: boolean;
+}
+
+/**
+ * The list sections in the shell's order, as the host filtered them for this viewer: only lists
+ * they reach, never an archived one's. None from a host older than list sections.
+ */
+export function kinListSections(shell: KinShell | null | undefined): ReadonlyArray<KinListSection> {
+  const seen = new Set<string>();
+  return (shell?.sections ?? []).flatMap((section) => {
+    const list = kinListOfSection(section.id);
+    if (list === null || seen.has(list)) return [];
+    seen.add(list);
+    return [{ id: kinListSectionId(list), list, on: section.on, dock: section.dock === true }];
+  });
+}
+
+/** The places the phone's dock holds, Chats included. */
+export const KIN_DOCK_PLACES = 5;
+
+/**
+ * The phone's dock: this person's own places, then each list section that is on and marked for the
+ * dock, in the shell's order, while places are left. Never more than five; a list section left out
+ * is reached in Lists.
+ */
+export function kinDockWithLists<Tab extends string>(
+  tabs: ReadonlyArray<Tab>,
+  shell: KinShell | null | undefined,
+): ReadonlyArray<Tab | KinListSectionId> {
+  const room = Math.max(0, KIN_DOCK_PLACES - tabs.length);
+  const docked = kinListSections(shell)
+    .filter((section) => section.on && section.dock)
+    .slice(0, room)
+    .map((section) => section.id);
+  return [...tabs, ...docked];
+}
+
+/**
+ * Room for list sections in the company's dock, as Settings offers it: Chats, Tasks and Docs always
+ * have a place, Money and Clients while they are on, and a list section takes one they leave.
+ */
+export function kinDockRoom(shell: KinShell | null | undefined): {
+  readonly room: number;
+  readonly used: number;
+  readonly full: boolean;
+} {
+  const kins = 3 + Number(kinSectionOn(shell, "money")) + Number(kinSectionOn(shell, "clients"));
+  const room = Math.max(0, KIN_DOCK_PLACES - kins);
+  const used = kinListSections(shell).filter((section) => section.on && section.dock).length;
+  return { room, used, full: used >= room };
+}
+
+/**
+ * Whether a list can be shown as a section, as the host decides it: a company's own list that is
+ * live, not one of Kin's own (they have their place already) and not paid over time.
+ */
+export function kinListCanBeSection(def: {
+  readonly list: string;
+  readonly name: string;
+  readonly builtIn: boolean;
+  readonly archivedAt: string | null;
+  readonly payments?: true | undefined;
+}): boolean {
+  return (
+    !def.builtIn &&
+    def.archivedAt === null &&
+    def.payments !== true &&
+    kinSectionOf({ list: def.list }) === null &&
+    !KINS_OWN_LISTS.has(def.list) &&
+    def.name.trim().toLowerCase() !== "bank transactions"
+  );
+}
+
+const KINS_OWN_LISTS = new Set(["work", "goals", "docs", "dates", "subscriptions", "payments"]);
+
+/** Settings › Sections' part for a company's own lists, written once for the web and the phone. */
+export const KIN_LIST_SECTIONS = {
+  title: "Your lists as sections",
+  detail:
+    "A list shown as a section has a place of its own in the sidebar, for everyone who can see the list.",
+  dock: "In the phone's dock",
+  dockFull: "The dock holds five places. Turn one off first.",
+  remove: "Remove from sidebar",
+  removeDetail: "The list itself stays under Lists.",
+  add: "Show a list as a section",
+  addPick: "Choose a list",
+  addSave: "Show",
+  addNone: "None of your own lists can be shown as a section.",
+} as const;
 
 /** What `kin.shell.set` takes to switch one section: every section as held, that one changed. */
 export const kinShellSwitched = (shell: KinShell, id: KinSectionId, on: boolean) =>

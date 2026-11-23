@@ -82,6 +82,7 @@ import {
   retryKinAccess,
 } from "./kinAccess.ts";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "./kinDocsStream.ts";
+import { KIN_LIST_ACCEPT } from "./kinLists.ts";
 import { kinReachPairKey } from "./kinReach.ts";
 import type { KinChatState } from "./kinInboxModel.ts";
 import { KIN_MONEY_LIVE_LABEL, kinMoneyLiveStream } from "./kinMoneyStream.ts";
@@ -1978,7 +1979,7 @@ export function makeKinClient<R, ER>(
     workLists: createKinQueryAtomFamily(runtime, {
       label: "kin:work:lists",
       execute: Effect.fn("KinClient.workLists")(function* (input: KinListsInput) {
-        return yield* readWorkLists(input);
+        return yield* readWorkLists({ ...input, accept: KIN_LIST_ACCEPT });
       }),
       staleTimeMs: 30_000,
       refreshTrigger: kinWorkRefreshOn(KIN_WORK_NOT_TASKS, kinRefreshOn("workLists")),

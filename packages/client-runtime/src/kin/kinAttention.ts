@@ -112,6 +112,29 @@ export const KIN_DEAL_SENSES: ReadonlySet<KinPulseFact["sense"]> = new Set<KinPu
   "deal_date_passed",
 ]);
 
+/** An entry of a list shown as a section that is late, due today, or off its check. */
+export const KIN_ENTRY_SENSES: ReadonlySet<KinPulseFact["sense"]> = new Set<KinPulseFact["sense"]>([
+  "entry_late",
+  "entry_check",
+]);
+
+/**
+ * What the host says of each list entry that is late, due today or off its check, by its key, in
+ * the fact's own words, for its row and its page. Empty from a host older than list sections.
+ */
+export function kinEntryFacts(
+  read: KinPulseScreenRead | null | undefined,
+): ReadonlyMap<string, ReadonlyArray<string>> {
+  const byKey = new Map<string, Array<string>>();
+  for (const fact of read?.facts ?? []) {
+    if (!KIN_ENTRY_SENSES.has(fact.sense) || fact.subject.kind !== "record") continue;
+    const lines = byKey.get(fact.subject.key) ?? [];
+    lines.push(kinPlainDates(fact.consequence));
+    byKey.set(fact.subject.key, lines);
+  }
+  return byKey;
+}
+
 /** A client's own matters, and its tasks that are late or due. */
 const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
   ...KIN_DEAL_SENSES,
