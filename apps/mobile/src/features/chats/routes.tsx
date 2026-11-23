@@ -17,6 +17,7 @@ import { KinDealScreen } from "./KinDealScreen";
 import { KinDealsConcernScreen } from "./KinDealsConcernScreen";
 import { KinDealStagesScreen } from "./KinDealsSettings";
 import { KinSectionsScreen } from "./KinSectionsScreen";
+import { KinNumberFormScreen, KinNumberScreen, KinNumbersScreen } from "./KinNumbersScreens";
 import { KinImportScreen } from "./KinImportScreen";
 import {
   KinConnectionAddScreen,
@@ -294,6 +295,20 @@ export const KIN_SCREENS = {
   KinSearch: createNativeStackScreen({
     screen: KinSearchScreen,
     linking: "kin/:environmentId/:orgId/search",
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinNumbers: createNativeStackScreen({
+    screen: KinNumbersScreen,
+    linking: "kin/:environmentId/:orgId/numbers",
+    options: pageRoute({ title: "Numbers" }),
+  }),
+  KinNumber: createNativeStackScreen({
+    screen: KinNumberScreen,
+    linking: "kin/:environmentId/:orgId/numbers/:number",
+    options: pageRoute({ title: "Number" }),
+  }),
+  KinNumberForm: createNativeStackScreen({
+    screen: KinNumberFormScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinGoalForm: createNativeStackScreen({
