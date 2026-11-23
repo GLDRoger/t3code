@@ -134,6 +134,15 @@ export const LISTS: Record<ListName, List> = {
     fields: ["home"],
   },
 };
+export const TEAM_LIST_RESERVED = [
+  ...Object.keys(LISTS),
+  "expenses",
+  "invoices",
+  "receipts",
+  "quotes",
+  "payments",
+  "bank_transactions",
+];
 
 export const listOf = (registerId: string): ListName =>
   registerId in LISTS ? (registerId as ListName) : "work";

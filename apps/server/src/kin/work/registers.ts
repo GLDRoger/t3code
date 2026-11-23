@@ -10,6 +10,8 @@ import {
   KinListFieldKey,
   KinNumberingRule,
   type KinOrgId,
+  type KinRecord,
+  type KinRecordDetail,
   KinRecordState,
   isCalendarDay,
 } from "@t3tools/contracts";
@@ -27,6 +29,7 @@ import {
   isMoney,
   LISTS,
   WATCHED_NUMBER_FIELDS,
+  TEAM_LIST_RESERVED,
   type ListName,
   parseFields,
   sensitiveFields,
@@ -80,6 +83,8 @@ export const StoredDefinition = Schema.Struct({
   remindOn: KinListDefinition.fields.remindOn,
   check: KinListDefinition.fields.check,
   sensitive: Schema.Boolean,
+  team: KinListDefinition.fields.team,
+  teamSince: KinListDefinition.fields.teamSince,
   amount: Schema.Boolean,
   currency: KinCurrency,
   /** Made while the company's country wasn't chosen: takes the company's currency once it is. */
@@ -470,6 +475,22 @@ export const unknownList = (id: string) =>
     message: `There is no list ${id.slice(0, 40)}. A new list is proposed with list_define first.`,
   });
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+export const teamListRefusal = (id: string, name: string, sensitive?: boolean) =>
+  TEAM_LIST_RESERVED.includes(id) || name.trim().toLowerCase() === "bank transactions"
+    ? invalid("A built-in list can't be opened to the team.")
+    : sensitive === true
+      ? invalid("A sensitive list can't be opened to the team. Unmark it as sensitive first.")
+      : undefined;
+
+export const teamListChange = (
+  def: Pick<StoredDefinition, "team" | "teamSince">,
+  team: boolean | undefined,
+  now: number,
+) => {
+  if (team === undefined || team === (def.team === true)) return {};
+  return { team, teamSince: team ? now : (def.teamSince ?? null) };
+};
+
 const isChatError = Schema.is(KinChatError);
 
 /** The entry's own fields that are confidential: money, files and any marked so, plus `amount`. */
@@ -477,6 +498,51 @@ export const sensitiveKeys = (def: ListDef): ReadonlyArray<string> => [
   ...(def.amount ? ["amount"] : []),
   ...def.fields.filter((one) => one.sensitive || one.type === "money").map((one) => one.key),
 ];
+
+/** The same field and history projection for the host's list, sheet and agent tools. */
+export const listEntryFor = <
+  T extends KinRecord & Partial<Pick<KinRecordDetail, "changes" | "payments" | "files">>,
+>(
+  entry: T,
+  list: string,
+  def: ListDef | undefined,
+  money: boolean,
+) => {
+  if (money || TEAM_LIST_RESERVED.includes(list)) return entry;
+  const secrets = new Set([
+    ...(def === undefined ? Object.keys(entry.fields ?? {}) : sensitiveKeys(def)),
+    "amount",
+    "payment",
+    "payments",
+  ]);
+  const {
+    amount: _amount,
+    balance: _balance,
+    received: _received,
+    tdsDeducted: _tds,
+    payments: _payments,
+    files: _files,
+    fields,
+    changes,
+    ...rest
+  } = entry;
+  const shown =
+    fields === undefined
+      ? undefined
+      : Object.fromEntries(Object.entries(fields).filter(([key]) => !secrets.has(key)));
+  return {
+    ...rest,
+    ...(shown === undefined || Object.keys(shown).length === 0 ? {} : { fields: shown }),
+    ...(changes === undefined
+      ? {}
+      : {
+          changes: changes.flatMap((change) => {
+            const fields = change.fields.filter((field) => !secrets.has(field.field));
+            return change.kind === "updated" && fields.length === 0 ? [] : [{ ...change, fields }];
+          }),
+        }),
+  };
+};
 
 /**
  * Whether stored values fit a defined list's fields: known, not retired unless cleared, and of
@@ -647,6 +713,7 @@ export const toDefinition = (
       : {}),
     ...(def.check !== undefined && accept?.includes("check") ? { check: def.check } : {}),
     sensitive: def.sensitive,
+    ...(def.team === undefined ? {} : { team: def.team, teamSince: def.teamSince ?? null }),
     amount: def.amount,
     currency: def.currency,
     ...shownLabels(def.categoryLabels),
@@ -690,6 +757,7 @@ const Proposal = Schema.Union([
     categories: Schema.Array(Schema.String),
     choices: Schema.Record(Schema.String, Schema.Array(Schema.String)),
     stateLabels: StateLabels,
+    team: KinListDefinition.fields.team,
   }),
 ]);
 export type Proposal = typeof Proposal.Type;
@@ -840,6 +908,7 @@ export type ListInput = {
   readonly amount?: boolean | undefined;
   readonly currency?: string | undefined;
   readonly sensitive?: boolean | undefined;
+  readonly team?: boolean | undefined;
   readonly dueLabel?: string | undefined;
   readonly dateLabel?: string | undefined;
 };
@@ -870,10 +939,18 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
   const fields = fieldDefs(input.fields ?? []);
   if (!Array.isArray(fields)) return yield* fields;
   if (input.list !== undefined) {
+    if (input.team === true) {
+      const reserved = teamListRefusal(input.list, input.list);
+      if (reserved !== undefined) return yield* reserved;
+    }
     const def = yield* listDef(orgId, input.list);
     if (def === undefined) return yield* unknownList(input.list);
     if (def.builtIn !== null)
       return yield* invalid(`${def.name} is built in; its fields are fixed.`);
+    if (input.team === true) {
+      const refused = teamListRefusal(def.id, def.name, def.sensitive);
+      if (refused !== undefined) return yield* refused;
+    }
     // A field named again with new choices adds those choices to it.
     const choices: Record<string, ReadonlyArray<string>> = {};
     const added = fields.filter((one) => {
@@ -891,12 +968,17 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       categories: input.categories ?? [],
       choices,
       stateLabels: input.stateNames ?? {},
+      ...(input.team === undefined ? {} : { team: input.team }),
     } satisfies Proposal;
   }
   const named =
     input.id ?? input.template ?? (input.name === undefined ? undefined : idFor(input.name));
   if (named === undefined)
     return yield* invalid("Name the list, start from a template, or say which list to add to.");
+  if (input.team === true) {
+    const reserved = teamListRefusal(named, input.name ?? named);
+    if (reserved !== undefined) return yield* reserved;
+  }
   const { pending, ...money } = yield* companyMoneyState(orgId);
   const home = money.homeCurrency;
   const preset = (PRESET_IDS as ReadonlyArray<string>).includes(named)
@@ -934,6 +1016,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       ...fields.filter((one) => !(preset?.fields ?? []).some((field) => field.key === one.key)),
     ],
     sensitive: input.sensitive ?? preset?.sensitive ?? amount,
+    ...(input.team === undefined ? {} : { team: input.team }),
     amount,
     currency: input.currency ?? home,
     ...(pending && input.currency === undefined ? { currencyPending: true as const } : {}),
@@ -952,7 +1035,9 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     prefix: input.prefix ?? preset?.prefix ?? prefixFor(name),
     definition,
   };
-  const refused = checkDraft(draft);
+  const refused =
+    (definition.team === true ? teamListRefusal(named, name, definition.sensitive) : undefined) ??
+    checkDraft(draft);
   if (refused !== undefined) return yield* refused;
   if ((yield* listDef(orgId, draft.id)) !== undefined)
     return yield* invalid(
@@ -1041,17 +1126,20 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (proposal._tag === "new") {
-    const { currencyPending, ...made } = proposal.definition;
+    const { currencyPending, teamSince: _teamSince, ...made } = proposal.definition;
     // A proposal from before the country was chosen, said yes to after, takes today's currency.
     const today = currencyPending === true ? yield* listCurrency(orgId) : undefined;
     const draft = {
       ...proposal,
-      definition:
-        today === undefined || today.currencyPending === true
-          ? proposal.definition
-          : { ...made, ...today },
+      definition: {
+        ...made,
+        ...(today === undefined ? (currencyPending === true ? { currencyPending } : {}) : today),
+        ...(made.team === true ? { teamSince: now } : {}),
+      },
     };
-    const refused = checkDraft(draft);
+    const refused =
+      (made.team === true ? teamListRefusal(draft.id, draft.name, made.sensitive) : undefined) ??
+      checkDraft(draft);
     if (refused !== undefined) return yield* refused;
     const taken = yield* sql<{ id: string; prefix: string }>`SELECT register_id AS id,
         key_prefix AS prefix FROM kin_registers WHERE org_id = ${orgId}
@@ -1071,7 +1159,11 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
   } else {
     const def = yield* listDef(orgId, proposal.id);
     if (def === undefined || def.builtIn !== null) return yield* unknownList(proposal.id);
-    const next = extended(def, proposal);
+    if (proposal.team === true) {
+      const refused = teamListRefusal(def.id, def.name, def.sensitive);
+      if (refused !== undefined) return yield* refused;
+    }
+    const next = extended({ ...def, ...teamListChange(def, proposal.team, now) }, proposal);
     if (isChatError(next)) return yield* next;
     const taken = def.id === "expenses" ? fundingKeyRefusal(next.fields) : undefined;
     if (taken !== undefined) return yield* invalid(taken);

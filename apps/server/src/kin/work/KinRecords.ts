@@ -1906,7 +1906,7 @@ const make = Effect.gen(function* () {
       request_hash: input.requestHash ?? null,
       team_shared:
         input.team === true ||
-        writer.teammate === true ||
+        (writer.teammate === true && def.team !== true) ||
         writer.teamShared === true ||
         (writer.view !== undefined && (ROOM_LISTS as ReadonlyArray<string>).includes(list))
           ? 1

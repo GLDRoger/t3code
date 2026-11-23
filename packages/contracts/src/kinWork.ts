@@ -807,8 +807,11 @@ export type KinWorkEvent = typeof KinWorkEvent.Type;
 /** The owner's "New": a short form. Long text belongs in chat. */
 export const KinWorkCreateInput = Schema.Struct({
   orgId: KinOrgId,
-  /** `milestones` adds a milestone to `project`; default a Work entry. */
-  list: Schema.optional(Schema.Literal("milestones")),
+  /** A milestone in its project or a team list entry. Default is a Work entry. */
+  list: Schema.optional(KinListId),
+  fields: Schema.optional(
+    Schema.Record(KinListFieldKey, Schema.NullOr(KinFieldValue)).check(Schema.isMaxProperties(20)),
+  ),
   title: KinTrimmedText.check(Schema.isMaxLength(280)),
   /** Defaults to the owner. A lead given work this way is woken to do it. */
   owner: Schema.optional(KinWorkPrincipal),

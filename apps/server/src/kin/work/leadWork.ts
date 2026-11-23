@@ -104,6 +104,7 @@ import {
   listOf,
   parseFields,
   shownField,
+  TEAM_LIST_RESERVED,
 } from "./lists.ts";
 import {
   addUp,
@@ -142,6 +143,7 @@ import {
   isBuiltIn,
   isInvoiceDraft,
   type ListDef,
+  listEntryFor,
   listOrPreset,
   sensitiveKeys,
   stateLabel,
@@ -155,6 +157,8 @@ import {
 } from "./sensitiveReads.ts";
 import { memberAdds, memberAddsContact, memberChangesContact } from "./ownerClients.ts";
 import {
+  allSeeMoney,
+  listLinksFor,
   crmSeenBy,
   crmVisible,
   KIN_OWNER_LEVEL,
@@ -1025,12 +1029,11 @@ const marksOf = (lists: Lists, row: RecordRow): typeof Marks.Type => {
 /** A defined list's own fields as a lead reads them: names for people, keys for links. */
 const shownFields = (
   def: ListDef | undefined,
-  row: RecordRow,
+  fields: ReturnType<typeof parseFields>,
   name: ToolNamer,
   keys: ReadonlyMap<string, string>,
 ) => {
   if (def === undefined || def.builtIn !== null) return {};
-  const fields = parseFields(row.fieldsJson);
   const shown: Record<string, string> = {};
   for (const [key, value] of Object.entries(fields)) {
     const spec = def.fields.find((one) => one.key === key);
@@ -1111,6 +1114,7 @@ type Shown = {
   readonly lists: Lists;
   readonly keys: ReadonlyMap<string, string>;
   readonly zone: string;
+  readonly money: boolean;
   /** Clients, projects and link targets on these rows the turn's people may not name. */
   readonly unseen: ReadonlySet<string>;
 };
@@ -1119,6 +1123,11 @@ const viewFor = Effect.fn("KinWorkTools.view")(function* (
   rows: ReadonlyArray<RecordRow>,
 ) {
   const lists = yield* allLists(lead.orgId);
+  const team = yield* viewOf(lead);
+  const money =
+    team === undefined ||
+    !rows.some((row) => !TEAM_LIST_RESERVED.includes(row.registerId)) ||
+    (yield* allSeeMoney(lead.orgId, team.people));
   const links = linkIds(rows, lists);
   const unseen = yield* unseenOf(lead, [
     ...rows.flatMap((row) => [row.partyId, row.projectId]),
@@ -1133,6 +1142,7 @@ const viewFor = Effect.fn("KinWorkTools.view")(function* (
     lists,
     keys: yield* linkKeys(lead, links, unseen),
     zone: yield* ownerZone(lead.orgId),
+    money,
     unseen,
   } satisfies Shown;
 });
@@ -1187,12 +1197,18 @@ const goalShown = (fields: ReturnType<typeof parseFields>) => {
 
 const rowFor = (view: Shown, row: RecordRow, now: number) => {
   const { name } = view;
-  const record = toRecord(row, now);
-  const waitingOn = name(record.waitingOn);
   const list = row.registerId;
   const def = defOf(view.lists, row);
   const defined = def !== undefined && def.builtIn === null;
-  const fields = parseFields(row.fieldsJson);
+  const record = listEntryFor(
+    { ...toRecord(row, now), fields: parseFields(row.fieldsJson) },
+    list,
+    def,
+    view.money,
+  );
+  const { sensitiveFields, ...marks } = marksOf(view.lists, row);
+  const waitingOn = name(record.waitingOn);
+  const fields = record.fields ?? {};
   const text = (key: string) => {
     const value = fieldText(fields, key);
     return value === null ? {} : { [key]: value };
@@ -1258,19 +1274,24 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...(repos.length === 0 ? {} : { repos: [...repos] }),
     ...(defined ? {} : { ...text("address"), ...text("gstin"), ...text("placeOfSupply") }),
     ...(defined && row.category !== null ? { category: row.category } : {}),
-    ...(record.amount === undefined ? {} : { amount: formatMoney(record.amount) }),
-    ...(record.balance === undefined || isInvoiceDraft(list, record.state)
+    ...(!("amount" in record) || record.amount === undefined
+      ? {}
+      : { amount: formatMoney(record.amount) }),
+    ...(!("balance" in record) || record.balance === undefined || isInvoiceDraft(list, record.state)
       ? {}
       : { balance: formatMoney(record.balance) }),
     ...(record.dateAt === undefined
       ? {}
       : { date: dayOrTime(record.dateAt, record.dateAllDay === true, view.zone) }),
     ...(record.repeat === undefined ? {} : { repeat: shownRepeatRule(record.repeat) }),
-    ...shownFields(def, row, name, view.keys),
+    ...shownFields(def, fields, name, view.keys),
     ...(list === "work" || list === "projects" ? spineShown(row, name) : {}),
     ...(list === "goals" ? goalShown(fields) : {}),
     ...(list === "work" ? stepsShown(row) : {}),
-    ...marksOf(view.lists, row),
+    ...marks,
+    ...(sensitiveFields !== undefined && (view.money || TEAM_LIST_RESERVED.includes(list))
+      ? { sensitiveFields }
+      : {}),
     rev: record.rev,
   } as typeof Row.Type;
 };
@@ -2250,14 +2271,28 @@ const dealsOn = Effect.fn("KinWorkTools.dealsOn")((orgId: KinOrgId) =>
 const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.Type) {
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
-  const row =
-    (yield* records.get(lead.orgId, input.key)) ?? (yield* byNumber(lead.orgId, input.key));
+  const byExactKey = yield* records.get(lead.orgId, input.key);
+  const row = byExactKey ?? (yield* byNumber(lead.orgId, input.key));
   if (row === undefined) return yield* notFound(input.key);
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, row.recordId)))
     return yield* notFound(input.key);
   if (listOf(row.registerId) === "docs") return yield* isDoc(input.key);
   const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
-  const detail = yield* records.detail(row, 10);
+  const view = yield* viewFor(lead, [row]);
+  const def = defOf(view.lists, row);
+  if (
+    byExactKey === undefined &&
+    !view.money &&
+    !TEAM_LIST_RESERVED.includes(row.registerId) &&
+    (def === undefined || sensitiveKeys(def).includes("number"))
+  )
+    return yield* notFound(input.key);
+  const safe = listEntryFor(yield* records.detail(row, 10), row.registerId, def, view.money);
+  const detail = {
+    ...safe,
+    links: yield* listLinksFor(lead.orgId, viewer, safe.links),
+    changes: safe.changes ?? [],
+  };
   const dealLinks = new Set<string>();
   if (!(yield* dealsOn(lead.orgId))) {
     const sql = yield* SqlClient.SqlClient;
@@ -2281,7 +2316,6 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     }
   }
   const now = yield* Clock.currentTimeMillis;
-  const view = yield* viewFor(lead, [row]);
   const { name } = view;
   const actor = (by: (typeof detail.changes)[number]["by"]) =>
     by._tag === "system" ? "Kin" : (name(by) ?? "someone");
@@ -2428,7 +2462,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
               : { noContact: project.healthBecause.noContact }),
           },
         }),
-    ...(detail.payments === undefined
+    ...(!("payments" in detail) || detail.payments === undefined
       ? {}
       : {
           payments: detail.payments.map((payment) => ({
@@ -2539,6 +2573,14 @@ const createRow = Effect.fnUntraced(function* (
   if (row.amount !== undefined) yield* countryFirst(lead.orgId);
   const def = yield* listFor(lead, row.list ?? "work");
   const list = def.id;
+  if (
+    team !== undefined &&
+    def.team === true &&
+    (row.amount !== undefined ||
+      sensitiveKeys(def).some((key) => Object.hasOwn(row.fields ?? {}, key))) &&
+    !(yield* allSeeMoney(lead.orgId, team.people))
+  )
+    return yield* TEAM_REFUSED;
   // A deal's rules are `deals.ts`'s, whoever writes it.
   if (list === "deals")
     return yield* dealRow(lead, sourceEventId, writer, def, lists, row, notices);
@@ -3589,6 +3631,14 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     });
   yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category ?? undefined);
   const def = yield* listFor(lead, before.registerId);
+  if (
+    team !== undefined &&
+    def.team === true &&
+    (input.amount !== undefined ||
+      sensitiveKeys(def).some((key) => Object.hasOwn(input.fields ?? {}, key))) &&
+    !(yield* allSeeMoney(lead.orgId, team.people))
+  )
+    return yield* TEAM_REFUSED;
   const work = before.registerId === "work";
   const route = (who: KinWorkPrincipal) =>
     work
