@@ -24,6 +24,9 @@ import {
   type KinHostInput,
   type KinOrgGetInput,
   type KinGoalsInput,
+  type KinNumbersDefinitionsInput,
+  type KinNumbersListInput,
+  type KinNumbersValuesInput,
   type KinBriefsInput,
   type KinCheckInsInput,
   type KinPulseListInput,
@@ -320,6 +323,19 @@ export function makeKinClient<R, ER>(
     tag: "kin.goals.list",
   });
   const readGoals = kinGuardedRead(goalsRead);
+  const numbersRead = createKinRpcCommand(runtime, {
+    label: "kin:numbers:read",
+    tag: "kin.numbers.list",
+  });
+  const readNumbers = kinGuardedRead(numbersRead);
+  const readNumberValues = kinGuardedRead(
+    createKinRpcCommand(runtime, { label: "kin:numbers:values:read", tag: "kin.numbers.values" }),
+  );
+  const numberDefinitionsRead = createKinRpcCommand(runtime, {
+    label: "kin:numbers:definitions:read",
+    tag: "kin.numbers.definitions",
+  });
+  const readNumberDefinitions = kinGuardedRead(numberDefinitionsRead);
   const checkInsRead = createKinRpcCommand(runtime, {
     label: "kin:checkIns:read",
     tag: "kin.checkIns.list",
@@ -1343,6 +1359,59 @@ export function makeKinClient<R, ER>(
       }),
       staleTimeMs: 30_000,
       refreshTrigger: kinWorkRefreshOn("any", kinRefreshOn("pulse")),
+    }),
+    /**
+     * Watched numbers with their latest values. Values move `numbers`; a number's set-up is a goals
+     * entry, so Work's changes to it move it too; a section switched off hides computed ones.
+     */
+    numbers: createKinQueryAtomFamily(runtime, {
+      label: "kin:numbers",
+      execute: Effect.fn("KinClient.numbers")(function* (input: KinNumbersListInput) {
+        return yield* readNumbers(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: (target: {
+        readonly environmentId: EnvironmentId;
+        readonly input: KinNumbersListInput;
+      }) => {
+        const work = kinWorkRefreshOn(["goals"])(target);
+        const values = kinRefreshOn("numbers")(target);
+        const shell = kinRefreshOn("shell")(target);
+        return Atom.make((get) => `${get(work)}|${get(values)}|${get(shell)}`);
+      },
+    }),
+    /** Its `permissionAtom` is whether this viewer may read Numbers at all. */
+    numbersRead,
+    /** One number's recorded values between two days, for its page. */
+    numberValues: createKinQueryAtomFamily(runtime, {
+      label: "kin:numbers:values",
+      execute: Effect.fn("KinClient.numberValues")(function* (input: KinNumbersValuesInput) {
+        return yield* readNumberValues(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinRefreshOn("numbers"),
+    }),
+    /** How each number is set up, archived ones too: the owner level's form and Restore. */
+    numberDefinitions: createKinQueryAtomFamily(runtime, {
+      label: "kin:numbers:definitions",
+      execute: Effect.fn("KinClient.numberDefinitions")(function* (
+        input: KinNumbersDefinitionsInput,
+      ) {
+        return yield* readNumberDefinitions(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinWorkRefreshOn(["goals"]),
+    }),
+    numberRecord: createKinRpcCommand(runtime, {
+      label: "kin:numbers:record",
+      tag: "kin.numbers.record",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    /** Its `permissionAtom` is whether this viewer may watch, change and archive numbers. */
+    numberSave: createKinRpcCommand(runtime, {
+      label: "kin:numbers:save",
+      tag: "kin.numbers.save",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.key ?? input.clientRequestId },
     }),
     goalSave: createKinRpcCommand(runtime, {
       label: "kin:goals:save",

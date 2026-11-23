@@ -20,6 +20,13 @@ vi.mock(import("./kinPlacesAtom"), async (importOriginal) => {
   return { ...(await importOriginal()), kinPlacesAtom: () => places };
 });
 
+// Whether the host lists a number for this person; the owner level always has Numbers.
+const numbersSeen = vi.hoisted(() => ({ shown: false }));
+vi.mock(import("./useKinNumbers"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinNumbersShown: () => numbersSeen.shown,
+}));
+
 vi.mock(import("./KinNewLeadButton"), async (importOriginal) => ({
   ...(await importOriginal()),
   kinNewLeadTarget: () => ({ ...target, lead: null }),
@@ -107,9 +114,10 @@ import { AppAtomRegistryProvider, appAtomRegistry } from "../rpc/atomRegistry";
 
 const chatsPath = `/kin/${target.environmentId}/${target.orgId}/chat-chief`;
 const KIN_ROWS =
-  /^(Chats|Tasks|Money|Clients|Docs|Projects|Lists|Dates|Go to)\b|: model, character/;
+  /^(Chats|Tasks|Money|Clients|Docs|Numbers|Projects|Lists|Dates|Go to)\b|: model, character/;
 
-function setup(destinations: ReadonlyArray<KinDestination>) {
+function setup(destinations: ReadonlyArray<KinDestination>, numbersShown = false) {
+  numbersSeen.shown = numbersShown;
   useCommandPaletteStore.setState(useCommandPaletteStore.getInitialState(), true);
   groupsSeen.values = [];
   appAtomRegistry.set(placesSeen.atom as Atom.Writable<KinPlaces>, {
@@ -142,7 +150,7 @@ const kinRowNames = () =>
 
 describe("Kin's rows in the command palette", () => {
   it("offers the owner each place once, with its shortcut, and no two rows share a value", async () => {
-    setup(["chats", "tasks", "money", "clients", "docs"]);
+    setup(["chats", "tasks", "money", "clients", "docs"], true);
     using _mac = onMac();
     await using _screen = await renderPalette();
 
@@ -152,6 +160,7 @@ describe("Kin's rows in the command palette", () => {
       "Money: who owes you, what came in and what went out⌘3",
       "Clients: what you owe them and what they owe you⌘4",
       "Docs: what your agents have written up⌘5",
+      "Numbers: the figures your company watches, and today's values⌘6",
       "Projects: how each one is going",
       "Lists: everything your agents keep track of",
       "Dates: everything due, across every list",
@@ -174,6 +183,7 @@ describe("Kin's rows in the command palette", () => {
     const names = kinRowNames();
     expect(names.some((name) => name.startsWith("Money"))).toBe(false);
     expect(names.some((name) => name.startsWith("Dates"))).toBe(false);
+    expect(names.some((name) => name.startsWith("Numbers"))).toBe(false);
     expect(names).toContain("Clients: what you owe them and what they owe you⌘3");
     expect(names).toContain("Projects: how each one is going");
     expect(names).toContain("Lists: everything your agents keep track of");

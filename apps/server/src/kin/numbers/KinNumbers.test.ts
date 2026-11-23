@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { KinAgentId, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { KinAgentId, KinChatError, KinOrgId, KinPersonId, KinRecordKey } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -8,6 +8,9 @@ import * as TestClock from "effect/testing/TestClock";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Option from "effect/Option";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { KinLevelGate } from "../lead/LevelGate.ts";
+import * as KinRecords from "../work/KinRecords.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Refresh from "../chat/KinRefreshHub.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
@@ -17,6 +20,7 @@ import * as Shell from "../shell/KinShell.ts";
 import * as Goals from "../work/goals.ts";
 import { personSees } from "../work/teamView.ts";
 import * as Numbers from "./KinNumbers.ts";
+import * as Definitions from "./numberDefinitions.ts";
 
 const layer = Layer.mergeAll(
   KinPersistence.layer,
@@ -388,4 +392,116 @@ it.effect(
       );
       assert.strictEqual((yield* Effect.flip(Numbers.list(agent))).message, SHARED_REFUSAL);
     }).pipe(Effect.provide(layer)),
+);
+
+const withRecords = Layer.mergeAll(
+  KinRecords.layer,
+  Layer.mock(KinLevelGate)({
+    ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
+  }),
+).pipe(Layer.provideMerge(KinEventQueue.layer), Layer.provideMerge(layer));
+
+it.effect("the owner level watches, shares, archives and restores a number; a member can't", () =>
+  Effect.gen(function* () {
+    const sql = yield* setup;
+    yield* sql`UPDATE kin_people SET sees_money = 1 WHERE org_id = ${orgId} AND person_id = ${member.personId}`;
+    yield* goal("G-9", { target: "100" });
+    const save = (input: Omit<Parameters<typeof Definitions.save>[1], "orgId">) =>
+      Definitions.save([owner], { orgId, ...input });
+    const made = yield* save({
+      name: "Refund rate",
+      unit: "%",
+      direction: "down",
+      every: "day",
+      above: "4.5",
+      clientRequestId: "watch-refunds",
+    });
+    assert.deepStrictEqual(made, {
+      key: made.key,
+      rev: made.rev,
+      name: "Refund rate",
+      unit: "%",
+      direction: "down",
+      every: "day",
+      above: "4.5",
+      computed: false,
+      shared: false,
+      archived: false,
+    });
+    assert.deepStrictEqual(
+      yield* save({
+        name: "Refund rate",
+        unit: "%",
+        direction: "down",
+        every: "day",
+        above: "4.5",
+        clientRequestId: "watch-refunds",
+      }),
+      made,
+    );
+    yield* Numbers.record(owner, [value(made.key, "5")]);
+    assert.deepStrictEqual(
+      (yield* Numbers.list(owner)).numbers.map(({ key, off, canType }) => ({ key, off, canType })),
+      [{ key: made.key, off: true, canType: true }],
+    );
+    assert.deepStrictEqual((yield* Numbers.list(member)).numbers, []);
+    const shared = yield* save({
+      key: made.key,
+      rev: made.rev,
+      name: "Refunds",
+      above: null,
+      shared: true,
+      clientRequestId: "share",
+    });
+    assert.include(shared, { name: "Refunds", shared: true, unit: "%" });
+    assert.isUndefined(shared.above);
+    assert.deepStrictEqual(
+      (yield* Numbers.list(member)).numbers.map(({ key, canType, off }) => ({ key, canType, off })),
+      [{ key: made.key, canType: true, off: false }],
+    );
+    const archived = yield* save({
+      key: made.key,
+      rev: shared.rev,
+      name: "Refunds",
+      archived: true,
+      clientRequestId: "archive",
+    });
+    assert.isTrue(archived.archived);
+    assert.deepStrictEqual((yield* Numbers.list(owner)).numbers, []);
+    assert.deepStrictEqual(
+      (yield* Definitions.definitions([owner], orgId)).numbers.map(({ key, archived }) => ({
+        key,
+        archived,
+      })),
+      [{ key: made.key, archived: true }],
+    );
+    yield* save({
+      key: made.key,
+      rev: archived.rev,
+      name: "Refunds",
+      archived: false,
+      clientRequestId: "restore",
+    });
+    assert.lengthOf((yield* Numbers.list(owner)).numbers, 1);
+    const refusedSave = yield* Effect.flip(
+      Definitions.save([member], { orgId, name: "Mine", clientRequestId: "member" }),
+    );
+    const refusedRead = yield* Effect.flip(Definitions.definitions([member], orgId));
+    assert.deepStrictEqual(
+      [refusedSave.reason, refusedRead.reason],
+      ["not_allowed", "not_allowed"],
+    );
+    assert.strictEqual(
+      (yield* Effect.flip(
+        save({ key: KinRecordKey.make("G-9"), rev: 0, name: "Target", clientRequestId: "goal" }),
+      )).reason,
+      "invalid_state",
+    );
+    assert.strictEqual(
+      (yield* Effect.flip(
+        save({ name: "Stock", above: "1", below: "2", clientRequestId: "upside-down" }),
+      )).message,
+      "The lower limit is above the upper one.",
+    );
+  }).pipe(Effect.provide(withRecords)),
 );
