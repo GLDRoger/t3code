@@ -85,6 +85,14 @@ import {
   TEAM_LIST_RESERVED,
 } from "./lists.ts";
 import {
+  BILL_TO_FIELDS,
+  billToNameOf,
+  clearedBillTo,
+  clearsBillTo,
+  hasBillTo,
+  validateBillTo,
+} from "./billTo.ts";
+import {
   addUp,
   askSlip,
   dayIn,
@@ -936,6 +944,11 @@ const make = Effect.gen(function* () {
   const choicesMoved = (orgId: KinOrgId, list: string) =>
     list === "clients" || list === "projects" ? refreshes.touch(orgId, "workChoices") : Effect.void;
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  const gstCompany = (orgId: KinOrgId) =>
+    companyMoney(orgId).pipe(
+      provideSql,
+      Effect.map((money) => money.country === "IN"),
+    );
 
   const failed = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
@@ -1562,8 +1575,13 @@ const make = Effect.gen(function* () {
     recordId: string,
     list: "clients" | "projects",
   ) {
-    const [row] = yield* sql<{ key: string; partyId: string | null; state: KinRecordState }>`
-      SELECT key, party_id AS "partyId", state FROM kin_records
+    const [row] = yield* sql<{
+      key: string;
+      title: string;
+      partyId: string | null;
+      state: KinRecordState;
+    }>`
+      SELECT key, title, party_id AS "partyId", state FROM kin_records
       WHERE org_id = ${orgId} AND record_id = ${recordId} AND register_id = ${list}`;
     if (row === undefined)
       return yield* new KinChatError({
@@ -1820,6 +1838,14 @@ const make = Effect.gen(function* () {
     const invalidRefs = checkRefs(def, partyId, projectId);
     if (invalidRefs !== undefined) return yield* invalidRefs;
     const party = partyId === null ? undefined : yield* target(orgId, partyId, "clients");
+    if (
+      hasBillTo(list) &&
+      Object.keys(fields).some((field) => Object.hasOwn(BILL_TO_FIELDS, field))
+    ) {
+      yield* validateBillTo(gstCompany(orgId), undefined, party, fields, fields.billToName, false);
+      if (party === undefined && billToNameOf(fields) === null)
+        for (const field of Object.keys(clearedBillTo)) delete fields[field];
+    }
     yield* sameName(orgId, list, input.title, partyId, null, input.category, writer.namesSeenBy);
     if (batch === undefined) yield* ownerExists(orgId, input.owner);
     if (list === "work") {
@@ -2420,9 +2446,11 @@ const make = Effect.gen(function* () {
               : row.partyId;
         const invalidRefs = checkRefs(def, partyId, projectId);
         if (invalidRefs !== undefined) return yield* invalidRefs;
-        if (partyId !== row.partyId) {
-          const party = partyId === null ? null : yield* target(orgId, partyId, "clients");
-          changes.push({ field: "party", from: row.partyKey, to: party?.key ?? null });
+        const partyChanged = partyId !== row.partyId;
+        const newParty =
+          partyChanged && partyId !== null ? yield* target(orgId, partyId, "clients") : undefined;
+        if (partyChanged) {
+          changes.push({ field: "party", from: row.partyKey, to: newParty?.key ?? null });
           set("party_id", partyId);
         }
         if (projectId !== row.projectId) {
@@ -2462,10 +2490,28 @@ const make = Effect.gen(function* () {
             : undefined;
         if (alsoOn !== undefined)
           yield* helperGuard(orgId, writer, row, before.owner, patch, alsoOn);
+        const billToPatch =
+          hasBillTo(list) &&
+          (partyChanged ||
+            Object.keys(patch.fields ?? {}).some((field) => Object.hasOwn(BILL_TO_FIELDS, field)))
+            ? (patch.fields ?? {})
+            : undefined;
+        const name =
+          patch.fields?.billToName === undefined ? stored.billToName : patch.fields.billToName;
+        if (billToPatch !== undefined) {
+          const client =
+            newParty ?? (partyId === null ? undefined : yield* target(orgId, partyId, "clients"));
+          yield* validateBillTo(gstCompany(orgId), row.key, client, billToPatch, name, partyChanged);
+        }
+        const clearBilling =
+          hasBillTo(list) &&
+          ((billToPatch !== undefined && clearsBillTo(billToPatch)) ||
+            (partyId === null && billToNameOf({ billToName: name ?? null }) === null));
         const merged: Record<string, FieldValue> = { ...stored };
         let fieldsChanged = false;
         for (const [field, value] of Object.entries({
           ...patch.fields,
+          ...(clearBilling ? clearedBillTo : {}),
           ...(alsoOn === undefined ? {} : { alsoOn: alsoOn.length === 0 ? null : alsoOn }),
         })) {
           const from = shownField(stored[field]);

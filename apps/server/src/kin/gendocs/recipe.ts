@@ -129,7 +129,6 @@ export type Recipe = {
 };
 
 const ENTRY_KEYS = ["key", "title", "state", "amount", "tax", "date", "due", "notes", "number"];
-const CLIENT_KEYS = ["name", "address", "gstin", "placeOfSupply", "terms"];
 const COMPANY_KEYS = [
   "legalName",
   "tradeName",
@@ -199,7 +198,7 @@ export const sourceOf = (from: string): Source | undefined => {
         return { _tag: "entryField", field: rest[1]! };
       return ENTRY_KEYS.includes(tail) ? { _tag: "entry", key: tail } : undefined;
     case "client":
-      return CLIENT_KEYS.includes(tail) ? { _tag: "client", key: tail } : undefined;
+      return /^[a-z][a-zA-Z0-9]{0,39}$/.test(tail) ? { _tag: "client", key: tail } : undefined;
     case "company":
       if (tail === "logo") return { _tag: "logo" };
       return COMPANY_KEYS.includes(tail) ||

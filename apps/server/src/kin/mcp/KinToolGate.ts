@@ -1,4 +1,5 @@
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
+import { BILL_TO_FIELDS } from "../work/billTo.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -263,6 +264,7 @@ const sectionsOfArguments = (
   while (pending.length > 0) {
     const { value, field } = pending.pop()!;
     if (typeof value === "string") {
+      if (Object.hasOwn(BILL_TO_FIELDS, field)) continue;
       const section =
         sectionOfReference(value.trim(), field) ??
         (field === "list" || field === "lists" ? sectionOfList(value) : null) ??

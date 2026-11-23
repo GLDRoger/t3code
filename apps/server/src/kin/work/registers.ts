@@ -50,6 +50,7 @@ import {
 import { companyRegion, NEUTRAL_PAID_WITH } from "./statements/statementRegion.ts";
 import { dayIn, isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
+import { BILL_TO_FIELDS, hasBillTo } from "./billTo.ts";
 import { countedEntry } from "./recordRows.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 import { keySentSql } from "../chat/keySent.ts";
@@ -129,6 +130,12 @@ const field = (
   more: Partial<Omit<FieldDef, "key" | "label" | "type">> = {},
 ): FieldDef => ({ key, label, type, sensitive: type === "money", ...more });
 
+const billToFields = Object.entries(BILL_TO_FIELDS).map(([key, label]) =>
+  field(key, label, "text", {
+    sensitive: key === "billToTaxNumber" || key === "billToEmail" || key === "billToAddress",
+  }),
+);
+
 /** The three lists money and the calendar read, by these ids; each is created in chat by a yes. */
 export const PRESETS: Record<
   PresetId,
@@ -181,6 +188,7 @@ export const PRESETS: Record<
       field("number", "Invoice number", "text"),
       field("tax", "Tax", "money"),
       field("file", "Invoice file", "file", { sensitive: true }),
+      ...billToFields,
     ],
     sensitive: true,
     amount: true,
@@ -228,6 +236,7 @@ export const PRESETS: Record<
       field("number", "Quote number", "text"),
       field("tax", "Tax", "money"),
       field("file", "Quote file", "file", { sensitive: true }),
+      ...billToFields,
     ],
     sensitive: true,
     amount: true,
@@ -432,6 +441,21 @@ const presetExtras = (id: string, definition: StoredDefinition) => {
   const categoryLabels = { ...preset?.categoryLabels, ...definition.categoryLabels };
   return {
     ...(Object.keys(categoryLabels).length === 0 ? {} : { categoryLabels }),
+    ...(hasBillTo(id)
+      ? {
+          fields: [
+            ...definition.fields.map((stored) =>
+              billToFields.some((field) => field.key === stored.key && field.sensitive) &&
+              !stored.sensitive
+                ? { ...stored, sensitive: true }
+                : stored,
+            ),
+            ...billToFields.filter(
+              (field) => !definition.fields.some((stored) => stored.key === field.key),
+            ),
+          ],
+        }
+      : {}),
     ...(preset?.payments === true ? { payments: true as const } : {}),
   };
 };

@@ -451,8 +451,10 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       (named !== undefined && !named.has(partyId))
         ? null
         : { recordId: KinRecordId.make(partyId), key: first.partyKey, title: first.partyTitle };
+    const names = [...new Set(members.flatMap((one) => one.billTo ?? []))];
     return {
       party,
+      ...(names.length === 0 ? {} : { billTo: names.join(", ") }),
       owed: addUp(
         members.map((one) => one.balance),
         home,
@@ -719,7 +721,10 @@ export const moneySection = (
   summary: KinMoneySummary,
   zone: string,
   setAside: ReadonlyArray<SetAsideInvoice> = [],
+  clientsOn = true,
 ) => {
+  const clientLabel = (party: { readonly title: string; readonly key: string }) =>
+    clientsOn ? `${party.title} (${party.key})` : party.title;
   const nothing =
     summary.owed.invoices === 0 &&
     summary.received.thisMonth.length === 0 &&
@@ -741,7 +746,7 @@ export const moneySection = (
       ? {}
       : { overdueSetAside: setAside.map((one) => ({ ...one, owed: shown([one.owed]) })) }),
     byClient: summary.owed.byClient.slice(0, SECTION_CLIENTS).map((client) => ({
-      client: client.party === null ? "no client" : `${client.party.title} (${client.party.key})`,
+      client: client.party === null ? (client.billTo ?? "no client") : clientLabel(client.party),
       owed: shown(client.owed),
       ...(client.oldestOverdueDays === null
         ? {}
@@ -794,9 +799,7 @@ export const moneySection = (
               title: record.title,
               list: listName,
               ...(record.amount === undefined ? {} : { amount: formatMoney(record.amount) }),
-              ...(record.party === undefined
-                ? {}
-                : { client: `${record.party.title} (${record.party.key})` }),
+              ...(record.party === undefined ? {} : { client: clientLabel(record.party) }),
             })),
           },
         }),

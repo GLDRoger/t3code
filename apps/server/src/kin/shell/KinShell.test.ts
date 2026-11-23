@@ -45,20 +45,6 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
     assert.equal((yield* refusal(meera, 0, off)).reason, "not_allowed");
     const strangers = KinOrgId.make("strangers");
     assert.equal((yield* Effect.flip(shell.set(strangers, rhea, 0, off))).reason, "not_allowed");
-    assert.deepInclude(yield* refusal(rhea, 0, [{ id: "clients", on: false }]), {
-      reason: "invalid_state",
-      message: "Turn off Invoices and quotes first: invoices need Clients.",
-    });
-    assert.deepInclude(
-      yield* refusal(rhea, 0, [
-        { id: "clients", on: false },
-        { id: "money", on: false },
-      ]),
-      {
-        reason: "invalid_state",
-        message: "Turn off Invoices and quotes first: invoices need Clients.",
-      },
-    );
     assert.equal((yield* refusal(rhea, 0, [{ id: "docs", on: false }])).reason, "invalid_state");
     const first = yield* shell.set(orgId, rhea, 0, [...off, { id: "unknown", on: false }]);
     assert.equal(first.rev, 1);
@@ -114,36 +100,35 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
       },
     );
     assert.isFalse(KinShell.sectionOn(moneyOff, "invoices"));
-    assert.equal(
-      (yield* refusal(rhea, 4, [{ id: "clients", on: false }])).message,
-      "Turn off Invoices and quotes first: invoices need Donors.",
-    );
     assert.isTrue(KinShell.sectionOn(moneyOff, "deals"));
     const clientsOff = yield* shell.set(orgId, rhea, 4, [
       { id: "clients", on: false, name: "Donors", noun: "donor" },
-      { id: "invoices", on: false },
+      { id: "money", on: true },
+      { id: "invoices", on: true },
     ]);
     assert.isFalse(KinShell.sectionOn(clientsOff, "deals"));
-    assert.deepInclude(
-      yield* refusal(rhea, 5, [
-        { id: "invoices", on: true },
-        { id: "clients", on: false },
-      ]),
-      {
-        reason: "invalid_state",
-        message: "Turn on Donors first: invoices need it.",
-      },
-    );
+    assert.isTrue(KinShell.sectionOn(clientsOff, "invoices"));
+    const bothOff = yield* shell.set(orgId, rhea, 5, [
+      { id: "clients", on: false },
+      { id: "invoices", on: false },
+    ]);
+    assert.isFalse(KinShell.sectionOn(bothOff, "invoices"));
+    const invoicesOn = yield* shell.set(orgId, rhea, 6, [
+      { id: "clients", on: false },
+      { id: "invoices", on: true },
+    ]);
+    assert.isFalse(KinShell.sectionOn(invoicesOn, "clients"));
+    assert.isTrue(KinShell.sectionOn(invoicesOn, "invoices"));
     const resetInput = yield* decodeSet({
       orgId,
-      rev: 5,
+      rev: 7,
       shell: { sections: [{ id: "clients", on: true, name: "  ", noun: "" }] },
     });
-    const reset = yield* shell.set(orgId, rhea, 5, resetInput.shell.sections);
+    const reset = yield* shell.set(orgId, rhea, 7, resetInput.shell.sections);
     assert.deepStrictEqual(reset.sections[0], { id: "clients", on: true });
     yield* sql`DROP TABLE kin_company_shell`;
-    assert.equal((yield* refusal(rhea, 6, off)).reason, "unavailable");
-    assert.equal(Option.getOrUndefined(yield* Stream.runHead(refresh.changes(orgId)))?.shell, 6);
+    assert.equal((yield* refusal(rhea, 8, off)).reason, "unavailable");
+    assert.equal(Option.getOrUndefined(yield* Stream.runHead(refresh.changes(orgId)))?.shell, 8);
   }).pipe(Effect.provide(layer)),
 );
 

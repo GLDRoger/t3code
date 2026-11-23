@@ -62,7 +62,7 @@ export const listSectionOn = (shell: Shell, listId: string) =>
 export const sectionOn = (shell: Shell, id: SectionId) =>
   storedOn(shell, id) &&
   (id !== "deals" || storedOn(shell, "clients")) &&
-  (id !== "invoices" || (storedOn(shell, "clients") && storedOn(shell, "money")));
+  (id !== "invoices" || storedOn(shell, "money"));
 
 export const sectionName = (shell: Shell, id: SectionId) =>
   (id === "clients" ? shell.sections.find((section) => section.id === id)?.name : undefined) ??
@@ -162,13 +162,10 @@ const conflict = new KinChatError({
     "Someone else changed the sections just now, so nothing was saved. Check them and save again.",
 });
 /**
- * Why the setter refuses `input` over the stored `before`, in its own words; undefined when it
- * may be saved. The setter runs it at the write; an agent's proposal runs it before its card.
+ * Why the setter refuses a section change, in its own words. An agent's proposal checks
+ * the same rules before making its card.
  */
-export const shellRefusal = (
-  before: readonly KinShellSection[],
-  input: readonly KinShellSection[],
-): string | undefined => {
+export const shellRefusal = (input: readonly KinShellSection[]): string | undefined => {
   for (const { id, on, name, noun } of ordered(input)) {
     if (input.filter((section) => section.id === id).length > 1)
       return "A section can only be set once.";
@@ -179,13 +176,7 @@ export const shellRefusal = (
       if (label.trim().length > 40) return "A name can be at most 40 characters.";
     }
   }
-  const proposed = { rev: 0, sections: ordered(input).map(labelsOf) };
-  if (storedOn(proposed, "clients") || !storedOn(proposed, "invoices")) return undefined;
-  const was = { rev: 0, sections: before.map(labelsOf) };
-  const name = sectionName(was, "clients");
-  return !storedOn(was, "clients")
-    ? `Turn on ${name} first: invoices need it.`
-    : `Turn off Invoices and quotes first: invoices need ${name}.`;
+  return undefined;
 };
 
 /**
@@ -344,7 +335,7 @@ export const set = Effect.fn("KinShell.set")(function* (
           stored === undefined
             ? undefined
             : Option.getOrUndefined(yield* Effect.option(decode(stored.shellJson)));
-        const refusal = shellRefusal(previous ?? [], input);
+        const refusal = shellRefusal(input);
         if (refusal !== undefined) return yield* invalid(refusal);
         const sections = ordered(yield* withPutAway(orgId, previous ?? [], input)).map(labelsOf);
         const lists = yield* listSectionsRefusal(orgId, sections, previous);

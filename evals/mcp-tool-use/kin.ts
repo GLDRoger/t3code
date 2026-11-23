@@ -686,12 +686,12 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     } as never),
   docRead: docReadAnswer,
   // company_sections' answer from a company set up as Kin's default, as runPropose words its card,
-  // or its refusal when the change would leave invoices without Clients.
+  // or its refusal.
   shellProposed: (input: { sections: unknown }) => {
     const shell = defaultShell();
     const asked = Array.isArray(input.sections) ? (input.sections as Array<AskedSection>) : [];
     const next = applied(shell, asked);
-    const refusal = shellRefusal(shell.sections, next);
+    const refusal = shellRefusal(next);
     if (refusal !== undefined)
       return { $error: { _tag: "KinChatError", reason: "invalid_state", message: refusal } };
     return {

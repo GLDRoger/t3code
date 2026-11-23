@@ -276,7 +276,16 @@ export type KinInvoiceFromQuoteResult = typeof KinInvoiceFromQuoteResult.Type;
  */
 export const KinNewInvoiceInput = Schema.Struct({
   orgId: KinOrgId,
-  client: KinRecordKey,
+  client: Schema.optional(KinRecordKey),
+  billTo: Schema.optional(
+    Schema.Struct({
+      name: KinTrimmedText.check(Schema.isMaxLength(200)),
+      address: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(500))),
+      taxNumber: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(100))),
+      place: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(100))),
+      email: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(100))),
+    }),
+  ),
   title: KinTrimmedText.check(Schema.isMaxLength(280)),
   lines: Schema.Array(KinDocumentLine).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
   /** GST percent, in India only; elsewhere the company's own tax applies. */
