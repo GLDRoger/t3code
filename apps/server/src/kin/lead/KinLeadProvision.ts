@@ -1,7 +1,5 @@
 import {
   KinAgentId,
-  KinRecordKey,
-  KinRecordState,
   KinChatId,
   KinLead,
   KinLeadCharter,
@@ -56,6 +54,7 @@ import { KinEventQueue } from "./KinEventQueue.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { KinStop } from "./KinStop.ts";
 import * as Retirement from "./Retirement.ts";
+import { tracked } from "./tracked.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import * as Reach from "./Reach.ts";
@@ -457,84 +456,35 @@ export const setCharter = Effect.fn("KinLeadProvision.setCharter")(function* (
   return { _tag: "updated" as const, lead };
 });
 
-const TrackedRow = Schema.Struct({
-  kind: KinLeadTracking.fields.kind,
-  title: Schema.String,
-  dueAt: Schema.NullOr(Schema.Number),
-  chatId: Schema.NullOr(KinChatId),
-  agentId: Schema.NullOr(KinAgentId),
-  key: Schema.NullOr(KinRecordKey),
-  state: Schema.NullOr(KinRecordState),
-  dueAllDay: Schema.Number,
-  waitingOnKind: Schema.NullOr(Schema.Literals(["person", "agent"])),
-  waitingOnId: Schema.NullOr(Schema.String),
-});
-const decodeTracked = Schema.decodeUnknownEffect(Schema.Array(TrackedRow));
+type Tracked = Effect.Success<ReturnType<typeof tracked>>[number];
 
 /**
- * What each lead has in hand, from stored rows: its open Work, the deferrals still waiting to
- * come due and the scheduled tasks still on. A deferral belongs to its chat's first-joined
- * lead, the one the trigger wakes for it (`orgLeads.liveLead`); a native schedule to its row's.
+ * Which reminders and schedules `personId` may see in a lead's list: only ones in a chat they are
+ * in now, whose card is at or after where they joined. Work entries are listed as before.
  */
-const tracked = Effect.fn("KinLeadProvision.tracked")(function* (orgId: KinOrgId) {
+const readableBy = Effect.fn("KinLeadProvision.readableBy")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
   const sql = yield* SqlClient.SqlClient;
-  const firstLead = sql`(SELECT m.agent_id FROM kin_chat_members m
-      JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
-        AND a.role = 'lead' AND a.retired_at IS NULL
-      WHERE m.org_id = w.org_id AND m.chat_id = w.chat_id AND m.principal_kind = 'agent'
-        AND m.left_at IS NULL
-      ORDER BY m.joined_at, m.agent_id LIMIT 1)`;
-  // Its open Work entries, then its alarms.
-  const rows = yield* sql`
-    SELECT 'work' AS kind, e.title, e.due_at AS "dueAt", e.source_chat_id AS "chatId",
-      e.owner_id AS "agentId",
-      CASE e.state WHEN 'doing' THEN 0 WHEN 'waiting' THEN 0 ELSE 1 END AS rank,
-      COALESCE(e.due_at, e.updated_at) AS at, e.key, e.state, e.due_all_day AS "dueAllDay",
-      CASE WHEN e.state = 'waiting' THEN e.waiting_on_kind END AS "waitingOnKind",
-      CASE WHEN e.state = 'waiting' THEN e.waiting_on_id END AS "waitingOnId"
-    FROM kin_records e WHERE e.org_id = ${orgId} AND e.register_id = 'work'
-      AND e.owner_kind = 'agent' AND e.state NOT IN ('done', 'dropped')
-    UNION ALL
-    SELECT CASE r.on_due WHEN 'remind' THEN 'reminder' ELSE 'follow_up' END,
-      COALESCE(json_extract(w.state_json, '$.title'), ''), COALESCE(f.next_run_at, r.due_at),
-      w.chat_id, ${firstLead}, 2, COALESCE(f.next_run_at, r.due_at, r.updated_at), NULL, NULL, 0,
-      NULL, NULL
-    FROM kin_deferral_runs r
-    JOIN kin_widgets w ON w.org_id = r.org_id
-      AND w.widget_id = 'deferral:' || r.org_id || ':' || r.item_id
-    LEFT JOIN kin_triggers f ON f.org_id = r.org_id
-      AND f.trigger_id = 'deferral:' || r.item_id || ':due' AND f.enabled = 1
-    WHERE r.org_id = ${orgId} AND (r.state = 'asked'
-      OR (r.state IN ('armed', 'heads_up', 'grace', 'snoozed') AND f.next_run_at IS NOT NULL))
-    UNION ALL
-    SELECT 'scheduled', COALESCE(json_extract(w.state_json, '$.title'), ''), NULL, w.chat_id,
-      ${firstLead}, 3, t.updated_at, NULL, NULL, 0, NULL, NULL
-    FROM kin_scheduled_tasks t
-    JOIN kin_widgets w ON w.org_id = t.org_id
-      AND w.widget_id = 'scheduled:' || t.org_id || ':' || t.item_id
-    JOIN kin_triggers f ON f.org_id = t.org_id
-      AND f.trigger_id = 'schedule:' || t.item_id AND f.enabled = 1 AND f.next_run_at IS NOT NULL
-    WHERE t.org_id = ${orgId} AND t.state = 'active' AND t.paused = 0
-    UNION ALL
-    SELECT 'scheduled', n.title, NULL, COALESCE(w.chat_id, s.chat_id), s.agent_id, 3, s.updated_at,
-      NULL, NULL, 0, NULL, NULL
-    FROM kin_schedules s
-    JOIN scheduled_tasks n ON n.task_id = s.task_id AND n.enabled = 1
-    LEFT JOIN kin_widgets w ON w.org_id = s.org_id
-      AND w.widget_id = 'scheduled:' || s.org_id || ':' || s.schedule_id
-    WHERE s.org_id = ${orgId} AND s.deleted_at IS NULL AND COALESCE(s.pending_enabled, 1) = 1
-    ORDER BY rank, at, title`.pipe(
-    Effect.mapError(toPersistenceSqlError("KinLeadProvision.tracked")),
-  );
-  return yield* decodeTracked(rows).pipe(
-    Effect.mapError(toPersistenceDecodeError("KinLeadProvision.tracked")),
-  );
+  const rows = yield* sql<{ chatId: string; from: number | null }>`SELECT chat_id AS "chatId",
+      joined_seq AS "from" FROM kin_chat_members
+    WHERE org_id = ${orgId} AND principal_kind = 'person' AND person_id = ${personId}
+      AND left_at IS NULL
+    ORDER BY chat_id`.pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.readableBy")));
+  const from = new Map(rows.map((row) => [row.chatId, row.from ?? 0]));
+  return (item: Tracked) => {
+    if (item.kind === "work") return true;
+    const joined = item.chatId === null ? undefined : from.get(item.chatId);
+    return joined !== undefined && (item.anchorSeq === null || item.anchorSeq >= joined);
+  };
 });
 
 const profileOf = (
   lead: LeadSummary,
   working: ReadonlySet<string>,
-  items: Effect.Success<ReturnType<typeof tracked>>,
+  items: ReadonlyArray<Tracked>,
+  sees: (item: Tracked) => boolean,
 ): KinLeadProfile => ({
   orgId: lead.orgId,
   agentId: lead.agentId,
@@ -547,7 +497,7 @@ const profileOf = (
   ownerChatId: lead.ownerChatId,
   working: working.has(lead.agentId),
   tracking: items
-    .filter((item) => item.agentId === lead.agentId && item.title.trim() !== "")
+    .filter((item) => item.agentId === lead.agentId && item.title.trim() !== "" && sees(item))
     .slice(0, KIN_LEAD_TRACKING_CAP)
     .map((item): KinLeadTracking => ({
       kind: item.kind,
@@ -631,7 +581,8 @@ export const profiles = Effect.fn("KinLeadProvision.profiles")(function* (
   );
   const working = new Set(running.map((row) => row.agentId));
   const items = yield* tracked(person.orgId);
-  return leads.map((lead) => profileOf(lead, working, items));
+  const sees = yield* readableBy(person.orgId, person.personId);
+  return leads.map((lead) => profileOf(lead, working, items, sees));
 });
 
 /**
@@ -657,13 +608,17 @@ export const update = Effect.fn("KinLeadProvision.update")(function* (input: {
       const { owner } = yield* KinIdentity;
       return yield* profileIn(
         yield* change(person.orgId, input.agentId, input.fields, owner.personId),
+        person.personId,
       );
     }),
   );
 });
 
-/** One lead's profile, read inside the caller's transaction. */
-export const profileIn = Effect.fn("KinLeadProvision.profileIn")(function* (lead: LeadSummary) {
+/** One lead's profile as `reader` may see it, in the caller's transaction. */
+export const profileIn = Effect.fn("KinLeadProvision.profileIn")(function* (
+  lead: LeadSummary,
+  reader: KinPersonId,
+) {
   const sql = yield* SqlClient.SqlClient;
   const running = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${lead.orgId}
     AND agent_id = ${lead.agentId} AND status = 'running' ORDER BY wakeup_id`.pipe(
@@ -673,6 +628,7 @@ export const profileIn = Effect.fn("KinLeadProvision.profileIn")(function* (lead
     lead,
     new Set(running.length > 0 ? [lead.agentId] : []),
     yield* tracked(lead.orgId),
+    yield* readableBy(lead.orgId, reader),
   );
 });
 
@@ -731,7 +687,11 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
     Effect.gen(function* () {
       const { lead, by } = yield* retirable(input);
       if (lead.retiredAt !== null)
-        return { _tag: "already_retired" as const, lead, profile: yield* profileIn(lead) };
+        return {
+          _tag: "already_retired" as const,
+          lead,
+          profile: yield* profileIn(lead, by ?? lead.ownerPersonId),
+        };
       const { owner } = yield* KinIdentity;
       const others = (yield* leadsIn(lead.orgId, { liveOnly: true })).filter(
         (entry) => entry.agentId !== lead.agentId && entry.ownerPersonId === owner.personId,
@@ -792,7 +752,11 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
       });
       yield* sql.afterCommit(after);
       const retired = { ...lead, retiredAt, retiredByPersonId: by };
-      return { _tag: "retired" as const, lead: retired, profile: yield* profileIn(retired) };
+      return {
+        _tag: "retired" as const,
+        lead: retired,
+        profile: yield* profileIn(retired, by ?? lead.ownerPersonId),
+      };
     }),
   );
 });
@@ -812,9 +776,13 @@ export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
     sql,
     "KinLeadProvision.restore",
     Effect.gen(function* () {
-      const { lead } = yield* retirable(input);
+      const { lead, by } = yield* retirable(input);
       if (lead.retiredAt === null)
-        return { _tag: "already_live" as const, lead, profile: yield* profileIn(lead) };
+        return {
+          _tag: "already_live" as const,
+          lead,
+          profile: yield* profileIn(lead, by ?? lead.ownerPersonId),
+        };
       const twin = (yield* leadsIn(lead.orgId, { liveOnly: true })).find(
         (entry) =>
           entry.ownerPersonId === lead.ownerPersonId &&
@@ -841,7 +809,11 @@ export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
         now: DateTime.toEpochMillis(yield* DateTime.now),
       });
       const restored = { ...lead, retiredAt: null, retiredByPersonId: null };
-      return { _tag: "restored" as const, lead: restored, profile: yield* profileIn(restored) };
+      return {
+        _tag: "restored" as const,
+        lead: restored,
+        profile: yield* profileIn(restored, by ?? lead.ownerPersonId),
+      };
     }),
   );
 });
@@ -876,10 +848,11 @@ export const setPaused = Effect.fn("KinLeadProvision.setPaused")(function* (inpu
     sql,
     "KinLeadProvision.setPaused",
     Effect.gen(function* () {
-      const { lead } = yield* retirable(input);
+      const { lead, by } = yield* retirable(input);
       if (lead.retiredAt !== null)
         return yield* refuse("retired", `Agent ${lead.agentId} was retired at ${lead.retiredAt}.`);
-      if ((lead.pausedAt !== null) === input.paused) return yield* profileIn(lead);
+      if ((lead.pausedAt !== null) === input.paused)
+        return yield* profileIn(lead, by ?? lead.ownerPersonId);
       const pausedAt = input.paused ? DateTime.formatIso(yield* DateTime.now) : null;
       yield* sql`UPDATE kin_agents SET paused_at = ${pausedAt}
         WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`.pipe(
@@ -888,7 +861,7 @@ export const setPaused = Effect.fn("KinLeadProvision.setPaused")(function* (inpu
       yield* leadsChanged(lead.orgId);
       if (!input.paused && Option.isSome(queue))
         yield* sql.afterCommit(queue.value.nudge(lead.orgId));
-      return yield* profileIn({ ...lead, pausedAt });
+      return yield* profileIn({ ...lead, pausedAt }, by ?? lead.ownerPersonId);
     }),
   );
 });

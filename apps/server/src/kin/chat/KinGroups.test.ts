@@ -6,6 +6,7 @@ import {
   KinMessageId,
   KinPersonId,
   KinWakeupId,
+  KinWidgetId,
   ThreadId,
   type KinMemberId,
   type KinMessage,
@@ -1124,5 +1125,118 @@ it.effect(
       WHERE wakeup_id = 'wakeup-growth'`;
       yield* sql`UPDATE kin_events SET state = 'done' WHERE event_id = 'handoff-test'`;
       assert.deepStrictEqual(yield* groups.working([owner], { chatId }), { handoffs: [] });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a join re-anchors a room's own reminder and routine as bare standing facts, once per join",
+  () =>
+    Effect.gen(function* () {
+      const { groups, repo, owner, orgId, tech, priya, sam, sql } = yield* seed;
+      const { chatId } = yield* groups.create([owner], {
+        orgId,
+        title: "Plans",
+        agentIds: [tech],
+        personIds: [priya.personId],
+      });
+      const askedBy = { personId: priya.personId, name: "Priya" };
+      const card = Effect.fn("test.card")(function* (
+        widgetId: string,
+        type: string,
+        state: Record<string, unknown>,
+      ) {
+        const message = yield* repo.insertMessage({
+          orgId,
+          chatId,
+          audience: "chat",
+          messageId: KinMessageId.make(widgetId),
+          author: { _tag: "system" },
+          kind: "system",
+          body: "Invented: the words Priya used, for the room as it was",
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          clientMessageId: null,
+          createdAt: at,
+          editedAt: null,
+        });
+        yield* repo.insertWidget({
+          orgId,
+          chatId,
+          messageId: message.messageId,
+          widgetId: KinWidgetId.make(widgetId),
+          widgetClass: "native",
+          type,
+          state: { ...state, askedBy },
+          source: null,
+          feed: null,
+          awaiting: [],
+          pinnedAt: null,
+          closedAt: null,
+          updatedAt: at,
+          audience: "chat",
+        });
+      });
+      yield* card("set-room", "deferral", {
+        itemId: "def-room",
+        title: "Invented: chase the bank about the overdraft",
+        dueAt: "1970-01-03T10:00:00.000Z",
+        onDue: "remind",
+        text: "Set for Saturday.",
+      });
+      yield* card("routine-room", "scheduled_task", {
+        itemId: "sch-room",
+        title: "Invented: post the client's margin",
+        every: { at: "09:00", days: [1] },
+        timeZone: "UTC",
+        status: "active",
+        nextRunAt: null,
+        lastRun: { at, status: "posted", note: "Invented: margin is 41%" },
+      });
+      yield* card("fired-room", "reminder", {
+        itemId: "def-old",
+        title: "Invented: what was due",
+        dueAt: at,
+        status: "due",
+      });
+      const join = (personId: KinPersonId) =>
+        groups.addMember([owner], { chatId, principal: { _tag: "person", personId } });
+      const anchored = sql<{
+        widgetId: string;
+        body: string;
+        state: string;
+        closed: string | null;
+      }>`
+        SELECT w.widget_id AS "widgetId", m.body, w.state_json AS state, w.closed_at AS closed
+        FROM kin_widgets w JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+        WHERE w.org_id = ${orgId} AND w.chat_id = ${chatId} ORDER BY w.widget_id`;
+      yield* join(sam.personId);
+      const first = yield* anchored;
+      const byId = (rows: typeof first, id: string) => rows.find((row) => row.widgetId === id)!;
+      // Standing facts only: who asked and when; no words, title or earlier result.
+      assert.strictEqual(byId(first, "set-room").body, "A reminder Priya asked for is set.");
+      assert.strictEqual(byId(first, "routine-room").body, "A routine Priya set runs here.");
+      for (const id of ["set-room", "routine-room"])
+        assert.notInclude(byId(first, id).body + byId(first, id).state, "Invented:");
+      assert.isNull(JSON.parse(byId(first, "routine-room").state).lastRun);
+      assert.isNotNull(byId(first, "fired-room").closed);
+      // A second join re-anchors them again, on fresh lines.
+      yield* repo.insertPerson({
+        orgId,
+        personId: KinPersonId.make("ines"),
+        handle: KinPersonId.make("ines"),
+        displayName: KinPersonId.make("Ines"),
+        githubLogin: null,
+        createdAt: at,
+      });
+      yield* join(KinPersonId.make("ines"));
+      const lines = yield* sql<{ messageId: string }>`SELECT message_id AS "messageId"
+        FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${chatId}
+          AND message_id LIKE 'set-room:moved:%' ORDER BY seq`;
+      assert.lengthOf(lines, 2);
     }).pipe(Effect.provide(layer)),
 );

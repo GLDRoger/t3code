@@ -488,8 +488,11 @@ const make = Effect.gen(function* () {
       const subject = event.subject;
       if (subject.type === "scheduled_task") {
         const schedule = yield* KinSchedules.readSchedule(sql, orgId, subject.itemId);
-        if (schedule !== undefined)
-          return (yield* KinSchedules.readNativeTask(sql, schedule.taskId)) === undefined;
+        if (schedule !== undefined) {
+          // Paused, or its setter gone, since it was queued: the run is dropped.
+          const task = yield* KinSchedules.readNativeTask(sql, schedule.taskId);
+          return task === undefined || !(yield* KinSchedules.runnable(sql, schedule, task));
+        }
         return yield* memory
           .readItemQuietly(orgId, subject.itemId, "triggers")
           .pipe(Effect.as(false), Effect.catchTags({ MemoryNotFound: () => Effect.succeed(true) }));
