@@ -385,6 +385,73 @@ it.effect(
         (yield* LeadWork.get(scope, { key: "C-1" })).projects!.map((row) => row.key),
         ["P-1"],
       );
+      yield* db`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at, definition_json)
+        VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
+      const bill = {
+        ...mail,
+        subject: "Invented invoice for kickoff",
+        attachments: [
+          {
+            key: "INV-1",
+            recordId: "invoice-one",
+            version: 1,
+            attachmentId: "invoice-pdf",
+            sha256: "invented",
+            name: "Invoice.pdf",
+            mimeType: "application/pdf",
+            bytes: 7,
+            label: null,
+            entryRecordId: "invoice-one",
+          },
+        ],
+      };
+      yield* db`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+        owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json, confirmed, state,
+        party_id, project_id, amount_minor, currency)
+        SELECT ${orgId}, 'invoice-one', 'invoices', 'INV-1', 'Invented invoice', 'person', ${ownerId},
+          'person', 'invoice-one', 0, 0, '{"number":"INV/1"}', 1, 'waiting', p.party_id, p.record_id,
+          5000, 'INR' FROM kin_records p WHERE p.org_id = ${orgId} AND p.key = 'P-1'`;
+      yield* db`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+          pin_digest, payload_json, agent_id, wakeup_id, chat_id, widget_id, proposed_at, state,
+          done_at)
+        VALUES (${orgId}, 'ask-bill', 'mail', 'mail_send', 'pin', ${JSON.stringify(bill)}, ${lead},
+          'wake', 'chief-chat', 'card-bill', 0, 'sent', 2)`;
+      const readClient = LeadWork.get(scope, { key: "C-1" });
+      const readProject = LeadWork.get(scope, { key: "P-1" });
+      const on = yield* readClient;
+      assert.deepStrictEqual(
+        on.mailed?.map((one) => one.subject),
+        [bill.subject, mail.subject],
+      );
+      assert.isDefined(on.owed?.money);
+      const switchOff = (id: "invoices" | "money") => db`INSERT INTO kin_company_shell
+        (org_id, shell_json, rev, set_by, set_at)
+        VALUES (${orgId}, ${JSON.stringify([{ id, on: false }])}, 1, ${ownerId}, 0)
+        ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json, rev = rev + 1`;
+      const off = yield* db.withTransaction(
+        Effect.gen(function* () {
+          yield* switchOff("invoices");
+          const client = yield* readClient;
+          yield* switchOff("money");
+          return { client, noMoney: yield* readClient, project: yield* readProject };
+        }),
+      );
+      assert.deepStrictEqual(
+        {
+          invoices: off.client.owed?.money,
+          mailed: off.client.mailed?.map((one) => one.subject),
+          clientMoney: off.noMoney.owed?.money,
+          projectMoney: off.project.plan?.money,
+        },
+        {
+          invoices: undefined,
+          mailed: [mail.subject],
+          clientMoney: undefined,
+          projectMoney: undefined,
+        },
+      );
+      assert.equal(off.client.owed?.tasksWeOwe, on.owed?.tasksWeOwe);
+      yield* db`DELETE FROM kin_company_shell WHERE org_id = ${orgId}`;
     }).pipe(Effect.provide(layer)),
 );
 
@@ -3540,8 +3607,11 @@ it.effect(
       // What a client owes counts its unpaid invoices by the rule Money uses, not only its tasks.
       yield* sql`UPDATE kin_records SET state = 'waiting', due_at = ${3 * DAY} WHERE key = 'INV-1'`;
       const owes = (yield* LeadWork.get(scope, { key: "C-1" })).owed!;
-      assert.deepStrictEqual(owes.money.overdue, owes.money.unpaid);
-      assert.match(owes.money.invoices[0]!, /^AM\/1 \(INV-1\): .*500.* overdue for \d+ days$/);
+      assert.deepStrictEqual(owes.money?.overdue, owes.money?.unpaid);
+      assert.match(
+        owes.money?.invoices[0] ?? "",
+        /^AM\/1 \(INV-1\): .*500.* overdue for \d+ days$/,
+      );
 
       // A client added today with work that ended long ago reads cold from that day, and a typed
       // name finds it: any case, a start of it, or a close spelling.

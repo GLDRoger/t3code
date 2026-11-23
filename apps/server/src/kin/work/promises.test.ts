@@ -490,7 +490,7 @@ it.effect(
 );
 
 it.effect(
-  "a promise on a deal is hidden from members while Deals is off and back when it is on; one on no deal stays",
+  "a promise on a deal is hidden from members while Deals (or Clients) is off and back when it is on; one on no deal stays",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -516,18 +516,24 @@ it.effect(
       });
       const on = yield* shown();
       assert.sameMembers(on.tasks, [onDeal.key, plain.key]);
-      const turn = (deals: boolean, rev: number) =>
+      const turn = (id: "deals" | "clients", on: boolean, rev: number) =>
         sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
-          VALUES (${orgId}, ${JSON.stringify([{ id: "deals", on: deals }])}, ${rev}, ${rheaId}, ${NOW})
+          VALUES (${orgId}, ${JSON.stringify([{ id, on }])}, ${rev}, ${rheaId}, ${NOW})
           ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json, rev = excluded.rev`;
-      yield* turn(false, 1);
+      yield* turn("deals", false, 1);
       assert.deepStrictEqual(yield* shown(), {
         tasks: [plain.key],
         client: [plain.key],
         opened: "Failure",
       });
-      yield* turn(true, 2);
+      yield* turn("deals", true, 2);
       assert.deepStrictEqual(yield* shown(), on);
+      yield* turn("clients", false, 3);
+      const tasks = yield* OwnerWork.list([zoya], { orgId, open: true });
+      assert.notInclude(
+        tasks.records.map((one) => one.key),
+        onDeal.key,
+      );
     }).pipe(Effect.provide(layer)),
 );
 

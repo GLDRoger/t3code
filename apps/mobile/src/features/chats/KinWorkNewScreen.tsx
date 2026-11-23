@@ -77,6 +77,7 @@ import {
   useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { useKinGate } from "./state/useKinHost";
+import { useKinSectionOn } from "./state/useKinShell";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -155,8 +156,10 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   const notesField = useRef<ComponentRef<typeof TextInput>>(null);
   const leave = useKinAskBeforeDiscard(kinFormTyped(base, draft));
   const work = useKinWork(target);
-  // An older server has no clients or projects to put a task under.
-  const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
+  // An older server has no clients or projects to put a task under, nor a company with Clients off.
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  const hostClients =
+    kinWorkHostClients(work._tag === "ready" ? work.live.summary : null) && clientsOn;
   const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
   const choices = kinNewTaskChoices(useKinWorkChoices(target, allowed && hostClients), me);
   const offersClient = choices.clients.length > 0 || draft.party !== null;

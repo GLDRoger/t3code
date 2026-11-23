@@ -1,4 +1,5 @@
 import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfList } from "../shell/sections.ts";
 import { KIN_MONEY_SEARCH_KINDS, type KinOrgId, type KinSearchKind } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -100,8 +101,13 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const indexed = yield* searchIndexed();
   if (words.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
   const kinds = input.kinds === undefined || input.kinds.length === 0 ? KINDS : input.kinds;
-  const deals = input.deals === true && (yield* KinShell.sectionOn(orgId, "deals"));
-  const registers: ReadonlyArray<string> = deals ? [...kinds, "deals"] : kinds;
+  const shell = yield* KinShell.get(orgId);
+  const deals = input.deals === true && KinShell.sectionOn(shell, "deals");
+  const registers = (deals ? [...kinds, "deals"] : kinds).filter((kind) => {
+    const section = sectionOfList(kind);
+    return section === null || KinShell.sectionOn(shell, section);
+  });
+  if (registers.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
   const where = [
     sql`r.org_id = ${orgId}`,
     sql`r.register_id IN ${sql.in(registers)}`,

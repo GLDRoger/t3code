@@ -180,15 +180,15 @@ const madeFrom = (sql: SqlClient.SqlClient) => sql`(CASE WHEN r.register_id = 'r
       AND pay.payment_id = json_extract(r.fields_json, '$.payment')) END)`;
 
 /**
- * A promise on a deal kept private, or on any deal while Deals is off (`shell/KinShell.ts`): it
- * is as hidden as its deal.
+ * A promise on a deal kept private, or on any deal while Deals (or Clients, which holds it) is off
+ * (`KinShell.sectionOn`): it is as hidden as its deal.
  */
 const promiseOnHiddenDeal = (sql: SqlClient.SqlClient, shell: boolean) =>
   promiseOn(
     sql,
     shell
       ? sql`(d.sensitive = 1 OR EXISTS (SELECT 1 FROM kin_company_shell sh, json_each(sh.shell_json) j
-      WHERE sh.org_id = r.org_id AND json_extract(j.value, '$.id') = 'deals'
+      WHERE sh.org_id = r.org_id AND json_extract(j.value, '$.id') IN ('deals', 'clients')
         AND json_extract(j.value, '$.on') = 0))`
       : sql`d.sensitive = 1`,
   );

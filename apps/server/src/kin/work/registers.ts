@@ -1,3 +1,5 @@
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfList, sectionOfRegister } from "../shell/sections.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 import {
@@ -1123,6 +1125,26 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
     });
   const proposal = Option.getOrUndefined(decodeProposal(row.json));
   if (proposal === undefined) return yield* invalid("That proposal can no longer be read.");
+  const register = proposal._tag === "new" ? proposal : yield* listDef(input.orgId, proposal.id);
+  const payments =
+    register === undefined
+      ? undefined
+      : "definition" in register
+        ? register.definition.payments
+        : register.payments;
+  const section =
+    sectionOfRegister({
+      id: proposal.id,
+      name: register?.name ?? null,
+      payments: payments === true ? 1 : null,
+    }) ?? sectionOfList(proposal.id);
+  if (section !== null) {
+    const shell = yield* KinShell.get(input.orgId);
+    if (!KinShell.sectionOn(shell, section))
+      return yield* invalid(
+        `${KinShell.sectionName(shell, section)} is turned off for this company.`,
+      );
+  }
   yield* defineList(input.orgId, proposal, input.now);
   yield* sql`UPDATE kin_list_proposals SET defined_at = ${input.now}
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}`;

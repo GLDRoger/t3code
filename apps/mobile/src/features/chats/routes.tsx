@@ -16,6 +16,7 @@ import { KinDealNewScreen } from "./KinDealNewScreen";
 import { KinDealScreen } from "./KinDealScreen";
 import { KinDealsConcernScreen } from "./KinDealsConcernScreen";
 import { KinDealStagesScreen } from "./KinDealsSettings";
+import { KinSectionsScreen } from "./KinSectionsScreen";
 import { KinImportScreen } from "./KinImportScreen";
 import {
   KinConnectionAddScreen,
@@ -254,6 +255,11 @@ export const KIN_SCREENS = {
     screen: KinDealStagesScreen,
     linking: "kin/:environmentId/:orgId/settings/deals",
     options: pageRoute({ title: "Deals" }),
+  }),
+  KinSections: createNativeStackScreen({
+    screen: KinSectionsScreen,
+    linking: "kin/:environmentId/:orgId/settings/sections",
+    options: pageRoute({ title: "Sections" }),
   }),
   KinImport: createNativeStackScreen({
     screen: KinImportScreen,

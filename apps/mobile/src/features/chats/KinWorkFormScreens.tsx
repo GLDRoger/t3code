@@ -98,7 +98,7 @@ import { KinCountryFirstField } from "./components/KinCountryFirst";
 import { KinDayField } from "./components/KinDayField";
 import { KinPageFold } from "./components/KinPageFold";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./state/useKinMoney.ts";
-import { useKinSectionOn } from "./state/useKinShell";
+import { useKinSectionOn, useKinSectionWords } from "./state/useKinShell";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
 import { KinCameFromFields, KinTagFields, useKinMarketing } from "./KinMarketing";
@@ -215,7 +215,8 @@ export type KinClientFormParams = Pick<KinWorkParams, "environmentId" | "orgId" 
 export function KinClientFormScreen({ route }: StaticScreenProps<KinClientFormParams>) {
   const target = targetOf(route.params);
   const key = keyParam(route.params.party);
-  const title = route.params.party === undefined ? COPY.party.newTitle : COPY.party.editTitle;
+  const party = useKinSectionWords(target?.environmentId ?? null, COPY.party);
+  const title = route.params.party === undefined ? party.newTitle : party.editTitle;
   if (target === null || (route.params.party !== undefined && key === null))
     return <FormMessage title={title}>{NO_LINK}</FormMessage>;
   return key === null ? (
@@ -231,6 +232,7 @@ export function KinClientFormScreen({ route }: StaticScreenProps<KinClientFormPa
 }
 
 function ClientFormRead(props: KinWorkTarget & { readonly clientKey: KinRecordKey }) {
+  const COPY = useKinSectionWords(props.environmentId, KIN_WORK_FORM_COPY);
   const atom = kinClient.workClient({
     environmentId: props.environmentId,
     input: { orgId: props.orgId, key: props.clientKey },
@@ -268,6 +270,7 @@ type ClientFormProps = KinWorkTarget & {
 };
 
 function ClientFormGate(props: ClientFormProps) {
+  const COPY = useKinSectionWords(props.environmentId, KIN_WORK_FORM_COPY);
   const ownerLevel = useKinIsOwnerLevel(props.environmentId);
   const seesClients = useKinSeesClients(props.environmentId);
   const gate = useKinGate(
@@ -297,6 +300,7 @@ const NO_PLACE = "none";
 const ABROAD = "abroad";
 
 function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
+  const COPY = useKinSectionWords(props.environmentId, KIN_WORK_FORM_COPY);
   const navigation = useNavigation();
   const { environmentId, orgId, editing, member } = props;
   const marketing = useKinMarketing(props);

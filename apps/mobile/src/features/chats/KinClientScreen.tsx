@@ -11,7 +11,7 @@ import {
   type KinWorkAction,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
-  KIN_CLIENTS,
+  KIN_CLIENTS as KIN_CLIENTS_WORDS,
   KIN_CLIENT_FAILED,
   KIN_CLIENT_REFUSED,
   KIN_CLIENT_GONE,
@@ -65,7 +65,18 @@ import {
   KinWorkToggleRow,
 } from "./components/KinWorkPieces";
 import { KinClientDeals } from "./KinDealsList";
-import { useKinSectionOn } from "./state/useKinShell";
+import {
+  useKinSectionNamed,
+  useKinSectionOn,
+  useKinSectionWords,
+  useKinShell,
+} from "./state/useKinShell";
+import {
+  kinSectionNamed,
+  kinSectionNamedWords,
+  kinSectionOffLine,
+  kinSectionOn,
+} from "@t3tools/client-runtime/kin/kinShell";
 import { KinWorkNamedRow } from "./KinWorkLists";
 import { KinAvatar } from "./components/KinAvatar";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
@@ -104,12 +115,14 @@ export function KinClientScreen({ route }: StaticScreenProps<KinClientParams>) {
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
   const orgId = Option.getOrNull(decodeOrgId(route.params.orgId));
   const key = Option.getOrNull(decodeKey(route.params.party));
+  const KIN_CLIENTS = useKinSectionWords(environmentId, KIN_CLIENTS_WORDS);
+  const named = useKinSectionNamed(environmentId);
   if (environmentId === null || orgId === null || key === null) {
     return (
       <KinWorkFrame title={KIN_CLIENTS.title} onBack={() => navigation.goBack()}>
         <EmptyState
           variant="plain"
-          title="This link doesn't name a client"
+          title={named("This link doesn't name a client")}
           detail="Open Work from your Kin chats."
         />
       </KinWorkFrame>
@@ -122,12 +135,14 @@ type ClientTarget = KinWorkTarget & { readonly clientKey: KinRecordKey };
 
 function KinClientGate(props: ClientTarget) {
   const navigation = useNavigation();
+  const KIN_CLIENTS = useKinSectionWords(props.environmentId, KIN_CLIENTS_WORDS);
+  const shell = useKinShell(props.environmentId);
   const allowed = useAtomValue(kinClient.workRead.permissionAtom(props.environmentId));
   // A teammate who follows a link asks the host nothing.
   if (!allowed) {
     return (
       <KinWorkFrame title={KIN_CLIENTS.title} onBack={() => navigation.goBack()}>
-        <EmptyState variant="plain" {...KIN_CLIENT_REFUSED} />
+        <EmptyState variant="plain" {...kinSectionNamedWords(shell, KIN_CLIENT_REFUSED)} />
       </KinWorkFrame>
     );
   }
@@ -136,6 +151,8 @@ function KinClientGate(props: ClientTarget) {
 
 function KinClientStates(props: ClientTarget) {
   const navigation = useNavigation();
+  const KIN_CLIENTS = useKinSectionWords(props.environmentId, KIN_CLIENTS_WORDS);
+  const shell = useKinShell(props.environmentId);
   const { state, refresh } = useKinClientPage(props, props.clientKey);
   if (state._tag === "ready") {
     return <KinClientBody {...props} page={state.value} stale={state.stale} onRefresh={refresh} />;
@@ -143,15 +160,15 @@ function KinClientStates(props: ClientTarget) {
   return (
     <KinWorkFrame title={KIN_CLIENTS.title} onBack={() => navigation.goBack()}>
       {state._tag === "loading" ? (
-        <KinWorkLoading label="Loading client" />
+        <KinWorkLoading label={kinSectionNamed(shell, "Loading client")} />
       ) : state._tag === "gone" ? (
-        <EmptyState variant="plain" {...KIN_CLIENT_GONE} />
+        <EmptyState variant="plain" {...kinSectionNamedWords(shell, KIN_CLIENT_GONE)} />
       ) : state._tag === "refused" ? (
-        <EmptyState variant="plain" {...KIN_CLIENT_REFUSED} />
+        <EmptyState variant="plain" {...kinSectionNamedWords(shell, KIN_CLIENT_REFUSED)} />
       ) : (
         <EmptyState
           variant="plain"
-          {...KIN_CLIENT_FAILED}
+          {...kinSectionNamedWords(shell, KIN_CLIENT_FAILED)}
           action={<Button tone="secondary" label={KIN_RETRY} onPress={refresh} />}
         />
       )}
@@ -177,7 +194,13 @@ function KinClientBody(
   const { state: changed, changes } = useKinWorkChanges(target);
   const ownerLevel = useKinIsOwnerLevel(environmentId);
   const canAddTask = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
-  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
+  const KIN_CLIENTS = useKinSectionWords(environmentId, KIN_CLIENTS_WORDS);
+  const shell = useKinShell(environmentId);
+  // A client opened by its link while Clients is off says so; Invoices off takes its invoicing.
+  const offLine = kinSectionOffLine(shell, "clients", ownerLevel);
+  const canInvoice =
+    useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId)) &&
+    kinSectionOn(shell, "invoices");
   const dealsOn = useKinSectionOn(environmentId, "deals");
   const canChangeTasks =
     useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) &&
@@ -224,6 +247,7 @@ function KinClientBody(
     names,
     now,
     ownerLevel,
+    shell,
   );
   const { can } = view;
   // Clients on, or the owner level: what's owed, the contact log, notes and history show.
@@ -426,6 +450,11 @@ function KinClientBody(
           }
         : {})}
     >
+      {offLine === null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {offLine}
+        </Text>
+      )}
       <View className="gap-1 px-2">
         <Text
           textRole="headline"

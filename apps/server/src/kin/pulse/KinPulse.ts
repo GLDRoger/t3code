@@ -246,13 +246,23 @@ const matches = (text: string | undefined, key: string | undefined, wanted: stri
   (text !== undefined && matchName(wanted, [{ name: text }])._tag === "found");
 
 export const quiet = (
-  fact: { readonly sense: string; readonly subject?: { readonly recordId?: string | undefined } },
+  fact: {
+    readonly sense: string;
+    readonly subject?: {
+      readonly recordId?: string | undefined;
+      readonly key?: string | undefined;
+    };
+  },
   shell: Shell,
   onDeals: ReadonlySet<string> = new Set(),
 ) => {
   if (fact.subject?.recordId !== undefined && onDeals.has(fact.subject.recordId)) return true;
   const section = sectionOfSense(fact.sense);
-  return section !== null && !KinShell.onIn(shell, section);
+  if (section === null) return false;
+  const subject = fact.subject?.key === undefined ? null : sectionOfKey(fact.subject.key);
+  return (
+    !KinShell.sectionOn(shell, section) || (subject !== null && !KinShell.sectionOn(shell, subject))
+  );
 };
 
 /** Promises on a deal (`promises.ts`), by record id: quiet with Deals, as the deal's own facts. */
@@ -260,7 +270,7 @@ const promisesOnDeals = Effect.fn("KinPulse.promisesOnDeals")(function* (
   orgId: KinOrgId,
   shell: Shell,
 ) {
-  if (KinShell.onIn(shell, "deals")) return new Set<string>();
+  if (KinShell.sectionOn(shell, "deals")) return new Set<string>();
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId" FROM kin_records r
     WHERE r.org_id = ${orgId} AND ${promiseOnDeal(sql)} ORDER BY r.record_id`;
@@ -435,8 +445,9 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
   const shownHolds = holdsFor(holds, input.viewer).filter(
     (hold) =>
       (input.withAside !== true ||
-        KinShell.onIn(shell, "deals") ||
-        sectionOfKey(hold.recordKey) !== "deals") &&
+        ((section) => section === null || KinShell.sectionOn(shell, section))(
+          sectionOfKey(hold.recordKey),
+        )) &&
       (input.viewer._tag === "owner" ||
         hold.forPersonId !== null ||
         visible.some((fact) => asides.get(fact.key)?.holdId === hold.holdId)) &&
@@ -767,7 +778,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         open: facts.filter((fact) => handledOf(stored.get(fact.key), at, fact) === null),
         holds,
         sees: (personId) => visibleTo(orgId, { _tag: "people", people: [personId] }, facts, shell),
-        dealsOn: KinShell.onIn(shell, "deals"),
+        shell,
       });
       const told = yield* tellHolders(ctx, facts, stored, holds, shell);
       if (moved > 0 || sensedNow !== lastSensed.get(orgId)) yield* refreshes.touch(orgId, "pulse");

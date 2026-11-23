@@ -147,6 +147,7 @@ import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 import { KinWatchLine } from "./KinWatchLine";
 import { KinTaskWithRows } from "./components/KinTaskWithRows";
 import { kinTaskLeftAtom } from "./state/kinTaskLeft";
+import { useKinSectionOn } from "./state/useKinShell";
 
 export type KinWorkItemParams = {
   readonly environmentId: string;
@@ -305,7 +306,10 @@ function KinWorkItemBody(props: ItemTarget) {
   const [peopleOpen, setPeopleOpen] = useState(false);
   // An older server has no clients or projects: the task shows as it always did.
   const opensClients = useKinOpensClients(environmentId);
-  const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
+  // With Clients off its pickers leave the task; it reads as it always did otherwise.
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  const hostClients =
+    kinWorkHostClients(work._tag === "ready" ? work.live.summary : null) && clientsOn;
   const choices = useKinWorkChoices(props, hostClients && canChange);
   // A teammate moves a task only into a project they lead, as the host takes it.
   const projectsAllowed = kinTaskProjectsAllowed(

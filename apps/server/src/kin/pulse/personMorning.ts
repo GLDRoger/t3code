@@ -25,6 +25,8 @@ import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
 import { type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { DAY_MS, HOUR_MS } from "./thresholds.ts";
 import { forHolder, markTold, untold } from "./told.ts";
+import type { KinShell as Shell } from "@t3tools/contracts";
+import { sectionOn } from "../shell/KinShell.ts";
 import { morningMoneyLines } from "./morningMoney.ts";
 
 /**
@@ -206,7 +208,7 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
   /** Open facts as sensed, not handled. */
   readonly open: ReadonlyArray<SensedFact>;
   readonly holds: ReadonlyArray<Hold>;
-  readonly dealsOn: boolean;
+  readonly shell: Shell;
   /** The facts this person may see (`visibleTo`). */
   readonly sees: (
     personId: KinPersonId,
@@ -268,15 +270,18 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
         AND COALESCE(r.category, '') <> 'obligation'
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
         AND r.due_at >= ${from} AND r.due_at <= ${to}`;
-    const followUps = today?.count ?? 0;
+    const clientsOn = sectionOn(input.shell, "clients");
+    const followUps = clientsOn ? (today?.count ?? 0) : 0;
     // Promises of theirs due from today through the week, each once: here, not in Needs you.
-    const promised = yield* sql<{
-      recordId: string;
-      title: string;
-      client: string;
-      dueAt: number;
-      allDay: number;
-    }>`SELECT r.record_id AS "recordId", r.title, c.title AS client, r.due_at AS "dueAt",
+    const promised = !clientsOn
+      ? []
+      : yield* sql<{
+          recordId: string;
+          title: string;
+          client: string;
+          dueAt: number;
+          allDay: number;
+        }>`SELECT r.record_id AS "recordId", r.title, c.title AS client, r.due_at AS "dueAt",
         r.due_all_day AS "allDay"
       FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'ours'
@@ -340,12 +345,14 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
       const line = holderLine(ctx, fact, due.dueAt);
       return [`${line.key} ${line.title}, ${line.state}`];
     });
-    const steps = yield* sql<{
-      title: string;
-      client: string;
-      dueAt: number;
-      allDay: number;
-    }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
+    const steps = !clientsOn
+      ? []
+      : yield* sql<{
+          title: string;
+          client: string;
+          dueAt: number;
+          allDay: number;
+        }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
       FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'ours'
         AND COALESCE(r.category, '') <> 'obligation'
@@ -354,19 +361,21 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
         AND r.due_at > ${to} AND r.due_at <= ${day7}
       ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
     // What clients promised them, coming due this week; once late, it is a Clients line instead.
-    const owed = yield* sql<{
-      title: string;
-      client: string;
-      dueAt: number;
-      allDay: number;
-    }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
+    const owed = !clientsOn
+      ? []
+      : yield* sql<{
+          title: string;
+          client: string;
+          dueAt: number;
+          allDay: number;
+        }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
       FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'theirs'
         AND r.category = 'obligation' AND r.state IN ('open', 'doing', 'waiting')
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
         AND r.due_at >= ${at} AND r.due_at <= ${day7} AND ${seenBy(sql, viewer)}
       ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
-    const expected = !input.dealsOn
+    const expected = !sectionOn(input.shell, "deals")
       ? []
       : yield* sql<{
           title: string;

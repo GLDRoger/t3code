@@ -21,6 +21,7 @@ import type {
   KinProjectState,
   KinProjectsInput,
   KinRecordKey,
+  KinShell,
   KinTouchLogInput,
   KinWorkHistoryItem,
   KinWorkPrincipal,
@@ -47,6 +48,7 @@ import {
   type KinWorkRowView,
 } from "./kinWork.ts";
 import { kinCount } from "./kinCount.ts";
+import { kinSectionNamed, kinSectionOn } from "./kinShell.ts";
 import { Atom } from "effect/reactivity";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -947,6 +949,8 @@ export function kinClientPageView(
   now: Date,
   /** A host before prospects sends no `can`: there only the owner level changes a client. */
   ownerLevel: boolean,
+  /** The company's sections: a renamed Clients names the kind line too. */
+  shell?: KinShell | null,
 ): KinClientPageView {
   const { party } = page;
   const ref = { key: party.key, title: party.name };
@@ -982,7 +986,7 @@ export function kinClientPageView(
         ? KIN_CLIENTS.kindVendor
         : prospect
           ? KIN_CLIENTS.kindProspect
-          : KIN_CLIENTS.kindClient,
+          : kinSectionNamed(shell, KIN_CLIENTS.kindClient),
       party.active ? null : KIN_CLIENTS.closed,
       source === null ? null : `from ${source}`,
     ]
@@ -1419,8 +1423,11 @@ export function kinProjectPageView(
   page: KinProjectPage,
   names: KinWorkNames,
   now: Date,
+  /** The company's sections: with Invoices and quotes off, the money it took leaves the page. */
+  shell?: KinShell | null,
 ): KinProjectPageView {
   const { project, counts } = page;
+  const invoices = kinSectionOn(shell, "invoices");
   const ref = { key: project.key, title: project.name };
   const because = project.healthBecause;
   const client = project.party?.title ?? "the client";
@@ -1435,7 +1442,7 @@ export function kinProjectPageView(
           because.waitingOverAWeek > 0
             ? `${kinCount(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
             : null,
-          (because.overdueInvoices ?? 0) > 0
+          invoices && (because.overdueInvoices ?? 0) > 0
             ? `${kinCount(because.overdueInvoices!, "invoice")} for this project ${because.overdueInvoices === 1 ? "is" : "are"} overdue.`
             : null,
           because.noContact === undefined
@@ -1549,7 +1556,7 @@ export function kinProjectPageView(
       doc: one.doc.key,
     })),
     money:
-      page.money === undefined
+      page.money === undefined || !invoices
         ? []
         : (
             [

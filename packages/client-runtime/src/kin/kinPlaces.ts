@@ -43,6 +43,7 @@ export function kinPlacesFromMe(input: {
       ownerLevel: input.ownerLevel,
       refused: { ...NONE, ...me?.refused },
       reaches: kinPlaceReach(me),
+      shell: me?.shell,
     }),
     answered: me !== null,
   };
@@ -103,6 +104,7 @@ export function makeKinPlaces<R, ER>(input: {
           docs: docsAllowed === "refused" || refusedBy(docs),
         },
         reaches: kinPlaceReach(me),
+        shell: me?.shell,
       });
       return { destinations, answered: true };
     }).pipe(Atom.withLabel(`kin:places:${environmentId}`));

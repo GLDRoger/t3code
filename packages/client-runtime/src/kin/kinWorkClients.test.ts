@@ -783,6 +783,37 @@ describe("kinProjectPageView", () => {
       ).why,
     ).toEqual(["Nothing is late."]);
   });
+
+  it("leaves the money and overdue invoices off the page with Invoices and quotes off", () => {
+    const base = page([]);
+    const billed: KinProjectPage = {
+      ...base,
+      project: {
+        ...base.project,
+        health: "at_risk",
+        healthBecause: { ...base.project.healthBecause, overdueInvoices: 1 },
+      },
+      money: {
+        quoted: [],
+        invoiced: [{ minor: 500000, currency: "INR" }],
+        received: [],
+        unpaid: [],
+      },
+    };
+    const shown = kinProjectPageView(billed, names, now);
+    expect(shown.money.map((line) => line.label)).toEqual(["Invoiced"]);
+    expect(shown.why).toContain("1 invoice for this project is overdue.");
+    const invoicesOff = {
+      rev: 2,
+      sections: [
+        { id: "money", on: true },
+        { id: "invoices", on: false },
+      ],
+    };
+    const hidden = kinProjectPageView(billed, names, now, invoicesOff);
+    expect(hidden.money).toEqual([]);
+    expect(hidden.why).not.toContain("1 invoice for this project is overdue.");
+  });
 });
 
 describe("kinClientPrivateNote", () => {

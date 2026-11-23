@@ -30,7 +30,7 @@ import { isSqlError, type SqlError } from "effect/sql/SqlError";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Crm from "./crm.ts";
-import { sectionOn } from "../shell/KinShell.ts";
+import { sectionOnFor as sectionOn } from "../shell/KinShell.ts";
 import { DEALS_OFF } from "../shell/sections.ts";
 import { createdOut, createIn as createDealIn, dealSeesField } from "./deals.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";

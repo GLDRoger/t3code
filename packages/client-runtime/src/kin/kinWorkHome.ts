@@ -37,6 +37,8 @@ export const KIN_WORK_HOME = {
   addReceipt: "Receipt",
   addExpense: "Expense",
   elsewhere: "Clients, projects and docs",
+  /** The same, while the company has Clients off. */
+  elsewhereDocs: "Docs",
   places: {
     tasks: "Tasks",
     money: "Money",

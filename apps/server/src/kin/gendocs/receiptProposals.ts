@@ -16,6 +16,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as KinShell from "../shell/KinShell.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
@@ -246,6 +247,19 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
     return yield* new KinChatError({
       reason: "invalid_state",
       message: "That receipt proposal can no longer be read; nothing was recorded.",
+    });
+  const shell = yield* KinShell.get(input.orgId);
+  const section = !KinShell.sectionOn(shell, "money")
+    ? "money"
+    : request.against !== undefined && !KinShell.sectionOn(shell, "invoices")
+      ? "invoices"
+      : request.advance?.client !== undefined && !KinShell.sectionOn(shell, "clients")
+        ? "clients"
+        : undefined;
+  if (section !== undefined)
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: `${KinShell.sectionName(shell, section)} is turned off for this company, so nothing was recorded. Turn it on in Settings › Sections and confirm again.`,
     });
   const shown = yield* snapshotOf(input.orgId, request);
   if (stableStringify(shown) !== row.snapshot)
