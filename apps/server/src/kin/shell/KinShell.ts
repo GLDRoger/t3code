@@ -188,12 +188,18 @@ export const shellRefusal = (
     : `Turn off Invoices and quotes first: invoices need ${name}.`;
 };
 
-/** Why one of these list sections can't be in the shell, in the setter's words; else undefined. */
+/**
+ * Why one of these list sections can't be in the shell, in the setter's words; else undefined. A
+ * section the shell already `held` stays whatever its list has become: put away, it waits there.
+ */
 export const listSectionsRefusal = Effect.fn("KinShell.listSectionsRefusal")(function* (
   orgId: KinOrgId,
   sections: readonly KinShellSection[],
+  held: readonly KinShellSection[] = [],
 ) {
-  const lists = sections.flatMap((section) => listOfSection(section.id) ?? []);
+  const lists = sections.flatMap((section) =>
+    held.some((one) => one.id === section.id) ? [] : (listOfSection(section.id) ?? []),
+  );
   if (lists.length === 0) return undefined;
   const sql = yield* SqlClient.SqlClient;
   const defined = yield* sql<{
@@ -212,6 +218,43 @@ export const listSectionsRefusal = Effect.fn("KinShell.listSectionsRefusal")(fun
       return `${list.name} has its place in Kin already, so it can't be a section of its own.`;
   }
   return undefined;
+});
+
+/**
+ * The setter's sections with those it wasn't shown put back where they were: a put-away list's
+ * section is in nobody's shell (`shellFor`), so a save without it is no ask to take it out.
+ */
+const withPutAway = Effect.fn("KinShell.withPutAway")(function* (
+  orgId: KinOrgId,
+  previous: readonly KinShellSection[],
+  input: readonly KinShellSection[],
+) {
+  const missing = previous.flatMap((section) => {
+    const list = listOfSection(section.id);
+    return list === undefined || input.some((one) => one.id === section.id) ? [] : [list];
+  });
+  if (missing.length === 0) return input;
+  const sql = yield* SqlClient.SqlClient;
+  const away = new Set<string>(
+    (yield* sql<{ id: string }>`SELECT register_id AS id FROM kin_registers
+      WHERE org_id = ${orgId} AND built_in = 0 AND archived_at IS NOT NULL
+        AND register_id IN ${sql.in(missing)} ORDER BY register_id`).map((row) =>
+      listSectionId(row.id),
+    ),
+  );
+  const out = [...input];
+  previous.forEach((section, index) => {
+    if (!away.has(section.id)) return;
+    const before = previous
+      .slice(0, index)
+      .findLast((one) => out.some((kept) => kept.id === one.id));
+    out.splice(
+      before === undefined ? 0 : out.findIndex((kept) => kept.id === before.id) + 1,
+      0,
+      section,
+    );
+  });
+  return out;
 });
 
 /**
@@ -264,7 +307,7 @@ export const showList = Effect.fn("KinShell.showList")(function* (
   const sections = current.some((section) => section.id === id)
     ? current.map((section) => (section.id === id ? { ...section, ...shown } : section))
     : [...current, shown];
-  const refusal = yield* listSectionsRefusal(orgId, sections);
+  const refusal = yield* listSectionsRefusal(orgId, sections, current);
   if (refusal !== undefined) return yield* invalid(refusal);
   return yield* save(
     orgId,
@@ -303,8 +346,8 @@ export const set = Effect.fn("KinShell.set")(function* (
             : Option.getOrUndefined(yield* Effect.option(decode(stored.shellJson)));
         const refusal = shellRefusal(previous ?? [], input);
         if (refusal !== undefined) return yield* invalid(refusal);
-        const sections = ordered(input).map(labelsOf);
-        const lists = yield* listSectionsRefusal(orgId, sections);
+        const sections = ordered(yield* withPutAway(orgId, previous ?? [], input)).map(labelsOf);
+        const lists = yield* listSectionsRefusal(orgId, sections, previous);
         if (lists !== undefined) return yield* invalid(lists);
         return yield* save(orgId, personId, { rev, sections: previous ?? [] }, sections);
       }),
