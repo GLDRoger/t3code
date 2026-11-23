@@ -1,5 +1,6 @@
 import type { KinCardGroupRow } from "@t3tools/client-runtime/kin/kinCardGroups";
 import {
+  KIN_LAND_MARK_MS,
   kinChatFeedFollow,
   kinChatFeedRows,
   kinChatReads,
@@ -190,6 +191,7 @@ import { KinChatPushWatch } from "./notifications/KinChatPushWatch";
 import {
   KIN_WORKING_COPY,
   kinChatWorkingItems,
+  kinWorkingPillItems,
   kinWorkingPillLabel,
   kinWorkingPillStop,
   kinWorkingRereadKey,
@@ -1097,6 +1099,8 @@ function KinChatFeed(props: {
           );
         };
   const landed = useRef<string | null>(null);
+  // The message a row opened, tinted a moment once it has loaded so the eye lands on it.
+  const [markDone, setMarkDone] = useState<string | null>(null);
   // LegendList grows an empty list to its frame, under both insets, which hid the intro under the
   // composer; the visible height ends it above the composer instead.
   const emptyMinHeight =
@@ -1207,6 +1211,13 @@ function KinChatFeed(props: {
     void listRef.current?.scrollToIndex({ index: landIndex, animated: false, viewPosition: 0.3 });
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition reads only refs and the stable setFollow.
   }, [landIndex, landOn, followsEnd, listRef, landed]);
+  const marked = landOn !== null && landIndex >= 0 && markDone !== landOn;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a timer: the mark on the message a row opened lasts a moment, then goes
+  useEffect(() => {
+    if (!marked || landOn === null) return;
+    const timer = setTimeout(() => setMarkDone(landOn), KIN_LAND_MARK_MS);
+    return () => clearTimeout(timer);
+  }, [marked, landOn]);
 
   const pinToEnd = (animated: boolean) => {
     // The list's own end, as maintainScrollAtEnd pins it: scrollToEnd counts the presence footer
@@ -1297,8 +1308,8 @@ function KinChatFeed(props: {
   const workingStop = useKinWorkingStop(props.environmentId, props.orgId);
   const pillStop = kinWorkingPillStop(workingItems, props.canInterrupt);
   const [workingOpen, setWorkingOpen] = useState(false);
-  // The sheet closes when the last thing in it finishes.
-  if (workingOpen && workingItems.length === 0) setWorkingOpen(false);
+  // The sheet opens from the pill and closes with it.
+  if (workingOpen && workingLabel === null) setWorkingOpen(false);
   const { themeAppearance } = useAppearancePreferences();
   const openWorking = () => {
     appAtomRegistry.refresh(workingAtom);
@@ -1331,7 +1342,7 @@ function KinChatFeed(props: {
       : {
           kind: "stop" as const,
           label: workingLabel,
-          unresponsive: workingItems.every((item) => item.held),
+          unresponsive: kinWorkingPillItems(workingItems).every((item) => item.held),
           onPress: openWorking,
           action:
             pillStop === null
@@ -1738,9 +1749,16 @@ function KinChatFeed(props: {
               ? "other"
               : row.type
         }
-        renderItem={renderItem}
+        renderItem={({ item, index }: { readonly item: KinChatRow; readonly index: number }) =>
+          marked && index === landIndex ? (
+            <View className="bg-primary/10">{renderItem({ item })}</View>
+          ) : (
+            renderItem({ item })
+          )
+        }
         // Both reach rows only through renderItem, which the list doesn't watch.
         extraData={[
+          marked,
           streamed.widgets,
           streamed.reactions,
           canReact,
@@ -1788,14 +1806,20 @@ function KinChatFeed(props: {
         ListHeaderComponent={header}
         ListEmptyComponent={empty}
         ListFooterComponent={
-          <KinPresenceLine
-            presence={props.presence}
-            avatar={presenceAvatar}
-            visible={focused && followsEnd}
-            stop={stopState}
-            onStop={onStop}
-            quiet={workingStatus !== null}
-          />
+          // The pill floats over the feed's end: the line keeps clear of it while it shows.
+          <View
+            style={{
+              paddingBottom: workingStatus === null ? 0 : FLOATING_WORKING_CONTROL_COVERAGE,
+            }}
+          >
+            <KinPresenceLine
+              presence={props.presence}
+              avatar={presenceAvatar}
+              visible={focused && followsEnd}
+              stop={stopState}
+              onStop={onStop}
+            />
+          </View>
         }
       />
       <KeyboardStickyView
@@ -1848,7 +1872,7 @@ function KinChatFeed(props: {
         </View>
       </KeyboardStickyView>
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
-      {workingOpen && workingItems.length > 0 ? (
+      {workingOpen && workingLabel !== null ? (
         <KinWorkingSheet
           items={workingItems}
           canInterrupt={props.canInterrupt}

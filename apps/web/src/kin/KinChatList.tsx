@@ -102,7 +102,7 @@ const STATE_COPY: Record<
 export function KinChatList() {
   const params = useParams({ strict: false });
   const openChatId = "chatId" in params ? (params.chatId ?? null) : null;
-  const { host, state, retry } = useKinInbox();
+  const { host, state, retry, reread } = useKinInbox();
   const nowMs = useNowMinuteMs();
   const { isMobile, setOpenMobile } = useSidebar();
   if (state._tag === "loading") {
@@ -170,6 +170,7 @@ export function KinChatList() {
         chats={inbox.chats}
         directory={directory}
         environmentId={state.environmentId}
+        onReread={reread}
       />
       {rows.length === 0 ? (
         mine === null ? (
@@ -623,6 +624,7 @@ function KinWaiting(props: {
   readonly chats: ReadonlyArray<KinChatSummary>;
   readonly directory: KinDirectory;
   readonly environmentId: EnvironmentId;
+  readonly onReread: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const nowMs = useNowMinuteMs();
@@ -678,7 +680,12 @@ function KinWaiting(props: {
                   {item.reason === "approval" ? <ApproveOnPhone /> : null}
                 </Link>
                 {ask === null ? null : (
-                  <KinWaitingAsk ask={ask} environmentId={props.environmentId} />
+                  <KinWaitingAsk
+                    ask={ask}
+                    item={item}
+                    environmentId={props.environmentId}
+                    onReread={props.onReread}
+                  />
                 )}
               </li>
             );

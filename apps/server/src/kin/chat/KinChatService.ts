@@ -580,6 +580,8 @@ const invalidState = new KinChatError({ reason: "invalid_state", message: "Inval
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 /** How a dismissed card's waiting rows read as resolved. */
 const DISMISSED = "dismissed";
+/** An agent's question in words that its card in the same chat now asks. */
+const ON_CARD = "asked on its card";
 const notFound = new KinChatError({ reason: "not_found", message: "Kin record not found." });
 const isKinChatError = Schema.is(KinChatError);
 // Live inserts also advance change_seq, so refresh the client's frozen change cursor well under
@@ -1104,6 +1106,31 @@ const make = Effect.gen(function* () {
     if (existing === undefined) return yield* notFound;
     return existing;
   });
+  /**
+   * One thing waiting is one row: an agent's question asked in words and on its card in the same
+   * chat is the card. That person's open question rows there from that agent, cards included.
+   */
+  const agentTextQuestions = Effect.fn("KinChatService.agentTextQuestions")(function* (input: {
+    readonly orgId: KinOrgId;
+    readonly chatId: KinChatId;
+    readonly personId: KinPersonId;
+    readonly agentId: KinAgentId;
+  }) {
+    const open = yield* repo.listOpenWaiting({ orgId: input.orgId, personId: input.personId });
+    const rows: Array<KinWaitingItem> = [];
+    for (const item of open) {
+      if (item.chatId !== input.chatId || item.reason !== "question" || item.messageId === null)
+        continue;
+      const asked = yield* repo.getMessage({ orgId: input.orgId, messageId: item.messageId });
+      if (
+        Option.isSome(asked) &&
+        asked.value.author._tag === "agent" &&
+        asked.value.author.agentId === input.agentId
+      )
+        rows.push(item);
+    }
+    return rows;
+  });
   const post = Effect.fn("KinChatService.post")(function* (
     identity: Identity,
     member: KinChatMember,
@@ -1185,6 +1212,13 @@ const make = Effect.gen(function* () {
       for (const recipient of members) {
         if (recipient.leftAt !== null || recipient.principal._tag !== "person") continue;
         if (chat.kind !== "direct" && !message.mentions.includes(recipient.memberId)) continue;
+        const asked = yield* agentTextQuestions({
+          orgId: identity.orgId,
+          chatId: message.chatId,
+          personId: recipient.principal.personId,
+          agentId: message.author.agentId,
+        });
+        if (asked.some((item) => item.widgetId !== null)) continue;
         yield* add(identity, {
           chatId: message.chatId,
           personId: recipient.principal.personId,
@@ -2087,7 +2121,7 @@ const make = Effect.gen(function* () {
     const anchor = yield* requireRecord(
       repo.getMessage({ orgId: identity.orgId, messageId: message.messageId }),
     );
-    for (const personId of new Set(awaiting))
+    for (const personId of new Set(awaiting)) {
       yield* add(identity, {
         chatId: widget.chatId,
         personId,
@@ -2095,6 +2129,15 @@ const make = Effect.gen(function* () {
         widgetId: widget.widgetId,
         reason: "question",
       });
+      if (input.type !== "choice") continue;
+      const words = yield* agentTextQuestions({
+        orgId: identity.orgId,
+        chatId: widget.chatId,
+        personId,
+        agentId: identity.agentId,
+      });
+      for (const item of words) if (item.widgetId === null) yield* resolve(item, ON_CARD);
+    }
     yield* sql.afterCommit(
       Effect.andThen(
         hub.publish({ type: "message.posted", orgId: identity.orgId, message: anchor }),

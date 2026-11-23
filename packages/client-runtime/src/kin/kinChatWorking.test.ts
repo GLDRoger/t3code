@@ -134,19 +134,16 @@ describe("kinChatWorkingItems", () => {
 });
 
 describe("kinWorkingPillLabel", () => {
-  it.each([
-    [[], null],
-    [[presence()], "Chief of staff is working"],
-    [[presence({ state: "starting" })], "Chief of staff is starting"],
-    [[presence({ state: "paused" })], "Chief of staff is paused"],
-    [[presence({ state: "stalled" })], "Chief of staff: no output for 3 min"],
-    [[presence({ agentId: "agent-gone" as KinAgentId })], "An agent is working"],
-  ] as const)("one agent", (turns, label) => {
-    expect(kinWorkingPillLabel(items({ presence: turns }))).toBe(label);
+  it("leaves the chat's own turn to the line: one turn alone draws no pill", () => {
+    expect(kinWorkingPillLabel([])).toBeNull();
+    for (const state of ["working", "starting", "paused", "stalled", "deferred"] as const)
+      expect(kinWorkingPillLabel(items({ presence: [presence({ state })] }))).toBeNull();
   });
 
   it("names one hand-off, counts workers, and names the first agent of many", () => {
-    expect(kinWorkingPillLabel(items({ handoffs: [handoff()] }))).toBe("Finance is working");
+    expect(kinWorkingPillLabel(items({ handoffs: [handoff()] }))).toBe(
+      "Finance is working on this",
+    );
     expect(
       kinWorkingPillLabel(items({ handoffs: [handoff({ state: "queued", wakeupId: null })] })),
     ).toBe("Waiting on Finance");
@@ -159,26 +156,29 @@ describe("kinWorkingPillLabel", () => {
     expect(
       kinWorkingPillLabel(items({ widgets: [task("a", "working")], handoffs: [handoff()] })),
     ).toBe("Finance and 1 more are working");
-    expect(
-      kinWorkingPillLabel(
-        items({ presence: [presence()], handoffs: [handoff()], widgets: [task("a", "working")] }),
-      ),
-    ).toBe("Chief of staff and 2 more are working");
+    // The turn and its workers together: the pill counts the workers only; the sheet lists all.
+    const both = items({ presence: [presence()], widgets: [task("a", "working")] });
+    expect(kinWorkingPillLabel(both)).toBe("Waiting on a worker");
+    expect(both.map((item) => item.kind)).toEqual(["agent", "worker"]);
   });
 });
 
 describe("kinWorkingPillStop", () => {
-  it("offers Stop only for one stoppable item, and only to someone the host lets interrupt", () => {
-    const one = items({ presence: [presence()] });
-    expect(kinWorkingPillStop(one, true)?.wakeupId).toBe("w1");
+  it("offers Stop only for one stoppable item it counts, and only to someone who may interrupt", () => {
+    const one = items({ handoffs: [handoff()] });
+    expect(kinWorkingPillStop(one, true)?.wakeupId).toBe("w2");
     expect(kinWorkingPillStop(one, false)).toBeNull();
+    expect(kinWorkingPillStop(items({ presence: [presence()] }), true)).toBeNull();
+    expect(
+      kinWorkingPillStop(items({ presence: [presence()], handoffs: [handoff()] }), true)?.wakeupId,
+    ).toBe("w2");
     expect(kinWorkingPillStop(items({ widgets: [task("a", "working")] }), true)).toBeNull();
     expect(
       kinWorkingPillStop(items({ handoffs: [handoff({ state: "queued", wakeupId: null })] }), true),
     ).toBeNull();
-    expect(kinWorkingPillStop(items({ presence: [presence()], handoffs: [handoff()] }), true)).toBe(
-      null,
-    );
+    expect(
+      kinWorkingPillStop(items({ handoffs: [handoff()], widgets: [task("a", "working")] }), true),
+    ).toBeNull();
   });
 });
 
