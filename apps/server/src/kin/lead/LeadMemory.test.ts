@@ -1243,6 +1243,33 @@ it.live(
           whole(yield* service.read(scope, { id: reminder.itemId })).head.title,
           "Invented stretch",
         );
+        // What a tap did to its run is what the lead reads: moved to Monday, or cancelled.
+        const runOf = (set: string) =>
+          sql.unsafe(`UPDATE kin_deferral_runs SET ${set} WHERE org_id = ? AND item_id = ?`, [
+            orgId,
+            reminder.itemId,
+          ]);
+        const memoryDue = Date.parse("2026-11-09T16:09:12Z");
+        const monday = Date.parse("2026-11-16T03:30:00.000Z");
+        yield* runOf(
+          `due_at = ${monday}, snapshot_json = json_set(snapshot_json, '$.movedFrom', ${memoryDue})`,
+        );
+        const found = (yield* service.search(scope, { kind: "deferral", status: "open" })).find(
+          (item) => item.id === reminder.itemId,
+        );
+        assert.strictEqual(
+          found !== undefined && "due" in found ? found.due : undefined,
+          "2026-11-16T03:30:00.000Z",
+        );
+        yield* runOf(`state = 'undone'`);
+        assert.notInclude(yield* openDeferrals("open"), reminder.itemId);
+        assert.strictEqual(
+          whole(yield* service.read(scope, { id: reminder.itemId })).head.status,
+          "cancelled",
+        );
+        yield* runOf(
+          `state = 'armed', due_at = ${memoryDue}, snapshot_json = json_remove(snapshot_json, '$.movedFrom')`,
+        );
         // The owner's words show only while he can open the message they came from.
         const quotesShown = Effect.gen(function* () {
           const read = whole(yield* service.read(scope, { id: KinMemoryItemId.make("new-claim") }));

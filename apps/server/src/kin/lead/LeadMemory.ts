@@ -77,6 +77,7 @@ import {
   sharedChatOf,
 } from "../triggers/deferralOrigin.ts";
 import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
+import { withRuns } from "../triggers/deferralRuns.ts";
 import { scheduledTaskTriggerId } from "../widgets/scheduledTaskCard.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { feedOf, isFeedSchedule } from "../numbers/numberRows.ts";
@@ -1284,9 +1285,13 @@ const make = Effect.gen(function* () {
         { lead: ctx.agentId },
       );
       const now = DateTime.toEpochMillis(yield* DateTime.now);
+      // A deferral as its run makes it: a status filter judges what the run says, not memory.
+      const projected = (yield* withRuns(ctx.orgId, found).pipe(provideSql)).filter(
+        (item) => input.status === undefined || item.status === input.status,
+      );
       const counts = new Map<string, number>();
-      for (const item of found) counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
-      return found.slice(0, input.limit ?? 50).map((item) => ({
+      for (const item of projected) counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
+      return projected.slice(0, input.limit ?? 50).map((item) => ({
         id: item.id,
         kind: item.kind,
         title: item.title,
@@ -1321,7 +1326,10 @@ const make = Effect.gen(function* () {
       // Review dates and invalidation are not in the projection, so a shared turn never gets them.
       if (shared) return { item: shareable(item) };
       const now = DateTime.toEpochMillis(yield* DateTime.now);
-      const [head] = yield* ownersView(ctx, [item.head]);
+      const [head] = yield* ownersView(
+        ctx,
+        yield* withRuns(ctx.orgId, [item.head]).pipe(provideSql),
+      );
       return {
         ...item,
         head: head!,

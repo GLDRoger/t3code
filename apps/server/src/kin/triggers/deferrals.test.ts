@@ -46,6 +46,7 @@ import { KinDeferralGithubReader, type GithubLinkState } from "./deferralGithub.
 import * as Deferrals from "./deferrals.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
 import * as TriggerService from "./KinTriggerService.ts";
+import * as OwnerCheck from "./ownerCheck.ts";
 import { addLead, fixture, item, orgId, otherOrg, seed } from "./routines.testkit.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -792,6 +793,22 @@ it.effect("once only: the due fire starts first, and the card drawn before it re
     assert.lengthOf(yield* starts(), 1);
   }).pipe(openGates(new Map()), Effect.provide(layerFor([deferral]))),
 );
+
+it.effect("the owner check leaves out a deferral a tap cancelled", () => {
+  const reviewed = makeDeferral("def-1", { review_by: "2026-11-01" });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* (yield* TriggerService.KinTriggerService).syncItem(reviewed);
+    yield* tick(headsUpAt);
+    const check = yield* OwnerCheck.OwnerCheck;
+    assert.deepStrictEqual(
+      (yield* check.select(orgId)).map((selection) => selection.itemId),
+      ["def-1"],
+    );
+    assert.equal(outcome(yield* tap("cancel")), "ok");
+    assert.deepStrictEqual(yield* check.select(orgId), []);
+  }).pipe(Effect.provide(layerFor([reviewed])));
+});
 
 it.effect("Monday twice moves once; Cancel then Start now starts nothing", () => {
   const items = [deferral, makeDeferral("def-2")];

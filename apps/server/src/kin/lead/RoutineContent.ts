@@ -32,6 +32,7 @@ import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
+import { withRuns } from "../triggers/deferralRuns.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { dayRecord, dayRecordEmpty, shownDay } from "./dayRecord.ts";
 import {
@@ -199,9 +200,13 @@ const make = Effect.gen(function* () {
     const dayLabel = (ms: number) => formatKinWhen(ms, "day", { zone, locale: KIN_TEXT_LOCALE });
     const timeLabel = (ms: number) => formatKinWhen(ms, "time", { zone, locale: KIN_TEXT_LOCALE });
 
-    const all = (yield* memory.query(orgId, {}, { lead: event.agentId })).filter(
-      (item) => item.orgId === orgId && !item.duplicate,
-    );
+    // Deferrals as their runs make them: moved or cancelled by a tap, or already handed over.
+    const all = yield* withRuns(
+      orgId,
+      (yield* memory.query(orgId, {}, { lead: event.agentId })).filter(
+        (item) => item.orgId === orgId && !item.duplicate,
+      ),
+    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const live = all.filter((item) => openBy(item, now));
     const due = (item: MemoryItemHead) => memoryDateMillis(item.due);
     const byDue = (a: MemoryItemHead, b: MemoryItemHead) =>
@@ -361,15 +366,17 @@ const make = Effect.gen(function* () {
       return recorded >= dayStart && recorded < dayEnd;
     };
     const moved = live.flatMap((item): ReadonlyArray<RoutineRow> => {
+      if (item.movedAt !== undefined && item.movedAt >= dayStart && item.movedAt < dayEnd)
+        return [row(item, `now ${dayLabel(due(item))}`)];
       if (!recordedToday(item)) return [];
       const previous = all.find((old) => old.superseded_by === item.id && old.due !== item.due);
       return previous === undefined || !Number.isFinite(due(item))
         ? []
         : [row(item, `now ${dayLabel(due(item))}`)];
     });
-    const missed = dueBetween(dayStart, now).map((item) =>
-      row(item, `was due ${timeLabel(due(item))}, still open`),
-    );
+    const missed = dueBetween(dayStart, now)
+      .filter((item) => item.started === undefined)
+      .map((item) => row(item, `was due ${timeLabel(due(item))}, still open`));
     const [failed] = yield* sql<{ n: number }>`
       SELECT COUNT(*) AS n FROM kin_wakeups
       WHERE org_id = ${orgId} AND status IN ('failed', 'timed_out') AND started_at >= ${dayStart}
