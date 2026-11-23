@@ -979,12 +979,6 @@ export const create = Effect.fn("KinWork.create")(function* (
   const partyId = yield* refId(viewer, input.orgId, input.party, "clients");
   const projectId = yield* refId(viewer, input.orgId, input.project, "projects");
   const custom = input.list === "milestones" ? undefined : input.list;
-  if (
-    custom !== undefined &&
-    !viewer.teammate &&
-    !(yield* teamLists(input.orgId).pipe(workFailure)).has(custom)
-  )
-    return yield* TEAM_REFUSED;
   if (custom === undefined && input.fields !== undefined) return yield* TEAM_REFUSED;
   const milestone = input.list === "milestones";
   if (milestone && (projectId === undefined || projectId === null))
@@ -995,6 +989,11 @@ export const create = Effect.fn("KinWork.create")(function* (
   // Before anything about the task is read, so its outcome turns on the agent alone.
   if (viewer.teammate) yield* teamAgent(person, owner);
   const write = Effect.gen(function* () {
+    if (custom !== undefined && !(yield* teamLists(input.orgId).pipe(workFailure)).has(custom))
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: 'Expected "milestones" | undefined\n  at ["list"]',
+      });
     if (custom !== undefined && input.fields !== undefined)
       yield* ownFiles(person, "{}", input.fields).pipe(workFailure);
     const { row } = yield* records.create(input.orgId, writerOf(viewer), {
@@ -1030,7 +1029,9 @@ export const create = Effect.fn("KinWork.create")(function* (
       shown: yield* shownTo(viewer, yield* records.detail(row, KIN_RECORD_CHANGES_CAP), row, row),
     };
   });
-  const { row, shown } = yield* asViewer(viewer, write);
+  const { row, shown } = yield* custom === undefined
+    ? asViewer(viewer, write)
+    : (yield* SqlClient.SqlClient).withTransaction(write).pipe(workFailure);
   yield* tellMoved(person, undefined, row);
   return shown;
 });

@@ -5061,6 +5061,37 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("Work create accepts a custom list only while it is open to the team", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    const project = yield* ownerTask("Project led by Arjun", {
+      list: "projects",
+      owner: { _tag: "person", personId: arjun.personId },
+    });
+    for (const person of [arjun, owner]) {
+      for (const list of ["docs", "clients", "expenses", bookings.list]) {
+        const refused = yield* OwnerWork.create([person], {
+          orgId,
+          list,
+          title: "Invented entry",
+          project: project.key,
+          clientRequestId: list,
+        }).pipe(Effect.result);
+        assert.strictEqual(refused._tag, "Failure", list);
+        if (refused._tag === "Failure")
+          assert.strictEqual(
+            refused.failure.message,
+            'Expected "milestones" | undefined\n  at ["list"]',
+          );
+      }
+    }
+    yield* setBookingTeam(true, 1);
+    assert.strictEqual((yield* addBooking("Team booking")).list, bookings.list);
+    yield* setBookingTeam(false, 2);
+    assert.strictEqual((yield* addBooking("Closed booking").pipe(Effect.result))._tag, "Failure");
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("refuses team flags from a teammate and for built-in or sensitive lists", () =>
   Effect.gen(function* () {
     yield* bookingList(true);
