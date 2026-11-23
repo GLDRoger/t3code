@@ -20,6 +20,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -2396,6 +2397,99 @@ it.effect(
       assert.lengthOf(yield* docs, 5);
     }).pipe(Effect.provide(layer)),
 );
+
+// A teammate's due task with no client wakes an agent to make its first piece: that one doc, theirs
+// to open, linked to the task with its card in their chat. Nothing else in the turn is their ask.
+it.effect("a teammate's doc head start files one doc they open, linked to the task", () => {
+  const cards: Array<string> = [];
+  const shown = Layer.mock(KinLevelGate)({
+    showCard: (_, input) =>
+      Effect.sync(() => cards.push(input.chatId)).pipe(
+        Effect.as(docWidget(input.chatId, input.state)),
+      ),
+  });
+  return Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* TestClock.setTime(Date.parse("2026-11-12T10:00:00.000Z"));
+    yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${mateId}`;
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES ('mate-chat', ${orgId}, 'direct', ${`${mateId}:${lead}`}, 1, ${at})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES ('mate-chat-mate', ${orgId}, 'mate-chat', 'person', ${mateId}, 'owner', ${at})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+      VALUES ('mate-chat-lead', ${orgId}, 'mate-chat', 'agent', ${lead}, 'member', ${at})`;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at) VALUES (${orgId}, 'work', 'Work', 'W', 1, 0) ON CONFLICT DO NOTHING`;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+        owner_kind, owner_id, created_by_kind, origin_key, due_at, created_at, updated_at)
+      VALUES (${orgId}, 'rec-w1', 'work', 'W-1', 'Invented onboarding checklist', 'open',
+        'person', ${mateId}, 'person', 'w1', ${Date.parse("2026-11-11T12:00:00.000Z")}, 0, 0)`;
+    const wake = Effect.fn("test.wake")(function* (id: string, dedupeKey: string | null) {
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+          status, event_ids, audience)
+        VALUES (${id}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
+          ${JSON.stringify([`${id}-event`])}, 'shared')`;
+      const event = {
+        _tag: "pulse",
+        orgId,
+        agentId: lead,
+        eventId: `${id}-event`,
+        receivedAt: at,
+        dedupeKey,
+        provenance: { _tag: "system" },
+        factKeys: ["task_late:W-1:due=1"],
+        chatId: "mate-chat",
+        origin: { agentId: lead, chatId: "mate-chat", personId: mateId },
+      };
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id, dedupe_key)
+        VALUES (${`${id}-event`}, ${orgId}, ${lead}, 'pulse', 'P2', ${JSON.stringify(event)}, 0, 0,
+          'claimed', ${id}, ${dedupeKey})`;
+      return `${id}-event`;
+    });
+    const draft = (sourceEventId: string, title: string) =>
+      LeadDocs.create(scopeOf(lead), {
+        sourceEventId,
+        title,
+        body: "## Before day one\n\n- Laptops ordered",
+      });
+    const docs = sql<{ key: string }>`SELECT key FROM kin_records
+      WHERE org_id = ${orgId} AND register_id = 'docs' ORDER BY key`;
+
+    // Any other wake of theirs files nothing, as before.
+    const other = yield* wake("other", null);
+    const refused = yield* Effect.flip(draft(other, "Invented onboarding checklist"));
+    assert.strictEqual(reasonOf(refused), "not_allowed");
+    assert.lengthOf(yield* docs, 0);
+
+    const woke = yield* wake("head", "draft:mate:task:rec-w1:2026-11-12");
+    const made = yield* draft(woke, "Invented onboarding checklist");
+    const mate = { _tag: "person" as const, orgId, personId: mateId };
+    assert.strictEqual((yield* OwnerDocs.get([mate], { orgId, key: made.key })).key, made.key);
+    const linked = yield* sql<{ target: string }>`SELECT l.target FROM kin_record_links l
+      JOIN kin_records d ON d.org_id = l.org_id AND d.record_id = l.record_id
+      WHERE l.org_id = ${orgId} AND d.key = ${made.key} AND l.kind = 'record'`;
+    assert.deepStrictEqual(linked, [{ target: "rec-w1" }]);
+    assert.deepStrictEqual(cards, ["mate-chat"]);
+    // One piece: a second doc in the same wake is refused, and the first stands alone.
+    const second = yield* Effect.flip(draft(woke, "Invented first-week plan"));
+    assert.strictEqual(reasonOf(second), "not_allowed");
+    assert.deepStrictEqual(yield* docs, [{ key: made.key }]);
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(KinRecords.layer, identity, shown).pipe(
+        Layer.provideMerge(KinEventQueue.layer),
+        Layer.provideMerge(KinPersistence.layer),
+        Layer.provideMerge(Sqlite.layerMemory),
+        Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+      ),
+    ),
+  );
+});
 
 // A draft is filed whatever its card meets; the agent then hears where it is, with no card.
 it.effect("a draft whose card can't be shown is filed, and the agent is told so", () =>

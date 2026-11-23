@@ -399,6 +399,12 @@ const letMate = Effect.gen(function* () {
     VALUES (${orgId}, ${chief}, ${mate}, ${owner}, 0)`;
 });
 
+/** Meera reads Docs, so a doc made for her task is one she can open. */
+const matesDocs = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${mate}`;
+});
+
 /** What Kin posted in someone's direct chat with the Chief of staff, oldest first. */
 const noticesTo = Effect.fn("test.noticesTo")(function* (personId: KinPersonId) {
   const sql = yield* SqlClient.SqlClient;
@@ -805,6 +811,7 @@ describe("KinPulse", () => {
     Effect.gen(function* () {
       yield* seed;
       yield* letMate;
+      yield* matesDocs;
       const sql = yield* SqlClient.SqlClient;
       const hub = yield* KinChatHub;
       const posted = yield* hub.subscribeAll;
@@ -1060,6 +1067,7 @@ describe("KinPulse", () => {
     () =>
       Effect.gen(function* () {
         yield* salesDay;
+        yield* matesDocs;
         const sql = yield* SqlClient.SqlClient;
         yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
           VALUES (${orgId}, ${finance}, ${mate}, ${owner}, 0)`;
@@ -1100,27 +1108,43 @@ describe("KinPulse", () => {
       const at = B + 3 * DAY + 12 * HOUR;
       yield* TestClock.setTime(at);
       const late = `task_late:W-8:due=${B + 2 * DAY}`;
-      assert.deepInclude((yield* KinPulse.tick(orgId, at)).drafted, { personId: mate, key: late });
+      // Without Docs she could open no doc, so none is started for her.
+      assert.notDeepInclude((yield* KinPulse.tick(orgId, at)).drafted, {
+        personId: mate,
+        key: late,
+      });
+      yield* matesDocs;
+      assert.deepInclude((yield* KinPulse.tick(orgId, at + MINUTE)).drafted, {
+        personId: mate,
+        key: late,
+      });
       const [made] = (yield* draftEvents).filter((event) => event.factKeys[0] === late);
       assert.strictEqual(made?.agentId, chief);
       const read = yield* draftWakeText(orgId, made!);
       assert.strictEqual(read?.text, DRAFT_DOCUMENT("Meera"));
       assert.deepStrictEqual(read?.data, { task: "W-8", title: "Invented W-8", late: true });
-      // Its first piece, a doc linked to it: the next day's wake has nothing to add.
+      // A doc linked to it that she can't open is no first piece of hers: the next day still wakes.
       yield* insert({ id: "D-9", list: "docs", createdAt: at });
       yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation,
           created_at)
         VALUES (${orgId}, 'r-D-9', 'record', 'r-W-8', 'relates', ${at + HOUR})`;
       yield* TestClock.setTime(at + DAY);
-      assert.notDeepInclude((yield* KinPulse.tick(orgId, at + DAY)).drafted, {
+      assert.deepInclude((yield* KinPulse.tick(orgId, at + DAY)).drafted, {
+        personId: mate,
+        key: late,
+      });
+      // Shared with the team, she opens it: it is the first piece, and the next day adds nothing.
+      yield* sql`UPDATE kin_records SET team_shared = 1 WHERE record_id = 'r-D-9'`;
+      yield* TestClock.setTime(at + 2 * DAY);
+      assert.notDeepInclude((yield* KinPulse.tick(orgId, at + 2 * DAY)).drafted, {
         personId: mate,
         key: late,
       });
       assert.isUndefined(yield* draftWakeText(orgId, { ...made!, eventId: KinEventId.make("d2") }));
       // A doc linked before it fell due is no head start: the next day it is made.
       yield* sql`UPDATE kin_record_links SET created_at = ${B} WHERE record_id = 'r-D-9'`;
-      yield* TestClock.setTime(at + 2 * DAY);
-      assert.deepInclude((yield* KinPulse.tick(orgId, at + 2 * DAY)).drafted, {
+      yield* TestClock.setTime(at + 3 * DAY);
+      assert.deepInclude((yield* KinPulse.tick(orgId, at + 3 * DAY)).drafted, {
         personId: mate,
         key: late,
       });

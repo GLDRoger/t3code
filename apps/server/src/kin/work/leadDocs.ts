@@ -32,6 +32,7 @@ import { madeUnderApproval } from "../questions/approval.ts";
 import { redo, redoOf, redoRaised, redoRefused } from "../questions/askPerson.ts";
 import { effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import { directKey } from "../lead/LeadAccess.ts";
+import { docHeadStart } from "../pulse/draftWake.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { DOC_BODY_MAX, outlineOf, sectionsOf, WHOLE_DOC } from "./docBody.ts";
@@ -657,6 +658,16 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
   if (input.draft !== undefined && input.body.length > DRAFT_TEXT_MAX)
     return yield* draftTooLong(input.body.length);
   const context = yield* writeContext(lead, "doc_create", input);
+  // A doc head start's one doc is filed for its task's holder, linked to that task.
+  const headStart = yield* docHeadStart(lead.orgId, lead.agentId, lead.wakeupId);
+  const writer =
+    headStart === undefined
+      ? context.writer
+      : { ...context.writer, headStartFor: headStart.personId };
+  const links =
+    headStart === undefined
+      ? (input.links ?? [])
+      : [...new Set([KinRecordKey.make(headStart.key), ...(input.links ?? [])])];
   const owner = yield* resolveWho(lead, input.owner ?? "you");
   const partyId = yield* refOrNull(lead, input.client, "clients");
   const projectId =
@@ -688,7 +699,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     return putUp;
   }
   const sql = yield* SqlClient.SqlClient;
-  const filed = Docs.create(lead.orgId, context.writer, context.provenance, {
+  const filed = Docs.create(lead.orgId, writer, context.provenance, {
     title: input.title,
     body: input.body,
     owner,
@@ -709,14 +720,18 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       : {}),
   }).pipe(
     Effect.catchIf(
-      (error): error is KinChatError => isChatError(error) && error.reason === "not_allowed",
+      (error): error is KinChatError =>
+        isChatError(error) && error.reason === "not_allowed" && headStart === undefined,
       (error) => Effect.flatMap(draftUp(lead, error), Effect.fail),
     ),
   );
-  // Its Approve card must carry it whole, worked out on the doc as filed: else nothing is.
+  // Its Approve card must carry it whole, worked out on the doc as filed: else nothing is. Its
+  // links go in with it, so a refused link leaves no doc behind.
   const { written, draft } = yield* sql.withTransaction(
     Effect.gen(function* () {
       const written = yield* filed;
+      if (links.length > 0)
+        yield* Docs.link(lead.orgId, writer, { key: written.row.key }, links, "relates");
       if (input.draft === undefined) return { written, draft: undefined };
       const drawn = yield* draftCardOf(lead, input.draft, {
         text: written.version.body,
@@ -726,8 +741,6 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       return { written, draft: drawn.card };
     }),
   );
-  if (input.links !== undefined && input.links.length > 0)
-    yield* Docs.link(lead.orgId, context.writer, { key: written.row.key }, input.links, "relates");
   // A proposal or client terms made under the owner's Approve is that approval's one result.
   if (written.created)
     yield* madeUnderApproval(lead, {
@@ -738,7 +751,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
   const placed = yield* shown(
     lead,
     written,
-    draft === undefined ? (input.card ?? "answer") : true,
+    draft !== undefined || headStart !== undefined ? true : (input.card ?? "answer"),
     draft,
   );
   const notes = [

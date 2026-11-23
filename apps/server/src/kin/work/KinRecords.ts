@@ -214,6 +214,8 @@ export type Writer = {
   readonly codingAgentKey?: string;
   /** Shared with the team when made; a turn others read shares its tasks too (`ROOM_LISTS`). */
   readonly teamShared?: boolean;
+  /** The holder whose doc head start this turn is (`docHeadStart`): its one new doc is theirs. */
+  readonly headStartFor?: KinPersonId;
   /** A lead's turn others read: `viewGuard` decides the write inside its transaction. */
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- a write's guard, not a read; absent is an owner-level writer.
   readonly view?: {
@@ -2000,7 +2002,11 @@ const make = Effect.gen(function* () {
             writer.view,
             { row: existing, changes: false, input },
             writer.actor._tag === "agent" && writer.wakeupId !== undefined
-              ? { agentId: writer.actor.agentId, wakeupId: writer.wakeupId }
+              ? {
+                  agentId: writer.actor.agentId,
+                  wakeupId: writer.wakeupId,
+                  headStartFor: writer.headStartFor,
+                }
               : undefined,
           ).pipe(provideSql);
     if (existing !== undefined) {

@@ -26,7 +26,7 @@ import * as KinShell from "../shell/KinShell.ts";
 import { personQuietUntil, validZone } from "../triggers/quietHold.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
-import { seenBy, viewerOfPeople } from "../work/teamView.ts";
+import { placesOf, seenBy, viewerOfPeople } from "../work/teamView.ts";
 import { iso, type SenseContext } from "./senses/shared.ts";
 
 /** Draft wakes one person gets in a day, at most: one per follow-up, never more than this. */
@@ -85,6 +85,9 @@ const stillDue = Effect.fnUntraced(function* (
   at: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const viewer = (yield* ownerLevel(orgId, personId))
+    ? ({ _tag: "ownerLevel" } as const)
+    : viewerOfPeople([personId]);
   const [row] = yield* sql<{
     dueAt: number | null;
     zone: string | null;
@@ -104,11 +107,14 @@ const stillDue = Effect.fnUntraced(function* (
           ON c.org_id = k.org_id AND c.connection_id = k.connection_id
         WHERE k.org_id = r.org_id AND k.entry_record_id = r.record_id AND k.state = 'open'
           AND (c.person_id IS NULL OR c.person_id = ${personId})) AS carded,
-      (SELECT MAX(l.created_at) FROM kin_record_links l JOIN kin_records d
-          ON d.org_id = l.org_id AND d.register_id = 'docs' AND d.state <> 'dropped'
-          AND d.record_id = CASE WHEN l.record_id = r.record_id THEN l.target ELSE l.record_id END
+      -- Only a doc they can open counts as its first piece.
+      (SELECT MAX(l.created_at) FROM kin_record_links l
         WHERE l.org_id = r.org_id AND l.kind = 'record'
-          AND (l.record_id = r.record_id OR l.target = r.record_id)) AS "linkedAt"
+          AND (l.record_id = r.record_id OR l.target = r.record_id)
+          AND (CASE WHEN l.record_id = r.record_id THEN l.target ELSE l.record_id END) IN (
+            SELECT r.record_id FROM kin_records r WHERE r.org_id = ${orgId}
+              AND r.register_id = 'docs' AND r.state <> 'dropped' AND ${seenBy(sql, viewer)})
+      ) AS "linkedAt"
     FROM kin_records r
     JOIN kin_people p ON p.org_id = r.org_id AND p.person_id = ${personId}
       AND p.removed_at IS NULL
@@ -116,15 +122,19 @@ const stillDue = Effect.fnUntraced(function* (
     WHERE r.org_id = ${orgId} AND r.record_id = ${recordId} AND r.register_id = 'work'
       AND r.state NOT IN ('done', 'dropped') AND COALESCE(r.side, 'ours') = 'ours'
       AND r.owner_kind = 'person' AND r.owner_id = ${personId}
-      AND ${seenBy(sql, (yield* ownerLevel(orgId, personId)) ? { _tag: "ownerLevel" } : viewerOfPeople([personId]))}`;
+      AND ${seenBy(sql, viewer)}`;
   if (row === undefined || row.dueAt === null) return undefined;
   const zone = validZone(row.zone) ?? (yield* ownerZone(orgId));
   if (row.dueAt > at && dayIn(row.dueAt, zone) !== dayIn(at, zone)) return undefined;
-  // A doc linked to it since its day began is its first piece: a later wake writes nothing.
-  if (row.client === 0)
-    return row.linkedAt !== null && row.linkedAt >= startOfDay(dayIn(row.dueAt, zone), zone)
-      ? undefined
-      : { zone, path: "doc" as const };
+  // A doc they can open, linked to it since its day began, is its first piece: a later wake
+  // writes nothing. Without Docs they could open none, so none is made.
+  if (row.client === 0) {
+    if (row.linkedAt !== null && row.linkedAt >= startOfDay(dayIn(row.dueAt, zone), zone))
+      return undefined;
+    if (viewer._tag !== "ownerLevel" && !(yield* placesOf(orgId, personId)).reaches.docs)
+      return undefined;
+    return { zone, path: "doc" as const };
+  }
   if (row.seesClients === 0 || row.carded === 1) return undefined;
   const on = (section: "clients" | "deals") =>
     KinShell.sectionOnFor(orgId, section).pipe(Effect.orElseSucceed(() => false));
@@ -259,6 +269,35 @@ const directChat = Effect.fnUntraced(function* (
   return Option.isSome(made) ? made.value.chatId : undefined;
 });
 
+/**
+ * The doc head start this turn is, from its stored event: a draft wake alone in it, for a task of
+ * its holder's that is still due with no client and no first piece (`stillDue`). Its one doc,
+ * linked to the task, is what the turn may file for them (`teamView.draftDoc`).
+ */
+export const docHeadStart = Effect.fn("KinPulse.docHeadStart")(function* (
+  orgId: KinOrgId,
+  agentId: string,
+  wakeupId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const events = yield* sql<{ dedupeKey: string | null; personId: string | null }>`SELECT
+      e.dedupe_key AS "dedupeKey", json_extract(e.json, '$.origin.personId') AS "personId"
+    FROM kin_events e
+    WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
+    ORDER BY e.event_id`;
+  const [event] = events;
+  if (events.length !== 1 || event?.personId == null || event.dedupeKey === null) return undefined;
+  const personId = KinPersonId.make(event.personId);
+  const prefix = `${draftParty(personId)}:task:`;
+  if (!event.dedupeKey.startsWith(prefix)) return undefined;
+  const recordId = event.dedupeKey.slice(prefix.length, -":YYYY-MM-DD".length);
+  const at = yield* DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
+  if ((yield* stillDue(orgId, personId, recordId, at))?.path !== "doc") return undefined;
+  const [task] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+    WHERE org_id = ${orgId} AND record_id = ${recordId}`;
+  return task === undefined ? undefined : { personId, recordId, key: task.key };
+});
+
 /** A wake Kin checked again as it started, and found nothing to draft for now. */
 export const DRAFT_NOTHING_NOW =
   "Kin checked this follow-up again as this turn started: there is nothing to draft for it now.";
@@ -270,7 +309,7 @@ export const DRAFT_CALL_NOTES = (name: string, mailbox: boolean) =>
   `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. ${mailbox ? "There is no contact address for it that they may see" : "No mailbox of theirs is connected"}, so draft no mail: give them call notes here in this chat (what to say, what was promised, the last contact).`;
 /** The wake's own line for a task with no client: its first piece is a doc linked to it. */
 export const DRAFT_DOCUMENT = (name: string) =>
-  `Kin woke you for ${name}: this task of theirs is due and nothing is prepared for it yet. Make its first piece now, whichever its own words call for: a first draft, an outline, a filled form or working notes, as a new doc (doc_create, or kin_document for a file) linked to the task. Never change a doc someone else wrote. Then tell them in one short line, with its card. If nothing can be prepared, say in one line what is missing and make nothing.`;
+  `Kin woke you for ${name}: this task of theirs is due and nothing is prepared for it yet. Make its first piece now, whichever its own words call for: a first draft, an outline, a filled form or working notes, as a new doc with doc_create, linked to the task. Never change a doc someone else wrote. Then tell them in one short line, with its card. If nothing can be prepared, say in one line what is missing and make nothing.`;
 
 /**
  * What a draft wake's turn reads, checked again as it starts: still theirs and due (`stillDue`),

@@ -549,7 +549,7 @@ export const viewGuard = Effect.fn("KinTeamView.viewGuard")(function* (
     readonly row: Pick<RecordRow, "recordId" | "key" | "registerId"> | undefined;
   },
   /** The agent's turn making the write, which `draftDoc` reads its ask from. */
-  turn?: { readonly agentId: KinAgentId; readonly wakeupId: string },
+  turn?: HeadStartTurn,
 ) {
   if (view.people.length === 0) return yield* noLongerTeam;
   const taskUpdate = write.changes && write.row?.registerId === "work";
@@ -612,7 +612,7 @@ const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
     readonly askers: ReadonlyArray<KinPersonId>;
   },
   write: Parameters<typeof teamGuard>[2],
-  turn: { readonly agentId: KinAgentId; readonly wakeupId: string } | undefined,
+  turn: HeadStartTurn | undefined,
 ) {
   const { row, input } = write;
   const [person] = view.people;
@@ -627,8 +627,10 @@ const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
     OWNERS_FIELDS.some((field) => input[field] !== undefined && !DRAFT_DOC_FIELDS.has(field))
   )
     return undefined;
-  if (row === undefined && (turn === undefined || !(yield* ownDirectAsk(orgId, person, turn))))
-    return "elsewhere" as const;
+  if (row === undefined && (turn === undefined || !(yield* ownDirectAsk(orgId, person, turn)))) {
+    if (turn?.headStartFor !== person) return "elsewhere" as const;
+    if (yield* docMadeIn(orgId, turn)) return yield* HEAD_START_ONE_DOC;
+  }
   const facts = yield* teamFactsOf(
     orgId,
     person,
@@ -644,6 +646,33 @@ const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
   return typeof input.projectId !== "string" || (yield* inProject(orgId, person, input.projectId))
     ? ("filed" as const)
     : undefined;
+});
+
+/**
+ * A lead's turn writing; `headStartFor` is the holder whose doc head start it is, read from its
+ * stored wake (`pulse/draftWake.ts` `docHeadStart`): its one new doc is filed for them.
+ */
+type HeadStartTurn = {
+  readonly agentId: KinAgentId;
+  readonly wakeupId: string;
+  readonly headStartFor?: KinPersonId | undefined;
+};
+
+export const HEAD_START_ONE_DOC = new KinChatError({
+  reason: "not_allowed",
+  message: "This head start makes one doc, and it is already made. Nothing was written.",
+});
+
+/** Whether this turn already filed a doc of its own (`leadDocs` origin keys name the turn). */
+const docMadeIn = Effect.fn("KinTeamView.docMadeIn")(function* (
+  orgId: KinOrgId,
+  turn: HeadStartTurn,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const made = yield* sql`SELECT 1 FROM kin_records WHERE org_id = ${orgId}
+      AND register_id = 'docs' AND origin_key LIKE 'doc:%'
+      AND instr(origin_key, ${`:${turn.agentId}:${turn.wakeupId}:`}) > 0 LIMIT 1`;
+  return made.length > 0;
 });
 
 export const DRAFT_OWN_CHAT_ONLY = new KinChatError({
