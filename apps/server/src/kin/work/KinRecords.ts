@@ -39,7 +39,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
-import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KinRefreshObserver, KinWorkRefresh } from "../chat/KinRefreshHub.ts";
 import type { ClosedSubject } from "../open/closeSubject.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
@@ -3971,4 +3971,12 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(KinRecords, make);
+export const layer = Layer.effectContext(
+  make.pipe(
+    Effect.map((records) =>
+      Context.make(KinRecords, records).pipe(
+        Context.add(KinWorkRefresh, (orgId) => records.announce(orgId)),
+      ),
+    ),
+  ),
+);
