@@ -33,8 +33,7 @@ import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinChatRepository } from "../../chat/KinChatRepository.ts";
 import { choiceCardState } from "../../widgets/choiceCard.ts";
 import { fieldText, parseFields } from "../lists.ts";
-import { companyMoney, homeCurrency } from "../companyProfile.ts";
-import { regionOf } from "../region.ts";
+import { homeCurrency, statementMoney } from "../companyProfile.ts";
 import { dayIn } from "../money.ts";
 import { keptEntry, ownerZone } from "../recordRows.ts";
 import { partnerPayees, partnersOwed } from "../partnersOwed.ts";
@@ -205,7 +204,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
   statementId: string | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const { homeCurrency: home, country } = yield* companyMoney(orgId);
+  const { homeCurrency: home, withholdsAtSource } = yield* statementMoney(orgId);
   const zone = yield* ownerZone(orgId);
   const day = (ms: number | null) => (ms === null ? null : dayIn(ms, zone));
   // Banks list newest first as often as oldest first; the window starts before either end.
@@ -315,7 +314,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     WHERE org_id = ${orgId} AND account IS NOT NULL ORDER BY account`;
   return {
     currency: statement.currency,
-    withholdsAtSource: regionOf(country)?.withholdsAtSource === true,
+    withholdsAtSource,
     bank: statement.bank,
     invoices: invoiceRows.map((row) => {
       const fields = parseFields(row.fieldsJson);

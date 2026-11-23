@@ -109,7 +109,7 @@ describe("kinSubscriptions", () => {
   });
 
   it("counts the year so far from the company's own first month", () => {
-    expect(kinFinancialYearStart(context.now)).toBe("2026-04-01");
+    expect(kinFinancialYearStart(context.now)).toBe("2026-01-01");
     expect(kinFinancialYearStart(context.now, 7)).toBe("2026-07-01");
     expect(kinFinancialYearStart(new Date(2026, 5, 30), 7)).toBe("2025-07-01");
     expect(kinFinancialYearStart(new Date(2026, 0, 1), 1)).toBe("2026-01-01");
@@ -124,7 +124,7 @@ describe("kinSubscriptions", () => {
         (line) => line.text,
       );
     expect(soFar(kinFinancialYearStart(context.now, 7))).toEqual(["₹8,000"]);
-    expect(soFar(kinFinancialYearStart(context.now))).toEqual(["₹14,000"]);
+    expect(soFar(kinFinancialYearStart(context.now, 4))).toEqual(["₹14,000"]);
   });
 
   it("finds the list by its name", () => {

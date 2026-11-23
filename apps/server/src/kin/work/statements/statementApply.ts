@@ -22,7 +22,7 @@ import { type FieldValue, fieldText, parseFields } from "../lists.ts";
 import { fundingOf } from "../reimbursement.ts";
 import { dayIn } from "../money.ts";
 import { endOfDay, isSuggestion, ownerZone, stillSuggestion } from "../recordRows.ts";
-import { homeCurrency } from "../companyProfile.ts";
+import { companyMoney } from "../companyProfile.ts";
 import { defineList, listDef, PRESETS, presetDefinition } from "../registers.ts";
 import {
   accountLabel,
@@ -280,17 +280,19 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
       if (
         decisions.some((one) => one.action?.action === "expense") &&
         (yield* listDef(input.orgId, "expenses")) === undefined
-      )
+      ) {
+        const { homeCurrency, country } = yield* companyMoney(input.orgId);
         yield* defineList(
           input.orgId,
           {
             _tag: "new",
             id: "expenses",
             ...PRESETS.expenses,
-            definition: presetDefinition("expenses", yield* homeCurrency(input.orgId)),
+            definition: presetDefinition("expenses", homeCurrency, country),
           },
           input.now,
         );
+      }
       const before = yield* listDef(input.orgId, "expenses");
       // A list made before salaries had a category gains it the first time one is confirmed.
       if (

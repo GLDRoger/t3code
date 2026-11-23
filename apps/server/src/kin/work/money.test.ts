@@ -886,6 +886,7 @@ describe("lists through the tools", () => {
   it.effect("groups by Indian financial year in the owner's zone, not UTC", () =>
     Effect.gen(function* () {
       yield* seed;
+      yield* setProfile(orgId, { _tag: "person", personId: ownerId }, { country: "IN" }, undefined);
       yield* defined(1, { template: "expenses" });
       const records = yield* KinRecords.KinRecords;
       // 20:00 UTC on 31 March is already 1 April in India.
@@ -2103,6 +2104,12 @@ describe("invoices", () => {
     () =>
       Effect.gen(function* () {
         yield* seed;
+        yield* setProfile(
+          orgId,
+          { _tag: "person", personId: ownerId },
+          { country: "IN" },
+          undefined,
+        );
         yield* defined(1, { template: "invoices" });
         const asked = yield* turn(3, "Draft five invoices for Invented Acme");
         yield* LeadWork.create(scope, {
@@ -2992,6 +2999,7 @@ describe("the owner's taps", () => {
   it.effect("open, from each Money figure, a list whose header is that figure", () =>
     Effect.gen(function* () {
       yield* seed;
+      yield* setProfile(orgId, { _tag: "person", personId: ownerId }, { country: "IN" }, undefined);
       yield* defined(1, { template: "invoices" });
       yield* defined(3, { template: "expenses" });
       const asked = yield* turn(5, "The books");
@@ -3689,6 +3697,12 @@ describe("an expense typed by hand", () => {
     () =>
       Effect.gen(function* () {
         yield* seed;
+        yield* setProfile(
+          orgId,
+          { _tag: "person", personId: ownerId },
+          { country: "IN" },
+          undefined,
+        );
         const records = yield* KinRecords.KinRecords;
         yield* turn(1, "The courier's receipt", ["courier.jpg"]);
         const asked = {
@@ -3981,18 +3995,19 @@ describe("the company profile", () => {
       yield* seed;
       const at = Date.UTC(2026, 10, 17, 9, 5);
       const line = waitLine(orgId, at);
-      // A company that never set one keeps rupees, and so India's 12-hour clock.
-      assert.match(yield* line, /after \d{1,2}:35 [ap]m;/);
+      assert.match(yield* line, /after \d{2}:35;/);
       let rev = 0;
       for (const [home, clock] of [
         ["GBP", /after \d{2}:35;/],
         ["USD", /after \d{1,2}:35 [AP]M;/],
         ["EUR", /after \d{2}:35;/],
-        ["INR", /after \d{1,2}:35 [ap]m;/],
+        ["INR", /after \d{2}:35;/],
       ] as const) {
         rev = (yield* OwnerMoney.setCompanyProfile(people, { orgId, rev, homeCurrency: home })).rev;
         assert.match(yield* line, clock, home);
       }
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev, country: "IN" });
+      assert.match(yield* line, /after \d{1,2}:35 [ap]m;/);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -4004,18 +4019,19 @@ describe("the company profile", () => {
         assert(proposal._tag === "new");
         return proposal.definition.fields.find((field) => field.key === "paidWith")?.choices;
       });
-      // A company that never set one keeps the default home currency, rupees, and so India's.
-      assert.deepStrictEqual(yield* paidWith, ["card", "upi", "bank", "cash"]);
+      assert.deepStrictEqual(yield* paidWith, ["card", "bank", "cash"]);
       let rev = 0;
       for (const [home, ways] of [
         ["USD", ["card", "ach", "wire", "check", "cash"]],
         ["GBP", ["card", "bank", "direct debit", "cash"]],
         ["EUR", ["card", "bank", "cash"]],
-        ["INR", ["card", "upi", "bank", "cash"]],
+        ["INR", ["card", "bank", "cash"]],
       ] as const) {
         rev = (yield* OwnerMoney.setCompanyProfile(people, { orgId, rev, homeCurrency: home })).rev;
         assert.deepStrictEqual(yield* paidWith, ways, home);
       }
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev, country: "IN" });
+      assert.deepStrictEqual(yield* paidWith, ["card", "upi", "bank", "cash"]);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -4288,6 +4304,11 @@ describe("the company profile", () => {
       Effect.gen(function* () {
         yield* seed;
         const sql = yield* SqlClient.SqlClient;
+        assert.deepInclude(yield* readProfile(orgId), {
+          country: null,
+          financialYearStartMonth: 1,
+          tax: null,
+        });
         const nobank = {
           accountName: null,
           accountNumber: null,

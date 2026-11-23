@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Schema from "effect/Schema";
 
-import { computeData } from "./compute.ts";
+import { computeData, GST_REGIME } from "./compute.ts";
 import { parseRecipe, type Recipe, type Value } from "./recipe.ts";
 import { STARTER_FILES } from "./starter.ts";
 
@@ -32,7 +32,7 @@ const compute = (one: Recipe, given: Readonly<Record<string, Value>>) => {
   const inputs = Object.fromEntries(
     one.inputs.map((input) => [input.name, given[input.name] ?? null]),
   );
-  const result = computeData(inputs, one.computed);
+  const result = computeData(inputs, one.computed, GST_REGIME);
   if ("error" in result) throw new Error(`${one.name}: ${result.error}`);
   return result.data as unknown as Figures;
 };

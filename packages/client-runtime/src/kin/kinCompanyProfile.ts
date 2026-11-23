@@ -319,7 +319,9 @@ const stored = (profile: KinCompanyProfile, id: KinCompanyFieldId): string | nul
     case "country":
       return profile.country ?? null;
     case "financialYearStartMonth":
-      return MONTHS[(profile.financialYearStartMonth ?? 4) - 1] ?? null;
+      return (
+        MONTHS[(profile.financialYearStartMonth ?? (profile.country === "IN" ? 4 : 1)) - 1] ?? null
+      );
     case "taxName":
       return profile.tax?.name ?? null;
     case "taxRate":
@@ -386,12 +388,9 @@ export const kinCompanyCountrySuggestion = (
         accept: () => ({ ...draft, country: region }),
       };
 
-/**
- * The form's sections for a company in `country`: India's tax ids only for India, and for a host
- * too old to say; the company's own tax everywhere else.
- */
+/** The form's sections for the company's tax regime. */
 const kinCompanySections = (country: string | null | undefined) => {
-  const india = country === undefined || country === "IN";
+  const india = country === "IN";
   return KIN_COMPANY_SECTIONS.map((section) => ({
     ...section,
     fields: section.fields.filter((field) => field.india === undefined || field.india === india),
@@ -419,13 +418,7 @@ export const kinCompanyDraftEdit = (
 export const kinCompanyEditSections = (profile: KinCompanyProfile, draft: KinCompanyDraft) => {
   const typed = draft.country.trim().toUpperCase();
   const sections = kinCompanySections(
-    profile.country === undefined
-      ? undefined
-      : typed === ""
-        ? null
-        : /^[A-Z]{2}$/.test(typed)
-          ? typed
-          : profile.country,
+    typed === "" ? null : /^[A-Z]{2}$/.test(typed) ? typed : profile.country,
   );
   if (draft.notRegistered === "") return sections;
   return sections.map((section) => ({

@@ -122,11 +122,11 @@ export const unregisteredTax = (country: string | null, ownTax: string | undefin
 };
 
 /**
- * The locale Kin writes a company's text in: its country's, or for a company in no country, that
- * of the country whose currency it keeps, as before countries were set.
+ * The company's locale, with a currency-based fallback for the UK and US before country was stored.
  */
 export const localeOf = (country: string | null, currency: string): string | undefined =>
   country !== null
     ? regionOf(country)?.locale
-    : Object.values(REGIONS).find((one) => one.locale !== undefined && one.currency === currency)
-        ?.locale;
+    : Object.entries(REGIONS).find(
+        ([code, one]) => code !== "IN" && one.locale !== undefined && one.currency === currency,
+      )?.[1].locale;

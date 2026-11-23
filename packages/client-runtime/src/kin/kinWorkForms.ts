@@ -162,12 +162,8 @@ function kinGstinState(gstin: string): string | null {
   return KIN_GSTIN_PATTERN.test(value) ? (KIN_GST_STATES[value.slice(0, 2)] ?? null) : null;
 }
 
-/**
- * Whether a client form asks for a GSTIN and a State: only for a company in India, and for one on
- * a host too old to say where it is.
- */
-export const kinIndiaFields = (country: string | null | undefined) =>
-  country === undefined || country === "IN";
+/** Whether a client form asks for India's GSTIN and place of supply. */
+export const kinIndiaFields = (country: string | null | undefined) => country === "IN";
 
 export const kinClientDraftOf = (
   party?: Pick<

@@ -349,7 +349,7 @@ describe("kinIssuedAmountQuestion", () => {
 });
 
 describe("receipts", () => {
-  it("offers India's UPI and UTR to a company in India or with no country, as before countries", () => {
+  it("offers India's UPI and UTR only to a company in India", () => {
     const form = (country: string | null | undefined) => [
       kinReceiptModes(country).some((mode) => mode.value === "upi"),
       kinReceiptReferencePlaceholder(country),
@@ -357,8 +357,8 @@ describe("receipts", () => {
     const india = [true, "UTR or cheque number"];
     expect([form("IN"), form(null), form(undefined), form("GB")]).toEqual([
       india,
-      india,
-      india,
+      [false, "Reference"],
+      [false, "Reference"],
       [false, "Reference"],
     ]);
   });

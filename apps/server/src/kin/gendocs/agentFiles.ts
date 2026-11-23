@@ -30,8 +30,7 @@ import {
   labelChange,
   recordBaseline,
   renderSample,
-  type SampleLogo,
-  sampleLogo,
+  sampleContext,
   verifySample,
 } from "./recipeLabels.ts";
 import {
@@ -296,7 +295,7 @@ export const writeRecipe = leadTool("KinAgentFiles.writeRecipe", (lead, input: D
       decodeReferences(open.referencesJson ?? "[]"),
       (): ReadonlyArray<Reference> => [],
     );
-    const logo: SampleLogo = yield* sampleLogo(lead.orgId);
+    const company = yield* sampleContext(lead.orgId);
     /** Why a change can't be kept for what it holds, before it is rendered. */
     const holds = Effect.fn("KinAgentFiles.holds")(
       function* (change: CheckedRecipe) {
@@ -330,7 +329,7 @@ export const writeRecipe = leadTool("KinAgentFiles.writeRecipe", (lead, input: D
     const held = yield* holds(preview);
     if (held !== undefined) return yield* refused(held);
     const lookAgain = references.length > 0 && open.compared === 0;
-    const rendered = yield* renderSample(renderer, lead.orgId, logo, preview, lookAgain);
+    const rendered = yield* renderSample(renderer, lead.orgId, company, preview, lookAgain);
     if (typeof rendered === "string")
       return yield* refused(`its sample didn't render because ${rendered}`);
     // Written from the owner's files: its first page goes back once, to set beside them.
@@ -354,7 +353,7 @@ export const writeRecipe = leadTool("KinAgentFiles.writeRecipe", (lead, input: D
     const verify: VerifyChange = Effect.fn("KinAgentFiles.verify")(function* (change) {
       const reason =
         (yield* holds(change).pipe(Effect.provideService(SqlClient.SqlClient, sql))) ??
-        (yield* verifySample(renderer, lead.orgId, logo)(change));
+        (yield* verifySample(renderer, lead.orgId, company)(change));
       if (reason === undefined) accepted = change;
       return reason;
     });
@@ -387,7 +386,7 @@ export const writeRecipe = leadTool("KinAgentFiles.writeRecipe", (lead, input: D
         : yield* renderSample(
             renderer,
             lead.orgId,
-            logo,
+            company,
             { ...accepted, commit: change.revision },
             true,
           );

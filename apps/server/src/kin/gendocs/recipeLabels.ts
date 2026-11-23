@@ -5,7 +5,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { readProfile } from "../work/companyProfile.ts";
 import { logoFile, logoPath } from "./brand.ts";
-import { computeData } from "./compute.ts";
+import { computeData, type TaxRegime } from "./compute.ts";
+import { taxRegimeOf } from "./facts.ts";
 import { checkedSample, declaredFigures, issuable, type Recipe, type Value } from "./recipe.ts";
 import { KinDocRenderer, type Rendered } from "./render.ts";
 import {
@@ -47,26 +48,33 @@ export const sampleInputs = (
 const PLACEHOLDER_LOGO = new TextEncoder().encode(
   '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="80" viewBox="0 0 240 80"><rect width="240" height="80" rx="10" fill="#94a3b8"/><rect x="18" y="18" width="44" height="44" rx="22" fill="#e2e8f0"/><rect x="76" y="30" width="140" height="20" rx="6" fill="#e2e8f0"/></svg>',
 );
-export type SampleLogo = { readonly bytes: Uint8Array; readonly extension: string };
+type SampleContext = {
+  readonly logo: { readonly bytes: Uint8Array; readonly extension: string };
+  readonly tax: TaxRegime;
+};
 
-/** The logo a sample renders with: the company's, else the stand-in. */
-export const sampleLogo = Effect.fn("KinRecipeLabels.sampleLogo")(function* (orgId: KinOrgId) {
+export const sampleContext = Effect.fn("KinRecipeLabels.sampleContext")(function* (
+  orgId: KinOrgId,
+) {
   const profile = yield* readProfile(orgId);
   const own = profile.logo === null ? null : yield* logoFile(profile.logo);
-  return own ?? { bytes: PLACEHOLDER_LOGO, extension: "svg" };
+  return {
+    logo: own ?? { bytes: PLACEHOLDER_LOGO, extension: "svg" },
+    tax: taxRegimeOf(profile),
+  };
 });
 
 /** A recipe's sample rendered as Kin renders a document from it, or why it can't be. */
 export const renderSample: (
   renderer: KinDocRenderer["Service"],
   orgId: KinOrgId,
-  logo: SampleLogo,
+  context: SampleContext,
   change: Parameters<VerifyChange>[0],
   page?: boolean,
 ) => Effect.Effect<Extract<Rendered, { readonly _tag: "made" }> | string> = Effect.fn(
   "KinRecipeLabels.renderSample",
 )(
-  function* (renderer, orgId, logo, change, page = false) {
+  function* (renderer, orgId, { logo, tax }, change, page = false) {
     const given = sampleInputs(change.recipe, change.sample);
     if (typeof given === "string") return given;
     // A sample that shows a logo shows the company's own, at the path Kin puts it.
@@ -79,7 +87,7 @@ export const renderSample: (
       ),
     };
     const computed = issuable(change.recipe)
-      ? computeData(inputs, change.recipe.computed)
+      ? computeData(inputs, change.recipe.computed, tax)
       : undefined;
     const figures =
       computed === undefined || "error" in computed
@@ -94,6 +102,7 @@ export const renderSample: (
       inputs,
       day: typeof inputs.today === "string" ? inputs.today : SAMPLE_DAY,
       logo: shown ? logo : null,
+      tax,
       page,
     });
     return rendered._tag === "made" ? rendered : rendered.reason;
@@ -103,9 +112,9 @@ export const renderSample: (
 
 /** Why a recipe can't be kept: its sample, rendered as Kin renders a document from it. */
 export const verifySample =
-  (renderer: KinDocRenderer["Service"], orgId: KinOrgId, logo: SampleLogo): VerifyChange =>
+  (renderer: KinDocRenderer["Service"], orgId: KinOrgId, context: SampleContext): VerifyChange =>
   (change) =>
-    renderSample(renderer, orgId, logo, change).pipe(
+    renderSample(renderer, orgId, context, change).pipe(
       Effect.map((rendered) =>
         typeof rendered === "string" ? `its sample didn't render because ${rendered}` : undefined,
       ),
@@ -203,7 +212,7 @@ export const undoRecipe = Effect.fn("KinRecipeLabels.undo")(function* (
     orgId,
     name,
     by,
-    verifySample(renderer, orgId, yield* sampleLogo(orgId)),
+    verifySample(renderer, orgId, yield* sampleContext(orgId)),
   );
   if (undone._tag === "undone")
     yield* label(

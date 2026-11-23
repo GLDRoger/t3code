@@ -3,7 +3,7 @@ import * as NodeZlib from "node:zlib";
 
 import { assert, describe, it } from "@effect/vitest";
 
-import { computeData, type TaxRegime } from "./compute.ts";
+import { computeData, GST_REGIME, type TaxRegime } from "./compute.ts";
 import { taxRegimeOf } from "./facts.ts";
 import { sampleInputs } from "./recipeLabels.ts";
 import { assembleInputs, parseRecipe, type Recipe, type Value } from "./recipe.ts";
@@ -62,6 +62,9 @@ const computeInvoice = (given: Readonly<Record<string, Value>>, tax?: TaxRegime)
   };
 };
 
+const computeGstInvoice = (given: Readonly<Record<string, Value>>, tax = GST_REGIME) =>
+  computeInvoice(given, tax);
+
 describe("invoice", () => {
   it("charges a company outside India its own one tax, and none without a rate", () => {
     const gbp = (minor: number) => ({ minor, currency: "GBP" });
@@ -110,6 +113,13 @@ describe("invoice", () => {
         name: "no country",
         input: plain,
         tax: taxRegimeOf({ country: null, tax: null }),
+        taxes: [],
+        total: "£999.99",
+      },
+      {
+        name: "no country or supplied tax regime",
+        input: { ...base, lines: plain.lines, clientPlace: "Karnataka" },
+        tax: undefined,
         taxes: [],
         total: "£999.99",
       },
@@ -210,7 +220,7 @@ describe("invoice", () => {
       },
     ];
     for (const one of cases) {
-      const { tax } = computeInvoice(one.input, "tax" in one ? one.tax : undefined);
+      const { tax } = computeGstInvoice(one.input, "tax" in one ? one.tax : undefined);
       assert.deepStrictEqual(
         tax.taxes.map((line) => [line.name, `${line.rate}%`, line.amount.text]),
         one.taxes,
@@ -229,25 +239,29 @@ describe("invoice", () => {
       if ("placeOfSupply" in one)
         assert.strictEqual(tax.placeOfSupply, one.placeOfSupply, one.name);
     }
-    const exported = computeInvoice({ ...base, clientPlace: "United States" }).tax;
+    const exported = computeGstInvoice({ ...base, clientPlace: "United States" }).tax;
     assert.deepStrictEqual([exported.exportUnderLut, exported.country], [true, "United States"]);
     // The LUT it goes under is the company's own, printed as stored, never made up.
-    const lut = computeInvoice({
+    const lut = computeGstInvoice({
       ...base,
       clientPlace: "United States",
       lutNumber: "AD2904260012345",
       lutDate: "2026-04-01",
     });
     assert.deepStrictEqual(
-      [lut.lutText, computeInvoice({ ...base, clientPlace: "United States" }).lutText],
+      [lut.lutText, computeGstInvoice({ ...base, clientPlace: "United States" }).lutText],
       ["1 Apr 2026", null],
     );
-    const paid = computeInvoice({ ...base, clientPlace: "United States", exportUnderLut: false });
+    const paid = computeGstInvoice({
+      ...base,
+      clientPlace: "United States",
+      exportUnderLut: false,
+    });
     assert.deepStrictEqual(
       paid.tax.taxes.map((line) => [line.name, line.amount.text]),
       [["IGST", "₹180.00"]],
     );
-    const words = computeInvoice({ ...base, clientPlace: "Maharashtra" });
+    const words = computeGstInvoice({ ...base, clientPlace: "Maharashtra" });
     assert.strictEqual(
       words.words,
       "Rupees One Thousand One Hundred Seventy Nine and Ninety Nine Paise Only",
@@ -257,7 +271,7 @@ describe("invoice", () => {
 
   it("splits a recorded total exactly, refuses lines that disagree with it, and spells amounts", () => {
     // ₹1,000.01 at 18% in one state: taxable 847.47, tax 152.54 split 76.27 + 76.27.
-    const fromTotal = computeInvoice({
+    const fromTotal = computeGstInvoice({
       ...base,
       lines: null,
       total: inr(100001),
@@ -272,7 +286,7 @@ describe("invoice", () => {
     );
     assert.strictEqual(fromTotal.total.text, "₹1,000.01");
     // A recorded tax is kept to the paisa; an odd one splits with the extra paisa second.
-    const recorded = computeInvoice({
+    const recorded = computeGstInvoice({
       ...base,
       lines: null,
       total: inr(100001),
@@ -284,18 +298,18 @@ describe("invoice", () => {
       ["₹847.46", "₹76.27", "₹76.28"],
     );
     assert.throws(
-      () => computeInvoice({ ...base, total: inr(118000), clientPlace: "Maharashtra" }),
+      () => computeGstInvoice({ ...base, total: inr(118000), clientPlace: "Maharashtra" }),
       "the lines come to ₹1,179.99 with tax, but the entry is recorded at ₹1,180.00",
     );
     assert.throws(
-      () => computeInvoice(base),
+      () => computeGstInvoice(base),
       /the client has no place of supply and needs a GSTIN or a place of supply/,
     );
     // Tax recorded on an entry of a company that isn't registered is never printed as charged.
     for (const lines of [null, base.lines!])
       assert.throws(
         () =>
-          computeInvoice(
+          computeGstInvoice(
             { ...base, lines, total: inr(99999), taxRecorded: inr(15254), supplierGstin: null },
             notRegistered,
           ),

@@ -184,10 +184,7 @@ describe("the Money summary", () => {
   });
 
   it("names and opens the company's own financial year", () => {
-    const calendar = kinMoneyView(
-      { ...summary, financialYear: "FY2026", financialYearStartMonth: 1 },
-      [list("expenses")],
-    );
+    const calendar = kinMoneyView({ ...summary, financialYear: "FY2026" }, [list("expenses")]);
     expect(calendar.yearLabel).toBe("FY 2026, January to December");
     expect(calendar.yearSpent.open?.filter.spent).toEqual({
       from: "2026-01-01",
@@ -280,6 +277,7 @@ describe("dates", () => {
 describe("company details", () => {
   const profile = {
     legalName: "Invented Studio Private Limited",
+    country: "IN",
     tradeName: null,
     address: null,
     gstin: null,
@@ -393,7 +391,6 @@ describe("company details", () => {
         .map((row) => row.id);
     expect(read(profile)).toEqual([
       "address",
-      "country",
       "gstin",
       "placeOfSupply",
       "accountName",
@@ -404,7 +401,7 @@ describe("company details", () => {
       ...(profile as { bank: object }),
       bank: { ...(profile as { bank: object }).bank, upi: "invented@hdfcbank" },
     };
-    expect(read(upi)).toEqual(["address", "country", "gstin", "placeOfSupply"]);
+    expect(read(upi)).toEqual(["address", "gstin", "placeOfSupply"]);
     expect(
       kinCompanyRead(profile)
         .flatMap((one) => one.rows)
@@ -414,7 +411,14 @@ describe("company details", () => {
     expect(kinCompanyRead(uk).flatMap((one) => one.rows.map((row) => row.id))).not.toContain(
       "ifsc",
     );
-    // Typing India brings its ids back; a host too old to say keeps them, as before.
+    for (const country of [null, undefined]) {
+      const unset = { ...(profile as object), country } as typeof uk;
+      expect(fields(kinCompanyEditSections(unset, kinCompanyDraftOf(unset)))).not.toContain(
+        "gstin",
+      );
+      expect(fields(kinCompanyEditSections(unset, kinCompanyDraftOf(unset)))).toContain("taxRate");
+    }
+    // Typing India brings its ids back.
     expect(fields(kinCompanyEditSections(uk, { ...ukDraft, country: "in" }))).toContain("gstin");
     expect(fields(kinCompanyEditSections(profile, kinCompanyDraftOf(profile)))).toContain("gstin");
     expect(fields(kinCompanyEditSections(profile, kinCompanyDraftOf(profile)))).not.toContain(
