@@ -21,6 +21,7 @@ import * as KeySeal from "./approvals/KeySeal.ts";
 import * as ApprovalCards from "./chat/approvalCards.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
+import * as KinPushDispatch from "./push/KinPushDispatch.ts";
 import * as KinHostCare from "./host/KinHostCare.ts";
 import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
@@ -120,6 +121,11 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
       yield* DevFakeMail.connectFakeAccounts(owner).pipe(Effect.provide(services));
       const hub = yield* KinChatHub;
       const scope = yield* Effect.scope;
+      // What pushes told of a task is withdrawn once it is done, dropped or handed on.
+      yield* KinPushDispatch.settleTasks(
+        owner.orgId,
+        (yield* KinRecords.KinRecords).changes(owner.orgId),
+      );
       const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
       // Receipt and statement cards' answers carry out their work here, in the tap's transaction.
       yield* chat.attachChoiceAnswers(

@@ -99,6 +99,22 @@ export function kinMessageSubject(message: {
 }
 
 /**
+ * The one stable thing a push is about, which a newer push about it replaces and which is
+ * withdrawn once it no longer needs the person: `c:` a chat's messages, `w:` a card, `q:` an open
+ * question, `a:` an approval, `r:` a task, `f:` Kin's notice of several, `t:` a trouble on Kin's
+ * computer, `u:` nothing else (never replaced). Ids only.
+ */
+export const KinPushTopic = Schema.String.check(
+  Schema.makeFilter((value: string) => /^[a-z]:\S{1,200}$/.test(value), {
+    expected: "a Kin push topic",
+  }),
+);
+export type KinPushTopic = typeof KinPushTopic.Type;
+
+/** At most this many topics in one withdrawal or one reconcile. */
+export const KIN_PUSH_TOPICS_MAX = 200;
+
+/**
  * What a Kin push carries besides `aps`, under the payload's `body` key, which is what
  * expo-notifications exposes as `content.data` for a remote push. Ids and a `/kin/` link only.
  */
@@ -118,6 +134,12 @@ export const KinPushData = Schema.Struct({
   cleared: Schema.optional(Schema.Literal(true)),
   /** Worked out for the person it is sent to, from what they may open. */
   subject: Schema.optional(KinPushSubject),
+  /** What it is about, to a build that registered `withdraws`. */
+  topic: Schema.optional(KinPushTopic),
+  /** On a silent push: these topics' notifications are settled, so the phone removes them. */
+  withdraw: Schema.optional(
+    Schema.Array(KinPushTopic).check(Schema.isMaxLength(KIN_PUSH_TOPICS_MAX)),
+  ),
   deepLink: Schema.String.check(
     Schema.makeFilter((value: string) => /^\/kin\/[A-Za-z0-9._~%/-]+$/.test(value), {
       expected: "a /kin/ app path",
@@ -138,6 +160,11 @@ export const KinPushRegisterDeviceInput = Schema.Struct({
   deviceLabel: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(80))),
   /** An Android build that made the `kin.quiet` channel; without it, quiet pushes set no banner. */
   quietChannel: Schema.optional(Schema.Boolean),
+  /**
+   * A build that matches its notifications by `topic`: its pushes replace one another by topic,
+   * and it removes the topics a silent push withdraws.
+   */
+  withdraws: Schema.optional(Schema.Boolean),
 });
 export type KinPushRegisterDeviceInput = typeof KinPushRegisterDeviceInput.Type;
 
@@ -157,6 +184,20 @@ export type KinPushUnregisterDeviceInput = typeof KinPushUnregisterDeviceInput.T
 export const KinPushUnregisterDeviceResult = Schema.Struct({ removed: Schema.Boolean });
 export type KinPushUnregisterDeviceResult = typeof KinPushUnregisterDeviceResult.Type;
 
+/** The topics of this host's notifications the phone still shows. */
+export const KinPushReconcileInput = Schema.Struct({
+  orgId: KinOrgId,
+  topics: Schema.Array(KinPushTopic).check(Schema.isMaxLength(KIN_PUSH_TOPICS_MAX)),
+});
+export type KinPushReconcileInput = typeof KinPushReconcileInput.Type;
+
+/** Of those, the ones sent to the caller that are settled, and the caller's badge now. */
+export const KinPushReconcileResult = Schema.Struct({
+  remove: Schema.Array(KinPushTopic),
+  badge: NonNegativeInt,
+});
+export type KinPushReconcileResult = typeof KinPushReconcileResult.Type;
+
 export const KinPushWatchInput = Schema.Struct({ chatId: KinChatId });
 export type KinPushWatchInput = typeof KinPushWatchInput.Type;
 
@@ -173,6 +214,7 @@ export const KIN_PUSH_WS_METHODS = {
   registerDevice: "kin.push.registerDevice",
   unregisterDevice: "kin.push.unregisterDevice",
   watch: "kin.push.watch",
+  reconcile: "kin.push.reconcile",
 } as const;
 
 const error = Schema.Union([KinPushError, EnvironmentAuthorizationError]);
@@ -195,6 +237,12 @@ export const KinPushRpcs = [
     error,
     stream: true,
   }),
+  // The phone in front, or a push arrived: what it still shows that is settled.
+  Rpc.make(KIN_PUSH_WS_METHODS.reconcile, {
+    payload: KinPushReconcileInput,
+    success: KinPushReconcileResult,
+    error,
+  }),
 ] as const;
 
 // Chat access is the gate: a device is bound to its caller's person and session, and gets
@@ -203,6 +251,7 @@ export const KIN_PUSH_RPC_SCOPES = {
   [KIN_PUSH_WS_METHODS.registerDevice]: AuthKinChatScope,
   [KIN_PUSH_WS_METHODS.unregisterDevice]: AuthKinChatScope,
   [KIN_PUSH_WS_METHODS.watch]: AuthKinChatScope,
+  [KIN_PUSH_WS_METHODS.reconcile]: AuthKinChatScope,
 } as const satisfies Record<
   (typeof KIN_PUSH_WS_METHODS)[keyof typeof KIN_PUSH_WS_METHODS],
   AuthEnvironmentScope
