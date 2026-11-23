@@ -87,6 +87,8 @@ import { KinHostCare } from "../host/KinHostCare.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
 import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
 import { morningMoneyFor } from "../pulse/morningMoney.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
+import { settleCheckInTold } from "../pulse/told.ts";
 import { weeklyFigures } from "../pulse/weekly.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -1382,7 +1384,28 @@ const make = Effect.gen(function* () {
         }),
       );
       // What follows, such as the memory commit, isn't work on the owner's message.
-      const settled = settleLine(wake);
+      const settled = settleLine(wake).pipe(
+        Effect.andThen(
+          settleCheckInTold({
+            orgId: wake.orgId,
+            wakeupId: wake.wakeupId,
+            chatId: wake.lane.chatId,
+            completed: input.rescue,
+            readFacts: (factKeys) =>
+              Effect.gen(function* () {
+                const read = yield* KinPulse.read({
+                  orgId: wake.orgId,
+                  at: yield* Clock.currentTimeMillis,
+                  viewer: { _tag: "owner" },
+                  includeHandled: true,
+                  factKeys,
+                  limit: 200,
+                });
+                return read.facts;
+              }),
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        ),
+      );
       // A failed or stopped run is retried or was the owner's choice; only a finished one is owed.
       if ((yield* finish) || !input.rescue) return yield* settled;
       const shown = yield* showed(wake).pipe(Effect.orElseSucceed(() => false));

@@ -269,6 +269,7 @@ const runHandle = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseHa
     (action === "got_it" && until !== undefined && holding._tag === "may");
   const fact = yield* KinPulse.handle({
     orgId: lead.orgId,
+    wakeupId: lead.wakeupId,
     at,
     viewer,
     by,
