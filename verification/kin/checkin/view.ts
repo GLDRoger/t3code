@@ -10,7 +10,7 @@ export const title =
   "Your loose morning check-in, a fact it tells once, and a post that waits until its reader is free";
 
 export const guide =
-  "Your check-in is set “around 9:00”: it may come any time from 8:55 to 9:20, the same minute however often Kin works it out. Each box is where today's check-in stands; each arrow is something that happens: time passes, Kin's host sleeps or wakes, its clock is set forward or back, you move the check-in to 9:10, and a fact about a member's overdue task is held (“I've got it”) or clears. A fact is told once, and again only when it changed. Something nobody asked for that comes in your quiet hours, a message passed on to you included, waits for them to end; one for a member waits, on her own clock, through her quiet hours and outside her working hours. The model covers two days, one outage, one clock change and one move. Red boxes are where a rule below breaks.";
+  "Your check-in is set “around 9:00”: it may come any time from 8:55 to 9:20, the same minute however often Kin works it out. Each box is where today's check-in stands; each arrow is something that happens: time passes, Kin's host sleeps or wakes, its clock is set forward or back, you move the check-in to 9:10, and a fact about a member's overdue task is held (“I've got it”) or clears. A fact is told once, and again only when it changed. An omitted fact can be offered at the next check-in. Something nobody asked for that comes in your quiet hours, a message passed on to you included, waits for them to end; one for a member waits, on her own clock, through her quiet hours and outside her working hours. The model covers two days, one outage, one clock change and one move. Red boxes are where a rule below breaks.";
 
 /** The chart is drawn on one day without clock changes; the rules are checked on the full bound. */
 export const chartConstants = { Days: "1", MaxJumps: "0" };
@@ -24,8 +24,9 @@ export const rules: Record<string, string> = {
   FiresWhenUp:
     "If Kin is running at any time in the window, that day's check-in happens, even when the host woke too late for T3's scheduler.",
   FactNeverAbsent:
-    "A fact you haven't been told as it stands now, even one someone has in hand, is in that day's check-in, never silently left out.",
+    "A fact you haven't been told as it stands now, even one someone has in hand, is offered to that day's check-in.",
   HandleKeepsTask: "Holding a fact (“I've got it”) never hides the member's task from them.",
+  OmissionsReleased: "A fact the check-in left out can be offered again.",
   ToldOnce: "A fact that hasn't changed is told at most once.",
   HeldDeliveredOnce: "A post held through your quiet hours reaches you exactly once.",
   HeldNeverLost: "A held post is never lost, even when Kin restarts before your quiet hours end.",
@@ -57,6 +58,11 @@ export const variants = [
     name: "late-offset",
     breaks: "InsideWindow",
     what: "a late start picks its minute from the start, not the window (the code before this change)",
+  },
+  {
+    name: "keep-omission",
+    breaks: "OmissionsReleased",
+    what: "an omitted fact still counts as told",
   },
   { name: "tell-again", breaks: "ToldOnce", what: "a told fact counts as new at every check-in" },
   {
@@ -142,8 +148,13 @@ export const step = (action: string, from: Vars, to: Vars) => {
     }
     case "CatchUp":
       return "Kin notices today's check-in never ran and sends it now";
-    case "AgentWakes":
-      return "The agent checks in";
+    case "AgentWakes": {
+      const day = [0, 1].find((d) => ofDay(from["woke"], d) !== ofDay(to["woke"], d));
+      const result = day === undefined ? undefined : ofDay(to["told"], day);
+      return Array.isArray(result) && result[1] === true
+        ? "The agent checks in and leaves the fact out"
+        : "The agent checks in with the fact";
+    }
     case "OwnerMoves":
       return "You move it to around 9:10";
     case "SeedFollows":
