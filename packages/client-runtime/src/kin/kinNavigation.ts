@@ -259,6 +259,7 @@ export const KIN_SET_UP_ON_COMPUTER = {
     "The model new agents start on, and agents on other providers, are set up in Kin on your computer.",
   checkInAdd:
     "New check-ins, what one is for, and removing one are set up in Kin on your computer.",
+  githubApp: "Kin's GitHub App is created in Kin on your computer.",
 } as const;
 
 /** The phone's Notifications row opens the system's page for Kin; the row says so first. */

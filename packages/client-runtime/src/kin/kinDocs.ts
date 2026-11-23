@@ -12,6 +12,7 @@ import {
   type KinDocEditSectionInput,
   type KinDocEmbed,
   type KinDocRenderInput,
+  type KinDocFile,
   type KinDocFileInput,
   KIN_DOC_KINDS,
   type KinDocKind,
@@ -156,6 +157,14 @@ export const KIN_DOCS = {
   noChanges: {
     title: "Nothing changed",
     detail: "These two versions read the same.",
+  },
+  pictureChanged: {
+    title: "The picture changed",
+    detail: "Its words read the same.",
+  },
+  fileChanged: {
+    title: "The file changed",
+    detail: "Its words read the same.",
   },
   firstVersion: {
     title: "This is the first version",
@@ -983,6 +992,16 @@ export function kinDocVersionView(
 }
 
 /** "1 section changed · 4 unchanged", from what the host says differs. */
+/** What to say when two versions' words read the same: a new picture or file is still a change. */
+export function kinDocSameWords(diff: {
+  readonly from: { readonly file?: Pick<KinDocFile, "sha256"> | undefined };
+  readonly to: { readonly file?: Pick<KinDocFile, "sha256" | "mimeType"> | undefined };
+}) {
+  const file = diff.to.file;
+  if (file === undefined || file.sha256 === diff.from.file?.sha256) return KIN_DOCS.noChanges;
+  return file.mimeType.startsWith("image/") ? KIN_DOCS.pictureChanged : KIN_DOCS.fileChanged;
+}
+
 export function kinDocDiffSummary(diff: KinDocDiff, sections: number): string {
   const changed = diff.changedSections.length;
   const removed = diff.removedSections.length;

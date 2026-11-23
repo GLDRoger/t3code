@@ -787,7 +787,8 @@ function KinTasksUndoToast(props: {
       pointerEvents="box-none"
     >
       <Toast
-        singleLine
+        // Without an Undo beside it, a notice wraps so its whole sentence is read.
+        singleLine={onUndo !== null}
         opaque
         message={props.text}
         {...(onUndo === null ? {} : { action: { label: KIN_WORK_COPY.undo, onPress: onUndo } })}
@@ -858,6 +859,8 @@ function kinWorkFilterMenu(props: {
     items: [
       {
         id: "quick",
+        // Untitled, the iOS toolbar would head the group with its items' labels run together.
+        title: "",
         inline: true,
         items: kinTaskQuickFilters(filter, overview, props.me).map((one) => ({
           id: `quick:${one.id}`,
