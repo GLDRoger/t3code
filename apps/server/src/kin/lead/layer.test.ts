@@ -51,7 +51,8 @@ import * as KinLead from "./layer.ts";
 import { event, harness, seed, orgId } from "./WakeupRunner.testkit.ts";
 
 const external = Layer.mergeAll(
-  Layer.mock(ChatService.KinChatService)({}),
+  // The lead runtime attaches its memory reader for deferral card taps.
+  Layer.mock(ChatService.KinChatService)({ attachDeferralItems: () => Effect.void }),
   Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
   Layer.mock(KinRecords.KinRecords)({}),
   Layer.mock(ChatHub.KinChatHub)({ subscribeAll: Effect.succeed(Stream.never) }),
