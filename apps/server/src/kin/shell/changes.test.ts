@@ -475,3 +475,47 @@ it.effect(
       assert.strictEqual((yield* KinShell.get(orgId)).rev, 0);
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect("shows a company list as a section, docks it and turns it off, each on a card", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'stock', 'Stock', 'STK', 0, 1, '{"sensitive":false}')`;
+    yield* turn(1);
+    for (const [sections, message] of [
+      [[{ id: "deals", dock: true }], "Only a list section is put in the phone's dock here."],
+      [[{ id: "list:shelves" }], "There is no list shelves to show as a section."],
+    ] as const)
+      assert.include(yield* Effect.flip(propose(scope, { sections })), { message });
+    const shown = yield* propose(scope, { sections: [{ id: "list:stock", dock: true }] });
+    assert.deepStrictEqual(shown.proposed, [
+      `Show the list "Stock" as a section, also in the phone's dock`,
+    ]);
+    assert.strictEqual((yield* KinShell.get(orgId)).rev, 0);
+    const [first] = yield* cards;
+    yield* answer(first!.widgetId, ownerId);
+    assert.deepStrictEqual((yield* KinShell.get(orgId)).sections.slice(5), [
+      { id: "list:stock", on: true, dock: true },
+    ]);
+    assert.strictEqual(
+      yield* shellDecision(orgId, first!.widgetId, true),
+      'Showed the list "Stock" as a section.',
+    );
+    yield* turn(2);
+    const off = yield* propose(scope, { sections: [{ id: "list:stock", on: false, dock: false }] });
+    assert.deepStrictEqual(off.proposed, [
+      'Turn off the "Stock" section',
+      `Take "Stock" out of the phone's dock`,
+    ]);
+    const [, second] = yield* cards;
+    yield* answer(second!.widgetId, ownerId);
+    assert.deepStrictEqual((yield* KinShell.get(orgId)).sections.slice(5), [
+      { id: "list:stock", on: false, dock: false },
+    ]);
+    yield* turn(3);
+    const back = yield* propose(scope, { sections: [{ id: "list:stock", on: true }] });
+    assert.deepStrictEqual(back.proposed, ['Turn on the "Stock" section']);
+  }).pipe(Effect.provide(layer)),
+);

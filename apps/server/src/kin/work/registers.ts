@@ -1,5 +1,5 @@
 import * as KinShell from "../shell/KinShell.ts";
-import { sectionOfList, sectionOfRegister } from "../shell/sections.ts";
+import { listSectionRefused, sectionOfList, sectionOfRegister } from "../shell/sections.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 import {
@@ -757,6 +757,13 @@ export type Additions = {
   readonly categories: ReadonlyArray<string>;
   readonly choices: Readonly<Record<string, ReadonlyArray<string>>>;
   readonly stateLabels: StoredDefinition["stateLabels"];
+  readonly remindOn?: string | undefined;
+  readonly check?: StoredDefinition["check"];
+};
+/** Shown as a section of the company's own once made, and in the phone's dock when asked. */
+const Shown = {
+  section: Schema.optional(Schema.Boolean),
+  dock: Schema.optional(Schema.Boolean),
 };
 const Proposal = Schema.Union([
   Schema.TaggedStruct("new", {
@@ -764,6 +771,7 @@ const Proposal = Schema.Union([
     name: Schema.String,
     prefix: Schema.String,
     definition: StoredDefinition,
+    ...Shown,
   }),
   Schema.TaggedStruct("extend", {
     id: Schema.String,
@@ -772,6 +780,9 @@ const Proposal = Schema.Union([
     choices: Schema.Record(Schema.String, Schema.Array(Schema.String)),
     stateLabels: StateLabels,
     team: KinListDefinition.fields.team,
+    remindOn: KinListDefinition.fields.remindOn,
+    check: KinListDefinition.fields.check,
+    ...Shown,
   }),
 ]);
 export type Proposal = typeof Proposal.Type;
@@ -878,8 +889,39 @@ const extended = (def: StoredDefinition, additions: Additions) => {
     fields,
     categories: [...new Set([...def.categories, ...additions.categories])],
     stateLabels: { ...def.stateLabels, ...additions.stateLabels },
+    ...(additions.remindOn === undefined ? {} : { remindOn: additions.remindOn }),
+    ...(additions.check === undefined ? {} : { check: additions.check }),
   };
-  return checkFieldDefs(next.fields) ?? next;
+  return checkFieldDefs(next.fields) ?? checkWatch(next) ?? next;
+};
+
+/** A list's check in its own words: "On hand is below Reorder point". */
+export const checkText = (
+  fields: ReadonlyArray<FieldDef>,
+  check: NonNullable<StoredDefinition["check"]>,
+) => {
+  const label = (key: string) => fields.find((one) => one.key === key)?.label ?? key;
+  const other = check.below ?? check.above ?? 0;
+  return `${label(check.field)} is ${check.below === undefined ? "above" : "below"} ${typeof other === "number" ? other : label(other)}`;
+};
+
+/** What a list's entries are watched by: a date field for reminders, and one number check. */
+const checkWatch = (
+  def: Pick<StoredDefinition, "fields" | "remindOn" | "check">,
+): KinChatError | undefined => {
+  const live = (key: string) => def.fields.find((one) => one.key === key && one.retired !== true);
+  if (def.remindOn !== undefined && live(def.remindOn)?.type !== "date")
+    return invalid(`remindOn names one of the list's date fields; ${def.remindOn} isn't one.`);
+  if (def.check === undefined) return undefined;
+  const { field, below, above } = def.check;
+  if (live(field)?.type !== "number")
+    return invalid(`A check compares one of the list's number fields; ${field} isn't one.`);
+  if ((below === undefined) === (above === undefined))
+    return invalid("A check is either below or above, not both.");
+  const other = below ?? above!;
+  if (typeof other === "string" && (other === field || live(other)?.type !== "number"))
+    return invalid(`A check compares with a number or another number field; ${other} isn't one.`);
+  return undefined;
 };
 
 /** What a proposal would make, checked now, so a yes never meets a refusal. */
@@ -895,7 +937,7 @@ const checkDraft = (draft: Draft): KinChatError | undefined => {
   if (!isCurrency(def.currency)) return invalid(`${def.currency} is not a currency code.`);
   const taken = draft.id === "expenses" ? fundingKeyRefusal(def.fields) : undefined;
   if (taken !== undefined) return invalid(taken);
-  return checkFieldDefs(def.fields);
+  return checkFieldDefs(def.fields) ?? checkWatch(def);
 };
 
 /** What a list is asked to be: `list_define`'s input, or an import's list. */
@@ -925,7 +967,70 @@ export type ListInput = {
   readonly team?: boolean | undefined;
   readonly dueLabel?: string | undefined;
   readonly dateLabel?: string | undefined;
+  readonly section?: boolean | undefined;
+  readonly dock?: boolean | undefined;
+  /** A date field by label or key. */
+  readonly remindOn?: string | undefined;
+  /** A number field by label or key, below or above a number or another number field. */
+  readonly check?:
+    | {
+        readonly field: string;
+        readonly below?: string | number | undefined;
+        readonly above?: string | number | undefined;
+      }
+    | undefined;
 };
+
+/** A field the caller named by its label or its key, as its key; the name as given when none is. */
+const fieldKey = (fields: ReadonlyArray<FieldDef>, named: string) =>
+  fields.find(
+    (one) =>
+      one.key === named ||
+      one.label.toLowerCase() === named.trim().toLowerCase() ||
+      one.key === keyFor(named),
+  )?.key ?? named.trim();
+
+/** The reminder field and check a call names, as the definition stores them. */
+const watchOf = (fields: ReadonlyArray<FieldDef>, input: ListInput) => {
+  const other = (value: string | number | undefined) =>
+    value === undefined ? undefined : typeof value === "number" ? value : fieldKey(fields, value);
+  const below = other(input.check?.below);
+  const above = other(input.check?.above);
+  return {
+    ...(input.remindOn === undefined ? {} : { remindOn: fieldKey(fields, input.remindOn) }),
+    ...(input.check === undefined
+      ? {}
+      : {
+          check: {
+            field: fieldKey(fields, input.check.field),
+            ...(below === undefined ? {} : { below }),
+            ...(above === undefined ? {} : { above }),
+          },
+        }),
+  };
+};
+const shownAs = (input: ListInput) => ({
+  ...(input.section === true ? { section: true } : {}),
+  ...(input.section === true && input.dock !== undefined ? { dock: input.dock } : {}),
+});
+
+/** Reminders and a check speak only for a list that is a section, or is asked to be one. */
+const watchRefusal = Effect.fn("KinRegisters.watchRefusal")(function* (
+  orgId: KinOrgId,
+  id: string,
+  input: ListInput,
+) {
+  if (input.dock !== undefined && input.section !== true)
+    return invalid("dock comes with section true: the phone's dock holds sections.");
+  if (input.remindOn === undefined && input.check === undefined) return undefined;
+  if (input.section === true) return undefined;
+  const shell = yield* KinShell.get(orgId);
+  return shell.sections.some((one) => one.id === KinShell.listSectionId(id))
+    ? undefined
+    : invalid(
+        "Kin reminds and warns only for a list shown as a section: pass section true as well.",
+      );
+});
 
 const fieldDefs = (fields: NonNullable<ListInput["fields"]>) => {
   const defs: Array<FieldDef> = [];
@@ -975,7 +1080,16 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       }
       return true;
     });
-    return {
+    const refused = yield* watchRefusal(orgId, def.id, input);
+    if (refused !== undefined) return yield* refused;
+    if (
+      input.section === true &&
+      listSectionRefused({ ...def, payments: def.payments === true ? 1 : null })
+    )
+      return yield* invalid(
+        `${def.name} has its place in Kin already, so it can't be a section of its own.`,
+      );
+    const extension = {
       _tag: "extend",
       id: def.id,
       fields: added,
@@ -985,7 +1099,12 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       ...(input.team === true || (input.team === false && def.team === true)
         ? { team: input.team }
         : {}),
+      ...watchOf([...def.fields, ...added], input),
+      ...shownAs(input),
     } satisfies Proposal;
+    const next = extended(def, extension);
+    if (isChatError(next)) return yield* next;
+    return extension;
   }
   const named =
     input.id ?? input.template ?? (input.name === undefined ? undefined : idFor(input.name));
@@ -1009,6 +1128,16 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       `${name} entries are numbered when issued, and an issued one always carries its amount, so this list keeps amounts.`,
     );
   const states = input.states ?? preset?.states ?? ["open", "done", "dropped"];
+  const listFields = [
+    // A template's choice field named again with more choices keeps them, as on a list made already.
+    ...(preset?.fields ?? []).map((had) => {
+      const asked = fields.find((one) => one.key === had.key);
+      return had.type === "choice" && asked?.type === "choice"
+        ? { ...had, choices: [...new Set([...(had.choices ?? []), ...(asked.choices ?? [])])] }
+        : had;
+    }),
+    ...fields.filter((one) => !(preset?.fields ?? []).some((field) => field.key === one.key)),
+  ];
   const definition: StoredDefinition = {
     noun: input.noun ?? preset?.noun ?? name.toLowerCase().replace(/s$/, ""),
     states,
@@ -1021,16 +1150,8 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
           : states[0]!,
     categories: [...new Set([...(preset?.categories ?? []), ...(input.categories ?? [])])],
     ...ownLabels(named, preset?.categoryLabels),
-    fields: [
-      // A template's choice field named again with more choices keeps them, as on a list made already.
-      ...(preset?.fields ?? []).map((had) => {
-        const asked = fields.find((one) => one.key === had.key);
-        return had.type === "choice" && asked?.type === "choice"
-          ? { ...had, choices: [...new Set([...(had.choices ?? []), ...(asked.choices ?? [])])] }
-          : had;
-      }),
-      ...fields.filter((one) => !(preset?.fields ?? []).some((field) => field.key === one.key)),
-    ],
+    fields: listFields,
+    ...watchOf(listFields, input),
     sensitive: input.sensitive ?? preset?.sensitive ?? amount,
     ...(input.team === undefined ? {} : { team: input.team }),
     amount,
@@ -1043,6 +1164,12 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       ? { dateLabel: (input.dateLabel ?? preset?.dateLabel)! }
       : {}),
   };
+  if (input.section === true && preset !== undefined)
+    return yield* invalid(
+      `${name} has its place in Kin already, so it can't be a section of its own.`,
+    );
+  const unwatched = yield* watchRefusal(orgId, named, input);
+  if (unwatched !== undefined) return yield* unwatched;
   if (!isCurrency(definition.currency))
     return yield* invalid(`${definition.currency} is not a currency code.`);
   const draft = {
@@ -1059,7 +1186,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     return yield* invalid(
       `There is already a list ${draft.name}; propose fields to add to it with list instead.`,
     );
-  return { _tag: "new", ...draft } satisfies Proposal;
+  return { _tag: "new", ...draft, ...shownAs(input) } satisfies Proposal;
 });
 
 const proposalIdFor = (orgId: string, agentId: string, wakeupId: string, json: string) =>
@@ -1139,6 +1266,8 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
   orgId: KinOrgId,
   proposal: Proposal,
   now: number,
+  /** The owner-level person whose yes this is: it shows the list as a section when asked. */
+  by?: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (proposal._tag === "new") {
@@ -1187,6 +1316,8 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
         rev = rev + 1
       WHERE org_id = ${orgId} AND register_id = ${proposal.id}`;
   }
+  if (proposal.section === true && by !== undefined)
+    yield* KinShell.showList(orgId, proposal.id, proposal.dock, by);
   yield* (yield* KinRefreshObserver).touch(orgId, "workLists");
 });
 
@@ -1231,7 +1362,8 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
     });
   // Every person here is read from the stored event and the stored message both: a tap is an
   // owner's or co-owner's own tap row on this proposal's card, a message their own text after it.
-  const answered = yield* sql`SELECT 1 FROM kin_events e
+  const answered = yield* sql<{ personId: string }>`SELECT m.author_person_id AS "personId"
+    FROM kin_events e
     JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
       AND m.chat_id = json_extract(e.json, '$.chatId')
     WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
@@ -1272,7 +1404,7 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
         `${KinShell.sectionName(shell, section)} is turned off for this company.`,
       );
   }
-  yield* defineList(input.orgId, proposal, input.now);
+  yield* defineList(input.orgId, proposal, input.now, answered[0]!.personId);
   yield* sql`UPDATE kin_list_proposals SET defined_at = ${input.now}
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}`;
   return { id: proposal.id, created: true };
@@ -1324,6 +1456,8 @@ export const defineProposed = Effect.fn("KinRegisters.defineProposed")(function*
   readonly proposalId: string;
   readonly definition: string;
   readonly now: number;
+  /** The owner-level person who tapped. */
+  readonly by: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ json: string; definedAt: number | null }>`SELECT
@@ -1334,7 +1468,7 @@ export const defineProposed = Effect.fn("KinRegisters.defineProposed")(function*
   if (row.definedAt !== null) return "the list was already made";
   const proposal = yield* proposalToCreate(input.orgId, row.json);
   if (typeof proposal === "string") return proposal;
-  yield* defineList(input.orgId, proposal, input.now);
+  yield* defineList(input.orgId, proposal, input.now, input.by);
   yield* sql`UPDATE kin_list_proposals SET defined_at = ${input.now}
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}`;
   return undefined;

@@ -821,6 +821,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
           proposalId: plan.proposalId,
           definition: plan.definition,
           now: tap.now,
+          by: personId,
         }));
       if (why !== undefined) return nothingDone(why);
       if (made === undefined) return { title: "List created", text: "Created." };

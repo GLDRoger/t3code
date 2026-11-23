@@ -84,6 +84,7 @@ import {
 import {
   attachCard,
   carryOut,
+  checkText,
   type FieldDef,
   isUnissuedDraft,
   listDef,
@@ -200,6 +201,24 @@ export const DefineInput = Schema.Struct({
   }),
   dueLabel: Schema.optional(Label),
   dateLabel: Schema.optional(Label),
+  section: Schema.optional(Schema.Boolean).annotate({
+    description: "Also show the list as a section of its own.",
+  }),
+  dock: Schema.optional(Schema.Boolean).annotate({
+    description: "With section: in the phone's dock too.",
+  }),
+  remindOn: Schema.optional(Label).annotate({
+    description: "A date field Kin reminds an entry's holder on, as on a task's due day.",
+  }),
+  check: Schema.optional(
+    Schema.Struct({
+      field: Label,
+      below: Schema.optional(Schema.Union([Label, Schema.Finite])),
+      above: Schema.optional(Schema.Union([Label, Schema.Finite])),
+    }),
+  ).annotate({
+    description: "Warn once per entry when a number field is below or above a number or field.",
+  }),
 });
 const ShownField = Schema.Struct({
   key: Schema.String,
@@ -326,6 +345,17 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
         )
       : undefined;
   const teamChange = proposal._tag === "new" ? proposal.definition.team : proposal.team;
+  const watched =
+    proposal._tag === "new"
+      ? proposal.definition
+      : {
+          ...proposal,
+          fields: [
+            ...((yield* listDef(lead.orgId, proposal.id))?.fields ?? []),
+            ...proposal.fields,
+          ],
+        };
+  const label = (key: string) => watched.fields.find((one) => one.key === key)?.label ?? key;
   // The card is how a tap answers this proposal and no other; a typed yes still works without it.
   const card = yield* askOwner(
     lead,
@@ -344,6 +374,17 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
           : teamChange === false && proposal._tag === "extend"
             ? ["The team will no longer see this list."]
             : []),
+        ...(proposal.section === true
+          ? [
+              `${shown.name} will show as a section of its own${proposal.dock === true ? ", and in the phone's dock" : ""}.`,
+            ]
+          : []),
+        ...(watched.check === undefined
+          ? []
+          : [`Kin will warn about each entry whose ${checkText(watched.fields, watched.check)}.`]),
+        ...(watched.remindOn === undefined
+          ? []
+          : [`Kin will remind whoever holds an entry on its ${label(watched.remindOn)} day.`]),
       ].join("\n"),
       yes: proposal._tag === "new" ? "Create it" : "Add them",
       no: "Not now",

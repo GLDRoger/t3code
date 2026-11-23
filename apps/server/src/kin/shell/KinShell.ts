@@ -34,7 +34,7 @@ const decode = Schema.decodeUnknownEffect(SectionsJson);
 const encode = Schema.encodeEffect(SectionsJson);
 
 /** A company list shown as a section of its own: `list:<its id>`. */
-export const listSectionId = (listId: string) => `list:${listId}`;
+export const listSectionId = (listId: string): `list:${string}` => `list:${listId}`;
 /** The list a section id names, or undefined for a built-in or unknown id. */
 export const listOfSection = (id: string) =>
   /^list:[a-z][a-z0-9_]{1,39}$/.test(id) ? id.slice(5) : undefined;
@@ -183,6 +183,83 @@ export const shellRefusal = (
     : `Turn off Invoices and quotes first: invoices need ${name}.`;
 };
 
+/** Why one of these list sections can't be in the shell, in the setter's words; else undefined. */
+export const listSectionsRefusal = Effect.fn("KinShell.listSectionsRefusal")(function* (
+  orgId: KinOrgId,
+  sections: readonly KinShellSection[],
+) {
+  const lists = sections.flatMap((section) => listOfSection(section.id) ?? []);
+  if (lists.length === 0) return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const defined = yield* sql<{
+    id: string;
+    name: string;
+    payments: number | null;
+    archivedAt: number | null;
+  }>`SELECT register_id AS id, name, archived_at AS "archivedAt",
+      json_extract(definition_json, '$.payments') AS payments
+    FROM kin_registers WHERE org_id = ${orgId} AND built_in = 0
+      AND register_id IN ${sql.in(lists)} ORDER BY register_id`;
+  for (const id of lists) {
+    const list = defined.find((one) => one.id === id && one.archivedAt === null);
+    if (list === undefined) return `There is no list ${id} to show as a section.`;
+    if (listSectionRefused(list))
+      return `${list.name} has its place in Kin already, so it can't be a section of its own.`;
+  }
+  return undefined;
+});
+
+/** Writes the next revision in the caller's transaction, for every reader after it commits. */
+const save = Effect.fn("KinShell.save")(function* (
+  orgId: KinOrgId,
+  personId: string,
+  rev: number,
+  sections: readonly KinShellSection[],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const refresh = yield* KinRefreshObserver;
+  const next = rev + 1;
+  yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+    VALUES (${orgId}, ${yield* encode(sections)}, ${next}, ${personId}, ${yield* Clock.currentTimeMillis})
+    ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json, rev = excluded.rev,
+      set_by = excluded.set_by, set_at = excluded.set_at`;
+  yield* sql.afterCommit(
+    Effect.sync(() => {
+      cacheFor(sql).delete(orgId);
+    }),
+  );
+  yield* refresh.touch(orgId, "shell");
+  // The open attention stream has its own counter, even though the sensed rows haven't moved.
+  yield* refresh.touch(orgId, "pulse");
+  return { rev: next, sections };
+});
+
+/**
+ * Shows a list as a section, switched on, in the caller's transaction: the owner-level answer on
+ * the list's own card (`registers.defineList`) is who set it. `dock` given sets its dock switch.
+ */
+export const showList = Effect.fn("KinShell.showList")(function* (
+  orgId: KinOrgId,
+  listId: string,
+  dock: boolean | undefined,
+  personId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [stored] = yield* sql<{
+    rev: number;
+    shellJson: string;
+  }>`SELECT rev, shell_json AS "shellJson" FROM kin_company_shell WHERE org_id = ${orgId}`;
+  const current = ordered(stored === undefined ? [] : yield* decode(stored.shellJson));
+  const id = listSectionId(listId);
+  const shown = { id, on: true, ...(dock === undefined ? {} : { dock }) };
+  const sections = current.some((section) => section.id === id)
+    ? current.map((section) => (section.id === id ? { ...section, ...shown } : section))
+    : [...current, shown];
+  const refusal = yield* listSectionsRefusal(orgId, sections);
+  if (refusal !== undefined) return yield* invalid(refusal);
+  return yield* save(orgId, personId, stored?.rev ?? 0, sections.map(labelsOf));
+});
+
 export const set = Effect.fn("KinShell.set")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
@@ -190,7 +267,6 @@ export const set = Effect.fn("KinShell.set")(function* (
   input: readonly KinShellSection[],
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const refresh = yield* KinRefreshObserver;
   return yield* sql
     .withTransaction(
       Effect.gen(function* () {
@@ -214,42 +290,9 @@ export const set = Effect.fn("KinShell.set")(function* (
         const refusal = shellRefusal(previous ?? [], input);
         if (refusal !== undefined) return yield* invalid(refusal);
         const sections = ordered(input).map(labelsOf);
-        const lists = sections.flatMap((section) => listOfSection(section.id) ?? []);
-        const defined =
-          lists.length === 0
-            ? []
-            : yield* sql<{
-                id: string;
-                name: string;
-                payments: number | null;
-                archivedAt: number | null;
-              }>`SELECT register_id AS id, name, archived_at AS "archivedAt",
-                json_extract(definition_json, '$.payments') AS payments
-              FROM kin_registers WHERE org_id = ${orgId} AND built_in = 0
-                AND register_id IN ${sql.in(lists)} ORDER BY register_id`;
-        for (const id of lists) {
-          const list = defined.find((one) => one.id === id && one.archivedAt === null);
-          if (list === undefined)
-            return yield* invalid(`There is no list ${id} to show as a section.`);
-          if (listSectionRefused(list))
-            return yield* invalid(
-              `${list.name} has its place in Kin already, so it can't be a section of its own.`,
-            );
-        }
-        const next = rev + 1;
-        yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
-      VALUES (${orgId}, ${yield* encode(sections)}, ${next}, ${personId}, ${yield* Clock.currentTimeMillis})
-      ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json, rev = excluded.rev,
-        set_by = excluded.set_by, set_at = excluded.set_at`;
-        yield* sql.afterCommit(
-          Effect.sync(() => {
-            cacheFor(sql).delete(orgId);
-          }),
-        );
-        yield* refresh.touch(orgId, "shell");
-        // The open attention stream has its own counter, even though the sensed rows haven't moved.
-        yield* refresh.touch(orgId, "pulse");
-        return { rev: next, sections };
+        const lists = yield* listSectionsRefusal(orgId, sections);
+        if (lists !== undefined) return yield* invalid(lists);
+        return yield* save(orgId, personId, rev, sections);
       }),
     )
     .pipe(

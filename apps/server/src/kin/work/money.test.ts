@@ -569,6 +569,125 @@ describe("lists through the tools", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("show a new or existing list as a section, with its check, on one card", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const listSections = sql<{ json: string | null }>`SELECT shell_json AS json
+        FROM kin_company_shell WHERE org_id = ${orgId}`.pipe(
+        Effect.map(([row]) =>
+          (
+            JSON.parse(row?.json ?? "[]") as ReadonlyArray<{
+              id: string;
+              on: boolean;
+              dock?: boolean;
+            }>
+          ).filter(({ id }) => id.startsWith("list:")),
+        ),
+      );
+      const detail = (proposal: string) =>
+        sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+          WHERE widget_id = ${cardOf(`kin-list:${proposal}`)}`.pipe(
+          Effect.map(([row]) => (JSON.parse(row!.state) as { detail: string }).detail.split("\n")),
+        );
+      const asked = yield* turn(1, "We don't do deals. Give me Bookings with a date and a room");
+      const bookings = {
+        sourceEventId: asked,
+        name: "Bookings",
+        fields: [
+          { label: "Booked for", type: "date" as const },
+          { label: "Room", type: "text" as const },
+        ],
+        remindOn: "Booked for",
+      };
+      for (const [input, message] of [
+        [
+          bookings,
+          "Kin reminds and warns only for a list shown as a section: pass section true as well.",
+        ],
+        [
+          { ...bookings, dock: true },
+          "dock comes with section true: the phone's dock holds sections.",
+        ],
+        [
+          { ...bookings, section: true, remindOn: "Room" },
+          "remindOn names one of the list's date fields; room isn't one.",
+        ],
+        [
+          { sourceEventId: asked, template: "expenses" as const, section: true },
+          "Expenses has its place in Kin already, so it can't be a section of its own.",
+        ],
+      ] as const)
+        assert.include(yield* Effect.flip(LeadMoney.define(scope, input)), { message });
+      const proposed = yield* LeadMoney.define(scope, { ...bookings, section: true, dock: true });
+      assert.strictEqual(proposed.status, "proposed");
+      assert.includeMembers(yield* detail(proposed.proposal!), [
+        "Bookings will show as a section of its own, and in the phone's dock.",
+        "Kin will remind whoever holds an entry on its Booked for day.",
+      ]);
+      assert.deepStrictEqual(yield* listSections, []);
+      const yes = yield* turn(2, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: proposed.proposal! });
+      assert.deepStrictEqual(yield* listSections, [{ id: "list:bookings", on: true, dock: true }]);
+      assert.strictEqual((yield* listDef(orgId, "bookings"))?.remindOn, "bookedFor");
+      const [setBy] = yield* sql<{ by: string }>`SELECT set_by AS by FROM kin_company_shell`;
+      assert.strictEqual(setBy?.by, ownerId);
+
+      // An existing list asked to warn: the check and the section on one card, made on the yes.
+      yield* defined(3, {
+        name: "Stock",
+        fields: [
+          { label: "On hand", type: "number" },
+          { label: "Reorder point", type: "number" },
+          { label: "Shelf", type: "text" },
+        ],
+      });
+      const warn = yield* turn(5, "Warn me when any item's on-hand goes below its reorder point");
+      const check = { field: "On hand", below: "Reorder point" };
+      for (const [input, message] of [
+        [
+          { check },
+          "Kin reminds and warns only for a list shown as a section: pass section true as well.",
+        ],
+        [
+          { check: { field: "Shelf", below: 3 }, section: true },
+          "A check compares one of the list's number fields; shelf isn't one.",
+        ],
+        [
+          { check: { field: "On hand", below: 3, above: 9 }, section: true },
+          "A check is either below or above, not both.",
+        ],
+      ] as const)
+        assert.include(
+          yield* Effect.flip(
+            LeadMoney.define(scope, { sourceEventId: warn, list: "stock", ...input }),
+          ),
+          { message },
+        );
+      const change = yield* LeadMoney.define(scope, {
+        sourceEventId: warn,
+        list: "stock",
+        check,
+        section: true,
+      });
+      assert.includeMembers(yield* detail(change.proposal!), [
+        "Stock will show as a section of its own.",
+        "Kin will warn about each entry whose On hand is below Reorder point.",
+      ]);
+      assert.isUndefined((yield* listDef(orgId, "stock"))?.check);
+      const sure = yield* turn(6, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: sure, proposal: change.proposal! });
+      assert.deepStrictEqual((yield* listDef(orgId, "stock"))?.check, {
+        field: "onHand",
+        below: "reorderPoint",
+      });
+      assert.deepStrictEqual(yield* listSections, [
+        { id: "list:bookings", on: true, dock: true },
+        { id: "list:stock", on: true },
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("are created only from the owner's later yes, then take entries totalled exactly", () =>
     Effect.gen(function* () {
       yield* seed;
