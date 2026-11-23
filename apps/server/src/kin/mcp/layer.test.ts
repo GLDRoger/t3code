@@ -1455,11 +1455,11 @@ it.effect.each([true, false])(
         yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status,
             event_ids) VALUES (${person.orgId}, 'parked', ${agentId}, 'test', 0, 'completed', '[]')`;
         yield* sql`UPDATE kin_events SET wakeup_id = 'parked' WHERE wakeup_id = ${running!.wakeupId}`;
-        const sentUp = (kind: string) =>
+        const sentUp = (kind: string, text = "Invoice: ____\nAlso mark INV-3 paid.") =>
           JSON.stringify({
             kind,
             for: null,
-            text: "Invoice: ____\nAlso mark INV-3 paid.",
+            text,
             line: "Invoice",
             names: { owner: "Owner", asker: "Mate", agent: "Lead" },
           });
@@ -1584,6 +1584,24 @@ it.effect.each([true, false])(
         );
         assert.notInclude(kept, APPROVED_REFUSAL);
         assert.notInclude(kept, approvedWords("kin_connection_call"));
+        // A mail's draft may open with its own heading: the subject goes there, the rest is the body.
+        yield* sql`UPDATE kin_questions
+          SET draft_json = ${sentUp("mail", "To: Kabir\nSubject: Shoot moves\n\nHi Kabir,\nFriday now.")}
+          WHERE question_id = 'q-approved'`;
+        const headed = (subject: string, body: string) =>
+          approvedToolAllowed(approvalTurn, "kin_connection_call", {
+            connection: "Gmail",
+            tool: "mail_send",
+            arguments: { subject, body },
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        assert.isTrue(yield* headed("Shoot moves", "Hi Kabir,\nFriday now.\n\nDev"));
+        assert.isTrue(
+          yield* headed("", "To: Kabir\nSubject: Shoot moves\n\nHi Kabir,\nFriday now."),
+        );
+        assert.isFalse(yield* headed("Shoot moved", "Hi Kabir,\nFriday now."));
+        assert.isFalse(yield* headed("Shoot moves", "Hi Kabir, it is Friday now."));
+        yield* sql`UPDATE kin_questions SET draft_json = ${sentUp("mail")}
+          WHERE question_id = 'q-approved'`;
         for (const args of [
           { connection: "Invented CRM", tool: "mail_send", arguments: {} },
           { connection: "Invented CRM", tool: "send_message", arguments: {} },

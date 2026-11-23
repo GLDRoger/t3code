@@ -83,6 +83,27 @@ const asWords = (text: string) => text.replace(/\r\n?/g, "\n").trim();
 export const keepsDraft = (made: unknown, draft: string) =>
   typeof made === "string" && asWords(made).includes(asWords(draft));
 
+/**
+ * Whether a mail holds its approved draft: whole in its body, or a line of the draft's first block
+ * (before its first blank line) ends with the subject and the body holds the rest, so a draft's
+ * own heading ("Subject: …") never has to be sent as body text.
+ */
+export const mailKeepsDraft = (subject: unknown, body: unknown, draft: string) => {
+  if (keepsDraft(body, draft)) return true;
+  const text = asWords(draft);
+  const cut = text.indexOf("\n\n");
+  const said = typeof subject === "string" ? subject.trim() : "";
+  return (
+    cut > 0 &&
+    said !== "" &&
+    text
+      .slice(0, cut)
+      .split("\n")
+      .some((line) => line.trimEnd().endsWith(said)) &&
+    keepsDraft(body, text.slice(cut))
+  );
+};
+
 /** The one thing an approval made, recorded against it at its write (`recordMade`). */
 const MadeJson = Schema.fromJsonString(
   Schema.Union([

@@ -5,7 +5,13 @@ import * as Predicate from "effect/Predicate";
 import { resolveConnection } from "../connections/ConnectionRows.ts";
 import { MAIL_TOOL } from "../connections/MailProvider.ts";
 import { KIN_READ_TOOLS } from "../mcp/readTools.ts";
-import { approvalOf, DRAFT_LIST, type DraftKind, keepsDraft } from "../questions/approval.ts";
+import {
+  approvalOf,
+  DRAFT_LIST,
+  type DraftKind,
+  keepsDraft,
+  mailKeepsDraft,
+} from "../questions/approval.ts";
 
 /**
  * The turn the owner's Approve on a sent-up draft queued (`approveDraft`) is confined, as an
@@ -90,16 +96,21 @@ const makes = Effect.fn("KinApprovedDraft.makes")(function* (
   return true;
 });
 
-/** The text each make writes, by its own arguments: none for a week card of drafts already made. */
-const madeTexts = (name: string, args: unknown): ReadonlyArray<unknown> => {
-  if (name === "doc_create") return [field(args, "body")];
+/** Whether the make holds the approved text, by its own arguments; a week card adds no text. */
+const keepsWords = (name: string, args: unknown, text: string) => {
+  if (name === "doc_create") return keepsDraft(field(args, "body"), text);
   if (name === "record_create") {
     const rows = field(args, "records");
-    return Array.isArray(rows) ? rows.map((row: unknown) => field(row, "notes")) : [undefined];
+    return (
+      Array.isArray(rows) && rows.every((row: unknown) => keepsDraft(field(row, "notes"), text))
+    );
   }
-  if (name === "kin_connection_call") return [field(field(args, "arguments"), "body")];
-  if (name === "social_draft") return [field(args, "caption")];
-  return [];
+  if (name === "kin_connection_call") {
+    const mail = field(args, "arguments");
+    return mailKeepsDraft(field(mail, "subject"), field(mail, "body"), text);
+  }
+  if (name === "social_draft") return keepsDraft(field(args, "caption"), text);
+  return true;
 };
 
 /**
@@ -118,8 +129,7 @@ const verdict = Effect.fn("KinApprovedDraft.verdict")(function* (
   if (of._tag === "invalid") return "refused" as const;
   if (APPROVED_ASKS.has(name)) return "allowed" as const;
   if (!(yield* makes(turn, of.approval.draft.kind, name, args))) return "refused" as const;
-  const text = of.approval.draft.text;
-  return madeTexts(name, args).every((made) => keepsDraft(made, text))
+  return keepsWords(name, args, of.approval.draft.text)
     ? ("allowed" as const)
     : ("reworded" as const);
 });
