@@ -158,7 +158,7 @@ export const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
 const Label = KinToolText(60);
 const FieldInput = Schema.Struct({
   label: Label,
-  type: KinWritableListFieldType,
+  type: Schema.Literals([...KinWritableListFieldType.literals, "number", "yesno"]),
   choices: Schema.optional(Schema.Array(Label).check(Schema.isMaxLength(30))),
   link: Schema.optional(Schema.Literals(["clients", "projects"])),
   sensitive: Schema.optional(Schema.Boolean),

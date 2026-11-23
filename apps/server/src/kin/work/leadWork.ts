@@ -142,6 +142,7 @@ import {
 import {
   allLists,
   isBuiltIn,
+  isFieldNumber,
   isInvoiceDraft,
   type ListDef,
   listEntryFor,
@@ -376,7 +377,9 @@ const Row = Schema.Struct({
   balance: Schema.optional(Schema.String),
   date: Schema.optional(Schema.String),
   repeat: Schema.optional(Schema.String),
-  fields: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  fields: Schema.optional(
+    Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Finite, Schema.Boolean])),
+  ),
   deal: Schema.optional(DealShown).annotate({
     description: "A deal's, as its page shows the people this turn is for.",
   }),
@@ -1060,10 +1063,14 @@ const shownFields = (
   keys: ReadonlyMap<string, string>,
 ) => {
   if (def === undefined || def.builtIn !== null) return {};
-  const shown: Record<string, string> = {};
+  const shown: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(fields)) {
     const spec = def.fields.find((one) => one.key === key);
     if (isMoney(value)) shown[key] = formatMoney(value);
+    else if (spec?.type === "number" && typeof value === "string" && isFieldNumber(value))
+      shown[key] = Number(value);
+    else if (spec?.type === "yesno" && (value === "yes" || value === "no"))
+      shown[key] = value === "yes";
     else if (Array.isArray(value))
       shown[key] = `${value.length} file${value.length === 1 ? "" : "s"}`;
     else if (spec?.type === "person") {
@@ -2948,22 +2955,34 @@ const createRow = Effect.fnUntraced(function* (
   };
 });
 const DEAL_FIELDS = ["stage", "source", "lostReason", "concerns"];
-const dealFields = (fields: FieldInputs | undefined) => {
+const dealFields = Effect.fn("KinWorkTools.dealFields")(function* (
+  fields: FieldInputs | undefined,
+) {
   const given = fields ?? {};
   const extra = Object.keys(given).filter((key) => !DEAL_FIELDS.includes(key));
-  if (extra.length > 0) return Effect.fail(invalid(`A deal has no ${extra.join(", ")}.`));
+  if (extra.length > 0) return yield* invalid(`A deal has no ${extra.join(", ")}.`);
   const text = (key: string) => {
     const value = given[key];
-    return typeof value === "string" ? value : value === null ? null : undefined;
+    return value === null
+      ? null
+      : value === undefined || typeof value === "object"
+        ? undefined
+        : String(value);
   };
-  return Effect.succeed({
+  const concerns = given.concerns;
+  return {
     stage: text("stage"),
     source: text("source"),
     lostReason: text("lostReason"),
     // A list as given: one concern alone may come as text.
-    concerns: typeof given.concerns === "string" ? [given.concerns] : given.concerns,
-  });
-};
+    concerns:
+      concerns === undefined || concerns === null
+        ? concerns
+        : typeof concerns === "object"
+          ? concerns
+          : [String(concerns)],
+  };
+});
 /** A deal's value as the agent wrote it: in the currency named, else the deal's own, else home. */
 const dealValue = (
   def: ListDef,

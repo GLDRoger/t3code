@@ -587,6 +587,12 @@ export const checkFields = (
       case "money":
         if (!isMoney(value) || !isCurrency(value.currency)) return wrong;
         break;
+      case "number":
+        if (typeof value !== "string" || !isFieldNumber(value)) return wrong;
+        break;
+      case "yesno":
+        if (value !== "yes" && value !== "no") return wrong;
+        break;
       case "file":
         if (!Array.isArray(value) || value.length === 0 || value.length > 10) return wrong;
         break;
@@ -596,6 +602,10 @@ export const checkFields = (
   }
   return undefined;
 };
+/** A number field's value as stored: plain digits, a leading minus, a decimal point. */
+export const isFieldNumber = (value: string) =>
+  /^-?\d{1,15}(?:\.\d{1,6})?$/.test(value) && Number.isFinite(Number(value));
+
 /** A date field's value: a day, or a day and a time of day in the owner's zone. */
 export const isFieldDate = (value: string) =>
   isCalendarDay(value.slice(0, 10)) &&
@@ -614,7 +624,11 @@ export const describe = (spec: FieldDef) =>
             ? "an amount such as 4,200.50 or 12k"
             : spec.type === "file"
               ? "the names of files attached to this turn's messages"
-              : "a line of text";
+              : spec.type === "number"
+                ? "a number, such as 12 or 3.5"
+                : spec.type === "yesno"
+                  ? "yes or no"
+                  : "a line of text";
 
 /**
  * The ids a defined list's fields hold, against rows of this org, inside the caller's write:

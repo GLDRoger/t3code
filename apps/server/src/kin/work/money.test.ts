@@ -2667,20 +2667,72 @@ describe("the owner's taps", () => {
       assert.deepStrictEqual(current?.check, { field: "count", below: 2 });
       const def = (yield* listDef(orgId, "expenses"))!;
       const unexpected = () => Effect.die("A read-only field must not reach a resolver");
-      const readOnly: ReadonlyArray<Readonly<Record<string, string>>> = [
-        { count: "42" },
-        { checked: "No" },
-        { shelf: "SH-1" },
-      ];
-      for (const fields of readOnly) {
-        assert.include(checkFields(def, fields), { reason: "invalid_state" });
-        assert.include(
-          yield* Effect.flip(
-            typedFields(def, fields, { who: unexpected, ref: unexpected, files: unexpected }),
-          ),
-          { reason: "invalid_state" },
-        );
+      const typed = { who: unexpected, ref: unexpected, files: unexpected };
+      // A number and a yes or no are stored as their plain words, so an old client shows text.
+      assert.deepStrictEqual(yield* typedFields(def, { count: "1,200.50", checked: "No" }, typed), {
+        count: "1200.5",
+        checked: "no",
+      });
+      assert.deepStrictEqual(yield* typedFields(def, { count: -3, checked: true }, typed), {
+        count: "-3",
+        checked: "yes",
+      });
+      assert.isUndefined(checkFields(def, { count: "1200.5", checked: "no" }));
+      for (const [fields, message] of [
+        [{ count: "forty" }, "Count takes a number, such as 12 or 3.5."],
+        [{ checked: "maybe" }, "Checked takes yes or no."],
+        [{ shelf: "SH-1" }, "Shelf takes a client's key or name."],
+      ] as const) {
+        assert.include(checkFields(def, fields), { reason: "invalid_state", message });
+        assert.include(yield* Effect.flip(typedFields(def, fields, typed)), { message });
       }
+      assert.include(checkFields(def, { checked: "No" }), { message: "Checked takes yes or no." });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("give agents a list's numbers and yes or no as typed values, and refuse others", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, {
+        name: "Stock",
+        fields: [
+          { label: "On hand", type: "number" },
+          { label: "Reorder point", type: "number" },
+          { label: "Active", type: "yesno" },
+        ],
+      });
+      const asked = yield* turn(3, "Blue mugs: 3 on hand, reorder at 10");
+      const refused = yield* Effect.flip(
+        LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [{ list: "stock", title: "Blue mugs", fields: { onHand: "a few" } }],
+        }),
+      );
+      assert.include(refused.message, "On hand takes a number, such as 12 or 3.5.");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "stock",
+            title: "Blue mugs",
+            fields: { onHand: 3, reorderPoint: "10", active: true },
+          },
+        ],
+      });
+      const [row] = (yield* LeadWork.query(scope, { list: "stock" })).records;
+      assert.deepStrictEqual(row?.fields, { onHand: 3, reorderPoint: 10, active: true });
+      const records = yield* KinRecords.KinRecords;
+      const stored = yield* records.get(orgId, row!.key);
+      assert.include(stored!.fieldsJson, '"onHand":"3"');
+      const ownerEdit = OwnerWork.update(people, {
+        orgId,
+        key: row!.key,
+        rev: stored!.rev,
+        fields: { onHand: "three" },
+      });
+      assert.include(yield* Effect.flip(ownerEdit), {
+        message: "On hand takes a number, such as 12 or 3.5.",
+      });
     }).pipe(Effect.provide(layer)),
   );
 
