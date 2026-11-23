@@ -263,6 +263,11 @@ export const crossFileTests = (files: ReadonlyArray<string>) => {
   const tests: string[] = [];
   if (files.includes("docs/user/t3-connect-troubleshooting.md"))
     tests.push("apps/server/src/cloud/ConnectReachability.test.ts");
+  if (files.some((file) => /^(apps\/mobile|packages\/client-runtime)\/src\//.test(file)))
+    tests.push(
+      "apps/mobile/src/features/chats/contract/mcpAppWebView.kin-contract.test.ts",
+      "apps/mobile/src/features/chats/widgets/kinVisualMessage.test.ts",
+    );
   if (files.some((file) => KIN_MIGRATIONS.test(file)))
     tests.push("apps/server/src/kin/people/leaver.test.ts");
   // The wire list also uses shared schemas and the T3 tools that Kin exposes.
