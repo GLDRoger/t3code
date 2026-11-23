@@ -2453,6 +2453,70 @@ describe("bank statement safety", () => {
   );
 
   it.effect(
+    "skips a ticked repayment when Repaid on is retired after the read, and applies the rest",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera Rao', ${at})`;
+        const desk = yield* expense("Desk deposit", 300_000, "2026-09-05", "Lakeview Cowork");
+        yield* records.update(orgId, owner, desk.key, {
+          state: "done",
+          fields: { fundedBy: "person:meera" },
+        });
+        const result = opened(
+          yield* read(
+            1,
+            "repay.csv",
+            csvOf([
+              ["2026-10-02", "UPI-LAKEVIEW COWORK-desk@invbank", 120_000, null],
+              ["2026-10-15", "NEFT DR-UTIB0000001-MEERA RAO-REIMB", 300_000, null],
+            ]),
+          ),
+        );
+        const card = (yield* reviewCardOf(result.statement)).card;
+        // Read while Expenses could record it: the repayment is ticked.
+        assert.deepStrictEqual(
+          card.matched.map((one) => one.target.key),
+          [desk.key],
+        );
+        const confirm = yield* confirmAll(card);
+        // Retired between the read and Confirm.
+        const def = (yield* listDef(orgId, "expenses"))!;
+        yield* OwnerMoney.updateList(people, {
+          orgId,
+          list: "expenses",
+          rev: def.rev,
+          retireFields: ["repaidOn"],
+        });
+        // Before: invalid_state "Repaid on is retired from Expenses." and nothing applied.
+        const applied = yield* OwnerStatements.apply(people, confirm);
+        const said = applied.card.result!.join(" ");
+        assert.include(
+          said,
+          "1 partner repayment wasn't recorded: Reimbursement or Repaid on is retired or missing from Expenses, so it was left Unexplained.",
+        );
+        assert.notInclude(said, "repaid.");
+        const [left] = yield* sql<{ fields: string }>`SELECT fields_json AS fields FROM kin_records
+          WHERE org_id = ${orgId} AND key = ${desk.key}`;
+        assert.notInclude(left!.fields, "repaid");
+        // The repayment line is left open; the other line applied.
+        const lines = yield* sql<{ state: string; title: string }>`SELECT state, title
+          FROM kin_records WHERE org_id = ${orgId} AND register_id = 'bank_transactions'
+          ORDER BY key`;
+        assert.strictEqual(lines.length, 2);
+        assert.strictEqual(lines.filter((one) => one.state !== "done").length, 1);
+        assert.strictEqual(applied.card.unexplained, 1);
+        const [entries] = yield* sql<{ n: number }>`SELECT count(*) AS n
+          FROM kin_bank_statement_entries WHERE org_id = ${orgId}
+            AND statement_id = ${result.statement}`;
+        assert.strictEqual(entries!.n, 1);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
     "repays a partner's oldest owed expenses from one debit, links it, and undo makes them owed",
     () =>
       Effect.gen(function* () {

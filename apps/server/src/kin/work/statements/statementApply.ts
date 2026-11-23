@@ -20,6 +20,7 @@ import { KinRecords, type Writer } from "../KinRecords.ts";
 import type { RecordRow } from "../recordRows.ts";
 import { type FieldValue, fieldText, parseFields } from "../lists.ts";
 import { fundingOf } from "../reimbursement.ts";
+import { repayable } from "../partnersOwed.ts";
 import { dayIn } from "../money.ts";
 import { endOfDay, isSuggestion, ownerZone, stillSuggestion } from "../recordRows.ts";
 import { homeCurrency } from "../companyProfile.ts";
@@ -396,6 +397,10 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         for (const [index, bank] of bankRows) if (taken.has(bank.recordId)) elsewhere.add(index);
       }
       const applying = decisions.filter((one) => !elsewhere.has(one.row));
+      // Reimbursement or Repaid on retired since the read: a repayment row is left Unexplained, the
+      // rest still apply. Checked once, here, since the read's own check is stale by Confirm.
+      let canRepay: boolean | undefined;
+      const unrepaid = new Set<number>();
 
       let seq =
         (yield* sql<{ seq: number | null }>`SELECT MAX(seq) AS seq FROM kin_bank_statement_entries
@@ -483,6 +488,10 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           // A suggestion's line applies nothing: not its payment, not its bill, until it is kept.
           if (isSuggestion(targetRow)) return yield* invalid(stillSuggestion(targetRow.key));
           if (candidate.repays !== undefined) {
+            if ((canRepay ??= yield* repayable(input.orgId)) === false) {
+              unrepaid.add(index);
+              continue;
+            }
             // Each must still be a kept Paid expense owed to a partner at the amount read, and the
             // run must still add up to the line: otherwise it would be paid back wrong or twice.
             const owed: Array<RecordRow> = [];
@@ -719,6 +728,11 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           : [
               `${elsewhere.size} row${elsewhere.size === 1 ? " was" : "s were"} already recorded from another statement and left as ${elsewhere.size === 1 ? "it was" : "they were"}.`,
             ]),
+        ...(unrepaid.size === 0
+          ? []
+          : [
+              `${unrepaid.size} partner repayment${unrepaid.size === 1 ? " wasn't" : "s weren't"} recorded: Reimbursement or Repaid on is retired or missing from Expenses, so ${unrepaid.size === 1 ? "it was" : "they were"} left Unexplained.`,
+            ]),
         ...(kept === 0
           ? []
           : [
@@ -730,23 +744,24 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         ...(held.size === 0
           ? []
           : [
-              `Undo takes back all ${held.size + applying.length} rows this statement recorded: ${held.size} from the earlier confirm and ${applying.length} from this one.`,
+              `Undo takes back all ${held.size + applying.length - unrepaid.size} rows this statement recorded: ${held.size} from the earlier confirm and ${applying.length - unrepaid.size} from this one.`,
             ]),
       ];
+      const notes = new Map([
+        ...[...elsewhere].map((row) => [row, "Already recorded from another statement"] as const),
+        ...[...unrepaid].map(
+          (row) =>
+            [
+              row,
+              "Repayment not recorded: Reimbursement or Repaid on is retired or missing from Expenses",
+            ] as const,
+        ),
+      ]);
       const card =
-        elsewhere.size === 0
+        notes.size === 0
           ? ((yield* cardState(input.orgId, stored.reviewWidgetId)) ??
             reviewCard(input.statementId, review, categories, selection, held))
-          : reviewCard(
-              input.statementId,
-              review,
-              categories,
-              selection,
-              held,
-              new Map(
-                [...elsewhere].map((row) => [row, "Already recorded from another statement"]),
-              ),
-            );
+          : reviewCard(input.statementId, review, categories, selection, held, notes);
       const next = {
         ...card,
         status: "applied" as const,

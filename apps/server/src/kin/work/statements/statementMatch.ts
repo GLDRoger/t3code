@@ -702,6 +702,8 @@ export const matchRows = (
     readonly expenses: ReadonlyArray<ExpenseCandidate>;
     /** Partners owed back; a debit to one repays their oldest expenses. */
     readonly partners?: ReadonlyArray<PartnerCandidate>;
+    /** False when Expenses has no live Reimbursement or Repaid on: no repayment can be recorded. */
+    readonly repayable?: boolean;
     /** Everyone who has funded an expense: a line naming one is theirs to place, not a new expense. */
     readonly payees?: ReadonlyArray<PayeeCandidate>;
     readonly ownAccounts: ReadonlyArray<string>;
@@ -797,6 +799,11 @@ export const matchRows = (
     }
     const payee = [...(input.partners ?? []), ...(input.payees ?? [])].find(named(row));
     if (payee === undefined) return plain;
+    if (input.repayable === false)
+      return {
+        action: "later",
+        why: `It names ${payee.name}, but a repayment can't be recorded: Reimbursement or Repaid on is retired or missing from Expenses`,
+      };
     return {
       action: "later",
       why: `It names ${payee.name}, who is owed nothing in ${input.currency}, so it isn't offered as a new expense`,
