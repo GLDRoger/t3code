@@ -23,6 +23,7 @@ import * as Comments from "../workComments.ts";
 import { numberRecordTool, numbersReadTool } from "../../numbers/mcp.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { companySections } from "../../shell/mcp.ts";
+import { numbersWatchTool } from "../../numbers/watch.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
 const enabled = McpToolAccess.threadBoundGate(() => {
@@ -207,4 +208,5 @@ export const KinWorkToolkit = Toolkit.make(
     success: Money.ProfileResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   companySections,
+  numbersWatchTool,
 );

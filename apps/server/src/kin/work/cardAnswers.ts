@@ -6,6 +6,7 @@ import {
   type KinPersonId,
   KinWidgetId,
 } from "@t3tools/contracts";
+import { answerNumbersChange } from "../numbers/watch.ts";
 import { shellDecision } from "../shell/changes.ts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -61,6 +62,15 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
           records: yield* KinRecords,
           chat: yield* KinChatService,
         });
+  // A numbers card applies here, before anything else the tap answers, so a refusal stops it all.
+  const watched = yield* answerNumbersChange({
+    orgId: input.orgId,
+    widgetId: input.widget.widgetId,
+    personId: input.personId,
+    confirmed: input.option.kind === "yes",
+    via: input.via,
+    now: input.now,
+  });
   // An agent's open question on this card is answered: its default is never taken.
   const sentBack = yield* answerCard(
     {
@@ -120,6 +130,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
       ),
     );
   if (ran !== undefined) return ran;
+  if (watched !== undefined) return watched;
   if (made?._tag === "made") return made.outcome;
   if (made?._tag === "declined")
     return { title: "Not recorded", text: "You said no, so nothing was recorded or numbered." };

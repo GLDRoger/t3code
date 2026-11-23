@@ -499,6 +499,8 @@ it.effect.each([true, false])(
         ).result.tools.map((tool) => tool.name);
         // The owner's own thread: Kin's tools and T3's, GitHub connected or not.
         assert.includeMembers(toolNames, ["kin_chat_read", "delegate_task"]);
+        // Asked to watch a number, an agent searching its tools finds the one that proposes it.
+        assert.includeMembers(toolNames, ["numbers_read", "number_record", "numbers_watch"]);
         for (const name of ["schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(toolNames, name);
         // Nothing a lead asks for goes to another machine, where Kin's checks don't follow it.
@@ -867,6 +869,8 @@ it.effect.each([true, false])(
           };
         });
         const engineering = yield* seatList("engineering");
+        // Listed by name only, as the provider defers it, beside the other number tools.
+        assert.notInclude(engineering.upFront, "numbers_watch");
         const seats = {
           finance: yield* seatList("finance"),
           social: yield* seatList("social"),

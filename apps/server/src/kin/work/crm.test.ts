@@ -38,6 +38,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadClients from "./leadClients.ts";
 import * as ShellMcp from "../shell/mcp.ts";
+import * as NumbersWatch from "../numbers/watch.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { handlers as workHandlers } from "./mcp/handlers.ts";
@@ -1502,6 +1503,11 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
       // Section switches and names: nothing of an entry. No chat here, so no card either.
       company_sections: [
         Effect.flip(ShellMcp.propose(scope, { sections: [{ id: "deals", on: false }] })),
+        false,
+      ],
+      // Names, limits and a source on a card: nothing of an entry is read back.
+      numbers_watch: [
+        Effect.exit(NumbersWatch.watch(scope, { numbers: [{ name: "Invented users" }] })),
         false,
       ],
       // Its record part is record_get's; contact and memory show no entry of their own.

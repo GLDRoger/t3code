@@ -12,6 +12,7 @@ import * as Work from "../leadWork.ts";
 import * as Comments from "../workComments.ts";
 import { liftMarks } from "../pageMarks.ts";
 import { proposeHandler } from "../../shell/mcp.ts";
+import { watchHandler } from "../../numbers/watch.ts";
 import { KinWorkToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -142,4 +143,5 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
     }, Effect.mapError(failure)),
   ),
   company_sections: proposeHandler,
+  numbers_watch: watchHandler,
 });

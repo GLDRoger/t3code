@@ -32,7 +32,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import * as KinShell from "../shell/KinShell.ts";
-import { sectionOfKey, sectionOfSense } from "../shell/sections.ts";
+import { sectionOfKey, sectionOfSense, type SectionId } from "../shell/sections.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { matchName } from "../work/nameMatch.ts";
@@ -41,6 +41,7 @@ import { clientSenses } from "./senses/clients.ts";
 import { DEAL_SENSES, dealSenses } from "./senses/deals.ts";
 import { goalSenses } from "./senses/goals.ts";
 import { moneySenses } from "./senses/money.ts";
+import { numberSenses } from "./senses/numbers.ts";
 import { projectSenses } from "./senses/projects.ts";
 import { iso, type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { systemSenses } from "./senses/system.ts";
@@ -128,6 +129,7 @@ const senseIn = Effect.fn("KinPulse.sense")(function* (ctx: SenseContext) {
     ...(yield* systemSenses(ctx)),
     ...(yield* clientSenses(ctx)),
     ...(yield* goalSenses(ctx)),
+    ...(yield* numberSenses(ctx)),
     ...(yield* projectSenses(ctx)),
     ...(yield* dealSenses(ctx)),
   ];
@@ -223,7 +225,7 @@ const withStored = (
   },
   hold?: Hold | undefined,
 ): KinPulseFact => {
-  const { yours, quietForMs: _quietForMs, ...shared } = fact;
+  const { yours, quietForMs: _quietForMs, section: _section, ...shared } = fact;
   // One person reading a fact that names them reads it as theirs; a shared view keeps names.
   const own =
     reader.viewer._tag === "people" && reader.viewer.people.length === 1
@@ -247,9 +249,14 @@ const matches = (text: string | undefined, key: string | undefined, wanted: stri
   (text !== undefined && matchName(wanted, [{ name: text }])._tag === "found");
 
 export const quiet = (
-  fact: { readonly sense: string; readonly subject?: { readonly key?: string | undefined } },
+  fact: {
+    readonly sense: string;
+    readonly subject?: { readonly key?: string | undefined };
+    readonly section?: SectionId | undefined;
+  },
   shell: Shell,
 ) => {
+  if (fact.section !== undefined && !KinShell.sectionOn(shell, fact.section)) return true;
   const section = sectionOfSense(fact.sense);
   if (section === null) return false;
   const subject = fact.subject?.key === undefined ? null : sectionOfKey(fact.subject.key);
@@ -480,7 +487,7 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
   const { orgId, at, zone } = ctx;
   const due = facts.flatMap((sensed): Array<KinPulseFact> => {
     if (quiet(sensed, shell)) return [];
-    const { yours: _yours, quietForMs: _quietForMs, ...fact } = sensed;
+    const { yours: _yours, quietForMs: _quietForMs, section: _section, ...fact } = sensed;
     const open = { ...fact, handled: handledOf(stored.get(fact.key), at, sensed) };
     return open.handled === null &&
       forHolder(open, at, zone) &&
@@ -612,7 +619,7 @@ const markQuiet = Effect.fn("KinPulse.markQuiet")(function* (
       (SELECT value FROM json_each(${yield* encodeKeys(muted.map((fact) => fact.key))}))`;
   const parties = new Map<string, Array<KinPulseFact>>();
   const owners = yield* ownerLevelPeople(orgId);
-  for (const { yours: _yours, quietForMs: _quietForMs, ...fact } of muted) {
+  for (const { yours: _yours, quietForMs: _quietForMs, section: _section, ...fact } of muted) {
     const destinations = new Set(owners);
     if (fact.actor._tag === "person") destinations.add(fact.actor.personId);
     if (fact.actor._tag === "agent") destinations.add(agentParty(fact.actor.agentId));
@@ -747,7 +754,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
       const drafted = yield* draftWakes({
         ctx,
         open: facts.flatMap((sensed): Array<KinPulseFact> => {
-          const { yours: _yours, quietForMs: _quietForMs, ...fact } = sensed;
+          const { yours: _yours, quietForMs: _quietForMs, section: _section, ...fact } = sensed;
           const handled = handledOf(stored.get(fact.key), at, sensed);
           const aside =
             asideOf(fact, holds, { _tag: "owner" }) !== undefined ||

@@ -828,6 +828,104 @@ it.effect(
       expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
         '# This company\n\nThis company watches these numbers: "DAU" (G-1), "Refund rate" (G-2), "Signups" (G-4). Read them with numbers_read.\nYou keep "DAU" (G-1) and "Signups" (G-4): record each new value with number_record.\n\n',
       );
+      const fields = (key: string, given: object) =>
+        sql`UPDATE kin_records SET fields_json = ${JSON.stringify({ measure: "manual", ...given })}
+          WHERE org_id = ${orgId} AND key = ${key}`;
+      const part = Effect.map(
+        prompt.build(input),
+        (built) =>
+          built
+            .split(TURN_DIVIDER)[1]!
+            .split(`${PROMPT_HEADINGS.thisCompany}\n\n`)[1]!
+            .split("\n\n")[0],
+      );
+      // Limits: when Kin speaks up, in the company's unit.
+      yield* fields("G-1", { source: "PostHog", below: "1000" });
+      yield* fields("G-2", { source: "Stripe", unit: "%", above: "3" });
+      expect(yield* part).toBe(
+        'This company watches these numbers: "DAU" (G-1, speak up below 1,000), "Refund rate" (G-2, speak up above 3%), "Signups" (G-4). Read them with numbers_read.\nYou keep "DAU" (G-1) and "Signups" (G-4): record each new value with number_record.',
+      );
+      // A limit and a feed: what this agent fetches, from where and when.
+      yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id, patch_json,
+          base_rev, widget_id, proposed_at, applied_at)
+        VALUES (${orgId}, 'nw_feed', ${agentId}, 'earlier', ${JSON.stringify({
+          numbers: [],
+          feed: { source: "PostHog", every: "day", at: "08:00" },
+          base: "invented",
+        })}, 0, NULL, 0, 0)`;
+      yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+          source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+        VALUES ('task-feed', ${orgId}, 'feed-invented', ${agentId}, 'chat', 'kin-numbers:nw_feed',
+          ${personId}, 'owner_only', 'hash', 'inbox', 0, 0)`;
+      expect(yield* part).toBe(
+        'This company watches these numbers: "DAU" (G-1, speak up below 1,000), "Refund rate" (G-2, speak up above 3%), "Signups" (G-4). Read them with numbers_read.\nYou keep "DAU" (G-1) and "Signups" (G-4): record each new value with number_record; you fetch them every day at 08:00 from "PostHog".',
+      );
+      // A feed and no limit; a kept number from another source is told apart.
+      yield* fields("G-1", { source: "PostHog" });
+      yield* fields("G-4", { source: "Invented sheet" });
+      expect(yield* part).toBe(
+        'This company watches these numbers: "DAU" (G-1), "Refund rate" (G-2, speak up above 3%), "Signups" (G-4). Read them with numbers_read.\nYou keep "Signups" (G-4): record each new value with number_record.\nYou keep "DAU" (G-1): record each new value with number_record; you fetch it every day at 08:00 from "PostHog".',
+      );
+      // A feed's run asks for what it keeps from there, as of the day before in the owner's zone.
+      yield* sql`DELETE FROM kin_trigger_settings`;
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+          evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+          quiet_hours_json)
+        VALUES (${orgId}, 'Pacific/Auckland', '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
+      yield* TestClock.setTime(Date.UTC(2026, 10, 20, 12));
+      const feedRun = decodeEvent({
+        _tag: "deferral.due",
+        orgId,
+        agentId,
+        eventId: "run-feed",
+        receivedAt: timestamp,
+        provenance: { _tag: "system" },
+        dedupeKey: null,
+        subject: { type: "scheduled_task", itemId: "feed-invented", runId: "run-feed" },
+        lateByMs: 0,
+      });
+      yield* stored("feed-wake", [feedRun]);
+      const fed = { ...input, wakeupId: KinWakeupId.make("feed-wake"), events: [feedRun] };
+      expect(yield* prompt.build(fed)).toContain(
+        `\n\nRecord "DAU" (G-1) from "PostHog" as of 2026-11-20. If this is the first run, record up to 28 days back. If the source can't be read, say so in one line and record nothing.`,
+      );
+      // An archived number is left out: here nothing is left, so the run stays silent.
+      yield* sql`UPDATE kin_records SET state = 'dropped' WHERE org_id = ${orgId} AND key = 'G-1'`;
+      const archived = yield* prompt.build(fed);
+      expect(archived).not.toContain("Record ");
+      expect(archived).toContain("Nothing is due from this feed now.");
+      yield* sql`UPDATE kin_records SET state = 'open' WHERE org_id = ${orgId} AND key = 'G-1'`;
+      // A number outside its limit: the keeper's wake says what moved and what to do, in its turn.
+      yield* fields("G-1", { source: "PostHog", below: "1000" });
+      yield* sql`INSERT INTO kin_number_values (org_id, record_id, as_of, seq, value, agent_id,
+          recorder_name, source, created_at)
+        VALUES (${orgId}, 'G-1', '2026-11-20', 1, '940', ${agentId}, 'Lead', 'PostHog', 0)`;
+      const offWake = decodeEvent({
+        _tag: "pulse",
+        orgId,
+        agentId,
+        eventId: "pulse-off",
+        receivedAt: timestamp,
+        provenance: { _tag: "system" },
+        dedupeKey: null,
+        factKeys: ["number_off:G-1:below=1000:since=2026-11-20"],
+      });
+      yield* stored("off-wake", [offWake]);
+      expect(
+        yield* prompt.build({
+          ...input,
+          wakeupId: KinWakeupId.make("off-wake"),
+          events: [offWake],
+        }),
+      ).toContain(
+        `\n\n"DAU" (G-1) is 940 as of 2026-11-20, below its limit of 1,000. Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a suggested task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don't ask a question and don't assign anyone.`,
+      );
+      yield* fields("G-1", { source: "PostHog" });
+      // A stopped feed is no longer said.
+      yield* sql`UPDATE kin_schedules SET deleted_at = 1 WHERE task_id = 'task-feed'`;
+      expect(yield* part).toContain(
+        'You keep "DAU" (G-1) and "Signups" (G-4): record each new value with number_record.',
+      );
       // A turn someone below owner level reads: no number lines, and with Kin's default sections
       // no part at all.
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${input.wakeupId}`;

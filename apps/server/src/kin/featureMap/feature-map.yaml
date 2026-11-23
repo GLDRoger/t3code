@@ -1662,7 +1662,7 @@ features:
     name: Read and record watched numbers with an agent
     tab: chats
     roles: { owner: none, co_owner: none, lead: none, member: none }
-    tools: [number_record, numbers_read]
+    tools: [number_record, numbers_read, numbers_watch]
     proof:
       - apps/server/src/kin/numbers/KinNumbers.test.ts
 

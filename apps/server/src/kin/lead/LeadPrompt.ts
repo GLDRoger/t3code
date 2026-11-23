@@ -106,6 +106,9 @@ import { salesRulesFor } from "../sales/seat.ts";
 import { buildSeat } from "./seat.ts";
 import { thisCompanyLines } from "../shell/words.ts";
 import * as KinNumbers from "../numbers/KinNumbers.ts";
+import { feedTurn } from "../numbers/feeds.ts";
+import { isFeedSchedule } from "../numbers/numberRows.ts";
+import { offTurnTexts } from "../pulse/senses/numbers.ts";
 import {
   answeredTurnText,
   askedForSection,
@@ -518,6 +521,36 @@ export class KinLeadPrompt extends Context.Service<
                 );
                 continue;
               }
+              // A feed's run is Kin's own, from the numbers and source the owner confirmed.
+              if (isFeedSchedule(event.subject.itemId)) {
+                const feed = yield* feedTurn(
+                  orgId,
+                  event.subject.itemId,
+                  yield* Clock.currentTimeMillis,
+                ).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                  Effect.catch((cause) =>
+                    Effect.logWarning("Kin numbers feed unreadable", cause).pipe(
+                      Effect.as(undefined),
+                    ),
+                  ),
+                );
+                const feedQuote = quote(
+                  QUOTE_LABELS.eventData,
+                  {
+                    event: event.eventId,
+                    item: event.subject.itemId,
+                    ...(feed?.how === undefined || !native.confirmed ? {} : { how: feed.how }),
+                  },
+                  true,
+                );
+                events.push(
+                  feed === undefined
+                    ? `${feedQuote}\n\nNothing is due from this feed now. Write exactly ${SILENT_REPLY}.`
+                    : `${feedQuote}\n\n${feed.text}`,
+                );
+                continue;
+              }
               askedIn.push(native.sourceEvent);
               items.push({ itemId: event.subject.itemId, sourceEvent: native.sourceEvent });
               const eventQuote = quote(QUOTE_LABELS.eventData, {
@@ -801,6 +834,29 @@ export class KinLeadPrompt extends Context.Service<
             replyDue = true;
             events.push(
               `${eventQuote}\n\n${made.text}\n\n${quote(QUOTE_LABELS.followUp, made.data, true)}`,
+            );
+            continue;
+          }
+          // A watched number outside its limit wakes its keeper with what to do about it.
+          if (
+            event._tag === "pulse" &&
+            ownerOnly &&
+            event.factKeys.some((key) => key.startsWith("number_off:"))
+          ) {
+            fromOwner = false;
+            const lines = yield* offTurnTexts(
+              orgId,
+              event.factKeys,
+              yield* Clock.currentTimeMillis,
+            ).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin watched numbers unreadable", cause).pipe(Effect.as([])),
+              ),
+            );
+            if (lines.length > 0) replyDue = true;
+            events.push(
+              [quote(QUOTE_LABELS.eventData, eventFacts(event), true), ...lines].join("\n\n"),
             );
             continue;
           }

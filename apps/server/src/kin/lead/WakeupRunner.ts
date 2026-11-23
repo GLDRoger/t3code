@@ -55,6 +55,8 @@ import * as Memory from "../memory/Memory.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { feedTurn } from "../numbers/feeds.ts";
+import { isFeedSchedule } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
 import { dismissalGone } from "../questions/dismissed.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
@@ -489,7 +491,13 @@ const make = Effect.gen(function* () {
       if (subject.type === "scheduled_task") {
         const schedule = yield* KinSchedules.readSchedule(sql, orgId, subject.itemId);
         if (schedule !== undefined)
-          return (yield* KinSchedules.readNativeTask(sql, schedule.taskId)) === undefined;
+          return (
+            (yield* KinSchedules.readNativeTask(sql, schedule.taskId)) === undefined ||
+            // A feed with every number already recorded for the period has nothing to fetch.
+            (isFeedSchedule(schedule.scheduleId) &&
+              (yield* feedTurn(orgId, schedule.scheduleId, yield* Clock.currentTimeMillis)) ===
+                undefined)
+          );
         return yield* memory
           .readItemQuietly(orgId, subject.itemId, "triggers")
           .pipe(Effect.as(false), Effect.catchTags({ MemoryNotFound: () => Effect.succeed(true) }));
