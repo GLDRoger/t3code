@@ -662,11 +662,7 @@ export const questionForCard = Effect.fn("KinQuestions.questionForCard")(functio
   card: Pick<KinWidget, "orgId" | "chatId" | "widgetId">,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{
-    question: string;
-    state: QuestionState;
-    raised: number;
-  }>`SELECT question, state, (raise_widget_id IS ${card.widgetId}) AS raised FROM kin_questions
+  const [row] = yield* sql<{ state: QuestionState }>`SELECT state FROM kin_questions
     WHERE org_id = ${card.orgId} AND chat_id = ${card.chatId}
       AND (widget_id = ${card.widgetId} OR raise_widget_id = ${card.widgetId})
     ORDER BY asked_at DESC, question_id LIMIT 1`;

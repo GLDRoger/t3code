@@ -4306,11 +4306,9 @@ const dismissedPayment = Effect.fn("test.dismissedPayment")(function* () {
 
 it.effect.each(
   ["513d5c83667", "current"].flatMap((build) =>
-    ["sparse", "complete"].flatMap((state) =>
-      ["option-1", "option-2", "dismiss"].map((choice) => ({ build, state, choice })),
-    ),
+    ["option-1", "option-2", "dismiss"].map((choice) => ({ build, choice })),
   ),
-)("takes $choice on the tally's new card from $build ($state state)", ({ choice, state }) =>
+)("takes $choice on the tally's new card from $build", ({ choice }) =>
   Effect.andThen(
     TestClock.setTime(PAYMENT_TEST_START),
     Effect.gen(function* () {
@@ -4362,9 +4360,6 @@ it.effect.each(
         "dismissed",
       );
 
-      if (state === "sparse")
-        yield* sql`UPDATE kin_widgets SET state_json = json_remove(state_json, '$.question', '$.detail')
-            WHERE org_id = ${orgId} AND widget_id = ${shown.widgetId}`;
       const request = tap(shown, "new-target");
       const posted = yield* chats.act(owner, request);
       assert.strictEqual(posted.kind, choice === "dismiss" ? "text" : "widget_action");
