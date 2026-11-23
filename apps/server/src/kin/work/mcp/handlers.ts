@@ -4,12 +4,14 @@ import { KinChatError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { numbersHandlers } from "../../numbers/mcp.ts";
 import { LeadMemory } from "../../lead/LeadMemory.ts";
 import * as Clients from "../leadClients.ts";
 import * as Money from "../leadMoney.ts";
 import * as Work from "../leadWork.ts";
 import * as Comments from "../workComments.ts";
 import { liftMarks } from "../pageMarks.ts";
+import { proposeHandler } from "../../shell/mcp.ts";
 import { KinWorkToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -21,6 +23,7 @@ const failure = (error: unknown) =>
 
 // Kin's service checks the persisted lead and wake-up, rather than T3 thread-control grants.
 export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
+  ...numbersHandlers,
   records_query: McpToolAccess.reads(
     Effect.fn("KinWorkToolkit.query")(function* (input) {
       const result = yield* Work.query(yield* McpInvocationContext, input);
@@ -138,4 +141,5 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
       return yield* Money.profile(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
+  company_sections: proposeHandler,
 });

@@ -52,6 +52,7 @@ import {
   changeStampKey,
   codingAgentSource,
   followsOutsideRead,
+  outsideRead,
   outsideStamp,
   stampEvent,
 } from "../lead/OutsideContent.ts";
@@ -141,6 +142,14 @@ import { contactFields } from "./contactDetails.ts";
 import { directionOf, findBankList } from "./statements/bankList.ts";
 import { cleanTags } from "./tags.ts";
 import { notAVendor } from "./vendorName.ts";
+import {
+  companyCashOut,
+  FUNDED_BY,
+  fundingOf,
+  partnerRepaidDay,
+  REIMBURSEMENT,
+  REPAID_ON,
+} from "./reimbursement.ts";
 import { withArticle } from "../article.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
@@ -426,6 +435,16 @@ export type QueryInput = {
   readonly late?: boolean;
   readonly dueBy?: number;
   readonly dueAfter?: number;
+  /**
+   * Paid expenses Money's "spent" counts in these days: the company's own by their date in
+   * `[fromAt, toAt)`, a partner's by the day it was paid back, `from` to `to`.
+   */
+  readonly spent?: {
+    readonly from: string;
+    readonly to: string;
+    readonly fromAt: number;
+    readonly toAt: number;
+  };
   /** Its own date, or the time it was added when it has none, in `[dateFrom, dateTo)`. */
   readonly dateFrom?: number;
   readonly dateTo?: number;
@@ -589,7 +608,47 @@ const FIELD_NAMES: Readonly<Record<string, string>> = {
 /** What a refusal may quote of an entry that isn't sensitive; money, notes and a list's own fields it doesn't. */
 const QUOTED = new Set(["title", "state", "owner", "waitingOn", "due", "date", "category", "side"]);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
-/** Whether an entry's amount or fields put money on it. */
+const notAllowed = (message: string) => new KinChatError({ reason: "not_allowed", message });
+/** A person named as an expense's funder, on a list that keeps a reimbursement for it. */
+const funds = (def: ListDef, funder: unknown) =>
+  def.id === "expenses" &&
+  typeof funder === "string" &&
+  funder.startsWith("person:") &&
+  def.fields.some((one) => one.key === REIMBURSEMENT);
+/** A repaid day after today in the owner's zone: nothing is paid back before it happens. */
+const repaidAhead = (fields: Readonly<Record<string, unknown>>, today: string) => {
+  const day = fields[REPAID_ON];
+  return typeof day === "string" && day.slice(0, 10) > today
+    ? invalid(`Repaid on can't be after today, ${today}.`)
+    : undefined;
+};
+/** Who funded an expense and whether it was paid back: a person's word, or one they gave in person. */
+const FUNDING = [FUNDED_BY, REIMBURSEMENT, REPAID_ON] as const;
+export const FUNDING_IS_THE_OWNERS =
+  "Only the owner or a co-owner says who funded an expense or that it was paid back, in their own message or tap before anything outside is read. Nothing changed. Put it to them as a card or a question.";
+export const FUNDING_A_PERSON_SET =
+  "A person said who funded this expense or whether it was paid back, and an agent doesn't change that. Nothing changed. Put it to the owner as a card or a question.";
+
+/**
+ * Whether an agent may say who funded an expense or that it was paid back: an owner-level person
+ * started the turn with their own message or tap, and it has read nothing from outside.
+ */
+export const agentMayFund = Effect.fn("KinRecords.agentMayFund")(function* (
+  orgId: KinOrgId,
+  writer: Writer,
+) {
+  if (writer.actor._tag !== "agent") return true;
+  const wakeupId = writer.wakeupId;
+  if (wakeupId === undefined) return false;
+  return (
+    (yield* personSpokeInTurn(orgId, writer.actor.agentId, wakeupId)) &&
+    (yield* ownerLevelAsked(orgId, writer.actor.agentId, wakeupId)) &&
+    !(yield* outsideRead({ orgId, wakeupId })) &&
+    !(yield* followsOutsideRead(orgId, wakeupId))
+  );
+});
+
+/** Whether an amount or fields put money on an entry. */
 const recordsMoney = (
   amount: KinMoney | null | undefined,
   fields: Readonly<Record<string, FieldValue | null>> | undefined,
@@ -1714,6 +1773,15 @@ const make = Effect.gen(function* () {
       steps: (input.steps?.length ?? 0) > 0 || input.urgent === true,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
+    // An agent's funder the owner didn't give in person waits with the new entry for Keep.
+    const unaskedFunding =
+      list === "expenses" &&
+      writer.actor._tag === "agent" &&
+      FUNDING.some((field) => field in fields) &&
+      !(yield* agentMayFund(orgId, writer).pipe(provideSql));
+    // Money counts a partner's expense as owed: the entry says so too, not "None".
+    if (funds(def, fields[FUNDED_BY]) && fields[REIMBURSEMENT] === undefined)
+      fields[REIMBURSEMENT] = "owed";
     const zero = zeroOwed(def, input.amount, input.category, writer);
     if (zero !== undefined) return yield* zero;
     if (input.askSlip === true && input.amount != null)
@@ -1756,13 +1824,18 @@ const make = Effect.gen(function* () {
         ? undefined
         : yield* storedRepeat(orgId, input.repeat, input.dueAt ?? null, input.dateAt ?? null));
     const now = yield* Clock.currentTimeMillis;
+    if (list === "expenses" && REPAID_ON in fields) {
+      const ahead = repaidAhead(fields, dayIn(now, yield* ownerZone(orgId).pipe(provideSql)));
+      if (ahead !== undefined) return yield* ahead;
+    }
     const next = batch ?? (yield* reserveKeys(orgId, def, now, 1));
     const key = `${next.prefix}-${next.next}`;
     const approved =
       options.kept === undefined ? yield* approvalKeeps(orgId, writer, list, partyId) : undefined;
     const kept =
       options.kept ??
-      ((approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps) &&
+      (!unaskedFunding &&
+        (approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps) &&
         !(yield* followsUnasked(orgId, writer)));
     // Nobody issued, sent or was paid for what nobody kept: it waits as a draft on its own day.
     // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
@@ -2382,12 +2455,85 @@ const make = Effect.gen(function* () {
           delete merged.untold;
           fieldsChanged = true;
         }
+        // Who funded it decides what is owed: a partner's reads owed, the company's nothing.
+        if (
+          shownField(stored[FUNDED_BY]) !== shownField(merged[FUNDED_BY]) &&
+          patch.fields?.[REIMBURSEMENT] === undefined &&
+          def.fields.some((one) => one.key === REIMBURSEMENT)
+        ) {
+          const was = shownField(merged[REIMBURSEMENT]);
+          if (funds(def, merged[FUNDED_BY]) && merged[REIMBURSEMENT] === undefined)
+            merged[REIMBURSEMENT] = "owed";
+          else if (merged[FUNDED_BY] === undefined) {
+            delete merged[REIMBURSEMENT];
+            delete merged[REPAID_ON];
+          }
+          if (shownField(merged[REIMBURSEMENT]) !== was) {
+            changes.push({
+              field: REIMBURSEMENT,
+              from: was,
+              to: shownField(merged[REIMBURSEMENT]),
+            });
+            fieldsChanged = true;
+          }
+        }
         if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
         const amount = amountOf(row) ?? null;
         const byOwner = writer.via === "owner";
         const amountChanged =
           patch.amount !== undefined &&
           (patch.amount?.minor !== amount?.minor || patch.amount?.currency !== amount?.currency);
+        if (
+          list === "expenses" &&
+          shownField(stored[REPAID_ON]) !== shownField(merged[REPAID_ON])
+        ) {
+          const today = dayIn(
+            yield* Clock.currentTimeMillis,
+            yield* ownerZone(orgId).pipe(provideSql),
+          );
+          const ahead = repaidAhead(merged, today);
+          if (ahead !== undefined) return yield* ahead;
+        }
+        const fundingMoved =
+          list === "expenses"
+            ? FUNDING.filter((field) => shownField(stored[field]) !== shownField(merged[field]))
+            : [];
+        if (writer.actor._tag === "agent" && fundingMoved.length > 0) {
+          if (!(yield* agentMayFund(orgId, writer).pipe(provideSql)))
+            return yield* notAllowed(FUNDING_IS_THE_OWNERS);
+          const set = fundingMoved.filter((field) => shownField(stored[field]) !== null);
+          if (set.length > 0) {
+            const [byPerson] = yield* sql`SELECT 1 FROM kin_record_changes c
+              WHERE c.org_id = ${orgId} AND c.record_id = ${row.recordId}
+                AND c.actor_kind <> 'agent'
+                AND c.seq = (SELECT MAX(l.seq) FROM kin_record_changes l, json_each(l.fields_json) f
+                  WHERE l.org_id = c.org_id AND l.record_id = c.record_id
+                    AND json_extract(f.value, '$.field') IN ${sql.in(set)})
+              LIMIT 1`;
+            if (byPerson !== undefined) return yield* notAllowed(FUNDING_A_PERSON_SET);
+          }
+        }
+        // A repayment Confirm linked to a bank row binds the expenses it settled: what they cost,
+        // who is paid back and when stay as the bank saw them until that repayment is undone.
+        if (list === "expenses") {
+          const was = fundingOf(stored);
+          const moves =
+            amountChanged ||
+            (patch.state !== undefined && patch.state !== row.state) ||
+            [FUNDED_BY, REIMBURSEMENT, REPAID_ON].some(
+              (field) => shownField(stored[field]) !== shownField(merged[field]),
+            );
+          if (moves && was.by === "partner" && was.state === "repaid") {
+            const [bound] = yield* sql`SELECT 1 FROM kin_bank_statement_entries
+              WHERE org_id = ${orgId} AND target_record_id = ${row.recordId}
+                AND action = 'expense_linked' AND json_extract(prior_json, '$.repaid') IS NOT NULL
+              LIMIT 1`;
+            if (bound !== undefined)
+              return yield* invalid(
+                `This was paid back on ${was.repaidOn ?? "its bank line's day"}. Undo that repayment first.`,
+              );
+          }
+        }
         if (amountChanged && row.paid > 0) {
           const received = formatMoney({ minor: row.paid, currency: amount!.currency });
           // An invoice's payments are in its currency: a different one would make them nonsense.
@@ -3486,6 +3632,14 @@ const make = Effect.gen(function* () {
     if (input.dateFrom !== undefined) where.push(sql`${moneyDay(sql)} >= ${input.dateFrom}`);
     if (input.dateTo !== undefined) where.push(sql`${moneyDay(sql)} < ${input.dateTo}`);
     if (input.category !== undefined) where.push(sql`r.category IS ${input.category}`);
+    // The tile's own rule (`moneyViews` spent): money that left the company's accounts.
+    if (input.spent !== undefined)
+      where.push(sql`(r.state = 'done' AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
+        AND ${companyCashOut(sql)}
+        AND CASE WHEN ${partnerRepaidDay(sql)} IS NOT NULL
+          THEN ${partnerRepaidDay(sql)} BETWEEN ${input.spent.from} AND ${input.spent.to}
+          ELSE ${moneyDay(sql)} >= ${input.spent.fromAt} AND ${moneyDay(sql)} < ${input.spent.toAt}
+        END)`);
     if (input.paidFrom !== undefined || input.paidTo !== undefined)
       where.push(sql`EXISTS (SELECT 1 FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL

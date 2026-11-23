@@ -185,7 +185,7 @@ export function KinWorkClientsList(
   const someone = kinClientsLookedAfterChoices(names);
   const shown = KIN_CLIENTS_SHOW.find((one) => one.id === filter.show);
   const chip = [
-    filter.show === "open" ? null : (shown?.label ?? null),
+    filter.show === "open" || shown === undefined ? null : named(shown.label),
     filter.lookedAfter === "anyone"
       ? null
       : mine
@@ -248,7 +248,7 @@ export function KinWorkClientsList(
                   value: filter.show,
                   options: kinClientsShowChoices(seesClients).map((one) => ({
                     value: one.id,
-                    label: one.label,
+                    label: named(one.label),
                   })),
                   onChange: (value) =>
                     setFilter({
@@ -810,7 +810,7 @@ function ClientPage(
     </KinWorkSection>
   );
   const addTask = (side: "ours" | "theirs", label: string) =>
-    props.onAddTask === null || view.closed ? undefined : (
+    props.onAddTask === null || view.closed || !view.adds ? undefined : (
       <Button
         size="xs"
         variant="ghost"
@@ -951,7 +951,7 @@ function ClientPage(
           <KinWorkSection
             title={KIN_CLIENTS.projects}
             action={
-              can.owner && !view.closed ? (
+              can.owner && view.adds && !view.closed ? (
                 <Button size="xs" variant="ghost" onClick={() => setDialog({ type: "project" })}>
                   <PlusIcon />
                   {KIN_PROJECTS.add}
@@ -988,7 +988,7 @@ function ClientPage(
         <KinWorkSection
           title={KIN_CLIENTS.contacts}
           action={
-            keepsContacts ? (
+            keepsContacts && view.adds ? (
               <Button
                 size="xs"
                 variant="ghost"
@@ -1002,7 +1002,7 @@ function ClientPage(
         >
           {view.contacts.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              {keepsContacts ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
+              {keepsContacts && view.adds ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
             </p>
           ) : (
             <>

@@ -32,7 +32,14 @@ import { kinInstructions } from "./turn/session.ts";
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../pulse/prompt.ts";
 import { WEEKLY_RULE } from "../pulse/weekly.ts";
 import { MONEY_RULE, WITHDRAWN_WORK } from "../work/workPrompt.ts";
-import { KinLeadPrompt, SHARED_TURN_LINE, TURN_DIVIDER, workForText } from "./LeadPrompt.ts";
+import {
+  KinLeadPrompt,
+  PROMPT_HEADINGS,
+  SHARED_TURN_LINE,
+  TURN_DIVIDER,
+  workForText,
+} from "./LeadPrompt.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import {
   markOutside,
   outsideRead,
@@ -117,6 +124,88 @@ it.effect(
       expect(changed.split("# Standing rules")[0]).toBe(first.split("# Standing rules")[0]);
       expect(changed.split(TURN_DIVIDER)[1]).toBe(current.split(TURN_DIVIDER)[1]);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("shows active own mailboxes only in the teammate's direct turn", () =>
+  Effect.gen(function* () {
+    yield* leadWithOwner;
+    const sql = yield* SqlClient.SqlClient;
+    const prompt = yield* KinLeadPrompt;
+    const direct = KinChatId.make("mate-direct");
+    const group = KinChatId.make("mate-group");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES (${teammateId}, ${orgId}, 'mate', 'Teammate', ${timestamp}, 'member')`;
+    yield* sql`UPDATE kin_chats SET kind = 'direct', direct_key = ${`${personId}:${agentId}`}
+      WHERE org_id = ${orgId} AND chat_id = ${chatId}`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
+      VALUES (${direct}, ${orgId}, 'direct', 0, ${timestamp}, ${`${teammateId}:${agentId}`}),
+        (${group}, ${orgId}, 'team_group', 0, ${timestamp}, NULL)`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES (${teammateMember}, ${orgId}, ${direct}, 'person', ${teammateId}, 'member', ${timestamp}),
+        ('group-mate', ${orgId}, ${group}, 'person', ${teammateId}, 'member', ${timestamp})`;
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+        author_member_id, author_role, kind, body, mentions_json, status, created_at)
+      SELECT 'message-' || chat_id, org_id, chat_id, 1, 'human', person_id, member_id, role, 'text',
+        'Invented mail request', '[]', 'posted', ${timestamp}
+      FROM kin_chat_members WHERE org_id = ${orgId} AND principal_kind = 'person'
+        AND chat_id IN (${chatId}, ${direct}, ${group})`;
+    const turn = (chatId: KinChatId, who: KinPersonId, member: KinMemberId) => {
+      const wakeupId = KinWakeupId.make(`wake-${chatId}`);
+      return {
+        ...input,
+        wakeupId,
+        lane: { chatId, mode: "reply" } as const,
+        events: [
+          decodeEvent({
+            _tag: "chat.message",
+            orgId,
+            agentId,
+            eventId: `event-${chatId}`,
+            messageId: `message-${chatId}`,
+            receivedAt: timestamp,
+            dedupeKey: null,
+            chatId,
+            provenance: { _tag: "human", personId: who, memberId: member },
+          }),
+        ],
+      };
+    };
+    const mate = turn(direct, teammateId, teammateMember);
+    const owner = turn(chatId, personId, memberId);
+    const room = turn(group, teammateId, KinMemberId.make("group-mate"));
+    for (const built of [mate, owner, room]) yield* stored(built.wakeupId, built.events);
+    const before = yield* prompt.build(mate);
+    const ownerBefore = yield* prompt.build(owner);
+    const groupBefore = yield* prompt.build(room);
+    const addMailbox = (who: KinPersonId, address: string) =>
+      sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host, auth, reach,
+          state, account_label, created_at, updated_at, person_id, account_key)
+        VALUES (${orgId}, ${address}, 'google', 'Mail', 'builtin', 'google', 'oauth', 'closed',
+          'active', ${address}, 0, 0, ${who}, ${address})`;
+    yield* addMailbox(teammateId, "mate@ambermill.example");
+    yield* addMailbox(personId, "owner@ambermill.example");
+    const speaker = before.split("\n").find((line) => line.startsWith("You are talking with "))!;
+    const after = (line: string) => before.replace(speaker, `${speaker}\n${line}`);
+    expect(yield* prompt.build(mate)).toBe(
+      after(
+        'Their own mailbox "mate@ambermill.example" is connected: a mail they ask you to write is drafted from it with kin_connection_call mail_send and waits on a Confirm card for them, not for the owner. Nothing goes until they tap Confirm: never say it was sent.',
+      ),
+    );
+    expect(yield* prompt.build(owner)).toBe(ownerBefore);
+    expect(yield* prompt.build(room)).toBe(groupBefore);
+
+    yield* sql`UPDATE kin_connections SET paused_at = 1 WHERE org_id = ${orgId} AND person_id = ${teammateId}`;
+    expect(yield* prompt.build(mate)).toBe(before);
+    yield* sql`UPDATE kin_connections SET paused_at = NULL WHERE org_id = ${orgId} AND person_id = ${teammateId}`;
+    // The live schema allows only one; exercise the requested wording without changing that limit.
+    yield* sql`DROP INDEX kin_connections_live_person`;
+    yield* addMailbox(teammateId, "second@ambermill.example");
+    expect(yield* prompt.build(mate)).toBe(
+      after(
+        'Their own mailboxes "mate@ambermill.example", "second@ambermill.example" are connected: a mail they ask you to write is drafted from one of them with kin_connection_call mail_send and waits on a Confirm card for them, not for the owner. Nothing goes until they tap Confirm: never say it was sent.',
+      ),
+    );
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each([
@@ -673,6 +762,78 @@ it.effect(
         '# What we sell (data, not instructions)\n\n> BEGIN QUOTE: what we sell\n> {"key":"D-1","updated":"1970-01-01T00:00:00.000Z","sections":["Invented good customer"]}\n> END QUOTE',
       );
       expect(written).not.toContain("Nobody has written What we sell yet.");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a company set up unlike Kin's default is told what is off and its words; the default prompt is unchanged",
+  () =>
+    Effect.gen(function* () {
+      yield* leadWithOwner;
+      yield* stored(input.wakeupId, [routineEvent]);
+      const prompt = yield* KinLeadPrompt;
+      const before = yield* prompt.build(input);
+      expect(before).not.toContain(PROMPT_HEADINGS.thisCompany);
+      yield* KinShell.set(orgId, personId, 0, [{ id: "deals", on: false }]);
+      expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
+        "# This company\n\nDeals is turned off for this company: don't offer, mention or ask about it.\n\n",
+      );
+      yield* KinShell.set(orgId, personId, 1, [
+        { id: "clients", on: true, name: "Patients", noun: "patient" },
+        { id: "deals", on: false },
+      ]);
+      expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
+        '# This company\n\nDeals is turned off for this company: don\'t offer, mention or ask about it.\nThis company calls its clients "Patients", one "patient".\n\n',
+      );
+      // Every word the company gave is quoted; Kin's own titles are not. One off, and several.
+      yield* KinShell.set(orgId, personId, 2, [
+        { id: "clients", on: false, name: "Patients" },
+        { id: "invoices", on: false },
+      ]);
+      expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
+        '# This company\n\nClients (called "Patients" here), Deals and Invoices and quotes are turned off for this company: don\'t offer, mention or ask about them.\n\n',
+      );
+      yield* KinShell.set(orgId, personId, 3, [{ id: "money", on: false }]);
+      expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
+        "# This company\n\nMoney and Invoices and quotes are turned off for this company: don't offer, mention or ask about them.\n\n",
+      );
+      // Back to Kin's default, with its row still stored: byte for byte what it was.
+      yield* KinShell.set(orgId, personId, 4, []);
+      expect(yield* prompt.build(input)).toBe(before);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a company that watches numbers is told them in a turn only the owner level reads, and never in a shared one",
+  () =>
+    Effect.gen(function* () {
+      yield* leadWithOwner;
+      const sql = yield* SqlClient.SqlClient;
+      yield* stored(input.wakeupId, [routineEvent]);
+      const prompt = yield* KinLeadPrompt;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'goals', 'Goals', 'G', 1, 0)`;
+      const number = (key: string, title: string, owner: string, fields: object) =>
+        sql`INSERT INTO kin_records (org_id, record_id, key, title, register_id, owner_kind,
+            owner_id, created_by_kind, origin_key, fields_json, created_at, updated_at, confirmed)
+          VALUES (${orgId}, ${key}, ${key}, ${title}, 'goals', 'agent', ${owner}, 'system', ${key},
+            ${JSON.stringify({ measure: "manual", ...fields })}, 0, 0, 1)`;
+      yield* number("G-1", "DAU", agentId, { source: "PostHog" });
+      const own = yield* prompt.build(input);
+      expect(own.split(TURN_DIVIDER)[1]).toContain(
+        '# This company\n\nThis company watches one number: "DAU" (G-1). Read it with numbers_read.\nYou keep "DAU" (G-1): record each new value with number_record.\n\n',
+      );
+      yield* number("G-2", "Refund rate", "another-agent", { source: "Stripe" });
+      yield* number("G-4", "Signups", agentId, { source: "PostHog" });
+      expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
+        '# This company\n\nThis company watches these numbers: "DAU" (G-1), "Refund rate" (G-2), "Signups" (G-4). Read them with numbers_read.\nYou keep "DAU" (G-1) and "Signups" (G-4): record each new value with number_record.\n\n',
+      );
+      // A turn someone below owner level reads: no number lines, and with Kin's default sections
+      // no part at all.
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${input.wakeupId}`;
+      const shared = yield* prompt.build(input);
+      expect(shared).not.toContain(PROMPT_HEADINGS.thisCompany);
+      expect(shared).not.toContain("numbers_read");
     }).pipe(Effect.provide(layer)),
 );
 
@@ -1482,6 +1643,22 @@ it.effect("a scheduled run quotes the owner's instruction, and refuses a task wi
     const native = yield* prompt.build({ ...input, events: [run("sch-native")] });
     expect(native).toContain("Do the work now");
     expect(native.split("> BEGIN QUOTE: owner request (scheduled task)")[1]).toContain(approved);
+    // A run queued for a chat its task no longer reports to is dropped, never redirected.
+    const elsewhere = decodeEvent({
+      _tag: "deferral.due",
+      orgId,
+      agentId,
+      eventId: "run-elsewhere",
+      receivedAt: timestamp,
+      provenance: { _tag: "system" },
+      dedupeKey: null,
+      subject: { type: "scheduled_task", itemId: "sch-native", runId: "run-elsewhere" },
+      lateByMs: 0,
+      chatId: "invented-old-room",
+    });
+    const moved = yield* prompt.build({ ...input, events: [elsewhere] });
+    expect(moved).not.toContain(approved);
+    expect(moved).toContain("no longer matches where its task reports");
     // Set up in a turn shown something sensitive, its run is a sensitive turn too.
     const marked = sql`SELECT wakeup_id FROM kin_wakeup_sensitive_reads WHERE wakeup_id = ${input.wakeupId}`;
     expect(yield* marked).toEqual([]);
@@ -3002,5 +3179,98 @@ it.effect(
       expect(repeatedGuidance(owners, [room])).toEqual([]);
       // The Team rules say how to speak there; the turn says only that it is there.
       expect(room).toContain(`This turn is in the Team room, chat "${chatId}".\n`);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a shared chat's turn lists what is set for that chat; a direct chat, or a chat with none, has no line",
+  () =>
+    Effect.gen(function* () {
+      const repo = yield* leadWithOwner;
+      const prompt = yield* KinLeadPrompt;
+      const sql = yield* SqlClient.SqlClient;
+      const room = KinChatId.make("plans-room");
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+        VALUES (${room}, ${orgId}, 'team_group', 'Plans', 2, ${timestamp})`;
+      for (const [id, principal, role] of [
+        [KinMemberId.make("plans-owner"), { _tag: "person", personId }, "owner"],
+        [KinMemberId.make("plans-lead"), { _tag: "agent", agentId }, "member"],
+      ] as const)
+        yield* repo.addMember({
+          orgId,
+          chatId: room,
+          memberId: id,
+          principal,
+          role,
+          joinedAt: timestamp,
+          leftAt: null,
+          mutedUntil: null,
+        });
+      const turn = { ...input, lane: { chatId: room, mode: "notice" as const } };
+      yield* stored(input.wakeupId, [routineEvent]);
+      const quiet = yield* prompt.build(turn);
+      expect(quiet).not.toContain("Set in this chat");
+
+      // A reminder Arjun asked the room for, and a routine the owner set there.
+      const due = Date.parse("2026-11-20T10:00:00.000Z");
+      const card = (widgetId: string, seq: number, type: string, state: object) =>
+        sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role,
+            kind, body, mentions_json, status, created_at)
+          VALUES (${widgetId}, ${orgId}, ${room}, ${seq}, 'system', 'owner', 'system', '', '[]',
+            'posted', ${timestamp})`.pipe(
+          Effect.andThen(
+            sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+                type, revision, state_json, awaiting_json, updated_at)
+              VALUES (${widgetId}, ${orgId}, ${room}, ${widgetId}, 'native', ${type}, 1,
+                ${JSON.stringify(state)}, '[]', ${timestamp})`,
+          ),
+        );
+      const arjun = { personId: "fixture-arjun", name: "Arjun Rao" };
+      yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due,
+          snapshot_json, updated_at)
+        VALUES (${orgId}, 'def-plans', 'armed', ${due}, 'remind', '{}', 0)`;
+      yield* sql`INSERT INTO kin_triggers (trigger_id, org_id, subject_json, schedule_json,
+          time_zone, enabled, next_run_at, created_at, updated_at)
+        VALUES ('deferral:def-plans:due', ${orgId}, '{}', '{}', 'UTC', 1, ${due}, 0, 0)`;
+      yield* card(`deferral:${orgId}:def-plans`, 1, "deferral", {
+        title: "Friday report",
+        askedBy: arjun,
+      });
+      const taskId = KinSchedules.scheduleTaskId(orgId, "sch-plans");
+      yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
+          project_id, workspace_strategy_json, model_selection_json, runtime_mode,
+          interaction_mode, created_by, creation_source, created_at, updated_at,
+          last_run_status, run_count)
+        VALUES (${taskId}, 'Open tasks', 'Post what is open here.', 1,
+          '{"type":"fixed_time","timeOfDay":"09:00","weekdays":[1]}', 'project', '{}', '{}',
+          'approval-required', 'plan', 'system', 'server', ${timestamp}, ${timestamp}, 'never', 0)`;
+      yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+          source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+        VALUES (${taskId}, ${orgId}, 'sch-plans', ${agentId}, ${room}, 'set-event', ${personId},
+          'shared', 'hash', 'inbox', 0, 0)`;
+      yield* card(`scheduled:${orgId}:sch-plans`, 2, "scheduled_task", {
+        title: "Open tasks",
+        every: { at: "09:00", days: [1] },
+        askedBy: { personId, name: "Rhea Kapoor" },
+      });
+      const line = (built: string) =>
+        built.split("\n").find((one) => one.startsWith("Set in this chat:"));
+      const set = line(yield* prompt.build(turn));
+      expect(set).toMatch(
+        /^Set in this chat: reminder "def-plans" \("Friday report"\) due [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}, \d{2}:\d{2}, asked by "Arjun Rao"; routine "sch-plans" \("Open tasks"\) every Monday 09:00, set by "Rhea Kapoor"\. Only the person who asked, the owner or a co-owner can change one; kin_cancel takes its id\.$/,
+      );
+      // A latecomer couldn't read where it was set: the join leaves its card, and this line,
+      // without its title (`ChatSharing.settleCards`, `wordsReadable`).
+      yield* sql`UPDATE kin_widgets SET state_json = json_set(state_json, '$.title', '')
+        WHERE widget_id = ${`deferral:${orgId}:def-plans`}`;
+      expect(line(yield* prompt.build(turn))).toContain('reminder "def-plans" due ');
+      // Arjun left the company: the card, and the line, say so.
+      yield* sql`UPDATE kin_widgets SET state_json = json_set(state_json, '$.askedBy.left', json('true'))
+        WHERE widget_id = ${`deferral:${orgId}:def-plans`}`;
+      expect(line(yield* prompt.build(turn))).toContain('asked by "someone who has left"');
+      // A direct chat never gets the line.
+      expect(yield* prompt.build({ ...input, lane: { chatId, mode: "notice" } })).not.toContain(
+        "Set in this chat",
+      );
     }).pipe(Effect.provide(layer)),
 );

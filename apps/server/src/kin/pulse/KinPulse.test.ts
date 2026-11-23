@@ -3,6 +3,7 @@ import {
   KinAgentId,
   KinConnectionId,
   KinEvent,
+  KinEventId,
   KinOrgId,
   KinPersonId,
   KinWakeupId,
@@ -29,8 +30,10 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { wordOf } from "./holds.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { headStarts } from "./headStart.ts";
+import { DRAFT_CALL_NOTES, DRAFT_FROM_MAILBOX, draftWakeText } from "./draftWake.ts";
 import { buildPulseSection } from "./prompt.ts";
 import { screenFacts } from "./people.ts";
 import { factSig } from "./told.ts";
@@ -49,7 +52,8 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const stamp = "2026-10-01T00:00:00.000Z";
 
-const layer = KinEventQueue.layer.pipe(
+const layer = KinShell.layer.pipe(
+  Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
 );
@@ -508,6 +512,30 @@ describe("KinPulse", () => {
         key: "D-1",
         title: "Invented D-1",
       });
+      yield* insert({
+        id: "W-16",
+        category: "meeting",
+        partyId: "r-C-1",
+        dateAt: B - 31 * DAY,
+      });
+      yield* sql`UPDATE kin_records SET party_id = 'r-C-1'
+        WHERE org_id = ${orgId} AND record_id IN ('r-QT-1', 'r-INV-6')`;
+      yield* sql`UPDATE kin_records SET date_at = ${B + 2 * DAY}
+        WHERE org_id = ${orgId} AND record_id = 'r-QT-1'`;
+      const shell = yield* KinShell.KinShell;
+      let rev = (yield* shell.get(orgId)).rev;
+      for (const [sections, words] of [
+        [[], "calls, meetings, mail, invoices and payments count; the last was a quote"],
+        [
+          [{ id: "invoices", on: false }],
+          "calls, meetings, mail and payments count; the last was a payment",
+        ],
+        [[{ id: "money", on: false }], "calls, meetings and mail count; the last was a meeting"],
+      ] as const) {
+        rev = (yield* shell.set(orgId, owner, rev, sections)).rev;
+        const [fact] = keyed((yield* read(B + 60 * DAY)).facts, "client_cold", "C-1");
+        assert.include(fact?.consequence, words);
+      }
     }).pipe(Effect.provide(layer)),
   );
 
@@ -740,6 +768,201 @@ describe("KinPulse", () => {
         "W-8 Invented W-8 was due yesterday.",
         "W-8 Invented W-8 was due 3 days ago.",
       ]);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  // The sales seat, Meera with Clients on in Los Angeles and allowed to message it, and her
+  // late follow-up W-30 to Lumen: 4 Nov 20:00 UTC is noon on 4 Nov in Los Angeles.
+  const salesDay = Effect.gen(function* () {
+    yield* seed;
+    yield* letMate;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id,
+        created_at)
+      VALUES (${growth}, ${orgId}, 'Growth', 'lead', ${owner}, ${stamp})`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+      VALUES ('chat-growth', ${orgId}, 'team_group', 0, ${stamp})`;
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+        worker_projects_json, owner_chat_id, domain)
+      VALUES (${growth}, ${orgId}, 'Growth', 0, '{}', '[]', 'chat-growth', 'growth')`;
+    yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+      VALUES (${orgId}, ${growth}, ${mate}, ${owner}, 0)`;
+    yield* sql`UPDATE kin_people SET sees_clients = 1, time_zone = 'America/Los_Angeles'
+      WHERE person_id = ${mate}`;
+    yield* insert({
+      id: "W-30",
+      dueAt: B + 2 * DAY,
+      ownerKind: "person",
+      ownerId: mate,
+      partyId: "r-C-1",
+    });
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+      VALUES (${orgId}, 'contacts', 'contacts', 'CT', 1, 0)`;
+    yield* insert({
+      id: "CT-1",
+      list: "contacts",
+      title: "Ravi Menon",
+      partyId: "r-C-1",
+      fields: '{"email":"ravi@lumen.example"}',
+    });
+  });
+  const growth = KinAgentId.make("growth");
+  const NOON_LA = B + 3 * DAY + 20 * HOUR;
+  const draftEvents = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ json: string }>`SELECT json FROM kin_events
+      WHERE org_id = ${orgId} AND dedupe_key LIKE 'draft:%' ORDER BY received_at, event_id`;
+    return rows.flatMap((row) => {
+      const event = decodeEvent(JSON.parse(row.json));
+      return event._tag === "pulse" ? [event] : [];
+    });
+  });
+  const slots = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql<{ person: string; key: string; day: string }>`SELECT person_id AS person,
+        fact_key AS key, sig AS day FROM kin_pulse_told
+      WHERE person_id LIKE 'draft:%' ORDER BY told_at, fact_key`;
+  });
+
+  it.effect(
+    "a teammate's follow-up wakes the sales agent in her chat, once per task and day in her zone",
+    () =>
+      Effect.gen(function* () {
+        yield* salesDay;
+        const sql = yield* SqlClient.SqlClient;
+        // No chat with the sales agent yet: the usual path opens one.
+        yield* TestClock.setTime(NOON_LA);
+        const first = yield* KinPulse.tick(orgId, NOON_LA);
+        assert.deepStrictEqual(first.drafted, [
+          { personId: mate, key: `task_late:W-30:due=${B + 2 * DAY}` },
+        ]);
+        const [chat] = yield* sql<{ chatId: string }>`SELECT chat_id AS "chatId" FROM kin_chats
+          WHERE direct_key = ${`${mate}:${growth}`}`;
+        const [made] = yield* draftEvents;
+        assert.deepStrictEqual(
+          [made?.chatId, made?.origin],
+          [chat?.chatId, { agentId: growth, chatId: chat?.chatId, personId: mate }],
+        );
+        // Later passes that day wake nothing more.
+        yield* TestClock.setTime(NOON_LA + HOUR);
+        assert.lengthOf((yield* KinPulse.tick(orgId, NOON_LA + HOUR)).drafted, 0);
+        // The wake's turn takes the task's slot for her day; another wake that day does nothing.
+        const read = yield* draftWakeText(orgId, made!);
+        assert.strictEqual(read?.text, DRAFT_CALL_NOTES("Meera", false));
+        assert.deepStrictEqual(read?.data, {
+          task: "W-30",
+          title: "Invented W-30",
+          late: true,
+          client: "Lumen",
+          writeTo: { name: "Ravi Menon", email: "ravi@lumen.example" },
+          mailbox: "none connected",
+        });
+        assert.deepStrictEqual(yield* slots, [
+          { person: `draft:${mate}`, key: "task:r-W-30", day: "2026-11-04" },
+        ]);
+        const again = { ...made!, eventId: KinEventId.make("pulse-again") };
+        assert.isUndefined(yield* draftWakeText(orgId, again));
+        // With her own mailbox and a contact she may see: a draft from it.
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+            url_host, auth, reach, state, account_label, created_at, updated_at, person_id)
+          VALUES (${orgId}, 'conn-mate', 'google', 'meera@invented.example', 'builtin',
+            'gmail.googleapis.com', 'oauth', 'closed', 'active', 'meera@invented.example', 0, 0,
+            ${mate})`;
+        assert.strictEqual(
+          (yield* draftWakeText(orgId, made!))?.text,
+          DRAFT_FROM_MAILBOX("Meera", "meera@invented.example"),
+        );
+        // Her next day in Los Angeles: one more.
+        yield* TestClock.setTime(NOON_LA + DAY);
+        assert.lengthOf((yield* KinPulse.tick(orgId, NOON_LA + DAY)).drafted, 1);
+      }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a wake checks again as it starts: holder, quiet hours, cards, a private client", () =>
+    Effect.gen(function* () {
+      yield* salesDay;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(NOON_LA);
+      yield* KinPulse.tick(orgId, NOON_LA);
+      const [made] = yield* draftEvents;
+      // In her quiet hours now: nothing, and no slot taken.
+      yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"11:00","to":"13:00"}'
+        WHERE person_id = ${mate}`;
+      assert.isUndefined(yield* draftWakeText(orgId, made!));
+      assert.lengthOf(yield* slots, 0);
+      yield* sql`UPDATE kin_people SET quiet_hours_json = NULL WHERE person_id = ${mate}`;
+      // Given to someone else meanwhile: nothing for her.
+      // Given to someone else meanwhile, though the team still sees it: nothing for her.
+      yield* sql`UPDATE kin_records SET owner_id = ${owner}, team_shared = 1
+        WHERE record_id = 'r-W-30'`;
+      assert.isUndefined(yield* draftWakeText(orgId, made!));
+      yield* sql`UPDATE kin_records SET owner_id = ${mate} WHERE record_id = 'r-W-30'`;
+      // A card from her own mailbox stands; a former holder's doesn't.
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+          url_host, auth, reach, state, created_at, updated_at, person_id)
+        VALUES (${orgId}, 'conn-mate', 'google', 'm', 'builtin', 'g', 'oauth', 'closed', 'active',
+            0, 0, ${mate}),
+          (${orgId}, 'conn-before', 'google', 'b', 'builtin', 'g', 'oauth', 'closed', 'active',
+            0, 0, ${owner})`;
+      const card = (connection: string) =>
+        sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+            pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at)
+          VALUES (${orgId}, ${`ask-${connection}`}, ${connection}, 'mail_send', 'p', '{}',
+            ${growth}, 'w', 'c', 'r-W-30', 0)`;
+      yield* card("conn-before");
+      assert.isDefined(yield* draftWakeText(orgId, made!));
+      yield* sql`DELETE FROM kin_pulse_told`;
+      yield* card("conn-mate");
+      assert.isUndefined(yield* draftWakeText(orgId, made!));
+      yield* sql`DELETE FROM kin_connection_asks`;
+      // Lumen marked private: her wake names neither the client nor its contact: call notes.
+      yield* sql`UPDATE kin_records SET sensitive = 1 WHERE record_id IN ('r-C-1', 'r-CT-1')`;
+      const read = yield* draftWakeText(orgId, made!);
+      assert.strictEqual(read?.text, DRAFT_CALL_NOTES("Meera", true));
+      assert.notProperty(read?.data ?? {}, "client");
+      assert.notProperty(read?.data ?? {}, "writeTo");
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("the company's switches and the sales agent's owner: who a follow-up wakes for", () =>
+    Effect.gen(function* () {
+      yield* salesDay;
+      const sql = yield* SqlClient.SqlClient;
+      // A step of a deal while Deals is off: no wake.
+      yield* sql`INSERT INTO kin_company_shell VALUES (${orgId}, '[{"id":"deals","on":false}]', 1,
+          ${owner}, 0)`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'deals', 'deals', 'DL', 1, 0)`;
+      yield* insert({ id: "DL-1", list: "deals", partyId: "r-C-1" });
+      yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation,
+          created_at)
+        VALUES (${orgId}, 'r-W-30', 'record', 'r-DL-1', 'relates', 0)`;
+      // The owner's own follow-up wakes it too, in his chat with it.
+      yield* sql`UPDATE kin_people SET access = 'owner' WHERE person_id = ${owner}`;
+      yield* insert({
+        id: "W-31",
+        dueAt: B + 2 * DAY,
+        ownerKind: "person",
+        ownerId: owner,
+        partyId: "r-C-1",
+      });
+      yield* TestClock.setTime(NOON_LA);
+      const ticked = yield* KinPulse.tick(orgId, NOON_LA);
+      assert.deepStrictEqual(
+        ticked.drafted.map((one) => one.personId),
+        [owner],
+      );
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("with Clients off for the company, no follow-up wakes anyone", () =>
+    Effect.gen(function* () {
+      yield* salesDay;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_company_shell VALUES (${orgId}, '[{"id":"clients","on":false}]',
+          1, ${owner}, 0)`;
+      yield* TestClock.setTime(NOON_LA);
+      assert.lengthOf((yield* KinPulse.tick(orgId, NOON_LA)).drafted, 0);
     }).pipe(Effect.provide(chatLayer)),
   );
 

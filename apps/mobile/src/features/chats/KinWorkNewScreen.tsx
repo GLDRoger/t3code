@@ -77,7 +77,7 @@ import {
   useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { useKinGate } from "./state/useKinHost";
-import { useKinSectionOn } from "./state/useKinShell";
+import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -124,6 +124,7 @@ export function KinWorkNewScreen({ route }: StaticScreenProps<KinWorkParams>) {
 }
 
 function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft }) {
+  const named = useKinSectionNamed(props.environmentId);
   const navigation = useNavigation();
   const { environmentId, orgId } = props;
   const target = { environmentId, orgId };
@@ -479,7 +480,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
               {problem === null ? null : <ErrorBanner message={problem} />}
               {fold.first.map(field)}
               {fold.moreLine === null ? null : (
-                <KinPageFold title={KIN_SHORT_FORMS.more} summary={fold.moreLine}>
+                <KinPageFold title={KIN_SHORT_FORMS.more} summary={named(fold.moreLine)}>
                   {fold.more.map(field)}
                 </KinPageFold>
               )}

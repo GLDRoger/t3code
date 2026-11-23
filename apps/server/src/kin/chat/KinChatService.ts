@@ -70,6 +70,8 @@ import {
   type KinReactionEmoji,
   type KinWaitingItem,
   type KinWidget,
+  KinCardAsker,
+  KIN_ASKER_ONLY_REFUSAL,
 } from "@t3tools/contracts";
 import {
   KIN_VISUAL_CARD_TYPE,
@@ -85,6 +87,7 @@ import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -103,6 +106,7 @@ import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as SocialCards from "../social/cards.ts";
 import { answerChange } from "../work/companyProfile.ts";
+import { answerShellChange } from "../shell/changes.ts";
 import { KinRefreshHub, KinRefreshObserver } from "./KinRefreshHub.ts";
 import { docsForViewer } from "./privateDocs.ts";
 import { previewRow } from "./chatRowPreview.ts";
@@ -562,6 +566,12 @@ const decodeReact = Schema.decodeEffect(KinMessagesReactInput);
 const decodeChoice = Schema.decodeUnknownEffect(KinChoiceCardState);
 /** Cards a reaction may land on; every other type (approval, level, review, deferral) refuses. */
 const REACTABLE_WIDGETS = new Set(["choice", "task", "routine"]);
+const decodeAsker = Schema.decodeUnknownOption(Schema.Struct({ askedBy: KinCardAsker }));
+/** Who asked for a shared chat's own reminder or routine, from its card (`KinCardAsker`). */
+const chatOwnAsker = (widget: KinWidget) =>
+  widget.type === "reminder" || widget.type === "scheduled_task" || widget.type === "deferral"
+    ? Option.getOrUndefined(decodeAsker(widget.state))?.askedBy
+    : undefined;
 /** Matches the choice card's window and the wake-up catch-up: older messages are not worth a wake. */
 const SOFT_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const encodeAction = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -1359,18 +1369,23 @@ const make = Effect.gen(function* () {
             now: yield* Clock.currentTimeMillis,
             emoji: reaction?.emoji ?? null,
           });
-    // A profile change a lead asked for lands only here, from the owner's own answer on its card.
-    const changed =
+    // A profile or shell change a lead asked for lands only here, from the owner's own answer on its card.
+    const asked =
       choice === null
         ? undefined
-        : yield* answerChange({
+        : {
             orgId: identity.orgId,
             widgetId: widget.widgetId,
             personId: identity.personId,
             confirmed: choice.option.kind === "yes",
-            via: reaction === null ? "tap" : "reaction",
+            via: reaction === null ? ("tap" as const) : ("reaction" as const),
             now: yield* Clock.currentTimeMillis,
-          }).pipe(
+          };
+    const changed =
+      asked === undefined
+        ? undefined
+        : yield* answerShellChange(asked).pipe(
+            Effect.filterOrElse(Predicate.isNotUndefined, () => answerChange(asked)),
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.provideService(KinRefreshObserver, refresh),
             Effect.mapError(cardTapError),
@@ -3585,6 +3600,17 @@ const make = Effect.gen(function* () {
         )
           return yield* invalidState;
       }
+      // A shared chat's own reminder or routine is its asker's, the owner's or a co-owner's.
+      const asker = chatOwnAsker(widget);
+      // A shared chat's own: its setter, or the owner or a co-owner by their live access.
+      if (
+        asker !== undefined &&
+        asker.personId !== identity.personId &&
+        !(yield* ownerLevel(identity.orgId, identity.personId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ))
+      )
+        return yield* new KinChatError({ reason: "not_allowed", message: KIN_ASKER_ONLY_REFUSAL });
       // Reminders and scheduled tasks act for the owner, so only the owner taps them, except a
       // reminder in someone's own direct chat: theirs to finish or snooze.
       if (
@@ -3593,6 +3619,7 @@ const make = Effect.gen(function* () {
           widget.type === KIN_SOCIAL_WEEK_CARD ||
           widget.type === KIN_SOCIAL_PACK_CARD) &&
         !owning &&
+        asker === undefined &&
         !(widget.type === "reminder" && (yield* ownDirectChat(identity, widget.chatId)))
       )
         return yield* notAllowed;

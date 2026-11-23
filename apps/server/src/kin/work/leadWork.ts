@@ -62,7 +62,15 @@ import { campaignsNamed, partyPage, projectDetail, sourceShown } from "./crm.ts"
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { fold, matchName } from "./nameMatch.ts";
 import { lastContacts } from "./touches.ts";
-import { clientFamily, KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
+import {
+  agentMayFund,
+  clientFamily,
+  KinRecords,
+  type Patch,
+  type TotalsBy,
+  type Writer,
+} from "./KinRecords.ts";
+import { FUNDED_BY } from "./reimbursement.ts";
 import {
   GOAL_INPUTS,
   GoalInputs,
@@ -3369,10 +3377,15 @@ const keepPairedFiles = Effect.fn("KinWorkTools.keepPairedFiles")(function* (
       return more.length === 0 ? [] : [[field, [...theirs, ...more]]];
     }),
   );
+  // A receipt names a funder only where none is said yet, and only as the owner may (`agentMayFund`).
+  const mayFund =
+    shownField(stored[FUNDED_BY]) === null && (yield* agentMayFund(lead.orgId, writer));
   const how = paid.receipt
     ? Object.fromEntries(
         PAYMENT_FIELDS.flatMap((field) =>
-          given[field] === undefined || shownField(given[field]) === shownField(stored[field])
+          given[field] === undefined ||
+          shownField(given[field]) === shownField(stored[field]) ||
+          (field === FUNDED_BY && !mayFund)
             ? []
             : [[field, given[field]]],
         ),
@@ -3392,7 +3405,7 @@ const keepPairedFiles = Effect.fn("KinWorkTools.keepPairedFiles")(function* (
     : yield* records.update(lead.orgId, writer, key, patch, entry.rev);
 });
 
-const PAYMENT_FIELDS = ["paidWith", "paidBy"];
+const PAYMENT_FIELDS = ["paidWith", "paidBy", FUNDED_BY];
 
 /** What a file's name says it is; a name saying both, or neither, says nothing. */
 const documentKind = (name: string | null) => {
@@ -3661,6 +3674,15 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   if (before === undefined) return yield* notFound(key);
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(key);
+  const beforeFields = parseFields(before.fieldsJson);
+  if (
+    before.registerId === "goals" &&
+    beforeFields.target === undefined &&
+    (input.current !== undefined || input.fields?.current !== undefined)
+  )
+    return yield* invalid(
+      `${before.title} is a watched number: record its value with number_record (the value, the day it is as of, and where it came from).`,
+    );
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
   if (before.registerId === "deals") {
     const { out, notices } = yield* dealUpdate(lead, writer, before, input);
@@ -3718,7 +3740,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   };
   if (patch.owner !== undefined) yield* notBouncedBack(lead, before, patch.owner);
   // tell false holds the new holder's notice on the task; giving it to them again tells them.
-  const heldFor = parseFields(before.fieldsJson).untold;
+  const heldFor = beforeFields.untold;
   const giving =
     before.registerId === "work" && patch.owner?._tag === "person" ? patch.owner : undefined;
   const moves =
@@ -3739,7 +3761,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...partyWords(before.registerId, { tags: input.tags, audience: input.audience }),
     ...spine.fields,
     ...(routedReason === undefined ? {} : { reason: routedReason }),
-    ...(yield* goalFields(lead.orgId, input, parseFields(before.fieldsJson))),
+    ...(yield* goalFields(lead.orgId, input, beforeFields)),
     ...(holds ? { untold: `person:${giving.personId}` } : releases ? { untold: null } : {}),
   };
   const money = yield* moneyPatch(lead, def, input, before.currency);

@@ -15,7 +15,8 @@ export type TurnAudience = "owner_only" | "shared";
 
 /**
  * Events that answer in the chat they name: a finished task names the chat its work was asked in,
- * a teammate's task their direct chat with the lead, and an answer the chat that asked for it.
+ * a teammate's task their direct chat with the lead, an answer the chat that asked for it, and a
+ * pulse made for one person (`draftWake.ts`) their direct chat with the lead.
  */
 export const CHAT_ANSWER_TAGS = [
   "chat.message",
@@ -24,6 +25,7 @@ export const CHAT_ANSWER_TAGS = [
   "record.changed",
   "task.finished",
   "deferral.due",
+  "pulse",
 ];
 
 /**
@@ -77,6 +79,7 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
       messageChatId: string | null;
       authorKind: string | null;
       authorPersonId: string | null;
+      subjectType: string | null;
     }>`
       SELECT e.tag, json_extract(e.json, '$.chatId') AS "chatId",
         json_extract(e.json, '$.origin.chatId') AS "originChatId",
@@ -84,7 +87,8 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
         json_extract(e.json, '$.provenance._tag') AS provenance,
         json_extract(e.json, '$.provenance.personId') AS "provenancePersonId",
         m.chat_id AS "messageChatId", m.author_kind AS "authorKind",
-        m.author_person_id AS "authorPersonId"
+        m.author_person_id AS "authorPersonId",
+        json_extract(e.json, '$.subject.type') AS "subjectType"
       FROM kin_events e
       LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
         AND m.message_id = json_extract(e.json, '$.messageId')
@@ -94,6 +98,7 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
       ORDER BY e.event_id`;
     if (events.length === 0) return "shared" as const;
     const chats = new Set<string>();
+    const fired = new Set<string>();
     let answersChat = false;
     for (const event of events) {
       if (event.tag === "chat.message" || event.tag === "widget.action") {
@@ -114,6 +119,8 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
           event.tag === "deferral.due") &&
         event.chatId !== null
       ) {
+        if (event.subjectType === "reminder" || event.subjectType === "scheduled_task")
+          fired.add(event.chatId);
         // A finished task, or an answer, answers where it was asked for, read by everyone there.
         answersChat = true;
         chats.add(event.chatId);
@@ -121,6 +128,12 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
       if (event.originPersonId !== null && !level.has(event.originPersonId))
         return "shared" as const;
       if (event.originChatId !== null) chats.add(event.originChatId);
+    }
+    // A room's own reminder or routine fired there never gets anyone's "Only you" memory.
+    if (fired.size > 0) {
+      const rooms = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${input.orgId}
+        AND chat_id IN ${sql.in([...fired])} AND kind <> 'direct' LIMIT 1`;
+      if (rooms.length > 0) return "shared" as const;
     }
     if (!answersChat) chats.add(lead.ownerChatId);
     const rows = yield* sql<ChatPeople>`

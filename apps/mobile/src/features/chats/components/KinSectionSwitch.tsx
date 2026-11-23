@@ -13,7 +13,7 @@ import {
   type KinSwitchableSection,
 } from "@t3tools/client-runtime/kin/kinShell";
 import type { KinShell } from "@t3tools/contracts";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -207,14 +207,18 @@ export function KinSectionsSettings(props: KinWorkTarget) {
         {KIN_SECTIONS_PAGE.intro}
       </Text>
       {KIN_SWITCHABLE_SECTIONS.map((id) => (
-        <KinSectionRow key={id} id={id} held={held} shell={shell} titled="name" />
+        <Fragment key={id}>
+          <KinSectionRow id={id} held={held} shell={shell} titled="name" />
+          {/* With Clients; a fresh form per saved name, so "Use Kin's name" empties the fields. */}
+          {id === "clients" ? (
+            <KinSectionRename
+              key={`${kinSectionName(shell, "clients")}/${kinSectionNoun(shell, "clients")}`}
+              held={held}
+              shell={shell}
+            />
+          ) : null}
+        </Fragment>
       ))}
-      {/* A fresh form per saved name, so "Use Kin's name" empties the fields. */}
-      <KinSectionRename
-        key={`${kinSectionName(shell, "clients")}/${kinSectionNoun(shell, "clients")}`}
-        held={held}
-        shell={shell}
-      />
       <Text textRole="footnote" className="px-2 text-foreground-muted">
         {KIN_SECTIONS_PAGE.olderPhones}
       </Text>

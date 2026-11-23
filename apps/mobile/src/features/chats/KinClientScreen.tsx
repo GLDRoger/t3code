@@ -336,7 +336,7 @@ function KinClientBody(
           }
         />
       )}
-      {canAddTask && !view.closed ? (
+      {canAddTask && view.adds && !view.closed ? (
         <ListActionRow
           label={add.label}
           onPress={() =>
@@ -344,7 +344,7 @@ function KinClientBody(
           }
         />
       ) : null}
-      {also !== undefined && canAddTask && !view.closed ? (
+      {also !== undefined && canAddTask && view.adds && !view.closed ? (
         <ListActionRow
           label={also.label}
           onPress={() =>
@@ -515,7 +515,7 @@ function KinClientBody(
           {view.nextStep.next === null ? (
             <>
               <ListRowLayout label={KIN_CLIENTS.noNextStep} disabled />
-              {canAddTask && !view.closed ? (
+              {canAddTask && view.adds && !view.closed ? (
                 <ListActionRow
                   label={KIN_CLIENTS.addNextStep}
                   onPress={() =>
@@ -573,7 +573,7 @@ function KinClientBody(
               />
             ))
           )}
-          {can.owner && !view.closed ? (
+          {can.owner && view.adds && !view.closed ? (
             <ListActionRow
               label={KIN_PROJECTS.add}
               onPress={() =>
@@ -597,7 +597,7 @@ function KinClientBody(
       >
         {view.contacts.length === 0 ? (
           <ListRowLayout
-            label={keepsContacts ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
+            label={keepsContacts && view.adds ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
             disabled
           />
         ) : (
@@ -623,7 +623,7 @@ function KinClientBody(
             />
           ))
         )}
-        {keepsContacts ? (
+        {keepsContacts && view.adds ? (
           <ListActionRow
             label={KIN_CLIENTS.addContact}
             onPress={() =>

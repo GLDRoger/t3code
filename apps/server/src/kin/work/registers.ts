@@ -26,6 +26,7 @@ import {
   type FieldValue,
   isMoney,
   LISTS,
+  WATCHED_NUMBER_FIELDS,
   type ListName,
   parseFields,
   sensitiveFields,
@@ -37,9 +38,16 @@ import {
   homeCurrency,
 } from "./companyProfile.ts";
 import { regionOf } from "./region.ts";
+import {
+  FUNDED_BY,
+  fundedByRefusal,
+  fundingKeyRefusal,
+  REIMBURSEMENT_FIELDS,
+} from "./reimbursement.ts";
 import { companyRegion, NEUTRAL_PAID_WITH } from "./statements/statementRegion.ts";
 import { dayIn, isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
+import { countedEntry } from "./recordRows.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
 /**
@@ -147,6 +155,8 @@ export const PRESETS: Record<
       field("paidWith", "Paid with", "choice", { choices: NEUTRAL_PAID_WITH }),
       field("paidBy", "Paid by", "person"),
       field("receipt", "Receipt", "file", { sensitive: true }),
+      // Who funded it, and whether the company owes a partner back (`reimbursement.ts`).
+      ...REIMBURSEMENT_FIELDS,
     ],
     sensitive: true,
     amount: true,
@@ -500,6 +510,10 @@ export const checkFields = (
         break;
       case "person":
         if (typeof value !== "string" || !/^(?:person|agent):.{1,120}$/.test(value)) return wrong;
+        if (def.id === "expenses" && key === FUNDED_BY) {
+          const refusal = fundedByRefusal(value);
+          if (refusal !== undefined) return invalid(refusal);
+        }
         break;
       case "link":
         if (spec.link === "list" || typeof value !== "string" || value.length > 120) return wrong;
@@ -622,6 +636,7 @@ export const toDefinition = (
     defaultState: def.defaultState,
     categories: def.categories,
     fields: def.fields.flatMap((field): ReadonlyArray<FieldDef> => {
+      if (def.id === "goals" && WATCHED_NUMBER_FIELDS.includes(field.key)) return [];
       if (field.type === "link" && field.link === "list")
         return accept?.includes("list") ? [field] : [];
       const type = accept?.includes(field.type) ? field.type : legacyFieldType(field);
@@ -796,6 +811,8 @@ const checkDraft = (draft: Draft): KinChatError | undefined => {
   if (isBuiltIn(draft.id) || Object.values(LISTS).some((list) => list.prefix === draft.prefix))
     return invalid(`The key prefix ${draft.prefix} is Kin's own. Propose another.`);
   if (!isCurrency(def.currency)) return invalid(`${def.currency} is not a currency code.`);
+  const taken = draft.id === "expenses" ? fundingKeyRefusal(def.fields) : undefined;
+  if (taken !== undefined) return invalid(taken);
   return checkFieldDefs(def.fields);
 };
 
@@ -1056,6 +1073,8 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
     if (def === undefined || def.builtIn !== null) return yield* unknownList(proposal.id);
     const next = extended(def, proposal);
     if (isChatError(next)) return yield* next;
+    const taken = def.id === "expenses" ? fundingKeyRefusal(next.fields) : undefined;
+    if (taken !== undefined) return yield* invalid(taken);
     yield* sql`UPDATE kin_registers SET definition_json = ${yield* encodeDefinition(next)},
         rev = rev + 1
       WHERE org_id = ${orgId} AND register_id = ${proposal.id}`;
@@ -1254,6 +1273,18 @@ export const openCounts = Effect.fn("KinRegisters.openCounts")(function* (
     }
     GROUP BY r.register_id ORDER BY r.register_id`;
   return new Map(rows.map((row) => [row.id, row.open]));
+});
+
+export const countListStates = Effect.fn("KinRegisters.countListStates")(function* (
+  orgId: KinOrgId,
+  list: string,
+  states: ReadonlyArray<KinRecordState>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = ${list} AND r.state IN ${sql.in(states)}
+      AND ${countedEntry(sql, states)}`;
+  return row?.count ?? 0;
 });
 
 /** Lists a built-in recipe needs: made from the preset on first use, with no card to approve. */

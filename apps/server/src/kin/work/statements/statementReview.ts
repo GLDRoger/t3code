@@ -37,7 +37,9 @@ import { companyMoney, homeCurrency } from "../companyProfile.ts";
 import { regionOf } from "../region.ts";
 import { dayIn } from "../money.ts";
 import { keptEntry, ownerZone } from "../recordRows.ts";
+import { partnerPayees, partnersOwed } from "../partnersOwed.ts";
 import { listDef } from "../registers.ts";
+import { fundingOf } from "../reimbursement.ts";
 import { type AlertCheck, alertCheck } from "./bankAlerts.ts";
 import { bankStates, directionOf, findBankList, type KnownRow, knownRows } from "./bankList.ts";
 import type { FileOutcome } from "./statementFiles.ts";
@@ -94,7 +96,7 @@ export const reviewOf = (json: string): Review | undefined =>
       ...(stored.alerts === undefined ? {} : { alerts: stored.alerts as AlertCheck }),
     }),
   });
-const storeReview = (review: Review) =>
+export const storeReview = (review: Review) =>
   encodeReview({
     statement: review.statement,
     format: review.format,
@@ -251,7 +253,8 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     fieldsJson: string;
     repeats: number;
     linked: number;
-  }>`SELECT r.record_id AS "recordId", r.key, r.title, r.state, r.currency,
+    rev: number;
+  }>`SELECT r.record_id AS "recordId", r.key, r.rev, r.title, r.state, r.currency,
       r.amount_minor AS "amountMinor", r.date_at AS "dateAt", r.due_at AS "dueAt",
       r.fields_json AS "fieldsJson", (r.repeat_json IS NOT NULL) AS repeats,
       EXISTS (SELECT 1 FROM kin_bank_statement_entries e WHERE e.org_id = r.org_id
@@ -287,6 +290,27 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     WHERE org_id = ${orgId} AND register_id = 'expenses' AND state = 'done'
       AND json_extract(fields_json, '$.vendor') IS NOT NULL
     ORDER BY updated_at DESC LIMIT 500`;
+  // A debit must name its partner; the expenses of one Kin can't name can't be told apart.
+  const partners = (yield* partnersOwed(orgId, home))
+    .filter((partner) => partner.personId !== null || partner.address !== null)
+    .flatMap((partner) =>
+      [...new Set(partner.entries.map((one) => one.money.currency))].map((currency) => ({
+        name: partner.name,
+        id: partner.personId ?? `address:${partner.address}`,
+        ids: partner.address === null ? [] : [partner.address],
+        currency,
+        owed: partner.entries
+          .filter((one) => one.money.currency === currency)
+          .map((one) => ({
+            recordId: one.recordId,
+            key: one.key,
+            amountMinor: one.money.minor,
+            day: dayIn(one.at, zone),
+            rev: one.rev,
+          })),
+      })),
+    );
+  const payees = yield* partnerPayees(orgId);
   const accounts = yield* sql<{ account: string }>`SELECT DISTINCT account FROM kin_bank_statements
     WHERE org_id = ${orgId} AND account IS NOT NULL ORDER BY account`;
   return {
@@ -314,8 +338,11 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
       };
     }),
     payments,
+    partners,
+    payees,
+    // A partner's expense left their own account, never this one; it is repaid instead.
     expenses: expenseRows
-      .filter((row) => row.linked === 0)
+      .filter((row) => row.linked === 0 && fundingOf(parseFields(row.fieldsJson)).by === "company")
       .map((row) => ({
         recordId: row.recordId,
         key: row.key,
@@ -327,6 +354,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         open: row.state === "open",
         vendor: fieldText(parseFields(row.fieldsJson), "vendor"),
         repeats: row.repeats === 1,
+        rev: row.rev,
       })),
     ownAccounts: accounts.map((row) => row.account).filter((one) => one !== statement.account),
     known: [

@@ -426,6 +426,30 @@ hosting", "the GST filing is due on the 20th". It records the entry and answers 
   **Add → New receipt**, then **Set against** an invoice of the same client when it's issued.
 - **Statements.** Send your bank or card statement in a chat to match its rows to invoices and
   expenses. See [Bank and card statements](./kin-statements.md).
+- **Paid by a partner.** When a partner pays a company expense from their own money, set **Funded
+  by** on the expense to that partner, in **Add → Expense** or on the expense itself. Leave it as
+  **The company** when the company paid. Its **Reimbursement** reads **owed** until the company
+  pays the partner back. A bank statement row that repays them marks it **repaid** for you (see
+  [Bank and card statements](./kin-statements.md)); or set it yourself, with the day in **Repaid
+  on**. Choose **not reimbursable** when the partner won't be paid back. A refund on something a
+  partner paid for, entered as a minus amount funded by them, comes off what they're owed. In
+  **Next 30 days**, each partner's balance is its own row, per currency: what they're owed under
+  **Going out**, and refunds they hold under **Coming in**; one partner never offsets another.
+  Under **Partners to name**, pick **Who is this?** beside expenses marked owed with an address or
+  no partner, to set that teammate as Funded by on all of them.
+- **Imported expenses a partner paid.** An import can say a partner paid with an email address,
+  without saying who that is in Kin or whether they were paid back. Until you say, those expenses
+  count as the company's own spending, as they did before. **Paid personally, not counted as owed
+  yet** under **Next 30 days** lists each address. Pick **Say who paid**, choose the teammate, and
+  say whether the company still owes them or already paid them back. **Still owed** counts them as
+  going out now; **Already paid back** changes no figure. The same address with other capitals or
+  spaces is one address. The accountant's pack has
+  an **Owed to partners** sheet with what was owed at the month's end and what was repaid in it.
+  Ask "what do we owe the partners?" for each partner's total and oldest expenses. The outlook
+  counts what partners are owed as going out now. Runway, Money's spent this month and the weekly
+  brief's out this week count a partner's expense on the day the company paid them back, not the
+  day they bought it, and never count one still owed or not reimbursable. Budgets count it when it
+  was bought.
 - **Subscriptions.** Tell an agent what you pay for each month or year, with a screenshot or the
   bill, and it keeps them under Subscriptions with what renews next.
 - **Budgets and goals.** **Add → Set a budget** or **Add goal**. Goals show to the whole team.

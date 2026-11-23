@@ -4,6 +4,7 @@ import * as NodeZlib from "node:zlib";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ServerConfig } from "../../config.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import {
   EnvironmentId,
   KinAgentId,
@@ -31,6 +32,7 @@ import * as KinPulse from "../pulse/KinPulse.ts";
 import { setAsideOverdue } from "../pulse/invoiceAsides.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import {
   answerChange,
   changeLines,
@@ -46,9 +48,11 @@ import * as LeadMoney from "./leadMoney.ts";
 import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import * as LeadWork from "./leadWork.ts";
 import { typedFields } from "./leadFields.ts";
-import { aboutTotal, addUp, financialYearOf, formatMinor, parseAmount } from "./money.ts";
+import { aboutTotal, addUp, dayIn, financialYearOf, formatMinor, parseAmount } from "./money.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
+import { markOutside } from "../lead/OutsideContent.ts";
+import { MATCH_MOVED, partnersOwed } from "./partnersOwed.ts";
 import {
   dates as datesView,
   moneySection,
@@ -57,6 +61,7 @@ import {
 } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
+import { weeklyFigures } from "../pulse/weekly.ts";
 import { checkFields, listDef, presetList, proposalFor } from "./registers.ts";
 import { ensureBankList } from "./statements/bankList.ts";
 import { waitLine } from "./statements/passwordBudget.ts";
@@ -193,7 +198,7 @@ const documents = Layer.mergeAll(
   Layer.mock(KinDocRenderer)({ drawable: () => Effect.undefined }),
   Layer.mock(KinWorkspace)({}),
 );
-const layer = Layer.mergeAll(KinRecords.layer, identity, gate, documents).pipe(
+const layer = Layer.mergeAll(KinRecords.layer, identity, gate, documents, KinShell.layer).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
@@ -337,6 +342,22 @@ const tap = (n: number, widgetId: string, kind: "yes" | "no", personId: string =
         0, 0, 'claimed', ${`wake-${n}`})`;
     return `event-${n}`;
   });
+/** What Money showed for a partner row: an address's not-yet-said group, or (Who is this) its owed one. */
+const seenOf = (address: string | null, saying: boolean) =>
+  OwnerMoneyAnswers.outlook(people, { orgId }).pipe(
+    Effect.map((view) => {
+      const unsaid = saying
+        ? view.partnersUnsaid?.find((one) => one.address === address)
+        : undefined;
+      const owed = view.owedToPartners?.find(
+        (one) => one.personId === null && one.address === address,
+      );
+      return unsaid !== undefined
+        ? { entries: unsaid.entries ?? [], totals: unsaid.total }
+        : { entries: owed?.entries ?? [], totals: owed?.owed ?? [] };
+    }),
+  );
+
 const cardOf = (clientMessageId: string) => `choice:card-${clientMessageId}`;
 /** The owner issues them: an invoice an agent made is a draft until then. */
 const issueAll = (...keys: ReadonlyArray<string>) =>
@@ -1521,6 +1542,21 @@ describe("invoices", () => {
           suggested: ["INV-2", "INV-3", "INV-4"],
           late: ["INV-1", "INV-2", "INV-3", "INV-4"],
         });
+        // With Invoices and quotes off, the outlook counts no invoice, overdue or coming in.
+        const invoicesOn = (on: boolean) =>
+          KinShell.KinShell.use((shell) =>
+            shell
+              .get(orgId)
+              .pipe(
+                Effect.flatMap(({ rev }) =>
+                  shell.set(orgId, ownerId, rev, [{ id: "invoices", on }]),
+                ),
+              ),
+          ).pipe(Effect.provide(KinShell.layer));
+        yield* invoicesOn(false);
+        assert.deepStrictEqual(outlookAnswer(yield* outlook(orgId, NOW)).overdueNotCounted, []);
+        yield* invoicesOn(true);
+        assert.lengthOf(outlookAnswer(yield* outlook(orgId, NOW)).overdueNotCounted, 1);
         // The agent reads it as a suggestion, and it waits on a person with the right.
         assert.include(yield* LeadWork.get(scope, { key: "INV-2" }), {
           suggested: true,
@@ -3663,9 +3699,11 @@ describe("an expense typed by hand", () => {
           vendor: "Invented Couriers",
           category: "Office",
           paidWith: "UPI",
+          fundedBy: ownerId,
           receipt: ["att-1-0"],
           clientRequestId: "form-1",
         };
+        // No Expenses list yet: the first expense makes it, Funded by and all.
         assert.isUndefined(yield* listDef(orgId, "expenses"));
         const made = yield* OwnerMoneyAnswers.newExpense(people, asked);
         const row = (yield* records.get(orgId, made.expense))!;
@@ -3676,7 +3714,13 @@ describe("an expense typed by hand", () => {
             "done",
             235_000,
             "office",
-            { vendor: "Invented Couriers", paidWith: "upi", receipt: ["att-1-0"] },
+            {
+              vendor: "Invented Couriers",
+              paidWith: "upi",
+              fundedBy: `person:${ownerId}`,
+              reimbursement: "owed",
+              receipt: ["att-1-0"],
+            },
           ],
         );
         assert.strictEqual(row.dateAt, endOfDay("2026-11-12", "Asia/Kolkata"));
@@ -5009,6 +5053,16 @@ describe("money answers", () => {
           dateAt: on("2026-11-10"),
           originKey: "hosting",
         });
+        // Recorded for a later day: no money has moved for it yet.
+        yield* records.create(orgId, system, {
+          list: "expenses",
+          title: "Invented annual licence",
+          owner,
+          state: "done",
+          amount: inr(7_000),
+          dateAt: on("2026-11-20"),
+          originKey: "licence ahead",
+        });
         const answer = cashAnswer(yield* cashPosition(orgId, now));
         if (!answer.known) return assert.fail(answer.note);
         assert.deepStrictEqual(answer.accounts, [
@@ -5187,6 +5241,639 @@ describe("money answers", () => {
           through: "2026-10-31",
           known: [["Account ••1234", "2026-10-01", "2026-10-31"]],
         });
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "count what partners are owed as going out, and their expenses in runway only once repaid",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at}, 'co_owner'),
+            ('arjun', ${orgId}, 'arjun', 'Arjun', ${at}, 'member')`;
+        yield* defined(3, { template: "expenses" });
+        const records = yield* KinRecords.KinRecords;
+        const spend = (key: string, day: string, rupees: number, fields = {}) =>
+          records.create(orgId, system, {
+            owner,
+            originKey: key,
+            list: "expenses",
+            title: `Invented ${key}`,
+            state: "done",
+            amount: inr(rupees),
+            dateAt: on(day),
+            fields,
+          });
+        for (const day of ["2026-08-01", "2026-09-10", "2026-10-10"])
+          yield* spend(`payroll ${day}`, day, 100_000);
+        yield* spend("repaid", "2026-09-12", 20_000, {
+          fundedBy: "person:meera",
+          reimbursement: "repaid",
+          repaidOn: "2026-10-20",
+        });
+        yield* spend("owed", "2026-10-02", 5_000, { fundedBy: "person:meera" });
+        yield* spend("given", "2026-08-03", 7_000, {
+          fundedBy: "person:meera",
+          reimbursement: "not reimbursable",
+        });
+        // As an import left them before K210: an address that paid, and nothing said yet.
+        const imported = (key: string, day: string, rupees: number, address: string) =>
+          Effect.gen(function* () {
+            const { row } = yield* spend(key, day, rupees);
+            yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json,
+                '$.paidPersonallyBy', ${address}) WHERE record_id = ${row.recordId}`;
+            return row.key;
+          });
+        const first = yield* imported("domain", "2026-09-01", 3_000, "meera@invented.example");
+        const second = yield* imported(
+          "laptop",
+          "2026-10-05",
+          60_000,
+          "Meera.Home@invented.example",
+        );
+        const figures = Effect.gen(function* () {
+          const { paidPersonallyNotYetSaid: _unsaid, ...view } = outlookAnswer(
+            yield* outlook(orgId, NOW),
+          );
+          return { view, cash: cashAnswer(yield* cashPosition(orgId, NOW)) };
+        });
+
+        // K210 again on a list it hadn't reached: no figure moves, nothing is marked owed.
+        const fields = yield* sql<{ json: string }>`SELECT definition_json AS json
+          FROM kin_registers WHERE org_id = ${orgId} AND register_id = 'expenses'`;
+        const definition = JSON.parse(fields[0]!.json) as {
+          fields: ReadonlyArray<{ key: string }>;
+        };
+        const before = JSON.stringify({
+          ...definition,
+          fields: definition.fields.filter(
+            (one) => !["fundedBy", "reimbursement", "repaidOn"].includes(one.key),
+          ),
+        });
+        yield* sql`UPDATE kin_registers SET definition_json = ${before}, built_in = 0
+          WHERE org_id = ${orgId} AND register_id = 'expenses'`;
+        const unmigrated = yield* figures;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 210`;
+        yield* runKinMigrations();
+        assert.deepStrictEqual(yield* figures, unmigrated);
+
+        const view = outlookAnswer(yield* outlook(orgId, NOW));
+        assert.deepStrictEqual(
+          view.windows.map((one) => one.expectedOut),
+          ["₹5,000.00", "₹5,000.00", "₹5,000.00"],
+        );
+        assert.deepStrictEqual(view.owedToPartnersCountedAsGoingOut, [
+          { partner: "Meera", owed: "₹5,000.00", expenses: 1 },
+        ]);
+        assert.deepStrictEqual(view.paidPersonallyNotYetSaid, [
+          { address: "meera.home@invented.example", total: "₹60,000.00", expenses: 1 },
+          { address: "meera@invented.example", total: "₹3,000.00", expenses: 1 },
+        ]);
+        // Repaid in October, so not September's; owed and given never left the company; an
+        // import not yet said counts on its own day, as it did before.
+        assert.deepStrictEqual(
+          view.runway[0]?.lastThreeMonths.map((one) => [one.month, one.out]),
+          [
+            ["2026-08", "₹1,00,000.00"],
+            ["2026-09", "₹1,03,000.00"],
+            ["2026-10", "₹1,80,000.00"],
+          ],
+        );
+        // Spent's drill-down holds exactly what each month's figure counts.
+        const spentIn = (spentFrom: string, spentTo: string) =>
+          OwnerWork.list(people, {
+            orgId,
+            list: "expenses",
+            states: ["done"],
+            kept: true,
+            spentFrom,
+            spentTo,
+            totalsBy: "none",
+          }).pipe(
+            Effect.map((page) => [
+              page.records.map((one) => one.title).toSorted(),
+              page.totals?.total,
+            ]),
+          );
+        assert.deepStrictEqual(
+          [yield* spentIn("2026-09-01", "2026-09-30"), yield* spentIn("2026-10-01", "2026-10-31")],
+          [
+            [["Invented domain", "Invented payroll 2026-09-10"], [inr(103_000)]],
+            [["Invented laptop", "Invented payroll 2026-10-10", "Invented repaid"], [inr(180_000)]],
+          ],
+        );
+
+        const as = (personId: string) => [
+          { _tag: "person" as const, orgId, personId: KinPersonId.make(personId) },
+        ];
+        const match = (
+          address: string,
+          settled: "owed" | "repaid",
+          seen?: Effect.Success<ReturnType<typeof seenOf>>,
+        ) => ({
+          orgId,
+          address,
+          personId: KinPersonId.make("meera"),
+          settled,
+          ...(seen === undefined ? {} : { seen }),
+        });
+        assert.strictEqual(
+          (yield* Effect.flip(
+            OwnerMoneyAnswers.matchPartner(as("arjun"), match("meera@invented.example", "owed")),
+          ))._tag,
+          "KinChatError",
+        );
+        // A co-owner says the first was paid back long ago: every figure stays where it was.
+        assert.deepStrictEqual(
+          yield* OwnerMoneyAnswers.matchPartner(
+            as("meera"),
+            match(
+              " Meera@Invented.example",
+              "repaid",
+              yield* seenOf("meera@invented.example", true),
+            ),
+          ),
+          { matched: [first] },
+        );
+        const { paidPersonallyNotYetSaid: _left, ...settledView } = outlookAnswer(
+          yield* outlook(orgId, NOW),
+        );
+        assert.deepStrictEqual(settledView, unmigrated.view);
+        // The owner says the second is still owed: it goes out now and leaves October's spend.
+        assert.deepStrictEqual(
+          yield* OwnerMoneyAnswers.matchPartner(
+            people,
+            match(
+              "meera.home@invented.example",
+              "owed",
+              yield* seenOf("meera.home@invented.example", true),
+            ),
+          ),
+          { matched: [second] },
+        );
+        const owed = yield* OwnerMoneyAnswers.outlook(people, { orgId });
+        assert.strictEqual(owed.partnersUnsaid, undefined);
+        assert.deepStrictEqual(owed.owedToPartners, [
+          {
+            personId: KinPersonId.make("meera"),
+            name: "Meera",
+            address: null,
+            owed: [inr(65_000)],
+            expenses: 2,
+            oldest: "2026-10-02",
+          },
+        ]);
+        const after = outlookAnswer(yield* outlook(orgId, NOW));
+        assert.deepStrictEqual(
+          after.runway[0]?.lastThreeMonths.map((one) => [one.month, one.out]),
+          [
+            ["2026-08", "₹1,00,000.00"],
+            ["2026-09", "₹1,03,000.00"],
+            ["2026-10", "₹1,20,000.00"],
+          ],
+        );
+        const asked = yield* LeadMoney.moneyQuery(scope, { view: "partners" });
+        // Amounts as Kin writes them, so the agent quotes them and never converts minor units.
+        const [meera] = (
+          asked.answer as {
+            partners: ReadonlyArray<{
+              owed: ReadonlyArray<string>;
+              oldest: ReadonlyArray<{ key: string; money: string }>;
+            }>;
+          }
+        ).partners;
+        assert.deepStrictEqual(
+          [meera?.owed, meera?.oldest.map((one) => [one.key, one.money])],
+          [
+            ["₹65,000.00"],
+            [
+              ["EXP-5", "₹5,000.00"],
+              [second, "₹60,000.00"],
+            ],
+          ],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "read a company's own Reimbursement text as nothing owed: K210 moves it off Kin's key",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* defined(3, { template: "expenses" });
+        // As a company's list was before: its own Reimbursement, a note, under Kin's key.
+        const [list] = yield* sql<{ json: string }>`SELECT definition_json AS json
+          FROM kin_registers WHERE org_id = ${orgId} AND register_id = 'expenses'`;
+        const definition = JSON.parse(list!.json) as {
+          fields: ReadonlyArray<{ key: string; label: string; type: string }>;
+        };
+        const own = JSON.stringify({
+          ...definition,
+          fields: [
+            ...definition.fields.filter(
+              (one) => !["fundedBy", "reimbursement", "repaidOn"].includes(one.key),
+            ),
+            { key: "reimbursement", label: "Reimbursement", type: "text", sensitive: false },
+          ],
+        });
+        yield* sql`UPDATE kin_registers SET definition_json = ${own}, built_in = 0
+          WHERE org_id = ${orgId} AND register_id = 'expenses'`;
+        const records = yield* KinRecords.KinRecords;
+        const { row } = yield* records.create(orgId, system, {
+          owner,
+          originKey: "claim",
+          list: "expenses",
+          title: "Invented client dinner",
+          state: "done",
+          amount: inr(9_000),
+          dateAt: on("2026-10-10"),
+          fields: { reimbursement: "owed" },
+        });
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 210`;
+        yield* runKinMigrations();
+
+        const view = outlookAnswer(yield* outlook(orgId, NOW));
+        const fields = JSON.parse((yield* records.get(orgId, row.key))!.fieldsJson);
+        assert.deepStrictEqual(
+          [
+            fields,
+            view.owedToPartnersCountedAsGoingOut,
+            view.runway[0]?.lastThreeMonths.find((one) => one.month === "2026-10")?.out,
+          ],
+          [{ reimbursement2: "owed" }, undefined, "₹9,000.00"],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "owe each partner the net of their list per currency, and count each expense once, when repaid",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at}, 'co_owner'),
+            ('dev', ${orgId}, 'dev', 'Dev Malhotra', ${at}, 'member')`;
+        yield* defined(3, { template: "expenses" });
+        const records = yield* KinRecords.KinRecords;
+        const spend = (
+          key: string,
+          day: string,
+          money: { minor: number; currency: string },
+          fields: Record<string, string>,
+          state: "done" | "dropped" = "done",
+        ) =>
+          records.create(orgId, system, {
+            owner,
+            originKey: key,
+            list: "expenses",
+            title: `Invented ${key}`,
+            state,
+            amount: money,
+            dateAt: on(day),
+            fields,
+          });
+        const meera = { fundedBy: "person:meera" };
+        yield* spend("domain", "2026-09-01", inr(4_200), meera);
+        yield* spend("domain refund", "2026-09-03", inr(-1_000), meera);
+        yield* spend("font licence", "2026-09-04", { minor: 3_000, currency: "USD" }, meera);
+        const { row: suggested } = yield* spend("suggested", "2026-09-05", inr(900), meera);
+        yield* sql`UPDATE kin_records SET confirmed = 0 WHERE record_id = ${suggested.recordId}`;
+        yield* spend("dropped", "2026-09-06", inr(800), meera, "dropped");
+        yield* spend("train", "2026-10-01", inr(500), { fundedBy: "person:dev" });
+
+        const partners = yield* partnersOwed(orgId, "INR");
+        // Each figure is the sum of its own list, per currency, refunds taking their part off.
+        for (const partner of partners)
+          assert.deepStrictEqual(
+            partner.owed,
+            addUp(
+              partner.entries.map((one) => one.money),
+              "INR",
+            ),
+          );
+        assert.deepStrictEqual(
+          partners.map((one) => [one.name, one.owed, one.entries.map((entry) => entry.key)]),
+          [
+            ["Meera", [inr(3_200), { minor: 3_000, currency: "USD" }], ["EXP-1", "EXP-2", "EXP-3"]],
+            ["Dev Malhotra", [inr(500)], ["EXP-6"]],
+          ],
+        );
+        const outOf = Effect.gen(function* () {
+          const view = yield* outlook(orgId, NOW);
+          return {
+            out: view.windows[0]!.expectedOut,
+            spent: Object.fromEntries(
+              view.runway.map((one) => [
+                one.currency,
+                one.months.map((month) => [month.month, Number(month.spent)]),
+              ]),
+            ),
+          };
+        });
+        // Owed: going out now, in no month's spending; the suggestion and the dropped one nowhere.
+        assert.deepStrictEqual(yield* outOf, {
+          out: [inr(3_700), { minor: 3_000, currency: "USD" }],
+          spent: {},
+        });
+        // Another partner holding a refund nets against nobody: it comes back, on its own row.
+        const comingIn = Effect.map(outlook(orgId, NOW), (view) => view.windows[0]!.expectedIn);
+        const before = yield* comingIn;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('zoya', ${orgId}, 'zoya', 'Zoya', ${at})`;
+        const { row: held } = yield* spend("zoya refund", "2026-09-07", inr(-3_000), {
+          fundedBy: "person:zoya",
+        });
+        const view = yield* outlook(orgId, NOW);
+        assert.deepStrictEqual(
+          [
+            view.windows[0]!.expectedOut,
+            addUp([...before, inr(3_000)], "INR"),
+            outlookAnswer(view).owedToPartnersCountedAsGoingOut,
+            outlookAnswer(view).refundsPartnersHoldCountedAsComingIn,
+          ],
+          [
+            [inr(3_700), { minor: 3_000, currency: "USD" }],
+            view.windows[0]!.expectedIn,
+            [
+              { partner: "Meera", owed: "₹3,200.00 + $30.00", expenses: 3 },
+              { partner: "Dev Malhotra", owed: "₹500.00", expenses: 1 },
+            ],
+            [{ partner: "Zoya", returns: "₹3,000.00" }],
+          ],
+        );
+        yield* records.update(orgId, system, held.key, { state: "dropped" });
+
+        // Paid back on 2026-10-20: out of what is owed, into October's spending, once.
+        for (const key of ["EXP-1", "EXP-2", "EXP-3", "EXP-6"])
+          yield* records.update(orgId, system, key, {
+            fields: { reimbursement: "repaid", repaidOn: "2026-10-20" },
+          });
+        assert.deepStrictEqual(yield* partnersOwed(orgId, "INR"), []);
+        assert.deepStrictEqual(yield* outOf, {
+          out: [],
+          spent: {
+            INR: [
+              ["2026-08", 0],
+              ["2026-09", 0],
+              ["2026-10", 370_000],
+            ],
+            USD: [
+              ["2026-08", 0],
+              ["2026-09", 0],
+              ["2026-10", 3_000],
+            ],
+          },
+        });
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "count a partner's expense in the month and the week's out on the day it was repaid",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at})`;
+        yield* defined(3, { template: "expenses" });
+        const records = yield* KinRecords.KinRecords;
+        const spend = (key: string, day: string, rupees: number, fields = {}) =>
+          records.create(orgId, system, {
+            owner,
+            originKey: key,
+            list: "expenses",
+            title: `Invented ${key}`,
+            state: "done",
+            amount: inr(rupees),
+            dateAt: on(day),
+            fields,
+          });
+        const partner = "person:meera";
+        const company = yield* spend("company", "2026-11-09", 1_000);
+        const owedOne = yield* spend("owed", "2026-11-10", 2_000, { fundedBy: partner });
+        yield* spend("repaid in the week", "2026-10-01", 4_000, {
+          fundedBy: partner,
+          reimbursement: "repaid",
+          repaidOn: "2026-11-11",
+        });
+        // Repaid with no day: counted on the day it was bought, as runway does.
+        yield* spend("repaid, no day", "2026-11-07", 8_000, {
+          fundedBy: partner,
+          reimbursement: "repaid",
+        });
+        yield* spend("given", "2026-11-08", 16_000, {
+          fundedBy: partner,
+          reimbursement: "not reimbursable",
+        });
+
+        // Paid back tomorrow is not yet paid back; one an older import stored that way waits too.
+        const ahead = yield* spend("repaid ahead", "2026-11-05", 32_000, { fundedBy: partner });
+        const today = dayIn(yield* Clock.currentTimeMillis, "Asia/Kolkata");
+        const tomorrow = dayIn((yield* Clock.currentTimeMillis) + 86_400_000, "Asia/Kolkata");
+        assert.strictEqual(
+          (yield* Effect.flip(
+            records.update(orgId, system, ahead.row.key, {
+              fields: { reimbursement: "repaid", repaidOn: tomorrow },
+            }),
+          )).message,
+          `Repaid on can't be after today, ${today}.`,
+        );
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json,
+            '$.reimbursement', 'repaid', '$.repaidOn', '2026-11-13')
+          WHERE record_id = ${ahead.row.recordId}`;
+
+        const { series } = yield* OwnerMoney.money(people, { orgId });
+        const spentIn = (month: string) => series.find((one) => one.month === month)?.spent;
+        assert.deepStrictEqual(spentIn("2026-11"), [inr(45_000)]);
+        assert.deepStrictEqual(spentIn("2026-10"), []);
+        const figures = yield* weeklyFigures({ orgId, now: NOW });
+        assert.include(figures, "Out this week: ₹13,000.00");
+
+        // A funder set when it is added or later reads owed, as Money counts it; cleared, nothing.
+        const fieldsOf = (key: string) =>
+          records.get(orgId, key).pipe(Effect.map((row) => JSON.parse(row!.fieldsJson)));
+        assert.include(yield* fieldsOf(owedOne.row.key), { reimbursement: "owed" });
+        yield* records.update(orgId, system, company.row.key, { fields: { fundedBy: partner } });
+        assert.include(yield* fieldsOf(company.row.key), {
+          fundedBy: partner,
+          reimbursement: "owed",
+        });
+        yield* records.update(orgId, system, company.row.key, { fields: { fundedBy: null } });
+        assert.notProperty(yield* fieldsOf(company.row.key), "reimbursement");
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "let an agent say who funded an expense only as the owner asked in person, before reading anything outside, and never over a person's word",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at})`;
+        yield* defined(1, { template: "expenses" });
+        const records = yield* KinRecords.KinRecords;
+        const agentIn = (wakeupId: string): KinRecords.Writer => ({
+          actor: { _tag: "agent", agentId: lead },
+          via: "lead",
+          wakeupId,
+        });
+        const spend = (writer: KinRecords.Writer, key: string, fields = {}) =>
+          records.create(orgId, writer, {
+            owner,
+            originKey: key,
+            list: "expenses",
+            title: `Invented ${key}`,
+            state: "done",
+            amount: inr(4_200),
+            dateAt: on("2026-11-10"),
+            fields,
+          });
+        const meera = { fundedBy: "person:meera" };
+        const refusal = (writer: KinRecords.Writer, key: string, fields: Record<string, string>) =>
+          Effect.map(
+            Effect.flip(records.update(orgId, writer, key, { fields })),
+            (error) => error.message,
+          );
+        const fieldsOf = (key: string) =>
+          Effect.map(records.get(orgId, key), (row) => JSON.parse(row!.fieldsJson));
+
+        // The owner's own message: the agent records it kept, funder and all, and may correct it.
+        yield* turn(3, "I paid 4,200 for the domain from my own card");
+        const asked = agentIn("wake-3");
+        const { row: domain } = yield* spend(asked, "domain", { fundedBy: `person:${ownerId}` });
+        assert.strictEqual(domain.confirmed, 1);
+        yield* records.update(orgId, asked, domain.key, { fields: meera });
+        assert.include(yield* fieldsOf(domain.key), { ...meera, reimbursement: "owed" });
+        // What a person said stands, even in an owner's turn.
+        const { row: byHand } = yield* spend(system, "by hand");
+        yield* records.update(
+          orgId,
+          { actor: { _tag: "person", personId: ownerId }, via: "owner" },
+          byHand.key,
+          { fields: meera },
+        );
+        assert.strictEqual(
+          yield* refusal(asked, byHand.key, { reimbursement: "repaid" }),
+          KinRecords.FUNDING_A_PERSON_SET,
+        );
+
+        // After the turn reads a statement: nothing changes, and a new one waits to be kept.
+        yield* markOutside({ orgId, wakeupId: "wake-3" }, "statement:invented");
+        assert.strictEqual(
+          yield* refusal(asked, domain.key, { reimbursement: "repaid" }),
+          KinRecords.FUNDING_IS_THE_OWNERS,
+        );
+        const { row: cab } = yield* spend(asked, "cab", meera);
+        assert.strictEqual(cab.confirmed, 0);
+        // A turn no owner-level person started in person, such as a routine: the same.
+        const routine = agentIn("wake-routine");
+        const { row: plain } = yield* spend(routine, "plain");
+        assert.strictEqual(
+          yield* refusal(routine, plain.key, meera),
+          KinRecords.FUNDING_IS_THE_OWNERS,
+        );
+        assert.deepStrictEqual(
+          [yield* fieldsOf(domain.key), yield* fieldsOf(plain.key)].map((one) => one.reimbursement),
+          ["owed", undefined],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "name an imported address however the import wrote it, and say when nothing is left to name",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at}, 'member'),
+            ('co-owner', ${orgId}, 'co', 'Co', ${at}, 'co_owner')`;
+        yield* defined(3, { template: "expenses" });
+        const records = yield* KinRecords.KinRecords;
+        const spend = (key: string, fields = {}) =>
+          records.create(orgId, system, {
+            owner,
+            originKey: key,
+            list: "expenses",
+            title: `Invented ${key}`,
+            state: "done",
+            amount: inr(1_000),
+            dateAt: on("2026-10-05"),
+            fields,
+          });
+        // A CSV's tab, CR and NBSP and a non-ASCII capital, which SQLite's trim and lower keep.
+        const { row: imported } = yield* spend("imported");
+        const raw = "\tPARTNÉR@Invented.example\u00a0\r";
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.paidPersonallyBy',
+            ${raw}) WHERE record_id = ${imported.recordId}`;
+        assert.deepStrictEqual(
+          (yield* OwnerMoneyAnswers.outlook(people, { orgId })).partnersUnsaid?.map(
+            (one) => one.address,
+          ),
+          ["partnér@invented.example"],
+        );
+        const as = (personId: string) => [
+          { _tag: "person" as const, orgId, personId: KinPersonId.make(personId) },
+        ];
+        // As the picker sends it: the address as Money grouped it.
+        const match = {
+          orgId,
+          address: "partnér@invented.example",
+          personId: KinPersonId.make("meera"),
+          seen: yield* seenOf("partnér@invented.example", true),
+        };
+        const refused = (who: typeof people, input: typeof match) =>
+          Effect.map(Effect.flip(OwnerMoneyAnswers.matchPartner(who, input)), (e) => e.message);
+        assert.match(yield* refused(as("meera"), match), /owner|co-owner/i);
+        assert.match(
+          yield* refused(people, { ...match, address: "other@invented.example" }),
+          /No expense owed to a partner carries that address/,
+        );
+        assert.match(yield* refused(people, match), /still owes them for these/);
+        // A second expense from that address lands while the picker is open: nothing changes.
+        const { row: late } = yield* spend("late");
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.paidPersonallyBy',
+            'partnér@invented.example') WHERE record_id = ${late.recordId}`;
+        const owedNow = { ...match, settled: "owed" as const };
+        assert.strictEqual(
+          (yield* Effect.flip(OwnerMoneyAnswers.matchPartner(people, owedNow))).message,
+          MATCH_MOVED,
+        );
+        const untouched = JSON.parse((yield* records.get(orgId, imported.key))!.fieldsJson);
+        assert.notProperty(untouched, "fundedBy");
+        // Meera leaves before the owner answers: checked in the same transaction as the write.
+        const fresh = { ...owedNow, seen: yield* seenOf("partnér@invented.example", true) };
+        yield* sql`UPDATE kin_people SET removed_at = ${at} WHERE person_id = 'meera'`;
+        assert.strictEqual(
+          (yield* Effect.flip(OwnerMoneyAnswers.matchPartner(people, fresh))).message,
+          "That person isn't on the team.",
+        );
+        yield* sql`UPDATE kin_people SET removed_at = NULL WHERE person_id = 'meera'`;
+        // Owner level: a co-owner may say who it was, and that it is still owed.
+        assert.deepStrictEqual(yield* OwnerMoneyAnswers.matchPartner(as("co-owner"), fresh), {
+          matched: [imported.key, late.key],
+        });
+        assert.match(yield* refused(people, match), /already say who funded them/);
+
+        // Marked owed by hand with no partner and no address: a person can still be named for it.
+        const { row: nameless } = yield* spend("nameless", { reimbursement: "owed" });
+        const unnamed = (yield* OwnerMoneyAnswers.outlook(people, { orgId })).owedToPartners?.find(
+          (one) => one.personId === null,
+        );
+        assert.deepInclude(unnamed, { address: null, expenses: 1 });
+        assert.deepStrictEqual(
+          yield* OwnerMoneyAnswers.matchPartner(people, {
+            orgId,
+            personId: KinPersonId.make("meera"),
+            seen: yield* seenOf(null, false),
+          }),
+          { matched: [nameless.key] },
+        );
       }).pipe(Effect.provide(layer)),
   );
 
@@ -5389,6 +6076,21 @@ describe("money answers", () => {
             runwayMonths: "6.0",
           },
         ]);
+        const now = yield* Clock.currentTimeMillis;
+        const enabled = yield* outlook(orgId, now);
+        const shell = yield* KinShell.KinShell;
+        const disabled = yield* shell.set(orgId, ownerId, (yield* shell.get(orgId)).rev, [
+          { id: "invoices", on: false },
+        ]);
+        const hidden = yield* outlook(orgId, now);
+        assert.deepStrictEqual(hidden.overdueIn, []);
+        assert.deepStrictEqual(hidden.incoming, []);
+        assert.isTrue(hidden.windows.every((window) => window.expectedIn.length === 0));
+        assert.deepStrictEqual(hidden.runway, enabled.runway);
+        assert.deepStrictEqual(hidden.dueOut, enabled.dueOut);
+        assert.deepStrictEqual(hidden.overdueOut, enabled.overdueOut);
+        yield* shell.set(orgId, ownerId, disabled.rev, [{ id: "invoices", on: true }]);
+        assert.deepStrictEqual(yield* outlook(orgId, now), enabled);
         // One chosen window instead of three.
         const week = (yield* LeadMoney.moneyQuery(scope, { view: "outlook", days: 7 }))
           .answer as ReturnType<typeof outlookAnswer>;

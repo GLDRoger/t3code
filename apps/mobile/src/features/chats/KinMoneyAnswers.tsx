@@ -20,6 +20,7 @@ import {
   kinBudgetsView,
   kinCashView,
   kinOutlookView,
+  type KinOutlookView,
   kinQuoteActions,
   kinQuoteInvoice,
   kinQuoteRow,
@@ -35,6 +36,7 @@ import {
   EnvironmentId,
   KinMoneyBudget,
   KinOrgId,
+  KinPersonId,
   type KinListDefinition,
   type KinRecordDetail,
   type KinRecordKey,
@@ -45,7 +47,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { useState } from "react";
 import type { KinMakeStep } from "./kinMakeStep";
-import { Pressable, View } from "react-native";
+import { Alert, Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -74,12 +76,14 @@ import {
   useKinBudgetSet,
   useKinCash,
   useKinInvoiceFromQuote,
+  useKinMatchPartner,
   useKinOutlook,
 } from "./state/useKinMoneyAnswers";
 import { useKinHostAt } from "./state/useKinHost";
-import { useKinWorkChoices, type KinWorkTarget } from "./state/useKinWork";
+import { useKinWorkChoices, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import { useKinShell } from "./state/useKinShell";
 
 const PEEK = 5;
 type Section = KinWorkTarget & { readonly seq: number | null; readonly rates: KinRates | null };
@@ -303,10 +307,121 @@ function OutlookRows(props: {
           note={row.note}
           amount={row.amount}
           estimate={row.estimate}
-          onPress={() => props.onOpen(row.key)}
+          {...(row.key === null ? {} : { onPress: () => props.onOpen(row.key!) })}
         />
       ))}
       {props.all && props.more > 0 ? <Plain>{KIN_OUTLOOK.more(props.more)}</Plain> : null}
+    </>
+  );
+}
+
+/** Who the company owes back; one no teammate is matched to yet gets a person picked. */
+function PartnersOwed(
+  props: Section & {
+    readonly rows: KinOutlookView["partners"];
+    readonly unsaid: KinOutlookView["unsaid"];
+  },
+) {
+  const directory = useKinWorkDirectory(
+    props,
+    props.rows.some((one) => one.match !== null) || props.unsaid.length > 0,
+  );
+  const matching = useKinMatchPartner(props);
+  const people = [...directory.names.people].sort((a, b) => a[1].localeCompare(b[1]));
+  if (props.rows.length + props.unsaid.length === 0) return null;
+  // While one pick saves, the menus open greyed and say so: a second pick is never lost silently.
+  const pickable = people.map(([id, name]) => ({
+    id,
+    title: name,
+    attributes: { disabled: matching.busy },
+  }));
+  const say = (row: KinOutlookView["unsaid"][number], event: string) => {
+    const [personId, settled] = event.split("\n");
+    const name = people.find(([id]) => id === personId)?.[1];
+    if (matching.busy || name === undefined || (settled !== "owed" && settled !== "repaid")) return;
+    Alert.alert(
+      KIN_OUTLOOK.sayTitle(row.address),
+      `${name}: ${settled === "owed" ? KIN_OUTLOOK.stillOwed : KIN_OUTLOOK.paidBack}. ${settled === "owed" ? KIN_OUTLOOK.stillOwedHint : KIN_OUTLOOK.paidBackHint}`,
+      [
+        { text: KIN_OUTLOOK.cancel, style: "cancel" },
+        {
+          text: KIN_OUTLOOK.confirm,
+          onPress: () =>
+            void matching.match(row.address, row.seen, KinPersonId.make(personId!), settled),
+        },
+      ],
+    );
+  };
+  return (
+    <>
+      {props.rows.length === 0 ? null : (
+        <Text textRole="footnote" className="bg-grouped-card px-4 pt-2 text-foreground-muted">
+          {KIN_OUTLOOK.partners}
+        </Text>
+      )}
+      {props.rows.map((row) =>
+        row.match === null ? (
+          <ListRowLayout key={row.id} label={row.name} description={row.note} detail={row.amount} />
+        ) : (
+          <Menu
+            key={row.id}
+            title={KIN_OUTLOOK.whoIsThis}
+            accessibilityRole="button"
+            accessibilityLabel={`${row.name}, ${row.amount}. ${KIN_OUTLOOK.whoIsThis}`}
+            actions={pickable}
+            onPressAction={({ nativeEvent: { event } }) => {
+              if (!matching.busy)
+                void matching.match(row.match!.address, row.match!.seen, KinPersonId.make(event));
+            }}
+          >
+            <View pointerEvents="none">
+              <ListRowLayout
+                label={row.name}
+                description={`${row.note} · ${matching.busy ? KIN_OUTLOOK.saving : KIN_OUTLOOK.whoIsThis}`}
+                detail={row.amount}
+              />
+            </View>
+          </Menu>
+        ),
+      )}
+      {props.unsaid.length === 0 ? null : (
+        <Text textRole="footnote" className="bg-grouped-card px-4 pt-2 text-foreground-muted">
+          {KIN_OUTLOOK.unsaid}
+        </Text>
+      )}
+      {props.unsaid.map((row) => (
+        <Menu
+          key={row.address}
+          title={KIN_OUTLOOK.sayWho}
+          accessibilityRole="button"
+          accessibilityLabel={`${row.address}, ${row.amount}. ${KIN_OUTLOOK.sayWho}`}
+          actions={people.map(([id, name]) => ({
+            id,
+            title: name,
+            attributes: { disabled: matching.busy },
+            subactions: (
+              [
+                ["owed", KIN_OUTLOOK.stillOwed],
+                ["repaid", KIN_OUTLOOK.paidBack],
+              ] as const
+            ).map(([settled, title]) => ({ id: `${id}\n${settled}`, title })),
+          }))}
+          onPressAction={({ nativeEvent: { event } }) => say(row, event)}
+        >
+          <View pointerEvents="none">
+            <ListRowLayout
+              label={row.address}
+              description={`${row.note} · ${matching.busy ? KIN_OUTLOOK.saving : KIN_OUTLOOK.sayWho}`}
+              detail={row.amount}
+            />
+          </View>
+        </Menu>
+      ))}
+      {matching.problem === null ? null : (
+        <Text textRole="footnote" className="bg-grouped-card px-4 py-1 text-destructive">
+          {matching.problem}
+        </Text>
+      )}
     </>
   );
 }
@@ -379,6 +494,7 @@ export function KinOutlookSection(props: Section) {
             more={view.more.outgoing}
             onOpen={open}
           />
+          <PartnersOwed {...props} rows={view.partners} unsaid={view.unsaid} />
           {view.notes.length + view.runway.length === 0 ? null : (
             <Text textRole="footnote" className="bg-grouped-card px-4 py-2 text-foreground-muted">
               {[...view.notes, ...view.runway.map((one) => one.text)].join(" ")}
@@ -728,7 +844,12 @@ export function KinQuoteActions(
     invoice: useAtomValue(kinClient.workInvoiceFromQuote.permissionAtom(environmentId)),
   };
   const invoiced = invoicing.invoice ?? kinQuoteInvoice(item.links);
-  const can = kinQuoteActions(quote.state, props.def?.numbering !== undefined, invoiced !== null);
+  const can = kinQuoteActions(
+    quote.state,
+    props.def?.numbering !== undefined,
+    invoiced !== null,
+    useKinShell(environmentId),
+  );
   const [requestId] = useState(uuidv4);
   const busy = props.busy || actions.busy || invoicing.busy;
   const numbered = quote.number !== item.key;

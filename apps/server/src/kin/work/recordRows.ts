@@ -994,7 +994,7 @@ const definedDetail = Effect.fn("KinRecords.definedDetail")(function* (row: Reco
   };
 });
 
-/** Mail that carried this entry's file, sent on the owner's Confirm (`connections/Sending.ts`). */
+/** Mail that carried this entry's file, sent on the owner level's Confirm (`connections/Sending.ts`). */
 const sentWith = Effect.fn("KinRecords.sentWith")(function* (orgId: KinOrgId, recordId: string) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
@@ -1008,9 +1008,12 @@ const sentWith = Effect.fn("KinRecords.sentWith")(function* (orgId: KinOrgId, re
       COALESCE(json_extract(payload_json, '$.confirmed.subject'),
         json_extract(payload_json, '$.subject')) AS subject,
       json_extract(result_json, '$.threadId') AS "threadId", done_at AS at
-    FROM kin_connection_asks
-    WHERE org_id = ${orgId} AND entry_record_id = ${recordId} AND state = 'sent'
-    ORDER BY done_at DESC, ask_id LIMIT 20`;
+    FROM kin_connection_asks k
+    WHERE k.org_id = ${orgId} AND k.entry_record_id = ${recordId} AND k.state = 'sent'
+      -- A person's own mailbox's mail stays theirs: the record keeps only its client's touch.
+      AND NOT EXISTS (SELECT 1 FROM kin_connections c WHERE c.org_id = k.org_id
+        AND c.connection_id = k.connection_id AND c.person_id IS NOT NULL)
+    ORDER BY k.done_at DESC, k.ask_id LIMIT 20`;
   return rows.map((sent) => ({
     to: Option.getOrElse(decodeAddresses(sent.to ?? "[]"), () => []),
     subject: sent.subject ?? "",

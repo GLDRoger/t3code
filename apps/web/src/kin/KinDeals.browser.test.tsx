@@ -956,13 +956,19 @@ describe("Settings › Sections", () => {
       return {
         ok: false,
         changed: true,
-        problem: "Someone changed this since you opened it. Nothing was saved; open it again.",
+        problem:
+          "Someone else changed the sections just now, so nothing was saved. Check them and save again.",
       };
     };
     await using _screen = await render(sections());
     await userEvent.click(page.getByRole("switch", { name: "Deals", exact: true }));
     await expect
-      .element(page.getByText("Someone changed this since you opened it.", { exact: false }))
+      .element(
+        page.getByText(
+          "Someone else changed the sections just now, so nothing was saved. Check them and save again.",
+          { exact: true },
+        ),
+      )
       .toBeVisible();
     await expect.element(page.getByRole("switch", { name: "Deals", exact: true })).toBeChecked();
     await expect

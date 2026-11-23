@@ -24,6 +24,9 @@ import {
   type KinHostInput,
   type KinOrgGetInput,
   type KinGoalsInput,
+  type KinNumbersDefinitionsInput,
+  type KinNumbersListInput,
+  type KinNumbersValuesInput,
   type KinBriefsInput,
   type KinCheckInsInput,
   type KinPulseListInput,
@@ -225,6 +228,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.connections.calls",
   });
   const readConnectionCalls = kinGuardedRead(connectionCallsRead);
+  const myMailboxRead = createKinRpcCommand(runtime, {
+    label: "kin:my-mailbox:read",
+    tag: "kin.connections.mine",
+  });
+  const readMyMailbox = kinGuardedRead(myMailboxRead);
   const githubRead = createKinRpcCommand(runtime, {
     label: "kin:github:read",
     tag: "kin.github.connect.status",
@@ -315,6 +323,19 @@ export function makeKinClient<R, ER>(
     tag: "kin.goals.list",
   });
   const readGoals = kinGuardedRead(goalsRead);
+  const numbersRead = createKinRpcCommand(runtime, {
+    label: "kin:numbers:read",
+    tag: "kin.numbers.list",
+  });
+  const readNumbers = kinGuardedRead(numbersRead);
+  const readNumberValues = kinGuardedRead(
+    createKinRpcCommand(runtime, { label: "kin:numbers:values:read", tag: "kin.numbers.values" }),
+  );
+  const numberDefinitionsRead = createKinRpcCommand(runtime, {
+    label: "kin:numbers:definitions:read",
+    tag: "kin.numbers.definitions",
+  });
+  const readNumberDefinitions = kinGuardedRead(numberDefinitionsRead);
   const checkInsRead = createKinRpcCommand(runtime, {
     label: "kin:checkIns:read",
     tag: "kin.checkIns.list",
@@ -715,6 +736,15 @@ export function makeKinClient<R, ER>(
       staleTimeMs: 30_000,
       refreshTrigger: kinRefreshOn("connections"),
     }),
+    /** The person's own mailbox; anyone's, live on the `connections` topic. */
+    myMailbox: createKinQueryAtomFamily(runtime, {
+      label: "kin:my-mailbox",
+      execute: Effect.fn("KinClient.myMailbox")(function* (input: KinConnectionsInput) {
+        return yield* readMyMailbox(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinRefreshOn("connections"),
+    }),
     connection: createKinQueryAtomFamily(runtime, {
       label: "kin:connection",
       execute: Effect.fn("KinClient.connection")(function* (input: KinConnectionRef) {
@@ -891,6 +921,21 @@ export function makeKinClient<R, ER>(
       label: "kin:connection:signInFinish",
       tag: "kin.connections.signInFinish",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:signIn` },
+    }),
+    /** A person signs in to their own mailbox: theirs alone to connect and disconnect. */
+    myMailboxSignInStart: createKinRpcCommand(runtime, {
+      label: "kin:my-mailbox:signInStart",
+      tag: "kin.connections.mineSignInStart",
+    }),
+    myMailboxSignInFinish: createKinRpcCommand(runtime, {
+      label: "kin:my-mailbox:signInFinish",
+      tag: "kin.connections.mineSignInFinish",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
+    }),
+    myMailboxRemove: createKinRpcCommand(runtime, {
+      label: "kin:my-mailbox:remove",
+      tag: "kin.connections.mineRemove",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
     }),
     connectionSetSignInClient: createKinRpcCommand(runtime, {
       label: "kin:connection:setSignInClient",
@@ -1314,6 +1359,59 @@ export function makeKinClient<R, ER>(
       }),
       staleTimeMs: 30_000,
       refreshTrigger: kinWorkRefreshOn("any", kinRefreshOn("pulse")),
+    }),
+    /**
+     * Watched numbers with their latest values. Values move `numbers`; a number's set-up is a goals
+     * entry, so Work's changes to it move it too; a section switched off hides computed ones.
+     */
+    numbers: createKinQueryAtomFamily(runtime, {
+      label: "kin:numbers",
+      execute: Effect.fn("KinClient.numbers")(function* (input: KinNumbersListInput) {
+        return yield* readNumbers(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: (target: {
+        readonly environmentId: EnvironmentId;
+        readonly input: KinNumbersListInput;
+      }) => {
+        const work = kinWorkRefreshOn(["goals"])(target);
+        const values = kinRefreshOn("numbers")(target);
+        const shell = kinRefreshOn("shell")(target);
+        return Atom.make((get) => `${get(work)}|${get(values)}|${get(shell)}`);
+      },
+    }),
+    /** Its `permissionAtom` is whether this viewer may read Numbers at all. */
+    numbersRead,
+    /** One number's recorded values between two days, for its page. */
+    numberValues: createKinQueryAtomFamily(runtime, {
+      label: "kin:numbers:values",
+      execute: Effect.fn("KinClient.numberValues")(function* (input: KinNumbersValuesInput) {
+        return yield* readNumberValues(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinRefreshOn("numbers"),
+    }),
+    /** How each number is set up, archived ones too: the owner level's form and Restore. */
+    numberDefinitions: createKinQueryAtomFamily(runtime, {
+      label: "kin:numbers:definitions",
+      execute: Effect.fn("KinClient.numberDefinitions")(function* (
+        input: KinNumbersDefinitionsInput,
+      ) {
+        return yield* readNumberDefinitions(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinWorkRefreshOn(["goals"]),
+    }),
+    numberRecord: createKinRpcCommand(runtime, {
+      label: "kin:numbers:record",
+      tag: "kin.numbers.record",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    /** Its `permissionAtom` is whether this viewer may watch, change and archive numbers. */
+    numberSave: createKinRpcCommand(runtime, {
+      label: "kin:numbers:save",
+      tag: "kin.numbers.save",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.key ?? input.clientRequestId },
     }),
     goalSave: createKinRpcCommand(runtime, {
       label: "kin:goals:save",
@@ -1952,6 +2050,12 @@ export function makeKinClient<R, ER>(
       label: "kin:work:new-expense",
       tag: "kin.work.newExpense",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    /** In order per address: a second pick runs after the first and says if nothing is left. */
+    workMatchPartner: createKinRpcCommand(runtime, {
+      label: "kin:work:match-partner",
+      tag: "kin.work.matchPartner",
+      concurrency: { mode: "serial", key: ({ input }) => `${input.orgId}:${input.address}` },
     }),
     /** One page of everything dated in a window; the Dates view decides when. */
     workDates: workDatesRead,

@@ -33,6 +33,15 @@ type List = {
   readonly fields: ReadonlyArray<string>;
 };
 
+export const WATCHED_NUMBER_FIELDS: ReadonlyArray<string> = [
+  "direction",
+  "above",
+  "below",
+  "every",
+  "spec",
+  "source",
+];
+
 export const LISTS: Record<ListName, List> = {
   work: {
     name: "Work",
@@ -114,7 +123,7 @@ export const LISTS: Record<ListName, List> = {
     noun: "goal",
     states: ["open", "done", "dropped"],
     categories: [],
-    fields: ["measure", "target", "current", "unit", "startsOn"],
+    fields: ["measure", "target", "current", "unit", "startsOn", ...WATCHED_NUMBER_FIELDS],
   },
   // What we hope to win from a client or prospect: done is won, dropped is lost. `stage` is a stage
   // id of the company's own (`deals.ts`), `value` a `KinMoney` in any currency.

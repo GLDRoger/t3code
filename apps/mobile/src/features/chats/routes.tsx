@@ -17,6 +17,7 @@ import { KinDealScreen } from "./KinDealScreen";
 import { KinDealsConcernScreen } from "./KinDealsConcernScreen";
 import { KinDealStagesScreen } from "./KinDealsSettings";
 import { KinSectionsScreen } from "./KinSectionsScreen";
+import { KinNumberFormScreen, KinNumberScreen, KinNumbersScreen } from "./KinNumbersScreens";
 import { KinImportScreen } from "./KinImportScreen";
 import {
   KinConnectionAddScreen,
@@ -24,6 +25,7 @@ import {
 } from "./connections/KinConnectionFormScreens";
 import { KinConnectionScreen } from "./connections/KinConnectionScreen";
 import { KinConnectionsScreen } from "./connections/KinConnectionsScreen";
+import { KinMyMailboxScreen } from "./connections/KinMyMailboxScreen";
 import { KinGitHubConnectScreen } from "./connections/KinGitHubConnect";
 import { KinSocialConnectScreen, KinSocialLinkScreen } from "./connections/KinSocialConnect";
 import { KinDocFileScreen } from "./KinDocFileScreen";
@@ -186,6 +188,11 @@ export const KIN_SCREENS = {
     linking: "kin/:environmentId/:orgId/connections",
     options: pageRoute({ title: "Connections" }),
   }),
+  KinMyMailbox: createNativeStackScreen({
+    screen: KinMyMailboxScreen,
+    linking: "kin/:environmentId/:orgId/mailbox",
+    options: pageRoute({ title: "Your mailbox" }),
+  }),
   KinConnection: createNativeStackScreen({
     screen: KinConnectionScreen,
     linking: "kin/:environmentId/:orgId/connections/:connectionId",
@@ -288,6 +295,20 @@ export const KIN_SCREENS = {
   KinSearch: createNativeStackScreen({
     screen: KinSearchScreen,
     linking: "kin/:environmentId/:orgId/search",
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinNumbers: createNativeStackScreen({
+    screen: KinNumbersScreen,
+    linking: "kin/:environmentId/:orgId/numbers",
+    options: pageRoute({ title: "Numbers" }),
+  }),
+  KinNumber: createNativeStackScreen({
+    screen: KinNumberScreen,
+    linking: "kin/:environmentId/:orgId/numbers/:number",
+    options: pageRoute({ title: "Number" }),
+  }),
+  KinNumberForm: createNativeStackScreen({
+    screen: KinNumberFormScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinGoalForm: createNativeStackScreen({

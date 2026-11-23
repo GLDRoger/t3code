@@ -287,7 +287,7 @@ export const kinCategoryLabel = (
 ) => def?.categoryLabels?.[category] ?? category;
 
 /** "Today" reads as "today" after a label; a date keeps its capitals. */
-const afterLabel = (when: string) =>
+export const afterLabel = (when: string) =>
   /^(Today|Tomorrow|Yesterday)/.test(when) ? when.charAt(0).toLowerCase() + when.slice(1) : when;
 
 /** Totals in a sentence: "₹4,20,000 and $13", or "Nothing". */
@@ -532,6 +532,8 @@ export interface KinListFilter {
   readonly period: KinPeriod | null;
   /** A payment came in between these days. */
   readonly paid: KinPeriod | null;
+  /** Money left the company's accounts between these days, as Money's spent counts it. */
+  readonly spent: KinPeriod | null;
   readonly party: KinWorkRef | null;
   readonly project: KinWorkRef | null;
   /** `true`: only what Money's figures count, as a figure opens it; `false`: only suggestions. */
@@ -548,6 +550,7 @@ export const KIN_LIST_DEFAULT_FILTER: KinListFilter = {
   noParty: false,
   period: null,
   paid: null,
+  spent: null,
   party: null,
   project: null,
   kept: null,
@@ -567,6 +570,7 @@ export const kinListSameFilter = (a: KinListFilter, b: KinListFilter) =>
   a.noParty === b.noParty &&
   samePeriod(a.period, b.period) &&
   samePeriod(a.paid, b.paid) &&
+  samePeriod(a.spent, b.spent) &&
   a.party?.key === b.party?.key &&
   a.project?.key === b.project?.key &&
   a.kept === b.kept &&
@@ -594,6 +598,7 @@ export function kinListQuery(
         : { listCategory: filter.category as NonNullable<KinWorkListInput["listCategory"]> }),
     ...(filter.period === null ? {} : { dateFrom: filter.period.from, dateTo: filter.period.to }),
     ...(filter.paid === null ? {} : { paidFrom: filter.paid.from, paidTo: filter.paid.to }),
+    ...(filter.spent === null ? {} : { spentFrom: filter.spent.from, spentTo: filter.spent.to }),
     ...(filter.noParty
       ? { party: null }
       : filter.party === null
@@ -691,6 +696,15 @@ export function kinListNarrowings(
             id: "paid",
             label: `Paid in ${kinPeriodLabel(filter.paid)}`,
             cleared: { ...filter, paid: null },
+          },
+        ]),
+    ...(filter.spent === null
+      ? []
+      : [
+          {
+            id: "spent",
+            label: `Spent in ${kinPeriodLabel(filter.spent)}`,
+            cleared: { ...filter, spent: null },
           },
         ]),
     ...(filter.noParty
@@ -1195,6 +1209,8 @@ export interface KinListEntryView {
     readonly draft: string;
     readonly currency: string;
     readonly received: KinMoney | null;
+    /** An expense's amount goes below zero as a refund or credit, as when it was added. */
+    readonly belowZero: boolean;
   } | null;
   /** Entries that take payments: what is still owed and what came in. */
   readonly balance: {
@@ -1359,6 +1375,7 @@ export function kinListEntryView(
                 : kinMoneyDraft(item.amount, def?.currency ?? item.amount.currency),
             currency: item.amount?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY,
             received: received !== null && received.minor > 0 ? received : null,
+            belowZero: item.list === "expenses",
           }
         : null,
     balance:
@@ -1437,12 +1454,17 @@ export function kinAmountCheck(
   text: string,
   currency: string,
   received: KinMoney | null,
+  belowZero = false,
 ): Checked<KinMoney | null> {
   if (text.trim() === "")
     return received === null
       ? { ok: true, value: null }
       : { ok: false, problem: "This entry has payments, so it needs an amount." };
-  const amount = kinParseMoney(text, currency);
+  const read = parseKinMoney(text, currency);
+  const amount =
+    "money" in read && (read.money.minor > 0 || (belowZero && read.money.minor < 0))
+      ? read.money
+      : null;
   if (amount === null) return { ok: false, problem: AMOUNT_PROBLEM };
   if (received === null) return { ok: true, value: amount };
   if (amount.currency !== received.currency)
@@ -1721,7 +1743,9 @@ export function kinListFilterParam(text: string | undefined): KinListFilter {
     noParty: from.noParty === true,
     period: period(from.period),
     paid: period(from.paid),
+    spent: period(from.spent),
     party: from.noParty === true ? null : ref(from.party),
+    ...(typeof from.kept === "boolean" ? { kept: from.kept } : {}),
     project: ref(from.project),
     ...(typeof from.groupBy === "string" && GROUPS.includes(from.groupBy)
       ? { groupBy: from.groupBy as KinListGroupBy }

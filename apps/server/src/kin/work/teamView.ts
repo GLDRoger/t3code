@@ -21,6 +21,7 @@ import type * as Statement from "effect/sql/Statement";
 
 import { personReads } from "../chat/sharing.ts";
 import { directKey } from "../lead/LeadAccess.ts";
+import { targetless } from "../numbers/numberRows.ts";
 import { LISTS } from "./lists.ts";
 import {
   inheritedSensitive,
@@ -153,6 +154,10 @@ export const alsoOnIt = (sql: SqlClient.SqlClient, personId: KinPersonId | State
   sql`(r.register_id = 'work' AND EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.alsoOn') o
     WHERE o.value = 'person:' || ${personId}))`;
 
+const teamListRow = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+  sql`(r.team_shared = 1 AND ${ownLabelOff(sql)}
+    AND NOT ${inheritedSensitive(sql)} AND ${placeOn(sql, personId, "sees_money")})`;
+
 /**
  * What a non-owner-level person sees: a picture by `pictureReader` alone; else a task they hold, are
  * on, attend or marked private; what they made, gave or share; their projects' entries and docs;
@@ -160,6 +165,8 @@ export const alsoOnIt = (sql: SqlClient.SqlClient, personId: KinPersonId | State
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`(CASE WHEN ${isPicture(sql)} THEN ${pictureReader(sql, personId)}
+  WHEN r.register_id = 'goals' AND ${targetless(sql)}
+    THEN json_type(r.fields_json, '$.spec') IS NULL AND ${teamListRow(sql, personId)}
   ELSE ((r.register_id = 'work' AND NOT ${inheritedSensitive(sql)}
       AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
       OR ${attends(sql, personId)} OR ${alsoOnIt(sql, personId)} OR r.marked_by_person_id = ${personId}
@@ -179,8 +186,7 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
       AND ${placeOn(sql, personId, "sees_docs")})))
   OR (r.register_id = 'deals' AND NOT ${keySensitive(sql)}
     AND ${placeOn(sql, personId, "sees_clients")})
-  OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND r.team_shared = 1 AND ${ownLabelOff(sql)}
-    AND NOT ${inheritedSensitive(sql)} AND ${placeOn(sql, personId, "sees_money")})) END)`;
+  OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND ${teamListRow(sql, personId)})) END)`;
 
 /** Version `pv` of doc `r` as this person reads it: the doc, and a picture's version by its own rule. */
 export const docVersionSeen = (

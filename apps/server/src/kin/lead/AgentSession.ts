@@ -234,26 +234,19 @@ const SEAT_HOME: Readonly<Record<string, string>> = {
 };
 const LEAVES_TO_HOME: ReadonlySet<string> = new Set(["engineering", "social"]);
 
-/** How far up T3's task links a lead's name is looked for. */
-const MAX_NAME_DEPTH = 8;
-
-/** The name of the lead whose thread this is, or whose task it is, up T3's task links. */
+/** The name of the lead whose thread this is, or whose turn delegated this task. */
 export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
   function* (threadId: ThreadId) {
     const sql = yield* SqlClient.SqlClient;
-    let current: string = threadId;
-    for (let depth = 0; depth <= MAX_NAME_DEPTH; depth++) {
-      const [lead] = yield* sql<{ name: string }>`SELECT l.name FROM kin_wakeups w
-        JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id
-        WHERE w.thread_id = ${current} ORDER BY w.started_at DESC LIMIT 1`;
-      if (lead !== undefined) return lead.name;
-      const [link] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId"
-        FROM orchestration_v2_projection_subagents
-        WHERE child_thread_id = ${current} AND origin = 'app_owned' ORDER BY subagent_id LIMIT 1`;
-      if (link === undefined) return undefined;
-      current = link.threadId;
-    }
-    return undefined;
+    const [own] = yield* sql<{ name: string }>`SELECT l.name FROM kin_wakeups w
+      JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id
+      WHERE w.thread_id = ${threadId} ORDER BY w.started_at DESC, w.wakeup_id LIMIT 1`;
+    if (own !== undefined) return own.name;
+    const { turn } = yield* governingTurn(threadId);
+    if (turn === undefined) return undefined;
+    const [lead] = yield* sql<{ name: string }>`SELECT name FROM kin_leads
+      WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId} ORDER BY agent_id`;
+    return lead?.name;
   },
   Effect.orElseSucceed((): string | undefined => undefined),
 );

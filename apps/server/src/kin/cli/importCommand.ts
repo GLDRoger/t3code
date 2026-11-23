@@ -65,6 +65,9 @@ const describeImport = (report: KinImport.ImportReport) =>
     counts("Payments", report.payments),
     counts("Contacts", report.contacts),
     counts("Deals", report.deals),
+    ...(report.fileProblems === 0
+      ? []
+      : [`Rows that don't fit the file format: ${report.fileProblems} with problems`]),
     ...(report.filled === 0
       ? []
       : [`Filled in empty fields on ${report.filled} clients and contacts Kin had.`]),

@@ -10,6 +10,7 @@ import {
   KinTrimmedText,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 /**
  * The file `kin import` reads: JSON Lines, so a company's whole history streams through in
@@ -32,9 +33,23 @@ const When = Schema.String.check(
     expected: "a real calendar day or time with its offset",
   }),
 );
-/** A plain decimal in major units, `1234.50`: never a float, never with grouping. */
-const Amount = Schema.String.check(Schema.isPattern(/^\d{1,15}(?:\.\d{1,6})?$/));
-const EntryAmount = Schema.String.check(Schema.isPattern(/^-?\d{1,15}(?:\.\d{1,6})?$/));
+const GROUPED_AMOUNT = /^-?\d{1,3}(?:,\d{2,3})*,\d{3}(?:\.\d{1,6})?$/;
+const ungroup = (value: string) => (GROUPED_AMOUNT.test(value) ? value.replaceAll(",", "") : value);
+const amount = (plain: RegExp) =>
+  Schema.String.check(
+    Schema.makeFilter(
+      (value) =>
+        plain.test(ungroup(value)) ||
+        `The amount ${JSON.stringify(value.slice(0, 40))} isn't a number Kin can read.`,
+    ),
+  ).pipe(
+    Schema.decodeTo(
+      Schema.String,
+      SchemaTransformation.transform({ decode: ungroup, encode: (value) => value }),
+    ),
+  );
+const Amount = amount(/^\d{1,15}(?:\.\d{1,6})?$/);
+const EntryAmount = amount(/^-?\d{1,15}(?:\.\d{1,6})?$/);
 /** Text, a choice or a day; `owner` for a person field; a client's or project's source id for a link. */
 const FieldValue = Schema.Union([Line, Schema.Struct({ amount: Amount, currency: KinCurrency })]);
 

@@ -1,12 +1,14 @@
 import { type KinOrgId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { turnAsks } from "../push/turnAsks.ts";
 import { CHANGES_FIRST } from "../questions/approval.ts";
-import { turnAsked } from "../reply/replyLane.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 
+const encodeWakeupIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 const iso = (at: number) => DateTime.formatIso(DateTime.makeUnsafe(at));
 
 export const lastCompleteWeek = Effect.fn("KinWeekMeasure.window")(function* (
@@ -44,14 +46,22 @@ export const weekMeasure = Effect.fn("KinWeekMeasure.read")(function* (input: {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, from, until, zone } = input;
   const before = iso(until);
+  const weekTurns = sql`SELECT w.* FROM kin_wakeups w
+    WHERE w.org_id = ${orgId} AND w.started_at >= ${from} AND w.started_at < ${until}
+      AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
+        AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id)`;
+  const wakeups = yield* sql<{ wakeup_id: string }>`SELECT wakeup_id FROM (${weekTurns})
+    ORDER BY started_at, wakeup_id`;
+  const asked = [];
+  for (const { wakeup_id } of wakeups) {
+    if ((yield* turnAsks(orgId, wakeup_id)).asks.length > 0) asked.push(wakeup_id);
+  }
+  const askedIds = encodeWakeupIds(asked);
   const turnsAndCards = sql`WITH turns AS (
-      SELECT w.*, ${turnAsked(sql, "w")} AS asked,
+      SELECT w.*, w.wakeup_id IN (SELECT value FROM json_each(${askedIds})) AS asked,
         strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch') AS started_iso,
         strftime('%Y-%m-%dT%H:%M:%fZ', w.ended_at / 1000.0, 'unixepoch') AS ended_iso
-      FROM kin_wakeups w WHERE w.org_id = ${orgId} AND w.started_at >= ${from}
-        AND w.started_at < ${until}
-        AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
-          AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id)
+      FROM (${weekTurns}) w
     ), posts AS (
       SELECT DISTINCT w.org_id, w.wakeup_id, m.chat_id, m.message_id, m.seq
       FROM turns w JOIN kin_messages m ON m.org_id = w.org_id AND m.author_agent_id = w.agent_id

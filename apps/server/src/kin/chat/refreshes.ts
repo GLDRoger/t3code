@@ -16,6 +16,7 @@ import { KinIdentity, type PersonIdentity } from "./KinIdentity.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { countryNeeded } from "../work/companyProfile.ts";
 import * as Money from "../work/ownerMoney.ts";
+import { visibleValueRevision } from "../numbers/KinNumbers.ts";
 import { theOwner } from "../work/ownerWork.ts";
 import { KinRefreshHub, KinRefreshObserver, type KinRevisions } from "./KinRefreshHub.ts";
 
@@ -25,6 +26,7 @@ type Reads = {
   readonly kind: Effect.Effect<KinPersonAccess | undefined>;
   readonly view: Effect.Effect<string | null>;
   readonly lists: Effect.Effect<string | null>;
+  readonly numbers: Effect.Effect<string>;
 };
 /**
  * One person's reads for one settled burst, shared by their devices. A burst's revisions are a new
@@ -53,6 +55,7 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.stop === b.stop &&
   a.watches === b.watches &&
   a.shell === b.shell &&
+  a.numbers === b.numbers &&
   a.boot === b.boot;
 
 /**
@@ -91,6 +94,7 @@ export const subscribeRefreshes = (
         Effect.map((shown) => JSON.stringify(shown)),
         Effect.orElseSucceed(() => null),
       );
+      const numbersView = visibleValueRevision(person).pipe(Effect.orElseSucceed(() => "refused"));
       const bursts = burstReads.get(hub) ?? new WeakMap<KinRevisions, Map<string, Reads>>();
       burstReads.set(hub, bursts);
       const readsOf = Effect.fn("KinRefreshes.readsOf")(function* (now: KinRevisions) {
@@ -100,12 +104,14 @@ export const subscribeRefreshes = (
         const held = people.get(key);
         if (held !== undefined) return held;
         const services = yield* Effect.context<
-          Effect.Services<typeof kind> | Effect.Services<typeof view | typeof listsView>
+          | Effect.Services<typeof kind>
+          | Effect.Services<typeof view | typeof listsView | typeof numbersView>
         >();
         const reads: Reads = {
           kind: yield* Effect.cached(Effect.provide(kind, services)),
           view: yield* Effect.cached(Effect.provide(view, services)),
           lists: yield* Effect.cached(Effect.provide(listsView, services)),
+          numbers: yield* Effect.cached(Effect.provide(numbersView, services)),
         };
         people.set(key, reads);
         return reads;
@@ -116,6 +122,7 @@ export const subscribeRefreshes = (
       let heard: KinRevisions | undefined;
       let leads = 0;
       let lists = 0;
+      let numbers = 0;
       let company = 0;
       let waited = false;
       return changes.pipe(
@@ -143,6 +150,8 @@ export const subscribeRefreshes = (
               waited ||= still;
               company = hub.counted(counter("company"), String(still));
             }
+            if (heard === undefined || heard.numbers !== now.numbers || heard.people !== now.people)
+              numbers = hub.counted(counter("numbers"), yield* reads.numbers);
             heard = now;
             // Everyone's profile is readable by the whole org. Pulse moves only say "read your
             // Needs attention again"; the read shows them only what they may see.
@@ -156,6 +165,7 @@ export const subscribeRefreshes = (
               // Moves say "read again"; the reads show a teammate only their own watches.
               watches: now.watches,
               shell: now.shell,
+              numbers,
               // Only a company that waited on its country: no other gains a byte.
               ...(waited ? { company } : {}),
               boot: hub.boot,

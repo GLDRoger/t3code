@@ -407,6 +407,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.newExpense": Effect.fn("KinWork.rpc.newExpense")(function* (input) {
         return yield* call((people) => MoneyAnswers.newExpense(people, input));
       }),
+      "kin.work.matchPartner": Effect.fn("KinWork.rpc.matchPartner")(function* (input) {
+        return yield* call((people) => MoneyAnswers.matchPartner(people, input));
+      }),
     }),
     ...moneyLive.of({
       "kin.money.subscribe": (input) => stream((people) => MoneyStream.subscribe(people, input)),

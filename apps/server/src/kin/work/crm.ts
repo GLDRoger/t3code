@@ -85,6 +85,7 @@ import {
 } from "./touches.ts";
 import { WEEK_MS } from "../durations.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
+import * as KinShell from "../shell/KinShell.ts";
 
 /**
  * The light CRM's read model: the client page, the project page and their history, computed on
@@ -323,6 +324,8 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
   seen: typeof seenBy = seenBy,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  // With Invoices and quotes off, an overdue invoice is no reason a project is at risk.
+  const invoicesOn = yield* KinShell.sectionOnFor(orgId, "invoices");
   const filter = sql.and([sql`p.org_id = ${orgId}`, sql`p.register_id = 'projects'`, ...where]);
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- only narrows whose contact is read; WHERE scopes the rows, the touches apply the viewer
   const clientsOfRows = sql`SELECT p.party_id FROM kin_records p WHERE ${filter} AND p.state = 'open'`;
@@ -369,6 +372,7 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
     LEFT JOIN (
       SELECT r.project_id, COUNT(*) AS overdue
       FROM kin_records r WHERE r.org_id = ${orgId} AND r.project_id IS NOT NULL
+        AND ${invoicesOn ? sql`1` : sql`0`}
         AND ${overdueInvoice(sql, now)} AND ${seen(sql, viewer)}
       GROUP BY r.project_id) i ON i.project_id = p.record_id
     LEFT JOIN (${lastContactRows(sql, orgId, clientsOfRows, now, viewer)}) lc

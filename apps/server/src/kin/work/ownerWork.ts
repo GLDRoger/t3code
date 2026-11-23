@@ -32,6 +32,7 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { sectionOnFor } from "../shell/KinShell.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -473,7 +474,10 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
   )
     return yield* unknownList(input.list);
   const zone =
-    input.dateFrom === undefined && input.dateTo === undefined
+    input.dateFrom === undefined &&
+    input.dateTo === undefined &&
+    input.spentFrom === undefined &&
+    input.spentTo === undefined
       ? "UTC"
       : yield* ownerZone(input.orgId).pipe(workFailure);
   const filter = {
@@ -498,6 +502,20 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
     ...(input.dateTo === undefined ? {} : { dateTo: endOfDay(input.dateTo, zone) + 1 }),
     ...(input.paidFrom === undefined ? {} : { paidFrom: input.paidFrom }),
     ...(input.paidTo === undefined ? {} : { paidTo: input.paidTo }),
+    ...(input.spentFrom === undefined && input.spentTo === undefined
+      ? {}
+      : {
+          spent: {
+            from: input.spentFrom ?? "0000-01-01",
+            to: input.spentTo ?? "9999-12-31",
+            fromAt:
+              input.spentFrom === undefined ? 0 : endOfDay(input.spentFrom, zone) - DAY_MS + 1,
+            toAt:
+              input.spentTo === undefined
+                ? Number.MAX_SAFE_INTEGER
+                : endOfDay(input.spentTo, zone) + 1,
+          },
+        }),
     ...(input.kept === undefined ? {} : { kept: input.kept }),
     ...(input.side === undefined ? {} : { side: input.side }),
     ...(partyId === undefined || partyId === null ? {} : { partyId }),
@@ -592,10 +610,19 @@ export const shownRecords = Effect.fn("KinWork.shownRecords")(function* (
   const named = viewer.teammate
     ? yield* taskClients(orgId, viewer.person.personId, parties).pipe(workFailure)
     : new Set<string>();
+  const clientsOff =
+    shown.some(
+      ({ row, record }) => row.registerId === "work" && (record.party || record.project),
+    ) && !(yield* sectionOnFor(orgId, "clients").pipe(workFailure));
   return shown.map(({ row, record: whole }): KinRecord => {
     // Only the task's own sheet sets a repeat or links, so its rows don't carry the answers.
     const { repeat: _repeat, links: _links, ...rowCan } = can(whole.recordId);
     const record = { ...whole, can: rowCan };
+    if (clientsOff && row.registerId === "work") {
+      const { party: _party, project: _project, ...task } = record;
+      if (viewer.teammate && plainTask(row, led)) return teamRecordIn(task, projects, clients);
+      return task;
+    }
     if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects, clients);
     if (viewer.teammate && row.registerId === "work") return withClient(record, named);
     const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
@@ -881,9 +908,10 @@ export const summaryOf = Effect.fn("KinWork.summaryOf")(function* (
     zero,
   );
   // Clients' and projects' counts are the owner's: they add up work a teammate can't see.
-  const groups = viewer.teammate
-    ? { parties: [], projects: [] }
-    : yield* summaryGroups(input.orgId, now).pipe(Effect.mapError(() => unavailable));
+  const groups =
+    viewer.teammate || !(yield* sectionOnFor(input.orgId, "clients").pipe(workFailure))
+      ? { parties: [], projects: [] }
+      : yield* summaryGroups(input.orgId, now).pipe(Effect.mapError(() => unavailable));
   return {
     ...total,
     closed: closed?.closed ?? 0,

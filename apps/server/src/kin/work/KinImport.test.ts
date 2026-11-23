@@ -28,6 +28,7 @@ import { IMPORT_BUSY } from "./importUndo.ts";
 import type { ImportEntry } from "./importFormat.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
+import { matchPartner, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
 
 // Invented org, people and amounts only.
 const orgId = KinOrgId.make("org");
@@ -475,6 +476,58 @@ describe("KinImport", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("keeps who funded an expense and whether it is owed when the file comes again", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const imports = yield* KinImport.KinImport;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('meera', ${orgId}, 'meera', 'Meera', 0)`;
+      const lists = header.lists.map((one) =>
+        one.list === "expenses"
+          ? {
+              ...one,
+              fields: [...(one.fields ?? []), { label: "Paid personally by", type: "text" }],
+            }
+          : one,
+      );
+      const paidByMeera = {
+        entry: {
+          source: "e9",
+          list: "expenses",
+          title: "Invented domain renewal",
+          state: "done",
+          date: "2026-05-20",
+          amount: "4200",
+          fields: { paidPersonallyBy: "meera@invented.example" },
+        },
+      };
+      const file = () => linesOf({ ...header, lists }, [...rows, paidByMeera]);
+      yield* imports.apply(orgId, ownerId, file());
+      // Not yet said: no one is owed until the owner says who it was and whether it is owed.
+      assert.deepStrictEqual(yield* partnersOwed(orgId, "INR"), []);
+      const [unsaid] = yield* partnersUnsaid(orgId, "INR");
+      assert.strictEqual(unsaid?.address, "meera@invented.example");
+      yield* sql.withTransaction(
+        matchPartner(orgId, owner, "meera@invented.example", "meera", "owed", {
+          entries: unsaid!.seen,
+          totals: unsaid!.total,
+        }),
+      );
+      const owed = yield* partnersOwed(orgId, "INR");
+      const again = yield* imports.apply(orgId, ownerId, file());
+      assert.deepStrictEqual(
+        again.changed.map((one) => one.source),
+        ["e9"],
+      );
+      assert.deepStrictEqual(yield* partnersOwed(orgId, "INR"), owed);
+      assert.deepStrictEqual(
+        owed.map((one) => [one.personId, one.owed]),
+        [["meera", [{ minor: 420_000, currency: "INR" }]]],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("names every line it can't import and imports the rest", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -528,7 +581,57 @@ describe("KinImport", () => {
       assert.include(report.problems[6]!.reason, "is far above anything in Invoices");
       assert.include(report.problems[7]!.reason, "can't fall due 2026-06-01, before it");
       assert.deepStrictEqual([report.entries.create, report.entries.problems], [8, 8]);
+      assert.strictEqual(report.fileProblems, 1);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each(["expense", "payment"] as const)(
+    "imports grouped %s amounts and counts each unreadable row",
+    (kind) =>
+      Effect.gen(function* () {
+        yield* seed;
+        const imports = yield* KinImport.KinImport;
+        const amounts = ["1450", "1,450", "1,450.50", "12,34,567", "1,45", "1.450,50"];
+        const inputs = amounts.map((amount, index) => ({
+          entry: {
+            source: `grouped-${index}`,
+            title: `Imported ${kind} ${index + 1}`,
+            confirmed: true,
+            ...(kind === "expense"
+              ? { list: "expenses", amount }
+              : {
+                  list: "invoices",
+                  amount: "2000000",
+                  payments: [{ source: `pay-${index}`, amount, paidOn: "2026-06-01" }],
+                }),
+          },
+        }));
+        const report = yield* imports.apply(orgId, ownerId, linesOf(header, inputs));
+        assert.strictEqual(report.rows, 6);
+        assert.deepStrictEqual([report.entries.create, report.fileProblems], [4, 2]);
+        assert.strictEqual(report.entries.create + report.fileProblems, report.rows);
+        assert.deepStrictEqual(
+          report.problems.map((one) => one.line),
+          [6, 7],
+        );
+        for (const [index, problem] of report.problems.entries()) {
+          assert.include(problem.reason, "amount");
+          assert.include(problem.reason, amounts[index + 4]!);
+        }
+        const sql = yield* SqlClient.SqlClient;
+        const added =
+          kind === "expense"
+            ? yield* sql<{ minor: number }>`SELECT amount_minor AS minor FROM kin_records
+                WHERE org_id = ${orgId} AND origin_key LIKE 'import:oldbooks:entry:grouped-%'
+                ORDER BY origin_key`
+            : yield* sql<{ minor: number }>`SELECT amount_minor AS minor FROM kin_record_payments
+                WHERE org_id = ${orgId} AND origin_key LIKE 'import:oldbooks:payment:pay-%'
+                ORDER BY origin_key`;
+        assert.deepStrictEqual(
+          added.map((one) => one.minor),
+          [145_000, 145_000, 145_050, 123_456_700],
+        );
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("refuses impossible entry days like malformed dates", () =>

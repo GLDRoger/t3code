@@ -144,13 +144,17 @@ const newestContacts = Effect.fn("KinTouches.newest")(function* (
   partyIds: ReadonlyArray<string>,
   now: number,
   viewer: KinViewer,
+  sections = { invoices: true, money: true },
 ) {
   if (partyIds.length === 0) return new Map<string, { at: number; kind: TouchSql["kind"] }>();
   const sql = yield* SqlClient.SqlClient;
   // SQLite takes the bare `kind` from the row MAX(at) picks.
   const rows = yield* sql<{ partyId: string; at: number; kind: TouchSql["kind"] }>`SELECT
       "partyId", MAX(at) AS at, kind
-    FROM (${touchUnion(sql, orgId, partyIds, now, viewer)}) GROUP BY "partyId" ORDER BY "partyId"`;
+    FROM (${touchUnion(sql, orgId, partyIds, now, viewer)})
+    WHERE (${sections.invoices} OR kind NOT IN ('invoice', 'quote'))
+      AND (${sections.money} OR kind != 'payment')
+    GROUP BY "partyId" ORDER BY "partyId"`;
   return new Map(rows.map((row) => [row.partyId, { at: row.at, kind: row.kind }]));
 });
 
@@ -338,6 +342,7 @@ export const clientRows = Effect.fn("KinTouches.clientRows")(function* (
 export const clientSenses = Effect.fn("KinTouches.senses")(function* (
   orgId: KinOrgId,
   now: number,
+  sections?: { readonly invoices: boolean; readonly money: boolean },
 ) {
   const clients = yield* clientRows(orgId, now);
   const lookup = yield* playbookThresholds(orgId);
@@ -346,6 +351,7 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
     clients.map((client) => client.partyId),
     now,
     KIN_OWNER_LEVEL,
+    sections,
   );
   const senses: Array<ClientSense> = [];
   for (const client of clients) {

@@ -51,6 +51,7 @@ import { DAY_MS } from "./thresholds.ts";
 import { tellHolder } from "./holderNotice.ts";
 import { morningPages, pageMinuteSince } from "./personMorning.ts";
 import { agentParty, forHolder, markTold, SHELL_QUIET_EVENT_PREFIX, untold } from "./told.ts";
+import { draftWakes } from "./draftWake.ts";
 import {
   asideOf,
   asideView,
@@ -781,6 +782,21 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         shell,
       });
       const told = yield* tellHolders(ctx, facts, stored, holds, shell);
+      // A teammate's own follow-up to a client, due now: the sales agent drafts it for them.
+      const drafted = yield* draftWakes({
+        ctx,
+        open: facts.flatMap((sensed): Array<KinPulseFact> => {
+          const { yours: _yours, quietForMs: _quietForMs, ...fact } = sensed;
+          const handled = handledOf(stored.get(fact.key), at, sensed);
+          const aside =
+            asideOf(fact, holds, { _tag: "owner" }) !== undefined ||
+            (fact.actor._tag === "person" &&
+              asideOf(fact, holds, { _tag: "people", people: [fact.actor.personId] }) !==
+                undefined);
+          return handled === null && !aside ? [{ ...fact, handled }] : [];
+        }),
+        sees: (personId, some) => visibleTo(orgId, { _tag: "people", people: [personId] }, some),
+      });
       if (moved > 0 || sensedNow !== lastSensed.get(orgId)) yield* refreshes.touch(orgId, "pulse");
       yield* sql.afterCommit(
         Effect.sync(() => {
@@ -788,7 +804,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           lastFacts.set(orgId, { at, facts });
         }),
       );
-      return { facts: facts.length, cleared: cleared.length, woken, told, pages };
+      return { facts: facts.length, cleared: cleared.length, woken, told, pages, drafted };
     }),
   );
 });
@@ -1078,7 +1094,7 @@ export const layer = Layer.effectDiscard(
         // Scheduler maintenance: orgs with a live mail connection; each poll is org-scoped.
         const orgs = yield* sql<{ orgId: string }>`SELECT DISTINCT org_id AS "orgId"
           FROM kin_connections WHERE preset IN ${sql.in(MAIL_PRESETS)} AND removed_at IS NULL
-            AND paused_at IS NULL AND state = 'active'
+            AND paused_at IS NULL AND state = 'active' AND person_id IS NULL
           ORDER BY org_id`.pipe(NodeSqliteClient.readOnly);
         for (const { orgId } of orgs) {
           if (now - (polled.get(orgId) ?? -Infinity) < OUTSIDE_EVERY_MS) continue;

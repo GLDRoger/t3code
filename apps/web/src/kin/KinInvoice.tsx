@@ -77,6 +77,7 @@ import { KinLinesEditor } from "./KinMoneyAnswers";
 import { useKinMoneyActions, useKinRecipes, type KinPreviewFile } from "./useKinMoney";
 import { useKinEntryLines, useKinInvoiceFromQuote } from "./useKinMoneyAnswers";
 import type { KinWorkTarget } from "./useKinWork";
+import { useKinShell } from "./useKinShell";
 
 type MoneyActions = ReturnType<typeof useKinMoneyActions>;
 
@@ -252,7 +253,12 @@ export function KinQuoteActions(
   };
   const invoicing = useKinInvoiceFromQuote(props);
   const invoiced = invoicing.invoice ?? kinQuoteInvoice(item.links);
-  const can = kinQuoteActions(quote.state, props.def?.numbering !== undefined, invoiced !== null);
+  const can = kinQuoteActions(
+    quote.state,
+    props.def?.numbering !== undefined,
+    invoiced !== null,
+    useKinShell(environmentId),
+  );
   const [sending, setSending] = useState(false);
   const [requestId] = useState(randomUUID);
   const busy = props.busy || actions.busy || invoicing.busy;

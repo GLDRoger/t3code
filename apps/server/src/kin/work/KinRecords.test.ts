@@ -1533,7 +1533,7 @@ it.effect(
       yield* turn("mate", "shared");
       const shared = { orgId, agentId: lead, wakeupId: "wake" };
       // Read and changed at the teammate's view, and contact logged; defining lists, payments and
-      // the profile stay the owner's.
+      // the profile, how Kin is set up (company_sections) and watched numbers stay the owner's.
       const view = new Set([
         "records_query",
         "record_get",
@@ -1548,7 +1548,7 @@ it.effect(
         "deal_stages",
         "touch_log",
       ]);
-      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 19);
+      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 22);
       for (const tool of Object.keys(KinWorkToolkit.tools))
         assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
       // G06: tasks made for the people there, whoever holds them, are shared with the team.
