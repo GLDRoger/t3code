@@ -87,6 +87,8 @@ import {
   workForText,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
+import { HEAD_START_WAKE } from "../../apps/server/src/kin/pulse/prepareWake.ts";
+import { DRAFT_DOCUMENT } from "../../apps/server/src/kin/pulse/draftWake.ts";
 import {
   feedTurnText,
   offTurnText,
@@ -413,6 +415,8 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
+    .replaceAll("{{HEAD_START_WAKE}}", HEAD_START_WAKE)
+    .replace(/\{\{DRAFT_DOCUMENT:([^}]+)\}\}/g, (_, name: string) => DRAFT_DOCUMENT(name))
     .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
     .replaceAll("{{TEAM_RULES}}", kinTeamRules)

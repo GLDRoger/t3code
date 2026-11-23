@@ -75,6 +75,8 @@ The `kin-gh-*` cases in `cases/kin-github-events.ndjson` replay a turn Kin's Git
 
 `cases/kin-shell.ndjson` holds the cases for a company set up unlike Kin's default. Write the `# This company` section `LeadPrompt` writes from the shell (`shell/words.ts`) into the prompt, word for word: with Deals off nothing offers or names a deal; with Clients renamed the agent uses the company's word; a request to change the sections is one `company_sections` card from the owner, and a teammate's goes to the owner. Its two `services` cases keep Kin's default sections as controls.
 
+`cases/kin-head-start.ndjson` holds the wakes Kin queues so an agent makes the first piece of something open: an unanswered quote, a client waiting on us and a renewal at its draft day (`{{HEAD_START_WAKE}}`, as `pulse/prepareWake.ts` writes it), and a person's late task with no client (`{{DRAFT_DOCUMENT:<name>}}`, from `pulse/draftWake.ts`). Each prepares one piece without asking, a mail only as far as its Confirm card; with a first piece already waiting the turn is `NO_REPLY` and writes nothing, and with nothing to prepare it names what is missing in one line.
+
 `kin-lead-memory-quotes-owner-words` checks that a lead saves what the owner said with a `quote` of their words, and `kin-lead-memory-paraphrased-quote-refused` replays the server refusing a paraphrased quote and checks the lead never resends it: it retries with the exact words or leaves the item out.
 
 ## Device manager cases
