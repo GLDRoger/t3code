@@ -20,6 +20,7 @@ import {
 import {
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
+  KIN_CARD_REREAD_COPY,
   kinChoiceCardActions,
   kinChoiceCardTaps,
   kinChoiceOutcomeSentence,
@@ -1179,8 +1180,10 @@ describe("choice cards", () => {
       {
         revision: 1,
         optionId: "option-1",
-        notice: kinChoiceFailureNotice(changed),
+        notice: { kind: "stale", text: KIN_CARD_REREAD_COPY.settled },
         holding: false,
+        // Settled or changed on the host: the card shows no answers until its newer one arrives.
+        behind: true,
       },
     ]);
 

@@ -54,6 +54,9 @@ function kinIntroCharter(charter: string): string | null {
  * What a chat's screen reads besides the chat and the inbox: a direct chat's leads (the owner's
  * list, retired ones too, where they may restore), and a group's members. `orgId` is the chat's.
  */
+/** How long the message a Waiting on you row opened stays tinted. */
+export const KIN_LAND_MARK_MS = 1_600;
+
 export function kinChatReads(input: {
   readonly chatId: KinChatId | null;
   readonly chats: ReadonlyArray<KinChatSummary> | null;

@@ -32,7 +32,7 @@ import { KinApprovalCard } from "./widgets/KinApprovalCard";
  */
 export function KinWaitingScreen() {
   const navigation = useNavigation();
-  const { host, state, retry } = useKinInbox();
+  const { host, state, retry, reread } = useKinInbox();
   const { agentNames } = kinDirectory(host);
   const nowMs = useNowMinuteMs();
   return (
@@ -123,7 +123,12 @@ export function KinWaitingScreen() {
                     meta={<KinWaitingExcerpt text={row.excerpt} />}
                     onPress={() => openChat(item)}
                   />
-                  <KinWaitingAsk ask={ask} environmentId={ready.environmentId} />
+                  <KinWaitingAsk
+                    ask={ask}
+                    item={item}
+                    environmentId={ready.environmentId}
+                    onReread={reread}
+                  />
                 </ListSection>
               );
             })}

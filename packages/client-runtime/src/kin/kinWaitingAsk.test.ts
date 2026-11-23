@@ -2,7 +2,7 @@
 import type { KinWaitingItem } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinWaitingAskView } from "./kinWaitingAsk.ts";
+import { kinWaitingAskInput, kinWaitingAskView } from "./kinWaitingAsk.ts";
 
 const item = (ask: KinWaitingItem["ask"]) =>
   ({
@@ -58,5 +58,22 @@ describe("an open question in Waiting on you", () => {
     expect(view?.line).toBe("Finance won't act on this without you.");
     expect(view?.options.some((option) => option.isDefault)).toBe(false);
     expect(kinWaitingAskView(item(undefined), now)).toBeNull();
+  });
+
+  it("posts an answer as the card's own tap, and Dismiss as the card's Dismiss", () => {
+    const target = { widgetId: "widget-1", revision: 2 } as const;
+    expect(kinWaitingAskInput(target as never, "option-1", "tap-1")).toMatchObject({
+      widgetId: "widget-1",
+      revision: 2,
+      actionId: "choose",
+      value: "option-1",
+      clientActionId: "tap-1",
+    });
+    expect(kinWaitingAskInput(target as never, "dismiss", "tap-2")).toEqual({
+      widgetId: "widget-1",
+      revision: 2,
+      actionId: "dismiss",
+      clientActionId: "tap-2",
+    });
   });
 });
