@@ -8,6 +8,9 @@ import type * as Statement from "effect/sql/Statement";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinRecords } from "./KinRecords.ts";
+import { parseFields, type FieldValue } from "./lists.ts";
+import { FUNDED_BY, REIMBURSEMENT } from "./reimbursement.ts";
+import { listDef } from "./registers.ts";
 import { workFailure } from "./recordRows.ts";
 import { searchIndexed } from "./searchIndex.ts";
 
@@ -17,21 +20,18 @@ const BATCH = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeLists = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.String)));
-const decodeFills = Schema.decodeUnknownOption(
-  Schema.fromJsonString(
-    Schema.Struct({
-      filled: Schema.optional(
-        Schema.Array(
-          Schema.Struct({
-            recordId: Schema.String,
-            key: Schema.String,
-            rev: Schema.Number,
-            fields: Schema.Array(Schema.String),
-          }),
-        ),
-      ),
-    }),
+const Fill = Schema.Struct({
+  recordId: Schema.String,
+  key: Schema.String,
+  rev: Schema.Number,
+  fields: Schema.Array(Schema.String),
+  entry: Schema.optional(
+    Schema.Struct({ notes: Schema.Boolean, changed: Schema.optional(Schema.Boolean) }),
   ),
+});
+export type ImportFill = typeof Fill.Type;
+const decodeFills = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ filled: Schema.optional(Schema.Array(Fill)) })),
 );
 
 export type UndoReport = {
@@ -233,34 +233,58 @@ const decide = Effect.fn("KinImport.undoPlan")(function* (
       AND (action = 'apply' OR (action = 'undo' AND finished_at IS NOT NULL))
     ORDER BY seq`;
   const made = new Set<string>();
-  const fills = new Map<string, { key: string; rev: number; fields: ReadonlyArray<string> }>();
+  const fills = new Map<string, ImportFill>();
   for (const one of runs) {
     if (one.action === "undo") {
       made.clear();
       fills.clear();
     } else {
       for (const list of Option.getOrElse(decodeLists(one.lists), () => [])) made.add(list);
-      const filled = Option.getOrUndefined(decodeFills(one.summary ?? "{}"))?.filled ?? [];
-      for (const fill of filled) fills.set(fill.recordId, fill);
+    }
+    const filled = Option.getOrUndefined(decodeFills(one.summary ?? "{}"))?.filled ?? [];
+    for (const fill of filled) {
+      const before = fills.get(fill.recordId);
+      const entry = fill.entry;
+      fills.set(
+        fill.recordId,
+        entry === undefined || before?.entry === undefined
+          ? fill
+          : {
+              ...fill,
+              fields: [...new Set([...before.fields, ...fill.fields])],
+              entry: {
+                notes: before.entry.notes || entry.notes,
+                changed: before.entry.changed === true || fill.rev !== before.rev + 1,
+              },
+            },
+      );
     }
   }
-  // A filled record emptied again only as the import left it: any change since keeps it whole.
   const filledNow =
     fills.size === 0
       ? []
       : yield* sql<{ id: string; rev: number }>`SELECT
       record_id AS id, rev FROM kin_records
     WHERE org_id = ${orgId} AND record_id IN ${sql.in([...fills.keys()])} ORDER BY record_id`;
-  const restoring = filledNow.flatMap((one) => {
+  const restoring: Array<ImportFill> = [];
+  const changedFills: Array<UndoReport["kept"][number]> = [];
+  const pendingFills: Array<ImportFill> = [];
+  for (const one of filledNow) {
     const fill = fills.get(one.id);
-    return fill !== undefined && fill.rev === one.rev ? [{ recordId: one.id, ...fill }] : [];
-  });
-  const changedFills = filledNow.flatMap((one) => {
-    const fill = fills.get(one.id);
-    return fill !== undefined && fill.rev !== one.rev
-      ? [{ key: fill.key, reason: changedSinceFilled(fill.fields) }]
-      : [];
-  });
+    if (fill === undefined) continue;
+    if (
+      (fill.rev === one.rev && fill.entry?.changed !== true) ||
+      (fill.entry !== undefined && options.includeChanged)
+    ) {
+      restoring.push({ ...fill, rev: one.rev });
+    } else {
+      changedFills.push({
+        key: fill.key,
+        reason: changedSinceFilled([...fill.fields, ...(fill.entry?.notes ? ["notes"] : [])]),
+      });
+      if (fill.entry !== undefined) pendingFills.push(fill);
+    }
+  }
   const lists: Array<UndoReport["lists"][number]> = [];
   for (const list of made) {
     const [held] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
@@ -289,7 +313,7 @@ const decide = Effect.fn("KinImport.undoPlan")(function* (
     kept: [...kept, ...changedFills].slice(0, MAX_LISTED),
     lists,
   };
-  return { report, gone, restoring, lists };
+  return { report, gone, restoring, pendingFills, lists };
 });
 
 export const IMPORT_BUSY =
@@ -334,14 +358,25 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
       yield* notImporting(orgId);
       const started = yield* Clock.currentTimeMillis;
       const plan = yield* decide(orgId, batch, options);
-      const { gone, restoring, lists } = plan;
+      const { gone, restoring, pendingFills, lists } = plan;
       if (entry !== undefined) entry.of = gone.length;
       for (const fill of restoring) {
-        const fields: Record<string, null> = {};
+        const fields: Record<string, FieldValue | null> = {};
+        const notes = fill.entry?.notes ?? fill.fields.includes("notes");
         for (const name of fill.fields) {
-          if (name === "notes") continue;
+          if (fill.entry === undefined && name === "notes") continue;
           fields[name] = null;
-          if (name === "email" || name === "phone") fields[`${name}s`] = null;
+          if (fill.entry === undefined && (name === "email" || name === "phone"))
+            fields[`${name}s`] = null;
+        }
+        if (fill.entry !== undefined && FUNDED_BY in fields && !(REIMBURSEMENT in fields)) {
+          const current = yield* records.get(orgId, fill.key);
+          if (current?.registerId === "expenses") {
+            const def = yield* listDef(orgId, "expenses");
+            if (def?.fields.some((one) => one.key === REIMBURSEMENT))
+              // Clearing the funder must not also clear a reimbursement or date the batch didn't fill.
+              fields[REIMBURSEMENT] = parseFields(current.fieldsJson)[REIMBURSEMENT] ?? null;
+          }
         }
         yield* records.update(
           orgId,
@@ -349,7 +384,7 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
           fill.key,
           {
             ...(Object.keys(fields).length === 0 ? {} : { fields }),
-            ...(fill.fields.includes("notes") ? { notes: "" } : {}),
+            ...(notes ? { notes: "" } : {}),
           },
           fill.rev,
         );
@@ -370,7 +405,7 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
           finished_at, lists_json, summary_json)
         VALUES (${orgId}, ${batch}, 'undo', ${owner}, ${started}, ${yield* Clock.currentTimeMillis},
           ${encodeJson(lists.filter((one) => one.action === "remove").map((one) => one.list))},
-          ${encodeJson({ ...report.removes, restored: report.restored, changed: report.changed.length, kept: report.kept.length, includeChanged: options.includeChanged })})`;
+          ${encodeJson({ ...report.removes, restored: report.restored, changed: report.changed.length, kept: report.kept.length, includeChanged: options.includeChanged, ...(pendingFills.length === 0 ? {} : { filled: pendingFills }) })})`;
       return plan;
     }),
   );
