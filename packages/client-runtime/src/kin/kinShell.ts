@@ -281,7 +281,7 @@ export function kinListSections(shell: KinShell | null | undefined): ReadonlyArr
 }
 
 /** The places the phone's dock holds, Chats included. */
-export const KIN_DOCK_PLACES = 5;
+const KIN_DOCK_PLACES = 5;
 
 /**
  * The phone's dock: this person's own places, then each list section that is on and marked for the
