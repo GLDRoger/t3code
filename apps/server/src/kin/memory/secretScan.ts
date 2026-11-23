@@ -92,7 +92,9 @@ const compiledRules = secretRules.map(([id, pattern]) => {
     new RegExp(`(?<![${leftBoundary}])(?:${pattern.source})${right}`, `${pattern.flags}g`),
   ] as const;
 });
-const anchors = /gh[pousr]_|github_pat_|sk-|AKIA|ASIA|xox|_live_|AIza|-----BEGIN|eyJ|:\/\/|[:=]/i;
+const tokenAnchors = /gh[pousr]_|github_pat_|sk-|AKIA|ASIA|xox|_live_|AIza|-----BEGIN|eyJ|:\/\//i;
+const assignmentName = /password|secret|token|api[_-]?key|access[_-]?key/i;
+const assignmentSeparator = /[:=]/;
 // The 4096-character overlap exceeds the longest match (the 3080-character JWT prefix).
 export const ruleWindows = function* (value: string) {
   for (let offset = 0; offset < value.length; offset += 4096)
@@ -183,6 +185,7 @@ const make = Effect.gen(function* () {
     if (allowed.length > 4096)
       return yield* new KinSecretScanError({ reason: "Allowlist size limit exceeded" });
     const allow = new Set(allowed.map((r) => JSON.stringify([r.path, r.rule_id, r.fingerprint])));
+    const paths = new Set(input.files.map((file) => file.path));
     const findings: SecretFinding[] = [];
     const seen = new Set<string>();
     let budget = 64 * 1024 * 1024;
@@ -199,7 +202,11 @@ const make = Effect.gen(function* () {
           budget -= window.text.length;
           if (budget < 0) return;
           yield;
-          if (!anchors.test(window.text)) continue;
+          if (
+            !tokenAnchors.test(window.text) &&
+            !(assignmentSeparator.test(window.text) && assignmentName.test(window.text))
+          )
+            continue;
           for (const [ruleId, bounded] of compiledRules) {
             bounded.lastIndex = 0;
             let match: RegExpExecArray | null;
@@ -237,7 +244,7 @@ const make = Effect.gen(function* () {
                   ruleId,
                   line,
                   ...(pathHit ? { pathHit: true } : {}),
-                  ...(itemPath && input.files.some((f) => f.path === itemPath) ? { itemPath } : {}),
+                  ...(itemPath && paths.has(itemPath) ? { itemPath } : {}),
                 });
               }
               break;
@@ -287,7 +294,8 @@ const make = Effect.gen(function* () {
         if (run.length < 2) return;
         const joined = run.map((part) => part.text).join("");
         // No rule matches without an anchor and no decoder starts below 20 characters.
-        if (joined.length >= 20 || anchors.test(joined)) yield* inspect(joined, run[0]!.line, 0);
+        if (joined.length >= 20 || tokenAnchors.test(joined) || assignmentSeparator.test(joined))
+          yield* inspect(joined, run[0]!.line, 0);
       };
       for (const [index, raw] of lines.entries()) {
         if (index % 1024 === 1023) yield* Effect.yieldNow;
