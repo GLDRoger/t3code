@@ -54,6 +54,7 @@ import {
   type RecommendChange,
   type RuleContext,
   agentNow,
+  agentPaused,
   connectionNow,
   grantNow,
   limitNow,
@@ -96,12 +97,13 @@ const turnRunning = Effect.fn("KinRecommend.turnRunning")(function* (
 });
 
 /** Every rule that fires now, less what is quiet or already asked, best first. Read-only. */
-const sense = Effect.fn("KinRecommend.sense")(function* (ctx: RuleContext) {
+const sense = Effect.fn("KinRecommend.sense")(function* (ctx: RuleContext, newCompany: boolean) {
   const fired: Array<{ readonly rank: number; readonly candidate: Candidate }> = [];
-  for (const [rank, rule] of RULES.entries())
+  for (const [rank, rule] of (newCompany ? [agentPaused] : RULES).entries())
     for (const verdict of yield* rule(ctx)) {
       if (verdict._tag !== "fires") continue;
       const { candidate } = verdict;
+      if (newCompany && !candidate.urgent) continue;
       const [latest] = yield* storedRows(
         ctx.orgId,
         { rule: candidate.rule, subject: candidate.subject },
@@ -112,6 +114,7 @@ const sense = Effect.fn("KinRecommend.sense")(function* (ctx: RuleContext) {
   return fired
     .toSorted(
       (a, b) =>
+        Number(b.candidate.urgent ?? false) - Number(a.candidate.urgent ?? false) ||
         a.rank - b.rank ||
         b.candidate.weight - a.candidate.weight ||
         (a.candidate.subject < b.candidate.subject ? -1 : 1),
@@ -151,8 +154,10 @@ export const tick = Effect.fn("KinRecommend.tick")(function* (orgId: KinOrgId, a
   const { lead, ctx } = found;
   const [org] = yield* sql<{ createdAt: string }>`SELECT created_at AS "createdAt"
     FROM kin_orgs WHERE org_id = ${orgId}`;
-  if (org === undefined || at - Date.parse(org.createdAt) < NEW_COMPANY_MS)
-    return skipped("new_company");
+  if (org === undefined) return skipped("new_company");
+  const newCompany = at - Date.parse(org.createdAt) < NEW_COMPANY_MS;
+  const early = newCompany ? yield* sense(ctx, true) : undefined;
+  if (early?.length === 0) return skipped("new_company");
   if (yield* isOrgPaused(orgId)) return skipped("paused");
   if ((yield* personQuietUntil(orgId, ctx.ownerId, at)) !== undefined)
     return skipped("quiet_hours");
@@ -165,7 +170,7 @@ export const tick = Effect.fn("KinRecommend.tick")(function* (orgId: KinOrgId, a
     FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${lead.agentId}
       AND thread_id IS NOT NULL`;
   if (thread === undefined) return skipped("no_owner");
-  const [best] = yield* sense(ctx);
+  const [best] = early ?? (yield* sense(ctx, false));
   if (best === undefined) return skipped("nothing");
   // Retried every sweep while busy: checked before Needs you is read, and again as it posts.
   if (yield* turnRunning(orgId, lead.agentId, thread.threadId)) return skipped("turn_running");

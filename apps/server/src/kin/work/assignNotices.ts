@@ -902,6 +902,8 @@ export const taskNewsBanner = Effect.fn("KinAssignNotices.taskNewsBanner")(funct
     /** Some of it is work now theirs: given to them, or handed back. */
     gives: told.some((news) => news.kind === "given" || news.kind === "returned"),
     chatId: chatId === undefined ? undefined : KinChatId.make(chatId),
+    /** Every task it tells of, by key: its push stands while one of them is still theirs. */
+    tasks: [...new Set(told.map((news) => news.key))],
     opens:
       only === undefined || more.length > 0 || !["work", "projects"].includes(only.register)
         ? undefined

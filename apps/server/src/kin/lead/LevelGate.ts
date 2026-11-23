@@ -195,6 +195,15 @@ export class KinLevelGate extends Context.Service<
         readonly emoji: KinReactionEmoji;
       },
     ) => Effect.Effect<KinReaction, KinChatError>;
+    /**
+     * `message_withdraw` and `message_replace`: a change to the lead's own message in `chatId`,
+     * gated as a post there would be, run in the gate's transaction.
+     */
+    readonly amend: <A>(
+      agent: AgentIdentity,
+      chatId: KinChatId,
+      change: Effect.Effect<A, KinChatError>,
+    ) => Effect.Effect<A, KinChatError>;
     /** `kin_chat_read`: a turn someone besides the owner reads reads only the chat it was asked in. */
     readonly read: (
       agent: AgentIdentity,
@@ -491,6 +500,8 @@ const make = Effect.gen(function* () {
 
   return KinLevelGate.of({
     read,
+    // @effect-diagnostics-next-line effectFnOpportunity:off -- generic in what the change returns; `gated` spans it.
+    amend: (agent, chatId, change) => gated("gated change", agent, chatId, change),
     post: Effect.fn("KinLevelGate.post")((agent, input, bind) =>
       gated(
         "gated post",

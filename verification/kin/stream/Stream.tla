@@ -29,18 +29,20 @@ VARIABLES
   inbox,      \* ticks the session took in and hasn't sent (bufferLatestLiveStream, groupedWithin)
   heard,      \* every change up to here reached the session (makeWorkStream heard)
   early,      \* numbers heard past heard
+  blockedAt,  \* empty, or the singleton number a burst held its cursor at for a gap
   shown,      \* her client's row for each task: its version, or 0 when it holds none
   clientNamed, \* her Tasks shows the owner's client label on the linked promise
   at,         \* the number each row was last applied at (kinApplyWorkRow skips anything older)
   cursor,     \* where her client resumes: the last counts or synchronized number (KinWorkResume)
   cMember,    \* that number is a member's (afterTeam)
+  shellOwed,  \* section switch numbers the client has not been told to reread through
   leak,       \* she was told of a task she can't see and was never told of
   levelOwed,  \* her level changed under a live session: its next send must start her over
   levelBroke, \* something else was sent first
   changes, moves, drops
 
-vars == <<ver, shared, dealPrivate, sectionsOn, switchedOffline, member, num, unpub, log, up, sMember, seen, inbox, heard, early, shown, clientNamed, at,
-          cursor, cMember, leak, levelOwed, levelBroke, changes, moves, drops>>
+vars == <<ver, shared, dealPrivate, sectionsOn, switchedOffline, member, num, unpub, log, up, sMember, seen, inbox, heard, early, blockedAt, shown, clientNamed, at,
+          cursor, cMember, shellOwed, leak, levelOwed, levelBroke, changes, moves, drops>>
 
 Max(S) == CHOOSE m \in S : \A x \in S : x <= m
 Min(a, b) == IF a < b THEN a ELSE b
@@ -55,14 +57,15 @@ Init ==
   /\ dealPrivate = FALSE /\ sectionsOn = TRUE /\ switchedOffline = FALSE
   /\ num = 0 /\ unpub = {} /\ log = {} /\ up = TRUE /\ sMember = TRUE
   /\ seen = {"a"} /\ inbox = {} /\ heard = 0 /\ early = {}
+  /\ blockedAt = {} /\ shellOwed = {}
   /\ shown = [t \in Tasks |-> IF t = "a" THEN 1 ELSE 0] /\ clientNamed = FALSE
   /\ at = [t \in Tasks |-> 0]
   /\ cursor = 0 /\ cMember = TRUE /\ leak = FALSE /\ levelOwed = FALSE /\ levelBroke = FALSE
   /\ changes = 0 /\ moves = 0 /\ drops = 0
 
-Session == <<up, sMember, seen, inbox, heard, early>>
+Session == <<up, sMember, seen, inbox, heard, early, blockedAt>>
 Client == <<shown, clientNamed, at, cursor, cMember>>
-Ghosts == <<leak, levelOwed, levelBroke, switchedOffline>>
+Ghosts == <<leak, levelOwed, levelBroke, switchedOffline, shellOwed>>
 
 (* KinRecords.logChange: the change is logged at the next number, her own number moves when she
    sees it before or after (bumpTeamSeqs; a co-owner's is the org's, which every change moves),
@@ -108,6 +111,7 @@ ShellSwitch ==
   /\ changes < 3
   /\ sectionsOn' = ~sectionsOn
   /\ switchedOffline' = ~up
+  /\ shellOwed' = shellOwed \cup {num + 1}
   /\ num' = num + 1
   /\ unpub' = unpub \cup {[k |-> num + 1, t |-> "shell"]}
   /\ changes' = changes + 1
@@ -123,7 +127,7 @@ Level ==
   /\ unpub' = unpub \cup {[k |-> num + 1, t |-> "level"]}
   /\ levelOwed' = up
   /\ moves' = moves + 1
-  /\ UNCHANGED <<ver, shared, dealPrivate, sectionsOn, log, changes, drops, leak, levelBroke, switchedOffline>>
+  /\ UNCHANGED <<ver, shared, dealPrivate, sectionsOn, log, changes, drops, leak, levelBroke, switchedOffline, shellOwed>>
   /\ UNCHANGED Session /\ UNCHANGED Client
 
 (* PubSub.publish in an afterCommit callback: any committed tick may go first. With no session it
@@ -134,7 +138,7 @@ Publish(x) ==
   /\ unpub' = unpub \ {x}
   /\ IF up
        THEN /\ inbox' = inbox \cup {x}
-            /\ IF (sMember \/ x.t # "level") /\ x.k > heard
+            /\ IF (sMember \/ x.t # "level") /\ (x.t # "shell" \/ Broken = "skip-live-reserved") /\ x.k > heard
                  THEN LET E == early \cup {x.k}
                           h == CHOOSE m \in heard..(heard + 4) :
                                  /\ \A j \in (heard + 1)..m : j \in E
@@ -142,7 +146,7 @@ Publish(x) ==
                       IN /\ heard' = h /\ early' = {j \in E : j > h}
                  ELSE UNCHANGED <<heard, early>>
        ELSE UNCHANGED <<inbox, heard, early>>
-  /\ UNCHANGED <<ver, shared, dealPrivate, sectionsOn, member, num, log, up, sMember, seen, changes, moves, drops>>
+  /\ UNCHANGED <<ver, shared, dealPrivate, sectionsOn, member, num, log, up, sMember, seen, changes, moves, drops, blockedAt>>
   /\ UNCHANGED Client /\ UNCHANGED Ghosts
 
 (* workStream.ts restart: snapshot-required, then whole counts. The client drops what it held and
@@ -155,6 +159,13 @@ StartOver ==
   /\ sMember' = member
   /\ seen' = {t \in Tasks : Sees(t, member)}
   /\ heard' = num /\ early' = {} /\ inbox' = {}
+  /\ blockedAt' = {} /\ shellOwed' = {}
+
+(* In the model, a missing allocated owner number that represents a whole-view change is in
+   shellOwed. The service also conservatively treats unrelated holes as possible announcements. *)
+LiveGap == /\ ~sMember /\ Broken # "skip-live-reserved" /\ early # {}
+           /\ \E x \in inbox : x.k > heard
+           /\ \E k \in shellOwed : heard < k /\ k <= Max(early)
 
 (* resumable: where a burst may close. A member's numbers run one by one; a co-owner's are the
    org's, so a gap is late only where the log has a change that hasn't arrived. *)
@@ -172,6 +183,7 @@ Batch ==
   /\ up /\ inbox # {}
   /\ IF (sMember # member /\ Broken # "no-level-check")
         \/ (Broken # "no-shell-refresh" /\ \E x \in inbox : x.t = "shell")
+        \/ (heard \in blockedAt /\ LiveGap)
        THEN /\ StartOver /\ levelOwed' = FALSE
             /\ UNCHANGED <<leak, levelBroke>>
        ELSE LET top == Max({x.k : x \in inbox})
@@ -195,20 +207,22 @@ Batch ==
                /\ clientNamed' = IF "a" \in applied THEN ClientNamed(sMember) ELSE clientNamed
                /\ at' = [t \in Tasks |-> IF t \in applied THEN seqOf(t) ELSE at[t]]
                /\ seen' = IF sMember THEN (seen \cup upserts) \ removes ELSE seen
-               /\ cursor' = Resumable(top) /\ cMember' = sMember
+               /\ cursor' = IF LiveGap THEN Min(top, heard) ELSE Resumable(top)
+               /\ cMember' = sMember
+               /\ blockedAt' = IF LiveGap THEN {heard} ELSE {}
                /\ levelBroke' = (levelBroke \/ levelOwed)
                /\ inbox' = {}
-               /\ UNCHANGED <<sMember, heard, early, levelOwed>>
+               /\ UNCHANGED <<sMember, heard, early, levelOwed, shellOwed>>
   /\ UNCHANGED <<ver, shared, dealPrivate, sectionsOn, member, num, unpub, log, up, changes, moves, drops, switchedOffline>>
 
 (* The socket drops: the session and what it hadn't sent go with it. *)
 Drop ==
   /\ up /\ drops < 1
-  /\ up' = FALSE /\ inbox' = {} /\ early' = {}
+  /\ up' = FALSE /\ inbox' = {} /\ early' = {} /\ blockedAt' = {}
   /\ levelOwed' = FALSE
   /\ drops' = drops + 1
   /\ UNCHANGED <<ver, shared, dealPrivate, sectionsOn, member, num, unpub, log, sMember, seen, heard, changes, moves>>
-  /\ UNCHANGED Client /\ UNCHANGED <<leak, levelBroke, switchedOffline>>
+  /\ UNCHANGED Client /\ UNCHANGED <<leak, levelBroke, switchedOffline, shellOwed>>
 
 (* makeWorkStream start uses the assigned owner cursor, including numbers reserved without rows.
    A hole in the replay through that number starts her over. *)
@@ -225,7 +239,8 @@ Resume ==
           THEN StartOver
           ELSE /\ sMember' = member
                /\ seen' = {t \in Tasks : Sees(t, member)}
-               /\ heard' = num /\ early' = {} /\ inbox' = {}
+               /\ heard' = num /\ early' = {} /\ inbox' = {} /\ blockedAt' = {}
+               /\ UNCHANGED shellOwed
                /\ shown' = [t \in Tasks |->
                               IF t \in replay /\ at[t] < seqOf(t) THEN ver[t] ELSE shown[t]]
                /\ clientNamed' = IF "a" \in replay /\ at["a"] < seqOf("a")
@@ -234,7 +249,7 @@ Resume ==
                            IF t \in replay /\ at[t] < seqOf(t) THEN seqOf(t) ELSE at[t]]
                /\ cursor' = now /\ cMember' = member
   /\ UNCHANGED <<ver, shared, dealPrivate, sectionsOn, member, num, unpub, log, changes, moves, drops>>
-  /\ UNCHANGED Ghosts
+  /\ UNCHANGED <<leak, levelOwed, levelBroke, switchedOffline>>
 
 Next ==
   \/ \E t \in Tasks : Edit(t) \/ Share(t)
@@ -248,6 +263,7 @@ Spec == Init /\ [][Next]_vars
 Settled == up /\ unpub = {} /\ inbox = {}
 StreamEqualsRead == Settled => shown = Read
 ClientLabelEqualsRead == Settled /\ switchedOffline => clientNamed = ClientNamed(member)
+SectionSwitchBeforeCursor == \A k \in shellOwed : cursor < k
 NoHiddenNamed == ~leak
 LevelStartsOver == ~levelBroke
 =============================================================================

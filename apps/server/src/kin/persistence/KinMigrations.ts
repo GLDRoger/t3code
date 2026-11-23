@@ -133,6 +133,8 @@ import Pictures from "./migrations/K209_Pictures.ts";
 import PartnerReimbursements from "./migrations/K210_PartnerReimbursements.ts";
 import PersonMailbox from "./migrations/K211_PersonMailbox.ts";
 import NumberValues from "./migrations/K212_NumberValues.ts";
+import PushSent from "./migrations/K213_PushSent.ts";
+import MessageWithdrawn from "./migrations/K214_MessageWithdrawn.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -346,6 +348,8 @@ const migrations = {
   "210_PartnerReimbursements": PartnerReimbursements,
   "211_PersonMailbox": PersonMailbox,
   "212_NumberValues": NumberValues,
+  "213_PushSent": PushSent,
+  "214_MessageWithdrawn": MessageWithdrawn,
 };
 const loader = Migrator.fromRecord(migrations);
 

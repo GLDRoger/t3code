@@ -2813,7 +2813,11 @@ const make = Effect.gen(function* () {
           parentRunId: parentRun.id,
           parentNodeId: parentRun.rootNodeId,
           ...(otherProjectId === undefined ? {} : { projectId: otherProjectId }),
-          task: taskPrompt(input),
+          task: yield* kinScratch.brief(
+            parent.thread,
+            requireProject(parent.thread.projectId),
+            taskPrompt(input),
+          ),
           ...(input.title === undefined ? {} : { title: input.title }),
           modelSelection: target.modelSelection,
           runtimeMode,

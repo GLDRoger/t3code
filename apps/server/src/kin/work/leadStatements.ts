@@ -19,7 +19,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { quote } from "../lead/quote.ts";
 import { turnFiles } from "./leadFields.ts";
-import { admitted, type Lead, leadTool, ownerTurn, sourceOf } from "./leadWork.ts";
+import { admitted, countryWorded, type Lead, leadTool, ownerTurn, sourceOf } from "./leadWork.ts";
 import { formatMoney } from "./money.ts";
 import { bankStates, findBankList, originKeyOf, rowFingerprints } from "./statements/bankList.ts";
 import {
@@ -402,7 +402,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
     input.refresh === true ||
     input.password !== undefined ||
     input.pages !== undefined;
-  yield* countryFirst(lead.orgId, { saved: reread });
+  yield* countryWorded(lead, reread, countryFirst(lead.orgId));
   yield* sourceOf(lead, input.sourceEventId);
   const chat = yield* turnChat(lead);
   if (chat === undefined) return yield* invalid("This turn has no chat to read a statement in.");

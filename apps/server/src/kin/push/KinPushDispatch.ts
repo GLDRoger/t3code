@@ -14,8 +14,10 @@ import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 
 import { ApproverKeys } from "../approvals/ApproverKeys.ts";
+import { KinPendingActions } from "../approvals/PendingActions.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinPushSender } from "./KinPushSender.ts";
+import { approvalTopic, cardTopic, chatTopic, taskTopic } from "./KinPushTopics.ts";
 
 const phaseOf = (widget: KinWidget) =>
   typeof widget.state === "object" && widget.state !== null && "phase" in widget.state
@@ -102,6 +104,23 @@ const make = Effect.gen(function* () {
   const onWidget = Effect.fn("KinPushDispatch.onWidget")(function* (widget: KinWidget) {
     const previous = announced.get(widget.widgetId);
     const turn = turns.get(turnKey(widget.orgId, widget.chatId));
+    // Closed, answered, or no longer waiting on someone: what its push told them may be settled.
+    if (
+      widget.closedAt !== null ||
+      widget.awaiting.length === 0 ||
+      [...(previous?.awaiting ?? [])].some(
+        (person) => !new Set<string>(widget.awaiting).has(person),
+      )
+    ) {
+      const actionId = actionOf(widget);
+      yield* sender.settle(widget.orgId, {
+        topics: [
+          cardTopic(widget.widgetId),
+          ...(actionId === null ? [] : [approvalTopic(actionId)]),
+        ],
+        messageIds: [widget.messageId],
+      });
+    }
     if (widget.closedAt !== null || widget.awaiting.length === 0) {
       announced.delete(widget.widgetId);
       turn?.cards.delete(widget.widgetId);
@@ -142,6 +161,14 @@ const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
+  // An approval decided, withdrawn or run out, whether or not a card shows it.
+  const actionChanges = yield* (yield* KinPendingActions).changes;
+  yield* Effect.forever(
+    PubSub.take(actionChanges).pipe(
+      Effect.flatMap((ref) => sender.settle(ref.orgId, { topics: [approvalTopic(ref.actionId)] })),
+    ),
+  ).pipe(Effect.forkScoped);
+
   const onMessage = (event: Extract<KinChatHubEvent, { type: "message.posted" }>) => {
     const { message } = event;
     const turn = turns.get(turnKey(event.orgId, message.chatId));
@@ -165,8 +192,44 @@ const make = Effect.gen(function* () {
                 chatId: event.chatId,
                 memberId: event.memberId,
               })
-            : Effect.void,
+            : event.type === "chat.cleared"
+              ? sender.settle(event.orgId, {
+                  chatId: event.chatId,
+                  topics: [chatTopic(event.chatId)],
+                })
+              : event.type === "member.removed" && event.member.principal._tag === "person"
+                ? sender.settle(event.orgId, {
+                    chatId: event.member.chatId,
+                    topics: [chatTopic(event.member.chatId)],
+                    personId: event.member.principal.personId,
+                  })
+                : event.type === "message.changed" && event.message.status !== "posted"
+                  ? sender.settle(event.orgId, {
+                      messageIds: [event.message.messageId],
+                      topics: [chatTopic(event.message.chatId)],
+                    })
+                  : Effect.void,
   ).pipe(Effect.forkScoped);
+});
+
+/**
+ * A task done, dropped or handed on settles what pushes told of it: its own topic, and Kin's
+ * notices and quiet-hours bundles that name it among others, found by its key. Runs for as long as the caller's scope, from Kin's layer, which holds
+ * the tasks service this layer sits beside.
+ */
+export const settleTasks = Effect.fn("KinPushDispatch.settleTasks")(function* <E>(
+  orgId: KinOrgId,
+  changes: Stream.Stream<{ readonly key?: string | undefined }, E>,
+) {
+  const sender = yield* KinPushSender;
+  yield* Stream.runForEach(changes, (tick) =>
+    tick.key === undefined
+      ? Effect.void
+      : sender.settle(orgId, { topics: [taskTopic(tick.key)], keys: [`task:${tick.key}`] }),
+  ).pipe(
+    Effect.catchCause((cause) => Effect.logWarning("Kin push stopped following tasks", { cause })),
+    Effect.forkScoped,
+  );
 });
 
 export const layer = Layer.effectDiscard(make);

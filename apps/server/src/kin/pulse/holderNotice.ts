@@ -15,6 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
+import { noteAbout } from "../push/pushAbout.ts";
 import { HELD_ID } from "../triggers/heldDelivery.ts";
 import { holdFor, holdLine } from "../triggers/quietHold.ts";
 import { daysAgoText, type SenseContext } from "./senses/shared.ts";
@@ -40,7 +41,7 @@ export const isHolderNotice = Effect.fn("KinPulse.isHolderNotice")(function* (
 /** One fact's line: "W-8 Send the deck, was due yesterday". */
 export const holderLine = (
   ctx: SenseContext,
-  fact: Pick<KinPulseFact, "sense" | "subject" | "scope">,
+  fact: Pick<KinPulseFact, "sense" | "subject" | "scope"> & { readonly lateReminder?: string },
   dueAt: number,
 ) => {
   const when = daysAgoText(ctx, dueAt);
@@ -48,7 +49,12 @@ export const holderLine = (
   const client = fact.sense === "theirs_late" ? fact.scope.clientTitle : undefined;
   const from = client === undefined ? "" : ` from ${client}`;
   const state = fact.sense === "task_due_soon" ? "due today" : `was due${from} ${when}`;
-  return { key: fact.subject.key, title: fact.subject.title, state };
+  return {
+    key: fact.subject.key,
+    title: fact.subject.title,
+    state,
+    ...(fact.lateReminder === undefined ? {} : { reminder: fact.lateReminder }),
+  };
 };
 
 /** What the holder's view hides, such as "Only me": counted, never named, as an agent reads it. */
@@ -79,10 +85,17 @@ export const holderBody = (
     lines.length === 0
       ? []
       : lines.length === 1
-        ? [`${lines[0]!.key} ${lines[0]!.title} ${lines[0]!.state}.`]
+        ? [
+            `${lines[0]!.key} ${lines[0]!.title} ${lines[0]!.state}.${lines[0]!.reminder === undefined ? "" : ` ${lines[0]!.reminder}`}`,
+          ]
         : [
             `${lines.length} of your tasks need you:`,
-            ...lines.slice(0, SHOWN).map((one) => `• ${one.key} ${one.title}, ${one.state}`),
+            ...lines
+              .slice(0, SHOWN)
+              .map(
+                (one) =>
+                  `• ${one.key} ${one.title}, ${one.state}${one.reminder === undefined ? "" : `. ${one.reminder}`}`,
+              ),
             ...(rest > 0 ? [`and ${rest} more`] : []),
           ];
   return [...named, ...(unnamed.length === 0 ? [] : [privateLine(unnamed)])].join("\n");
@@ -98,7 +111,7 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
   readonly ctx: SenseContext;
   readonly personId: KinPersonId;
   readonly agentId: KinAgentId;
-  readonly facts: ReadonlyArray<KinPulseFact>;
+  readonly facts: ReadonlyArray<KinPulseFact & { readonly lateReminder?: string }>;
   readonly unnamed: ReadonlyArray<KinPulseFact>;
 }) {
   const { ctx, personId } = input;
@@ -124,7 +137,7 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
   // One pass's facts for one person are one message, so a retried pass posts nothing more; a fact
   // open again after it cleared is told in a later pass, so it is a new message.
   const keys = [...input.facts, ...input.unnamed].map((fact) => fact.key);
-  return yield* noticeHolder({
+  const noticeId = yield* noticeHolder({
     orgId,
     personId,
     agentId: input.agentId,
@@ -134,6 +147,14 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
       .digest("hex")
       .slice(0, 32),
   });
+  // Its push stands while one of its facts does (`factsStand`); held, it waits on them too.
+  if (noticeId !== undefined)
+    yield* noteAbout(
+      orgId,
+      noticeId,
+      keys.map((key) => `fact:${key}`),
+    );
+  return noticeId;
 });
 
 /**

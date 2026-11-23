@@ -384,6 +384,9 @@ export const recordAsk = Effect.fn("KinQuestions.recordAsk")(function* (
     ON CONFLICT (question_id) DO NOTHING`;
 });
 
+/** A question asked in words, by the turn that asked it: its message carries the same turn. */
+export const textQuestionId = (wakeupId: string) => `q-${hash(`text:${wakeupId}`).slice(0, 12)}`;
+
 /**
  * A reply that ended on a question to the one person in a direct chat, with no card: stored
  * with no default, so every agent sees it is open. Their next message in that chat answers it,
@@ -401,7 +404,7 @@ export const recordTextQuestion = Effect.fn("KinQuestions.recordText")(function*
   const personId = yield* personOfChat(input.orgId, input.chatId);
   if (personId === undefined) return undefined;
   const clock = yield* personClock(input.orgId, personId);
-  const questionId = `q-${hash(`text:${input.wakeupId}`).slice(0, 12)}`;
+  const questionId = textQuestionId(input.wakeupId);
   const dueAt = defaultDue(input.now, clock.zone, clock.work);
   yield* sql`UPDATE kin_questions SET state = 'withdrawn', closed_at = ${input.now}
     WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND chat_id = ${input.chatId}
@@ -426,16 +429,26 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
     readonly personId: string;
     readonly label: string;
     readonly approves?: boolean;
+    readonly via?: "tap" | "reaction";
     readonly now: number;
   },
   chat: Pick<KinChatService["Service"], "notice" | "setDocCardChangesFirst">,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const open = sql`org_id = ${input.orgId} AND person_id = ${input.personId} AND state = 'open'
+    AND (widget_id = ${input.widgetId} OR raise_widget_id = ${input.widgetId})`;
+  if (input.via === "reaction") {
+    const [draft] = yield* sql`SELECT 1 FROM kin_questions WHERE ${open} AND draft_json IS NOT NULL
+      ORDER BY question_id LIMIT 1`;
+    if (draft !== undefined)
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: "Tap Approve or Changes first on the card.",
+      });
+  }
   const moved = yield* sql<{ questionId: string }>`UPDATE kin_questions SET state = 'answered',
       answer = ${input.label}, closed_at = ${input.now}
-    WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND state = 'open'
-      AND (widget_id = ${input.widgetId} OR raise_widget_id = ${input.widgetId})
-    RETURNING question_id AS "questionId"`;
+    WHERE ${open} RETURNING question_id AS "questionId"`;
   const row =
     moved[0] === undefined ? undefined : yield* readQuestion(input.orgId, moved[0].questionId);
   if (row?.forChatId == null) return undefined;

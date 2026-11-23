@@ -639,11 +639,24 @@ describe("KinPulse", () => {
       const wakes = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
           AND dedupe_key NOT LIKE 'holders:%'`;
       assert.lengthOf(wakes, first.woken.length + overdue.length);
+      for (const [minute, retries] of [
+        [3, 1],
+        [5, 1],
+        [7, 0],
+      ] as const) {
+        yield* sql`UPDATE kin_events SET state = 'failed' WHERE org_id = ${orgId}
+          AND dedupe_key = ${`${overdue[0]}:${at + minute * MINUTE}`}`;
+        const result = yield* KinPulse.tick(orgId, at + (minute + 2) * MINUTE);
+        assert.lengthOf(
+          result.woken.filter((key) => key === overdue[0]),
+          retries,
+        );
+      }
     }).pipe(Effect.provide(layer)),
   );
 
   it.effect(
-    "a record past due wakes its agent holder once, and again only when the due day changes",
+    "a late task wakes its agent once per age band and again when the due day changes",
     () =>
       Effect.gen(function* () {
         yield* seed;
@@ -656,12 +669,36 @@ describe("KinPulse", () => {
           `task_late:W-1:due=${B + 10 * DAY}`,
         ]);
         assert.isTrue(first.told.some((one) => one.to === `agent:${chief}`));
-        // Late all week: not again.
-        for (const later of [at + HOUR, at + DAY, at + 6 * DAY])
+        yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId}
+          AND dedupe_key = ${`holders:${chief}:${at}`}`;
+        for (const [offset, count] of [
+          [HOUR, 0],
+          [DAY, 0],
+          [2 * DAY, 1],
+          [3 * DAY, 0],
+          [6 * DAY, 1],
+        ] as const) {
           assert.lengthOf(
-            lateW1((yield* KinPulse.tick(orgId, later)).told.map((one) => one.key)),
-            0,
+            lateW1((yield* KinPulse.tick(orgId, at + offset)).told.map((one) => one.key)),
+            count,
           );
+        }
+        const [thirdDay] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+          FROM kin_events WHERE org_id = ${orgId} AND dedupe_key = ${`holders:${chief}:${at + 2 * DAY}`}
+          ORDER BY event_id`;
+        const section = yield* buildPulseSection({
+          orgId,
+          agentId: chief,
+          now: at + 2 * DAY,
+          wokeFor: [`task_late:W-1:due=${B + 10 * DAY}`],
+          pulseEvents: [thirdDay!.eventId],
+        });
+        assert.match(
+          section!.byProject
+            .flatMap((group) => group.facts)
+            .find((row) => row.key.startsWith("task_late:W-1:"))!.consequence,
+          / Still open since 2026-11-11\.$/,
+        );
         // Its due day moves: told again, once.
         yield* sql`UPDATE kin_records SET due_at = ${B + 11 * DAY} WHERE record_id = 'r-W-1'`;
         const moved = yield* KinPulse.tick(orgId, at + 7 * DAY);
@@ -1045,7 +1082,40 @@ describe("KinPulse", () => {
     }).pipe(Effect.provide(chatLayer)),
   );
 
-  it.effect("an away teammate is told once they are back; a removed one never", () =>
+  it.effect(
+    "an away teammate is told when back, and again in a new band; a removed one never",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* letMate;
+        const sql = yield* SqlClient.SqlClient;
+        const chats = yield* KinChatService;
+        const at = B + 3 * DAY + 12 * HOUR;
+        yield* TestClock.setTime(at);
+        yield* sql`UPDATE kin_people SET away_until = '2026-11-06' WHERE person_id = ${mate}`;
+        yield* KinPulse.tick(orgId, at);
+        yield* deliverHeld(orgId, chats);
+        assert.lengthOf(yield* mateNotices, 0);
+        const back = B + 5 * DAY + 12 * HOUR;
+        yield* TestClock.setTime(back);
+        yield* deliverHeld(orgId, chats);
+        yield* KinPulse.tick(orgId, back);
+        yield* deliverHeld(orgId, chats);
+        assert.deepStrictEqual(yield* mateNotices, [
+          "W-8 Invented W-8 was due yesterday.",
+          "W-8 Invented W-8 was due 3 days ago. Still open since 2026-11-03.",
+        ]);
+
+        // Removed: a new late task of theirs reaches no one, by notice or by wake.
+        yield* sql`UPDATE kin_people SET removed_at = ${back} WHERE person_id = ${mate}`;
+        yield* insert({ id: "W-23", dueAt: B + 4 * DAY, ownerKind: "person", ownerId: mate });
+        const removed = yield* KinPulse.tick(orgId, back + HOUR);
+        assert.isFalse(removed.told.some((one) => one.key.startsWith("task_late:W-23:")));
+        assert.lengthOf(yield* mateNotices, 2);
+      }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a held notice whose facts all settled overnight is never posted", () =>
     Effect.gen(function* () {
       yield* seed;
       yield* letMate;
@@ -1055,21 +1125,23 @@ describe("KinPulse", () => {
       yield* TestClock.setTime(at);
       yield* sql`UPDATE kin_people SET away_until = '2026-11-06' WHERE person_id = ${mate}`;
       yield* KinPulse.tick(orgId, at);
-      yield* deliverHeld(orgId, chats);
-      assert.lengthOf(yield* mateNotices, 0);
+      // The held notice keeps which facts it tells, by key.
+      const [held] = yield* sql<{ kind: string }>`SELECT kind FROM kin_held_posts
+        WHERE org_id = ${orgId} AND person_id = ${mate} AND delivered_at IS NULL`;
+      assert.deepStrictEqual(yield* sql`SELECT key FROM kin_push_about WHERE ref = ${held!.kind}`, [
+        { key: `fact:task_late:W-8:due=${B + 2 * DAY}` },
+      ]);
+      // W-8 is done while she is away: its fact clears, and the notice has nothing left to say.
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-8'`;
+      yield* KinPulse.tick(orgId, at + HOUR);
       const back = B + 5 * DAY + 12 * HOUR;
       yield* TestClock.setTime(back);
       yield* deliverHeld(orgId, chats);
-      yield* KinPulse.tick(orgId, back);
-      yield* deliverHeld(orgId, chats);
-      assert.deepStrictEqual(yield* mateNotices, ["W-8 Invented W-8 was due yesterday."]);
-
-      // Removed: a new late task of theirs reaches no one, by notice or by wake.
-      yield* sql`UPDATE kin_people SET removed_at = ${back} WHERE person_id = ${mate}`;
-      yield* insert({ id: "W-23", dueAt: B + 4 * DAY, ownerKind: "person", ownerId: mate });
-      const removed = yield* KinPulse.tick(orgId, back + HOUR);
-      assert.isFalse(removed.told.some((one) => one.key.startsWith("task_late:W-23:")));
-      assert.lengthOf(yield* mateNotices, 1);
+      assert.deepStrictEqual(yield* mateNotices, []);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_held_posts WHERE org_id = ${orgId} AND person_id = ${mate}`,
+        0,
+      );
     }).pipe(Effect.provide(chatLayer)),
   );
 

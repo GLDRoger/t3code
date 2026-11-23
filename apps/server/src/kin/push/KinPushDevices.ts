@@ -40,6 +40,8 @@ export type KinPushDevice = {
   readonly sessionId: AuthSessionId;
   /** An Android build that made the quiet channel (`KinPushRegisterDeviceInput.quietChannel`). */
   readonly quietChannel: boolean;
+  /** A build that matches notifications by topic (`KinPushRegisterDeviceInput.withdraws`). */
+  readonly withdraws: boolean;
 };
 
 /** What logs and clients see instead of a token: 12 hex characters of its SHA-256. */
@@ -139,6 +141,7 @@ const make = Effect.gen(function* () {
             aps_environment: input.apsEnvironment,
             device_label: input.deviceLabel ?? null,
             quiet_channel: input.quietChannel === true ? 1 : 0,
+            withdraws: input.withdraws === true ? 1 : 0,
             session_id: caller.session.sessionId,
             proof_key_thumbprint: caller.session.proofKeyThumbprint ?? null,
             created_at: now,
@@ -150,6 +153,7 @@ const make = Effect.gen(function* () {
           aps_environment = excluded.aps_environment,
           device_label = excluded.device_label,
           quiet_channel = excluded.quiet_channel,
+          withdraws = excluded.withdraws,
           session_id = excluded.session_id,
           proof_key_thumbprint = excluded.proof_key_thumbprint,
           updated_at = excluded.updated_at
@@ -200,7 +204,8 @@ const make = Effect.gen(function* () {
         aps_environment: KinApsEnvironment;
         session_id: AuthSessionId;
         quiet_channel: number;
-      }>`SELECT token, person_id, platform, aps_environment, session_id, quiet_channel
+        withdraws: number;
+      }>`SELECT token, person_id, platform, aps_environment, session_id, quiet_channel, withdraws
         FROM kin_push_devices
         WHERE org_id = ${orgId} AND person_id IN ${sql.in(people)}
         ORDER BY person_id, token`;
@@ -212,6 +217,7 @@ const make = Effect.gen(function* () {
         apsEnvironment: row.aps_environment,
         sessionId: row.session_id,
         quietChannel: row.quiet_channel === 1,
+        withdraws: row.withdraws === 1,
       }));
     },
     Effect.catch(internal("KinPushDevices.forPeople")),

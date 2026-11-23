@@ -13,11 +13,15 @@ import type {
   KinPushSendingStatus,
   KinPushSubject,
   KinPushToken,
+  KinPushTopic,
+  KinPushWithdrawn,
   KinRecordKey,
   KinWidgetId,
 } from "@t3tools/contracts";
 import {
   KIN_DEVICE_LINKED_NOTICE,
+  KIN_PUSH_TOPICS_MAX,
+  KinPushError,
   KinChoiceCardState,
   KinMessageId,
   KinMessageRelay,
@@ -31,13 +35,14 @@ import {
   kinThreadLinksAsWords,
   kinWhenParts,
 } from "@t3tools/contracts";
-import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import type * as Fiber from "effect/Fiber";
+import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
+import * as Schedule from "effect/Schedule";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -57,6 +62,21 @@ import { KinApnsTransport } from "./Apns.ts";
 import { KinFcmTransport } from "./Fcm.ts";
 import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
+import {
+  approvalTopic,
+  bundleTopic,
+  cardTopic,
+  chatTopic,
+  kinTopicCollapseId,
+  makeKinPushTopics,
+  noticeTopic,
+  questionTopic,
+  taskTopic,
+  troubleTopic,
+  uniqueTopic,
+  type KinPushSentRow,
+  type KinPushSettled,
+} from "./KinPushTopics.ts";
 import { lastAsk, turnAsks } from "./turnAsks.ts";
 
 /**
@@ -79,6 +99,16 @@ export type KinPushNotification =
   | { readonly _tag: "tasks"; readonly orgId: KinOrgId; readonly holdIds: ReadonlyArray<string> }
   /** A teammate's messages held from one reader's quiet hours (`deliverHeld`): one banner. */
   | { readonly _tag: "dm"; readonly orgId: KinOrgId; readonly holdIds: ReadonlyArray<string> }
+  /**
+   * A message an agent took back or put right: the chat banner that shows it now shows, quietly,
+   * the newest words still unread there, or goes (`restate`).
+   */
+  | {
+      readonly _tag: "restate";
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly messageId: KinMessageId;
+    }
   /** A member's read mark moved: their other devices get the new badge, with no banner. */
   | {
       readonly _tag: "read";
@@ -125,6 +155,14 @@ type Push = {
   readonly source: KinMessageId | undefined;
   /** One per message: a resend replaces its own banner. The chat groups them (`thread-id`). */
   readonly collapseId?: string;
+  /** What it is about: to a build that matches by topic, a newer push about it replaces it. */
+  readonly topic: KinPushTopic;
+  /** A chat's name, titled "<name> · 3 new" when the reader has more than one unread there. */
+  readonly countTitle?: string;
+  /** A chat's topic: the newest message position the banner covers, which settles it once read. */
+  readonly seq?: number;
+  /** What a bundle is about (`task:<record key>`): it stands while any of them does. */
+  readonly about?: ReadonlyArray<string>;
   readonly data: KinPushData;
   readonly recipients: ReadonlyArray<Recipient>;
   /** A device the push is about, which needs no word of itself. */
@@ -135,6 +173,8 @@ type Push = {
 const KIN_APNS_PAYLOAD_MAX = 4096;
 /** FCM refuses a message whose data keys and values come to more than this many bytes. */
 const KIN_FCM_DATA_MAX = 4096;
+/** A withdrawal's data, leaving room for `aps` on iOS and the `body` key's JSON on Android. */
+const WITHDRAW_PAYLOAD_MAX = 3_600;
 
 const utf8 = new TextEncoder();
 const jsonBytes = (value: unknown) => utf8.encode(JSON.stringify(value)).length;
@@ -322,6 +362,11 @@ const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeIds = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 const decodeState = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const UNPROMPTED_RING_GAP_MS = 30 * 60_000;
+/** Withdrawals for one person wait this long, so many settling at once make one silent push. */
+export const KIN_WITHDRAW_BATCH = Duration.seconds(3);
+/** The recovery pass runs at start and this often, over at most `RECOVER_ROWS` live rows. */
+const KIN_PUSH_RECOVER_EVERY = Duration.minutes(10);
+const RECOVER_ROWS = 200;
 const decodeRelay = Schema.decodeUnknownOption(Schema.fromJsonString(KinMessageRelay));
 const decodeTurnCards = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
@@ -360,20 +405,9 @@ const approvalPushText = (action: KinPendingAction) => {
   }
 };
 
-export class KinPushSender extends Context.Service<
-  KinPushSender,
-  {
-    readonly status: KinPushSendingStatus;
-    /** Whether pushes to this platform's devices go anywhere. */
-    readonly statusFor: (platform: KinPushPlatform) => KinPushSendingStatus;
-    /** Call after the commit; it sends in the background, outliving the request, and never fails. */
-    readonly notify: (
-      notification: KinPushNotification,
-    ) => Effect.Effect<Fiber.Fiber<KinPushOutcome>>;
-    /** Sends every push an approver key change still owes, then settles it. Returns how many. */
-    readonly flushKeyPushes: Effect.Effect<number>;
-  }
->()("t3/kin/push/KinPushSender") {}
+import { KinPushSender } from "./KinPushSenderService.ts";
+
+export { KinPushSender };
 
 const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
@@ -390,6 +424,7 @@ const make = Effect.gen(function* () {
   const cache = yield* MemoryCache;
   const actions = yield* KinPendingActions;
   const chats = yield* KinChatRepository;
+  const topics = yield* makeKinPushTopics;
   const environmentId = yield* (yield* ServerEnvironment.ServerEnvironment).getEnvironmentId;
   const host = segment(environmentId);
   const chatLink = (orgId: KinOrgId, chatId: KinChatId) =>
@@ -579,6 +614,7 @@ const make = Effect.gen(function* () {
       body: approvalPushText(action.value),
       chatId: undefined,
       source: undefined,
+      topic: approvalTopic(actionId),
       data: { kin: 1, orgId, pendingActionId: actionId, deepLink },
       recipients,
     } satisfies Push;
@@ -787,6 +823,21 @@ const make = Effect.gen(function* () {
                 : { ...told, delivery: "ring", capped: { spent: "badge" } },
       );
     }
+    // Kin's notice of a trouble, or of the reader's work, is its own topic; the rest, the chat's.
+    const [trouble] =
+      row.author_kind === "system"
+        ? yield* sql<{ cause: string }>`SELECT cause FROM kin_troubles
+            WHERE org_id = ${orgId} AND trouble_id = ${messageId}`
+        : [];
+    const told = recipients.find((recipient) => recipient.subject !== undefined)?.subject;
+    const topic =
+      trouble !== undefined
+        ? troubleTopic(trouble.cause)
+        : own === "work" && told?._tag === "record"
+          ? taskTopic(told.key)
+          : own === "work" && told?._tag === "tasks"
+            ? noticeTopic(messageId)
+            : chatTopic(row.chat_id);
     const push: Push = {
       category: "kin.message",
       channel: brief ? "kin.briefs" : "kin.messages",
@@ -795,6 +846,10 @@ const make = Effect.gen(function* () {
       chatId: row.chat_id,
       source: messageId,
       collapseId: kinPushCollapseId(orgId, row.chat_id, messageId),
+      topic,
+      ...(topic === chatTopic(row.chat_id)
+        ? { countTitle: chat.direct ? (author ?? chat.name) : chat.name, seq: row.seq }
+        : {}),
       data: {
         kin: 1,
         orgId,
@@ -931,6 +986,11 @@ const make = Effect.gen(function* () {
     }
     const cardKind =
       greeting !== undefined ? kinBriefKind(null, greeting) : kinCardKind(row, state);
+    // A question asked again on a new card replaces the old card's notification.
+    const [question] = yield* sql<{ questionId: string }>`SELECT question_id AS "questionId"
+      FROM kin_questions WHERE org_id = ${orgId} AND state = 'open'
+        AND (widget_id = ${widgetId} OR raise_widget_id = ${widgetId})
+      ORDER BY asked_at DESC, question_id LIMIT 1`;
     return {
       ...kind,
       channel: greeting !== undefined ? "kin.briefs" : kinCardChannel(cardKind),
@@ -941,6 +1001,7 @@ const make = Effect.gen(function* () {
       ...(kind.category === "kin.message"
         ? { collapseId: kinPushCollapseId(orgId, row.chat_id, row.message_id) }
         : {}),
+      topic: question === undefined ? cardTopic(widgetId) : questionTopic(question.questionId),
       data: {
         kin: 1,
         orgId,
@@ -1025,6 +1086,10 @@ const make = Effect.gen(function* () {
       readonly delivery: KinPushDelivery;
       readonly badge: number;
       readonly subject: KinPushSubject | undefined;
+      /** Their unread in the push's chat, for a chat topic's count. */
+      readonly unread: number;
+      /** Their next version of the push's topic, taken once, by the first phone that shows it. */
+      readonly version: Effect.Effect<number | undefined> | undefined;
     },
   ) {
     if (push.chatId !== undefined && (yield* presence.isWatching(device.sessionId, push.chatId)))
@@ -1037,8 +1102,26 @@ const make = Effect.gen(function* () {
     )
       return "dropped" as const;
     if (statusFor(device.platform) === "unconfigured") return "skipped" as const;
-    const data =
-      recipient.subject === undefined ? push.data : { ...push.data, subject: recipient.subject };
+    // A build that matches by topic: the push replaces the last about the same thing, and says
+    // how many are unread in a chat it stands for.
+    const topical = device.withdraws;
+    const version =
+      topical && recipient.delivery !== "badge" && recipient.version !== undefined
+        ? yield* recipient.version
+        : undefined;
+    const data = {
+      ...push.data,
+      ...(recipient.subject === undefined ? {} : { subject: recipient.subject }),
+      ...(topical ? { topic: push.topic } : {}),
+      ...(version === undefined ? {} : { version }),
+    };
+    const collapseId = topical
+      ? kinTopicCollapseId(environmentId, orgId, push.topic)
+      : push.collapseId;
+    const title =
+      topical && push.countTitle !== undefined && recipient.unread > 1
+        ? `${push.countTitle} · ${recipient.unread} new`
+        : push.title;
     if (device.platform === "android") {
       // An Android launcher counts the banners shown, so a badge-only push would show nothing. A
       // build without the quiet channel would draw a quiet one in Expo's loud fallback channel.
@@ -1050,7 +1133,7 @@ const make = Effect.gen(function* () {
       const encoded = yield* encodeJson(data);
       // Data only: the app draws the banner, with its category's buttons, even when killed.
       const message = (body: string) => ({
-        title: push.title,
+        title,
         message: body,
         // expo-notifications reads a remote push's `content.data` from `body`, as on iOS.
         body: encoded,
@@ -1059,7 +1142,7 @@ const make = Effect.gen(function* () {
         badge: String(recipient.badge),
         ...(push.chatId === undefined ? {} : { threadIdentifier: `kin:${orgId}:${push.chatId}` }),
         // The shown banner with this tag is replaced, as `apns-collapse-id` replaces on iOS.
-        ...(push.collapseId === undefined ? {} : { tag: push.collapseId }),
+        ...(collapseId === undefined ? {} : { tag: collapseId }),
       });
       const result = yield* fcm.send({
         token: device.token,
@@ -1073,7 +1156,7 @@ const make = Effect.gen(function* () {
         recipient.delivery === "badge"
           ? { badge: recipient.badge }
           : {
-              alert: { title: push.title, body },
+              alert: { title, body },
               badge: recipient.badge,
               category: push.category,
               // Passive: listed in Notification Center with no sound, banner or lit screen.
@@ -1089,9 +1172,7 @@ const make = Effect.gen(function* () {
       token: device.token,
       environment: device.apsEnvironment,
       // A badge-only push must not replace the banner a loud one left under the same id.
-      ...(push.collapseId === undefined || recipient.delivery === "badge"
-        ? {}
-        : { collapseId: push.collapseId }),
+      ...(collapseId === undefined || recipient.delivery === "badge" ? {} : { collapseId }),
       payload: payload(kinPushFit(push.body, KIN_APNS_PAYLOAD_MAX - jsonBytes(payload("")))),
     });
     if (result.status === 200) {
@@ -1138,10 +1219,25 @@ const make = Effect.gen(function* () {
       // A phone whose platform has no sender gets nothing, and so spends no ring.
       (device) => device.sessionId !== push.exceptSession && statusFor(device.platform) === "ready",
     );
+    // Who a version was taken for: checked once more after the sends (`recheck`).
+    const reserved = new Set<KinPersonId>();
     const recipients = new Map<
       KinPersonId,
-      { delivery: KinPushDelivery; badge: number; subject: KinPushSubject | undefined }
+      {
+        delivery: KinPushDelivery;
+        badge: number;
+        subject: KinPushSubject | undefined;
+        unread: number;
+        version: Effect.Effect<number | undefined> | undefined;
+      }
     >();
+    // A chat's own topic says how many are unread there, to a build that replaces by topic.
+    const counted =
+      push.chatId !== undefined &&
+      push.topic === chatTopic(push.chatId) &&
+      targets.some((device) => device.withdraws)
+        ? push.chatId
+        : undefined;
     for (const recipient of push.recipients) {
       let delivery = recipient.delivery;
       // A rationed ring is spent only on a phone that will show it, so a push decided before
@@ -1162,6 +1258,31 @@ const make = Effect.gen(function* () {
         delivery,
         badge: yield* badgeFor(orgId, recipient.personId),
         subject: recipient.subject,
+        unread:
+          counted === undefined ? 0 : yield* topics.unreadIn(orgId, recipient.personId, counted),
+        // Taken only when a phone that matches by topic shows it. A unique topic has none.
+        version: push.topic.startsWith("u:")
+          ? undefined
+          : yield* Effect.cached(
+              topics
+                .reserve({
+                  orgId,
+                  personId: recipient.personId,
+                  topic: push.topic,
+                  chatId: push.chatId,
+                  messageId: push.source,
+                  seq: push.seq,
+                  about: push.about,
+                })
+                .pipe(
+                  Effect.tap(() => Effect.sync(() => reserved.add(recipient.personId))),
+                  Effect.catch((error) =>
+                    Effect.logWarning("Kin couldn't note a push it sends.", {
+                      error: error._tag,
+                    }).pipe(Effect.as(undefined)),
+                  ),
+                ),
+            ),
       });
     }
     // Bounded, so one slow device doesn't hold up the rest and a big org doesn't flood APNs.
@@ -1175,14 +1296,220 @@ const make = Effect.gen(function* () {
       },
       { concurrency: SEND_CONCURRENCY },
     );
+    // What settled while this was with the gateway, before its row stood to be found: withdrawn now.
+    if (reserved.size > 0)
+      yield* topics.live(orgId, { topics: [push.topic] }).pipe(
+        Effect.flatMap((rows) =>
+          Effect.forEach(
+            rows.filter((row) => reserved.has(row.personId)),
+            (row) =>
+              topics
+                .stands(orgId, row)
+                .pipe(Effect.flatMap((stands) => (stands ? Effect.void : enqueue(orgId, [row])))),
+            { discard: true },
+          ),
+        ),
+        Effect.catch((error) =>
+          Effect.logWarning("Kin couldn't recheck a push it sent.", { error: error._tag }),
+        ),
+      );
     const count = (outcome: (typeof results)[number]) =>
       results.filter((result) => result === outcome).length;
     return { sent: count("sent"), suppressed: count("suppressed"), failed: count("failed") };
   });
 
+  const batches = yield* FiberSet.make<void, never>();
+  /** Each person's settled rows waiting for their batch to go, by org and person. */
+  const waiting = new Map<
+    string,
+    {
+      readonly orgId: KinOrgId;
+      readonly personId: KinPersonId;
+      readonly rows: Map<KinPushTopic, KinPushSentRow>;
+    }
+  >();
+
+  const withdrawalData = (
+    orgId: KinOrgId,
+    withdraw: ReadonlyArray<KinPushWithdrawn>,
+  ): KinPushData => ({
+    kin: 1,
+    orgId,
+    deepLink: `/kin/${host}/${segment(orgId)}/work`,
+    ...(withdraw.length === 0 ? {} : { withdraw }),
+  });
+
+  /** Topics in lists that each fit one silent push on either platform. */
+  const fitted = (orgId: KinOrgId, withdraw: ReadonlyArray<KinPushWithdrawn>) => {
+    const lists: Array<Array<KinPushWithdrawn>> = [];
+    let list: Array<KinPushWithdrawn> = [];
+    for (const topic of withdraw) {
+      if (
+        list.length > 0 &&
+        (list.length >= KIN_PUSH_TOPICS_MAX ||
+          jsonBytes(withdrawalData(orgId, [...list, topic])) > WITHDRAW_PAYLOAD_MAX)
+      ) {
+        lists.push(list);
+        list = [];
+      }
+      list.push(topic);
+    }
+    return list.length === 0 && lists.length > 0 ? lists : [...lists, list];
+  };
+
   /**
-   * A badge-only push to the reader's other devices; the one reading watches the chat. It wakes
-   * the app too, which takes the chat's banners off the pane once nothing in it is unread.
+   * A silent push to one phone that matches by topic: it removes `withdraw`'s notifications and,
+   * on iOS, sets the badge. With nothing to withdraw it goes only to move an iOS badge.
+   */
+  const sendWithdrawal = Effect.fn("KinPushSender.sendWithdrawal")(function* (
+    orgId: KinOrgId,
+    device: KinPushDevice,
+    withdraw: ReadonlyArray<KinPushWithdrawn>,
+    badge: number,
+  ) {
+    // Taken: the gateway accepted it, or the phone is gone and shows nothing any more.
+    let taken = true;
+    if (device.platform === "android") {
+      if (withdraw.length === 0) return taken;
+      for (const list of fitted(orgId, withdraw)) {
+        const encoded = yield* encodeJson(withdrawalData(orgId, list));
+        const result = yield* fcm.send({
+          token: device.token,
+          priority: "NORMAL",
+          data: { body: encoded },
+        });
+        yield* fcmOutcome(orgId, device, result, badge);
+        if (result.status !== 200 && !FCM_DEAD_REASONS.has(result.reason ?? "")) taken = false;
+      }
+      return taken;
+    }
+    if (withdraw.length === 0 && shownBadge.get(device.token) === badge) return taken;
+    for (const list of fitted(orgId, withdraw)) {
+      // Apple's background push carries no badge of its own: the app sets it when woken.
+      const result = yield* apns.send({
+        token: device.token,
+        environment: device.apsEnvironment,
+        background: true,
+        payload: {
+          aps: { "content-available": 1 },
+          body: { ...withdrawalData(orgId, list), badge },
+        },
+      });
+      if (result.status === 200) shownBadge.set(device.token, badge);
+      else if (result.status !== 410 && !DEAD_TOKEN_REASONS.has(result.reason ?? "")) taken = false;
+    }
+    return taken;
+  });
+
+  /** Withdraws what in one person's batch is settled now, once, and tells their phones. */
+  const flushWithdrawals = Effect.fn("KinPushSender.flushWithdrawals")(function* (key: string) {
+    const batch = waiting.get(key);
+    waiting.delete(key);
+    if (batch === undefined) return;
+    const { orgId, personId } = batch;
+    // As they are now: a newer version sent since is checked, and withdrawn, as itself.
+    const settled: Array<KinPushSentRow> = [];
+    if (batch.rows.size > 0)
+      for (const row of yield* topics.live(orgId, { topics: [...batch.rows.keys()], personId }))
+        if (!(yield* topics.stands(orgId, row))) settled.push(row);
+    const withdraw = settled.map((row) => ({ topic: row.topic, version: row.version }));
+    // Withdrawals are silent, so quiet hours never hold one.
+    const targets = (yield* devices.forPeople(orgId, [personId])).filter(
+      (device) => device.withdraws && statusFor(device.platform) === "ready",
+    );
+    const badge = targets.length === 0 ? 0 : yield* badgeFor(orgId, personId);
+    const taken = yield* Effect.forEach(
+      targets,
+      (device) => sendWithdrawal(orgId, device, withdraw, badge),
+      { concurrency: SEND_CONCURRENCY },
+    );
+    // Marked only once every phone's gateway took it; else the recovery pass sends it again.
+    const sent = taken.every(Boolean);
+    if (sent) for (const row of settled) yield* topics.withdraw(orgId, row);
+    if (settled.length > 0)
+      yield* Effect.logInfo("Kin push withdraws settled notifications", {
+        orgId,
+        personId,
+        topics: withdraw.map((one) => `${one.topic}@${one.version}`),
+        devices: targets.length,
+        sent,
+      });
+  });
+
+  /** Adds rows to their people's batches; `badgeOf` gets a batch even with none, for its badge. */
+  const enqueue = Effect.fn("KinPushSender.enqueue")(function* (
+    orgId: KinOrgId,
+    rows: ReadonlyArray<KinPushSentRow>,
+    badgeOf?: KinPersonId,
+  ) {
+    const people = [
+      ...rows.map((row) => row.personId),
+      ...(badgeOf === undefined ? [] : [badgeOf]),
+    ];
+    for (const personId of people) {
+      const key = `${orgId}\u0000${personId}`;
+      if (waiting.has(key)) continue;
+      waiting.set(key, { orgId, personId, rows: new Map() });
+      yield* Effect.sleep(KIN_WITHDRAW_BATCH).pipe(
+        Effect.andThen(flushWithdrawals(key)),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin push couldn't withdraw settled notifications.", { cause }),
+        ),
+        FiberSet.run(batches),
+      );
+    }
+    for (const row of rows) waiting.get(`${orgId}\u0000${row.personId}`)?.rows.set(row.topic, row);
+  });
+
+  const settle = Effect.fn("KinPushSender.settle")(
+    function* (orgId: KinOrgId, settled: KinPushSettled) {
+      yield* enqueue(orgId, yield* topics.live(orgId, settled));
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin push couldn't read what settled.", { cause }),
+    ),
+  );
+
+  let recovered: { readonly sentAt: number; readonly rowid: number } | undefined;
+  const recover = Effect.fn("KinPushSender.recover")(
+    function* () {
+      const rows = yield* topics.due(recovered, RECOVER_ROWS);
+      const last = rows.at(-1);
+      recovered =
+        rows.length < RECOVER_ROWS || last === undefined
+          ? undefined
+          : { sentAt: last.sentAt, rowid: last.rowid };
+      for (const row of rows)
+        if (!(yield* topics.stands(row.orgId, row))) yield* enqueue(row.orgId, [row]);
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin push couldn't look for settled notifications.", { cause }),
+    ),
+  );
+
+  const reconcile = Effect.fn("KinPushSender.reconcile")(
+    function* (orgId: KinOrgId, personId: KinPersonId, asked: ReadonlyArray<KinPushTopic>) {
+      const { remove, unknown } = yield* topics.settledOf(orgId, personId, asked);
+      return { remove, unknown, badge: yield* badgeFor(orgId, personId) };
+    },
+    Effect.catch((error) =>
+      Effect.logWarning("Kin push reconcile failed.", { error: error._tag }).pipe(
+        Effect.andThen(
+          Effect.fail(
+            new KinPushError({
+              reason: "unavailable",
+              message: "Kin couldn't check notifications.",
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  /**
+   * A badge-only push to the reader's other devices that don't match by topic; the one reading
+   * watches the chat. It wakes the app too, which takes the chat's banners off the pane once
+   * nothing in it is unread. Phones that match by topic hear of it in the reader's batch.
    */
   const readBadge = Effect.fn("KinPushSender.readBadge")(function* (
     orgId: KinOrgId,
@@ -1194,9 +1521,16 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${orgId} AND chat_id = ${chatId} AND member_id = ${memberId}
         AND principal_kind = 'person' AND left_at IS NULL`;
     if (row === undefined) return { sent: 0, suppressed: 0, failed: 0 };
+    yield* enqueue(
+      orgId,
+      yield* topics.live(orgId, { chatId, topics: [chatTopic(chatId)], personId: row.person_id }),
+      row.person_id,
+    );
     const badge = yield* badgeFor(orgId, row.person_id);
     const cleared = (yield* chats.unreadCount({ orgId, chatId, memberId })) === 0;
-    const targets = yield* devices.forPeople(orgId, [row.person_id]);
+    const targets = (yield* devices.forPeople(orgId, [row.person_id])).filter(
+      (device) => !device.withdraws,
+    );
     const data: KinPushData = {
       kin: 1,
       orgId,
@@ -1267,6 +1601,9 @@ const make = Effect.gen(function* () {
       body: news.body,
       chatId: undefined,
       source: undefined,
+      // Several tasks: tracked by which, so it goes once the last no longer stands for them.
+      topic: news.opens === undefined ? bundleTopic(holdIds) : taskTopic(news.opens.key),
+      ...(news.opens === undefined ? { about: news.tasks.map((key) => `task:${key}`) } : {}),
       data: {
         kin: 1,
         orgId,
@@ -1307,8 +1644,13 @@ const make = Effect.gen(function* () {
       (person) => person.personId === first.personId,
     );
     if (reader === undefined) return undefined;
-    const unread = yield* sql<{ messageId: KinMessageId; body: string; name: string | null }>`
-      SELECT m.message_id AS "messageId", m.body, p.display_name AS name FROM kin_messages m
+    const unread = yield* sql<{
+      messageId: KinMessageId;
+      seq: number;
+      body: string;
+      name: string | null;
+    }>`
+      SELECT m.message_id AS "messageId", m.seq, m.body, p.display_name AS name FROM kin_messages m
       LEFT JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = m.author_person_id
       WHERE m.org_id = ${orgId} AND m.chat_id = ${first.chatId} AND m.status = 'posted'
         AND m.message_id IN ${sql.in(held.filter((row) => row.chatId === first.chatId).map((row) => row.messageId))}
@@ -1327,6 +1669,9 @@ const make = Effect.gen(function* () {
       chatId: first.chatId,
       source: oldest.messageId,
       collapseId: kinPushCollapseId(orgId, first.chatId, oldest.messageId),
+      topic: chatTopic(first.chatId),
+      countTitle: name,
+      seq: unread.at(-1)!.seq,
       data: { kin: 1, orgId, chatId: first.chatId, deepLink: chatLink(orgId, first.chatId) },
       recipients: [
         {
@@ -1377,6 +1722,7 @@ const make = Effect.gen(function* () {
       body: KIN_DEVICE_LINKED_NOTICE,
       chatId: undefined,
       source: undefined,
+      topic: uniqueTopic(`device-${kinPushDeviceId(sessionId)}`),
       data: {
         kin: 1,
         orgId,
@@ -1391,9 +1737,58 @@ const make = Effect.gen(function* () {
 
   const nothing: KinPushOutcome = { status, sent: 0, suppressed: 0, failed: 0 };
 
+  /**
+   * Each person's banner for the chat that shows `messageId`: replaced, never rung, by their newest
+   * message still unread among those it covers, with that message's own push; with none left, or
+   * none they would be told of, it goes in their batch.
+   */
+  const restate = Effect.fn("KinPushSender.restate")(function* (
+    orgId: KinOrgId,
+    chatId: KinChatId,
+    messageId: KinMessageId,
+  ) {
+    const topic = chatTopic(chatId);
+    const rows = (yield* topics.live(orgId, { topics: [topic] })).filter(
+      (row) => row.messageId === messageId,
+    );
+    const total = { sent: 0, suppressed: 0, failed: 0 };
+    for (const row of rows) {
+      const [newest] = yield* sql<{ message_id: KinMessageId }>`SELECT m.message_id
+        FROM kin_messages m
+        JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+        JOIN kin_chat_members p ON p.org_id = m.org_id AND p.chat_id = m.chat_id
+          AND p.principal_kind = 'person' AND p.person_id = ${row.personId} AND p.left_at IS NULL
+        WHERE m.org_id = ${orgId} AND m.chat_id = ${chatId} AND m.status = 'posted'
+          AND m.silent = 0 AND m.kind = 'text' AND m.seq > c.cleared_seq
+          AND m.seq <= ${row.seq ?? Number.MAX_SAFE_INTEGER}
+          AND m.seq > COALESCE((SELECT r.last_read_seq FROM kin_read_state r
+            WHERE r.org_id = m.org_id AND r.chat_id = m.chat_id AND r.member_id = p.member_id), 0)
+        ORDER BY m.seq DESC LIMIT 1`;
+      const push = newest === undefined ? undefined : yield* messagePush(orgId, newest.message_id);
+      const told = push?.recipients.find((one) => one.personId === row.personId);
+      if (push === undefined || push.topic !== topic || told === undefined) {
+        yield* enqueue(orgId, [row]);
+        continue;
+      }
+      const outcome = yield* deliver(orgId, {
+        ...push,
+        recipients: [{ ...told, delivery: told.delivery === "badge" ? "badge" : "quiet" }],
+      });
+      total.sent += outcome.sent;
+      total.suppressed += outcome.suppressed;
+      total.failed += outcome.failed;
+    }
+    return total;
+  });
+
   const run = Effect.fn("KinPushSender.run")(
     function* (notification: KinPushNotification) {
       if (status === "unconfigured") return nothing;
+      if (notification._tag === "restate")
+        return {
+          status,
+          ...(yield* restate(notification.orgId, notification.chatId, notification.messageId)),
+        };
       if (notification._tag === "read") {
         const outcome: KinPushOutcome = {
           status,
@@ -1473,6 +1868,7 @@ const make = Effect.gen(function* () {
               body: row.body,
               chatId: undefined,
               source: undefined,
+              topic: uniqueTopic(`key-${kinPushDeviceId(`${row.thumbprint}\u0000${row.change}`)}`),
               data: {
                 kin: 1,
                 orgId: row.org_id,
@@ -1502,7 +1898,27 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  return KinPushSender.of({ status, statusFor, notify, flushKeyPushes: flushKeyPushes() });
+  return KinPushSender.of({
+    status,
+    statusFor,
+    notify,
+    flushKeyPushes: flushKeyPushes(),
+    settle,
+    reconcile,
+    drainWithdrawals: FiberSet.awaitEmpty(batches),
+    recover: recover(),
+  });
 });
 
 export const layer = Layer.effect(KinPushSender, make);
+
+/** The recovery pass, at start and every `KIN_PUSH_RECOVER_EVERY`, for as long as Kin runs. */
+export const recoverLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const sender = yield* KinPushSender;
+    yield* sender.recover.pipe(
+      Effect.repeat(Schedule.spaced(KIN_PUSH_RECOVER_EVERY)),
+      Effect.forkScoped,
+    );
+  }),
+);

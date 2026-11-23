@@ -50,7 +50,10 @@ import { afterSay, opened, sayRefusal, type Said } from "../../apps/server/src/k
 import { concernsLine, mineLine, totalsLine } from "../../apps/server/src/kin/sales/text.ts";
 import { whenLabel } from "../../apps/server/src/kin/social/rows.ts";
 import { moneySection } from "../../apps/server/src/kin/work/moneyViews.ts";
-import { notRegisteredFact } from "../../apps/server/src/kin/work/companyProfile.ts";
+import {
+  countryFirstMessage,
+  notRegisteredFact,
+} from "../../apps/server/src/kin/work/companyProfile.ts";
 import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
@@ -83,7 +86,9 @@ import {
 } from "../../apps/server/src/kin/work/workPrompt.ts";
 import {
   githubTriggerEvent,
+  ASSIGNED_NOT_IN_PERSON,
   HANDED_BACK_WORK,
+  UNREAD_RULE,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
   joinedWork,
@@ -96,6 +101,8 @@ import {
   proposedAnswer,
 } from "../../apps/server/src/kin/numbers/words.ts";
 import { thisCompanyLines } from "../../apps/server/src/kin/shell/words.ts";
+import { REVIEW_WAKE_TEXT } from "../../apps/server/src/kin/pulse/reviewWake.ts";
+import { OWN_MESSAGE_REFUSALS } from "../../apps/server/src/kin/chat/ownMessages.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
 import { DECLINED_RULE } from "../../apps/server/src/kin/lead/declinedSection.ts";
@@ -470,6 +477,7 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     )
     .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
+    .replaceAll("{{ASSIGNED_NOT_IN_PERSON}}", ASSIGNED_NOT_IN_PERSON)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
     .replaceAll("{{DECLINED_RULE}}", DECLINED_RULE)
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
@@ -478,6 +486,10 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{UNISSUED_INVOICE}}", UNISSUED_INVOICE)
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
+    .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
+    .replace(/\{\{REVIEW_WAKE:([^|}]+)\|(\d+)\}\}/g, (_, who: string, count: string) =>
+      REVIEW_WAKE_TEXT({ who: who.split(", "), count: Number(count) }),
+    )
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names))
     .replace(/\{\{JOINED_WORK:([^|}]+)\|([^}]+)\}\}/g, (_, adder: string, holder: string) =>
       joinedWork(adder, holder),
@@ -552,14 +564,36 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       message: helperRefusal(input.holder, input.key),
     },
   }),
+  // message_withdraw or message_replace refused, as `chat/ownMessages.ts` says it.
+  ownMessageRefusal: (input: {
+    readonly why: "read" | "otherAuthor" | "outside" | "moreThanWords";
+    readonly name?: string;
+  }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_allowed",
+      message:
+        input.why === "read"
+          ? OWN_MESSAGE_REFUSALS.read(input.name ?? "")
+          : OWN_MESSAGE_REFUSALS[input.why],
+    },
+  }),
   // An agent with no person asking in its turn, refused a change to who is on a task.
   alsoOnUnasked: () => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: ALSO_ON_UNASKED },
   }),
-  // kin_hand_off to an agent this turn put on a task: nothing more is passed on.
-  alreadyOnIt: (input: { keys: ReadonlyArray<string> }) => ({
+  // kin_hand_off to an agent this turn gave a task or put on one: nothing more is passed on.
+  alreadyOnIt: (input: { agent: string; titles: ReadonlyArray<string> }) => ({
     passed: false,
-    note: alreadyOnIt(input.keys),
+    note: alreadyOnIt(input.agent, input.titles),
+  }),
+  // A money write refused while the company's country isn't chosen, as the turn's caller words it.
+  countryFirst: (input: { owner: string; saved?: boolean; answeringChooser?: boolean }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "invalid_state",
+      message: countryFirstMessage(input.owner, input),
+    },
   }),
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),

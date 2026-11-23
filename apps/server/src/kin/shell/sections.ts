@@ -22,6 +22,8 @@ export const SECTIONS = {
     kin_ask_close: null,
     kin_ask_person: null,
     kin_react: null,
+    message_withdraw: null,
+    message_replace: null,
     kin_chart: null,
     kin_visual: null,
     kin_chat_read: null,
@@ -236,6 +238,7 @@ export const SECTIONS = {
     number_stale: null,
     entry_late: null,
     entry_check: null,
+    sense_overflow: null,
     // A project's contract renewal, which needs no deal (`KIN_PROMISE_SENSES`).
     notice_due: null,
   } satisfies Record<KinPulseSense, SectionId | null>,

@@ -64,7 +64,11 @@ export const chatShared = Effect.fn("KinChatSharing.chatShared")(function* (
  * people in it now besides its owner, never below where it was first shared; a re-join raises it.
  * NULL for a chat never shared or not found, so a shared turn sees none of it.
  */
-export const historyFloor = (sql: SqlClient.SqlClient, orgId: string, chatId: string) =>
+export const historyFloor = (
+  sql: SqlClient.SqlClient,
+  orgId: string | Statement.Fragment,
+  chatId: string | Statement.Fragment,
+) =>
   sql`(SELECT MAX(c.shared_from_seq, COALESCE((SELECT MAX(m.joined_seq) FROM kin_chat_members m
       WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id AND m.principal_kind = 'person'
         AND m.left_at IS NULL AND ${sql.literal(notOwnerSql("m.org_id", "m.chat_id", "m.person_id"))}), 0))

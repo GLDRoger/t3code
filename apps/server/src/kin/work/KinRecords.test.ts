@@ -4269,13 +4269,39 @@ it.effect(
         owner: toLead,
         clientRequestId: "his",
       });
+      // Read in a wake-up of his act alone, it is his ask in person.
+      const sql = yield* SqlClient.SqlClient;
+      const event = (yield* lastGiven)!;
+      const firstGiven = decodeEvent(JSON.parse((yield* assignedEvents)[0]!.json));
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+          status, event_ids)
+        VALUES ('owner-wake', ${orgId}, ${event.agentId}, 'lead-thread', 'test', 0, 'completed', '[]'),
+          ('mixed-wake', ${orgId}, ${event.agentId}, 'lead-thread', 'test', 0, 'completed', '[]')`;
+      yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'owner-wake'
+        WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
       const his = (yield* told)!;
       assert.include(his, "as if the owner had asked you");
       assert.notInclude(his, TEAMMATE_WORDS);
       assert.notInclude(his, '"number"');
+      // Woken beside other news, it is his task but not his ask in person: what it makes waits.
+      yield* sql`UPDATE kin_events SET wakeup_id = 'mixed-wake'
+        WHERE org_id = ${orgId} AND event_id IN (${event.eventId}, ${firstGiven.eventId})`;
+      assert.isFalse(yield* ownerLevelAsked(orgId, event.agentId, "mixed-wake"));
+      const mixed = (yield* workEventText({
+        orgId,
+        event,
+        ownerOnly: true,
+        wakeupId: "mixed-wake",
+      }))!;
+      assert.match(
+        mixed,
+        /^The owner gave you this Work entry to do, but this turn is not his ask in person/,
+      );
+      assert.include(mixed, "what you make from it waits to be kept");
+      assert.notInclude(mixed, "as if the owner had asked you");
+      yield* sql`UPDATE kin_events SET wakeup_id = 'owner-wake'
+        WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
       // An entry with the number people see carries it beside its key.
-      const sql = yield* SqlClient.SqlClient;
-      const event = (yield* lastGiven)!;
       yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/004')
         WHERE org_id = ${orgId} AND record_id = ${event.recordId}`;
       assert.include(
