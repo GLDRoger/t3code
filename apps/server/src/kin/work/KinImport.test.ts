@@ -585,8 +585,9 @@ describe("KinImport", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  for (const kind of ["expense", "payment"] as const) {
-    it.effect(`imports grouped ${kind} amounts and counts each unreadable row`, () =>
+  it.effect.each(["expense", "payment"] as const)(
+    "imports grouped %s amounts and counts each unreadable row",
+    (kind) =>
       Effect.gen(function* () {
         yield* seed;
         const imports = yield* KinImport.KinImport;
@@ -631,8 +632,7 @@ describe("KinImport", () => {
           [145_000, 145_000, 145_050, 123_456_700],
         );
       }).pipe(Effect.provide(layer)),
-    );
-  }
+  );
 
   it.effect("refuses impossible entry days like malformed dates", () =>
     Effect.gen(function* () {
