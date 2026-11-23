@@ -13,6 +13,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { callable, pausedRefusal, toolsOf } from "../connections/ConnectionRows.ts";
+import { teamAgent } from "../lead/LeadAccess.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { USUAL_LIMITS } from "../lead/KinBudget.ts";
 import * as Reach from "../lead/Reach.ts";
 import type { RecommendPlan } from "../widgets/cardPlans.ts";
@@ -42,6 +44,7 @@ export type Candidate = {
   readonly subject: string;
   /** Within a rule, the largest count speaks first. */
   readonly weight: number;
+  readonly urgent?: true;
   readonly noticed: string;
   /** The card's question: the one change, as a question. */
   readonly ask: string;
@@ -367,6 +370,9 @@ export const agentPaused = Effect.fn("KinRecommendRules.agentPaused")(function* 
       AND a.paused_at IS NOT NULL
       ${only === undefined ? sql`AND a.retired_at IS NULL` : sql`AND a.agent_id = ${only.agentId}`}
     ORDER BY a.agent_id`;
+  if (rows.length === 0) return [];
+  const routing = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
+  const chair = yield* teamAgent(orgId);
   const verdicts: Array<Verdict> = [];
   for (const row of rows) {
     const subject = `agent:${row.agentId}`;
@@ -381,9 +387,10 @@ export const agentPaused = Effect.fn("KinRecommendRules.agentPaused")(function* 
         AND e.state = 'queued' AND e.queued_at >= ${pausedAt}`;
     const waiting = queued?.waiting ?? 0;
     const yours = queued?.yours ?? 0;
+    const urgent = row.agentId === routing?.agentId || row.agentId === chair;
     if (row.retiredAt !== null) silent(`${row.name} is no longer there`);
-    else if (at - pausedAt < PAUSED_MS) silent(`${row.name} was paused only recently`);
-    else if (waiting < PAUSED_HELD) silent(`not much waits for ${row.name}`);
+    else if (!urgent && at - pausedAt < PAUSED_MS) silent(`${row.name} was paused only recently`);
+    else if (!urgent && waiting < PAUSED_HELD) silent(`not much waits for ${row.name}`);
     else
       verdicts.push({
         _tag: "fires",
@@ -391,7 +398,8 @@ export const agentPaused = Effect.fn("KinRecommendRules.agentPaused")(function* 
           rule: AGENT_PAUSED,
           subject,
           weight: waiting,
-          noticed: `${row.name} has been paused since ${formatDay(ctx, pausedAt)}, and ${waiting} things wait for it${yours === 0 ? "" : `, ${yours} of them ${yours === 1 ? "a message" : "messages"} from you`}.`,
+          ...(urgent ? { urgent: true as const } : {}),
+          noticed: `${row.name} has been paused since ${formatDay(ctx, pausedAt)}${waiting === 0 ? "" : `, and ${waiting} ${waiting === 1 ? "thing waits" : "things wait"} for it${yours === 0 ? "" : `, ${yours} of them ${yours === 1 ? "a message" : "messages"} from you`}`}.`,
           ask: `Resume ${row.name}?`,
           gives: `${row.name} would then pick up what waits for it.`,
           change: { kind: "agent_resume", agentId: row.agentId, agentName: row.name, pausedAt },

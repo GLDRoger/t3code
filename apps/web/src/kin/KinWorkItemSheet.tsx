@@ -1012,14 +1012,9 @@ function KinWorkItem(
               who={{ name: view.owner.name, avatar: view.owner.avatar }}
               extra={view.owner.retired ? KIN_RETIRED_LABEL : null}
             />
-            {view.given === null && (view.reason === null || step.words !== null) ? null : (
-              <dd className="col-start-2 -mt-1 flex min-w-0 flex-col gap-0.5 text-xs">
-                {view.given === null ? null : (
-                  <span className="text-muted-foreground">{view.given}</span>
-                )}
-                {view.reason === null || step.words !== null ? null : (
-                  <span className="text-foreground/80">“{view.reason}”</span>
-                )}
+            {view.given === null ? null : (
+              <dd className="col-start-2 -mt-1 min-w-0 text-xs text-muted-foreground">
+                {view.given}
               </dd>
             )}
             {view.owner.principal._tag === "agent" ? (
@@ -1266,6 +1261,7 @@ function KinWorkItem(
           names={names}
           now={props.now}
           note={view.historyNote}
+          reason={step.words === view.reason ? null : view.reason}
           onOpenProject={props.onOpenProject}
         />
         <KinWorkLinks

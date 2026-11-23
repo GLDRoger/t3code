@@ -8,11 +8,11 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import { cappedRows } from "./capped.ts";
 
 import { lastContacts } from "../../work/touches.ts";
 import { DAY_MS, thresholds } from "../thresholds.ts";
 import { daysAgoText, daysText, iso, type SenseContext, type SensedFact } from "./shared.ts";
-import { SENSE_CAP } from "./work.ts";
 
 interface DealRow {
   readonly recordId: string;
@@ -69,7 +69,17 @@ const hearer = (
 export const dealSenses = Effect.fn("KinPulse.dealSenses")(function* (ctx: SenseContext) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, at } = ctx;
-  const deals = yield* sql<DealRow>`SELECT d.record_id AS "recordId", d.key, d.title,
+  const facts: Array<SensedFact> = [];
+  const deals = yield* cappedRows<DealRow>(
+    ctx,
+    facts,
+    {
+      id: "open_deals",
+      sense: "deal_no_next_step",
+      plural: "open deals",
+      access: "deal",
+    },
+    sql`SELECT d.record_id AS "recordId", d.key, d.title,
       d.owner_kind AS "ownerKind", d.owner_id AS "ownerId", d.due_at AS "dueAt",
       d.created_at AS "createdAt", d.updated_at AS "updatedAt",
       (d.sensitive = 1 OR c.sensitive = 1) AS sensitive,
@@ -94,9 +104,20 @@ export const dealSenses = Effect.fn("KinPulse.dealSenses")(function* (ctx: Sense
     FROM kin_records d
     JOIN kin_records c ON c.org_id = d.org_id AND c.record_id = d.party_id
     WHERE d.org_id = ${orgId} AND d.register_id = 'deals' AND d.state = 'open'
-    ORDER BY d.created_at, d.key LIMIT ${SENSE_CAP}`;
+    ORDER BY d.created_at, d.key`,
+  );
   // A prospect's next step is any open entry of ours for it (`crm.ts` `next`), deal or none.
-  const prospects = yield* sql<ProspectRow>`SELECT c.record_id AS "recordId", c.key, c.title,
+  const prospects = yield* cappedRows<ProspectRow>(
+    ctx,
+    facts,
+    {
+      id: "prospects_without_steps",
+      also: "clients",
+      sense: "deal_no_next_step",
+      plural: "prospects without a next step",
+      access: "prospect",
+    },
+    sql`SELECT c.record_id AS "recordId", c.key, c.title,
       c.owner_kind AS "ownerKind", c.owner_id AS "ownerId", c.created_at AS "createdAt",
       c.sensitive,
       (SELECT MAX(w.closed_at) FROM kin_records w WHERE w.org_id = c.org_id
@@ -109,7 +130,8 @@ export const dealSenses = Effect.fn("KinPulse.dealSenses")(function* (ctx: Sense
       AND NOT EXISTS (SELECT 1 FROM kin_records w WHERE w.org_id = c.org_id
         AND w.register_id = 'work' AND w.party_id = c.record_id AND w.side = 'ours'
         AND w.state NOT IN ('done', 'dropped'))
-    ORDER BY c.created_at, c.key LIMIT ${SENSE_CAP}`;
+    ORDER BY c.created_at, c.key`,
+  );
   if (deals.length === 0 && prospects.length === 0) return [];
   const present = new Set(
     (yield* sql<{ personId: string }>`SELECT person_id AS "personId" FROM kin_people
@@ -120,7 +142,6 @@ export const dealSenses = Effect.fn("KinPulse.dealSenses")(function* (ctx: Sense
   const limits = yield* thresholds(orgId);
   const contacts = yield* lastContacts(orgId, [...new Set(deals.map((deal) => deal.clientId))], at);
   const quiet = limits("deal_quiet_days");
-  const facts: Array<SensedFact> = [];
   for (const deal of deals) {
     const named = `${deal.title} for ${deal.clientTitle}`;
     const base = {

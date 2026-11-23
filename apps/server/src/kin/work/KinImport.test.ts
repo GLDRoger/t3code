@@ -28,7 +28,8 @@ import { IMPORT_BUSY } from "./importUndo.ts";
 import type { ImportEntry } from "./importFormat.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
-import { matchPartner, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
+import { parseFields } from "./lists.ts";
+import { matchPartner, partnerPayees, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
 
 // Invented org, people and amounts only.
 const orgId = KinOrgId.make("org");
@@ -502,30 +503,387 @@ describe("KinImport", () => {
           fields: { paidPersonallyBy: "meera@invented.example" },
         },
       };
-      const file = () => linesOf({ ...header, lists }, [...rows, paidByMeera]);
+      const records = yield* KinRecords.KinRecords;
+      const other = (source: string, address: string) => ({
+        entry: {
+          ...paidByMeera.entry,
+          source,
+          title: `Invented domain renewal (${source})`,
+          fields: { paidPersonallyBy: address },
+        },
+      });
+      const file = () =>
+        linesOf({ ...header, lists }, [
+          ...rows,
+          paidByMeera,
+          other("hand", "meera@invented.example"),
+          other("repaid", "repaid@invented.example"),
+        ]);
       yield* imports.apply(orgId, ownerId, file());
-      // Not yet said: no one is owed until the owner says who it was and whether it is owed.
       assert.deepStrictEqual(yield* partnersOwed(orgId, "INR"), []);
-      const [unsaid] = yield* partnersUnsaid(orgId, "INR");
-      assert.strictEqual(unsaid?.address, "meera@invented.example");
+      const unsaid = yield* partnersUnsaid(orgId, "INR");
+      assert.deepStrictEqual(
+        unsaid.map((one) => one.address),
+        ["meera@invented.example", "repaid@invented.example"],
+      );
+      const imported = (yield* recordOf("e9"))!;
+      const repaid = (yield* recordOf("repaid"))!;
+      const hand = (yield* recordOf("hand"))!;
+      const backfill = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf({ ...header, batch: "funding", lists: [] }, [
+          {
+            entry: {
+              source: "owed",
+              list: "expenses",
+              match: imported.key,
+              fields: { fundedBy: "meera", reimbursement: "owed" },
+            },
+          },
+          {
+            entry: {
+              source: "repaid",
+              list: "expenses",
+              match: repaid.key,
+              fields: { fundedBy: "meera", reimbursement: "repaid", repaidOn: "2026-06-01" },
+            },
+          },
+        ]),
+      );
+      assert.deepStrictEqual(backfill.problems, []);
+      assert.deepStrictEqual(backfill.money, []);
+      assert.deepStrictEqual(
+        (yield* partnersOwed(orgId, "INR")).map((one) => [
+          one.personId,
+          one.owed,
+          one.entries.map((entry) => entry.key),
+        ]),
+        [["meera", [{ minor: 420_000, currency: "INR" }], [imported.key]]],
+      );
+      const [stillUnsaid] = yield* partnersUnsaid(orgId, "INR");
+      assert.deepStrictEqual(
+        stillUnsaid?.seen.map((one) => one.key),
+        [hand.key],
+      );
       yield* sql.withTransaction(
-        matchPartner(orgId, owner, "meera@invented.example", "meera", "owed", {
-          entries: unsaid!.seen,
-          totals: unsaid!.total,
+        matchPartner(orgId, owner, stillUnsaid!.address, "meera", "owed", {
+          entries: stillUnsaid!.seen,
+          totals: stillUnsaid!.total,
         }),
       );
+      assert.deepStrictEqual(yield* partnersUnsaid(orgId, "INR"), []);
+      const handFields = parseFields((yield* records.get(orgId, hand.key))!.fieldsJson);
+      const importedFields = parseFields((yield* records.get(orgId, imported.key))!.fieldsJson);
+      assert.deepStrictEqual(importedFields, handFields);
+      assert.deepStrictEqual(importedFields, {
+        paidPersonallyBy: "meera@invented.example",
+        fundedBy: "person:meera",
+        reimbursement: "owed",
+      });
+      assert.deepStrictEqual(yield* partnerPayees(orgId), [
+        {
+          id: "meera",
+          name: "Meera",
+          ids: [],
+          repaid: [{ currency: "INR", day: "2026-06-01", amountMinor: 420_000 }],
+        },
+      ]);
       const owed = yield* partnersOwed(orgId, "INR");
       const again = yield* imports.apply(orgId, ownerId, file());
       assert.deepStrictEqual(
         again.changed.map((one) => one.source),
-        ["e9"],
+        ["hand"],
       );
       assert.deepStrictEqual(yield* partnersOwed(orgId, "INR"), owed);
-      assert.deepStrictEqual(
-        owed.map((one) => [one.personId, one.owed]),
-        [["meera", [{ minor: 420_000, currency: "INR" }]]],
-      );
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "plans entry matches, fills only empty fields once, and undoes only its own fills",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const imports = yield* KinImport.KinImport;
+        const records = yield* KinRecords.KinRecords;
+        const list = {
+          list: "expenses",
+          template: "expenses",
+          fields: [
+            { label: "Keep me", type: "text" },
+            { label: "Reference", type: "text" },
+            { label: "Receipt text", type: "text" },
+            { label: "Later", type: "text" },
+          ],
+        };
+        yield* imports.apply(
+          orgId,
+          ownerId,
+          linesOf(
+            { ...header, lists: [list] },
+            ["first", "second"].map((source) => ({
+              entry: { source, list: "expenses", title: source, fields: { keepMe: "Original" } },
+            })),
+          ),
+        );
+        const first = (yield* recordOf("first"))!;
+        const second = (yield* recordOf("second"))!;
+        const before = (yield* records.get(orgId, first.key))!;
+        const batch = "fill-existing";
+        const file = () =>
+          linesOf(
+            { ...header, batch, lists: [] },
+            [first, second].map(({ key }, index) => ({
+              entry: {
+                list: "expenses",
+                source: `fix-${index}`,
+                match: key,
+                notes: "A note",
+                fields: {
+                  keepMe: "Never replace",
+                  reference: "A reference",
+                  receiptText: "A receipt",
+                },
+              },
+            })),
+          );
+        const plan = yield* imports.plan(orgId, ownerId, file());
+        assert.deepStrictEqual(plan.problems, []);
+        assert.deepStrictEqual(
+          plan.entryMatches,
+          [first, second].map(({ key }) => ({
+            key,
+            fields: ["Reference", "Receipt text", "Notes"],
+          })),
+        );
+        assert.deepStrictEqual(yield* records.get(orgId, first.key), before);
+        const applied = yield* imports.apply(orgId, ownerId, file());
+        assert.deepStrictEqual({ ...applied, applied: false }, plan);
+        assert.deepStrictEqual(
+          [applied.entries.create, applied.entries.matched, applied.filled],
+          [0, 2, 2],
+        );
+        const filled = (yield* records.get(orgId, first.key))!;
+        assert.strictEqual(filled.rev, before.rev + 1);
+        assert.strictEqual(filled.originKey, before.originKey);
+        assert.strictEqual(filled.notes, "A note");
+        assert.deepStrictEqual(parseFields(filled.fieldsJson), {
+          keepMe: "Original",
+          reference: "A reference",
+          receiptText: "A receipt",
+        });
+
+        const again = yield* imports.apply(orgId, ownerId, file());
+        assert.deepStrictEqual([again.entries.matched, again.filled, again.problems], [2, 0, []]);
+        assert.deepStrictEqual(
+          again.entryMatches,
+          [first, second].map(({ key }) => ({ key, fields: [] })),
+        );
+        assert.deepStrictEqual(yield* records.get(orgId, first.key), filled);
+
+        yield* records.update(orgId, owner, second.key, { fields: { later: "Set by hand" } });
+        const undoPlan = yield* imports.undo(orgId, ownerId, batch, {
+          apply: false,
+          includeChanged: false,
+        });
+        assert.strictEqual(undoPlan.restored, 1);
+        assert.deepStrictEqual(
+          undoPlan.kept.map((one) => one.key),
+          [second.key],
+        );
+        const forcedPlan = yield* imports.undo(orgId, ownerId, batch, {
+          apply: false,
+          includeChanged: true,
+        });
+        assert.strictEqual(forcedPlan.restored, 2);
+        const undone = yield* imports.undo(orgId, ownerId, batch, {
+          apply: true,
+          includeChanged: true,
+        });
+        assert.deepStrictEqual({ ...undone, applied: false }, forcedPlan);
+        assert.strictEqual(undone.removes.entries, 0);
+        assert.deepStrictEqual(parseFields((yield* records.get(orgId, first.key))!.fieldsJson), {
+          keepMe: "Original",
+        });
+        const kept = (yield* records.get(orgId, second.key))!;
+        assert.strictEqual(kept.notes, "");
+        assert.deepStrictEqual(parseFields(kept.fieldsJson), {
+          keepMe: "Original",
+          later: "Set by hand",
+        });
+
+        yield* imports.apply(orgId, ownerId, file());
+        const edited = yield* records.update(orgId, owner, second.key, {
+          fields: { later: "Edited since" },
+        });
+        const plainUndo = yield* imports.undo(orgId, ownerId, batch, {
+          apply: true,
+          includeChanged: false,
+        });
+        assert.strictEqual(plainUndo.restored, 1);
+        assert.deepStrictEqual(
+          plainUndo.kept.map((one) => one.key),
+          [second.key],
+        );
+        assert.deepStrictEqual(yield* records.get(orgId, second.key), edited);
+        const forcedLater = yield* imports.undo(orgId, ownerId, batch, {
+          apply: true,
+          includeChanged: true,
+        });
+        assert.strictEqual(forcedLater.restored, 1);
+        assert.deepStrictEqual(parseFields((yield* records.get(orgId, second.key))!.fieldsJson), {
+          keepMe: "Original",
+          later: "Edited since",
+        });
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("plans repeated matches across chunks and undoes automatic fills too", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const records = yield* KinRecords.KinRecords;
+      yield* imports.apply(orgId, ownerId, books());
+      const expense = (yield* recordOf("e1"))!;
+      const before = (yield* records.get(orgId, expense.key))!;
+      const match = { list: "expenses", match: expense.key };
+      const file = () =>
+        linesOf(
+          { ...header, batch: "two-fills", lists: [] },
+          [{ entry: { ...match, source: "first", fields: { fundedBy: "owner" } } }],
+          [
+            ...Array.from({ length: 100 }, () => ""),
+            JSON.stringify({
+              entry: {
+                ...match,
+                source: "second",
+                notes: "The receipt is on file.",
+                fields: { reimbursement: "repaid" },
+              },
+            }),
+          ],
+        );
+      const plan = yield* imports.plan(orgId, ownerId, file());
+      assert.deepStrictEqual(plan.entryMatches, [
+        { key: expense.key, fields: ["Funded by", "Reimbursement"] },
+        { key: expense.key, fields: ["Notes"] },
+      ]);
+      assert.deepStrictEqual(yield* records.get(orgId, expense.key), before);
+      const applied = yield* imports.apply(orgId, ownerId, file());
+      assert.deepStrictEqual({ ...applied, applied: false }, plan);
+      assert.strictEqual(
+        parseFields((yield* records.get(orgId, expense.key))!.fieldsJson).reimbursement,
+        "owed",
+      );
+      const undone = yield* imports.undo(orgId, ownerId, "two-fills", {
+        apply: true,
+        includeChanged: false,
+      });
+      assert.strictEqual(undone.restored, 1);
+      const restored = (yield* records.get(orgId, expense.key))!;
+      assert.deepStrictEqual(parseFields(restored.fieldsJson), parseFields(before.fieldsJson));
+      assert.strictEqual(restored.notes, before.notes);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reports refused entry matches without writing any part of the row", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const records = yield* KinRecords.KinRecords;
+      yield* imports.apply(orgId, ownerId, books());
+      const expense = (yield* recordOf("e1"))!;
+      const before = (yield* records.get(orgId, expense.key))!;
+      const base = { list: "expenses", match: expense.key, fields: { vendorGstin: "Invented ID" } };
+      const report = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf(
+          { ...header, batch: "broken-matches", lists: [] },
+          [
+            { ...base, source: "missing", match: "EXP-999" },
+            { ...base, source: "wrong-list", list: "work" },
+            { ...base, source: "no-list", list: "unknown" },
+            { ...base, source: "title", title: "Don't rename" },
+            { ...base, source: "amount", amount: "42" },
+            { ...base, source: "extra", extra: true },
+            { ...base, source: "unknown-field", fields: { ...base.fields, notAField: "No" } },
+            { ...base, source: "refused", fields: { ...base.fields, repaidOn: "2026-11-13" } },
+          ].map((entry) => ({ entry })),
+        ),
+      );
+      assert.deepStrictEqual(
+        report.problems.slice(0, 6).map((one) => [one.source, one.reason]),
+        [
+          ["missing", "There is no entry EXP-999 on expenses."],
+          ["wrong-list", `There is no entry ${expense.key} on work.`],
+          ["no-list", "There is no list unknown; name it in the header."],
+          ["title", "A row with match fills fields and notes only."],
+          ["amount", "A row with match fills fields and notes only."],
+          ["extra", "A row with match fills fields and notes only."],
+        ],
+      );
+      assert.strictEqual(report.problems.length, 8);
+      assert.match(report.problems[6]!.reason, / has no field notAField/);
+      assert.strictEqual(report.problems[7]!.reason, "Repaid on can't be after today, 2026-11-12.");
+      assert.deepStrictEqual(
+        [report.entries.matched, report.filled, report.entryMatches],
+        [0, 0, []],
+      );
+      assert.deepStrictEqual(yield* records.get(orgId, expense.key), before);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "imports person fields as the owner or an active teammate, never a guessed person",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, removed_at)
+        VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', 0, NULL),
+        ('removed', ${orgId}, 'removed', 'Former teammate', 0, 1)`;
+        const imports = yield* KinImport.KinImport;
+        const records = yield* KinRecords.KinRecords;
+        const absent = "unknown".repeat(10);
+        const report = yield* imports.apply(
+          orgId,
+          ownerId,
+          linesOf(
+            {
+              ...header,
+              lists: [{ list: "expenses", template: "expenses" }],
+            },
+            ["owner", "teammate", absent, "removed"].map((person, index) => ({
+              entry: {
+                source: `person-${index}`,
+                list: "expenses",
+                title: `Expense ${index}`,
+                fields: { fundedBy: person },
+              },
+            })),
+          ),
+        );
+        assert.deepStrictEqual(
+          report.problems.map((one) => [one.source, one.reason]),
+          [
+            ["person-2", `Funded by: no one on the team has the id ${absent.slice(0, 40)}.`],
+            ["person-3", "Funded by: no one on the team has the id removed."],
+          ],
+        );
+        for (const [index, id] of [
+          [0, ownerId],
+          [1, "teammate"],
+        ] as const) {
+          const saved = (yield* recordOf(`person-${index}`))!;
+          assert.strictEqual(
+            parseFields((yield* records.get(orgId, saved.key))!.fieldsJson).fundedBy,
+            `person:${id}`,
+          );
+        }
+        assert.isUndefined(yield* recordOf("person-2"));
+        assert.isUndefined(yield* recordOf("person-3"));
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("names every line it can't import and imports the rest", () =>
@@ -1362,6 +1720,39 @@ describe("KinImport", () => {
           [["f1", waits]],
         );
         assert.deepStrictEqual(again.money, []);
+        const match = (yield* recordOf("f1"))!;
+        const backfill = yield* imports.apply(
+          orgId,
+          ownerId,
+          linesOf(
+            {
+              ...header,
+              batch: "fee-fill",
+              lists: [
+                {
+                  ...header.lists[1],
+                  fields: [{ label: "Processing fee", type: "money" }],
+                },
+              ],
+            },
+            [
+              {
+                entry: {
+                  list: "expenses",
+                  source: "fee",
+                  match: match.key,
+                  fields: { processingFee: { amount: "10", currency: "GBP" } },
+                },
+              },
+            ],
+          ),
+        );
+        assert.deepStrictEqual(
+          backfill.problems.map((one) => [one.source, one.reason]),
+          [["fee", waits]],
+        );
+        assert.deepStrictEqual(backfill.money, []);
+        assert.strictEqual(backfill.filled, 0);
       }).pipe(Effect.provide(layer)),
   );
 
