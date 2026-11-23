@@ -1,5 +1,5 @@
 import * as KinShell from "../shell/KinShell.ts";
-import { sectionOfList } from "../shell/sections.ts";
+import { listSectionRefused, sectionOfList } from "../shell/sections.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -45,7 +45,13 @@ import {
 import { isHelperRefusal, type KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
 import { repeatOf } from "../work/recordRows.ts";
-import { defineProposed, listPlace, proposalToCreate, proposedList } from "../work/registers.ts";
+import {
+  defineProposed,
+  listDef,
+  listPlace,
+  proposalToCreate,
+  proposedList,
+} from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
 import {
   type CardActionInput,
@@ -257,10 +263,23 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
           (teammates.length > 0 && !(yield* viewVisible(orgId, teammates, row.recordId)))
         )
           return yield* notFound(`entry ${input.target.slice(0, 40)}`);
-        if (row.registerId !== "work") return yield* refuse(`${row.key} is not a task.`);
+        const state = input.kind === "done" ? "done" : "dropped";
+        // A task, or an entry of one of the company's own lists, as record_update closes it.
+        if (row.registerId !== "work") {
+          const def = yield* listDef(orgId, row.registerId);
+          if (
+            def === undefined ||
+            def.builtIn !== null ||
+            listSectionRefused({ ...def, payments: def.payments === true ? 1 : null })
+          )
+            return yield* refuse(
+              `${row.key} is not a task or an entry of the company's own lists.`,
+            );
+          if (!def.states.includes(state))
+            return yield* refuse(`${def.name} has no ${state} state for ${row.key}.`);
+        }
         if (row.state === "done" || row.state === "dropped")
           return yield* refuse(`${row.key} is ${row.state} already.`);
-        const state = input.kind === "done" ? "done" : "dropped";
         if (!(yield* teamMay(orgId, drawn, row, state)))
           return yield* notAllowed(`The people you are acting for can't change ${row.key}.`);
         return {
@@ -821,6 +840,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
           proposalId: plan.proposalId,
           definition: plan.definition,
           now: tap.now,
+          by: personId,
         }));
       if (why !== undefined) return nothingDone(why);
       if (made === undefined) return { title: "List created", text: "Created." };

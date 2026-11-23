@@ -494,10 +494,12 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replace(/\{\{JOINED_WORK:([^|}]+)\|([^}]+)\}\}/g, (_, adder: string, holder: string) =>
       joinedWork(adder, holder),
     )
-    // Watched numbers' lines and turn texts as Kin writes them, each placeholder on its own line.
-    .replace(/^\{\{NUMBERS_LINES:(.+)\}\}$/gm, (_, json: string) =>
-      thisCompanyLines({ rev: 0, sections: [] }, JSON.parse(json) as never).join("\n"),
-    )
+    // Watched numbers' and list sections' lines and turn texts as Kin writes them, each
+    // placeholder on its own line.
+    .replace(/^\{\{NUMBERS_LINES:(.+)\}\}$/gm, (_, json: string) => {
+      const given = JSON.parse(json) as { lists?: never };
+      return thisCompanyLines({ rev: 0, sections: [] }, given as never, given.lists).join("\n");
+    })
     .replace(/^\{\{NUMBER_OFF:(.+)\}\}$/gm, (_, json: string) =>
       offTurnText(JSON.parse(json) as never),
     )

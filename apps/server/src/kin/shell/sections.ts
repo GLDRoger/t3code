@@ -236,6 +236,7 @@ export const SECTIONS = {
     deal_date_passed: "deals",
     number_off: null,
     number_stale: null,
+    // A list section's own facts: each carries its `list:<id>` section, whose switch silences it.
     entry_late: null,
     entry_check: null,
     sense_overflow: null,
@@ -272,6 +273,10 @@ export const sectionOfRegister = ({ id, name, payments }: SectionRegister): Sect
   if (id === "dates" || id === "subscriptions") return null;
   return sectionOfList(id);
 };
+
+/** Kin's own lists, and any paid over time, have their place already: none is a section. */
+export const listSectionRefused = (row: SectionRegister) =>
+  Object.hasOwn(SECTIONS.lists, row.id) || sectionOfRegister(row) !== null;
 
 export const registerSectionColumns = (sql: SqlClient.SqlClient) =>
   sql`r.register_id AS id, g.name, json_extract(g.definition_json, '$.payments') AS payments`;

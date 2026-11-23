@@ -77,8 +77,8 @@ import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { KinPushSender } from "../push/KinPushSender.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { placeRefusals } from "../work/ownerWork.ts";
-import { placesOf } from "../work/teamView.ts";
-import * as KinShell from "../shell/KinShell.ts";
+import { KIN_OWNER_LEVEL, placesOf, viewerOfPeople } from "../work/teamView.ts";
+import { shellFor } from "../shell/listSections.ts";
 import { accessOf, accessSql, isOwnerHimself, mayActAsOwner, ownerLevel } from "./KinAccess.ts";
 import { KIN_DEFAULT_QUIET_HOURS, stillAway, storedWorkHours } from "../triggers/quietHours.ts";
 import { profileSets } from "./profileFields.ts";
@@ -1451,9 +1451,10 @@ export const make = Effect.gen(function* () {
         : { clients: places.clients, docs: places.docs, money: places.money },
       leads: places.leads,
       refused,
-      shell: yield* KinShell.getForDisplay(input.orgId).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      ),
+      shell: yield* shellFor(
+        input.orgId,
+        all ? KIN_OWNER_LEVEL : viewerOfPeople([caller.personId]),
+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ...(yield* companyMoney(input.orgId).pipe(
         Effect.map(({ homeCurrency, country, financialYearStartMonth }) => ({
           homeCurrency,

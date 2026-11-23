@@ -16,7 +16,7 @@ import { SqlError, UnknownError } from "effect/sql/SqlError";
 
 import { KinRefreshObserver, KinWorkRefresh } from "../chat/KinRefreshHub.ts";
 import { accessSql } from "../people/KinAccess.ts";
-import type { SectionId } from "./sections.ts";
+import { listSectionRefused, type SectionId } from "./sections.ts";
 
 const BUILT_INS = [
   "clients",
@@ -32,11 +32,32 @@ const defaultShell = (): Shell => ({
 const SectionsJson = Schema.fromJsonString(Schema.Array(KinShellSection));
 const decode = Schema.decodeUnknownEffect(SectionsJson);
 const encode = Schema.encodeEffect(SectionsJson);
-const ordered = (sections: readonly KinShellSection[]) =>
-  BUILT_INS.map((id) => sections.find((section) => section.id === id) ?? { id, on: true });
+
+/** A company list shown as a section of its own: `list:<its id>`. */
+export const listSectionId = (listId: string): `list:${string}` => `list:${listId}`;
+/** The list a section id names, or undefined for a built-in or unknown id. */
+export const listOfSection = (id: string) =>
+  /^list:[a-z][a-z0-9_]{1,39}$/.test(id) ? id.slice(5) : undefined;
+
+/** Built-ins in their fixed order, then each list section once, in the order added. */
+const ordered = (sections: readonly KinShellSection[]) => [
+  ...BUILT_INS.map((id) => sections.find((section) => section.id === id) ?? { id, on: true }),
+  ...sections.filter(
+    (section, index) =>
+      listOfSection(section.id) !== undefined &&
+      sections.findIndex((one) => one.id === section.id) === index,
+  ),
+];
 
 const storedOn = (shell: Shell, id: SectionId) =>
   shell.sections.find((section) => section.id === id)?.on !== false;
+
+/** Every built-in section switched on: no tool or record is kept from an agent by the shell. */
+export const builtInsOn = (shell: Shell) => BUILT_INS.every((id) => storedOn(shell, id));
+
+/** A list is a section only while the shell names it and its switch is on. */
+export const listSectionOn = (shell: Shell, listId: string) =>
+  shell.sections.some((section) => section.id === listSectionId(listId) && section.on);
 
 export const sectionOn = (shell: Shell, id: SectionId) =>
   storedOn(shell, id) &&
@@ -167,6 +188,92 @@ export const shellRefusal = (
     : `Turn off Invoices and quotes first: invoices need ${name}.`;
 };
 
+/** Why one of these list sections can't be in the shell, in the setter's words; else undefined. */
+export const listSectionsRefusal = Effect.fn("KinShell.listSectionsRefusal")(function* (
+  orgId: KinOrgId,
+  sections: readonly KinShellSection[],
+) {
+  const lists = sections.flatMap((section) => listOfSection(section.id) ?? []);
+  if (lists.length === 0) return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const defined = yield* sql<{
+    id: string;
+    name: string;
+    payments: number | null;
+    archivedAt: number | null;
+  }>`SELECT register_id AS id, name, archived_at AS "archivedAt",
+      json_extract(definition_json, '$.payments') AS payments
+    FROM kin_registers WHERE org_id = ${orgId} AND built_in = 0
+      AND register_id IN ${sql.in(lists)} ORDER BY register_id`;
+  for (const id of lists) {
+    const list = defined.find((one) => one.id === id && one.archivedAt === null);
+    if (list === undefined) return `There is no list ${id} to show as a section.`;
+    if (listSectionRefused(list))
+      return `${list.name} has its place in Kin already, so it can't be a section of its own.`;
+  }
+  return undefined;
+});
+
+/**
+ * Writes the next revision over `before` in the caller's transaction, for every reader after it
+ * commits. Open Work pages restart only when a built-in switch takes effect: a list section gates
+ * no Work row, so it moves the shell and pulse topics alone, as a rename does.
+ */
+const save = Effect.fn("KinShell.save")(function* (
+  orgId: KinOrgId,
+  personId: string,
+  before: Shell,
+  sections: readonly KinShellSection[],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const refresh = yield* KinRefreshObserver;
+  const refreshWork = yield* KinWorkRefresh;
+  const next = before.rev + 1;
+  const after = { rev: next, sections };
+  yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+    VALUES (${orgId}, ${yield* encode(sections)}, ${next}, ${personId}, ${yield* Clock.currentTimeMillis})
+    ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json, rev = excluded.rev,
+      set_by = excluded.set_by, set_at = excluded.set_at`;
+  yield* sql.afterCommit(invalidate(orgId));
+  yield* refresh.touch(orgId, "shell");
+  // The open attention stream has its own counter, even though the sensed rows haven't moved.
+  yield* refresh.touch(orgId, "pulse");
+  if (BUILT_INS.some((id) => sectionOn(before, id) !== sectionOn(after, id)))
+    yield* refreshWork(orgId);
+  return after;
+});
+
+/**
+ * Shows a list as a section, switched on, in the caller's transaction: the owner-level answer on
+ * the list's own card (`registers.defineList`) is who set it. `dock` given sets its dock switch.
+ */
+export const showList = Effect.fn("KinShell.showList")(function* (
+  orgId: KinOrgId,
+  listId: string,
+  dock: boolean | undefined,
+  personId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [stored] = yield* sql<{
+    rev: number;
+    shellJson: string;
+  }>`SELECT rev, shell_json AS "shellJson" FROM kin_company_shell WHERE org_id = ${orgId}`;
+  const current = ordered(stored === undefined ? [] : yield* decode(stored.shellJson));
+  const id = listSectionId(listId);
+  const shown = { id, on: true, ...(dock === undefined ? {} : { dock }) };
+  const sections = current.some((section) => section.id === id)
+    ? current.map((section) => (section.id === id ? { ...section, ...shown } : section))
+    : [...current, shown];
+  const refusal = yield* listSectionsRefusal(orgId, sections);
+  if (refusal !== undefined) return yield* invalid(refusal);
+  return yield* save(
+    orgId,
+    personId,
+    { rev: stored?.rev ?? 0, sections: current },
+    sections.map(labelsOf),
+  );
+});
+
 export const set = Effect.fn("KinShell.set")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
@@ -174,8 +281,6 @@ export const set = Effect.fn("KinShell.set")(function* (
   input: readonly KinShellSection[],
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const refresh = yield* KinRefreshObserver;
-  const refreshWork = yield* KinWorkRefresh;
   return yield* sql
     .withTransaction(
       Effect.gen(function* () {
@@ -199,20 +304,9 @@ export const set = Effect.fn("KinShell.set")(function* (
         const refusal = shellRefusal(previous ?? [], input);
         if (refusal !== undefined) return yield* invalid(refusal);
         const sections = ordered(input).map(labelsOf);
-        const next = rev + 1;
-        const before = { rev, sections: previous ?? [] };
-        const after = { rev: next, sections };
-        yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
-      VALUES (${orgId}, ${yield* encode(sections)}, ${next}, ${personId}, ${yield* Clock.currentTimeMillis})
-      ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json, rev = excluded.rev,
-        set_by = excluded.set_by, set_at = excluded.set_at`;
-        yield* sql.afterCommit(invalidate(orgId));
-        yield* refresh.touch(orgId, "shell");
-        // The open attention stream has its own counter, even though the sensed rows haven't moved.
-        yield* refresh.touch(orgId, "pulse");
-        if (BUILT_INS.some((id) => sectionOn(before, id) !== sectionOn(after, id)))
-          yield* refreshWork(orgId);
-        return after;
+        const lists = yield* listSectionsRefusal(orgId, sections);
+        if (lists !== undefined) return yield* invalid(lists);
+        return yield* save(orgId, personId, { rev, sections: previous ?? [] }, sections);
       }),
     )
     .pipe(

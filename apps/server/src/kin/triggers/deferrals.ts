@@ -336,7 +336,7 @@ export const deferredSectionOff = Effect.fn("Deferrals.sectionOff")(function* (
   ]);
   if (references.size === 0) return false;
   const shell = yield* KinShell.get(orgId);
-  if (shell.sections.every(({ on }) => on)) return false;
+  if (KinShell.builtInsOn(shell)) return false;
   const sectionOfReference = yield* resolveSections(orgId, references, KIN_OWNER_LEVEL);
   return [...references].some((reference) => {
     const section = sectionOfReference(reference);
