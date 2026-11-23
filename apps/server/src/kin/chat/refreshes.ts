@@ -89,7 +89,7 @@ export const subscribeRefreshes = (
         // An unreadable list counts as changed; the client's own read then reports the failure.
         Effect.orElseSucceed(() => null),
       );
-      // Without the Money place the read is refused: null, and it stays null until that changes.
+      // The view includes open team lists even for someone without the Money place.
       const listsView = Money.lists([person], { orgId: input.orgId, archived: true }).pipe(
         Effect.map((shown) => JSON.stringify(shown)),
         Effect.orElseSucceed(() => null),
@@ -142,7 +142,11 @@ export const subscribeRefreshes = (
             }
             if (heard === undefined || heard.leads !== now.leads || heard.people !== now.people)
               leads = hub.counted(counter("leads"), yield* reads.view);
-            if (heard === undefined || heard.workLists !== now.workLists)
+            if (
+              heard === undefined ||
+              heard.workLists !== now.workLists ||
+              heard.shell !== now.shell
+            )
               // A refusal that stands is no change.
               lists = hub.counted(counter("workLists"), (yield* reads.lists) ?? "refused");
             if (heard === undefined || heard.company !== now.company) {

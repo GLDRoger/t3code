@@ -21,6 +21,25 @@ const UPI_DEBIT =
 const NEFT_CREDIT =
   "Dear Customer, INR 95,000.00 was credited to your A/c No. XX4821 on 17-11-2026 for NEFT Cr-INVT0000001-AMBERMILL DESIGN LLP-Invoice 26-27/004. UTR No: INVTN52026111700042. Available balance: INR 5,05,250.50. Never share your OTP, PIN or CVV with anyone.";
 
+const LABELLED_CREDIT = `(https://mail.invented.example/banner)
+
+Dear Customer,
+
+You've received a credit in your HDFC Bank account.
+
+Details of the transaction:
+Amount received: INR 86,420.75
+Account: XX5372
+Date: 18-Nov-2026
+Reference Details: NEFT Cr-ZQTX0009753-CORRAN TILES LLP-SUPPLY ORDER-ZQTWN64261182345
+
+Available Balance: INR 3,24,610.80
+
+For more information about your account balance, contact the bank.
+
+Regards,
+HDFC Bank`;
+
 describe("an HDFC alert mail", () => {
   it("reads a debit, a credit, and one without Avl bal", () => {
     const debit = readHdfcAlert(mail(UPI_DEBIT));
@@ -51,6 +70,25 @@ describe("an HDFC alert mail", () => {
       counterparty: "NEFT Cr-INVT0000001-AMBERMILL DESIGN LLP-Invoice 26-27/004",
       balanceMinor: 50_525_050,
     });
+    assert.deepStrictEqual(
+      readHdfcAlert(
+        mail(LABELLED_CREDIT, { subject: "❗ Incoming transfer: View your account balance" }),
+      ),
+      {
+        _tag: "alert",
+        alert: {
+          direction: "credit",
+          amountMinor: 8_642_075,
+          currency: "INR",
+          account: "5372",
+          date: "2026-11-18",
+          reference: "ZQTWN64261182345",
+          counterparty: "CORRAN TILES LLP",
+          balanceMinor: 32_461_080,
+          sentAt: Date.parse("2026-11-18T08:35:09Z"),
+        },
+      },
+    );
     const noBalance = readHdfcAlert(
       mail(
         "Dear Customer, Rs.5000.00 is successfully credited to your account **4821 by VPA rhea.invented@invented RHEA INVENTED on 18-11-26. Your UPI transaction reference number is 632211110002. Thank you for banking with us.",
@@ -86,6 +124,36 @@ describe("an HDFC alert mail", () => {
       [
         "two balances",
         mail(UPI_DEBIT.replace("Warm", "Available balance: INR 9.00 Warm")),
+        "unparsed",
+      ],
+      [
+        "labelled amount without an explicit credit",
+        mail(LABELLED_CREDIT.replace("a credit", "an update")),
+        "unparsed",
+      ],
+      [
+        "labelled credit explicitly negated",
+        mail(LABELLED_CREDIT.replace("You've received", "You have not received")),
+        "unparsed",
+      ],
+      [
+        "labelled credit alongside a different movement",
+        mail(`${LABELLED_CREDIT}\n\n${UPI_DEBIT}`),
+        "unparsed",
+      ],
+      [
+        "a labelled lookalike",
+        mail(LABELLED_CREDIT, { fromAddress: "alerts@hdfcbank-secure.net" }),
+        "sender",
+      ],
+      [
+        "a labelled credit with a missing reference",
+        mail(LABELLED_CREDIT.replace(/-ZQTWN\w+/, "")),
+        "unparsed",
+      ],
+      [
+        "a labelled credit with an impossible day",
+        mail(LABELLED_CREDIT.replace("18-Nov", "31-Nov")),
         "unparsed",
       ],
       ["no date header", mail(UPI_DEBIT, { date: null }), "unparsed"],

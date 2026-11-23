@@ -22,7 +22,8 @@ import type * as Statement from "effect/sql/Statement";
 import { personReads } from "../chat/sharing.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { targetless } from "../numbers/numberRows.ts";
-import { LISTS } from "./lists.ts";
+import { LISTS, TEAM_LIST_RESERVED } from "./lists.ts";
+import { listDef, sensitiveKeys } from "./registers.ts";
 import {
   inheritedSensitive,
   iso,
@@ -59,6 +60,37 @@ const placeOn = (
 ) =>
   sql`EXISTS (SELECT 1 FROM kin_people sp WHERE sp.org_id = r.org_id AND sp.person_id = ${personId}
     AND sp.${sql.literal(place)} = 1)`;
+
+const listMoneyFor = (
+  sql: SqlClient.SqlClient,
+  people: ReadonlyArray<KinPersonId | Statement.Fragment>,
+) =>
+  sql`(r.register_id IN ${sql.in(TEAM_LIST_RESERVED)} OR ${
+    people.length === 0
+      ? sql`0 = 1`
+      : sql.and(
+          people.map(
+            (person) =>
+              sql`(${placeOn(sql, person, "sees_money")} OR ${legacyPersonSees(sql, person)})`,
+          ),
+        )
+  })`;
+
+export const listMoneySeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  viewer._tag === "ownerLevel"
+    ? sql`1 = 1`
+    : sql`CASE WHEN ${listMoneyFor(sql, viewer.people)} THEN 1 ELSE 0 END`;
+
+export const privateListField = (sql: SqlClient.SqlClient, key: string | Statement.Fragment) =>
+  sql`EXISTS (SELECT 1 FROM kin_registers g, json_each(g.definition_json, '$.fields') spec
+    WHERE g.org_id = r.org_id AND g.register_id = r.register_id
+      AND json_extract(spec.value, '$.key') = ${key}
+      AND (json_extract(spec.value, '$.sensitive') = 1 OR json_extract(spec.value, '$.type') = 'money'))`;
+
+export const listNumberSeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  viewer._tag === "ownerLevel"
+    ? sql`1 = 1`
+    : sql`(${listMoneySeenBy(sql, viewer)} OR NOT ${privateListField(sql, "number")})`;
 
 /**
  * `r` carries no label of the owner's own: money lists label every entry sensitive by default
@@ -158,12 +190,55 @@ const teamListRow = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement
   sql`(r.team_shared = 1 AND ${ownLabelOff(sql)}
     AND NOT ${inheritedSensitive(sql)} AND ${placeOn(sql, personId, "sees_money")})`;
 
+/** A defined team list `g`. */
+const teamRegister = (sql: SqlClient.SqlClient) =>
+  sql`(g.built_in = 0 AND json_type(g.definition_json, '$.team') = 'true'
+    AND g.register_id NOT IN ${sql.in(TEAM_LIST_RESERVED)}
+    AND lower(trim(g.name)) <> 'bank transactions'
+    AND json_type(g.definition_json, '$.sensitive') = 'false'
+    AND json_type(g.definition_json, '$.teamSince') = 'integer'
+    AND json_extract(g.definition_json, '$.teamSince') >= 0)`;
+
+/** For a team list, only payments place it in a switchable section (`sectionOfRegister`). */
+const teamSectionOff = (sql: SqlClient.SqlClient) =>
+  sql`(g.register_id NOT IN ('dates', 'subscriptions')
+    AND json_type(g.definition_json, '$.payments') IS 'true'
+    AND EXISTS (SELECT 1 FROM kin_company_shell sh, json_each(sh.shell_json) section
+      WHERE sh.org_id = g.org_id AND json_extract(section.value, '$.id') = 'money'
+        AND json_type(section.value, '$.on') = 'false'))`;
+
+export const teamLists = Effect.fn("KinTeamView.lists")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ id: string }>`SELECT g.register_id AS id FROM kin_registers g
+    WHERE g.org_id = ${orgId} AND ${teamRegister(sql)} AND NOT ${teamSectionOff(sql)}
+    ORDER BY g.register_id`;
+  return new Set(rows.map((row) => row.id));
+});
+
+// All org/list pairs let SQLite build membership once, even in a query whose rows span orgs.
+const onTeamList = (sql: SqlClient.SqlClient) =>
+  sql`((r.org_id, r.register_id) IN (SELECT g.org_id, g.register_id FROM kin_registers g
+    WHERE ${teamRegister(sql)}))`;
+
+export const allSeeMoney = Effect.fn("KinTeamView.allSeeMoney")(function* (
+  orgId: KinOrgId,
+  people: ReadonlyArray<KinPersonId>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const ids = [...new Set(people)];
+  if (ids.length === 0) return false;
+  const [row] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_people
+    WHERE org_id = ${orgId} AND person_id IN ${sql.in(ids)}
+      AND removed_at IS NULL AND sees_money = 1`;
+  return row?.count === ids.length;
+});
+
 /**
  * What a non-owner-level person sees: a picture by `pictureReader` alone; else a task they hold, are
  * on, attend or marked private; what they made, gave or share; their projects' entries and docs;
  * their drafts; company docs with Docs on; with Clients on, the deals of clients they see.
  */
-export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+const legacyPersonSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`(CASE WHEN ${isPicture(sql)} THEN ${pictureReader(sql, personId)}
   WHEN r.register_id = 'goals' AND ${targetless(sql)}
     THEN json_type(r.fields_json, '$.spec') IS NULL AND ${teamListRow(sql, personId)}
@@ -187,6 +262,16 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
   OR (r.register_id = 'deals' AND NOT ${keySensitive(sql)}
     AND ${placeOn(sql, personId, "sees_clients")})
   OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND ${teamListRow(sql, personId)})) END)`;
+
+/** A team list adds its unlabelled entries from its opening on; it takes nothing the older rule gives. */
+export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+  sql`COALESCE(CASE WHEN ${onTeamList(sql)} THEN
+    (SELECT CASE WHEN ${teamSectionOff(sql)} THEN 0
+        WHEN r.sensitive = 0 AND NOT ${inheritedSensitive(sql)}
+          AND (r.created_at >= json_extract(g.definition_json, '$.teamSince')
+            OR (r.created_by_kind = 'person' AND r.created_by_id = ${personId})) THEN 1 END
+      FROM kin_registers g WHERE g.org_id = r.org_id AND g.register_id = r.register_id)
+  END, ${legacyPersonSees(sql, personId)})`;
 
 /** Version `pv` of doc `r` as this person reads it: the doc, and a picture's version by its own rule. */
 export const docVersionSeen = (
@@ -399,6 +484,25 @@ export const keyedAs = (sql: SqlClient.SqlClient, viewer: KinViewer, alias = "r"
 export const seenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
   sql`(${viewer._tag === "ownerLevel" ? sql`1 = 1` : viewSees(sql, viewer.people)} AND ${keyedAs(sql, viewer)})`;
 
+export const legacySeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  viewer._tag === "ownerLevel"
+    ? sql`1 = 1`
+    : viewer.people.length === 0
+      ? sql`0 = 1`
+      : sql.and(viewer.people.map((person) => legacyPersonSees(sql, person)));
+
+export const recordFieldAccess = Effect.fn("KinTeamView.recordFieldAccess")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ full: number }>`SELECT ${listMoneySeenBy(sql, viewer)} AS full
+    FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id = ${recordId}
+      AND ${seenBy(sql, viewer)} LIMIT 1`;
+  return row;
+});
+
 /** Whether every one of these people may see this entry now. */
 export const viewVisible = Effect.fn("KinTeamView.viewVisible")(function* (
   orgId: KinOrgId,
@@ -462,10 +566,15 @@ export const viewGuard = Effect.fn("KinTeamView.viewGuard")(function* (
   const draft = yield* draftDoc(orgId, view, write, turn);
   if (draft === "filed") return { draftFor: view.people[0]! };
   for (const person of view.people)
-    yield* teamGuard(orgId, person, {
-      ...write,
-      changes: write.changes && view.askers.includes(person),
-    }).pipe(
+    yield* teamGuard(
+      orgId,
+      person,
+      {
+        ...write,
+        changes: write.changes && view.askers.includes(person),
+      },
+      { readOnly: view.askers.length === 0, teamListChanges: write.changes },
+    ).pipe(
       Effect.mapError((error) =>
         draft === "elsewhere" && error === TEAM_REFUSED ? DRAFT_OWN_CHAT_ONLY : error,
       ),
@@ -704,7 +813,8 @@ export const linkedFromOf = Effect.fn("KinTeamView.linkedFrom")(function* (
     number: unknown;
     total: number;
   }>`SELECT l.relation, l.created_at AS "createdAt", r.record_id AS "recordId", r.key, r.title,
-      json_extract(r.fields_json, '$.number') AS "number", COUNT(*) OVER () AS total
+      CASE WHEN ${listNumberSeenBy(sql, viewer)} THEN json_extract(r.fields_json, '$.number') END
+        AS "number", COUNT(*) OVER () AS total
     FROM kin_record_links l
     JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
     WHERE l.org_id = ${orgId} AND l.kind = 'record' AND l.target = ${recordId}
@@ -824,8 +934,12 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
           partyId: string | null;
           projectId: string | null;
           projectPartyId: string | null;
+          teamList: number;
+          madeByViewer: number;
         }>`SELECT
           r.record_id AS "recordId", ${teamWrites(sql, personId)} AS writes,
+          ${onTeamList(sql)} AS "teamList",
+          r.created_by_kind = 'person' AND r.created_by_id = ${personId} AS "madeByViewer",
           ${alsoOnIt(sql, personId)} AS "onTask", r.owner_kind AS "ownerKind", r.owner_id AS "ownerId",
           r.party_id AS "partyId", r.project_id AS "projectId",
           (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id
@@ -858,6 +972,26 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
 });
 type TeamFacts = ReturnType<Effect.Success<ReturnType<typeof teamFactsOf>>>;
 
+const TEAM_LIST_REFUSED = new KinChatError({
+  reason: "not_allowed",
+  message: "Only the owner or a co-owner can do that on this list.",
+});
+const TEAM_LIST_EDITS: ReadonlySet<string> = new Set([
+  "state",
+  "fields",
+  "title",
+  "notes",
+  "amount",
+]);
+const teamListEdit = (facts: TeamFacts, write: TeamWrite) => {
+  if (write.input.state === "dropped" && facts.seen?.madeByViewer !== 1) return TEAM_LIST_REFUSED;
+  return Object.entries(write.input).some(
+    ([key, value]) => value !== undefined && !TEAM_LIST_EDITS.has(key),
+  )
+    ? TEAM_REFUSED
+    : undefined;
+};
+
 /**
  * Whether a teammate's write goes through, and the refusal when it doesn't: they are still let in,
  * the task is one they see (else it is no task at all) and, for a change, one they hold or gave
@@ -866,6 +1000,7 @@ type TeamFacts = ReturnType<Effect.Success<ReturnType<typeof teamFactsOf>>>;
  */
 const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined => {
   if (!facts.member) return noLongerTeam;
+  if (facts.seen?.teamList === 1) return teamListEdit(facts, write);
   if (write.changes && withOnly(facts)) return WITH_REFUSED;
   // Who is on a task besides its holder is set by whoever may change the task.
   if (alsoOnOnly(facts, write))
@@ -1006,7 +1141,11 @@ export const teamGuard = Effect.fn("KinTeamView.guard")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   write: TeamWrite,
-  options?: { readonly room: boolean },
+  options?: {
+    readonly room?: boolean;
+    readonly readOnly?: boolean;
+    readonly teamListChanges?: boolean;
+  },
 ) {
   const factsOf = yield* teamFactsOf(
     orgId,
@@ -1018,6 +1157,42 @@ export const teamGuard = Effect.fn("KinTeamView.guard")(function* (
   if (facts.member && facts.seen != null) {
     if (write.leaveBy === personId && facts.seen.onTask === 1) return;
     if (options?.room === true && !withOnly(facts)) return;
+  }
+  const list = write.row === undefined ? write.input.list : facts.seen?.registerId;
+  const teamList =
+    facts.member &&
+    typeof list === "string" &&
+    !TEAM_LIST_RESERVED.includes(list) &&
+    (write.row === undefined ? (yield* teamLists(orgId)).has(list) : facts.seen?.teamList === 1);
+  if (teamList) {
+    if (options?.readOnly === true) return yield* TEAM_LIST_REFUSED;
+    const refused =
+      write.row !== undefined && (options?.teamListChanges ?? write.changes)
+        ? teamListEdit(facts, write)
+        : OWNERS_FIELDS.some(
+              (field) =>
+                field !== "list" &&
+                field !== "fields" &&
+                field !== "amount" &&
+                write.input[field] !== undefined,
+            )
+          ? TEAM_REFUSED
+          : undefined;
+    if (refused !== undefined) return yield* refused;
+    const { fields, amount } = write.input;
+    if (fields !== undefined || amount !== undefined) {
+      const def = yield* listDef(orgId, list);
+      if (def === undefined) return yield* TEAM_REFUSED;
+      if (
+        (amount !== undefined ||
+          (typeof fields === "object" &&
+            fields !== null &&
+            sensitiveKeys(def).some((key) => Object.hasOwn(fields, key)))) &&
+        !(yield* allSeeMoney(orgId, [personId]))
+      )
+        return yield* TEAM_REFUSED;
+    }
+    return;
   }
   const refused = teamRule(facts, {
     ...write,
@@ -1122,13 +1297,18 @@ export const teamCan = Effect.fn("KinTeamView.can")(function* (
             (facts.clients.on && facts.seen?.registerId === "work" && moves)),
         project: led !== undefined && takes({ projectId: led }),
         clearProject: takes({ projectId: null }),
-        give: open && moves,
-        takeBack: open && moves && !samePrincipal(row.owner, { _tag: "person", personId }),
+        give: open && moves && facts.seen?.teamList !== 1,
+        takeBack:
+          open &&
+          moves &&
+          facts.seen?.teamList !== 1 &&
+          !samePrincipal(row.owner, { _tag: "person", personId }),
         mark: takes({ sensitive: true }),
         unmark: takes({ sensitive: false }),
         share: false,
         confirm: false,
         repeat: takes({ repeat: { every: "month" } }),
+        ...(facts.seen?.teamList === 1 ? { links: false } : {}),
       };
       return [row.recordId, can] as const;
     }),
@@ -1316,6 +1496,28 @@ export const teamChanges = (changes: ReadonlyArray<KinRecordChange>) => {
   return shown.map((change, index) => ({ ...change, seq: shown.length - index }));
 };
 
+export const listLinksFor = Effect.fn("KinTeamView.listLinksFor")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  links: ReadonlyArray<KinRecordLink>,
+) {
+  if (viewer._tag === "ownerLevel") return links;
+  const targets = links.flatMap((link) =>
+    link.kind === "record" && link.number !== undefined ? [link.target] : [],
+  );
+  if (targets.length === 0) return links;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ id: string }>`SELECT r.record_id AS id FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(targets)}
+      AND ${listNumberSeenBy(sql, viewer)} ORDER BY r.record_id`;
+  const seen = new Set(rows.map((row) => row.id));
+  return links.map((link): KinRecordLink => {
+    if (link.kind !== "record" || link.number === undefined || seen.has(link.target)) return link;
+    const { number: _number, ...rest } = link;
+    return rest;
+  });
+});
+
 /**
  * A task's sheet as a teammate reads it. Links keep pull requests, web addresses and tasks they
  * may see; messages, workers and memory are the owner's. Where it was first asked is not theirs.
@@ -1343,10 +1545,16 @@ export const teamDetail = Effect.fn("KinTeamView.detail")(function* (
   const sheet: KinRecordDetail = {
     ...(whole ? detail : teamRecordIn(detail, visible, clients)),
     source: { chatId: null, messageId: null },
-    links: detail.links.filter((link) =>
-      link.kind === "pull_request" || link.kind === "url"
-        ? true
-        : link.kind === "record" && link.record !== undefined && visible.has(link.record.recordId),
+    links: yield* listLinksFor(
+      detail.orgId,
+      viewerOfPeople([personId]),
+      detail.links.filter((link) =>
+        link.kind === "pull_request" || link.kind === "url"
+          ? true
+          : link.kind === "record" &&
+            link.record !== undefined &&
+            visible.has(link.record.recordId),
+      ),
     ),
     changes: whole
       ? detail.changes.map((change, index) => ({ ...change, seq: detail.changes.length - index }))
@@ -1480,13 +1688,16 @@ export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
         WHEN ${currency} IN ${sql.in(kinCurrenciesWithDecimals(0))} THEN ${column}
         WHEN ${currency} IN ${sql.in(kinCurrenciesWithDecimals(3))} THEN ${column} / 1000
         ELSE ${column} / 100 END) IN ${sql.in(figures)})`;
+    const figureSeen = sql`(${personSees(sql, personId)} AND ${listMoneyFor(sql, [personId])})`;
+    const figureKnown =
+      askedBy === undefined ? known : sql`(${known} AND ${listMoneyFor(sql, [askedBy])})`;
     const [hit] = yield* sql<{ hit: number }>`SELECT EXISTS (SELECT 1 FROM kin_records r
         WHERE r.org_id = ${orgId} AND r.amount_minor IS NOT NULL
-          AND ${same(sql`r.amount_minor`, sql`r.currency`)} AND NOT ${personSees(sql, personId)} AND ${known})
+          AND ${same(sql`r.amount_minor`, sql`r.currency`)} AND NOT ${figureSeen} AND ${figureKnown})
       OR EXISTS (SELECT 1 FROM kin_record_payments p
         JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
         WHERE p.org_id = ${orgId} AND ${same(sql`p.amount_minor`, sql`p.currency`)}
-          AND NOT ${personSees(sql, personId)} AND ${known}) AS hit`;
+          AND NOT ${figureSeen} AND ${figureKnown}) AS hit`;
     if (hit?.hit === 1) return "it carries a figure that is a sum they may not see";
   }
   const keys = [...new Set(text.match(ENTRY_KEY) ?? [])];

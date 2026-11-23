@@ -63,7 +63,14 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { handlers as documentHandlers, KinDocumentToolkit } from "../gendocs/mcp.ts";
-import { listPlace, presetDefinition, propose } from "../work/registers.ts";
+import {
+  defineList,
+  listDef,
+  listPlace,
+  presetDefinition,
+  propose,
+  proposalFor,
+} from "../work/registers.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import * as CardActions from "./cardActions.ts";
 import { plansOf, takesAsDefault } from "./cardPlans.ts";
@@ -1232,6 +1239,142 @@ it.effect("a tap on a list proposal's own card makes the list once, for an owner
         // A second tap, from another session, changes nothing.
         yield* kin.tap(who, widgetId, "option-1", `${name}-tap-again`);
         assert.deepStrictEqual(yield* lists(id), [{ name }]);
+      }
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("a tap on a team list proposal opens it at Confirm, for an owner or co-owner", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { owner, orgId, sql } = kin;
+      const meera = kin.person("meera");
+      const meeraChat = (yield* kin.chats.createDirect(meera, {
+        orgId,
+        agentId: KinAgentId.make("finance"),
+      })).chatId;
+      const lists = (id: string) =>
+        sql<{ name: string; team: number | null; teamSince: number | null }>`SELECT name,
+          json_extract(definition_json, '$.team') AS team,
+          json_extract(definition_json, '$.teamSince') AS "teamSince" FROM kin_registers
+          WHERE org_id = ${orgId} AND register_id = ${id}`;
+      const proposals = (chatId: KinChatId) =>
+        sql<{ id: string; widgetId: string | null; definedAt: number | null }>`SELECT
+            proposal_id AS id, widget_id AS "widgetId", defined_at AS "definedAt"
+          FROM kin_list_proposals WHERE org_id = ${orgId} AND chat_id = ${chatId}
+          ORDER BY proposed_at, proposal_id`;
+      const define = (wakeupId: string, name: string, extra: string) =>
+        callAs("finance", "list_define", {
+          sourceEventId: `event:${wakeupId}`,
+          name,
+          noun: "item",
+          prefix: name.slice(0, 3).toUpperCase(),
+          fields: [
+            { label: "Vendor", type: "text" },
+            { label: extra, type: "text" },
+          ],
+          team: true,
+        });
+      for (const [who, chatId, name] of [
+        [meera, meeraChat, "Stationery"],
+        [owner, kin.chatOf("finance"), "Office snacks"],
+      ] as const) {
+        const turn = yield* kin.turn("finance", chatId, `Track ${name} for me`, who);
+        const first = yield* define(turn, name, "Note");
+        assert.strictEqual(first.value.status, "proposed", JSON.stringify(first.value));
+        // The same list proposed again in that turn, worded differently, is the first proposal.
+        const again = yield* define(turn, name, "Comment");
+        assert.strictEqual(again.value.proposal, first.value.proposal);
+        const stored = yield* proposals(chatId);
+        assert.lengthOf(stored, 1);
+        const cards = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
+          WHERE org_id = ${orgId} AND chat_id = ${chatId} AND type = 'choice'`;
+        assert.strictEqual(cards[0]!.n, 1);
+        const widgetId = stored[0]!.widgetId;
+        const shown = card(yield* kin.widget(widgetId));
+        assert.strictEqual(shown.options[0]?.label, "Create it");
+        assert.include(shown.detail?.split("\n") ?? [], "The whole team will see and add entries.");
+
+        const id = String(first.value.list);
+        if (who === owner) {
+          // A teammate let into the chat after the card was drawn: their tap is refused.
+          yield* kin.repo.addMember({
+            orgId,
+            chatId,
+            memberId: KinMemberId.make("dev-in-finance"),
+            principal: { _tag: "person", personId: KinPersonId.make("dev") },
+            role: "member",
+            joinedAt: at,
+            leftAt: null,
+            mutedUntil: null,
+          });
+          const refused = yield* kin
+            .tap(kin.person("dev"), widgetId, "option-1", "dev-tap")
+            .pipe(Effect.flip);
+          assert.include(refused, { reason: "not_found" });
+          assert.lengthOf(yield* lists(id), 0);
+        }
+        yield* TestClock.adjust("1 millis");
+        const confirmedAt = yield* Clock.currentTimeMillis;
+        yield* kin.tap(who, widgetId, "option-1", `${name}-tap`);
+        assert.deepStrictEqual(yield* lists(id), [{ name, team: 1, teamSince: confirmedAt }]);
+        assert.strictEqual(card(yield* kin.widget(widgetId)).outcome?.title, "List created");
+        assert.isNotNull((yield* proposals(chatId))[0]!.definedAt);
+        // A second tap, from another session, changes nothing.
+        yield* kin.tap(who, widgetId, "option-1", `${name}-tap-again`);
+        assert.deepStrictEqual(yield* lists(id), [{ name, team: 1, teamSince: confirmedAt }]);
+      }
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("a list change card says when it closes a team list", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { orgId, sql } = kin;
+      const chatId = kin.chatOf("finance");
+      const closedLine = "The team will no longer see this list.";
+      for (const name of ["Bookings", "Supplies", "Stock"]) {
+        const team = name === "Bookings";
+        yield* defineList(orgId, yield* proposalFor(orgId, { name, team }), MON);
+      }
+      for (const [list, team, detail, staysOpen] of [
+        ["bookings", undefined, ["Note (text)"], true],
+        ["supplies", false, ["Note (text)"], false],
+        ["bookings", false, ["Extra (text)", closedLine], false],
+        ["stock", false, ["Note (text)"], true],
+      ] as const) {
+        const label = list === "bookings" && team === false ? "Extra" : "Note";
+        const asked = yield* kin.turn("finance", chatId, `Add ${label} to ${list}`);
+        const proposed = yield* callAs("finance", "list_define", {
+          sourceEventId: `event:${asked}`,
+          list,
+          fields: [{ label, type: "text" }],
+          ...(team === undefined ? {} : { team }),
+        });
+        assert.strictEqual(proposed.value.status, "proposed", JSON.stringify(proposed.value));
+        const [row] = yield* sql<{
+          widgetId: string;
+        }>`SELECT widget_id AS "widgetId" FROM kin_list_proposals
+          WHERE org_id = ${orgId} AND proposal_id = ${String(proposed.value.proposal)}`;
+        assert.deepStrictEqual(card(yield* kin.widget(row!.widgetId)).detail?.split("\n"), [
+          ...detail,
+        ]);
+        if (list === "stock")
+          yield* defineList(orgId, yield* proposalFor(orgId, { list, team: true }), MON);
+        const yes = yield* kin.turn("finance", chatId, `Yes to ${label} on ${list}`);
+        const applied = yield* callAs("finance", "list_define", {
+          sourceEventId: `event:${yes}`,
+          proposal: proposed.value.proposal,
+        });
+        assert.strictEqual(applied.value.status, "defined", JSON.stringify(applied.value));
+        const def = yield* listDef(orgId, list);
+        assert.strictEqual(def?.team === true, staysOpen);
+        assert.include(def?.fields.map((field) => field.label) ?? [], label);
       }
     }).pipe(Effect.provide(layer)),
   ),
