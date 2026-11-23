@@ -247,8 +247,42 @@ it.effect(
       assert.deepStrictEqual(yield* lists(KIN_OWNER_LEVEL), ["payroll", "bookings"]);
       yield* sql`UPDATE kin_registers SET archived_at = NULL WHERE register_id = 'stock'`;
       assert.deepStrictEqual(yield* lists(KIN_OWNER_LEVEL), ["stock", "payroll", "bookings"]);
+      // A list section gates no Work row: open pages hear it on the shell topic, and Work
+      // restarts only for a built-in switch that takes effect.
+      let restarts = 0;
+      const counted = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.provideService(effect, RefreshHub.KinWorkRefresh, () =>
+          Effect.sync(() => {
+            restarts += 1;
+          }),
+        );
+      const refresh = yield* RefreshHub.KinRefreshHub;
+      const shellTopic = Effect.map(
+        Stream.runHead(refresh.changes(orgId)),
+        (head) => Option.getOrUndefined(head)?.shell,
+      );
+      const docked = yield* counted(
+        KinShell.set(orgId, rhea, 1, [
+          { id: "deals", on: false },
+          { id: "list:stock", on: true, dock: false },
+          { id: "list:payroll", on: true },
+          { id: "list:bookings", on: true },
+        ]),
+      );
+      assert.deepStrictEqual([restarts, yield* shellTopic], [0, docked.rev]);
+      const shown = yield* counted(
+        sql.withTransaction(KinShell.showList(orgId, "bookings", true, rhea)),
+      );
+      assert.deepStrictEqual([restarts, yield* shellTopic], [0, shown.rev]);
+      yield* counted(
+        KinShell.set(orgId, rhea, shown.rev, [
+          { id: "deals", on: true },
+          ...shown.sections.slice(5),
+        ]),
+      );
+      assert.strictEqual(restarts, 1);
       // Taken out again: the setter given the sections without it.
-      const out = yield* shell.set(orgId, rhea, 1, [{ id: "list:payroll", on: true }]);
+      const out = yield* shell.set(orgId, rhea, 4, [{ id: "list:payroll", on: true }]);
       assert.deepStrictEqual(out.sections.slice(5), [{ id: "list:payroll", on: true }]);
       assert.isTrue(KinShell.builtInsOn(out));
     }).pipe(Effect.provide(layer)),

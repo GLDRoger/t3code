@@ -606,6 +606,22 @@ export const checkFields = (
 export const isFieldNumber = (value: string) =>
   /^-?\d{1,15}(?:\.\d{1,6})?$/.test(value) && Number.isFinite(Number(value));
 
+const YES_NO = new Map([
+  ["yes", "yes"],
+  ["true", "yes"],
+  ["no", "no"],
+  ["false", "no"],
+]);
+/**
+ * A number or yes/no as a person or agent writes it ("1,200.50", "Yes"), as the field stores it;
+ * undefined when it isn't one.
+ */
+export const typedText = (type: "number" | "yesno", text: string) => {
+  if (type === "yesno") return YES_NO.get(text.trim().toLowerCase());
+  const number = text.replace(/[\s,]/g, "");
+  return isFieldNumber(number) ? String(Number(number)) : undefined;
+};
+
 /** A date field's value: a day, or a day and a time of day in the owner's zone. */
 export const isFieldDate = (value: string) =>
   isCalendarDay(value.slice(0, 10)) &&

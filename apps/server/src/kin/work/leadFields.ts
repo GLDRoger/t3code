@@ -12,7 +12,7 @@ import type { SqlError } from "effect/sql/SqlError";
 
 import type { FieldValue } from "./lists.ts";
 import { parseAmount } from "./money.ts";
-import { describe, isFieldNumber, type ListDef } from "./registers.ts";
+import { describe, type ListDef, typedText } from "./registers.ts";
 
 /**
  * A lead's words for a defined list's fields, as the values the list stores: a choice by its
@@ -35,12 +35,6 @@ export const FieldInputs = Schema.Record(
 export type FieldInputs = typeof FieldInputs.Type;
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
-const YES_NO = new Map([
-  ["yes", true],
-  ["true", true],
-  ["no", false],
-  ["false", false],
-]);
 const decodeAttachments = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(KinAttachment)),
 );
@@ -122,16 +116,11 @@ export const typedFields = Effect.fn("KinWorkTools.typedFields")(function* (
         out[key] = parsed.money;
         break;
       }
-      case "number": {
-        const number = text.replace(/[\s,]/g, "");
-        if (!isFieldNumber(number)) return yield* wrong;
-        out[key] = String(Number(number));
-        break;
-      }
+      case "number":
       case "yesno": {
-        const answer = YES_NO.get(text.toLowerCase());
-        if (answer === undefined) return yield* wrong;
-        out[key] = answer ? "yes" : "no";
+        const typed = typedText(spec.type, text);
+        if (typed === undefined) return yield* wrong;
+        out[key] = typed;
         break;
       }
       case "file": {
