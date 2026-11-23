@@ -9,6 +9,8 @@ export const guide =
 export const rules: Record<string, string> = {
   StreamEqualsRead:
     "Once everything sent has arrived, what her screen holds is exactly what reading her own view fresh would show, whatever order the changes reached her in and however often her socket dropped.",
+  ClientLabelEqualsRead:
+    "If the section switches while her socket is down, her promise shows its client as a fresh read would once she catches up.",
   NoHiddenNamed:
     "She is never told of a task she can't see: a task leaving her view is named to her only if she was told of it before.",
   LevelStartsOver:
@@ -17,9 +19,14 @@ export const rules: Record<string, string> = {
 
 export const variants = [
   {
+    name: "skip-reserved-on-resume",
+    breaks: "ClientLabelEqualsRead",
+    what: "a co-owner resumes from before a section switch and keeps the promise's client label",
+  },
+  {
     name: "no-shell-refresh",
     breaks: "StreamEqualsRead",
-    what: "a Deals section switch leaves the promise in a teammate’s open Tasks page",
+    what: "a Clients section switch leaves the promise in a teammate’s open Tasks page",
   },
   {
     name: "deal-no-dependent-row",
@@ -57,7 +64,7 @@ const held = (vars: Vars) => {
 };
 
 export const state = (vars: Vars) =>
-  `${vars["member"] === true ? "Member" : "Co-owner"}, ${vars["up"] === true ? "connected" : "offline"}: holds ${held(vars)}`;
+  `${vars["member"] === true ? "Member" : "Co-owner"}, ${vars["up"] === true ? "connected" : "offline"}: holds ${held(vars)}${vars["clientNamed"] === true ? " with the client label" : ""}`;
 
 export const step = (action: string, from: Vars, to: Vars) => {
   switch (action) {
@@ -66,7 +73,9 @@ export const step = (action: string, from: Vars, to: Vars) => {
     case "Share":
       return "A task is shared with her, or taken from her view";
     case "ShellSwitch":
-      return to["sectionsOn"] === true ? "The owner turns Deals on" : "The owner turns Deals off";
+      return to["sectionsOn"] === true
+        ? "The owner turns Clients on"
+        : "The owner turns Clients off";
     case "DealLabel":
       return to["dealPrivate"] === true
         ? "The owner makes the promise’s deal private"
