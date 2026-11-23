@@ -3546,6 +3546,15 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   if (before === undefined) return yield* notFound(key);
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(key);
+  const beforeFields = parseFields(before.fieldsJson);
+  if (
+    before.registerId === "goals" &&
+    beforeFields.target === undefined &&
+    (input.current !== undefined || input.fields?.current !== undefined)
+  )
+    return yield* invalid(
+      `${before.title} is a watched number: record its value with number_record (the value, the day it is as of, and where it came from).`,
+    );
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
   if (before.registerId === "deals") {
     const { out, notices } = yield* dealUpdate(lead, writer, before, input);
@@ -3603,7 +3612,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   };
   if (patch.owner !== undefined) yield* notBouncedBack(lead, before, patch.owner);
   // tell false holds the new holder's notice on the task; giving it to them again tells them.
-  const heldFor = parseFields(before.fieldsJson).untold;
+  const heldFor = beforeFields.untold;
   const giving =
     before.registerId === "work" && patch.owner?._tag === "person" ? patch.owner : undefined;
   const moves =
@@ -3624,7 +3633,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...partyWords(before.registerId, { tags: input.tags, audience: input.audience }),
     ...spine.fields,
     ...(routedReason === undefined ? {} : { reason: routedReason }),
-    ...(yield* goalFields(lead.orgId, input, parseFields(before.fieldsJson))),
+    ...(yield* goalFields(lead.orgId, input, beforeFields)),
     ...(holds ? { untold: `person:${giving.personId}` } : releases ? { untold: null } : {}),
   };
   const money = yield* moneyPatch(lead, def, input, before.currency);

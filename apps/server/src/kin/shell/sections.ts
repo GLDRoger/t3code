@@ -77,6 +77,8 @@ export const SECTIONS = {
     money_summary: "money",
     money_query: "money",
     budget_set: "money",
+    number_record: null,
+    numbers_read: null,
     dates_query: null,
     company_profile: null,
     shell_propose: null,

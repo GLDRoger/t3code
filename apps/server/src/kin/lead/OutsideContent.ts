@@ -118,6 +118,9 @@ export const OUTSIDE_TOOLS = {
   money_summary: "allowed",
   money_query: "allowed",
   budget_set: "allowed",
+  // Appends a sourced value for an existing number the lead keeps, without changing the definition.
+  number_record: "allowed",
+  numbers_read: "allowed",
   dates_query: "allowed",
   company_profile: "allowed",
   // Only a card: the owner's Confirm applies it, in their own tap.

@@ -4,6 +4,7 @@ import { KinChatError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { numbersHandlers } from "../../numbers/mcp.ts";
 import { LeadMemory } from "../../lead/LeadMemory.ts";
 import * as Clients from "../leadClients.ts";
 import * as Money from "../leadMoney.ts";
@@ -22,6 +23,7 @@ const failure = (error: unknown) =>
 
 // Kin's service checks the persisted lead and wake-up, rather than T3 thread-control grants.
 export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
+  ...numbersHandlers,
   records_query: McpToolAccess.reads(
     Effect.fn("KinWorkToolkit.query")(function* (input) {
       const result = yield* Work.query(yield* McpInvocationContext, input);

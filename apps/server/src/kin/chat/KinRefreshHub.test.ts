@@ -143,6 +143,7 @@ describe("KinRefreshHub", () => {
           stop: 0,
           watches: 0,
           shell: 0,
+          numbers: 0,
           company: 0,
           boot,
           streams: KIN_STREAMS,
@@ -195,6 +196,7 @@ describe("KinRefreshHub", () => {
           stop: 0,
           watches: 0,
           shell: 0,
+          numbers: 0,
           company: 0,
           boot,
           streams: KIN_STREAMS,
@@ -417,6 +419,7 @@ describe("KinRefreshHub", () => {
   it("finds no write to a refreshed table outside the files that touch its topic", () => {
     const root = NodePath.resolve(import.meta.dirname, "..");
     const writers: Record<string, ReadonlyArray<string>> = {
+      kin_number_values: ["numbers/KinNumbers.ts"],
       // The repository writes only a new company's first profile, at first start, before any client.
       kin_company_profile: ["work/companyProfile.ts", "chat/KinChatRepository.ts"],
       kin_recipe_defaults: ["gendocs/recipeDefaults.ts"],
