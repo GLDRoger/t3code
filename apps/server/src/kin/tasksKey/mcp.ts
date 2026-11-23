@@ -1,3 +1,6 @@
+import * as KinShell from "../shell/KinShell.ts";
+import type { SectionId } from "../shell/sections.ts";
+import { MATERIAL } from "../you/projection.ts";
 import {
   KinChatError,
   KinMoney,
@@ -380,6 +383,26 @@ const GATED: Partial<
   search_memory: readsMemory,
 };
 
+const TOOL_SECTIONS: Readonly<Partial<Record<string, SectionId>>> = {
+  money_summary: "money",
+  open_client: "clients",
+  open_project: "clients",
+};
+const shellOf = Effect.fn("KinTasksKeyTools.shell")((holder: TasksKeyHolder) =>
+  KinShell.get(holder.orgId).pipe(Effect.mapError(() => unavailable)),
+);
+const requireSection = Effect.fn("KinTasksKeyTools.requireSection")(function* (
+  holder: TasksKeyHolder,
+  section: SectionId,
+) {
+  const shell = yield* shellOf(holder);
+  if (!KinShell.sectionOn(shell, section))
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: `${KinShell.sectionName(shell, section)} is turned off for this company.`,
+    });
+});
+
 // Read from the request, not declared: tool services are built with the server, and the holder
 // exists only per request. Without `auth` in front there is none, and every call fails.
 // Every answer passes here: text a reader can't see but a model reads is taken out of it.
@@ -423,26 +446,44 @@ const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
   ),
   find: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.find")(function* ({ kind, ...input }) {
-      if (kind === "projects") return yield* asHolder((holder) => listProjects(holder, input));
-      if (kind === "clients") return yield* asHolder((holder) => listClients(holder, input));
+      if (kind === "projects" || kind === "clients")
+        return yield* asHolder((holder) =>
+          Effect.gen(function* () {
+            if (!KinShell.sectionOn(yield* shellOf(holder), "clients")) {
+              const page = { more: false, next: null, material: MATERIAL };
+              return kind === "projects" ? { ...page, projects: [] } : { ...page, clients: [] };
+            }
+            return kind === "projects"
+              ? yield* listProjects(holder, input)
+              : yield* listClients(holder, input);
+          }),
+        );
       return yield* asHolder((holder) => findDocs(holder, input));
     }),
   ),
   open_project: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.openProject")((input) =>
-      asHolder((holder) => openProject(holder, input.key)),
+      asHolder((holder) =>
+        requireSection(holder, "clients").pipe(Effect.andThen(openProject(holder, input.key))),
+      ),
     ),
   ),
   open_client: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.openClient")((input) =>
-      asHolder((holder) => openClient(holder, input.key)),
+      asHolder((holder) =>
+        requireSection(holder, "clients").pipe(Effect.andThen(openClient(holder, input.key))),
+      ),
     ),
   ),
   read_doc: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.readDoc")((input) => asHolder((holder) => readDoc(holder, input))),
   ),
   money_summary: McpToolAccess.reads(
-    Effect.fn("KinTasksKeyTools.money")(() => asHolder(moneySummary)),
+    Effect.fn("KinTasksKeyTools.money")(() =>
+      asHolder((holder) =>
+        requireSection(holder, "money").pipe(Effect.andThen(moneySummary(holder))),
+      ),
+    ),
   ),
   search_memory: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.memory")((input) =>
@@ -453,10 +494,16 @@ const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
 
 // Untraced: it runs for every tool on each list and call.
 const listed = toolVisibility(
-  Effect.fnUntraced(function* (name: string) {
+  Effect.fnUntraced(function* (name, method) {
     const gate = GATED[name];
-    if (gate === undefined) return true;
-    return yield* asHolder(gate).pipe(Effect.orElseSucceed(() => false));
+    const section = method === "tools/call" ? undefined : TOOL_SECTIONS[name];
+    if (gate === undefined && section === undefined) return true;
+    return yield* asHolder((holder) =>
+      Effect.gen(function* () {
+        if (gate !== undefined && !(yield* gate(holder))) return false;
+        return section === undefined || KinShell.sectionOn(yield* shellOf(holder), section);
+      }),
+    ).pipe(Effect.orElseSucceed(() => false));
   }),
 );
 

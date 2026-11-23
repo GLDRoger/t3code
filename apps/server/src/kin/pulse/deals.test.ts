@@ -1078,6 +1078,17 @@ describe("the morning page's Money lines", () => {
         "Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue.",
         "Corran Tiles hasn't answered quote CQ/7 for NZ$3,540 in 6 days.",
       ]);
+      const set = (rev: number, id: "money" | "invoices", on: boolean) =>
+        KinShell.KinShell.use((shell) => shell.set(orgId, rhea, rev, [{ id, on }])).pipe(
+          Effect.provide(KinShell.layer),
+        );
+      const on = yield* lines();
+      yield* set(0, "invoices", false);
+      assert.deepStrictEqual(yield* lines(), []);
+      yield* set(1, "money", false);
+      assert.deepStrictEqual(yield* lines(), []);
+      yield* set(2, "money", true);
+      assert.deepStrictEqual(yield* lines(), on);
       // A teammate who may not see Money hears none of it; one who may, the same lines.
       yield* sql`UPDATE kin_records SET team_shared = 1 WHERE register_id IN ('invoices', 'quotes')`;
       // The agent named the quote by its title, as an unnumbered one shows: Kin says it once.

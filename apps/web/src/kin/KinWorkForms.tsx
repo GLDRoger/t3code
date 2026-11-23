@@ -89,6 +89,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
+import { useKinSectionNamed, useKinSectionWords } from "./useKinShell";
 
 const COPY = KIN_WORK_FORM_COPY;
 
@@ -302,6 +303,9 @@ export function KinClientDialog(
     readonly onClose: () => void;
   },
 ) {
+  // The company's own word for Clients, in the form's title, buttons and choices.
+  const COPY = useKinSectionWords(props.environmentId, KIN_WORK_FORM_COPY);
+  const named = useKinSectionNamed(props.environmentId);
   const { environmentId, orgId, editing } = props;
   const ownerLevel = useKinOwnerLevel(environmentId);
   const member = props.member ?? !ownerLevel;
@@ -387,7 +391,9 @@ export function KinClientDialog(
             ? COPY.party.prospectTitle
             : COPY.party.newTitle
       }
-      submit={editing !== null ? COPY.save : newProspect ? KIN_CLIENTS.addProspect : COPY.party.add}
+      submit={
+        editing !== null ? COPY.save : newProspect ? named(KIN_CLIENTS.addProspect) : COPY.party.add
+      }
       saving={state.saving}
       canSave={draft.name.trim() !== ""}
       problem={nameMissing ? null : state.problem}

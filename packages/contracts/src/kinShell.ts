@@ -17,6 +17,11 @@ export const KinShellSection = Schema.Struct({
 export type KinShellSection = typeof KinShellSection.Type;
 
 const Sections = Schema.Array(KinShellSection);
+const SetSection = Schema.Struct({
+  ...KinShellSection.fields,
+  name: Schema.optional(Schema.String),
+  noun: Schema.optional(Schema.String),
+});
 export const KinShell = Schema.Struct({
   rev: NonNegativeInt,
   sections: Sections,
@@ -28,7 +33,7 @@ export const KinShellRpcs = [
     payload: Schema.Struct({
       orgId: KinOrgId,
       rev: NonNegativeInt,
-      shell: Schema.Struct({ sections: Sections }),
+      shell: Schema.Struct({ sections: Schema.Array(SetSection) }),
     }),
     success: KinShell,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),

@@ -1,9 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinAttentionBadge } from "@t3tools/client-runtime/kin/kinAttention";
-import {
-  KIN_DESTINATION_NAMES,
-  type KinDestination,
-} from "@t3tools/client-runtime/kin/kinNavigation";
+import { kinDestinationName, type KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
 import { Link, useLocation } from "@tanstack/react-router";
 import {
   BanknoteIcon,
@@ -31,6 +28,7 @@ import {
 import { useKinTasksNeedsYou } from "./useKinAttention";
 import { kinHostKeptTarget, useKinHost } from "./useKinHost";
 import { useKinDestinations } from "./useKinPlaces";
+import { useKinShell } from "./useKinShell";
 import type { KinWorkTarget } from "./useKinWork";
 
 const ICON: Record<KinDestination, LucideIcon> = {
@@ -75,6 +73,7 @@ export function KinNav() {
 
 function KinNavList(props: KinWorkTarget) {
   const entries = useKinNavEntries(props);
+  const shell = useKinShell(props.environmentId);
   const pathname = useLocation({ select: (location) => location.pathname });
   const { isMobile, setOpenMobile } = useSidebar();
   const current = kinListShownAt(pathname) === "kin" ? kinDestinationAt(pathname) : null;
@@ -99,7 +98,7 @@ function KinNavList(props: KinWorkTarget) {
                 >
                   <Icon />
                   <span className="min-w-0 flex-1 truncate">
-                    {KIN_DESTINATION_NAMES[destination]}
+                    {kinDestinationName(destination, shell)}
                   </span>
                   {badge === null ? null : (
                     <Badge

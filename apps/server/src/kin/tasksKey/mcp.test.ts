@@ -1,3 +1,5 @@
+import * as KinShell from "../shell/KinShell.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { assert, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -214,6 +216,65 @@ it.effect(
         Object.keys(yield* toolsOf(owners.secret)).toSorted(),
         KinTasksKeyMcp.TASKS_KEY_TOOLS.toSorted(),
       );
+      const sql = yield* SqlClient.SqlClient;
+      const setShell = (rev: number, on: boolean) =>
+        KinShell.KinShell.use((shell) =>
+          shell.set(
+            orgId,
+            rhea.personId,
+            rev,
+            ["clients", "invoices", "money"].map((id) => ({ id, on })),
+          ),
+        ).pipe(
+          Effect.provide(KinShell.layer),
+          Effect.provideService(KinRefreshObserver, { touch: () => Effect.void }),
+        );
+      yield* setShell(0, false);
+      const ownerTools = yield* toolsOf(owners.secret);
+      assert.notProperty(ownerTools, "money_summary");
+      assert.notProperty(ownerTools, "open_project");
+      assert.notProperty(ownerTools, "open_client");
+      assert.property(ownerTools, "find");
+      const calls = [
+        ["money_summary", {}, "Money"],
+        ["open_client", { key: "C-3" }, "Clients"],
+        ["open_project", { key: "P-3" }, "Clients"],
+      ] as const;
+      for (const [name, args, label] of calls) {
+        const started = yield* call({
+          token: owners.secret,
+          method: "initialize",
+          params: initialize,
+        });
+        const session = started.headers["mcp-session-id"];
+        const body = yield* text(
+          yield* call({
+            token: owners.secret,
+            method: "tools/call",
+            params: { name, arguments: args },
+            ...(session === undefined ? {} : { session }),
+          }),
+        );
+        assert.include(body, `${label} is turned off for this company.`);
+      }
+      const started = yield* call({
+        token: owners.secret,
+        method: "initialize",
+        params: initialize,
+      });
+      for (const kind of ["clients", "projects"]) {
+        const session = started.headers["mcp-session-id"];
+        const body = yield* text(
+          yield* call({
+            token: owners.secret,
+            method: "tools/call",
+            params: { name: "find", arguments: { kind, text: "Invented" } },
+            ...(session === undefined ? {} : { session }),
+          }),
+        );
+        assert.include(body, `"${kind}":[]`);
+      }
+      yield* setShell(1, true);
       // And called anyway, they answer as tools that aren't there.
       for (const name of ["money_summary", "search_memory"]) {
         const refused = yield* text(
@@ -245,7 +306,6 @@ it.effect(
           .pipe(Effect.map(({ row }) => row));
       const client = yield* make("Lan\u200Bterns", { list: "clients" });
       const project = yield* make("launch", { list: "projects", partyId: client.recordId });
-      const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
         VALUES ('other-company', 'Invented other', '1970-01-01')`;
       yield* sql`CREATE TEMP TABLE elsewhere AS SELECT * FROM kin_records

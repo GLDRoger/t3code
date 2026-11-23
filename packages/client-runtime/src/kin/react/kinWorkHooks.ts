@@ -18,6 +18,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
 
 import { kinAccessMeAtom } from "../kinAccess.ts";
+import { kinSectionOn } from "../kinShell.ts";
 import { kinHostLink, type KinRouteHost } from "../kinHost.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinInvitedPeople } from "../kinTeam.ts";
@@ -503,8 +504,13 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     kinClient.workChoices({ environmentId, input: { orgId } });
 
   /** The clients and projects a task can be put under. `enabled` is off on a host without them. */
+  /** The client and project pickers' choices: none while the company has Clients off. */
   function useKinWorkChoices(target: KinScreenTarget, enabled: boolean) {
-    const result = useAtomValue(enabled ? kinWorkChoicesAtom(target) : noChoicesAtom);
+    const clientsOn = kinSectionOn(
+      useAtomValue(kinAccessMeAtom(app.runtime, target.environmentId))?.shell,
+      "clients",
+    );
+    const result = useAtomValue(enabled && clientsOn ? kinWorkChoicesAtom(target) : noChoicesAtom);
     const held = Option.getOrNull(AsyncResult.value(result));
     return {
       clients: (held?.clients ?? []).map(kinWorkRefOf),

@@ -50,7 +50,7 @@ import * as KinWatches from "../watches/KinWatches.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { type AssignNotice, movedNotices } from "./assignNotices.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
-import { sectionOn } from "../shell/KinShell.ts";
+import { sectionOnFor as sectionOn } from "../shell/KinShell.ts";
 import { DEALS_OFF } from "../shell/sections.ts";
 import { campaignsNamed, dealsFromCampaign, sourceShown } from "./crm.ts";
 import { DEFAULT_STAGES, stageLine, stageMove, stagesOf } from "./dealStages.ts";

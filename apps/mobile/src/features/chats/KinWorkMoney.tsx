@@ -85,6 +85,7 @@ import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from ".
 import { KinChart } from "./widgets/KinChart";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import { useKinSectionOn } from "./state/useKinShell";
 
 type Shared = KinWorkTarget & {
   readonly live: KinWorkLive;
@@ -120,9 +121,10 @@ function AreaFrame(props: {
   const canBudget = useAtomValue(
     kinClient.workSetBudget.permissionAtom(props.target.environmentId),
   );
-  const canInvoice = useAtomValue(
-    kinClient.workNewInvoice.permissionAtom(props.target.environmentId),
-  );
+  // Invoices and quotes off: no way to make one.
+  const invoicesOn = useKinSectionOn(props.target.environmentId, "invoices");
+  const canInvoice =
+    useAtomValue(kinClient.workNewInvoice.permissionAtom(props.target.environmentId)) && invoicesOn;
   const canExpense = useAtomValue(
     kinClient.workNewExpense.permissionAtom(props.target.environmentId),
   );
@@ -207,13 +209,17 @@ function AreaFrame(props: {
             icon: "arrow.clockwise" as const,
             onPress: () => agent.ask(KIN_SUBSCRIPTIONS.addMessage),
           },
-          {
-            id: "quote",
-            title: KIN_MONEY.newQuote,
-            subtitle: `${agent.name} drafts it`,
-            icon: "doc.plaintext" as const,
-            onPress: () => agent.ask(KIN_QUOTES.askMessage),
-          },
+          ...(invoicesOn
+            ? [
+                {
+                  id: "quote",
+                  title: KIN_MONEY.newQuote,
+                  subtitle: `${agent.name} drafts it`,
+                  icon: "doc.plaintext" as const,
+                  onPress: () => agent.ask(KIN_QUOTES.askMessage),
+                },
+              ]
+            : []),
         ]),
   ];
   const addItems = props.waiting === true ? offered.filter((item) => item.id === "goal") : offered;
@@ -433,6 +439,7 @@ export function KinDateRowLine(props: {
 export function KinMoneyArea(props: Shared) {
   const navigation = useNavigation();
   const target = { environmentId: props.environmentId, orgId: props.orgId };
+  const invoicesOn = useKinSectionOn(props.environmentId, "invoices");
   const seq = props.stale ? null : props.live.seq;
   const datesAllowed = useAtomValue(kinClient.workDates.permissionAtom(target.environmentId));
   // Only a viewer who can't open Dates is drawn the coming-up rows themselves.
@@ -717,7 +724,9 @@ export function KinMoneyArea(props: Shared) {
     cash: <KinMoneyCash {...target} seq={seq} rates={rates} />,
     folded: (
       <View className="gap-2">
-        <KinQuotesSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
+        {invoicesOn ? (
+          <KinQuotesSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
+        ) : null}
         <KinBudgetsSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
         <KinSubscriptionsSection
           {...target}
@@ -778,7 +787,8 @@ export function KinMoneyArea(props: Shared) {
   return (
     <AreaFrame {...frame}>
       {top}
-      {KIN_MONEY_BLOCKS.map((block) => (
+      {/* What clients owe is invoices: it goes with Invoices and quotes. */}
+      {KIN_MONEY_BLOCKS.filter((block) => invoicesOn || block !== "owed").map((block) => (
         <Fragment key={block}>{blocks[block]}</Fragment>
       ))}
     </AreaFrame>
