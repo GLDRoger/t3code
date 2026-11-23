@@ -663,7 +663,8 @@ const canFor = (viewer: KinViewer, row: RecordRow): KinDealCan => {
 
 /**
  * Open follow-ups linked to these deals that this viewer reads in Clients (`crmSeenBy`), soonest
- * first, and the deals that have such a step this viewer doesn't read (`hidden`): only that.
+ * first, the deal's own steps before its promises at the head (its `next`), and the deals that
+ * have such a step this viewer doesn't read (`hidden`): only that.
  */
 const stepsFor = Effect.fn("KinDeals.steps")(function* (
   orgId: KinOrgId,
@@ -674,6 +675,7 @@ const stepsFor = Effect.fn("KinDeals.steps")(function* (
   const out = new Map<string, Array<KinDealNext>>();
   const hidden = new Set<string>();
   if (dealIds.length === 0) return { steps: out, hidden };
+  const promises = new Set<string>();
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
     dealId: string;
@@ -682,8 +684,10 @@ const stepsFor = Effect.fn("KinDeals.steps")(function* (
     dueAt: number | null;
     dueAllDay: number;
     seen: number;
+    promise: number;
   }>`SELECT l.target AS "dealId", r.key, r.title, r.due_at AS "dueAt",
-      r.due_all_day AS "dueAllDay", CASE WHEN ${crmSeenBy(sql, viewer)} THEN 1 ELSE 0 END AS seen
+      r.due_all_day AS "dueAllDay", CASE WHEN ${crmSeenBy(sql, viewer)} THEN 1 ELSE 0 END AS seen,
+      COALESCE(r.category = 'obligation', 0) AS promise
     FROM kin_record_links l JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
     WHERE l.org_id = ${orgId} AND l.kind = 'record' AND l.target IN ${sql.in([...dealIds])}
       AND r.register_id = 'work' AND r.state NOT IN ('done', 'dropped') AND r.side = 'ours'
@@ -695,14 +699,20 @@ const stepsFor = Effect.fn("KinDeals.steps")(function* (
     }
     const steps = out.get(row.dealId) ?? [];
     if (steps.some((step) => step.key === row.key)) continue;
-    steps.push({
+    const step: KinDealNext = {
       key: row.key,
       title: row.title as KinDealNext["title"],
       dueAt: row.dueAt === null ? null : iso(row.dueAt),
       dueAllDay: row.dueAllDay === 1,
       late: row.dueAt !== null && row.dueAt < now,
-    });
+    };
+    steps.push(step);
+    if (row.promise === 1) promises.add(row.key);
     out.set(row.dealId, steps);
+  }
+  for (const steps of out.values()) {
+    const own = steps.findIndex((step) => !promises.has(step.key));
+    if (own > 0) steps.unshift(...steps.splice(own, 1));
   }
   return { steps: out, hidden };
 });
