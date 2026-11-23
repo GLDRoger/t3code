@@ -89,6 +89,8 @@ import { closeHeldQuestions } from "../questions/openQuestions.ts";
 import { live as liveKey } from "../tasksKey/TasksKeys.ts";
 import { staleAsksStranded } from "../connections/strandedAsks.ts";
 import { leaverBack, leaverCards, leaverChatOwn } from "./leaver.ts";
+import { personConnections, revokeMailboxes } from "../connections/ConnectionRows.ts";
+import { KinConnections, MAILBOX_GONE } from "../connections/ConnectionsService.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -261,6 +263,7 @@ export const make = Effect.gen(function* () {
   const groups = yield* Effect.serviceOption(KinGroups);
   const records = yield* Effect.serviceOption(KinRecords);
   const push = yield* Effect.serviceOption(KinPushSender);
+  const connections = yield* Effect.serviceOption(KinConnections);
   /** Work's live streams re-read what this person may see once the change commits. */
   const viewMoved = (orgId: KinOrgId, personId: KinPersonId) =>
     Option.isSome(records) ? records.value.peopleMoved(orgId, [personId]) : Effect.void;
@@ -1061,6 +1064,21 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleRemoveAccessInput,
   ) {
+    // Their own mailboxes are revoked inside, under the fence a send's hand-off takes.
+    const mailboxIds = (yield* personConnections(input.orgId, input.personId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(sqlError("KinPeople.removeAccessMailboxes")),
+    )).map((row) => row.connectionId);
+    const removed = yield* Option.isSome(connections)
+      ? connections.value.fenced(mailboxIds, removeAccessIn(session, input))
+      : removeAccessIn(session, input);
+    if (Option.isSome(connections)) yield* connections.value.forgetSignIns(input.personId);
+    return removed;
+  });
+  const removeAccessIn = Effect.fnUntraced(function* (
+    session: AuthenticatedSession,
+    input: KinPeopleRemoveAccessInput,
+  ) {
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
@@ -1139,6 +1157,28 @@ export const make = Effect.gen(function* () {
         WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessPush")),
           );
+          // Their own mailbox goes with them: nothing waiting on it can send, and its keys are
+          // deleted once this commits. A new link doesn't bring it back; they connect it again.
+          const mailboxes = yield* revokeMailboxes(
+            input.orgId,
+            input.personId,
+            MAILBOX_GONE,
+            now,
+          ).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessMailbox")),
+          );
+          if (Option.isSome(chats))
+            for (const widgetId of mailboxes.cards)
+              yield* chats.value
+                .closeReplaced({
+                  orgId: input.orgId,
+                  widgetId: KinWidgetId.make(widgetId),
+                  outcome: { title: "Not sent", text: MAILBOX_GONE },
+                })
+                .pipe(Effect.mapError(sqlError("KinPeople.removeAccessMailboxCards")));
+          if (mailboxes.connectionIds.length > 0 && Option.isSome(connections))
+            yield* sql.afterCommit(connections.value.dropKeys(mailboxes.connectionIds));
           yield* refresh.touch(input.orgId, "people");
           yield* refresh.touch(input.orgId, "leads");
           // Nobody is left to answer what agents asked them; tasks stay theirs, flagged above.

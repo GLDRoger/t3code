@@ -217,10 +217,11 @@ const runtimeLayer = Layer.effectDiscard(
           );
         }
         // Scheduler maintenance: every org's live mail connections; each read is org-scoped.
+        // A person's own mailbox is theirs alone (`turnMailbox.ts`): never read for the company.
         const rows = yield* sql<{ orgId: string; connectionId: string }>`SELECT org_id AS "orgId",
             connection_id AS "connectionId" FROM kin_connections
           WHERE preset IN ${sql.in(MAIL_PRESETS)} AND removed_at IS NULL AND paused_at IS NULL
-            AND state = 'active'
+            AND state = 'active' AND person_id IS NULL
           ORDER BY org_id, created_at, connection_id`.pipe(NodeSqliteClient.readOnly);
         for (const { orgId, connectionId } of rows) {
           const key = `${orgId}\0${connectionId}`;

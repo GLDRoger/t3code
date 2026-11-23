@@ -15,7 +15,8 @@ export type TurnAudience = "owner_only" | "shared";
 
 /**
  * Events that answer in the chat they name: a finished task names the chat its work was asked in,
- * a teammate's task their direct chat with the lead, and an answer the chat that asked for it.
+ * a teammate's task their direct chat with the lead, an answer the chat that asked for it, and a
+ * pulse made for one person (`draftWake.ts`) their direct chat with the lead.
  */
 export const CHAT_ANSWER_TAGS = [
   "chat.message",
@@ -24,6 +25,7 @@ export const CHAT_ANSWER_TAGS = [
   "record.changed",
   "task.finished",
   "deferral.due",
+  "pulse",
 ];
 
 /**

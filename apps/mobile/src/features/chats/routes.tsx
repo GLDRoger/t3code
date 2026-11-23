@@ -24,6 +24,7 @@ import {
 } from "./connections/KinConnectionFormScreens";
 import { KinConnectionScreen } from "./connections/KinConnectionScreen";
 import { KinConnectionsScreen } from "./connections/KinConnectionsScreen";
+import { KinMyMailboxScreen } from "./connections/KinMyMailboxScreen";
 import { KinGitHubConnectScreen } from "./connections/KinGitHubConnect";
 import { KinSocialConnectScreen, KinSocialLinkScreen } from "./connections/KinSocialConnect";
 import { KinDocFileScreen } from "./KinDocFileScreen";
@@ -185,6 +186,11 @@ export const KIN_SCREENS = {
     screen: KinConnectionsScreen,
     linking: "kin/:environmentId/:orgId/connections",
     options: pageRoute({ title: "Connections" }),
+  }),
+  KinMyMailbox: createNativeStackScreen({
+    screen: KinMyMailboxScreen,
+    linking: "kin/:environmentId/:orgId/mailbox",
+    options: pageRoute({ title: "Your mailbox" }),
   }),
   KinConnection: createNativeStackScreen({
     screen: KinConnectionScreen,

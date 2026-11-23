@@ -54,6 +54,12 @@ export const seedMeasuredWeek = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
       auth, reach, state, created_at, updated_at)
     VALUES (${orgId}, 'mail', 'google', 'Mail', 'builtin', '', 'oauth', 'closed', 'active', ${from}, ${from})`;
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+    VALUES ('helper', ${orgId}, 'Helper', 'lead', 'rhea', ${seedAt})`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+    VALUES ('helper-member', ${orgId}, ${ownerChat}, 'agent', 'helper', 'member', ${seedAt})`;
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+    VALUES ('helper', ${orgId}, 'Helper', 0, '{}', '[]', ${ownerChat})`;
   const rows = [
     { id: "approval", at: from, card: "approval" },
     { id: "edited", at: from + hour, card: "edited" },
@@ -61,15 +67,19 @@ export const seedMeasuredWeek = Effect.gen(function* () {
     { id: "open", at: from + 3 * hour, card: "open" },
     { id: "notice", at: from + 4 * hour, card: "notice" },
     { id: "asked", at: from + 5 * hour, card: "dismissed", asked: true },
+    { id: "helper", at: from + 6 * hour, askedIn: ["asked"] },
     { id: "earlier", at: from - hour },
     { id: "at-end", at: until },
   ];
   let seq = 0;
-  for (const { id, at, card, asked } of rows) {
+  for (const { id, at, card, asked, askedIn } of rows) {
     const messageId = `post-${id}`;
     const widgetId = `widget-${id}`;
     const eventId = `event-${id}`;
-    const tag = asked === true ? "chat.message" : "pulse";
+    const tag = asked === true ? "chat.message" : askedIn ? "task.finished" : "pulse";
+    const agent = askedIn ? "helper" : "chief";
+    const thread = askedIn ? "helper-thread" : "chief-thread";
+    const member = askedIn ? "helper-member" : "chief-member";
     const postedAt = card === "edited" ? at + hour / 2 : at + 1;
     const settledAt = postedAt + 1;
     const humanPost = (mid: string, at: number) =>
@@ -80,12 +90,12 @@ export const seedMeasuredWeek = Effect.gen(function* () {
     if (asked === true) yield* humanPost(`ask-${id}`, at - 1);
     yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, thread_id, model,
         started_at, ended_at, status, event_ids)
-      VALUES (${orgId}, ${id}, 'chief', 'chief-thread', 'replay', ${at}, ${at + 100}, 'completed',
+      VALUES (${orgId}, ${id}, ${agent}, ${thread}, 'replay', ${at}, ${at + 100}, 'completed',
         ${yield* encodeFixture([eventId])})`;
     yield* sql`INSERT INTO kin_events (org_id, event_id, agent_id, tag, priority, json,
         received_at, queued_at, state, wakeup_id)
-      VALUES (${orgId}, ${eventId}, 'chief', ${tag}, 'P1',
-        ${yield* encodeFixture({ _tag: tag, chatId: ownerChat, messageId: `ask-${id}` })},
+      VALUES (${orgId}, ${eventId}, ${agent}, ${tag}, 'P1',
+        ${yield* encodeFixture({ _tag: tag, chatId: ownerChat, messageId: `ask-${id}`, askedIn })},
         ${at}, ${at}, 'done', ${id})`;
 
     if (card === "approval") {
@@ -107,8 +117,8 @@ export const seedMeasuredWeek = Effect.gen(function* () {
       yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_agent_id,
           author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body,
           mentions_json, status, created_at, source_wakeup_id)
-        VALUES (${messageId}, ${orgId}, ${ownerChat}, ${++seq}, 'agent', 'chief', 'rhea', 'chief-thread',
-          'chief-member', 'member', 'text', ${card === undefined ? "A new update." : ""}, '[]', 'posted', ${iso(postedAt)}, ${card === undefined || card === "edited" ? null : id})`;
+        VALUES (${messageId}, ${orgId}, ${ownerChat}, ${++seq}, 'agent', ${agent}, 'rhea', ${thread},
+          ${member}, 'member', 'text', ${card === undefined ? "A new update." : ""}, '[]', 'posted', ${iso(postedAt)}, ${card === undefined || card === "edited" ? null : id})`;
     }
     if (card === undefined) continue;
     if (card === "edited")

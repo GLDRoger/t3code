@@ -59,15 +59,23 @@ describe("check:changed", () => {
     ["packages/contracts/src/kinChat.ts", ["budgets"]],
     ["packages/shared/src/kinVisual.ts", ["budgets"]],
     ["apps/web/src/components/sidebar/SidebarThreadRow.tsx", []],
+    ["apps/mobile/src/features/chats/widgets/KinVisual.tsx", ["phone"]],
+    ["packages/client-runtime/src/mcpApps/host.ts", ["phone"]],
     ["apps/server/src/kin/people/leaver.test.ts", []],
   ] as const)("runs cross-file checks for %s", (file, checks) => {
     const tests = {
       leaver: ["apps/server/src/kin/people/leaver.test.ts"],
+      phone: [
+        "apps/mobile/src/features/chats/contract/mcpAppWebView.kin-contract.test.ts",
+        "apps/mobile/src/features/chats/widgets/kinVisualMessage.test.ts",
+      ],
       budgets: [
         "apps/server/src/kin/lead/deferredTools.test.ts",
         "apps/server/src/kin/mcp/layer.test.ts",
       ],
     };
+    if (checks.some((check) => check === "phone"))
+      assert.include(decide([file], readWorkspace(), false).affected, "@t3tools/mobile");
     assert.deepStrictEqual(
       crossFileTests([file]),
       checks.flatMap((check) => tests[check]),

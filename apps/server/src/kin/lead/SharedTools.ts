@@ -8,6 +8,7 @@ import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { SALES_SHARED_TOOLS } from "../sales/policies.ts";
 import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from "./Audience.ts";
 import { reviewToolAllowed } from "./outsideReview.ts";
+import { mailboxPerson } from "../connections/turnMailbox.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -82,6 +83,11 @@ const ownReminderCancel: Condition = Effect.fnUntraced(function* (turn) {
   const chat = yield* turnChat(turn);
   if (chat === undefined) return false;
   return (yield* askersDirectChat(turn, chat.chatId)) || (yield* sharedAsked(turn, chat.chatId));
+});
+
+/** The turn is one person's own (`mailboxPerson`): it may reach their own mailbox, never the company's. */
+const ownMailboxTurn: Condition = Effect.fnUntraced(function* (turn) {
+  return (yield* mailboxPerson(turn)) !== null;
 });
 
 /** The turn answers in the company chat: what it makes is shared with the whole team. */
@@ -207,9 +213,10 @@ export const SHARED_TOOLS = {
   kin_issue: "refused",
   kin_recipe_undo: "refused",
   kin_receipt: "refused",
-  // Connected services are the owner's accounts; the service checks the audience again.
-  kin_connection_tools: "refused",
-  kin_connection_call: "refused",
+  // Connected services are the owner's accounts, and a person's own mailbox theirs alone, in a
+  // turn that is theirs alone; the service decides which again (`turnMailboxes`).
+  kin_connection_tools: ownMailboxTurn,
+  kin_connection_call: ownMailboxTurn,
   kin_connection_offer: "refused",
   kin_connection_note: "refused",
   // The company's and clients' social accounts are the owner's.

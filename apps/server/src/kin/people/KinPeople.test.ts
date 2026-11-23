@@ -48,6 +48,7 @@ import { makeDocsStream } from "../work/ownerDocs.ts";
 import { KinPushSender, type KinPushNotification } from "../push/KinPushSender.ts";
 import * as TasksKeys from "../tasksKey/TasksKeys.ts";
 import * as People from "./KinPeople.ts";
+import { MAILBOX_GONE } from "../connections/ConnectionsService.ts";
 
 const database = layerKinAuthTest("kin-people-");
 const identities = KinIdentity.layer.pipe(
@@ -2418,7 +2419,36 @@ it.effect("removing a person closes their open questions and leaves their tasks 
           ${widgetId === null ? "text" : "card"}, ${widgetId}, 'Invented?', 0, 0, 1, 1, 'open')`;
     yield* ask("q-arjun", arjun, card.widgetId);
     yield* ask("q-owner", owner.personId, null);
-    assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: arjun }), 1);
+    // Arjun's own mailbox, with a follow-up waiting on his Confirm in his chat.
+    yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+        url_host, auth, reach, state, account_label, created_at, updated_at, person_id)
+      VALUES (${orgId}, 'conn_arjun', 'google', 'arjun@invented.example', 'builtin', NULL,
+        'gmail.googleapis.com', 'oauth', 'closed', 'active', 'arjun@invented.example', 0, 0,
+        ${arjun})`;
+    const mail = yield* chats.ask(
+      {
+        _tag: "agent",
+        orgId,
+        agentId: finance,
+        ownerPersonId: owner.personId,
+        threadId,
+        hostPosted: true,
+      },
+      {
+        chatId: direct.chatId,
+        clientMessageId: "mail-arjun",
+        question: "Invented: send this follow-up?",
+        options: [
+          { label: "Confirm", kind: "yes" },
+          { label: "Cancel", kind: "no" },
+        ],
+      },
+    );
+    yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+        pin_digest, payload_json, agent_id, wakeup_id, chat_id, widget_id, proposed_at)
+      VALUES (${orgId}, 'ask_arjun', 'conn_arjun', 'mail_send', 'p', '{}', ${finance}, 'w',
+        ${direct.chatId}, ${mail.widgetId}, 0)`;
+    assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: arjun }), 2);
     const { row: task } = yield* records.create(
       orgId,
       {
@@ -2450,6 +2480,16 @@ it.effect("removing a person closes their open questions and leaves their tasks 
       },
     });
     assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: arjun }), 0);
+    // His mailbox went with him: removed, its waiting send stale, its card closed saying so.
+    assert.deepStrictEqual(
+      yield* sql`SELECT (c.removed_at IS NOT NULL) AS removed, k.state FROM kin_connections c
+        JOIN kin_connection_asks k ON k.connection_id = c.connection_id
+        WHERE c.connection_id = 'conn_arjun'`,
+      [{ removed: 1, state: "stale" }],
+    );
+    const mailClosed = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: mail.widgetId }));
+    assert.isNotNull(mailClosed.closedAt);
+    assert.deepInclude(mailClosed.state, { outcome: { title: "Not sent", text: MAILBOX_GONE } });
     // The task is neither closed nor moved: it stays Arjun's, flagged for the owner to decide.
     const kept = (yield* records.get(orgId, task.key))!;
     assert.deepStrictEqual([kept.ownerKind, kept.ownerId, kept.state], ["person", arjun, "open"]);
