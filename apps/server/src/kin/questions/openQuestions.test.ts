@@ -4304,169 +4304,159 @@ const dismissedPayment = Effect.fn("test.dismissedPayment")(function* () {
   return { ...fixture, repo, widget, first, original, tally };
 });
 
-for (const [build, sparse] of [
-  ["513d5c83667", false],
-  ["current", false],
-  ["513d5c83667", true],
-  ["current", true],
-] as const)
-  for (const choice of ["option-1", "option-2", "dismiss"] as const)
-    it.effect(
-      `takes ${choice} on the tally's new card from ${build} (${sparse ? "sparse" : "complete"} state)`,
-      () =>
-        Effect.andThen(
-          TestClock.setTime(PAYMENT_TEST_START),
-          Effect.gen(function* () {
-            const { sql, chats, owner, orgId, tally, widget, first, original, repo } =
-              yield* dismissedPayment();
-            // A prior dismissal beyond the repeat window still leaves the new card tappable.
-            const now = yield* Clock.currentTimeMillis;
-            yield* sql`UPDATE kin_questions SET closed_at = ${now - 8 * 86_400_000}
+it.effect.each(
+  ["513d5c83667", "current"].flatMap((build) =>
+    ["sparse", "complete"].flatMap((state) =>
+      ["option-1", "option-2", "dismiss"].map((choice) => ({ build, state, choice })),
+    ),
+  ),
+)("takes $choice on the tally's new card from $build ($state state)", ({ choice, state }) =>
+  Effect.andThen(
+    TestClock.setTime(PAYMENT_TEST_START),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, tally, widget, first, original, repo } =
+        yield* dismissedPayment();
+      // A prior dismissal beyond the repeat window still leaves the new card tappable.
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`UPDATE kin_questions SET closed_at = ${now - 8 * 86_400_000}
               WHERE org_id = ${orgId} AND question_id = ${String(first.value.question)}`;
-            yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 25, 52));
-            yield* tally();
-            const again = yield* callAs("chief", "kin_ask", tallyAsk);
-            assert.isTrue(again.ok, JSON.stringify(again.value));
-            const shown = yield* widget(String(again.value.widgetId));
-            assert.notStrictEqual(shown.widgetId, original.widgetId);
-            assert.strictEqual(shown.revision, 1);
-            assert.deepStrictEqual(shown.awaiting, [owner.personId]);
-            assert.isNull(shown.closedAt);
-            assert.include(shown.state, { untilAnswered: true, answer: null });
+      yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 25, 52));
+      yield* tally();
+      const again = yield* callAs("chief", "kin_ask", tallyAsk);
+      assert.isTrue(again.ok, JSON.stringify(again.value));
+      const shown = yield* widget(String(again.value.widgetId));
+      assert.notStrictEqual(shown.widgetId, original.widgetId);
+      assert.strictEqual(shown.revision, 1);
+      assert.deepStrictEqual(shown.awaiting, [owner.personId]);
+      assert.isNull(shown.closedAt);
+      assert.include(shown.state, { untilAnswered: true, answer: null });
 
-            // Both builds' plain choice and Dismiss helpers send these same fields.
-            const tap = (card: typeof shown, clientActionId: string) => ({
-              widgetId: card.widgetId,
-              revision: card.revision,
-              ...(choice === "dismiss"
-                ? { actionId: "dismiss" }
-                : { actionId: "choose", value: choice }),
-              clientActionId,
-            });
-            yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 28));
-            const stale = { ...tap(shown, "stale-new"), revision: shown.revision + 1 };
-            assert.include(yield* Effect.flip(chats.act(owner, stale)), {
-              reason: "widget_changed",
-            });
+      // Both builds' plain choice and Dismiss helpers send these same fields.
+      const tap = (card: typeof shown, clientActionId: string) => ({
+        widgetId: card.widgetId,
+        revision: card.revision,
+        ...(choice === "dismiss" ? { actionId: "dismiss" } : { actionId: "choose", value: choice }),
+        clientActionId,
+      });
+      yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 28));
+      const stale = { ...tap(shown, "stale-new"), revision: shown.revision + 1 };
+      assert.include(yield* Effect.flip(chats.act(owner, stale)), {
+        reason: "widget_changed",
+      });
 
-            const old = tap(original, "old-target");
-            if (choice === "dismiss") yield* chats.act(owner, old);
-            else {
-              assert.include(yield* Effect.flip(chats.act(owner, old)), {
-                reason: "widget_changed",
-              });
-              assert.include(
-                yield* Effect.flip(
-                  chats.act(owner, tap(yield* widget(original.widgetId), "old-revision")),
-                ),
-                { reason: "widget_changed" },
-              );
-            }
-            assert.strictEqual(
-              (yield* questionRow(sql, String(first.value.question))).state,
-              "dismissed",
-            );
+      const old = tap(original, "old-target");
+      if (choice === "dismiss") yield* chats.act(owner, old);
+      else {
+        assert.include(yield* Effect.flip(chats.act(owner, old)), {
+          reason: "widget_changed",
+        });
+        assert.include(
+          yield* Effect.flip(
+            chats.act(owner, tap(yield* widget(original.widgetId), "old-revision")),
+          ),
+          { reason: "widget_changed" },
+        );
+      }
+      assert.strictEqual(
+        (yield* questionRow(sql, String(first.value.question))).state,
+        "dismissed",
+      );
 
-            if (sparse)
-              yield* sql`UPDATE kin_widgets SET state_json = json_remove(state_json, '$.question', '$.detail')
+      if (state === "sparse")
+        yield* sql`UPDATE kin_widgets SET state_json = json_remove(state_json, '$.question', '$.detail')
             WHERE org_id = ${orgId} AND widget_id = ${shown.widgetId}`;
-            const request = tap(shown, "new-target");
-            const posted = yield* chats.act(owner, request);
-            assert.strictEqual(posted.kind, choice === "dismiss" ? "text" : "widget_action");
-            assert.deepStrictEqual(yield* chats.act(owner, request), posted);
-            const settled = yield* widget(shown.widgetId);
-            assert.isNotNull(settled.closedAt);
-            assert.deepStrictEqual(settled.awaiting, []);
-            assert.notInclude(
-              (yield* repo.listOpenWaiting(owner)).map((item) => item.widgetId),
-              shown.widgetId,
-            );
-            assert.strictEqual(
-              (yield* questionRow(sql, String(again.value.question))).state,
-              choice === "dismiss" ? "dismissed" : "answered",
-            );
-          }).pipe(Effect.provide(layer)),
-        ),
-    );
+      const request = tap(shown, "new-target");
+      const posted = yield* chats.act(owner, request);
+      assert.strictEqual(posted.kind, choice === "dismiss" ? "text" : "widget_action");
+      assert.deepStrictEqual(yield* chats.act(owner, request), posted);
+      const settled = yield* widget(shown.widgetId);
+      assert.isNotNull(settled.closedAt);
+      assert.deepStrictEqual(settled.awaiting, []);
+      assert.notInclude(
+        (yield* repo.listOpenWaiting(owner)).map((item) => item.widgetId),
+        shown.widgetId,
+      );
+      assert.strictEqual(
+        (yield* questionRow(sql, String(again.value.question))).state,
+        choice === "dismiss" ? "dismissed" : "answered",
+      );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
 
-for (const state of [
-  "answered",
-  "withdrawn",
-  "default_taken",
-  "dismissed",
-  "missing",
-  "expired",
-] as const)
-  for (const actionId of ["choose", "dismiss"] as const)
-    it.effect(`settles an open-looking ${state} question card on ${actionId}`, () =>
-      Effect.andThen(
-        TestClock.setTime(PAYMENT_TEST_START),
-        Effect.gen(function* () {
-          const { sql, chats, owner, orgId, chatOf, wake, services } = yield* ambermill;
-          const repo = Context.get(services, KinChatRepository);
-          yield* wake("chief");
-          const asked = yield* callAs("chief", "kin_ask", paymentAsk);
-          assert.isTrue(asked.ok, JSON.stringify(asked.value));
-          const questionId = String(asked.value.question);
-          const widgetId = KinWidgetId.make(String(asked.value.widgetId));
-          const card = { orgId, widgetId };
-          const present = yield* Clock.currentTimeMillis;
-          if (state === "missing")
-            yield* sql`DELETE FROM kin_questions WHERE org_id = ${orgId} AND question_id = ${questionId}`;
-          else if (state === "expired")
-            yield* sql`UPDATE kin_widgets SET state_json = json_remove(state_json, '$.untilAnswered'),
+it.effect.each(
+  (["answered", "withdrawn", "default_taken", "dismissed", "missing", "expired"] as const).flatMap(
+    (state) => (["choose", "dismiss"] as const).map((actionId) => ({ state, actionId })),
+  ),
+)("settles an open-looking $state question card on $actionId", ({ state, actionId }) =>
+  Effect.andThen(
+    TestClock.setTime(PAYMENT_TEST_START),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, chatOf, wake, services } = yield* ambermill;
+      const repo = Context.get(services, KinChatRepository);
+      yield* wake("chief");
+      const asked = yield* callAs("chief", "kin_ask", paymentAsk);
+      assert.isTrue(asked.ok, JSON.stringify(asked.value));
+      const questionId = String(asked.value.question);
+      const widgetId = KinWidgetId.make(String(asked.value.widgetId));
+      const card = { orgId, widgetId };
+      const present = yield* Clock.currentTimeMillis;
+      if (state === "missing")
+        yield* sql`DELETE FROM kin_questions WHERE org_id = ${orgId} AND question_id = ${questionId}`;
+      else if (state === "expired")
+        yield* sql`UPDATE kin_widgets SET state_json = json_remove(state_json, '$.untilAnswered'),
               updated_at = ${DateTime.formatIso(DateTime.makeUnsafe(present - 86_400_000))}
               WHERE org_id = ${orgId} AND widget_id = ${widgetId}`;
-          else
-            yield* sql`UPDATE kin_questions SET state = ${state}, closed_at = ${present}
+      else
+        yield* sql`UPDATE kin_questions SET state = ${state}, closed_at = ${present}
               WHERE org_id = ${orgId} AND question_id = ${questionId}`;
-          const stale = Option.getOrThrow(yield* repo.getWidget(card));
-          const request = {
-            widgetId,
-            revision: stale.revision,
-            actionId,
-            ...(actionId === "choose" ? { value: "option-1" } : {}),
-            clientActionId: "terminal-tap",
-          };
-          const tap = chats.act(owner, request);
-          if (actionId === "dismiss") {
-            const anchor = yield* tap;
-            assert.strictEqual(anchor.messageId, stale.messageId);
-            assert.deepStrictEqual(yield* tap, anchor);
-          } else assert.include(yield* Effect.flip(tap), { reason: "widget_changed" });
+      const stale = Option.getOrThrow(yield* repo.getWidget(card));
+      const request = {
+        widgetId,
+        revision: stale.revision,
+        actionId,
+        ...(actionId === "choose" ? { value: "option-1" } : {}),
+        clientActionId: "terminal-tap",
+      };
+      const tap = chats.act(owner, request);
+      if (actionId === "dismiss") {
+        const anchor = yield* tap;
+        assert.strictEqual(anchor.messageId, stale.messageId);
+        assert.deepStrictEqual(yield* tap, anchor);
+      } else assert.include(yield* Effect.flip(tap), { reason: "widget_changed" });
 
-          const closed = Option.getOrThrow(yield* repo.getWidget(card));
-          assert.isNotNull(closed.closedAt);
-          assert.strictEqual(closed.revision, stale.revision + 1);
-          assert.deepStrictEqual(closed.awaiting, []);
-          assert.deepInclude(closed.state, {
-            answer: null,
-            outcome: {
-              title: state === "expired" ? "Question expired" : "Question closed",
-              text:
-                state === "expired"
-                  ? "This question expired without an answer."
-                  : state === "missing"
-                    ? "This question is no longer available."
-                    : "This question was already settled.",
-            },
-          });
-          assert.notInclude(
-            (yield* repo.listOpenWaiting(owner)).map((item) => item.widgetId),
-            widgetId,
-          );
-          assert.lengthOf(
-            yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId}
+      const closed = Option.getOrThrow(yield* repo.getWidget(card));
+      assert.isNotNull(closed.closedAt);
+      assert.strictEqual(closed.revision, stale.revision + 1);
+      assert.deepStrictEqual(closed.awaiting, []);
+      assert.deepInclude(closed.state, {
+        answer: null,
+        outcome: {
+          title: state === "expired" ? "Question expired" : "Question closed",
+          text:
+            state === "expired"
+              ? "This question expired without an answer."
+              : state === "missing"
+                ? "This question is no longer available."
+                : "This question was already settled.",
+        },
+      });
+      assert.notInclude(
+        (yield* repo.listOpenWaiting(owner)).map((item) => item.widgetId),
+        widgetId,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId}
               AND chat_id = ${chatOf("chief")} AND kind = 'widget_action'`,
-            0,
-          );
-          assert.lengthOf(
-            yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'question-dismissed:%'`,
-            0,
-          );
-        }).pipe(Effect.provide(layer)),
-      ),
-    );
+        0,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'question-dismissed:%'`,
+        0,
+      );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
 
 it.effect(
   "refuses a dismissal's scheduled repeat but takes a new subject or the person's own word",
