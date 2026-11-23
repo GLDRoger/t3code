@@ -37,6 +37,22 @@ const chatFailure = (error: unknown) =>
   isChatError(error)
     ? error
     : new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+/** Closes the cards a removed mailbox's asks left waiting, saying why nothing was sent. */
+const closing =
+  (orgId: KinOrgId, chat: KinChatService["Service"]) =>
+  (widgetIds: ReadonlyArray<string>, text: string) =>
+    Effect.forEach(
+      widgetIds,
+      (widgetId) =>
+        chat
+          .closeReplaced({
+            orgId,
+            widgetId: KinWidgetId.make(widgetId),
+            outcome: { title: "Not sent", text },
+          })
+          .pipe(Effect.mapError(chatFailure)),
+      { discard: true },
+    );
 const disabled = new KinChatError({
   reason: "disabled",
   message: "Kin is not running on this host.",
@@ -280,7 +296,15 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       call((c, people) => c.acceptToolChanges(people, input)),
     "kin.connections.update": (input) => call((c, people) => c.update(people, input)),
     "kin.connections.setReach": (input) => call((c, people) => c.setReach(people, input)),
-    "kin.connections.remove": (input) => call((c, people) => c.remove(people, input)),
+    "kin.connections.remove": (input) =>
+      call((c, people, chat) => c.remove(people, input, closing(input.orgId, chat))),
+    "kin.connections.mine": (input) => call((c, people) => c.mine(people, input)),
+    "kin.connections.mineSignInStart": (input) =>
+      call((c, people) => c.mineSignInStart(people, input)),
+    "kin.connections.mineSignInFinish": (input) =>
+      call((c, people) => c.mineSignInFinish(people, input)),
+    "kin.connections.mineRemove": (input) =>
+      call((c, people, chat) => c.mineRemove(people, input, closing(input.orgId, chat))),
     "kin.connections.calls": (input) => call((c, people) => c.calls(people, input)),
     "kin.connections.signInStart": (input) => call((c, people) => c.signInStart(people, input)),
     "kin.connections.signInFinish": (input) => call((c, people) => c.signInFinish(people, input)),

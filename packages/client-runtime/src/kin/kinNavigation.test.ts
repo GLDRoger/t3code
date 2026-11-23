@@ -264,8 +264,9 @@ describe("kinSettingsGroups", () => {
     expect(groups("coOwner").map((group) => group.id)).toEqual(["you", "company"]);
     expect(groups("lead").map((group) => group.id)).toEqual(["you", "company"]);
     expect(groups("member").map((group) => group.id)).toEqual(["you", "company"]);
-    // A teammate's Company holds What Kin checked alone: the watches on their own things.
-    expect(groups("member")[1]?.pages).toEqual(["watches"]);
+    // A teammate's Company holds What Kin checked, the watches on their own things, and
+    // Connections, with only their own mailbox there.
+    expect(groups("member")[1]?.pages).toEqual(["watches", "connections"]);
     expect(groups("member")[0]?.pages).toEqual(["profile", "appearance"]);
     expect(groups("member", true)[0]?.pages).toEqual(["profile", "notifications", "appearance"]);
     expect(groups("coOwner")[1]?.pages).toEqual([
@@ -294,7 +295,7 @@ describe("kinSettingsGroups", () => {
     });
     expect(member.map((group) => [group.id, group.pages])).toEqual([
       ["you", ["profile", "appearance"]],
-      ["company", ["deals", "watches"]],
+      ["company", ["deals", "watches", "connections"]],
     ]);
     expect(kinSettingsPageOf("deals", member)).toBe("deals");
     expect(kinSettingsPageOf("deals", groups("member"))).toBe("profile");
@@ -304,7 +305,7 @@ describe("kinSettingsGroups", () => {
     // Sections and Deals are the owner level's, for their switches.
     const owner = ["team", "agents", "company", "sections", "deals", "watches", "host", "stop"];
     expect(kinPhoneSettingsRows(ROLES.owner)).toEqual({
-      you: ["profile", "notifications", "appearance"],
+      you: ["profile", "notifications", "appearance", "mailbox"],
       company: owner,
     });
     expect(kinPhoneSettingsRows(ROLES.coOwner).company).toEqual(owner);
@@ -315,7 +316,9 @@ describe("kinSettingsGroups", () => {
 
   it("opens a Company address only for the owner level; anything else lands on the profile", () => {
     expect(kinSettingsPageOf("connections", groups("coOwner"))).toBe("connections");
-    expect(kinSettingsPageOf("connections", groups("member"))).toBe("profile");
+    // A teammate's Connections is theirs too: only their own mailbox is on it.
+    expect(kinSettingsPageOf("connections", groups("member"))).toBe("connections");
+    expect(kinSettingsPageOf("company", groups("member"))).toBe("profile");
     expect(kinSettingsPageOf("recommendations", groups("owner"))).toBe("recommendations");
     expect(kinSettingsPageOf("recommendations", groups("coOwner"))).toBe("profile");
     expect(kinSettingsPageOf("team", groups("lead"))).toBe("profile");

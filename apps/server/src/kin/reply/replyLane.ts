@@ -29,7 +29,7 @@ export type Lane = {
 };
 
 /** The same turn-level reply/notice split, for a live reply or a recorded wake-up. */
-export const turnAsked = (sql: SqlClient.SqlClient, row: "e" | "w") =>
+const turnAsked = (sql: SqlClient.SqlClient, row: "e" | "w") =>
   sql`EXISTS (SELECT 1 FROM kin_events h
     WHERE h.org_id = ${sql.literal(`${row}.org_id`)}
       AND h.agent_id = ${sql.literal(`${row}.agent_id`)}

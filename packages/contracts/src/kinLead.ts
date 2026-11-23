@@ -901,6 +901,10 @@ export const KinEvent = Schema.Union([
     outside: Schema.optional(Schema.Array(KinPulseOutsideLine).check(Schema.isMaxLength(200))),
     // The one mail that woke it, as `kin_arrivals` keeps it (`arrivals/ArrivalStore.ts`).
     arrivalId: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+    // A wake for one person's own follow-up (`pulse/draftWake.ts`): it answers in their direct
+    // chat with this agent, `origin` naming them, so the turn is theirs alone. From stored rows.
+    chatId: Schema.optional(KinChatId),
+    origin: Schema.optional(KinEventOrigin),
   }),
   // An entry given to this lead (`assigned`), closed or taken back (`withdrawn`), come back
   // (`handed_back`), commented on (`commented`, `note` their words), or someone else's it is put on

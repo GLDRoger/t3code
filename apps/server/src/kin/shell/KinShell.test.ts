@@ -66,7 +66,7 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
     assert.equal(stale.reason, "conflict");
     assert.equal(
       stale.message,
-      "Someone changed this since you opened it. Nothing was saved; open it again.",
+      "Someone else changed the sections just now, so nothing was saved. Check them and save again.",
     );
     assert.deepStrictEqual(yield* shell.get(orgId), first);
     yield* sql
@@ -94,7 +94,7 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
     assert.equal(loser?.failure.reason, "conflict");
     assert.equal(
       loser?.failure.message,
-      "Someone changed this since you opened it. Nothing was saved; open it again.",
+      "Someone else changed the sections just now, so nothing was saved. Check them and save again.",
     );
     assert.deepStrictEqual(yield* shell.get(orgId), winner?.success);
     yield* sql`UPDATE kin_people SET removed_at = 1 WHERE org_id = ${orgId} AND person_id = ${zoya}`;
