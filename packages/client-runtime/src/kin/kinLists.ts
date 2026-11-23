@@ -253,7 +253,7 @@ export const KIN_LISTS = {
     cancel: "Cancel",
   },
   onlyOwner: {
-    title: "Not available",
+    title: "Lists aren't open to you",
     detail: "Lists and money are kept by whoever runs this Kin.",
   },
 };

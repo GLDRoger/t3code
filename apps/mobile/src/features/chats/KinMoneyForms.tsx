@@ -466,6 +466,7 @@ function ExpenseForm(props: KinWorkTarget) {
         label={KIN_MONEY_FORMS.expense.amount}
         value={draft.amount}
         placeholder={KIN_MONEY_FORMS.expense.amountPlaceholder}
+        hint={KIN_MONEY_FORMS.expense.amountRefundHint}
         keyboard="numbers"
         onChangeText={(amount) => set({ amount })}
       />
