@@ -5,6 +5,7 @@ import {
   type KinOrgId,
   type KinPersonId,
   KinWidgetId,
+  mentionsKinMoney,
 } from "@t3tools/contracts";
 import { answerNumbersChange } from "../numbers/answer.ts";
 import { shellDecision } from "../shell/changes.ts";
@@ -44,6 +45,14 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   scope: Scope.Scope,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const followOn = <E, R>(message: string, work: Effect.Effect<void, E, R>) =>
+    sql
+      .withTransaction(work)
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning(message, { widgetId: input.widget.widgetId, cause }),
+        ),
+      );
   // Kin's own route, suggestion and leaver cards answer nothing else; no decision to remember.
   if (
     input.plan?.kind === "let_talk" ||
@@ -84,7 +93,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
     yield* KinChatService,
   );
   if (input.plan === undefined && input.via === "tap" && input.option.kind === "yes")
-    yield* chosenWork(input);
+    yield* followOn("Kin couldn't track the card answer", chosenWork(input));
   const currency = yield* answerCurrencyCard({
     orgId: input.orgId,
     widgetId: input.widget.widgetId,
@@ -115,7 +124,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   if (asked?._tag === "declined") yield* sql.afterCommit(tasksReread(input.orgId));
   // An agent's question the owner level answered is a decision; Kin's own cards record elsewhere.
   if (asked === undefined && made === undefined && currency === undefined)
-    yield* saveDecision(input, scope);
+    yield* followOn("Kin couldn't prepare the card decision", saveDecision(input, scope));
   if (made?._tag === "made")
     yield* sql.afterCommit(
       afterTap(
@@ -224,9 +233,16 @@ const chosenWork = Effect.fn("KinCardAnswers.chosenWork")(function* (
     return;
   }
   const asked = question.question.trim().replace(/[?？]+$/u, "");
+  const title = `${asked}: ${input.option.label}`.slice(0, CHOSEN_TITLE);
+  const questionTitle = `Follow up on question ${question.questionId}`;
+  const subjectTitle = keys.length === 0 ? questionTitle : `Follow up on ${keys.join(", ")}`;
   yield* records.create(input.orgId, writer, {
     originKey: `chosen:${question.questionId}`,
-    title: `${asked}: ${input.option.label}`.slice(0, CHOSEN_TITLE),
+    title: !mentionsKinMoney(title)
+      ? title
+      : mentionsKinMoney(subjectTitle)
+        ? questionTitle
+        : subjectTitle,
     owner: { _tag: "agent", agentId: KinAgentId.make(question.agentId) },
   });
 });

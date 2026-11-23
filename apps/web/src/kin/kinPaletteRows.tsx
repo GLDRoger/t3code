@@ -12,6 +12,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { KIN_IMPORT } from "@t3tools/client-runtime/kin/kinImport";
 import {
   CalendarDaysIcon,
+  ChartLineIcon,
   FileUpIcon,
   ContactRoundIcon,
   FileTextIcon,
@@ -25,7 +26,8 @@ import {
 
 import { type CommandPaletteActionItem, ITEM_ICON_CLASS } from "../components/CommandPalette.logic";
 import { KinAvatar } from "./KinAvatar";
-import { kinDestinationLink } from "./kinListSwitch";
+import { kinDestinationLink, kinNumbersLink } from "./kinListSwitch";
+import { useKinNumbersShown } from "./useKinNumbers";
 import { KIN_PLACE_PATH } from "./kinPlaces";
 import { kinClient } from "./kinClient";
 import { kinHostKeptTarget, useKinHost } from "./useKinHost";
@@ -82,6 +84,7 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
   const dealsOn = useKinSectionOn(target?.environmentId ?? null, "deals");
   const shell = useKinShell(target?.environmentId ?? null);
   const named = (text: string) => kinSectionNamed(shell, text);
+  const numbersShown = useKinNumbersShown(target) === true;
   const destinations = shown?.destinations ?? [];
   if (target === null || destinations.length === 0) return [];
   const row = (
@@ -114,6 +117,22 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
       ),
       description: `${mod}${index + 1}`,
     })),
+    ...(numbersShown
+      ? [
+          {
+            ...row(
+              "numbers",
+              "Numbers: the figures your company watches, and today's values",
+              ChartLineIcon,
+              ["go", "open", "numbers", "figures", "daily", "watch", "refunds", "users", "stock"],
+              async () => {
+                await navigate(kinNumbersLink(target));
+              },
+            ),
+            description: `${mod}${destinations.length + 1}`,
+          },
+        ]
+      : []),
     ...(has("clients")
       ? [
           row(

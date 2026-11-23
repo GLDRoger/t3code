@@ -144,6 +144,21 @@ export const KinRecordCan = Schema.Struct({
 });
 export type KinRecordCan = typeof KinRecordCan.Type;
 
+/**
+ * Where a promise (an obligation) was made, as its reader may follow it: a meeting or mail logged
+ * on its client, a chat message, or words someone typed. `chatId` and `messageId` only where the
+ * reader may open that chat; `at` is when the meeting, mail or message happened.
+ */
+export const KinPromiseFrom = Schema.Struct({
+  kind: Schema.Literals(["meeting", "mail", "chat", "note"]),
+  at: Schema.optional(IsoDateTime),
+  /** A typed note's own words. */
+  note: Schema.optional(KinTrimmedText),
+  chatId: Schema.optional(KinChatId),
+  messageId: Schema.optional(KinMessageId),
+});
+export type KinPromiseFrom = typeof KinPromiseFrom.Type;
+
 /** A step's words: one checklist line under a task. */
 export const KIN_WORK_STEP_MAX = 200;
 /** How many steps a task holds. */
@@ -230,6 +245,8 @@ export const KinRecord = Schema.Struct({
   markedBy: Schema.optional(KinPersonId),
   /** Its true list when that is newer than older clients know, such as a deal. */
   listName: Schema.optional(KinRecordListName),
+  /** A promise's source, on a client's or deal's page; absent elsewhere and from older hosts. */
+  from: Schema.optional(KinPromiseFrom),
   /** A task's steps, ticked of all; absent with none, and from older hosts. */
   steps: Schema.optional(KinWorkStepCount),
   /** Someone marked the task urgent: first within its day; absent otherwise. */
@@ -807,8 +824,11 @@ export type KinWorkEvent = typeof KinWorkEvent.Type;
 /** The owner's "New": a short form. Long text belongs in chat. */
 export const KinWorkCreateInput = Schema.Struct({
   orgId: KinOrgId,
-  /** `milestones` adds a milestone to `project`; default a Work entry. */
-  list: Schema.optional(Schema.Literal("milestones")),
+  /** A milestone in its project or a team list entry. Default is a Work entry. */
+  list: Schema.optional(KinListId),
+  fields: Schema.optional(
+    Schema.Record(KinListFieldKey, Schema.NullOr(KinFieldValue)).check(Schema.isMaxProperties(20)),
+  ),
   title: KinTrimmedText.check(Schema.isMaxLength(280)),
   /** Defaults to the owner. A lead given work this way is woken to do it. */
   owner: Schema.optional(KinWorkPrincipal),
@@ -825,6 +845,10 @@ export const KinWorkCreateInput = Schema.Struct({
   repo: Schema.optional(KinRepoName),
   /** A task that comes back: when it closes, the next one is made from its due date. */
   repeat: Schema.optional(KinRepeatRule),
+  /** A deal's key: the entry sits on that deal, and takes its client when `party` is absent. */
+  deal: Schema.optional(KinRecordKey),
+  /** Where a promise was made, in the person's own words ("At the site visit"). */
+  from: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(280))),
   /** A task's steps, in order, none ticked. */
   steps: Schema.optional(
     Schema.Array(KinWorkStepTitle).check(Schema.isMaxLength(KIN_WORK_STEPS_MAX)),
@@ -1243,6 +1267,8 @@ export const KinProjectDetail = Schema.Struct({
   startsOn: Schema.optional(Schema.NullOr(KinDay)),
   /** A retainer's next renewal day. */
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** Days of notice before `renewsOn` to end or change the contract; absent from older hosts. */
+  noticeDays: Schema.optional(Schema.NullOr(NonNegativeInt)),
   /** The people and agents on it besides its lead (`owner`). Membership only; it grants nothing. */
   members: Schema.optional(Schema.Array(KinWorkPrincipal)),
   /** A campaign's audience, the contacts carrying this tag; kept on one turned back to a project. */
@@ -1340,6 +1366,18 @@ export const KinPartyPage = Schema.Struct({
   /** Newest first, a few; absent from hosts before contact logs. */
   touches: Schema.optional(Schema.Array(KinClientTouch)),
   can: Schema.optional(KinPartyCan),
+  /**
+   * The soonest renewal among its open projects the reader sees, with the last day to give notice
+   * (`renewsOn` less the project's `noticeDays`); `soon` within the renewal heads-up days.
+   */
+  contract: Schema.optional(
+    Schema.Struct({
+      project: KinRecordKey,
+      renewsOn: KinDay,
+      noticeBy: Schema.optional(KinDay),
+      soon: Schema.optional(Schema.Literal(true)),
+    }),
+  ),
   /**
    * To the owner level while it isn't private: who sees it now and wouldn't once kept private,
    * by name. Absent otherwise and from older hosts.
@@ -1653,6 +1691,10 @@ export const KinContactUpdateInput = Schema.Struct({
 });
 export type KinContactUpdateInput = typeof KinContactUpdateInput.Type;
 
+export const KinNoticeDays = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(1),
+  Schema.isLessThanOrEqualTo(730),
+);
 export const KinProjectCreateInput = Schema.Struct({
   orgId: KinOrgId,
   name: Name,
@@ -1668,6 +1710,8 @@ export const KinProjectCreateInput = Schema.Struct({
   value: Schema.optional(Schema.NullOr(KinMoney)),
   startsOn: Schema.optional(Schema.NullOr(KinDay)),
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** Days of notice before `renewsOn`, 1 to 730; `null` clears. */
+  noticeDays: Schema.optional(Schema.NullOr(KinNoticeDays)),
   members: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
   /** A campaign, with the tag its audience carries. */
   campaign: Schema.optional(Schema.Boolean),
@@ -1694,6 +1738,8 @@ export const KinProjectUpdateInput = Schema.Struct({
   value: Schema.optional(Schema.NullOr(KinMoney)),
   startsOn: Schema.optional(Schema.NullOr(KinDay)),
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** Days of notice before `renewsOn`, 1 to 730; `null` clears. */
+  noticeDays: Schema.optional(Schema.NullOr(KinNoticeDays)),
   members: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
   /** `false` makes a campaign an ordinary project again; its audience stays for when it returns. */
   campaign: Schema.optional(Schema.Boolean),

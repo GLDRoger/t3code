@@ -1,3 +1,4 @@
+import { KIN_PROMISES } from "@t3tools/client-runtime/kin/kinPromises";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
@@ -257,7 +258,7 @@ function ContactDetails(props: {
   );
 }
 
-function PrivateSwitch(props: {
+export function PrivateSwitch(props: {
   readonly label: string;
   readonly note: string;
   readonly checked: boolean;
@@ -893,6 +894,7 @@ export function KinProjectDialog(
     value: useId(),
     startsOn: useId(),
     renewsOn: useId(),
+    noticeDays: useId(),
     audience: useId(),
   };
   const marketing = useKinMarketing(props);
@@ -1020,6 +1022,21 @@ export function KinProjectDialog(
             />
           </Field>
         ) : null}
+        {draft.renewsOn === null ? null : (
+          <Field
+            id={ids.noticeDays}
+            label={KIN_PROMISES.noticeDays}
+            hint={KIN_PROMISES.noticeDaysHint}
+            moved={moved.noticeDays ?? undefined}
+          >
+            <Input
+              id={ids.noticeDays}
+              inputMode="numeric"
+              value={draft.noticeDays}
+              onChange={(event) => form.edit({ noticeDays: event.target.value })}
+            />
+          </Field>
+        )}
       </div>
       {editing === null && props.directory !== undefined ? (
         <div className="flex flex-col gap-1.5">

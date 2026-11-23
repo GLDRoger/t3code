@@ -14,7 +14,7 @@ import type * as SqlClient from "effect/sql/SqlClient";
 
 import type { SectionId } from "../../shell/sections.ts";
 import { dayIn } from "../../work/money.ts";
-import { issuedNumber, sensitiveNow } from "../../work/recordRows.ts";
+import { issuedNumber, labelledNow } from "../../work/recordRows.ts";
 import { DAY_MS, HOUR_MS, type Threshold } from "../thresholds.ts";
 
 /** What every sense reads with: the org, the instant, the owner's zone and who acts by default. */
@@ -68,7 +68,7 @@ export interface EntryRow {
 export const entryColumns = (sql: SqlClient.SqlClient) => sql`r.record_id AS "recordId", r.key,
   r.title, r.owner_kind AS "ownerKind", r.owner_id AS "ownerId", r.due_at AS "dueAt",
   r.date_at AS "dateAt", r.created_at AS "createdAt", r.updated_at AS "updatedAt",
-  r.amount_minor AS "amountMinor", r.currency, ${sensitiveNow(sql)} AS sensitive,
+  r.amount_minor AS "amountMinor", r.currency, ${labelledNow(sql)} AS sensitive,
   p.key AS "projectKey", p.title AS "projectTitle", c.key AS "clientKey", c.title AS "clientTitle",
   c.record_id AS "clientId", json_extract(r.fields_json, '$.number') AS "number"`;
 

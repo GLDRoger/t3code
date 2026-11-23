@@ -365,6 +365,78 @@ describe("one deal's page", () => {
   );
   const renderPage = (held: typeof directory = directory) => render(pageElement(held));
 
+  it("lists its promises, ours then theirs, each with where it was made, and Add opens the form for this deal", async () => {
+    const pilot = deal(7, "Clinic scheduling pilot");
+    const promise = (key: string, title: string, side: "ours" | "theirs", from: object) =>
+      ({
+        recordId: KinRecordId.make(`rec-${key}`),
+        orgId: target.orgId,
+        key: KinRecordKey.make(key),
+        title,
+        state: "open",
+        waitingOn: null,
+        owner: { _tag: "person", personId: zoya },
+        category: "obligation",
+        side,
+        dueAt: null,
+        dueAllDay: false,
+        late: false,
+        confirmed: true,
+        sensitive: false,
+        working: false,
+        pullRequest: null,
+        rev: 1,
+        createdAt: "2026-11-01T00:00:00.000Z",
+        updatedAt: "2026-11-01T00:00:00.000Z",
+        closedAt: null,
+        from,
+      }) as never;
+    setup({
+      page: {
+        ...dealPage(pilot),
+        promises: [
+          promise("W-1", "Send the revised quote", "ours", {
+            kind: "note",
+            note: "At the site visit",
+          }),
+          promise("W-2", "Signed order form", "theirs", { kind: "meeting" }),
+        ],
+      },
+    });
+    const onAddTask = vi.fn();
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinDealPage
+          {...target}
+          dealKey={KinRecordKey.make("DL-7")}
+          frame="page"
+          directory={directory}
+          onOpenTask={() => {}}
+          onOpenClient={() => {}}
+          onStartProject={null}
+          onAddTask={onAddTask}
+          onClose={() => {}}
+        />
+      </AppAtomRegistryProvider>,
+    );
+    await expect.element(page.getByRole("heading", { name: "Promises" })).toBeVisible();
+    const rows = page.getByRole("button", { name: /Send the revised quote|Signed order form/ });
+    expect(rows.elements().map((one) => one.textContent?.includes("Send"))).toEqual([true, false]);
+    await expect.element(page.getByText("We promised")).toBeVisible();
+    await expect.element(page.getByText("They owe")).toBeVisible();
+    await expect.element(page.getByText("At the site visit")).toBeVisible();
+    await expect.element(page.getByText("From a meeting")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Add" }));
+    await userEvent.click(page.getByRole("menuitem", { name: "They promise" }));
+    expect(onAddTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        party: { key: "C-1", title: "Brightwater Clinics" },
+        side: "theirs",
+        deal: { key: "DL-7", title: "Clinic scheduling pilot" },
+      }),
+    );
+  });
+
   it("moves to the next stage, wins, and loses with a reason", async () => {
     const pilot = deal(7, "Clinic scheduling pilot", { stage: "in-talks" });
     const { move } = setup({ page: dealPage(pilot) });

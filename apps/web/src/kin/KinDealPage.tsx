@@ -17,7 +17,14 @@ import {
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinSectionOffLine } from "@t3tools/client-runtime/kin/kinShell";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
-import { kinWorkAssignees, kinWorkDueText, kinWorkName } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_PROMISES, kinDealPromises } from "@t3tools/client-runtime/kin/kinPromises";
+import {
+  kinWorkAssignees,
+  kinWorkDraftFor,
+  kinWorkDueText,
+  kinWorkName,
+  type KinWorkDraft,
+} from "@t3tools/client-runtime/kin/kinWork";
 import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type {
   KinDealMove,
@@ -42,7 +49,14 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
-import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../components/ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuTrigger,
+} from "../components/ui/menu";
 import {
   Select,
   SelectItem,
@@ -55,7 +69,7 @@ import { KinAsideNote } from "./KinAttention";
 import { KinWatchLine } from "./KinWatchLine";
 import { kinClient } from "./kinClient";
 import { KinDealLostDialog, KinDealMoveMenu, KinDealNextLine } from "./KinDeals";
-import { Field, FormShell, oneParagraph } from "./KinWorkForms";
+import { Field, FormShell, oneParagraph, PrivateSwitch } from "./KinWorkForms";
 import { GiveItems } from "./KinWorkItemSheet";
 import {
   KinLoadFailed,
@@ -64,6 +78,8 @@ import {
   KinWorkRowSkeletons,
   KinWorkSection,
 } from "./KinWorkParts";
+import { KinPromiseFrom } from "./KinPromises";
+import { KinWorkRow } from "./KinWorkTasks";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinDealPage, useKinDealSend } from "./useKinDeals";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
@@ -80,6 +96,8 @@ type DealPageProps = KinWorkTarget & {
   readonly onOpenClient: (key: KinRecordKey) => void;
   /** Opens a new project already for this client; null where projects can't be added. */
   readonly onStartProject: ((party: { key: KinRecordKey; title: string }) => void) | null;
+  /** Opens the new-task form already for this deal; null where tasks can't be added here. */
+  readonly onAddTask?: ((draft: KinWorkDraft) => void) | null;
   readonly onClose: () => void;
 };
 
@@ -414,6 +432,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
         </KinWorkSection>
       )}
 
+      <DealPromises {...props} />
       {deal.concerns === undefined ? null : (
         <KinWorkSection title={KIN_DEALS.concernsRaised}>
           <ul className="flex flex-col gap-2 text-sm">
@@ -684,7 +703,7 @@ function AddStep(
 
 const NO_QUOTE = "none";
 
-/** Title, value, expected day, came from and the quote, as the phone's Edit sends them. */
+/** Title, value, expected day, came from, Keep private and the quote, as the phone's Edit sends them. */
 function DealEdit(
   props: KinWorkTarget & {
     readonly page: KinDealPageValue;
@@ -696,6 +715,7 @@ function DealEdit(
   const { names } = props.directory;
   const send = useKinDealSend(props);
   const home = useKinHomeCurrency(props);
+  const ownerLevel = useKinOwnerLevel(props.environmentId);
   const [opened] = useState(() => kinDealEditDraft({ ...deal, notes: props.page.notes }, names));
   const [draft, setDraft] = useState(opened);
   const [busy, setBusy] = useState(false);
@@ -791,6 +811,15 @@ function DealEdit(
           onChange={(event) => set({ source: event.target.value })}
         />
       </Field>
+      {!ownerLevel ? null : (
+        <PrivateSwitch
+          label={KIN_DEALS.privateLabel}
+          note={draft.private ? KIN_DEALS.privateOn : KIN_DEALS.privateOff}
+          checked={draft.private}
+          disabled={busy}
+          onChange={(on) => set({ private: on })}
+        />
+      )}
       {quotes === null ? null : (
         <Field
           id={ids.quote}
@@ -819,5 +848,63 @@ function DealEdit(
         </Field>
       )}
     </FormShell>
+  );
+}
+
+/** What we promised the client on this deal and what they promised us, each opening its task. */
+function DealPromises(props: DealPageProps & { readonly page: KinDealPageValue }) {
+  const { page } = props;
+  const { deal } = page;
+  const now = new Date(useNowMinuteMs());
+  const promises = kinDealPromises(page, props.directory.names, now);
+  if (promises === null) return null;
+  const party = { key: deal.party.key, title: deal.party.title };
+  const add = (side: "ours" | "theirs") =>
+    props.onAddTask?.(kinWorkDraftFor({ party, side, deal: { key: deal.key, title: deal.title } }));
+  const rows = [
+    ...promises.ours.map((row) => ({ row, mark: KIN_PROMISES.oursShort })),
+    ...promises.theirs.map((row) => ({ row, mark: KIN_PROMISES.theirsShort })),
+  ];
+  return (
+    <KinWorkSection
+      title={KIN_PROMISES.title}
+      action={
+        props.onAddTask == null ? undefined : (
+          <Menu>
+            <MenuTrigger render={<Button size="xs" variant="ghost" />}>
+              <PlusIcon />
+              {KIN_PROMISES.add}
+            </MenuTrigger>
+            <MenuPopup align="end">
+              <MenuItem onClick={() => add("ours")}>{KIN_PROMISES.ours}</MenuItem>
+              <MenuItem onClick={() => add("theirs")}>{KIN_PROMISES.theirs}</MenuItem>
+            </MenuPopup>
+          </Menu>
+        )
+      }
+    >
+      {rows.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{KIN_PROMISES.none}</p>
+      ) : (
+        <ul className="flex flex-col">
+          {rows.map(({ row, mark }) => (
+            <li key={row.key} className="border-b border-border/60 last:border-b-0">
+              <KinWorkRow
+                row={row}
+                saving={false}
+                onOpen={() => props.onOpenTask(row.key)}
+                onAct={null}
+                promised={mark}
+              />
+              <KinPromiseFrom
+                environmentId={props.environmentId}
+                orgId={props.orgId}
+                promise={row.promise}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </KinWorkSection>
   );
 }

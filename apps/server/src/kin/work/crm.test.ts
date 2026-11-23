@@ -4815,3 +4815,145 @@ it.effect(
       });
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "an agent records promises both ways on a deal, with where they were said, and reads them back; a teammate's own turn too",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      const asMate = { _tag: "person" as const, personId: mateId };
+      const corran = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Corran Tiles",
+        owner: asMate,
+        clientRequestId: "corran",
+      });
+      const deal = (yield* Deals.create([owner], {
+        orgId,
+        party: corran.key,
+        title: "Invented stock system",
+        owner: asMate,
+        clientRequestId: "corran-deal",
+      })).deal.key;
+      // "They'll send the staff list by Wednesday; I'll send the plan Friday", said in this chat.
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          {
+            title: "Invented send the plan",
+            category: "obligation",
+            deal,
+            from: "chat:ask",
+            due: "2026-11-27",
+          },
+          {
+            title: "Invented staff list",
+            side: "theirs",
+            deal,
+            from: "chat:ask",
+            due: "2026-11-25",
+          },
+        ],
+      });
+      const [ours, theirs] = made.records.map((one) => one.key);
+      const linked = yield* sql<{ key: string; holder: string; client: string }>`SELECT r.key,
+          r.owner_id AS holder, c.key AS client
+        FROM kin_record_links l JOIN kin_records r ON r.org_id = l.org_id
+          AND r.record_id = l.record_id
+        JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+        WHERE l.kind = 'record' AND l.label = ${deal} ORDER BY r.key`;
+      // Theirs is held by whoever looks after Corran; ours by the agent, as any task it takes.
+      assert.deepStrictEqual(linked, [
+        { key: ours!, holder: lead, client: corran.key },
+        { key: theirs!, holder: mateId, client: corran.key },
+      ]);
+      // Read back: the deal lists both, whose each is and where it was said.
+      const read = yield* LeadWork.get(scope, { key: deal });
+      assert.deepStrictEqual(
+        read.deal?.promises?.map((one) => [one.title, one.side, one.owner, one.from]),
+        [
+          ["Invented send the plan", "ours", "Lead lead (you)", "chat on 2026-11-11"],
+          ["Invented staff list", "theirs", "Mate", "chat on 2026-11-11"],
+        ],
+      );
+      assert.include(yield* LeadWork.get(scope, { key: theirs! }), {
+        from: "chat:ask",
+        side: "theirs",
+        owner: "Mate",
+      });
+      // A row on a deal is a promise with no category; a deal that isn't one, one on another
+      // client, and a deal on a row called something else are refused and nothing is written.
+      const other = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Orbit Dental",
+        clientRequestId: "orbit",
+      });
+      for (const row of [
+        { deal: "DL-99" },
+        { deal, client: other.key },
+        { deal, category: "task" },
+      ])
+        yield* Effect.flip(
+          LeadWork.create(scope, {
+            sourceEventId: "again-event",
+            records: [{ title: "Invented refused", category: "obligation", ...row }],
+          }),
+        );
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_records WHERE title = 'Invented refused'`, 0);
+
+      // The teammate's own turn: the promise is theirs to record on a deal of a client they see.
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('mate-chat', ${orgId}, 'direct', 'mate:lead', 1, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('mate-chat-mate', ${orgId}, 'mate-chat', 'person', ${mateId}, 'member', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('mate-chat-lead', ${orgId}, 'mate-chat', 'agent', ${lead}, 'member', ${at})`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+          author_member_id, author_role, kind, body, mentions_json, status, created_at)
+        VALUES ('mate-ask', ${orgId}, 'mate-chat', 1, 'human', ${mateId}, 'mate-chat-mate', 'member',
+          'text', 'I promised them the training dates at the fair', '[]', 'posted', ${at})`;
+      const event = {
+        _tag: "chat.message",
+        orgId,
+        agentId: lead,
+        eventId: "mate-event",
+        receivedAt: at,
+        dedupeKey: null,
+        provenance: { _tag: "human", personId: mateId, memberId: "mate-chat-mate" },
+        chatId: "mate-chat",
+        messageId: "mate-ask",
+      };
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+          queued_at, state, wakeup_id)
+        VALUES ('mate-event', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0,
+          'claimed', 'wake')`;
+      yield* sql`UPDATE kin_events SET wakeup_id = NULL, state = 'done' WHERE event_id != 'mate-event'`;
+      yield* sql`UPDATE kin_wakeups SET event_ids = '["mate-event"]', audience = 'shared'
+        WHERE wakeup_id = 'wake'`;
+      const theirTurn = yield* LeadWork.create(scope, {
+        sourceEventId: "mate-event",
+        records: [
+          {
+            title: "Invented training dates",
+            category: "obligation",
+            owner: "me",
+            deal,
+            from: "At the trade fair",
+          },
+        ],
+      });
+      const page = yield* Deals.page([mate], { orgId, key: deal });
+      assert.include(
+        page.promises?.map((one) => one.key),
+        theirTurn.records[0]!.key,
+      );
+      assert.deepStrictEqual(
+        page.promises?.find((one) => one.key === theirTurn.records[0]!.key)?.from,
+        { kind: "note", note: "At the trade fair" },
+      );
+    }).pipe(Effect.provide(layer)),
+);

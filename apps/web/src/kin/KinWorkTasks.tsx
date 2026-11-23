@@ -1,4 +1,5 @@
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { KIN_PROMISES } from "@t3tools/client-runtime/kin/kinPromises";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { useKinHostAt } from "./useKinHost";
@@ -1042,6 +1043,8 @@ export function KinWorkRow(props: {
   readonly onOpen: () => void;
   /** Null where this browser or this host can't change a task. */
   readonly onAct: ((action: KinWorkAction) => void) | null;
+  /** A promise to or from a client: its "Promised" mark, or the mark given, such as "They owe". */
+  readonly promised?: boolean | string;
 }) {
   const { row, onAct } = props;
   const tick = onAct === null ? null : row.tick;
@@ -1099,6 +1102,11 @@ export function KinWorkRow(props: {
             )}
           </span>
         </span>
+        {props.promised === undefined || props.promised === false ? null : (
+          <Badge size="sm" variant="info">
+            {props.promised === true ? KIN_PROMISES.mark : props.promised}
+          </Badge>
+        )}
         {row.markText === null ? null : (
           <Badge
             size="sm"

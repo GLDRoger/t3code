@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { KinPulseSense } from "@t3tools/contracts";
+import { KIN_PROMISE_SENSES, KinPulseSense } from "@t3tools/contracts";
 
 import { SHARED_TOOLS } from "../lead/SharedTools.ts";
 import { DEAL_SENSES } from "../pulse/senses/deals.ts";
@@ -40,6 +40,8 @@ it("classifies every shared tool, built-in list and pulse sense, including expli
     KinPulseSense.literals.filter((sense) => sectionOfSense(sense) === "deals"),
     [...DEAL_SENSES],
   );
+  // A contract's notice day is about a project, which needs no deal; a promise's deal is a DL key.
+  for (const sense of KIN_PROMISE_SENSES) assert.isNull(sectionOfSense(sense));
 });
 
 it("classifies client and project, money, and invoice and quote surfaces", () => {

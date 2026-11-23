@@ -14,6 +14,9 @@ export type KinWorkParams = {
   readonly projectName?: string;
   /** `theirs` when a new task is something the client owes. */
   readonly side?: string;
+  /** The deal a new promise sits on, from the deal's page. */
+  readonly deal?: string;
+  readonly dealName?: string;
   /** Tasks starts narrowed to what this person holds, from their page's "See all in Tasks". */
   readonly person?: string;
 };

@@ -3,6 +3,7 @@ import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswer
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { KIN_PROMISES, type KinPromiseView } from "@t3tools/client-runtime/kin/kinPromises";
 import { kinWorkHostEdits } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_WORK_COPY,
@@ -287,6 +288,23 @@ function KinClientBody(
       setUnopened(`This phone has nothing set up to ${what}.`);
   };
   const about = { party: view.key, partyName: view.name };
+  const promiseRow = (promise: KinPromiseView | null) => {
+    if (promise === null) return null;
+    const { open: at } = promise;
+    return {
+      from: promise.from,
+      onOpen:
+        at === null
+          ? null
+          : () =>
+              navigation.navigate("KinChat", {
+                environmentId,
+                orgId,
+                chatId: at.chatId,
+                message: at.messageId,
+              }),
+    };
+  };
   const owed = (
     title: string,
     side: KinOwedView,
@@ -306,6 +324,7 @@ function KinClientBody(
             saving={changed.pending[row.key] !== undefined}
             onPress={() => openRecord("KinWorkItem", { environmentId, orgId, task: row.key })}
             onAct={canChangeTasks ? (action) => act(row.key, action) : null}
+            promise={promiseRow(row.promise)}
           />
         ))
       )}
@@ -463,6 +482,15 @@ function KinClientBody(
             {view.lookedAfter.name}
           </Text>
         </View>
+        {view.contract === null ? null : (
+          <Text
+            textRole="footnote"
+            accessibilityLabel={`${KIN_PROMISES.contract}: ${view.contract.text}`}
+            className={view.contract.soon ? "text-warning-foreground" : "text-foreground-muted"}
+          >
+            {view.contract.text}
+          </Text>
+        )}
         {view.privacy.private ? <KinWorkPrivateMark /> : null}
       </View>
       {props.stale ? (
