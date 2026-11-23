@@ -57,8 +57,9 @@ import * as LeadStatements from "../leadStatements.ts";
 import * as LeadWork from "../leadWork.ts";
 import { OPEN_INVOICE_NOTE } from "./statementCard.ts";
 import { moneySummary } from "../moneyViews.ts";
+import * as OwnerMoney from "../ownerMoney.ts";
 import * as OwnerStatements from "../ownerStatements.ts";
-import { defineList, PRESETS, presetDefinition } from "../registers.ts";
+import { defineList, listDef, PRESETS, presetDefinition } from "../registers.ts";
 import { makeKinWorkHandlers } from "../rpcHandlers.ts";
 import { readStatementFile } from "./statementFiles.ts";
 import { answerCurrencyCard } from "./statementReview.ts";
@@ -2411,6 +2412,43 @@ describe("bank statement safety", () => {
           ?.options.map((o) => o.note),
         [OPEN_INVOICE_NOTE, OPEN_INVOICE_NOTE],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("offers no repayment when Expenses can't record one, so Confirm still applies", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('meera', ${orgId}, 'meera', 'Meera Rao', ${at})`;
+      const desk = yield* expense("Desk deposit", 300_000, "2026-09-05", "Lakeview Cowork");
+      yield* records.update(orgId, owner, desk.key, {
+        state: "done",
+        fields: { fundedBy: "person:meera" },
+      });
+      // The owner retires Repaid on: Confirm can no longer mark anything repaid.
+      const def = (yield* listDef(orgId, "expenses"))!;
+      yield* OwnerMoney.updateList(people, {
+        orgId,
+        list: "expenses",
+        rev: def.rev,
+        retireFields: ["repaidOn"],
+      });
+      const result = opened(
+        yield* read(
+          1,
+          "repay.csv",
+          csvOf([["2026-10-15", "NEFT DR-UTIB0000001-MEERA RAO-REIMB", 300_000, null]]),
+        ),
+      );
+      assert.deepStrictEqual(result.matched, []);
+      const card = (yield* reviewCardOf(result.statement)).card;
+      // Before: the repayment was ticked and Confirm failed for the whole statement.
+      yield* OwnerStatements.apply(people, yield* confirmAll(card));
+      const [left] = yield* sql<{ fields: string }>`SELECT fields_json AS fields FROM kin_records
+        WHERE org_id = ${orgId} AND key = ${desk.key}`;
+      assert.notInclude(left!.fields, "repaid");
     }).pipe(Effect.provide(layer)),
   );
 
