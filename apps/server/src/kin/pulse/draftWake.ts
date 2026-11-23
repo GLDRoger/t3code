@@ -29,10 +29,10 @@ import { personQuietUntil, validZone } from "../triggers/quietHold.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import { placesOf, seenBy, viewerOfPeople } from "../work/teamView.ts";
+import { HEAD_STARTS_PER_DAY } from "./prepareSenses.ts";
 import { iso, type SenseContext } from "./senses/shared.ts";
 
 /** Draft wakes one person gets in a day, at most: one per follow-up, never more than this. */
-const DRAFT_WAKES_PER_DAY = 20;
 /** The told ledger's party for a person's draft wakes, apart from what they were told. */
 const draftParty = (personId: string) => `draft:${personId}`;
 /** A follow-up's slot in that ledger: by its task's own id, whichever sense it is now. */
@@ -277,7 +277,7 @@ const windowFull = Effect.fnUntraced(function* (
   day: string,
 ) {
   const keys = new Set((yield* daySlots(orgId, personId, day)).map((row) => row.key));
-  return keys.size >= DRAFT_WAKES_PER_DAY;
+  return keys.size >= HEAD_STARTS_PER_DAY;
 });
 
 /** Takes the task's slot for the day if it is free and the day's window has room, in one write. */
@@ -298,7 +298,7 @@ const reserve = Effect.fnUntraced(function* (
     WHERE NOT EXISTS (SELECT 1 FROM kin_pulse_told WHERE org_id = ${orgId}
         AND person_id = ${party} AND fact_key = ${slot} AND sig = ${day})
       AND (SELECT COUNT(DISTINCT fact_key) FROM kin_pulse_told WHERE org_id = ${orgId}
-        AND person_id = ${party} AND sig = ${day}) < ${DRAFT_WAKES_PER_DAY}
+        AND person_id = ${party} AND sig = ${day}) < ${HEAD_STARTS_PER_DAY}
     ON CONFLICT DO NOTHING RETURNING fact_key`;
   return taken.length > 0;
 });

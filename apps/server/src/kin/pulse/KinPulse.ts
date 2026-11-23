@@ -35,7 +35,8 @@ import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/org
 import * as KinShell from "../shell/KinShell.ts";
 import { sectionOfKey, sectionOfSense, type SectionId } from "../shell/sections.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
-import { ownerZone, promiseOnDeal } from "../work/recordRows.ts";
+import { dayIn } from "../work/money.ts";
+import { ownerZone, promiseOnDeal, startOfDay } from "../work/recordRows.ts";
 import { matchName } from "../work/nameMatch.ts";
 import { crmVisible, viewSees } from "../work/teamView.ts";
 import { clientSenses } from "./senses/clients.ts";
@@ -62,7 +63,12 @@ import {
 } from "./told.ts";
 import { visibleOverflow } from "./senses/capped.ts";
 import { draftWakes } from "./draftWake.ts";
-import { URGENT_SENSES } from "./prepareSenses.ts";
+import {
+  HEAD_STARTS_PER_DAY,
+  PREPARE_EVENT_SQL,
+  PREPARE_SENSES,
+  URGENT_SENSES,
+} from "./prepareSenses.ts";
 import {
   asideOf,
   asideView,
@@ -302,6 +308,8 @@ export const standingNow = Effect.fn("KinPulse.standingNow")(function* (
     return [{ ...fact, handled: null }];
   });
 });
+
+const PREPARES: ReadonlySet<string> = new Set(PREPARE_SENSES);
 
 /** By key, or by name as typed: any case, a start of it, or a close spelling. */
 const matches = (text: string | undefined, key: string | undefined, wanted: string) =>
@@ -833,6 +841,18 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           ? [`${fact.key}:${wokeAt}`]
           : [];
       });
+      // Head starts are paced per agent and local day, in the pulse's order (longest standing first).
+      const dayBegan = startOfDay(dayIn(at, ctx.zone), ctx.zone);
+      const startedToday = new Map<string, number>();
+      const headStartsToday = Effect.fnUntraced(function* (agentId: KinAgentId) {
+        const known = startedToday.get(agentId);
+        if (known !== undefined) return known;
+        const [row] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_events e
+          WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.tag = 'pulse'
+            AND e.received_at >= ${dayBegan} AND ${sql.unsafe(PREPARE_EVENT_SQL)}`;
+        startedToday.set(agentId, row?.n ?? 0);
+        return row?.n ?? 0;
+      });
       const failedWakes = new Set<string>();
       for (let start = 0; start < latestWakeKeys.length; start += 500)
         for (const row of yield* sql<{ key: string }>`SELECT dedupe_key AS key FROM kin_events
@@ -870,6 +890,9 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
             WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
           continue;
         }
+        const headStart = PREPARES.has(fact.sense);
+        if (headStart && (yield* headStartsToday(fact.actor.agentId)) >= HEAD_STARTS_PER_DAY)
+          continue;
         const eventId = KinEventId.make(`pulse-${shortHash(`${orgId}\0${fact.key}\0${at}`)}`);
         const enqueued = yield* queue
           .enqueue(
@@ -899,6 +922,8 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
             }),
           );
         if (!enqueued) continue;
+        if (headStart)
+          startedToday.set(fact.actor.agentId, (yield* headStartsToday(fact.actor.agentId)) + 1);
         yield* markTold({ ...delivery, eventId });
         yield* sql`UPDATE kin_pulse_facts SET woke_at = ${at}
           WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;

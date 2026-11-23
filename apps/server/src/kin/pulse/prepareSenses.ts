@@ -12,6 +12,9 @@ export const URGENT_SENSES: ReadonlySet<string> = new Set<KinPulseFact["sense"]>
   "client_waiting_on_us",
 ]);
 
+/** Head starts Kin queues for one agent, or follow-ups for one person, in one local day. */
+export const HEAD_STARTS_PER_DAY = 20;
+
 /** Head starts one turn takes at most; the rest wait for the next. */
 export const PREPARES_PER_TURN = 10;
 

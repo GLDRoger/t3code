@@ -735,6 +735,43 @@ describe("KinPulse", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("an agent gets at most twenty head starts a day, longest standing first", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      for (let n = 0; n < 25; n++)
+        yield* insert({
+          id: `QT-${100 + n}`,
+          list: "quotes",
+          state: "waiting",
+          amount: 1_000_00,
+          createdAt: B + (n + 1) * MINUTE,
+        });
+      const headStarts = Effect.map(
+        sql<{ key: string }>`SELECT json_extract(json, '$.factKeys[0]') AS key FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'pulse' AND agent_id = ${finance}
+            AND json_extract(json, '$.factKeys[0]') LIKE 'quote_unanswered:%'
+          ORDER BY key`,
+        (rows) => rows.map((row) => row.key.split(":")[1]!),
+      );
+      const day = B + 20 * DAY + 9 * HOUR;
+      yield* KinPulse.tick(orgId, day);
+      const first = yield* headStarts;
+      // With the seed's QT-1, 26 stand: the 20 oldest start today; the six quoted last wait,
+      // unwoken, through the rest of the day.
+      assert.lengthOf(first, 20);
+      assert.include(first, "QT-1");
+      assert.notInclude(first, "QT-119");
+      yield* KinPulse.tick(orgId, day + HOUR);
+      assert.deepStrictEqual(yield* headStarts, first);
+      const unwoken = yield* sql`SELECT fact_key FROM kin_pulse_facts WHERE org_id = ${orgId}
+        AND sense = 'quote_unanswered' AND woke_at IS NULL`;
+      assert.lengthOf(unwoken, 6);
+      yield* KinPulse.tick(orgId, day + DAY);
+      assert.lengthOf(yield* headStarts, 26);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "a late task wakes its agent once per age band and again when the due day changes",
     () =>
