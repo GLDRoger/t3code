@@ -4998,6 +4998,46 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a teammate's prompt withholds a team list entry's sensitive number", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* storedTeamList();
+    yield* turn("mate", "shared");
+    const number = "AM/26-27/102";
+    const row = yield* book("Afternoon booking", {
+      fields: { number },
+      owner: { _tag: "agent", agentId: lead },
+    });
+    const chatId = KinChatId.make("lead-chat");
+    const event = {
+      _tag: "record.changed",
+      orgId,
+      agentId: lead,
+      eventId: "booking-given",
+      receivedAt: at,
+      dedupeKey: null,
+      recordId: KinRecordId.make(row.recordId),
+      key: row.key,
+      seq: 1,
+      reason: "assigned",
+      chatId,
+      origin: { agentId: lead, chatId, personId: arjun.personId },
+      provenance: {
+        _tag: "human",
+        personId: arjun.personId,
+        memberId: KinMemberId.make("lead-chat-mate"),
+      },
+    } satisfies Parameters<typeof workEventText>[0]["event"];
+    const text = (ownerOnly: boolean) =>
+      workEventText({ orgId, event, ownerOnly, wakeupId: "wake" });
+    const shared = (yield* text(false)) ?? "";
+    assert.include(shared, row.key);
+    assert.include(shared, row.title);
+    assert.notInclude(shared, number);
+    assert.include((yield* text(true)) ?? "", number);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "allows a teammate to add and edit visible team entries while guarding labels, archive and money",
   () =>
