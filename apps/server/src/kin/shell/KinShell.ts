@@ -235,7 +235,7 @@ const withPutAway = Effect.fn("KinShell.withPutAway")(function* (
   });
   if (missing.length === 0) return input;
   const sql = yield* SqlClient.SqlClient;
-  const away = new Set(
+  const away = new Set<string>(
     (yield* sql<{ id: string }>`SELECT register_id AS id FROM kin_registers
       WHERE org_id = ${orgId} AND built_in = 0 AND archived_at IS NOT NULL
         AND register_id IN ${sql.in(missing)} ORDER BY register_id`).map((row) =>
