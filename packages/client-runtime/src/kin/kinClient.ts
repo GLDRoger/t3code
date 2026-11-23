@@ -85,7 +85,6 @@ import { KIN_DOCS_LABEL, kinDocsLiveStream } from "./kinDocsStream.ts";
 import { kinReachPairKey } from "./kinReach.ts";
 import type { KinChatState } from "./kinInboxModel.ts";
 import { KIN_MONEY_LIVE_LABEL, kinMoneyLiveStream } from "./kinMoneyStream.ts";
-import { KIN_CANVAS_LIVE_LABEL, kinCanvasLiveStream } from "./kinCanvasStream.ts";
 import { KIN_PULSE_LIVE_LABEL, kinPulseLiveStream } from "./kinPulseStream.ts";
 import {
   createKinDirectoryTrigger,
@@ -1341,33 +1340,6 @@ export function makeKinClient<R, ER>(
     }),
     /** Whether the host streams Money; null until its refreshes say. */
     moneyStreamed: kinRefreshOn.serves("money"),
-    /** The canvas: where cards sit, its widgets, what changed and where agents are working. */
-    canvasLive: createEnvironmentSubscriptionAtomFamily(runtime, {
-      label: KIN_CANVAS_LIVE_LABEL,
-      subscribe: kinCanvasLiveStream,
-    }),
-    canvasPlace: createKinRpcCommand(runtime, {
-      label: "kin:canvas:place",
-      tag: "kin.canvas.place",
-    }),
-    canvasUnplace: createKinRpcCommand(runtime, {
-      label: "kin:canvas:unplace",
-      tag: "kin.canvas.unplace",
-    }),
-    canvasWidgetAdd: createKinRpcCommand(runtime, {
-      label: "kin:canvas:widget-add",
-      tag: "kin.canvas.widgetAdd",
-    }),
-    canvasWidgetRemove: createKinRpcCommand(runtime, {
-      label: "kin:canvas:widget-remove",
-      tag: "kin.canvas.widgetRemove",
-      concurrency: { mode: "singleFlight", key: ({ input }) => input.id },
-    }),
-    canvasSeen: createKinRpcCommand(runtime, {
-      label: "kin:canvas:seen",
-      tag: "kin.canvas.seen",
-      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
-    }),
     attentionHandle: createKinRpcCommand(runtime, {
       label: "kin:pulse:handle",
       tag: "kin.pulse.handle",

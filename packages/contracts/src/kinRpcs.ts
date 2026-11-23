@@ -43,7 +43,6 @@ import { KinStatementRpcs, KIN_STATEMENT_RPC_SCOPES } from "./kinStatements.ts";
 import { KinMoneyAnswerRpcs, KIN_MONEY_ANSWER_RPC_SCOPES } from "./kinMoneyAnswers.ts";
 import { KinMoneyLiveRpcs, KIN_MONEY_LIVE_RPC_SCOPES } from "./kinMoneyLive.ts";
 import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
-import { KIN_CANVAS_RPC_SCOPES, KinCanvasRpcs } from "./kinCanvas.ts";
 import { KinPulseRpcs, KIN_PULSE_RPC_SCOPES } from "./kinPulse.ts";
 import { KinOpenRpcs, KIN_OPEN_RPC_SCOPES } from "./kinOpen.ts";
 import { KinRecommendationRpcs, KIN_RECOMMENDATION_RPC_SCOPES } from "./kinRecommendations.ts";
@@ -222,7 +221,6 @@ export const KinRpcs = [
   ...KinPicturesRpcs,
   ...KinRefreshRpcs,
   ...KinPulseRpcs,
-  ...KinCanvasRpcs,
   ...KinOpenRpcs,
   ...KinRecommendationRpcs,
   ...KinHostRpcs,
@@ -252,7 +250,6 @@ export const KIN_RPC_SCOPES = {
   ...KIN_PICTURES_RPC_SCOPES,
   ...KIN_REFRESH_RPC_SCOPES,
   ...KIN_PULSE_RPC_SCOPES,
-  ...KIN_CANVAS_RPC_SCOPES,
   ...KIN_OPEN_RPC_SCOPES,
   ...KIN_RECOMMENDATION_RPC_SCOPES,
   ...KIN_HOST_RPC_SCOPES,
@@ -510,14 +507,6 @@ const KIN_RPC_ACCESS = {
   "kin.tasksKeys.list": "person",
   "kin.tasksKeys.revoke": "person",
   "kin.refreshes.subscribe": "person",
-  // The canvas: anyone reads their own view of it; only the owner level arranges it.
-  "kin.canvas.read": "person",
-  "kin.canvas.subscribe": "person",
-  "kin.canvas.place": "owner_level",
-  "kin.canvas.unplace": "owner_level",
-  "kin.canvas.widgetAdd": "owner_level",
-  "kin.canvas.widgetRemove": "owner_level",
-  "kin.canvas.seen": "person",
   // Needs attention and goals: the service shows a member only what they may see.
   "kin.pulse.read": "person",
   "kin.pulse.subscribe": "person",
@@ -631,13 +620,6 @@ export const KIN_RPC_AGGREGATES = {
 
   "kin.refreshes.subscribe": "kin-refreshes",
   "kin.refreshes.announce": "kin-refreshes",
-  "kin.canvas.read": "kin-canvas",
-  "kin.canvas.subscribe": "kin-canvas",
-  "kin.canvas.place": "kin-canvas",
-  "kin.canvas.unplace": "kin-canvas",
-  "kin.canvas.widgetAdd": "kin-canvas",
-  "kin.canvas.widgetRemove": "kin-canvas",
-  "kin.canvas.seen": "kin-canvas",
   "kin.pulse.read": "kin-pulse",
   "kin.pulse.subscribe": "kin-pulse",
   "kin.pulse.handle": "kin-pulse",

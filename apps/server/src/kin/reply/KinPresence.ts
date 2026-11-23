@@ -91,10 +91,6 @@ export class KinPresence extends Context.Service<
     }>;
     /** The chat's status lines, which carry no text of the lead's. */
     readonly lines: (orgId: KinOrgId, chatId: KinChatId) => ReadonlyArray<Presence>;
-    /** Every chat's status lines in the organization; a caller keeps the chats its viewer is in. */
-    readonly orgLines: (
-      orgId: KinOrgId,
-    ) => ReadonlyArray<{ readonly chatId: KinChatId; readonly presence: Presence }>;
   }
 >()("t3/kin/reply/KinPresence") {}
 
@@ -291,14 +287,6 @@ const make = Effect.gen(function* () {
       yield* send(orgId, chatId, draftId, state, { messageId });
     }),
     lines: (orgId, chatId) => [...(lines.get(keyOf(orgId, chatId))?.presence.values() ?? [])],
-    orgLines: (orgId) => {
-      const prefix = `${orgId}\u0000`;
-      return [...lines].flatMap(([key, found]) => {
-        if (!key.startsWith(prefix)) return [];
-        const chatId = KinChatId.make(key.slice(prefix.length));
-        return [...found.presence.values()].map((presence) => ({ chatId, presence }));
-      });
-    },
     snapshot: Effect.fn("KinPresence.snapshot")(function* (orgId, chatId) {
       const current = lines.get(keyOf(orgId, chatId));
       if (current === undefined) return { presence: [], drafts: [] };

@@ -40,9 +40,6 @@ const MEMBER = [
   // Their own briefs; the service shows and changes only the ones they receive.
   "kin.briefs.list",
   "kin.briefs.save",
-  "kin.canvas.read",
-  "kin.canvas.seen",
-  "kin.canvas.subscribe",
   "kin.chat.history",
   "kin.chat.members",
   "kin.chat.subscribe",

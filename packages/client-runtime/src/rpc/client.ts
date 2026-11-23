@@ -94,7 +94,6 @@ export type EnvironmentSubscriptionRpcTag =
   | "kin.refreshes.subscribe"
   | "kin.pulse.subscribe"
   | "kin.money.subscribe"
-  | "kin.canvas.subscribe"
   | typeof KIN_PUSH_WS_METHODS.watch;
 
 export type EnvironmentStreamCommandRpcTag =

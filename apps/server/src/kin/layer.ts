@@ -26,7 +26,6 @@ import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
 import * as KinImport from "./work/KinImport.ts";
 import * as KinRecords from "./work/KinRecords.ts";
-import * as KinCanvas from "./canvas/KinCanvas.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
 import * as FileSystem from "effect/FileSystem";
@@ -167,8 +166,6 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               KinRefusedModels.layer,
               LevelControl.layer,
               MemoryChanges.layer,
-              // Reads Work and the chats' status lines; its writes reach open canvases.
-              KinCanvas.layer.pipe(Layer.provideMerge(KinRecords.layer)),
               KinImport.layer.pipe(Layer.provideMerge(KinRecords.layer)),
               Render.layer.pipe(
                 Layer.provideMerge(Workspace.layer),

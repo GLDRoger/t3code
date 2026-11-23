@@ -19,7 +19,6 @@ import * as Stream from "effect/Stream";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import type { AuthenticatedSession } from "../auth/EnvironmentAuth.ts";
 import { makeKinApprovalHandlers } from "./approvals/rpcHandlers.ts";
-import { makeKinCanvasHandlers } from "./canvas/rpcHandlers.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import { makeKinChatHandlers } from "./chat/rpcHandlers.ts";
 import { makeKinConnectionHandlers } from "./connections/rpcHandlers.ts";
@@ -108,7 +107,6 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     ...(yield* makeKinLevelHandlers(session)),
     ...(yield* makeKinMemoryHandlers(session)),
     ...(yield* makeKinWorkHandlers(session)),
-    ...(yield* makeKinCanvasHandlers(session)),
     ...(yield* makeKinPushHandlers(session)),
     ...(yield* makeKinConnectionHandlers(session)),
     ...(yield* makeKinSocialHandlers(session)),

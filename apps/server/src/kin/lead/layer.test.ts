@@ -61,7 +61,6 @@ const external = Layer.mergeAll(
     clear: () => Effect.void,
     snapshot: () => Effect.succeed({ presence: [], drafts: [] }),
     lines: () => [],
-    orgLines: () => [],
   }),
   Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(VcsProcess.VcsProcess)({}),

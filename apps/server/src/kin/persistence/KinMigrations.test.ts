@@ -62,9 +62,6 @@ const tableNames = [
   "kin_budget",
   "kin_budget_charges",
   "kin_budget_limits",
-  "kin_canvas_places",
-  "kin_canvas_seen",
-  "kin_canvas_widgets",
   "kin_card_plans",
   "kin_chat_levels",
   "kin_chat_members",
@@ -587,7 +584,6 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(indexes, [
           { name: "idx_kin_agents_org_agent" },
           { name: "idx_kin_auth_session_keys_revoked" },
-          { name: "idx_kin_canvas_widgets_org" },
           { name: "idx_kin_chat_members_agent" },
           { name: "idx_kin_chat_members_person" },
           { name: "idx_kin_chats_org_chat" },
@@ -622,7 +618,6 @@ describe("Kin migrations", () => {
           { name: "idx_kin_push_devices_person" },
           { name: "idx_kin_reaction_wakes_chat" },
           { name: "idx_kin_reactions_woke" },
-          { name: "idx_kin_record_changes_at" },
           { name: "idx_kin_record_changes_org" },
           { name: "idx_kin_record_changes_record" },
           { name: "idx_kin_record_changes_wakeup" },
@@ -1927,10 +1922,7 @@ describe("Kin migrations", () => {
         // Later branches' migrations run after these too; only these three are this test's.
         assert.deepStrictEqual(
           (yield* runKinMigrations()).map(([id]) => id),
-          [
-            196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213,
-          ],
+          [196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212],
         );
         assert.deepStrictEqual(yield* receipts, [
           { trigger_key: "review:ambermill/shop#7", review_url: null },
@@ -1979,7 +1971,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* added, []);
       assert.deepStrictEqual(
         (yield* runKinMigrations()).map(([id]) => id),
-        [197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213],
+        [197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212],
       );
       const all = [
         "approved_at",
@@ -2544,12 +2536,12 @@ describe("Kin migrations", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
       yield* sql`DROP TABLE kin_number_values`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 212`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(212));
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 212`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [[212, "NumberValues"]]);
       yield* sql`INSERT INTO kin_number_values (org_id, record_id, as_of, seq, value, person_id, recorder_name, created_at)
         VALUES ('org', 'g1', '2026-11-20', 1, '1.00000000000000000001', 'rhea', 'Rhea', 42),
           ('org', 'g1', '2026-11-20', 2, '1.00000000000000000002', 'rhea', 'Rhea', 42)`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 212`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 212`;
       assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(212));
       assert.deepStrictEqual(
         yield* sql`SELECT value FROM kin_number_values WHERE org_id = 'org' ORDER BY seq`,
@@ -2572,7 +2564,7 @@ describe("Kin migrations", () => {
         String(exit),
         `below the latest applied migration ${kinMigrations.at(-1)![0]}`,
       );
-      assert.include(String(exit), "below the latest applied migration 213");
+      assert.include(String(exit), "below the latest applied migration 212");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

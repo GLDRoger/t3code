@@ -12,7 +12,7 @@
 #   `?history` open as sheets), `sheet:` or `dialog:` <title>, or inline `menu:`, `card:`,
 #   `section:`, `button:` <label>, which add no depth.
 # phone steps: `tab:<dock tab>` or a first screen, then KIN_SCREENS names, plus the same inline steps.
-#   Settings paths start at `SettingsKin`: the owner's dock is six tabs, and Settings is the gear
+#   Settings paths start at `SettingsKin`: the owner's dock is five tabs, and Settings is the gear
 #   on Chats, so it starts its own paths as a tab does (dock tab → list → record → sheet).
 # roles: owner, co_owner, lead (a member who leads a project), member; each `both`, `web`,
 #   `phone` or `none`. A role's reach follows what the host allows, not only what the client shows.
@@ -540,48 +540,6 @@ features:
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: Web `work` is the old link, redirected to its place; phone pushes a place outside the dock.
     proof: [apps/web/src/kin/kinPlaces.test.ts]
-
-  # ── Canvas ─────────────────────────────────────────────────────────────────────────────────
-  - id: canvas
-    name: The canvas, every task and doc on one board
-    tab: canvas
-    web: [canvas]
-    phone: [tab:canvas]
-    roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: >-
-      Cards are the tasks and docs the person may read, grouped by project; only the owner level
-      moves them, into one layout the company shares, and each person keeps their own view. A card
-      opens as a peek, then its own task, doc or project. Select cards and Ask to start a chat
-      with an agent about them. The lens lays tasks out by state, holder or due date for a while
-      without moving the stored layout.
-    proof:
-      - packages/client-runtime/src/kin/kinCanvas.test.ts
-
-  - id: canvas-widgets
-    name: Live widgets on the canvas
-    tab: canvas
-    web: [canvas, button:Add widget]
-    phone: [tab:canvas, button:Add widget]
-    roles: { owner: both, co_owner: both, lead: none, member: none }
-    note: >-
-      Progress, at a glance and countdown widgets count a project or an entry from the viewer's own
-      read and change as their source does, with no agent turn. Everyone who can read the source
-      sees the widget; only the owner level adds or removes one.
-    proof:
-      - packages/client-runtime/src/kin/kinCanvas.test.ts
-
-  - id: canvas-since
-    name: Since you last looked, Needs you and agents at work
-    tab: canvas
-    web: [canvas, section:Since you last looked]
-    phone: [tab:canvas, section:Since you last looked]
-    roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: >-
-      What others changed since the person last left the canvas, kept on the host so it follows
-      them across devices; what needs them, each row going to its card; and each agent working in a
-      chat they are in, on the cards its running turn has changed.
-    proof:
-      - packages/client-runtime/src/kin/kinCanvas.test.ts
 
   # ── Money ──────────────────────────────────────────────────────────────────────────────────
   - id: money
@@ -1741,7 +1699,6 @@ features:
       - apps/server/src/kin/numbers/KinNumbers.test.ts
 
 unlisted:
-  "phone:KinCanvas": The canvas tab as a pushed page, for links and the coding-threads shell with no dock; the canvas feature covers it.
   "web:team": Old address; opens the Settings modal on Team.
   "web:memory": Old address; opens the Settings modal on Memory.
   "web:settings/approvals": The app's old address; opens Kin's Settings → Approvals.

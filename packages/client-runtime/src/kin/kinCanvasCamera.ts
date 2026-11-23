@@ -121,8 +121,18 @@ export const kinCanvasTweenMs = (from: KinCanvasCamera, to: KinCanvasCamera) =>
 
 /**
  * How much a card says at a zoom. `dots`: only its colour. `titles`: key and title. `cards`: the
- * whole card, with who has it, its state and its last change.
+ * whole card. `near`: the card is about as wide as the screen, so it shows what it says (a doc's
+ * text, a task's notes) to read in place. `width` is the screen's, in points.
  */
-export type KinCanvasDetail = "dots" | "titles" | "cards";
-export const kinCanvasDetail = (scale: number): KinCanvasDetail =>
-  scale < 0.22 ? "dots" : scale < 0.55 ? "titles" : "cards";
+export type KinCanvasDetail = "dots" | "titles" | "cards" | "near";
+export const kinCanvasDetail = (scale: number, width = Infinity): KinCanvasDetail =>
+  scale < 0.22
+    ? "dots"
+    : scale < 0.55
+      ? "titles"
+      : scale < Math.max(1.1, Math.min(1.6, (width - 32) / KIN_CANVAS_NEAR_CARD_W))
+        ? "cards"
+        : "near";
+
+/** A card's width in canvas units, which `near` measures against the screen. */
+const KIN_CANVAS_NEAR_CARD_W = 240;
