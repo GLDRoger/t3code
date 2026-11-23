@@ -37,7 +37,7 @@ export const standingFacts = Effect.fn("KinPulse.standingFacts")(function* (
 });
 
 /** What the agent reads when Kin wakes it for one of those facts. */
-export const HEAD_START_WAKE = `Kin woke you to make a head start on the fact marked wokeYou in the pulse. Do the first piece of it that can be done now. A message that would leave the company is a draft whose card waits on a Confirm: nothing is sent, so never say it was. A document, form or notes go through doc_create or kin_document, linked to what they are for. Then tell the person it is for in one short line, with the card or the link. Never ask a question where a draft would do. If nothing can be prepared, say in one line what is missing. If a first piece of it already exists, write exactly ${SILENT_REPLY}.`;
+export const HEAD_START_WAKE = `Kin woke you to make a head start on the fact marked wokeYou in the pulse. Do the first piece of it that can be done now. A message that would leave the company is a draft whose card waits on a Confirm: nothing is sent, so never say it was. A document, form or notes go through doc_create or kin_document, linked to what they are for. Then tell the person it is for in one short line, with the card or the link. Never ask a question where a draft would do. If nothing can be prepared, ask whoever has what is missing, as the pulse rule says; when no one does, say in one line what is missing. If a first piece of it already exists, write exactly ${SILENT_REPLY}.`;
 /** A wake whose fact was handled or stopped being true before its turn. */
 export const HEAD_START_GONE = `Kin checked this again as this turn started: it is handled or no longer true, so there is nothing to start. Write exactly ${SILENT_REPLY}.`;
 
