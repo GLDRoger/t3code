@@ -385,6 +385,8 @@ it.live(
           "kin_chart",
           "kin_visual",
           "kin_react",
+          "message_withdraw",
+          "message_replace",
           "memory_search",
           "memory_read",
           "memory_write",
