@@ -2940,11 +2940,12 @@ const make = Effect.gen(function* () {
           const live = Stream.mergeAll(streams, { concurrency: "unbounded" }).pipe(
             Stream.mapEffect(({ viewer, event }) =>
               Effect.gen(function* (): Effect.fn.Return<KinChatListEvent, ServiceError> {
-                // Reactions, draft deltas and a message read anew don't change a chat's row.
+                // Reactions, draft deltas and a message read anew don't change a chat's row; one
+                // its agent took back leaves the unread count.
                 if (
                   event.type === "reaction.updated" ||
                   event.type === "draft.updated" ||
-                  event.type === "message.changed"
+                  (event.type === "message.changed" && event.message.withdrawn === undefined)
                 )
                   return yield* notFound;
                 if (event.type === "waiting.updated")
@@ -2962,7 +2963,7 @@ const make = Effect.gen(function* () {
                 const chatId =
                   event.type === "chat.created"
                     ? event.chat.chatId
-                    : event.type === "message.posted"
+                    : event.type === "message.posted" || event.type === "message.changed"
                       ? event.message.chatId
                       : event.type === "widget.updated"
                         ? event.widget.chatId

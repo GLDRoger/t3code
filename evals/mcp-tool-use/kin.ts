@@ -81,12 +81,15 @@ import {
 import {
   githubTriggerEvent,
   HANDED_BACK_WORK,
+  UNREAD_RULE,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
   joinedWork,
   workForText,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
+import { REVIEW_WAKE_TEXT } from "../../apps/server/src/kin/pulse/reviewWake.ts";
+import { OWN_MESSAGE_REFUSALS } from "../../apps/server/src/kin/chat/ownMessages.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
 import { DECLINED_RULE } from "../../apps/server/src/kin/lead/declinedSection.ts";
@@ -425,6 +428,12 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{UNISSUED_INVOICE}}", UNISSUED_INVOICE)
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
+    .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
+    .replace(
+      /\{\{REVIEW_WAKE:([^|}]+)\|(\d+)\|([^}]+)\}\}/g,
+      (_, who: string, count: string, changed: string) =>
+        REVIEW_WAKE_TEXT({ who: who.split(", "), count: Number(count), changed }),
+    )
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names))
     .replace(/\{\{JOINED_WORK:([^|}]+)\|([^}]+)\}\}/g, (_, adder: string, holder: string) =>
       joinedWork(adder, holder),
@@ -476,6 +485,17 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       _tag: "KinChatError",
       reason: "not_allowed",
       message: helperRefusal(input.holder, input.key),
+    },
+  }),
+  // message_withdraw or message_replace refused, as `chat/ownMessages.ts` says it.
+  ownMessageRefusal: (input: { readonly why: "read" | "otherAuthor"; readonly name?: string }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_allowed",
+      message:
+        input.why === "read"
+          ? OWN_MESSAGE_REFUSALS.read(input.name ?? "")
+          : OWN_MESSAGE_REFUSALS.otherAuthor,
     },
   }),
   // An agent with no person asking in its turn, refused a change to who is on a task.

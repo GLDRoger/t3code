@@ -40,6 +40,8 @@ import { updatePeople } from "../peopleUpdate.ts";
 import { setAway } from "../awaySet.ts";
 import { updateAgent } from "../agentUpdate.ts";
 import { wordOf } from "../../pulse/holds.ts";
+import * as OwnMessages from "../../chat/ownMessages.ts";
+import { KinPushSender } from "../../push/KinPushSender.ts";
 import { KinLeadToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -388,6 +390,60 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         { ...lead, wakeupId },
         { ...input, chatId: lane.value.chatId },
       );
+    }, Effect.mapError(failure)),
+  ),
+  message_withdraw: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.messageWithdraw")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      const wakeupId = KinWakeupId.make(lead.wakeupId);
+      const services = Option.getOrThrow((yield* KinServer).services);
+      const chatId = yield* OwnMessages.chatOfMessage(lead.orgId, input.messageId).pipe(
+        Effect.provideContext(services),
+      );
+      if (chatId === undefined)
+        return yield* new KinChatError({
+          reason: "not_found",
+          message: OwnMessages.OWN_MESSAGE_REFUSALS.unknown,
+        });
+      return yield* Context.get(services, KinLevelGate).amend(
+        { ...lead, wakeupId },
+        chatId,
+        OwnMessages.withdrawOwn(
+          { ...lead, ...input, now: yield* Clock.currentTimeMillis },
+          Context.get(services, KinChatService),
+          Context.get(services, KinEventQueue),
+        ).pipe(Effect.provideContext(services), Effect.mapError(failure)),
+      );
+    }, Effect.mapError(failure)),
+  ),
+  message_replace: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.messageReplace")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      const wakeupId = KinWakeupId.make(lead.wakeupId);
+      const services = Option.getOrThrow((yield* KinServer).services);
+      const chatId = yield* OwnMessages.chatOfMessage(lead.orgId, input.messageId).pipe(
+        Effect.provideContext(services),
+      );
+      if (chatId === undefined)
+        return yield* new KinChatError({
+          reason: "not_found",
+          message: OwnMessages.OWN_MESSAGE_REFUSALS.unknown,
+        });
+      const replaced = yield* Context.get(services, KinLevelGate).amend(
+        { ...lead, wakeupId },
+        chatId,
+        OwnMessages.replaceOwn({ ...lead, ...input, now: yield* Clock.currentTimeMillis }).pipe(
+          Effect.provideContext(services),
+          Effect.mapError(failure),
+        ),
+      );
+      // Its push names the chat, so the new words take the old notification's place.
+      yield* Context.get(services, KinPushSender).notify({
+        _tag: "message",
+        orgId: lead.orgId,
+        messageId: input.messageId,
+      });
+      return replaced;
     }, Effect.mapError(failure)),
   ),
   memory_search: McpToolAccess.reads(

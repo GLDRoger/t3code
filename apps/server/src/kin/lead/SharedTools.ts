@@ -36,6 +36,18 @@ const inTurnChat: Condition = Effect.fnUntraced(function* (turn, args) {
   return typeof chatId === "string" && (yield* turnChat(turn))?.chatId === chatId;
 });
 
+/** A message in the chat the turn answers; `ownMessages.ts` checks the rest inside the change. */
+const messageInTurnChat: Condition = Effect.fnUntraced(function* (turn, args) {
+  const messageId = field(args, "messageId");
+  if (typeof messageId !== "string") return false;
+  const sql = yield* SqlClient.SqlClient;
+  const chatId = (yield* turnChat(turn))?.chatId;
+  if (chatId === undefined) return false;
+  const rows = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${turn.orgId}
+    AND message_id = ${messageId} AND chat_id = ${chatId} LIMIT 1`;
+  return rows.length > 0;
+});
+
 const inAskedChat: Condition = Effect.fnUntraced(function* (turn, args) {
   const chatId = field(args, "chatId");
   return typeof chatId === "string" && (yield* askedIn(turn, chatId));
@@ -115,6 +127,9 @@ export const SHARED_TOOLS = {
   // Checked against everyone behind the turn, in its own transaction (`askPerson`).
   kin_ask_person: "allowed",
   kin_react: "allowed",
+  // Its own unread message, only in the chat this turn answers.
+  message_withdraw: messageInTurnChat,
+  message_replace: messageInTurnChat,
   // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
   kin_chart: "allowed",
   // Like a chart, in the sealed frame; its figures are checked against everyone behind the

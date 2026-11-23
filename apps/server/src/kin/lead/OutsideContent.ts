@@ -48,6 +48,9 @@ export const OUTSIDE_TOOLS = {
   // A question to one person of the company, checked for what they may read; no action rides on it.
   kin_ask_person: "allowed",
   kin_react: "allowed",
+  // Its own message no one has read: words as kin_chat_post's, in a chat it may post in.
+  message_withdraw: "allowed",
+  message_replace: "allowed",
   kin_chart: "allowed",
   kin_visual: "allowed",
   kin_picture: "allowed",

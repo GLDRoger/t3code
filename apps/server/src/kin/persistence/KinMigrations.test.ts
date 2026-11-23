@@ -723,6 +723,7 @@ describe("Kin migrations", () => {
       yield* sql`ALTER TABLE kin_handoffs DROP COLUMN asked_message_id`;
       yield* sql`ALTER TABLE kin_handoffs DROP COLUMN route_widget_id`;
       yield* sql`ALTER TABLE kin_handoffs DROP COLUMN route_state`;
+      yield* sql`ALTER TABLE kin_messages DROP COLUMN withdrawn_json`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN origin_json`;
       yield* sql`ALTER TABLE kin_handoffs DROP COLUMN wants_answer`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN source_wakeup_id`;
@@ -1896,7 +1897,7 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 213, and runs again",
+    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 214, and runs again",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -1928,7 +1929,7 @@ describe("Kin migrations", () => {
           (yield* runKinMigrations()).map(([id]) => id),
           [
             196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213,
+            213, 214,
           ],
         );
         assert.deepStrictEqual(yield* receipts, [
@@ -1956,7 +1957,7 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("a host on K196 migrates through 197 to 213, and again", () =>
+  it.effect("a host on K196 migrates through 197 to 214, and again", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const added = sql<{ name: string }>`
@@ -1978,7 +1979,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* added, []);
       assert.deepStrictEqual(
         (yield* runKinMigrations()).map(([id]) => id),
-        [197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213],
+        [197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214],
       );
       const all = [
         "approved_at",
@@ -1995,7 +1996,7 @@ describe("Kin migrations", () => {
         all,
       );
       for (const from of [
-        197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213,
+        197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
       ]) {
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
@@ -2575,7 +2576,7 @@ describe("Kin migrations", () => {
         yield* sql`INSERT INTO kin_push_devices (org_id, token, person_id, platform, aps_environment,
           session_id, quiet_channel, created_at, updated_at)
         VALUES ('org', ${"a".repeat(64)}, 'rhea', 'ios', 'production', 's1', 0, 1, 2)`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[213, "PushSent"]]);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(213));
         assert.deepStrictEqual(yield* devices, [
           { token: "a".repeat(64), quiet_channel: 0, withdraws: 0 },
         ]);
@@ -2597,6 +2598,30 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("K214 keeps why an agent withdrew a message, keeps every message, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      // A host on K213: messages with no withdrawn column.
+      yield* sql`ALTER TABLE kin_messages DROP COLUMN withdrawn_json`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 214`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+          VALUES ('chat', 'org', 'project_group', 1, '2026-11-23T09:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_messages (org_id, chat_id, message_id, seq, author_kind,
+            author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('org', 'chat', 'm1', 1, 'system', 'member', 'system', 'Kept', '[]', 'posted',
+            '2026-11-23T09:00:00.000Z')`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [[214, "MessageWithdrawn"]]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT message_id, body, status, withdrawn_json FROM kin_messages`,
+        [{ message_id: "m1", body: "Kept", status: "posted", withdrawn_json: null }],
+      );
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 214`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(214));
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -2611,7 +2636,7 @@ describe("Kin migrations", () => {
         String(exit),
         `below the latest applied migration ${kinMigrations.at(-1)![0]}`,
       );
-      assert.include(String(exit), "below the latest applied migration 213");
+      assert.include(String(exit), "below the latest applied migration 214");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
