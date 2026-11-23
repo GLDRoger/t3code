@@ -826,7 +826,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         <>
           {notice}
           <View className="gap-2 pt-1">
-            {choice.options.map((option) => (
+            {(status?.behind === true ? [] : choice.options).map((option) => (
               <View key={option.id} className="gap-0.5">
                 <Button
                   label={option.label}
@@ -849,7 +849,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                 )}
               </View>
             ))}
-            {editable ? (
+            {editable && status?.behind !== true ? (
               <Button
                 label={KIN_SEND_EDIT_COPY.edit}
                 accessibilityHint={KIN_SEND_EDIT_COPY.editHint}

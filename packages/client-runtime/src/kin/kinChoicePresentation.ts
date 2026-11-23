@@ -1106,7 +1106,18 @@ type KinChoiceSend<I, A> = (value: {
   readonly input: I;
 }) => Promise<AtomCommandResult<A, unknown>>;
 
-export type KinChoiceCardStatus = (KinCardStatus & { readonly optionId: string }) | null;
+export type KinChoiceCardStatus =
+  | (KinCardStatus & {
+      readonly optionId: string;
+      /** The host refused the tap as settled or changed: no answers until its newer card arrives. */
+      readonly behind?: true;
+    })
+  | null;
+
+export const KIN_CARD_REREAD_COPY = {
+  checking: "Checking where this question stands…",
+  settled: "This question is already settled.",
+} as const;
 
 /** What a card keeps between renders outside React: its tap queue and the tick a press reads. */
 export interface KinChoiceCardTaps {
@@ -1186,6 +1197,15 @@ export function kinChoiceCardActions(options: {
     });
     if (outcome.status === "ignored") return;
     set.pending(null);
+    // The host's newer card reaches this chat's stream; until then it takes no answer here.
+    if (outcome.status === "failed" && outcome.behind === true)
+      return set.lastStatus({
+        revision,
+        optionId,
+        notice: { kind: "stale", text: KIN_CARD_REREAD_COPY.settled },
+        holding: false,
+        behind: true,
+      });
     set.lastStatus(
       outcome.status === "failed"
         ? { revision, optionId, notice: outcome.notice, holding: false }
