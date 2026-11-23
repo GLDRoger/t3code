@@ -15,6 +15,7 @@ import {
   type KinWakeupId,
   KinPersonId,
   KinRecordKey,
+  type KinWidget,
   KinWidgetId,
   ProviderInstanceId,
   ThreadId,
@@ -69,6 +70,7 @@ import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
 import * as Team from "../team/KinTeam.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import * as ChatWake from "../lead/ChatWake.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { presetDefinition } from "../work/registers.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -4236,9 +4238,9 @@ const tallyAsk = {
 
 const PAYMENT_TEST_START = Date.UTC(2026, 10, 16, 14, 8);
 
-const dismissedPayment = Effect.fn("test.dismissedPayment")(function* () {
+const paymentChat = Effect.fn("test.paymentChat")(function* () {
   const fixture = yield* ambermill;
-  const { owner, orgId, chats, chatOf, wake, services, sql } = fixture;
+  const { orgId, chatOf, services } = fixture;
   const chatId = chatOf("chief");
   const repo = Context.get(services, KinChatRepository);
   const widget = Effect.fn("test.paymentWidget")(function* (widgetId: string) {
@@ -4246,41 +4248,8 @@ const dismissedPayment = Effect.fn("test.dismissedPayment")(function* () {
       yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(widgetId) }),
     );
   });
-  yield* wake("chief");
-  const first = yield* callAs("chief", "kin_ask", paymentAsk);
-  assert.isTrue(first.ok, JSON.stringify(first.value));
-  const original = yield* widget(String(first.value.widgetId));
-
-  for (const [second, body] of [
-    [20, "Corran Tiles paid 95,000."],
-    [35, "That was for both invoices."],
-  ] as const) {
-    yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 8, second));
-    yield* wake("chief", yield* chats.send(owner, { chatId, body, clientMessageId: body }));
-  }
-  yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 8, 43));
-  yield* chats.act(owner, {
-    widgetId: original.widgetId,
-    revision: original.revision,
-    actionId: "dismiss",
-    clientActionId: "dismiss-original",
-  });
   const agentId = KinAgentId.make("chief");
   const threadId = ThreadId.make("chief-thread");
-  const dismissal = yield* startAgentWakeup({ orgId, agentId, threadId, queued: true });
-  const events = yield* sql<{ json: string }>`SELECT json FROM kin_events
-    WHERE org_id = ${orgId} AND wakeup_id = ${dismissal} ORDER BY rowid`;
-  assert.isTrue(
-    events.some(({ json }) => {
-      const event = decodeEvent(JSON.parse(json));
-      return (
-        event._tag === "deferral.due" &&
-        event.subject.type === "question" &&
-        event.subject.dismissed === true &&
-        event.subject.questionId === first.value.question
-      );
-    }),
-  );
   const tally = Effect.fn("test.tally")(function* () {
     yield* startAgentWakeup({
       orgId,
@@ -4301,7 +4270,56 @@ const dismissedPayment = Effect.fn("test.dismissedPayment")(function* () {
       }),
     });
   });
-  return { ...fixture, repo, widget, first, original, tally };
+  return { ...fixture, repo, widget, tally, agentId, threadId };
+});
+
+const dismissPayment = Effect.fn("test.dismissPayment")(function* (
+  fixture: Effect.Success<ReturnType<typeof paymentChat>>,
+  original: KinWidget,
+  questionId: string,
+) {
+  const { owner, orgId, chats, chatOf, wake, sql, agentId, threadId } = fixture;
+  const chatId = chatOf("chief");
+  for (const [second, body] of [
+    [20, "Corran Tiles paid 95,000."],
+    [35, "That was for both invoices."],
+  ] as const) {
+    yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 8, second));
+    yield* wake("chief", yield* chats.send(owner, { chatId, body, clientMessageId: body }));
+  }
+  yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 8, 43));
+  yield* chats.act(owner, {
+    widgetId: original.widgetId,
+    revision: original.revision,
+    actionId: "dismiss",
+    clientActionId: "dismiss-original",
+  });
+  const dismissal = yield* startAgentWakeup({ orgId, agentId, threadId, queued: true });
+  const events = yield* sql<{ json: string }>`SELECT json FROM kin_events
+    WHERE org_id = ${orgId} AND wakeup_id = ${dismissal} ORDER BY rowid`;
+  assert.isTrue(
+    events.some(({ json }) => {
+      const event = decodeEvent(JSON.parse(json));
+      return (
+        event._tag === "deferral.due" &&
+        event.subject.type === "question" &&
+        event.subject.dismissed === true &&
+        event.subject.questionId === questionId
+      );
+    }),
+  );
+});
+
+const dismissedPayment = Effect.fn("test.dismissedPayment")(function* () {
+  const fixture = yield* paymentChat();
+  const { wake, widget } = fixture;
+  yield* wake("chief");
+  const first = yield* callAs("chief", "kin_ask", paymentAsk);
+  assert.isTrue(first.ok, JSON.stringify(first.value));
+  const original = yield* widget(String(first.value.widgetId));
+
+  yield* dismissPayment(fixture, original, String(first.value.question));
+  return { ...fixture, first, original };
 });
 
 it.effect.each(
@@ -4520,4 +4538,167 @@ it.effect("takes the same scheduled ask on day eight after a dismissal", () =>
       assert.isTrue(dayEight.ok, JSON.stringify(dayEight.value));
     }).pipe(Effect.provide(layer)),
   ),
+);
+
+it.effect.each([
+  { card: "first", choice: "option-1", failCreate: false },
+  { card: "tally", choice: "option-1", failCreate: false },
+  { card: "tally", choice: "option-2", failCreate: false },
+  { card: "tally", choice: "dismiss", failCreate: false },
+  { card: "tally", choice: "option-1", failCreate: true },
+] as const)(
+  "settles the invoice $card card on $choice with tracking failure $failCreate",
+  ({ card, choice, failCreate }) =>
+    Effect.andThen(
+      TestClock.setTime(PAYMENT_TEST_START),
+      Effect.gen(function* () {
+        const fixture = yield* paymentChat();
+        const { services, sql, owner, orgId, agentId, chats, wake, tally, widget } = fixture;
+        const records = Context.get(services, KinRecords);
+        const person = { _tag: "person", personId: owner.personId } as const;
+        const writer = { actor: person, via: "owner" } as const;
+        const { row: client } = yield* records.create(orgId, writer, {
+          list: "clients",
+          originKey: "corran",
+          title: "Corran Tiles",
+          category: "client",
+          owner: person,
+        });
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+          VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
+        const invoices = yield* Effect.forEach(
+          [
+            ["Catalogue", 50_000],
+            ["Studio photos", 45_000],
+          ] as const,
+          ([title, amount]) =>
+            records.create(orgId, writer, {
+              list: "invoices",
+              originKey: `corran:${title}`,
+              title,
+              partyId: client.recordId,
+              owner: person,
+              amount: { minor: amount * 100, currency: "INR" },
+            }),
+        );
+        const invoiceKeys = invoices.map(({ row }) => row.key);
+        const intent = "as both credit hdfc invoice neft payment record";
+
+        yield* wake("chief");
+        const first = yield* callAs("chief", "kin_ask", {
+          ...paymentAsk,
+          question:
+            "Record the ₹95,000 as Corran Tiles paying QST/2026-27/011 and QST/2026-27/012 in full?",
+          about: invoiceKeys,
+          intent,
+        });
+        assert.isTrue(first.ok, JSON.stringify(first.value));
+        const original = yield* widget(String(first.value.widgetId));
+        let asked = first;
+        if (card === "tally") {
+          const firstId = String(first.value.question);
+          yield* dismissPayment(fixture, original, firstId);
+          // An older host could post this card before the repeat rule existed.
+          const now = yield* Clock.currentTimeMillis;
+          yield* sql`UPDATE kin_questions SET closed_at = ${now - 8 * 86_400_000}
+            WHERE org_id = ${orgId} AND question_id = ${firstId}`;
+          yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 25, 52));
+          yield* tally();
+          asked = yield* callAs("chief", "kin_ask", {
+            ...tallyAsk,
+            question:
+              "Record Corran Tiles' ₹95,000 from 23 Nov as paid against QST/2026-27/011 (₹50,000) and QST/2026-27/012 (₹45,000)?",
+            about: [client.key, ...invoiceKeys],
+            intent,
+          });
+          assert.isTrue(asked.ok, JSON.stringify(asked.value));
+        }
+        const questionId = String(asked.value.question);
+        const shown = yield* widget(String(asked.value.widgetId));
+        assert.deepInclude(shown.state, { detail: null, untilAnswered: true, answer: null });
+        assert.deepStrictEqual(shown.awaiting, [owner.personId]);
+
+        if (failCreate)
+          yield* sql`CREATE TRIGGER fail_chosen_work AFTER INSERT ON kin_records
+            WHEN NEW.origin_key LIKE 'chosen:%'
+            BEGIN SELECT RAISE(FAIL, 'forced tracking failure after insert'); END`;
+        const history = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_record_changes
+          WHERE org_id = ${orgId}`;
+        const before = yield* history;
+
+        const woke = yield* Deferred.make<Extract<KinEvent, { readonly _tag: "widget.action" }>>();
+        const eventQueue = Context.get(services, KinEventQueue.KinEventQueue);
+        yield* Layer.build(
+          ChatWake.layer.pipe(
+            Layer.provide(
+              Layer.succeed(KinEventQueue.KinEventQueue, {
+                ...eventQueue,
+                enqueue: (event, options) =>
+                  eventQueue
+                    .enqueue(event, options)
+                    .pipe(
+                      Effect.tap(() =>
+                        event._tag === "widget.action"
+                          ? Deferred.succeed(woke, event)
+                          : Effect.void,
+                      ),
+                    ),
+              }),
+            ),
+            Layer.provide(Layer.succeedContext(services)),
+          ),
+        );
+
+        const tap = chats.act(owner, {
+          widgetId: shown.widgetId,
+          revision: shown.revision,
+          ...(choice === "dismiss"
+            ? { actionId: "dismiss" }
+            : { actionId: "choose", value: choice }),
+          clientActionId: "record-invoice-tap",
+        });
+        const message = yield* tap;
+        assert.deepStrictEqual(yield* tap, message);
+        const closed = yield* widget(shown.widgetId);
+        assert.isNotNull(closed.closedAt);
+        assert.deepStrictEqual(closed.awaiting, []);
+        const label =
+          card === "first"
+            ? "Yes, both paid in full"
+            : choice === "option-2"
+              ? "Not yet"
+              : "Yes, record both";
+        assert.deepInclude(
+          yield* questionRow(sql, questionId),
+          choice === "dismiss"
+            ? { state: "dismissed", answer: null }
+            : { state: "answered", answer: label },
+        );
+        if (choice !== "dismiss") {
+          assert.include(JSON.parse(message.body), { value: choice });
+          assert.include(String(JSON.parse(message.body).text), `Chose "${label}"`);
+          assert.include(yield* Deferred.await(woke), {
+            agentId,
+            messageId: message.messageId,
+            actionId: "choose",
+          });
+        }
+
+        const tracked = yield* sql<{ title: string }>`SELECT title FROM kin_records
+          WHERE org_id = ${orgId} AND origin_key = ${`chosen:${questionId}`} ORDER BY key`;
+        if (choice === "option-1" && !failCreate) {
+          assert.deepStrictEqual(tracked, [
+            {
+              title: `Follow up on ${(card === "first" ? invoiceKeys : [client.key, ...invoiceKeys]).join(", ")}`,
+            },
+          ]);
+        } else {
+          assert.lengthOf(tracked, 0);
+          assert.deepStrictEqual(yield* history, before);
+        }
+        const payments = yield* sql`SELECT 1 FROM kin_record_payments WHERE org_id = ${orgId}`;
+        assert.isEmpty(payments);
+      }).pipe(Effect.provide(layer), Effect.scoped),
+    ),
 );
