@@ -1,6 +1,7 @@
 ---------------------------- MODULE Stream ----------------------------
 (* Work's live stream to one person, Ana, with Tasks open. Two tasks change and are shared with her
-   or taken from her view; she is made a co-owner or a member again; her socket drops and comes
+   or taken from her view. Task a is a promise whose deal can become private or public;
+   she is made a co-owner or a member again; her socket drops and comes
    back. The host sends each change as the task itself, as her own read shows it now, numbered in
    her own numbering; her client folds what arrives. Each action names the code it stands for
    (paths under apps/server/src/kin/work and packages). One action is one transaction or one step
@@ -14,7 +15,8 @@ MaxVer == 2
 
 VARIABLES
   ver,        \* each task's version on the host, 1..MaxVer
-  shared,     \* a teammate sees it (teamView.ts personSees): shared, hers, or in her project
+  shared,     \* a teammate could see it by task sharing, ownership or project membership
+  dealPrivate, \* the linked deal hides its promise from teammates
   member,     \* Ana is a member; FALSE: a co-owner, who sees every task
   num,        \* her own number now: kin_team_seqs as a member, the org's latest as a co-owner
   unpub,      \* committed changes whose tick hasn't published: afterCommit runs once the lock is free
@@ -34,18 +36,19 @@ VARIABLES
   levelBroke, \* something else was sent first
   changes, moves, drops
 
-vars == <<ver, shared, member, num, unpub, log, up, sMember, seen, inbox, heard, early, shown, at,
+vars == <<ver, shared, dealPrivate, member, num, unpub, log, up, sMember, seen, inbox, heard, early, shown, at,
           cursor, cMember, leak, levelOwed, levelBroke, changes, moves, drops>>
 
 Max(S) == CHOOSE m \in S : \A x \in S : x <= m
 Min(a, b) == IF a < b THEN a ELSE b
 
 (* What her own read shows (ownerWork.ts list via shownRecords), at a level. *)
-Sees(t, asMember) == ~asMember \/ shared[t]
+Sees(t, asMember) == ~asMember \/ (shared[t] /\ ~(t = "a" /\ dealPrivate))
 Read == [t \in Tasks |-> IF Sees(t, member) THEN ver[t] ELSE 0]
 
 Init ==
   /\ ver = [t \in Tasks |-> 1] /\ shared = [t \in Tasks |-> t = "a"] /\ member = TRUE
+  /\ dealPrivate = FALSE
   /\ num = 0 /\ unpub = {} /\ log = {} /\ up = TRUE /\ sMember = TRUE
   /\ seen = {"a"} /\ inbox = {} /\ heard = 0 /\ early = {}
   /\ shown = [t \in Tasks |-> IF t = "a" THEN 1 ELSE 0] /\ at = [t \in Tasks |-> 0]
@@ -71,7 +74,7 @@ Edit(t) ==
   /\ changes < 3 /\ ver[t] < MaxVer
   /\ ver' = [ver EXCEPT ![t] = @ + 1]
   /\ Logged(t, Sees(t, member))
-  /\ UNCHANGED <<shared, member, moves, drops>> /\ UNCHANGED Session /\ UNCHANGED Client
+  /\ UNCHANGED <<shared, dealPrivate, member, moves, drops>> /\ UNCHANGED Session /\ UNCHANGED Client
   /\ UNCHANGED Ghosts
   /\ changes' = changes + 1
 
@@ -80,9 +83,19 @@ Edit(t) ==
 Share(t) ==
   /\ changes < 3
   /\ shared' = [shared EXCEPT ![t] = ~@]
-  /\ Logged(t, TRUE)
-  /\ UNCHANGED <<ver, member, moves, drops>> /\ UNCHANGED Session /\ UNCHANGED Client
+  /\ Logged(t, ~member \/ t # "a" \/ ~dealPrivate)
+  /\ UNCHANGED <<ver, dealPrivate, member, moves, drops>> /\ UNCHANGED Session /\ UNCHANGED Client
   /\ UNCHANGED Ghosts
+  /\ changes' = changes + 1
+
+(* KinRecords.update includes the deal's promise in its before/after visibility scope.
+   A teammate receives the deal tick when that scope changes what they may see. *)
+DealLabel ==
+  /\ changes < 3
+  /\ dealPrivate' = ~dealPrivate
+  /\ Logged("deal", ~member \/ shared["a"])
+  /\ UNCHANGED <<ver, shared, member, moves, drops>>
+  /\ UNCHANGED Session /\ UNCHANGED Client /\ UNCHANGED Ghosts
   /\ changes' = changes + 1
 
 (* KinPeople.setAccess, then KinRecords.peopleMoved: her own number moves and a people tick names
@@ -94,7 +107,7 @@ Level ==
   /\ unpub' = unpub \cup {[k |-> num + 1, t |-> "level"]}
   /\ levelOwed' = up
   /\ moves' = moves + 1
-  /\ UNCHANGED <<ver, shared, log, changes, drops, leak, levelBroke>>
+  /\ UNCHANGED <<ver, shared, dealPrivate, log, changes, drops, leak, levelBroke>>
   /\ UNCHANGED Session /\ UNCHANGED Client
 
 (* PubSub.publish in an afterCommit callback: any committed tick may go first. With no session it
@@ -113,7 +126,7 @@ Publish(x) ==
                       IN /\ heard' = h /\ early' = {j \in E : j > h}
                  ELSE UNCHANGED <<heard, early>>
        ELSE UNCHANGED <<inbox, heard, early>>
-  /\ UNCHANGED <<ver, shared, member, num, log, up, sMember, seen, changes, moves, drops>>
+  /\ UNCHANGED <<ver, shared, dealPrivate, member, num, log, up, sMember, seen, changes, moves, drops>>
   /\ UNCHANGED Client /\ UNCHANGED Ghosts
 
 (* workStream.ts restart: snapshot-required, then whole counts. The client drops what it held and
@@ -143,11 +156,16 @@ Batch ==
   /\ IF sMember # member /\ Broken # "no-level-check"
        THEN /\ StartOver /\ levelOwed' = FALSE
             /\ UNCHANGED <<leak, levelBroke>>
-       ELSE LET named == {x.t : x \in inbox} \cap Tasks
+       ELSE LET top == Max({x.k : x \in inbox})
+                direct == {x.t : x \in inbox} \cap Tasks
+                dependents == IF sMember /\ Broken # "deal-no-dependent-row" /\ \E x \in inbox : x.t = "deal"
+                              THEN {"a"} ELSE {}
+                named == direct \cup dependents
                 \* rowsNow reads her number first, then the rows: each carries at least that.
-                seqOf(t) == IF Broken = "tick-number" THEN Max({x.k : x \in {y \in inbox : y.t = t}})
+                seqOf(t) == IF Broken = "tick-number"
+                            THEN IF t \in direct THEN Max({x.k : x \in {y \in inbox : y.t = t}})
+                                 ELSE top
                             ELSE num
-                top == Max({x.k : x \in inbox})
                 upserts == {t \in named : Sees(t, sMember)}
                 removes == {t \in named \ upserts :
                               ~sMember \/ t \in seen \/ Broken = "removed-unseen"}
@@ -162,7 +180,7 @@ Batch ==
                /\ levelBroke' = (levelBroke \/ levelOwed)
                /\ inbox' = {}
                /\ UNCHANGED <<sMember, heard, early, levelOwed>>
-  /\ UNCHANGED <<ver, shared, member, num, unpub, log, up, changes, moves, drops>>
+  /\ UNCHANGED <<ver, shared, dealPrivate, member, num, unpub, log, up, changes, moves, drops>>
 
 (* The socket drops: the session and what it hadn't sent go with it. *)
 Drop ==
@@ -170,7 +188,7 @@ Drop ==
   /\ up' = FALSE /\ inbox' = {} /\ early' = {}
   /\ levelOwed' = FALSE
   /\ drops' = drops + 1
-  /\ UNCHANGED <<ver, shared, member, num, unpub, log, sMember, seen, heard, changes, moves>>
+  /\ UNCHANGED <<ver, shared, dealPrivate, member, num, unpub, log, sMember, seen, heard, changes, moves>>
   /\ UNCHANGED Client /\ UNCHANGED <<leak, levelBroke>>
 
 (* A new session with the client's cursor (subscribeDynamic, makeWorkStream start): another
@@ -192,12 +210,12 @@ Resume ==
                /\ at' = [t \in Tasks |->
                            IF t \in replay /\ at[t] < seqOf(t) THEN seqOf(t) ELSE at[t]]
                /\ cursor' = num /\ cMember' = member
-  /\ UNCHANGED <<ver, shared, member, num, unpub, log, changes, moves, drops>>
+  /\ UNCHANGED <<ver, shared, dealPrivate, member, num, unpub, log, changes, moves, drops>>
   /\ UNCHANGED Ghosts
 
 Next ==
   \/ \E t \in Tasks : Edit(t) \/ Share(t)
-  \/ Level
+  \/ DealLabel \/ Level
   \/ \E x \in unpub : Publish(x)
   \/ Batch \/ Drop \/ Resume
 
