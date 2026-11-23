@@ -343,7 +343,6 @@ describe("createKinCardActions", () => {
     expect(await late.act(view(deferral()), "undo")).toEqual({
       status: "failed",
       notice: { kind: "stale", text: KIN_UNDO_TOO_LATE_TEXT },
-      behind: true,
     });
   });
 

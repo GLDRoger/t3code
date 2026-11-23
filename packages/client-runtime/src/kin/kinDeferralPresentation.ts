@@ -411,9 +411,12 @@ export type KinActionOutcome =
       readonly behind?: true;
     };
 
-/** A refusal that means the card was settled or changed since this screen drew it. */
+/**
+ * A refusal that means the card was settled or changed since this screen drew it. Any other refusal
+ * leaves the card answerable: the person may try again.
+ */
 const kinCardBehindHost = (cause: unknown) =>
-  isKinChatError(cause) && (cause.reason === "invalid_state" || cause.reason === "widget_changed");
+  isKinChatError(cause) && cause.reason === "widget_changed";
 
 /**
  * Posts card taps one at a time: a tap while another is in flight is ignored, so a double
