@@ -41,7 +41,10 @@ import type { KinRefusedModels } from "./lead/refusedModels.ts";
 
 import type { KinShell } from "./shell/KinShell.ts";
 
+import type { KinNumbers } from "./numbers/KinNumbers.ts";
+
 export type Services =
+  | KinNumbers
   | KinShell
   | KinIdentity
   | KinDevClock
