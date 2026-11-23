@@ -4,6 +4,7 @@ import {
   KIN_LISTS,
   KIN_LIST_LABEL_MAX,
   kinCategoryLabel,
+  kinListCanOpenToTeam,
   kinListCanTogglePayments,
   kinListChips,
   kinListColumns,
@@ -597,7 +598,13 @@ function KinListSettings(
   const { def, orgId } = props;
   const changes = useKinListChanges(props);
   const [draft, setDraft] = useState(() => kinListEditDraftOf(def));
-  const ids = { name: useId(), states: useId(), categories: useId(), payments: useId() };
+  const ids = {
+    name: useId(),
+    states: useId(),
+    categories: useId(),
+    payments: useId(),
+    team: useId(),
+  };
   const locked = def.builtIn;
   const save = async () => {
     const checked = kinListEditInput(orgId, def, draft);
@@ -705,6 +712,20 @@ function KinListSettings(
                     checked={draft.payments}
                     disabled={changes.busy}
                     onCheckedChange={(payments) => setDraft({ ...draft, payments })}
+                  />
+                </div>
+              ) : null}
+              {kinListCanOpenToTeam(def) ? (
+                <div className="flex items-start gap-3">
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <Label htmlFor={ids.team}>{KIN_LISTS.edit.team}</Label>
+                    <p className="text-xs text-muted-foreground">{KIN_LISTS.edit.teamDetail}</p>
+                  </div>
+                  <Switch
+                    id={ids.team}
+                    checked={draft.team}
+                    disabled={changes.busy}
+                    onCheckedChange={(team) => setDraft({ ...draft, team })}
                   />
                 </div>
               ) : null}

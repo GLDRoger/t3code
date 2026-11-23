@@ -1,4 +1,4 @@
-import { useKinOpensClients } from "./useKinOwnerLevel";
+import { useKinOpensClients, useKinOwnerLevel } from "./useKinOwnerLevel";
 import { KIN_DOCS } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { useAtomValue } from "@effect/atom-react";
@@ -42,9 +42,8 @@ import {
   KIN_TASK_RECORD,
   kinBriefBy,
   kinNextStep,
-  kinRecordAskedBy,
   kinRecordChip,
-  kinRecordWho,
+  kinTaskOrigin,
   kinTaskControls,
   kinTaskWith,
   kinTaskWithChoices,
@@ -167,7 +166,12 @@ import {
   type KinWorkTarget,
 } from "./useKinWork";
 import { useKinShell } from "./useKinShell";
-import { kinPickerNamed, kinSectionNoun } from "@t3tools/client-runtime/kin/kinShell";
+import {
+  kinPickerNamed,
+  kinSectionNoun,
+  kinSectionOf,
+  kinSectionOffLine,
+} from "@t3tools/client-runtime/kin/kinShell";
 
 const LINK_ICON: Record<KinWorkLinkView["kind"], typeof LinkIcon> = {
   pull_request: PullRequestGlyph.pullRequest,
@@ -236,6 +240,8 @@ export function KinWorkItemSheet(
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
   const canComment = useAtomValue(kinClient.workComment.permissionAtom(environmentId));
   const place = useKinWorkPlace(environmentId);
+  const shell = useKinShell(environmentId);
+  const ownerLevel = useKinOwnerLevel(environmentId);
   const now = new Date(useNowMinuteMs());
   const state = kinWorkItemState(result, changed.answers[itemKey] ?? null);
   useKinWorkItemWatch(
@@ -251,6 +257,12 @@ export function KinWorkItemSheet(
   const entry = state._tag === "ready" && state.item.list !== undefined;
   const sheet = props.frame === "sheet" || entry;
   const Frame = sheet ? SHEET_FRAME : PAGE_FRAME;
+  // An entry of a section that is off, opened by its link, says so, as its page on the phone does.
+  const section =
+    state._tag === "ready" && state.item.list !== undefined
+      ? kinSectionOf({ list: state.item.list })
+      : null;
+  const offLine = section === null ? null : kinSectionOffLine(shell, section, ownerLevel);
 
   const content =
     state._tag === "ready" && state.item.list !== undefined ? (
@@ -266,6 +278,7 @@ export function KinWorkItemSheet(
             links={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place).links}
           />
         }
+        offLine={offLine}
       />
     ) : state._tag === "ready" ? (
       <KinWorkItem
@@ -697,7 +710,7 @@ function KinWorkItem(
     give: give !== null,
   });
   const chip = kinRecordChip(shown, view, names, props.now);
-  const askedBy = kinRecordAskedBy(props.item);
+  const origin = kinTaskOrigin(shown, names, props.now);
   const briefBy = kinBriefBy(shown, names, props.now);
   const stepAct = (id: KinNextStepAct) => {
     if (change === null) return;
@@ -1004,19 +1017,11 @@ function KinWorkItem(
         )}
         <Section title={KIN_TASK_RECORD.details}>
           <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-sm">
-            {askedBy === null ? null : (
-              <DetailPerson label={KIN_TASK_RECORD.askedBy} who={kinRecordWho(askedBy, names)} />
-            )}
             <DetailPerson
               label={KIN_TASK_RECORD.heldBy}
               who={{ name: view.owner.name, avatar: view.owner.avatar }}
               extra={view.owner.retired ? KIN_RETIRED_LABEL : null}
             />
-            {view.given === null ? null : (
-              <dd className="col-start-2 -mt-1 min-w-0 text-xs text-muted-foreground">
-                {view.given}
-              </dd>
-            )}
             {view.owner.principal._tag === "agent" ? (
               <dd className="col-start-2 -mt-1">
                 <KinWorkLeadChat
@@ -1190,6 +1195,7 @@ function KinWorkItem(
             disabled={saving}
             onMark={change === null ? null : (on) => change({ type: "private", private: on })}
           />
+          {origin === null ? null : <p className="text-xs text-muted-foreground">{origin}</p>}
         </Section>
         {view.tasks === null ? null : (
           <Section title={KIN_WORK_MILESTONE.tasks}>

@@ -13,6 +13,7 @@ import {
   kinListEditInput,
   KIN_FIELD_FILES_MAX,
   kinCategoryLabel,
+  kinListCanOpenToTeam,
   kinListCanTogglePayments,
   kinListEntryView,
   kinListStateLabel,
@@ -1244,6 +1245,16 @@ function KinListSettingsForm(props: KinWorkTarget & { readonly def: KinListDefin
             value={draft.payments}
             disabled={changes.busy}
             onValueChange={(payments) => setDraft({ ...draft, payments })}
+          />
+        </ListSection>
+      )}
+      {!kinListCanOpenToTeam(def) ? null : (
+        <ListSection footer={KIN_LISTS.edit.teamDetail}>
+          <KinWorkToggleRow
+            label={KIN_LISTS.edit.team}
+            value={draft.team}
+            disabled={changes.busy}
+            onValueChange={(team) => setDraft({ ...draft, team })}
           />
         </ListSection>
       )}

@@ -588,6 +588,14 @@ it.effect(
           ["taken", zoyaId, theirs],
         ],
       );
+      // Given to an agent, the keeper's steps go to it too; Dev's stays with Dev.
+      const page = yield* Deals.page([owner], { orgId, key: deal.key });
+      yield* Deals.update([owner], { orgId, key: deal.key, rev: page.deal.rev, owner: agent });
+      assert.strictEqual(
+        `${(yield* records.get(orgId, theirs))!.ownerKind}:${(yield* records.get(orgId, theirs))!.ownerId}`,
+        "agent:sales",
+      );
+      assert.strictEqual((yield* records.get(orgId, devs))!.ownerId, devId);
     }).pipe(Effect.provide(layer)),
 );
 
