@@ -541,6 +541,8 @@ export function KinListEntry(
     readonly directory: KinWorkDirectory;
     readonly now: Date;
     readonly links: React.ReactNode;
+    /** Giving it to someone, where the host lets this reader; shown on a company's own list. */
+    readonly give?: React.ReactNode;
     /** That its section is off, for an entry opened by its link; null while it is on. */
     readonly offLine?: string | null;
     readonly onOpenClient: (key: KinRecordKey) => void;
@@ -574,6 +576,10 @@ export function KinListEntry(
   // rest are owner-level, which the host says by letting this reader set its client.
   const canChange = mayUpdate && view.can.party;
   const canDraft = mayUpdate && view.can.edit;
+  // A company's own list: its status and who has it, as far as the host lets this reader.
+  const ownList = def?.builtIn === false;
+  const moves = canChange || (ownList && mayUpdate && view.can.states.length > 0);
+  const give = ownList ? (props.give ?? null) : null;
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
   const [paying, setPaying] = useState(false);
   const [takingBack, setTakingBack] = useState<string | null>(null);
@@ -745,12 +751,12 @@ export function KinListEntry(
               onState={(state) => void changes.update(item.rev, { state })}
               onMakePdf={() => setMaking("pdf")}
             />
-          ) : !canChange ? null : (
+          ) : !moves && give === null ? null : (
             <div className="flex flex-wrap items-center gap-2">
               {payLater === null ? null : (
                 <p className="w-full text-sm text-muted-foreground">{payLater}</p>
               )}
-              {finish === null ? null : (
+              {finish === null || !canChange ? null : (
                 <Button
                   size="sm"
                   disabled={busy || (finish.pays !== null && !canPay)}
@@ -768,29 +774,37 @@ export function KinListEntry(
                   {finish.label}
                 </Button>
               )}
-              {finish?.pays == null || !canPay || paying ? null : (
+              {finish?.pays == null || !canPay || paying || !canChange ? null : (
                 <Button size="sm" variant="outline" disabled={busy} onClick={() => setPaying(true)}>
                   {KIN_LISTS.entry.recordPayment}
                 </Button>
               )}
-              <Menu>
-                <MenuTrigger render={<Button size="sm" variant="outline" disabled={busy} />}>
-                  {KIN_LISTS.entry.status}
-                  <ChevronDownIcon />
-                </MenuTrigger>
-                <MenuPopup align="start">
-                  {entry.states.map((choice) => (
-                    <MenuItem
-                      key={choice.state}
-                      disabled={choice.current}
-                      onClick={() => void changes.update(item.rev, { state: choice.state })}
-                    >
-                      <KinWorkStateIcon state={choice.state} />
-                      {choice.label}
-                    </MenuItem>
-                  ))}
-                </MenuPopup>
-              </Menu>
+              {!moves ? null : (
+                <Menu>
+                  <MenuTrigger render={<Button size="sm" variant="outline" disabled={busy} />}>
+                    {KIN_LISTS.entry.status}
+                    <ChevronDownIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="start">
+                    {entry.states
+                      .filter(
+                        (choice) =>
+                          canChange || choice.current || view.can.states.includes(choice.state),
+                      )
+                      .map((choice) => (
+                        <MenuItem
+                          key={choice.state}
+                          disabled={choice.current}
+                          onClick={() => void changes.update(item.rev, { state: choice.state })}
+                        >
+                          <KinWorkStateIcon state={choice.state} />
+                          {choice.label}
+                        </MenuItem>
+                      ))}
+                  </MenuPopup>
+                </Menu>
+              )}
+              {give}
             </div>
           )}
           {canChange && kinSuggestion(item) ? (

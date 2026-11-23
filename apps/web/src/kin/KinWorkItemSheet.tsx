@@ -264,13 +264,39 @@ export function KinWorkItemSheet(
       : null;
   const offLine = section === null ? null : kinSectionOffLine(shell, section, ownerLevel);
 
+  const entryView =
+    state._tag === "ready" && state.item.list !== undefined
+      ? kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place)
+      : null;
   const content =
-    state._tag === "ready" && state.item.list !== undefined ? (
+    state._tag === "ready" && state.item.list !== undefined && entryView !== null ? (
       <KinListEntry
         {...props}
         item={state.item}
-        view={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place)}
+        view={entryView}
         now={now}
+        give={
+          !canGive || !entryView.can.give || entryView.assignLabel === null ? null : (
+            <Menu>
+              <MenuTrigger render={<Button size="sm" variant="outline" disabled={saving} />}>
+                {entryView.assignLabel}
+                <ChevronDownIcon />
+              </MenuTrigger>
+              <MenuPopup align="start">
+                <GiveItems
+                  assignees={kinWorkAssignees({
+                    ...props.directory,
+                    orgId,
+                    current: entryView.owner.principal,
+                  })}
+                  onGive={(to) =>
+                    void changes.run(state.item, { type: "give", to: to.principal }, names)
+                  }
+                />
+              </MenuPopup>
+            </Menu>
+          )
+        }
         links={
           <KinWorkLinks
             {...props}
