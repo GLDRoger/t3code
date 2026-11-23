@@ -644,7 +644,7 @@ export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof Rec
           next:
             card === undefined
               ? "Nothing was recorded. Kin couldn't show the owner a card to confirm this money, so ask them to record it themselves in Money."
-              : "Nothing is recorded or numbered yet. Kin showed the owner this money on a card, every detail on it; ask in one short line, repeating none of them, to check it and tap Confirm. Their tap records it and makes its receipt; in a later turn, call kin_receipt with this proposal to read what was made.",
+              : "Nothing is recorded or numbered yet. Kin showed the owner this money on a card; ask in one short line to check it and tap Confirm. Their tap records it and makes its receipt; in a later turn, call kin_receipt with this proposal to read what was made.",
           sensitive: true as const,
         };
       }
