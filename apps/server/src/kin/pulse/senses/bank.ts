@@ -1,5 +1,7 @@
+import { formatKinWhen, KIN_TEXT_LOCALE } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { dayIn, monthOf, shiftMonth } from "../../work/money.ts";
 import { endOfDay, owedInvoices, startOfDay } from "../../work/recordRows.ts";
@@ -25,6 +27,44 @@ const MONTHS = [
 const shiftDay = (day: string, days: number) =>
   DateTime.formatIsoDate(DateTime.makeUnsafe(Date.parse(`${day}T00:00:00Z`) + days * DAY_MS));
 const lastDayOf = (month: string) => shiftDay(`${shiftMonth(month, 1)}-01`, -1);
+
+export const UNREADABLE_BANK_ALERTS_KEY = "bank_alerts_unreadable";
+
+export const unreadableBankAlerts = Effect.fn("KinPulse.unreadableBankAlerts")(function* (
+  ctx: Pick<SenseContext, "orgId" | "at" | "zone">,
+  finance?: SenseContext["finance"],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [alerts] = yield* sql<{ count: number; first: number; last: number }>`SELECT
+    COUNT(*) AS count, MIN(sent_at) AS first, MAX(sent_at) AS last
+    FROM kin_bank_alerts WHERE org_id = ${ctx.orgId} AND outcome = 'unparsed'
+      AND sent_at BETWEEN ${ctx.at - 14 * DAY_MS} AND ${ctx.at}
+    HAVING COUNT(*) > 0`;
+  if (alerts === undefined) return undefined;
+  const when = (ms: number) =>
+    formatKinWhen(ms, "day", { zone: ctx.zone, locale: KIN_TEXT_LOCALE });
+  const first = when(alerts.first);
+  const last = when(alerts.last);
+  const { count } = alerts;
+  const sent = first === last ? first : `between ${first} and ${last}`;
+  return {
+    sense: UNREADABLE_BANK_ALERTS_KEY,
+    family: "money",
+    key: UNREADABLE_BANK_ALERTS_KEY,
+    subject: {
+      kind: "bank",
+      key: "bank-alerts",
+      title: `${count} bank alert${count === 1 ? "" : "s"} could not be read`,
+    },
+    scope: {},
+    since: iso(alerts.first),
+    measure: { value: count, unit: "count", threshold: 1, from: { _tag: "default" } },
+    consequence: `Sent ${sent}. Money may have arrived that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.`,
+    actor: agentOrOwner(finance),
+    sensitive: true,
+    wake: "brief",
+  } satisfies SensedFact;
+});
 
 /**
  * statement_missing: the month after the day Kin sees the bank to ended more than the playbook's

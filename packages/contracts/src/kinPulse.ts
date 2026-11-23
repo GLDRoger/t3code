@@ -49,6 +49,7 @@ const KIN_PULSE_SENSES = [
   "meeting_soon",
   "holder_removed",
   "statement_missing",
+  "bank_alerts_unreadable",
   "deal_no_next_step",
   "deal_quiet",
   "deal_date_passed",
@@ -65,6 +66,7 @@ const KIN_PULSE_SENSES = [
 export const KIN_PULSE_LATER_SENSES = [
   "holder_removed",
   "statement_missing",
+  "bank_alerts_unreadable",
   "deal_no_next_step",
   "deal_quiet",
   "deal_date_passed",

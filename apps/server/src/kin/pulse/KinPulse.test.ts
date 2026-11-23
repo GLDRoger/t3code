@@ -9,6 +9,7 @@ import {
   KinWakeupId,
   type KinPulseFact,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -36,7 +37,9 @@ import { headStarts } from "./headStart.ts";
 import { DRAFT_CALL_NOTES, DRAFT_FROM_MAILBOX, draftWakeText } from "./draftWake.ts";
 import { buildPulseSection } from "./prompt.ts";
 import { screenFacts } from "./people.ts";
-import { factSig } from "./told.ts";
+import { factSig, markTold, untold } from "./told.ts";
+import { morningMoneyLines } from "./morningMoney.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { projectLastMoved } from "./senses/projects.ts";
 import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
 
@@ -1784,6 +1787,87 @@ describe("KinPulse", () => {
         named!.consequence,
         /^November's statement for Invented Bank Account ••1234 isn't in yet/,
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("unreadable bank alerts are one changing Money fact until recorded or too old", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const at = B + 20 * DAY;
+      const zone = "America/Los_Angeles";
+      yield* TestClock.setTime(at);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_trigger_settings SET time_zone = ${zone} WHERE org_id = ${orgId}`;
+      const insertAlert = (id: string, sentAt: number) =>
+        sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, sent_at, seen_at, outcome)
+          VALUES (${orgId}, ${id}, 'invented-connection', ${id}, ${sentAt}, ${at}, 'unparsed')`;
+      const facts = (viewer?: KinPulse.Viewer) =>
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) => read(now, viewer)),
+          Effect.map((pulse) =>
+            pulse.facts.filter((fact) => fact.sense === "bank_alerts_unreadable"),
+          ),
+        );
+      const advice =
+        "Money may have arrived that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.";
+      assert.isEmpty(yield* facts());
+      yield* insertAlert("old", at - 15 * DAY);
+      yield* insertAlert("future", at + DAY);
+      assert.isEmpty(yield* facts());
+      yield* insertAlert("first", at - 3 * DAY);
+      const [one, ...others] = yield* facts();
+      assert.isEmpty(others);
+      assert.equal(one?.subject.title, "1 bank alert could not be read");
+      assert.deepInclude(one!, {
+        consequence: `Sent Tue 17 Nov. ${advice}`,
+        family: "money",
+        scope: {},
+        sensitive: true,
+        wake: "brief",
+        actor: { _tag: "agent", agentId: finance },
+      });
+      assert.isEmpty(yield* facts({ _tag: "people", people: [mate] }));
+      assert.isEmpty(screenFacts([one!], undefined));
+
+      yield* insertAlert("second", at - DAY);
+      const [two, ...more] = yield* facts();
+      assert.isEmpty(more);
+      assert.equal(two?.key, one!.key);
+      assert.equal(two?.subject.title, "2 bank alerts could not be read");
+      assert.equal(two?.consequence, `Sent between Tue 17 Nov and Thu 19 Nov. ${advice}`);
+      assert.notEqual(factSig(one!, at, zone), factSig(two!, at, zone));
+
+      const told = { orgId, personId: owner, at, zone };
+      yield* markTold({ ...told, eventId: "first-checkin", facts: [one!] });
+      yield* markTold({ ...told, at: at + 1, eventId: "next-checkin", facts: [two!] });
+      assert.isEmpty(yield* untold({ ...told, anyState: true, facts: [two!] }));
+      yield* sql`UPDATE kin_bank_alerts SET outcome = 'recorded'
+        WHERE org_id = ${orgId} AND alert_id = 'second'`;
+      assert.deepEqual(yield* untold({ ...told, anyState: true, facts: yield* facts() }), [one]);
+      yield* sql`UPDATE kin_bank_alerts SET outcome = 'recorded'
+        WHERE org_id = ${orgId} AND alert_id IN ('first', 'future')`;
+      assert.isEmpty(yield* facts());
+      yield* insertAlert("ages-out", at - 14 * DAY);
+      assert.lengthOf(yield* facts(), 1);
+      yield* TestClock.adjust(1);
+      assert.isEmpty(yield* facts());
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("the morning Money section includes an offered unreadable bank alert once", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, sent_at, seen_at, outcome)
+        VALUES (${orgId}, 'invented-alert', 'invented-connection', 'invented-thread', ${B}, ${B}, 'unparsed')`;
+      const title = "1 bank alert could not be read";
+      const expected = `${title}. Sent Sun 1 Nov. Money may have arrived that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.`;
+      const input = { orgId, now: B, viewer: KIN_OWNER_LEVEL };
+      const offered = { ...input, offeredFacts: new Set(["bank_alerts_unreadable"]) };
+      assert.isEmpty(yield* morningMoneyLines(input));
+      assert.deepEqual(yield* morningMoneyLines(offered), [expected]);
+      assert.isEmpty(yield* morningMoneyLines({ ...offered, said: title }));
+      assert.isEmpty(yield* morningMoneyLines({ ...offered, viewer: viewerOfPeople([mate]) }));
     }).pipe(Effect.provide(layer)),
   );
 
