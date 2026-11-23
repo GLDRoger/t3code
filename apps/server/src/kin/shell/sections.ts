@@ -270,6 +270,10 @@ export const sectionOfRegister = ({ id, name, payments }: SectionRegister): Sect
   return sectionOfList(id);
 };
 
+/** Kin's own lists, and any paid over time, have their place already: none is a section. */
+export const listSectionRefused = (row: SectionRegister) =>
+  Object.hasOwn(SECTIONS.lists, row.id) || sectionOfRegister(row) !== null;
+
 export const registerSectionColumns = (sql: SqlClient.SqlClient) =>
   sql`r.register_id AS id, g.name, json_extract(g.definition_json, '$.payments') AS payments`;
 

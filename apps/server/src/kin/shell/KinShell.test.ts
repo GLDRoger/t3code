@@ -10,7 +10,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { KIN_OWNER_LEVEL, type KinViewer, viewerOfPeople } from "../work/teamView.ts";
 import * as KinShell from "./KinShell.ts";
+import { shellFor } from "./listSections.ts";
 
 const layer = KinShell.layer.pipe(
   Layer.provideMerge(RefreshHub.layer),
@@ -169,4 +171,85 @@ it.effect("returns one-line service errors for bad section names from the set wi
     }
     assert.equal((yield* shell.get(orgId)).rev, 0);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "keeps a company list as a section after the built-ins, shown only where it reaches",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const shell = yield* KinShell.KinShell;
+      yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Ambermill', '2026-11-22')`;
+      yield* sql`INSERT INTO kin_people (org_id, person_id, handle, display_name, access, created_at,
+        sees_money)
+      VALUES (${orgId}, ${rhea}, 'rhea', 'Rhea', 'owner', '2026-11-22', 0),
+      (${orgId}, ${meera}, 'meera', 'Meera', 'member', '2026-11-22', 1)`;
+      const list = (id: string, prefix: string, more: object, archivedAt: number | null = null) =>
+        sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at,
+          definition_json, archived_at)
+        VALUES (${orgId}, ${id}, ${id[0]!.toUpperCase() + id.slice(1)}, ${prefix}, 0, 1,
+          ${JSON.stringify({ sensitive: false, ...more })}, ${archivedAt})`;
+      yield* list("bookings", "BK", { team: true, teamSince: 0 });
+      yield* list("payroll", "PAY", { sensitive: true });
+      yield* list("stock", "STK", {});
+      yield* list("visits", "VIS", {}, 5);
+      yield* list("expenses", "EXP", { payments: true });
+      const refusal = (sections: ReadonlyArray<{ id: string; on: boolean }>) =>
+        shell.set(orgId, rhea, 0, sections).pipe(
+          Effect.flip,
+          Effect.map((error) => error.message),
+        );
+      assert.equal(
+        yield* refusal([{ id: "list:visits", on: true }]),
+        "There is no list visits to show as a section.",
+      );
+      assert.equal(
+        yield* refusal([{ id: "list:shelves", on: true }]),
+        "There is no list shelves to show as a section.",
+      );
+      assert.equal(
+        yield* refusal([{ id: "list:expenses", on: true }]),
+        "Expenses has its place in Kin already, so it can't be a section of its own.",
+      );
+      assert.equal(
+        yield* refusal([
+          { id: "list:stock", on: true },
+          { id: "list:stock", on: false },
+        ]),
+        "A section can only be set once.",
+      );
+      const saved = yield* shell.set(orgId, rhea, 0, [
+        { id: "list:stock", on: true, dock: true, name: "Inventory" } as never,
+        { id: "deals", on: false },
+        { id: "list:payroll", on: true },
+        { id: "list:bookings", on: false },
+      ]);
+      assert.deepStrictEqual(saved.sections.slice(5), [
+        { id: "list:stock", on: true, dock: true },
+        { id: "list:payroll", on: true },
+        { id: "list:bookings", on: false },
+      ]);
+      assert.isTrue(KinShell.listSectionOn(saved, "stock"));
+      assert.isFalse(KinShell.listSectionOn(saved, "bookings"));
+      assert.isFalse(KinShell.listSectionOn(saved, "visits"));
+      assert.isFalse(KinShell.builtInsOn(saved));
+      const lists = (viewer: KinViewer) =>
+        shellFor(orgId, viewer).pipe(
+          Effect.map(({ sections }) =>
+            sections.flatMap(({ id }) => KinShell.listOfSection(id) ?? []),
+          ),
+        );
+      assert.deepStrictEqual(yield* lists(KIN_OWNER_LEVEL), ["stock", "payroll", "bookings"]);
+      // A teammate reaches the team list; never a sensitive one, nor one they see nothing of.
+      assert.deepStrictEqual(yield* lists(viewerOfPeople([meera])), ["bookings"]);
+      // An archived list's section is gone for everyone, and comes back with the list.
+      yield* sql`UPDATE kin_registers SET archived_at = 9 WHERE register_id = 'stock'`;
+      assert.deepStrictEqual(yield* lists(KIN_OWNER_LEVEL), ["payroll", "bookings"]);
+      yield* sql`UPDATE kin_registers SET archived_at = NULL WHERE register_id = 'stock'`;
+      assert.deepStrictEqual(yield* lists(KIN_OWNER_LEVEL), ["stock", "payroll", "bookings"]);
+      // Taken out again: the setter given the sections without it.
+      const out = yield* shell.set(orgId, rhea, 1, [{ id: "list:payroll", on: true }]);
+      assert.deepStrictEqual(out.sections.slice(5), [{ id: "list:payroll", on: true }]);
+      assert.isTrue(KinShell.builtInsOn(out));
+    }).pipe(Effect.provide(layer)),
 );

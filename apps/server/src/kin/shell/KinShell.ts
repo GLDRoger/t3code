@@ -16,7 +16,7 @@ import { SqlError, UnknownError } from "effect/sql/SqlError";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { accessSql } from "../people/KinAccess.ts";
-import type { SectionId } from "./sections.ts";
+import { listSectionRefused, type SectionId } from "./sections.ts";
 
 const BUILT_INS = [
   "clients",
@@ -32,11 +32,32 @@ const defaultShell = (): Shell => ({
 const SectionsJson = Schema.fromJsonString(Schema.Array(KinShellSection));
 const decode = Schema.decodeUnknownEffect(SectionsJson);
 const encode = Schema.encodeEffect(SectionsJson);
-const ordered = (sections: readonly KinShellSection[]) =>
-  BUILT_INS.map((id) => sections.find((section) => section.id === id) ?? { id, on: true });
+
+/** A company list shown as a section of its own: `list:<its id>`. */
+export const listSectionId = (listId: string) => `list:${listId}`;
+/** The list a section id names, or undefined for a built-in or unknown id. */
+export const listOfSection = (id: string) =>
+  /^list:[a-z][a-z0-9_]{1,39}$/.test(id) ? id.slice(5) : undefined;
+
+/** Built-ins in their fixed order, then each list section once, in the order added. */
+const ordered = (sections: readonly KinShellSection[]) => [
+  ...BUILT_INS.map((id) => sections.find((section) => section.id === id) ?? { id, on: true }),
+  ...sections.filter(
+    (section, index) =>
+      listOfSection(section.id) !== undefined &&
+      sections.findIndex((one) => one.id === section.id) === index,
+  ),
+];
 
 const storedOn = (shell: Shell, id: SectionId) =>
   shell.sections.find((section) => section.id === id)?.on !== false;
+
+/** Every built-in section switched on: no tool or record is kept from an agent by the shell. */
+export const builtInsOn = (shell: Shell) => BUILT_INS.every((id) => storedOn(shell, id));
+
+/** A list is a section only while the shell names it and its switch is on. */
+export const listSectionOn = (shell: Shell, listId: string) =>
+  shell.sections.some((section) => section.id === listSectionId(listId) && section.on);
 
 export const sectionOn = (shell: Shell, id: SectionId) =>
   storedOn(shell, id) &&
@@ -193,6 +214,28 @@ export const set = Effect.fn("KinShell.set")(function* (
         const refusal = shellRefusal(previous ?? [], input);
         if (refusal !== undefined) return yield* invalid(refusal);
         const sections = ordered(input).map(labelsOf);
+        const lists = sections.flatMap((section) => listOfSection(section.id) ?? []);
+        const defined =
+          lists.length === 0
+            ? []
+            : yield* sql<{
+                id: string;
+                name: string;
+                payments: number | null;
+                archivedAt: number | null;
+              }>`SELECT register_id AS id, name, archived_at AS "archivedAt",
+                json_extract(definition_json, '$.payments') AS payments
+              FROM kin_registers WHERE org_id = ${orgId} AND built_in = 0
+                AND register_id IN ${sql.in(lists)} ORDER BY register_id`;
+        for (const id of lists) {
+          const list = defined.find((one) => one.id === id && one.archivedAt === null);
+          if (list === undefined)
+            return yield* invalid(`There is no list ${id} to show as a section.`);
+          if (listSectionRefused(list))
+            return yield* invalid(
+              `${list.name} has its place in Kin already, so it can't be a section of its own.`,
+            );
+        }
         const next = rev + 1;
         yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
       VALUES (${orgId}, ${yield* encode(sections)}, ${next}, ${personId}, ${yield* Clock.currentTimeMillis})
