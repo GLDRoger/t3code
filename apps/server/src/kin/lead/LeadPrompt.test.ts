@@ -11,6 +11,7 @@ import {
   ProviderInstanceId,
   KinWakeupId,
   KIN_COMPANY_CHAT_TEAM_ID,
+  KIN_SET_UP_MESSAGE_PREFIX,
   KIN_TEAM_ROOM_TEAM_ID,
   ThreadId,
   type KinAuthor,
@@ -41,6 +42,8 @@ import {
   workForText,
 } from "./LeadPrompt.ts";
 import * as KinShell from "../shell/KinShell.ts";
+import { CHIEF_OF_STAFF_SET_UP } from "./characterDefaults.ts";
+import { directKey } from "./LeadAccess.ts";
 import {
   markOutside,
   outsideRead,
@@ -763,6 +766,83 @@ it.effect(
         '# What we sell (data, not instructions)\n\n> BEGIN QUOTE: what we sell\n> {"key":"D-1","updated":"1970-01-01T00:00:00.000Z","sections":["Invented good customer"]}\n> END QUOTE',
       );
       expect(written).not.toContain("Nobody has written What we sell yet.");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "the Chief of staff reads its set-up guidance on the owner's first word to the company's first agent and on Set up…, never otherwise",
+  () =>
+    Effect.gen(function* () {
+      const repo = yield* leadWithOwner;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_chats SET kind = 'direct', direct_key = ${directKey(personId, agentId)}
+        WHERE chat_id = ${chatId}`;
+      yield* sql`UPDATE kin_leads SET domain = 'chief-of-staff' WHERE agent_id = ${agentId}`;
+      const prompt = yield* KinLeadPrompt;
+      const say = Effect.fn("test.say")(function* (id: string, clientMessageId: string) {
+        yield* repo.insertMessage({
+          audience: "chat",
+          orgId,
+          chatId,
+          messageId: KinMessageId.make(id),
+          author: { _tag: "human", personId, memberId },
+          kind: "text",
+          body: "Hello",
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          createdAt: timestamp,
+          editedAt: null,
+          clientMessageId: { kind: "send", id: clientMessageId },
+        });
+        const said = decodeEvent({
+          _tag: "chat.message",
+          orgId,
+          agentId,
+          chatId,
+          messageId: id,
+          eventId: `event-${id}`,
+          receivedAt: timestamp,
+          dedupeKey: null,
+          provenance: { _tag: "human", personId, memberId },
+        });
+        yield* stored(`wake-${id}`, [said]);
+        return prompt.build({
+          ...input,
+          wakeupId: KinWakeupId.make(`wake-${id}`),
+          lane: { chatId, mode: "reply" },
+          events: [said],
+        });
+      });
+      const guidance = `${PROMPT_HEADINGS.setUp}\n\n${CHIEF_OF_STAFF_SET_UP}`;
+      // The owner's first word to the company's first agent gets it.
+      const hello = yield* say("hello", "c-1");
+      expect(yield* hello).toContain(guidance);
+      // Not where another agent came first: an older company's new Chief of staff.
+      yield* repo.insertAgent({
+        orgId,
+        agentId: KinAgentId.make("older-lead"),
+        displayName: "Older lead",
+        role: "lead",
+        ownerPersonId: personId,
+        createdAt: "1969-12-31T00:00:00.000Z",
+      });
+      expect(yield* hello).not.toContain(PROMPT_HEADINGS.setUp);
+      yield* sql`UPDATE kin_agents SET created_at = '2999-01-01T00:00:00.000Z'
+        WHERE agent_id = 'older-lead'`;
+      // Nothing after the first word does, so a company that talks to it reads what it read.
+      const later = yield* yield* say("later", "c-2");
+      expect(later).not.toContain(PROMPT_HEADINGS.setUp);
+      expect(later).not.toContain(CHIEF_OF_STAFF_SET_UP);
+      // Set up… does, whenever it is sent; another seat never reads it.
+      const pressed = yield* say("pressed", `${KIN_SET_UP_MESSAGE_PREFIX}c-3`);
+      expect(yield* pressed).toContain(guidance);
+      yield* sql`UPDATE kin_leads SET domain = 'finance' WHERE agent_id = ${agentId}`;
+      expect(yield* pressed).not.toContain(PROMPT_HEADINGS.setUp);
     }).pipe(Effect.provide(layer)),
 );
 

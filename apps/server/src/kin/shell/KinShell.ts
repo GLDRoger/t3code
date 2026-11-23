@@ -25,7 +25,7 @@ const BUILT_INS = [
   "invoices",
   "docs",
 ] as const satisfies readonly SectionId[];
-const defaultShell = (): Shell => ({
+export const defaultShell = (): Shell => ({
   rev: 0,
   sections: BUILT_INS.map((id) => ({ id, on: true })),
 });

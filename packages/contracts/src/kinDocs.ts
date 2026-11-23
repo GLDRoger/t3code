@@ -353,8 +353,14 @@ export const KinDocDeleteInput = Schema.Struct({
 });
 export type KinDocDeleteInput = typeof KinDocDeleteInput.Type;
 
+/** The longest answer to "What does your company sell, and to whom?". */
+export const KIN_SELLS_MAX = 300;
 /** The owner level starts What we sell: Kin writes its outline once, or brings an archived one back. */
-export const KinDocStartWhatWeSellInput = Schema.Struct({ orgId: KinOrgId });
+export const KinDocStartWhatWeSellInput = Schema.Struct({
+  orgId: KinOrgId,
+  /** A new company's answer to what it sells and to whom, written first; older hosts ignore it. */
+  sells: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(KIN_SELLS_MAX))),
+});
 export type KinDocStartWhatWeSellInput = typeof KinDocStartWhatWeSellInput.Type;
 
 /** One input a recipe asks for, as its RECIPE.md declares it. */

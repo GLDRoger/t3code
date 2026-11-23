@@ -18,7 +18,12 @@ import {
   type KinSectionChange,
   type KinSwitchableSection,
 } from "@t3tools/client-runtime/kin/kinShell";
-import type { KinShell } from "@t3tools/contracts";
+import { kinFailureText, kinRetryText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_SET_UP, kinSetUpChief } from "@t3tools/client-runtime/kin/kinSetUp";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { KIN_SET_UP_MESSAGE_PREFIX, type KinShell } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/reactivity";
 import { Fragment, useState } from "react";
 import { View } from "react-native";
 
@@ -28,6 +33,10 @@ import { ListSection } from "../../../components/ui/ListSection";
 import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { ListToggleRow } from "../../../components/ui/ListToggleRow";
 import { Notice } from "../../../components/ui/Notice";
+import { appAtomRegistry } from "../../../state/atom-registry";
+import { kinClient } from "../state/kinClient";
+import { deliverKinOutbox, kinOutbox } from "../state/kinOutboxDelivery";
+import { useKinOpenChat } from "../state/useKinOpenChat";
 import { kinListsOf, useKinLists } from "../state/useKinMoney";
 import { useKinSectionCanSet, useKinSectionSet, useKinShell } from "../state/useKinShell";
 import type { KinWorkTarget } from "../state/useKinWork";
@@ -214,6 +223,7 @@ export function KinSectionsSettings(props: KinWorkTarget) {
       <Text textRole="footnote" className="px-2 text-foreground-muted">
         {KIN_SECTIONS_PAGE.intro}
       </Text>
+      <KinSetUpRow {...props} />
       {KIN_SWITCHABLE_SECTIONS.map((id) => (
         <Fragment key={id}>
           <KinSectionRow id={id} held={held} shell={shell} titled="name" />
@@ -231,6 +241,66 @@ export function KinSectionsSettings(props: KinWorkTarget) {
       <Text textRole="footnote" className="px-2 text-foreground-muted">
         {KIN_SECTIONS_PAGE.olderPhones}
       </Text>
+    </>
+  );
+}
+
+/**
+ * "Set up for my kind of company…": sends the owner's own ask to their Chief of staff and opens
+ * that chat. Nothing changes here; the Chief of staff proposes each change on its own card.
+ */
+function KinSetUpRow(props: KinWorkTarget) {
+  const { environmentId, orgId } = props;
+  const leads = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
+  const openChat = useKinOpenChat();
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const chief = AsyncResult.isSuccess(leads) ? kinSetUpChief(leads.value.leads) : undefined;
+  const ask = async () => {
+    if (chief === undefined || chief === null) return;
+    setBusy(true);
+    setProblem(null);
+    const chat = await kinClient.chatWithAgent.run(appAtomRegistry, {
+      environmentId,
+      input: { orgId, agentId: chief.agentId },
+    });
+    const queued =
+      chat._tag === "Success"
+        ? await kinOutbox.enqueue({
+            environmentId,
+            chatId: chat.value.chatId,
+            body: KIN_SET_UP.ask,
+            idPrefix: KIN_SET_UP_MESSAGE_PREFIX,
+          })
+        : null;
+    setBusy(false);
+    if (chat._tag !== "Success") {
+      setProblem(kinFailureText(squashAtomCommandFailure(chat), KIN_SET_UP.failed));
+      return;
+    }
+    if (queued?._tag !== "queued") {
+      setProblem(kinRetryText(KIN_SET_UP.failed));
+      return;
+    }
+    void deliverKinOutbox();
+    openChat(environmentId, orgId, chat.value.chatId);
+  };
+  return (
+    <>
+      {problem === null ? null : (
+        <Notice message={problem} tone="danger" onDismiss={() => setProblem(null)} />
+      )}
+      <ListSection
+        title={KIN_SET_UP.title}
+        footer={chief === null ? KIN_SET_UP.noChief : KIN_SET_UP.detail}
+      >
+        <ListActionRow
+          label={KIN_SET_UP.action}
+          loading={busy}
+          disabled={chief === undefined || chief === null}
+          onPress={() => void ask()}
+        />
+      </ListSection>
     </>
   );
 }
