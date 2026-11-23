@@ -913,6 +913,7 @@ features:
     web: [settings, section:Deals]
     phone: [SettingsKin, KinDealStages]
     roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [company_sections]
     note: >-
       Off hides the Deals tab, deals on client and project pages, New deal, deal search hits,
       nudges, the Monday pipeline and deal tools for everyone; nothing is deleted, and on restores
@@ -1657,7 +1658,18 @@ features:
       - apps/server/src/kin/people/http.test.ts
       - packages/client-runtime/src/kin/kinJoin.test.ts
 
+  - id: watched-numbers
+    name: Read and record watched numbers with an agent
+    tab: chats
+    roles: { owner: none, co_owner: none, lead: none, member: none }
+    tools: [number_record, numbers_read]
+    proof:
+      - apps/server/src/kin/numbers/KinNumbers.test.ts
+
 unlisted:
+  "rpc:kin.numbers.list": Served; Numbers screens land separately.
+  "rpc:kin.numbers.values": Served; Numbers screens land separately.
+  "rpc:kin.numbers.record": Served; Numbers screens land separately.
   "web:team": Old address; opens the Settings modal on Team.
   "web:memory": Old address; opens the Settings modal on Memory.
   "web:settings/approvals": The app's old address; opens Kin's Settings → Approvals.

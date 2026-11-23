@@ -32,7 +32,14 @@ import { kinInstructions } from "./turn/session.ts";
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../pulse/prompt.ts";
 import { WEEKLY_RULE } from "../pulse/weekly.ts";
 import { MONEY_RULE, WITHDRAWN_WORK } from "../work/workPrompt.ts";
-import { KinLeadPrompt, SHARED_TURN_LINE, TURN_DIVIDER, workForText } from "./LeadPrompt.ts";
+import {
+  KinLeadPrompt,
+  PROMPT_HEADINGS,
+  SHARED_TURN_LINE,
+  TURN_DIVIDER,
+  workForText,
+} from "./LeadPrompt.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import {
   markOutside,
   outsideRead,
@@ -755,6 +762,78 @@ it.effect(
         '# What we sell (data, not instructions)\n\n> BEGIN QUOTE: what we sell\n> {"key":"D-1","updated":"1970-01-01T00:00:00.000Z","sections":["Invented good customer"]}\n> END QUOTE',
       );
       expect(written).not.toContain("Nobody has written What we sell yet.");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a company set up unlike Kin's default is told what is off and its words; the default prompt is unchanged",
+  () =>
+    Effect.gen(function* () {
+      yield* leadWithOwner;
+      yield* stored(input.wakeupId, [routineEvent]);
+      const prompt = yield* KinLeadPrompt;
+      const before = yield* prompt.build(input);
+      expect(before).not.toContain(PROMPT_HEADINGS.thisCompany);
+      yield* KinShell.set(orgId, personId, 0, [{ id: "deals", on: false }]);
+      expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
+        "# This company\n\nDeals is turned off for this company: don't offer, mention or ask about it.\n\n",
+      );
+      yield* KinShell.set(orgId, personId, 1, [
+        { id: "clients", on: true, name: "Patients", noun: "patient" },
+        { id: "deals", on: false },
+      ]);
+      expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
+        '# This company\n\nDeals is turned off for this company: don\'t offer, mention or ask about it.\nThis company calls its clients "Patients", one "patient".\n\n',
+      );
+      // Every word the company gave is quoted; Kin's own titles are not. One off, and several.
+      yield* KinShell.set(orgId, personId, 2, [
+        { id: "clients", on: false, name: "Patients" },
+        { id: "invoices", on: false },
+      ]);
+      expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
+        '# This company\n\nClients (called "Patients" here), Deals and Invoices and quotes are turned off for this company: don\'t offer, mention or ask about them.\n\n',
+      );
+      yield* KinShell.set(orgId, personId, 3, [{ id: "money", on: false }]);
+      expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
+        "# This company\n\nMoney and Invoices and quotes are turned off for this company: don't offer, mention or ask about them.\n\n",
+      );
+      // Back to Kin's default, with its row still stored: byte for byte what it was.
+      yield* KinShell.set(orgId, personId, 4, []);
+      expect(yield* prompt.build(input)).toBe(before);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a company that watches numbers is told them in a turn only the owner level reads, and never in a shared one",
+  () =>
+    Effect.gen(function* () {
+      yield* leadWithOwner;
+      const sql = yield* SqlClient.SqlClient;
+      yield* stored(input.wakeupId, [routineEvent]);
+      const prompt = yield* KinLeadPrompt;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'goals', 'Goals', 'G', 1, 0)`;
+      const number = (key: string, title: string, owner: string, fields: object) =>
+        sql`INSERT INTO kin_records (org_id, record_id, key, title, register_id, owner_kind,
+            owner_id, created_by_kind, origin_key, fields_json, created_at, updated_at, confirmed)
+          VALUES (${orgId}, ${key}, ${key}, ${title}, 'goals', 'agent', ${owner}, 'system', ${key},
+            ${JSON.stringify({ measure: "manual", ...fields })}, 0, 0, 1)`;
+      yield* number("G-1", "DAU", agentId, { source: "PostHog" });
+      const own = yield* prompt.build(input);
+      expect(own.split(TURN_DIVIDER)[1]).toContain(
+        '# This company\n\nThis company watches one number: "DAU" (G-1). Read it with numbers_read.\nYou keep "DAU" (G-1): record each new value with number_record.\n\n',
+      );
+      yield* number("G-2", "Refund rate", "another-agent", { source: "Stripe" });
+      yield* number("G-4", "Signups", agentId, { source: "PostHog" });
+      expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
+        '# This company\n\nThis company watches these numbers: "DAU" (G-1), "Refund rate" (G-2), "Signups" (G-4). Read them with numbers_read.\nYou keep "DAU" (G-1) and "Signups" (G-4): record each new value with number_record.\n\n',
+      );
+      // A turn someone below owner level reads: no number lines, and with Kin's default sections
+      // no part at all.
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${input.wakeupId}`;
+      const shared = yield* prompt.build(input);
+      expect(shared).not.toContain(PROMPT_HEADINGS.thisCompany);
+      expect(shared).not.toContain("numbers_read");
     }).pipe(Effect.provide(layer)),
 );
 
