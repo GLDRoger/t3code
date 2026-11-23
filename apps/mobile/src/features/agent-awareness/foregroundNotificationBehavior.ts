@@ -1,5 +1,6 @@
 import type { Notification, NotificationBehavior } from "expo-notifications";
 
+import { kinIsSilentPush } from "../chats/notifications/kinPushPayload";
 import { extractAgentNotificationDeepLink } from "./notificationPayload";
 
 const SHOW: NotificationBehavior = {
@@ -20,6 +21,7 @@ export function foregroundNotificationBehavior(
   notification: Notification,
   deepLinkOnScreen: string | null,
 ): NotificationBehavior {
+  if (kinIsSilentPush(notification)) return SUPPRESS;
   const target = extractAgentNotificationDeepLink({ notification });
   if (target !== null && target === deepLinkOnScreen) {
     return SUPPRESS;

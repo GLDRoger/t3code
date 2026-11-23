@@ -8,7 +8,11 @@ import {
   kinActionDelivery,
   kinNotificationRoute,
   kinClearedChat,
+  kinDeliveredTopics,
+  kinIsSilentPush,
   kinSettledNotificationIds,
+  kinWithdrawal,
+  kinWithdrawnIds,
 } from "./kinPushPayload";
 
 const chatLink = "/kin/env-1/kin-default/chats/chat-1";
@@ -425,5 +429,93 @@ describe("kinSettledNotificationIds", () => {
     expect(
       kinSettledNotificationIds(presented, EnvironmentId.make("env-1"), (id) => id === "chat-1"),
     ).toEqual(["read", "read-card", "read-json"]);
+  });
+});
+
+describe("kinWithdrawal", () => {
+  const silent = {
+    kin: 1,
+    orgId: "kin-default",
+    deepLink: "/kin/env-1/kin-default/work",
+    withdraw: ["c:chat-1", "w:card-7"],
+  };
+  it.each([
+    ["a host's withdrawal", silent, ["c:chat-1", "w:card-7"]],
+    ["a read's badge, from a host before topics", { ...silent, withdraw: undefined }, null],
+    ["nothing to withdraw", { ...silent, withdraw: [] }, null],
+    ["a topic that isn't one", { ...silent, withdraw: ["chat 1"] }, null],
+    ["a link that is no Kin path", { ...silent, deepLink: "/threads/1" }, null],
+  ] as const)("%s", (_name, body, topics) => {
+    const ios = kinWithdrawal({ data: { dataString: JSON.stringify(body) }, aps: {} });
+    expect(ios?.topics ?? null).toEqual(topics);
+    if (topics !== null) expect(ios?.environmentId).toBe("env-1");
+    const android = kinWithdrawal({
+      messageId: "0:1794096000%fcm",
+      data: { body: JSON.stringify(body), dataString: JSON.stringify(body) },
+      notification: null,
+    });
+    expect(android).toEqual(ios);
+  });
+});
+
+describe("kinWithdrawnIds", () => {
+  it("removes this host's notifications the host settled, and keeps the rest", () => {
+    const note = (identifier: string, data: unknown) => ({
+      request: { identifier, content: { data } },
+    });
+    const about = (topic: string | undefined, environmentId = "env-1") => ({
+      kin: 1,
+      orgId: "kin-default",
+      chatId: "chat-1",
+      deepLink: `/kin/${environmentId}/kin-default/chats/chat-1`,
+      ...(topic === undefined ? {} : { topic }),
+    });
+    const presented = [
+      note("chat", about("c:chat-1")),
+      note("card", JSON.stringify(about("w:card-7"))),
+      note("question", about("q:q-1")),
+      // Sent before this build matched by topic, from another host, and upstream's own.
+      note("older", about(undefined)),
+      note("other-host", about("c:chat-1", "env-2")),
+      note("t3", { deepLink: "/threads/1" }),
+    ];
+    const env = EnvironmentId.make("env-1");
+    // What the phone asks about: only this host's topics.
+    expect(kinDeliveredTopics(presented, env).map((one) => one.topic)).toEqual([
+      "c:chat-1",
+      "w:card-7",
+      "q:q-1",
+    ]);
+    // The host's answer: the chat was read and the card answered; the question still waits.
+    expect(kinWithdrawnIds(presented, env, ["c:chat-1", "w:card-7", "a:never-shown"])).toEqual([
+      "chat",
+      "card",
+    ]);
+    expect(kinWithdrawnIds(presented, env, [])).toEqual([]);
+  });
+});
+
+describe("kinIsSilentPush", () => {
+  const delivered = (content: object) => ({ request: { identifier: "n", content } });
+  const data = { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/work" };
+  it.each([
+    [
+      "a withdrawal, drawn by nothing",
+      { title: null, body: null, data: { ...data, withdraw: ["c:chat-1"] } },
+      true,
+    ],
+    [
+      "a read's badge as Android gets it",
+      { title: "", body: "", data: JSON.stringify(data) },
+      true,
+    ],
+    ["a message", { title: "Finance · 2 new", body: "Invoice 15 is late", data }, false],
+    [
+      "upstream's own silent push",
+      { title: null, body: null, data: { deepLink: "/threads/1" } },
+      false,
+    ],
+  ] as const)("%s", (_name, content, silent) => {
+    expect(kinIsSilentPush(delivered(content))).toBe(silent);
   });
 });

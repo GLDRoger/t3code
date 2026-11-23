@@ -4,6 +4,8 @@ import {
   KinPushData,
   kinDeferralItemIdFromWidgetId,
   type KinChatId,
+  type KinOrgId,
+  type KinPushTopic,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
 import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
@@ -239,6 +241,63 @@ export function kinSettledNotificationIds(
     const target = linkTarget(data);
     return target?.environmentId === environmentId && settled(data.chatId) ? [identifier] : [];
   });
+}
+
+/** This host's delivered notifications that name what they are about, by org. */
+export function kinDeliveredTopics(
+  presented: ReadonlyArray<unknown>,
+  environmentId: EnvironmentId,
+): ReadonlyArray<{
+  readonly identifier: string;
+  readonly orgId: KinOrgId;
+  readonly topic: KinPushTopic;
+}> {
+  return presented.flatMap((notification) => {
+    const request = field(notification, "request");
+    const identifier = field(request, "identifier");
+    const data = pushData(field(field(request, "content"), "data"))?.data;
+    if (typeof identifier !== "string" || data?.topic === undefined) return [];
+    return linkTarget(data)?.environmentId === environmentId
+      ? [{ identifier, orgId: data.orgId, topic: data.topic }]
+      : [];
+  });
+}
+
+/** Of this host's delivered notifications, the ids of those whose topic the host settled. */
+export function kinWithdrawnIds(
+  presented: ReadonlyArray<unknown>,
+  environmentId: EnvironmentId,
+  settled: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  const remove = new Set(settled);
+  return kinDeliveredTopics(presented, environmentId).flatMap((one) =>
+    remove.has(one.topic) ? [one.identifier] : [],
+  );
+}
+
+/**
+ * What a host's silent push withdraws, from a background push's task payload (`data.dataString`
+ * is the push's `body`): its host and the settled topics. Null for anything else.
+ */
+export function kinWithdrawal(
+  payload: unknown,
+): { readonly environmentId: EnvironmentId; readonly topics: ReadonlyArray<KinPushTopic> } | null {
+  const data = pushData(field(field(payload, "data"), "dataString"))?.data;
+  if (data?.withdraw === undefined || data.withdraw.length === 0) return null;
+  const target = linkTarget(data);
+  return target === null
+    ? null
+    : { environmentId: EnvironmentId.make(target.environmentId), topics: data.withdraw };
+}
+
+/** A Kin push with nothing to show: a withdrawal or a read's badge. It is never drawn. */
+export function kinIsSilentPush(notification: unknown): boolean {
+  const content = field(field(notification, "request"), "content");
+  const said = (key: string) => {
+    const value = field(content, key);
+    return typeof value === "string" && value.trim() !== "";
+  };
+  return pushData(field(content, "data")) !== null && !said("title") && !said("body");
 }
 
 /**

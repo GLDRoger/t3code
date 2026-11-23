@@ -23,6 +23,18 @@ export type KinUnreadSeen = ReadonlyMap<string, number>;
 export const kinUnreadSeen = (rows: ReadonlyArray<KinChatListRow>): KinUnreadSeen =>
   new Map(rows.map((row) => [row.chat.chatId, row.view.unread]));
 
+/**
+ * Of the chats this computer showed an alert for, those settled now: read on any device, or no
+ * longer in the person's list. Their alert is taken down, as the phone's is withdrawn.
+ */
+export const kinSettledAlertChats = (
+  shown: Iterable<string>,
+  rows: ReadonlyArray<KinChatListRow>,
+): ReadonlyArray<string> => {
+  const unread = kinUnreadSeen(rows);
+  return [...shown].filter((chatId) => (unread.get(chatId) ?? 0) === 0);
+};
+
 /** Chats with more unread than `seen` held, muted ones left out; none on the first look. */
 export function kinNewArrivals(
   seen: KinUnreadSeen | null,
