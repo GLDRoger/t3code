@@ -25,7 +25,10 @@ import { kinInvitedPeople } from "../kinTeam.ts";
 import {
   kinWorkNames,
   kinWorkScreenState,
+  kinWorkAnswerKept,
+  kinWorkAnswerOf,
   type KinWorkAnswers,
+  type KinWorkAnswersHeld,
   type KinWorkScreenState,
 } from "../kinWork.ts";
 import {
@@ -140,28 +143,29 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
   const kinWorkLiveAtom = ({ environmentId, orgId }: KinScreenTarget) =>
     kinClient.workLive({ environmentId, input: { orgId } });
 
-  // The host's answers to the owner's changes, per host and org, read by every screen of a task.
+  // The host's answers to a person's changes, per host and org, read by every screen of a task.
   const kinWorkAnswersAtom = Atom.family((_key: string) =>
-    Atom.make<Readonly<Record<string, KinRecordDetail>>>({}).pipe(Atom.keepAlive),
+    Atom.make<KinWorkAnswersHeld>({}).pipe(Atom.keepAlive),
   );
   const answersAtomOf = ({ environmentId, orgId }: KinScreenTarget) =>
     kinWorkAnswersAtom(JSON.stringify([environmentId, orgId]));
+  const viewerAtomOf = (environmentId: EnvironmentId) =>
+    kinAccessMeAtom(app.runtime, environmentId);
 
   function kinWorkAnswersOf(target: KinScreenTarget): KinWorkAnswers {
     const atom = answersAtomOf(target);
+    // Who is signed in when asked: another person on the same host never reads these.
+    const viewer = () => registry.get(viewerAtomOf(target.environmentId))?.personId ?? null;
     return {
-      get: (key) => registry.get(atom)[key],
-      put: (item) => {
-        const held = registry.get(atom);
-        if ((held[item.key]?.rev ?? -1) >= item.rev) return;
-        registry.set(atom, { ...held, [item.key]: item });
-      },
+      get: (key) => kinWorkAnswerOf(registry.get(atom), key, viewer()),
+      put: (item) => registry.set(atom, kinWorkAnswerKept(registry.get(atom), item, viewer())),
     };
   }
 
-  /** The host's latest answer to a change to this task from any screen; null with none. */
+  /** The host's latest answer to this person's change to this task from any screen; null with none. */
   function useKinWorkAnswer(target: KinScreenTarget, key: KinRecordKey) {
-    return useAtomValue(answersAtomOf(target))[key] ?? null;
+    const viewer = useAtomValue(viewerAtomOf(target.environmentId))?.personId ?? null;
+    return kinWorkAnswerOf(useAtomValue(answersAtomOf(target)), key, viewer) ?? null;
   }
 
   /** The owner's changes to tasks on one host, for a list or a task on screen. */

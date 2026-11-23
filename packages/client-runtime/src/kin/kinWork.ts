@@ -2156,6 +2156,29 @@ export interface KinWorkAnswers {
   readonly put: (item: KinRecordDetail) => void;
 }
 
+/** The answers kept for one host and org, each with the person it answered. */
+export type KinWorkAnswersHeld = Readonly<
+  Record<string, { readonly viewer: string | null; readonly item: KinRecordDetail }>
+>;
+
+/** This person's answer for a task; the next person signed in on the same host gets none. */
+export const kinWorkAnswerOf = (
+  held: KinWorkAnswersHeld,
+  key: string,
+  viewer: string | null,
+): KinRecordDetail | undefined => (held[key]?.viewer === viewer ? held[key].item : undefined);
+
+/** The answers with this one kept, unless the same person already holds one as new. */
+export function kinWorkAnswerKept(
+  held: KinWorkAnswersHeld,
+  item: KinRecordDetail,
+  viewer: string | null,
+): KinWorkAnswersHeld {
+  const one = held[item.key];
+  if (one !== undefined && one.viewer === viewer && one.item.rev >= item.rev) return held;
+  return { ...held, [item.key]: { viewer, item } };
+}
+
 /** A task as held, or the host's newer answer to a change made to it from any screen. */
 export function kinWorkNewest<R extends KinRecord>(record: R, answers?: KinWorkAnswers): R {
   const answer = answers?.get(record.key);
