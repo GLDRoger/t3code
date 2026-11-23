@@ -20,7 +20,7 @@ import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { PRIVATE_WRITE, privateRefusal } from "../connections/privateTurn.ts";
 import { REVIEW_REFUSAL, reviewToolAllowed } from "../lead/outsideReview.ts";
-import { APPROVED_REFUSAL, approvedToolAllowed } from "../lead/approvedDraft.ts";
+import { APPROVED_REFUSAL, approvedRefusal, approvedToolAllowed } from "../lead/approvedDraft.ts";
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
@@ -494,7 +494,9 @@ export const layer = ReadTools.layer.pipe(
         REMOTE_REFUSAL,
       ),
       McpToolPolicy.toolCallGate(gate("KinToolGate.review", reviewOnly), REVIEW_REFUSAL),
-      McpToolPolicy.toolCallGate(gate("KinToolGate.approved", approvedOnly), APPROVED_REFUSAL),
+      McpToolPolicy.toolCallRefusal(
+        Effect.succeed(inRunningTurn("KinToolGate.approved", approvedRefusal, APPROVED_REFUSAL)),
+      ),
       McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", admitted), SHARED_REFUSAL),
       McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outside), (_args, tool) =>
         tool === "message_withdraw" || tool === "message_replace"

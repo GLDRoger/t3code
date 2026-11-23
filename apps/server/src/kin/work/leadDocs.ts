@@ -28,7 +28,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
-import { madeUnderApproval } from "../questions/approval.ts";
 import { redo, redoOf, redoRaised, redoRefused } from "../questions/askPerson.ts";
 import { effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import { directKey } from "../lead/LeadAccess.ts";
@@ -728,13 +727,6 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
   );
   if (input.links !== undefined && input.links.length > 0)
     yield* Docs.link(lead.orgId, context.writer, { key: written.row.key }, input.links, "relates");
-  // A proposal or client terms made under the owner's Approve is that approval's one result.
-  if (written.created)
-    yield* madeUnderApproval(lead, {
-      kind: "doc",
-      recordId: written.row.recordId,
-      key: written.row.key,
-    });
   const placed = yield* shown(
     lead,
     written,
