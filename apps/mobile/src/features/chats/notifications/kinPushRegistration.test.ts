@@ -164,6 +164,7 @@ describe("kinPushRegisterInput", () => {
       token: "abcdef0123",
       platform: "ios",
       apsEnvironment: "development",
+      withdraws: true,
     });
     expect(android).toEqual({
       ...ios,

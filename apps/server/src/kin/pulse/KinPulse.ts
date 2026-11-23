@@ -50,6 +50,8 @@ import { workSenses } from "./senses/work.ts";
 import { fromConnections, noOutside, poll } from "./outside.ts";
 import { alertsOnMail } from "../work/statements/alertMail.ts";
 import { DAY_MS } from "./thresholds.ts";
+import { KinPushSender } from "../push/KinPushSenderService.ts";
+import { handledOf, storedRows, type StoredRow } from "./factState.ts";
 import { tellHolder } from "./holderNotice.ts";
 import { morningPages, pageMinuteSince } from "./personMorning.ts";
 import {
@@ -150,69 +152,6 @@ const senseIn = Effect.fn("KinPulse.sense")(function* (ctx: SenseContext) {
   );
 });
 const sense = (orgId: KinOrgId, at: number) => context(orgId, at).pipe(Effect.flatMap(senseIn));
-
-interface StoredRow {
-  readonly key: string;
-  readonly firstSeenAt: number;
-  readonly wokeAt: number | null;
-  readonly byKind: string | null;
-  readonly byId: string | null;
-  readonly handledAt: number | null;
-  readonly until: number | null;
-  readonly note: string | null;
-}
-
-const storedRows = Effect.fn("KinPulse.stored")(function* (
-  orgId: KinOrgId,
-  keys: ReadonlyArray<string>,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = new Map<string, StoredRow>();
-  for (let start = 0; start < keys.length; start += 500)
-    for (const row of yield* sql<StoredRow>`SELECT fact_key AS key,
-        first_seen_at AS "firstSeenAt", woke_at AS "wokeAt", handled_by_kind AS "byKind",
-        handled_by_id AS "byId", handled_at AS "handledAt", handled_until AS until,
-        handled_note AS note
-      FROM kin_pulse_facts
-      WHERE org_id = ${orgId} AND fact_key IN ${sql.in(keys.slice(start, start + 500))}
-      ORDER BY fact_key`)
-      rows.set(row.key, row);
-  return rows;
-});
-
-/**
- * A stored hold that still applies at `at`; an expired "I've got it" brings the fact back, as does
- * "not a problem" past the fact's `quietForMs`. With a
- * reader, only theirs: an agent's or an owner-level person's hold the owner's view, a person's own
- * hold theirs. Handling a fact hides it from no one else, and never hides the task.
- */
-const handledOf = (
-  row: StoredRow | undefined,
-  at: number,
-  fact: Pick<SensedFact, "quietForMs">,
-  reader?: { readonly viewer: Viewer; readonly level: ReadonlySet<string> },
-): KinPulseHandled | null => {
-  if (row?.byKind == null || row.byId === null || row.handledAt === null) return null;
-  if (row.until !== null && row.until <= at) return null;
-  if (row.until === null && fact.quietForMs !== undefined && row.handledAt + fact.quietForMs <= at)
-    return null;
-  if (reader !== undefined) {
-    const theirs =
-      reader.viewer._tag === "owner"
-        ? row.byKind === "agent" || reader.level.has(row.byId)
-        : row.byKind === "person" && reader.viewer.people.some((person) => person === row.byId);
-    if (!theirs) return null;
-  }
-  return {
-    by:
-      row.byKind === "agent"
-        ? { _tag: "agent", agentId: KinAgentId.make(row.byId) }
-        : { _tag: "person", personId: KinPersonId.make(row.byId) },
-    at: iso(row.handledAt),
-    until: row.until === null ? null : iso(row.until),
-    note: row.note,
-  };
-};
 
 /** A hold reads as handled for clients that know nothing of holds, with `aside` for those that do. */
 const heldAs = (hold: Hold): KinPulseHandled => ({
@@ -722,6 +661,16 @@ const markQuiet = Effect.fn("KinPulse.markQuiet")(function* (
  * Stores what is true now, clears what stopped being true, and wakes each fact's agent once for
  * the facts that matter now, and each holder once for its late and due work. No model runs here.
  */
+/** After a commit: Kin's notices about these facts are withdrawn where nothing of them stands. */
+const settleNotices = Effect.fn("KinPulse.settleNotices")(function* (
+  orgId: KinOrgId,
+  keys: ReadonlyArray<string>,
+) {
+  const push = yield* Effect.serviceOption(KinPushSender);
+  if (keys.length === 0 || Option.isNone(push)) return;
+  yield* push.value.settle(orgId, { keys: keys.map((key) => `fact:${key}`) });
+});
+
 export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: number) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -732,7 +681,8 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
   const sensedText = yield* encodeSensed(
     facts.map((fact) => (fact.sense === "sense_overflow" ? { ...fact, since: iso(0) } : fact)),
   );
-  return yield* sql.withTransaction(
+  let gone: ReadonlyArray<string> = [];
+  const result = yield* sql.withTransaction(
     Effect.gen(function* () {
       const shell = yield* KinShell.get(orgId);
       // Set-wise over one JSON array: a tick can sense thousands of facts.
@@ -765,7 +715,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           AND fact_key IN (SELECT value FROM json_each(${yield* encodeKeys(reopened.map((row) => row.key))}))`;
       yield* sql`UPDATE kin_pulse_facts SET last_seen_at = ${at}
         WHERE org_id = ${orgId} AND fact_key IN (${sensedKeys})`;
-      const cleared = yield* sql`UPDATE kin_pulse_facts SET cleared_at = ${at}
+      const cleared = yield* sql<{ fact_key: string }>`UPDATE kin_pulse_facts SET cleared_at = ${at}
         WHERE org_id = ${orgId} AND cleared_at IS NULL AND last_seen_at < ${at}
         RETURNING fact_key`;
       const moved = inserted.length + reopened.length + cleared.length;
@@ -893,9 +843,12 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           lastFacts.set(orgId, { at, facts });
         }),
       );
+      gone = cleared.map((row) => row.fact_key);
       return { facts: facts.length, cleared: cleared.length, woken, told, pages, drafted };
     }),
   );
+  yield* settleNotices(orgId, gone);
+  return result;
 });
 
 /**
@@ -1079,6 +1032,7 @@ export const handle = Effect.fn("KinPulse.handle")(function* (input: {
       yield* (yield* KinRefreshObserver).touch(orgId, "pulse");
     }),
   );
+  if (input.action !== "undo") yield* settleNotices(orgId, [fact.key]);
   const stored = yield* storedRows(orgId, [fact.key]);
   return withStored(
     fact,
@@ -1180,6 +1134,8 @@ export const layer = Layer.effectDiscard(
     const queue = yield* KinEventQueue.KinEventQueue;
     const refreshes = yield* KinRefreshObserver;
     const chats = yield* Effect.serviceOption(KinChatService);
+    // Facts that clear withdraw Kin's notices about them (`settleNotices`).
+    const push = yield* Effect.serviceOption(KinPushSender);
     const last: Passes = new Map();
     const connections = yield* Effect.serviceOption(KinConnections);
     const outside = Option.isNone(connections)
@@ -1212,6 +1168,7 @@ export const layer = Layer.effectDiscard(
         Effect.provideService(KinEventQueue.KinEventQueue, queue),
         Effect.provideService(KinRefreshObserver, refreshes),
         Option.isSome(chats) ? Effect.provideService(KinChatService, chats.value) : (e) => e,
+        Option.isSome(push) ? Effect.provideService(KinPushSender, push.value) : (e) => e,
       ),
     );
   }),
