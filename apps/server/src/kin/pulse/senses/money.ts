@@ -150,7 +150,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
         since: iso(row.lastAt + toMs(followUp)),
         measure: measure(days, followUp),
         consequence: `Quote${amount === undefined ? "" : ` for ${amount}`} sent, with no answer recorded for ${daysText(days)}.`,
-        wake: "sweep",
+        wake: "now",
       }),
     );
   }
@@ -283,7 +283,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
         since: iso(row.dueAt! - toMs(renewal)),
         measure: measure(days, renewal),
         consequence: `Renewal due ${dayOf(ctx, row.dueAt!)}${row.dueAt! < at ? ", already passed" : `, in ${daysText(days)}`}${amount === undefined ? "" : ` (${amount})`}${stage === "heads_up" ? `; drafting starts ${dayOf(ctx, draftFrom)}, not before` : ""}.`,
-        wake: "sweep",
+        wake: stage === "draft" ? "now" : "sweep",
       }),
       stage,
     });

@@ -113,6 +113,7 @@ import * as KinNumbers from "../numbers/KinNumbers.ts";
 import { feedTurn } from "../numbers/feeds.ts";
 import { feedOf } from "../numbers/numberRows.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
+import { HEAD_START_GONE, isPrepareWake, prepareWakeText } from "../pulse/prepareWake.ts";
 import {
   answeredTurnText,
   askedForSection,
@@ -404,6 +405,7 @@ export class KinLeadPrompt extends Context.Service<
         let fromOwner = true;
         // A reminder always gets a reply; a brief, a scheduled run and other notices may stay silent.
         let replyDue = false;
+        const prepared = new Set<string>();
         // The one gate from memory into a turn anyone else may read: an item only through
         // `reaches`, and nothing at all when the labels can't be read. Unknown audience is shared.
         const ownerOnly = input.audience === "owner_only";
@@ -940,6 +942,37 @@ export class KinLeadPrompt extends Context.Service<
             events.push(
               [quote(QUOTE_LABELS.eventData, eventFacts(event), true), ...lines].join("\n\n"),
             );
+            continue;
+          }
+          // Facts Kin woke this agent to make a head start on, as true now, each once and in full.
+          if (ownerOnly && isPrepareWake(event)) {
+            fromOwner = false;
+            const live = yield* prepareWakeText(
+              orgId,
+              event.factKeys,
+              yield* Clock.currentTimeMillis,
+            ).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin head start unreadable", cause).pipe(Effect.as(undefined)),
+              ),
+            );
+            const fresh = (live?.facts ?? []).filter((fact) => !prepared.has(fact.key));
+            if (live === undefined) {
+              events.push(
+                `${quote(QUOTE_LABELS.eventData, eventFacts(event), true)}\n\n${HEAD_START_GONE}`,
+              );
+              continue;
+            }
+            if (fresh.length === 0) continue;
+            replyDue = true;
+            events.push(
+              [
+                quote(QUOTE_LABELS.eventData, { ...eventFacts(event), facts: fresh }, true),
+                ...(prepared.size === 0 ? [live.text] : []),
+              ].join("\n\n"),
+            );
+            for (const fact of fresh) prepared.add(fact.key);
             continue;
           }
           if (event._tag !== "chat.message" && event._tag !== "widget.action") {

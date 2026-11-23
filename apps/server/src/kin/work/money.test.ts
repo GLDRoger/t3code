@@ -48,6 +48,7 @@ import {
 } from "./companyProfile.ts";
 import * as Goals from "./goals.ts";
 import * as KinRecords from "./KinRecords.ts";
+import { KIN_OWN_REFUSAL } from "../people/KinAccess.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import * as LeadWork from "./leadWork.ts";
@@ -253,6 +254,32 @@ const turn = (n: number, body: string, files: ReadonlyArray<string> = []) =>
     yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
         received_at, queued_at, state, wakeup_id)
       VALUES (${`event-${n}`}, ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)},
+        0, 0, 'claimed', ${`wake-${n}`})`;
+    return `event-${n}`;
+  });
+
+/** A turn Kin woke by itself for a pulse fact, with no person's word in it; the turn before ends. */
+const pulseTurn = (n: number, factKey: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+        status, event_ids, audience)
+      VALUES (${`wake-${n}`}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
+        ${JSON.stringify([`event-${n}`])}, 'owner_only')`;
+    const event = {
+      _tag: "pulse",
+      orgId,
+      agentId: lead,
+      eventId: `event-${n}`,
+      receivedAt: at,
+      dedupeKey: null,
+      provenance: { _tag: "system" },
+      factKeys: [factKey],
+    };
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+        received_at, queued_at, state, wakeup_id)
+      VALUES (${`event-${n}`}, ${orgId}, ${lead}, 'pulse', 'P2', ${JSON.stringify(event)},
         0, 0, 'claimed', ${`wake-${n}`})`;
     return `event-${n}`;
   });
@@ -2574,6 +2601,114 @@ describe("invoices", () => {
         );
       }).pipe(Effect.provide(layer)),
   );
+  it.effect(
+    "a turn Kin woke by itself issues, voids and records no payment; the owner's turn does",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* defined(1, { template: "invoices" });
+        const sql = yield* SqlClient.SqlClient;
+        const asked = yield* turn(3, "Invoice Invented Acme for October and November");
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [{ list: "clients", title: "Invented Acme" }],
+        });
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: ["10", "11"].map((month) => ({
+            list: "invoices",
+            title: `Invented retainer ${month}`,
+            client: "Invented Acme",
+            amount: "1 lakh",
+            date: `2026-${month}-01`,
+            due: `2026-${month}-20`,
+          })),
+        });
+        yield* LeadDocuments.issue(scope, {
+          sourceEventId: asked,
+          entry: KinRecordKey.make("INV-1"),
+        });
+        const first = yield* LeadMoney.payment(scope, {
+          sourceEventId: asked,
+          key: "INV-1",
+          amount: "10k",
+          paidOn: "2026-11-05",
+        });
+        const books = sql`SELECT r.key, r.state, r.rev,
+          (SELECT COUNT(*) FROM kin_issued_numbers n WHERE n.org_id = r.org_id
+            AND n.record_id = r.record_id) AS numbers,
+          (SELECT COUNT(*) FROM kin_record_payments p WHERE p.org_id = r.org_id
+            AND p.record_id = r.record_id AND p.voided_at IS NULL) AS payments
+        FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' ORDER BY r.key`;
+        const before = yield* books;
+
+        // A renewal woke the agent with nobody's word: whatever it tries, the books stay as they were.
+        const woke = yield* pulseTurn(4, "renewal_due:INV-2:due=1");
+        const refusal = <A, R>(call: Effect.Effect<A, { readonly message: string }, R>) =>
+          Effect.map(Effect.flip(call), (error) => error.message);
+        const messages = [
+          yield* refusal(
+            LeadDocuments.issue(scope, { sourceEventId: woke, entry: KinRecordKey.make("INV-2") }),
+          ),
+          yield* refusal(
+            LeadDocuments.issue(scope, {
+              sourceEventId: woke,
+              entry: KinRecordKey.make("INV-1"),
+              void: true,
+            }),
+          ),
+          yield* refusal(
+            LeadMoney.payment(scope, {
+              sourceEventId: woke,
+              key: "INV-1",
+              amount: "90k",
+              paidOn: "2026-11-06",
+            }),
+          ),
+          yield* refusal(
+            LeadMoney.payment(scope, { sourceEventId: woke, key: "INV-1", void: first.paymentId! }),
+          ),
+          yield* refusal(
+            LeadWork.update(scope, {
+              sourceEventId: woke,
+              key: KinRecordKey.make("INV-1"),
+              state: "dropped",
+            }),
+          ),
+          yield* refusal(
+            LeadWork.update(scope, {
+              sourceEventId: woke,
+              key: KinRecordKey.make("INV-1"),
+              state: "done",
+            }),
+          ),
+        ];
+        assert.deepStrictEqual(messages, [
+          KIN_OWN_REFUSAL.number,
+          KIN_OWN_REFUSAL.number,
+          KIN_OWN_REFUSAL.payment,
+          KIN_OWN_REFUSAL.payment,
+          KIN_OWN_REFUSAL.number,
+          KIN_OWN_REFUSAL.payment,
+        ]);
+        assert.deepStrictEqual(yield* books, before);
+
+        // The owner's own word in the next turn does each as before.
+        const owner = yield* turn(5, "Issue November and record Acme's 90k");
+        const issued = yield* LeadDocuments.issue(scope, {
+          sourceEventId: owner,
+          entry: KinRecordKey.make("INV-2"),
+        });
+        assert.isTrue(issued.issued);
+        const rest = yield* LeadMoney.payment(scope, {
+          sourceEventId: owner,
+          key: "INV-1",
+          amount: "90k",
+          paidOn: "2026-11-06",
+        });
+        assert.strictEqual(rest.state, "done");
+      }).pipe(Effect.provide(layer)),
+  );
 });
 
 describe("the owner's taps", () => {
@@ -3802,7 +3937,8 @@ describe("who keeps a suggestion", () => {
       });
 
       // One approval makes one kept entry: its list, for its party, as a Draft whatever state it
-      // was given; a different party, or a second entry, is ordinary; a retry is the same one.
+      // was given; a different party or a second row is refused (`approval.ts`); a retry is the
+      // same one.
       const [harbour] = yield* asAgent([ownerId], [{ list: "clients", title: "Invented Harbour" }]);
       yield* asAgent([ownerId], [{ list: "clients", title: "Invented Tide" }]);
       const harbourId = (yield* records.get(orgId, harbour!))!.recordId;
@@ -3814,8 +3950,13 @@ describe("who keeps a suggestion", () => {
         partyId: harbourId,
       };
       const approval = yield* woken("approved");
+      const wrongParty = { list: "invoices", title: "Invented wrong", client: "Invented Tide" };
+      const refusedMake = yield* LeadWork.create(scope, {
+        sourceEventId: approval,
+        records: [{ ...wrongParty, amount: "1" }] as never,
+      }).pipe(Effect.flip);
+      assert.match(refusedMake.message, /the approved draft is for Invented Harbour/);
       const rows = [
-        { list: "invoices", title: "Invented wrong party", client: "Invented Tide", amount: "1" },
         {
           list: "invoices",
           title: "Invented approved one",
@@ -3823,17 +3964,12 @@ describe("who keeps a suggestion", () => {
           amount: "9,750",
           state: "waiting",
         },
-        { list: "invoices", title: "Invented second", client: "Invented Harbour", amount: "2" },
       ];
       const underApproval = (yield* LeadWork.create(scope, {
         sourceEventId: approval,
         records: rows as never,
       })).records.map((one) => one.key);
-      assert.deepStrictEqual(yield* Effect.forEach(underApproval, startedAs), [
-        [0, "open", null],
-        [1, "open", null],
-        [0, "open", null],
-      ]);
+      assert.deepStrictEqual(yield* Effect.forEach(underApproval, startedAs), [[1, "open", null]]);
       const retried = (yield* LeadWork.create(scope, {
         sourceEventId: approval,
         records: rows as never,

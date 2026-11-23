@@ -1,4 +1,5 @@
 import {
+  KinChatError,
   KinPersonAccess,
   kinOwnerLevel,
   type KinOrgId,
@@ -76,6 +77,49 @@ export const ownerLevelAsked = Effect.fn("KinAccess.ownerLevelAsked")(function* 
     WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
     ORDER BY e.event_id`;
   return rows.length > 0 && rows.every((row) => row.direct === 1);
+});
+
+/**
+ * Whether no person started this turn: every event that woke it is a pulse Kin queued by itself
+ * (a fact, a head start, a follow-up draft), never a check-in the owner scheduled. Such a turn
+ * prepares; the sinks below refuse what would commit money or post outside (`refuseKinOwn`).
+ */
+export const kinOwnTurn = Effect.fn("KinAccess.kinOwnTurn")(
+  function* (orgId: KinOrgId, agentId: string, wakeupId: string) {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ own: number }>`SELECT (e.tag = 'pulse'
+      AND json_extract(e.json, '$.checkIn') IS NULL) AS own
+    FROM kin_events e
+    WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
+    ORDER BY e.event_id`;
+    return rows.length > 0 && rows.every((row) => row.own === 1);
+  },
+  Effect.mapError(toPersistenceSqlError("KinAccess.kinOwnTurn")),
+);
+
+/** What a sink answers an agent in a turn no person started (`kinOwnTurn`). */
+export const KIN_OWN_REFUSAL = {
+  number:
+    "No person started this turn, so Kin issues and voids nothing in it: leave the entry ready and tell the owner it waits on them.",
+  payment:
+    "No person started this turn, so Kin records and takes back no payment in it: tell the owner what you found and leave the payment to them.",
+  review:
+    "No person started this turn, so Kin posts no review in it: put the review to the owner in your reply and leave posting it to them.",
+} as const;
+
+/** Refuses an agent's write in a turn no person started; anyone else's passes. */
+export const refuseKinOwn = Effect.fn("KinAccess.refuseKinOwn")(function* (
+  orgId: KinOrgId,
+  writer: {
+    readonly actor: { readonly _tag: string; readonly agentId?: string };
+    readonly wakeupId?: string | undefined;
+  },
+  message: string,
+) {
+  if (writer.actor._tag !== "agent" || writer.actor.agentId === undefined) return;
+  if (writer.wakeupId === undefined) return;
+  if (yield* kinOwnTurn(orgId, writer.actor.agentId, writer.wakeupId))
+    return yield* new KinChatError({ reason: "not_allowed", message });
 });
 
 /**

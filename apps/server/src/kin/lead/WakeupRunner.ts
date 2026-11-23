@@ -58,6 +58,8 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { feedTurn } from "../numbers/feeds.ts";
 import { reviewStillDue } from "../pulse/reviewWake.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
+import { isPrepareWake, prepareWakeText, wakeHeldUntil } from "../pulse/prepareWake.ts";
+import { draftWakeGone, isDraftWake } from "../pulse/draftWake.ts";
 import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
 import { dismissalGone } from "../questions/dismissed.ts";
@@ -503,6 +505,14 @@ const make = Effect.gen(function* () {
       // A review whose messages were all read or taken back since it was queued.
       if (event._tag === "pulse" && event.review === true)
         return !(yield* reviewStillDue(orgId, event));
+      // A person's own task: no longer theirs and due, or this agent may no longer draft it.
+      if (event._tag === "pulse" && isDraftWake(event)) return yield* draftWakeGone(orgId, event);
+      // A head start Kin woke it for, on a fact handled or no longer true since it was queued.
+      if (isPrepareWake(event))
+        return (
+          (yield* prepareWakeText(orgId, event.factKeys, yield* Clock.currentTimeMillis)) ===
+          undefined
+        );
       if (event._tag !== "deferral.due") return false;
       const subject = event.subject;
       if (subject.type === "scheduled_task") {
@@ -1257,6 +1267,25 @@ const make = Effect.gen(function* () {
                 wakeupId,
                 level: current.level,
               });
+            }
+            // Kin's own wake claimed inside the quiet hours it waits out goes back until they end.
+            const heldUntil = yield* wakeHeldUntil(
+              orgId,
+              agentId,
+              events,
+              yield* Clock.currentTimeMillis,
+            ).pipe(
+              provideSql,
+              Effect.orElseSucceed(() => undefined),
+            );
+            if (heldUntil !== undefined) {
+              yield* queue.release({
+                orgId,
+                wakeupId,
+                countAttempt: false,
+                notBefore: heldUntil,
+              });
+              return;
             }
             const admitted = yield* admitEvents(orgId, agentId, events);
             const atLimit = admitted.atLimit;

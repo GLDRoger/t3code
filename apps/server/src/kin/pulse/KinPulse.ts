@@ -35,7 +35,8 @@ import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/org
 import * as KinShell from "../shell/KinShell.ts";
 import { sectionOfKey, sectionOfSense, type SectionId } from "../shell/sections.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
-import { ownerZone, promiseOnDeal } from "../work/recordRows.ts";
+import { dayIn } from "../work/money.ts";
+import { ownerZone, promiseOnDeal, startOfDay } from "../work/recordRows.ts";
 import { matchName } from "../work/nameMatch.ts";
 import { crmVisible, viewSees } from "../work/teamView.ts";
 import { clientSenses } from "./senses/clients.ts";
@@ -66,6 +67,12 @@ import {
 import { visibleOverflow } from "./senses/capped.ts";
 import { draftWakes } from "./draftWake.ts";
 import { reviewWakes } from "./reviewWake.ts";
+import {
+  HEAD_STARTS_PER_DAY,
+  PREPARE_EVENT_SQL,
+  PREPARE_SENSES,
+  URGENT_SENSES,
+} from "./prepareSenses.ts";
 import {
   asideOf,
   asideView,
@@ -201,6 +208,49 @@ const withStored = (
     ...(hold === undefined ? {} : { aside: asideView(hold, reader.viewer, reader.personId) }),
   };
 };
+
+/**
+ * Of `keys`, the facts that would wake their agent now, sensed afresh rather than read from the
+ * last tick: on, due to wake (a renewal at its draft stage), not handled and not set aside.
+ */
+export const standingNow = Effect.fn("KinPulse.standingNow")(function* (
+  orgId: KinOrgId,
+  keys: ReadonlyArray<string>,
+  at: number,
+) {
+  const wanted = new Set(keys);
+  if (wanted.size === 0) return [];
+  const sensed = (yield* sense(orgId, at)).filter(
+    (fact) => wanted.has(fact.key) && fact.wake === "now",
+  );
+  if (sensed.length === 0) return [];
+  const shell = yield* KinShell.get(orgId);
+  const onDeals = yield* promisesOnDeals(orgId, shell);
+  const stored = yield* storedRows(
+    orgId,
+    sensed.map((fact) => fact.key),
+  );
+  const holds = yield* liveHolds(orgId, at);
+  return sensed.flatMap((one): Array<KinPulseFact> => {
+    if (
+      quiet(one, shell, onDeals) ||
+      handledOf(stored.get(one.key), at, one) !== null ||
+      asideOf(one, holds, { _tag: "owner" }) !== undefined
+    )
+      return [];
+    const {
+      yours: _yours,
+      quietForMs: _quietForMs,
+      section: _section,
+      overflow: _overflow,
+      extraSection: _extraSection,
+      ...fact
+    } = one;
+    return [{ ...fact, handled: null }];
+  });
+});
+
+const PREPARES: ReadonlySet<string> = new Set(PREPARE_SENSES);
 
 /** By key, or by name as typed: any case, a start of it, or a close spelling. */
 const matches = (text: string | undefined, key: string | undefined, wanted: string) =>
@@ -473,8 +523,6 @@ const lastFacts = new Map<
  * moved Needs attention since, so their next read senses afresh.
  */
 export const lastTick = (orgId: KinOrgId) => lastFacts.get(orgId);
-/** Facts that can't wait for the morning: they wake their agent whatever the hour. */
-const URGENT_SENSES = new Set<KinPulseFact["sense"]>(["client_waiting_on_us"]);
 const ENTRY_SENSES = new Set<string>(["entry_late", "entry_check"]);
 
 /**
@@ -759,6 +807,18 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           ? [`${fact.key}:${wokeAt}`]
           : [];
       });
+      // Head starts are paced per agent and local day, in the pulse's order (longest standing first).
+      const dayBegan = startOfDay(dayIn(at, ctx.zone), ctx.zone);
+      const startedToday = new Map<string, number>();
+      const headStartsToday = Effect.fnUntraced(function* (agentId: KinAgentId) {
+        const known = startedToday.get(agentId);
+        if (known !== undefined) return known;
+        const [row] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_events e
+          WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.tag = 'pulse'
+            AND e.received_at >= ${dayBegan} AND ${sql.unsafe(PREPARE_EVENT_SQL)}`;
+        startedToday.set(agentId, row?.n ?? 0);
+        return row?.n ?? 0;
+      });
       const failedWakes = new Set<string>();
       for (let start = 0; start < latestWakeKeys.length; start += 500)
         for (const row of yield* sql<{ key: string }>`SELECT dedupe_key AS key FROM kin_events
@@ -787,6 +847,18 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           continue;
         // Set aside: it wakes no one; when the hold ends, the check-in tells it once.
         if (asideOf(fact, holds, { _tag: "owner" }) !== undefined) continue;
+        // A wake for it still queued (held for the morning, say) carries it: one turn per fact.
+        const [waiting] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'pulse' AND state = 'queued'
+            AND dedupe_key >= ${`${fact.key}:`} AND dedupe_key < ${`${fact.key};`} LIMIT 1`;
+        if (waiting !== undefined) {
+          yield* sql`UPDATE kin_pulse_facts SET woke_at = ${at}
+            WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
+          continue;
+        }
+        const headStart = PREPARES.has(fact.sense);
+        if (headStart && (yield* headStartsToday(fact.actor.agentId)) >= HEAD_STARTS_PER_DAY)
+          continue;
         const eventId = KinEventId.make(`pulse-${shortHash(`${orgId}\0${fact.key}\0${at}`)}`);
         const enqueued = yield* queue
           .enqueue(
@@ -816,6 +888,8 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
             }),
           );
         if (!enqueued) continue;
+        if (headStart)
+          startedToday.set(fact.actor.agentId, (yield* headStartsToday(fact.actor.agentId)) + 1);
         yield* markTold({ ...delivery, eventId });
         yield* sql`UPDATE kin_pulse_facts SET woke_at = ${at}
           WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
@@ -830,7 +904,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         shell,
       });
       const told = yield* tellHolders(ctx, facts, stored, holds, shell);
-      // A teammate's own follow-up to a client, due now: the sales agent drafts it for them.
+      // A person's own task, due now: an agent makes its first piece for them (`draftWake.ts`).
       const drafted = yield* draftWakes({
         ctx,
         open: facts.flatMap((sensed): Array<KinPulseFact> => {

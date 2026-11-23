@@ -32,6 +32,7 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { settleReviews } from "../github/askedFor.ts";
+import { PREPARE_EVENT_SQL, PREPARES_PER_TURN } from "../pulse/prepareSenses.ts";
 import * as Reach from "./Reach.ts";
 
 const EventJson = Schema.fromJsonString(KinEvent);
@@ -85,9 +86,9 @@ const SteerInput = Schema.Struct({
 });
 
 /**
- * An event's lane, the chat a wake-up answers: a message's, tap's or task's asking chat, else the
- * lead's owner chat. Deferrals from other chats, GitHub triggers, approved drafts, follow-ups
- * (`draftWake.ts`) and reviews (`reviewWake.ts`) get their own lanes: nothing else mixes in.
+ * An event's lane, the chat a wake-up answers (asking chat, else the owner chat). Other chats'
+ * deferrals, GitHub triggers, approved drafts, follow-ups (`draftWake.ts`), reviews
+ * (`reviewWake.ts`) and Kin's head starts each get their own lanes: nothing else mixes in.
  */
 const LANE_OF = `CASE WHEN e.tag = 'github' AND json_extract(e.json, '$.trigger.key') IS NOT NULL
   THEN 'github:' || json_extract(e.json, '$.trigger.key')
@@ -102,6 +103,7 @@ const LANE_OF = `CASE WHEN e.tag = 'github' AND json_extract(e.json, '$.trigger.
   THEN 'review:' || json_extract(e.json, '$.chatId')
   WHEN e.tag = 'pulse' AND json_extract(e.json, '$.chatId') IS NOT NULL
   THEN 'draft:' || json_extract(e.json, '$.chatId') || ':' || json_extract(e.json, '$.factKeys[0]')
+  WHEN ${PREPARE_EVENT_SQL} THEN 'prepare:' || l.owner_chat_id
   WHEN e.tag = 'deferral.due' AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
   THEN 'origin:' || json_extract(e.json, '$.origin.agentId') || ':' || json_extract(e.json, '$.origin.chatId')
     || ':' || COALESCE(json_extract(e.json, '$.origin.personId'), '')
@@ -743,7 +745,9 @@ const make = Effect.gen(function* () {
                 WHERE org_id = ${input.orgId} AND event_id IN (
                   SELECT event_id FROM selected o
                   WHERE CASE WHEN (SELECT alone FROM brief) THEN o.asked = 0 ELSE o.page IS NOT 1 END
-                  ORDER BY priority, received_at, event_id LIMIT 50
+                  ORDER BY priority, received_at, event_id
+                  LIMIT (SELECT CASE WHEN lane LIKE 'prepare:%' THEN ${PREPARES_PER_TURN} ELSE 50 END
+                    FROM first)
                 ) RETURNING json, priority, received_at, queued_at, event_id`;
                       if (rows.length === 0) return yield* new NoClaimableEvents({});
                       const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);

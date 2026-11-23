@@ -15,6 +15,7 @@ import { followsCodingAgent } from "../lead/OutsideContent.ts";
 import { markedKey } from "../work/keyCall.ts";
 import { companyMoney } from "../work/companyProfile.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
+import { KIN_OWN_REFUSAL, refuseKinOwn } from "../people/KinAccess.ts";
 import { isMoney, parseFields } from "../work/lists.ts";
 import { dayIn, financialYearOf, formatMoney } from "../work/money.ts";
 import {
@@ -193,6 +194,7 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
   yield* byAPerson(orgId, writer);
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.number);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
@@ -381,6 +383,7 @@ export const adopt = Effect.fn("KinNumbers.adopt")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.number);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
@@ -458,6 +461,7 @@ export const unvoidEntry = Effect.fn("KinNumbers.unvoid")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.number);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
@@ -510,6 +514,7 @@ export const voidEntry = Effect.fn("KinNumbers.void")(function* (
   yield* byAPerson(orgId, writer);
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.number);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);

@@ -30,6 +30,7 @@ import { salesRules } from "../sales/instructions.ts";
 import { instructions } from "./instructions.ts";
 import { kinInstructions } from "./turn/session.ts";
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../pulse/prompt.ts";
+import { HEAD_START_GONE, HEAD_START_WAKE } from "../pulse/prepareWake.ts";
 import { WEEKLY_RULE } from "../pulse/weekly.ts";
 import { MONEY_RULE, WITHDRAWN_WORK } from "../work/workPrompt.ts";
 import {
@@ -997,6 +998,56 @@ it.effect(
       expect(shared).not.toContain(PROMPT_HEADINGS.thisCompany);
       expect(shared).not.toContain("numbers_read");
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a head-start wake carries its facts as true now, each once, and nothing once gone", () =>
+  Effect.gen(function* () {
+    yield* leadWithOwner;
+    const sql = yield* SqlClient.SqlClient;
+    const prompt = yield* KinLeadPrompt;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'quotes', 'Quotes', 'QT', 0, 0, ${JSON.stringify(PRESETS.quotes)})`;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+        owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at,
+        amount_minor, currency, confirmed)
+      VALUES (${orgId}, 'rec-quote', 'quotes', 'QT-1', 'Invented quote zq', 'waiting', 'person',
+        ${personId}, 'person', ${personId}, 'owner:quote', 0, 0, 4500000, 'INR', 1)`;
+    yield* TestClock.setTime(30 * 24 * 60 * 60_000);
+    const key = "quote_unanswered:QT-1:last=0";
+    // Kin's last tick stored it; the turn senses it again rather than trusting that row.
+    yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense, scope_json, first_seen_at,
+        last_seen_at)
+      VALUES (${orgId}, ${key}, 'quote_unanswered', '{}', 0, 0)`;
+    const wake = (eventId: string) =>
+      decodeEvent({
+        _tag: "pulse",
+        orgId,
+        agentId,
+        eventId,
+        receivedAt: timestamp,
+        provenance: { _tag: "system" },
+        dedupeKey: null,
+        factKeys: [key],
+      });
+    const both = [wake("pulse-quote"), wake("pulse-quote-again")];
+    yield* stored("quote-wake", both);
+    const events = (built: string) => built.split(`${PROMPT_HEADINGS.events}\n\n`)[1] ?? "";
+    const build = prompt.build({
+      ...input,
+      wakeupId: KinWakeupId.make("quote-wake"),
+      events: both,
+    });
+    const shown = events(yield* build);
+    expect(shown.split(HEAD_START_WAKE)).toHaveLength(2);
+    expect(shown.split("with no answer recorded for")).toHaveLength(2);
+    expect(shown).toContain(`"key":"${key}"`);
+    // Answered since the tick, its stored row still open: the wake starts nothing.
+    yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'rec-quote'`;
+    const gone = events(yield* build);
+    expect(gone).toContain(HEAD_START_GONE);
+    expect(gone).not.toContain(HEAD_START_WAKE);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("an owner turn names who is talking and states what the lead started as Kin has it", () =>

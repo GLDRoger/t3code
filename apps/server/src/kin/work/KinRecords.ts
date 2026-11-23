@@ -46,7 +46,14 @@ import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
-import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
+import {
+  KIN_OWN_REFUSAL,
+  kinOwnTurn,
+  ownerLevel,
+  ownerLevelAsked,
+  ownsAgent,
+  refuseKinOwn,
+} from "../people/KinAccess.ts";
 import { approvedClient, approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
 import {
   changeStampKey,
@@ -206,6 +213,8 @@ export type Writer = {
   readonly codingAgentKey?: string;
   /** Shared with the team when made; a turn others read shares its tasks too (`ROOM_LISTS`). */
   readonly teamShared?: boolean;
+  /** The holder whose doc head start this turn is (`docHeadStart`): its one new doc is theirs. */
+  readonly headStartFor?: KinPersonId;
   /** A lead's turn others read: `viewGuard` decides the write inside its transaction. */
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- a write's guard, not a read; absent is an owner-level writer.
   readonly view?: {
@@ -1995,7 +2004,11 @@ const make = Effect.gen(function* () {
             writer.view,
             { row: existing, changes: false, input },
             writer.actor._tag === "agent" && writer.wakeupId !== undefined
-              ? { agentId: writer.actor.agentId, wakeupId: writer.wakeupId }
+              ? {
+                  agentId: writer.actor.agentId,
+                  wakeupId: writer.wakeupId,
+                  headStartFor: writer.headStartFor,
+                }
               : undefined,
           ).pipe(provideSql);
     if (existing !== undefined) {
@@ -2605,6 +2618,23 @@ const make = Effect.gen(function* () {
                 : row.state
             : undefined;
         const wanted = patch.state ?? settled ?? row.state;
+        // A turn no person started settles nothing paid over time, and voids or reopens no
+        // numbered entry, by its state: the other ways to a payment or a void (`refuseKinOwn`).
+        const settles = wanted === "done" && row.takesPayments === 1;
+        if (
+          writer.actor._tag === "agent" &&
+          writer.wakeupId !== undefined &&
+          wanted !== row.state &&
+          !isSuggestion(row) &&
+          (settles ||
+            (yield* sql`SELECT 1 FROM kin_issued_numbers
+              WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`).length > 0) &&
+          (yield* kinOwnTurn(orgId, writer.actor.agentId, writer.wakeupId).pipe(provideSql))
+        )
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message: settles ? KIN_OWN_REFUSAL.payment : KIN_OWN_REFUSAL.number,
+          });
         // An agent never issues or settles an invoice by its state: Issue gives it its number.
         const unissued =
           writer.actor._tag === "agent" &&
@@ -3337,6 +3367,7 @@ const make = Effect.gen(function* () {
   ) {
     return yield* transaction(
       Effect.gen(function* () {
+        yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.payment).pipe(provideSql);
         const row = yield* byKey(orgId, key).pipe(provideSql);
         if (row === undefined) return yield* notFound(key);
         if (row.takesPayments !== 1)
@@ -3438,6 +3469,7 @@ const make = Effect.gen(function* () {
   ) {
     return yield* transaction(
       Effect.gen(function* () {
+        yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.payment).pipe(provideSql);
         const row = yield* byKey(orgId, key).pipe(provideSql);
         if (row === undefined) return yield* notFound(key);
         const [found] = yield* sql<{
