@@ -255,8 +255,8 @@ Every screen handles the same seven states. Each state's copy is fixed below.
 | `started`           | "Started."                                                                                                                              | none                                                                 |
 | closed (`closedAt`) | "Closed."                                                                                                                               | none                                                                 |
 
-- Kin applies Start now, Monday and Cancel itself in the tap, with no agent turn, so the card says "Started.", "Moved to Monday." or "Cancelled." and its buttons stay off until the next revision. Monday brings back the confirm card for next Monday 9:00.
-- A tap on a card that changed since it was drawn is refused as changed: "This card changed. Check it again."
+- Kin applies Start now, Monday and Cancel itself in the tap, with no agent turn, so the card says "Asked <Agent> to start it.", "Moved to Monday." or "Cancelled." and its buttons stay off until the next revision. Monday brings back the confirm card for next Monday 9:00.
+- A tap on a card that changed since it was drawn is refused as changed: "This card changed. Check it again." A refusal stays on the card for the person who tapped even when the card changed or closed before the answer came; what was sent stays with its revision.
 - Notices belong to the revision they were raised on and disappear when the card changes. A retry of the same action on the same revision after a dropped send reuses its `clientActionId`.
 - The countdown follows the shared minute tick, never a timer of its own.
 - All times are in the device timezone, written as "Fri 13 Nov, 9:00". They are built from whole `Intl.DateTimeFormat` strings, because Hermes leaves `hour` and `minute` out of `formatToParts`.

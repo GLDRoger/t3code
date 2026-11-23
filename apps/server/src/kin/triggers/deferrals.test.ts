@@ -754,6 +754,10 @@ it.effect("taps that aren't this card's are refused and change nothing", () => {
       ),
       "not_found",
     );
+    // A co-owner who isn't in the card's chat.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+      VALUES ('elsewhere-a', ${orgId}, 'elsewhere-a', 'Elsewhere', 'co_owner', 0)`;
+    assert.equal(outcome(yield* tap("cancel", "elsewhere-a")), "not_found");
     // A guest co-owner, and a co-owner who left the chat.
     yield* joinChat("guest-a", "co_owner");
     yield* sql`UPDATE kin_chat_members SET role = 'guest' WHERE member_id = 'member-guest-a'`;
