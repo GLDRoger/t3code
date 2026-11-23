@@ -502,7 +502,7 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
   return messages.map((message) => {
     if (message.kind !== "text" || message.status === "deleted") return message;
     // A person's own words keep their keys as typed; an agent's read as names.
-    const links =
+    const links: ReadonlyArray<KinMessageLink> =
       message.author._tag === "agent"
         ? match(message.body)
         : match(message.body).map(({ name: _name, ...link }) => link);

@@ -210,7 +210,7 @@ it.effect("links for each reader only what they may open; a hidden client leaves
     const [typed] = yield* withLinks(orgId, { _tag: "person", personId: ownerId }, [
       {
         ...message("Check W-1 today."),
-        author: { _tag: "person", personId: ownerId, memberId: KinMemberId.make("rhea-member") },
+        author: { _tag: "human", personId: ownerId, memberId: KinMemberId.make("rhea-member") },
       },
     ]);
     assert.deepStrictEqual(
