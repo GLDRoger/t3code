@@ -786,21 +786,21 @@ it.effect.each([true, false])(
           }),
           "Give the name to bill first (billToName). Nothing changed.",
         );
-        const [invoice] = yield* sql<{
+        const [typedInvoice] = yield* sql<{
           key: string;
           partyId: string | null;
         }>`SELECT key, party_id AS "partyId" FROM kin_records
           WHERE org_id = ${person.orgId} AND title = ${typed.title}`;
-        assert.isNull(invoice!.partyId);
+        assert.isNull(typedInvoice!.partyId);
         const edited = yield* leadCall("record_update", {
-          key: invoice!.key,
+          key: typedInvoice!.key,
           fields: { billToEmail: "asha@example.com" },
         });
         assert.include(edited, '"isError":false', edited);
         const typedRows = yield* leadCall("records_query", { list: "invoices" });
         assert.include(typedRows, "Asha Rao");
         assert.include(typedRows, "asha@example.com");
-        const typedGet = yield* leadCall("record_get", { key: invoice!.key });
+        const typedGet = yield* leadCall("record_get", { key: typedInvoice!.key });
         assert.include(typedGet, "Asha Rao");
         yield* store(10, []);
         const lumen = yield* OwnerClients.createParty([person], {
@@ -824,12 +824,12 @@ it.effect.each([true, false])(
         const linkedRows = yield* leadCall("records_query", { list: "clients", text: "Lumen" });
         assert.include(linkedRows, "Lumen", linkedRows);
         const refusedTyped = yield* leadCall("record_update", {
-          key: invoice!.key,
+          key: typedInvoice!.key,
           client: lumen.key,
         });
         assert.include(
           refusedTyped,
-          `${invoice!.key} bills Asha Rao by name. Clear that name first to give it a client. Nothing changed.`,
+          `${typedInvoice!.key} bills Asha Rao by name. Clear that name first to give it a client. Nothing changed.`,
         );
         assert.include(
           yield* leadCall("record_update", {
