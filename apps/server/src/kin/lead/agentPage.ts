@@ -82,7 +82,7 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
   const connections = yield* liveConnections(orgId).pipe(Effect.mapError(persistence));
   const team = yield* LeadAccess.teamAgent(orgId).pipe(Effect.mapError(persistence));
   return {
-    profile: yield* profileIn(lead, by ?? undefined),
+    profile: yield* profileIn(lead, by ?? lead.ownerPersonId),
     model: lead.model,
     runsOn: runs.model,
     modelNote: runs.note,

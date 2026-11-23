@@ -691,10 +691,10 @@ export const update = Effect.fn("KinLeadProvision.update")(function* (input: {
   );
 });
 
-/** One lead's profile as `viewer` (its owner when left out) may see it, in the caller's transaction. */
+/** One lead's profile as `reader` may see it, in the caller's transaction. */
 export const profileIn = Effect.fn("KinLeadProvision.profileIn")(function* (
   lead: LeadSummary,
-  viewer?: KinPersonId,
+  reader: KinPersonId,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const running = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${lead.orgId}
@@ -705,7 +705,7 @@ export const profileIn = Effect.fn("KinLeadProvision.profileIn")(function* (
     lead,
     new Set(running.length > 0 ? [lead.agentId] : []),
     yield* tracked(lead.orgId),
-    yield* readableBy(lead.orgId, viewer ?? lead.ownerPersonId),
+    yield* readableBy(lead.orgId, reader),
   );
 });
 
@@ -767,7 +767,7 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
         return {
           _tag: "already_retired" as const,
           lead,
-          profile: yield* profileIn(lead, by ?? undefined),
+          profile: yield* profileIn(lead, by ?? lead.ownerPersonId),
         };
       const { owner } = yield* KinIdentity;
       const others = (yield* leadsIn(lead.orgId, { liveOnly: true })).filter(
@@ -832,7 +832,7 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
       return {
         _tag: "retired" as const,
         lead: retired,
-        profile: yield* profileIn(retired, by ?? undefined),
+        profile: yield* profileIn(retired, by ?? lead.ownerPersonId),
       };
     }),
   );
@@ -858,7 +858,7 @@ export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
         return {
           _tag: "already_live" as const,
           lead,
-          profile: yield* profileIn(lead, by ?? undefined),
+          profile: yield* profileIn(lead, by ?? lead.ownerPersonId),
         };
       const twin = (yield* leadsIn(lead.orgId, { liveOnly: true })).find(
         (entry) =>
@@ -889,7 +889,7 @@ export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
       return {
         _tag: "restored" as const,
         lead: restored,
-        profile: yield* profileIn(restored, by ?? undefined),
+        profile: yield* profileIn(restored, by ?? lead.ownerPersonId),
       };
     }),
   );
@@ -928,7 +928,8 @@ export const setPaused = Effect.fn("KinLeadProvision.setPaused")(function* (inpu
       const { lead, by } = yield* retirable(input);
       if (lead.retiredAt !== null)
         return yield* refuse("retired", `Agent ${lead.agentId} was retired at ${lead.retiredAt}.`);
-      if ((lead.pausedAt !== null) === input.paused) return yield* profileIn(lead, by ?? undefined);
+      if ((lead.pausedAt !== null) === input.paused)
+        return yield* profileIn(lead, by ?? lead.ownerPersonId);
       const pausedAt = input.paused ? DateTime.formatIso(yield* DateTime.now) : null;
       yield* sql`UPDATE kin_agents SET paused_at = ${pausedAt}
         WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`.pipe(
@@ -937,7 +938,7 @@ export const setPaused = Effect.fn("KinLeadProvision.setPaused")(function* (inpu
       yield* leadsChanged(lead.orgId);
       if (!input.paused && Option.isSome(queue))
         yield* sql.afterCommit(queue.value.nudge(lead.orgId));
-      return yield* profileIn({ ...lead, pausedAt }, by ?? undefined);
+      return yield* profileIn({ ...lead, pausedAt }, by ?? lead.ownerPersonId);
     }),
   );
 });

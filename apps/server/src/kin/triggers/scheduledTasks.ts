@@ -102,9 +102,7 @@ const triggerNext = (sql: SqlClient.SqlClient, orgId: KinOrgId, itemId: string) 
   );
 
 /** A schedule as `sharedChatOf` reads it: set for its chat when its row's audience is 'shared'. */
-export const sourceOf = (
-  row: Pick<KinSchedules.KinSchedule, "chatId" | "sourceEvent" | "audience">,
-) => ({
+const sourceOf = (row: Pick<KinSchedules.KinSchedule, "chatId" | "sourceEvent" | "audience">) => ({
   chat: row.chatId,
   source_event: KinEventId.make(row.sourceEvent),
   ...(row.audience === "shared" ? { for_chat: true as const } : {}),
