@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { cappedRows } from "./capped.ts";
 
 import { budgetsAnswer, budgetsView } from "../../work/budgets.ts";
 import { noticeDay } from "../../work/crm.ts";
@@ -38,7 +39,6 @@ import {
   type SenseContext,
   type SensedFact,
 } from "./shared.ts";
-import { SENSE_CAP } from "./work.ts";
 
 type ClientKey =
   | "chase_invoice_after_days"
@@ -83,7 +83,15 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   const forClient = (key: ClientKey, clientId: string | null) => limits(key, clientId ?? undefined);
 
   // invoice_overdue: issued, still owed, and past its due date (else its client's terms) plus the grace.
-  const invoices = yield* sql<EntryRow & { base: number; paid: number }>`SELECT * FROM (
+  const invoices = yield* cappedRows<EntryRow & { base: number; paid: number }>(
+    ctx,
+    facts,
+    {
+      sense: "invoice_overdue",
+      plural: "overdue invoices",
+      access: "money",
+    },
+    sql`SELECT * FROM (
     SELECT ${entryColumns(sql)}, ${invoiceDue(sql)} AS base,
       (SELECT COALESCE(SUM(pay.amount_minor), 0) FROM kin_record_payments pay
         WHERE pay.org_id = r.org_id AND pay.record_id = r.record_id AND pay.voided_at IS NULL) AS paid
@@ -91,7 +99,8 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
       AND r.state = 'waiting' AND r.amount_minor IS NOT NULL)
     WHERE base IS NOT NULL AND base <= ${at - DAY_MS} AND "amountMinor" > paid
-    ORDER BY base, key LIMIT ${SENSE_CAP}`;
+    ORDER BY base, key`,
+  );
   for (const row of invoices) {
     const chase = forClient("chase_invoice_after_days", row.clientId);
     if (row.base > at - toMs(chase)) continue;
@@ -112,14 +121,23 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   }
 
   // quote_unanswered: sent, and nothing recorded on it since for the threshold.
-  const quotes = yield* sql<EntryRow & { lastAt: number }>`SELECT * FROM (
+  const quotes = yield* cappedRows<EntryRow & { lastAt: number }>(
+    ctx,
+    facts,
+    {
+      sense: "quote_unanswered",
+      plural: "unanswered quotes",
+      access: "money",
+    },
+    sql`SELECT * FROM (
     SELECT ${entryColumns(sql)}, COALESCE((SELECT MAX(ch.at) FROM kin_record_changes ch
         WHERE ch.org_id = r.org_id AND ch.record_id = r.record_id), r.updated_at) AS "lastAt"
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'quotes' AND ${countedEntry(sql)}
       AND r.state = 'waiting')
     WHERE "lastAt" <= ${at - DAY_MS}
-    ORDER BY "lastAt", key LIMIT ${SENSE_CAP}`;
+    ORDER BY "lastAt", key`,
+  );
   for (const row of quotes) {
     const followUp = forClient("quote_follow_up_days", row.clientId);
     if (row.lastAt > at - toMs(followUp)) continue;
@@ -138,13 +156,22 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   }
 
   // retainer_due: a repeating invoice's next one is still a draft as its day comes up.
-  const drafts = yield* sql<EntryRow & { goesOut: number; kept: number }>`SELECT * FROM (
+  const drafts = yield* cappedRows<EntryRow & { goesOut: number; kept: number }>(
+    ctx,
+    facts,
+    {
+      sense: "retainer_due",
+      plural: "repeating invoice drafts",
+      access: "money",
+    },
+    sql`SELECT * FROM (
     SELECT ${entryColumns(sql)}, COALESCE(r.date_at, r.due_at) AS "goesOut", r.confirmed AS kept
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND r.state = 'open'
       AND r.repeat_json IS NOT NULL)
     WHERE "goesOut" IS NOT NULL AND "goesOut" <= ${at + toMs(retainer)}
-    ORDER BY "goesOut", key LIMIT ${SENSE_CAP}`;
+    ORDER BY "goesOut", key`,
+  );
   for (const row of drafts) {
     const amount = row.kept === 1 ? amountText(row) : undefined;
     const days = elapsed(at, row.goesOut, "days");
@@ -162,15 +189,25 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
 
   // renewal_due: a renewal in Dates or Subscriptions, or an open project's renews-on day, coming
   // up within the heads-up or passed and still open. One renewal is one fact.
-  const listed = yield* sql<EntryRow & { kept: number }>`SELECT ${entryColumns(sql)},
+  const listed = yield* cappedRows<EntryRow & { kept: number }>(
+    ctx,
+    facts,
+    {
+      id: "listed_renewals",
+      sense: "renewal_due",
+      plural: "renewals in Dates or Subscriptions",
+      access: "money",
+    },
+    sql`SELECT ${entryColumns(sql)},
       r.confirmed AS kept
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId}
       AND ((r.register_id = 'dates' AND r.category = 'renewal') OR r.register_id = 'subscriptions')
       AND r.state IN ('open', 'doing', 'waiting') AND r.due_at IS NOT NULL
       AND r.due_at <= ${at + RENEWAL_WIDEST_MS}
-    ORDER BY r.due_at, r.key LIMIT ${SENSE_CAP}`;
-  const projects = yield* sql<
+    ORDER BY r.due_at, r.key`,
+  );
+  const projects = yield* cappedRows<
     EntryRow & {
       renewsOn: string;
       value: string | null;
@@ -179,7 +216,17 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
       clientOwnerKind: string | null;
       clientOwnerId: string | null;
     }
-  >`SELECT
+  >(
+    ctx,
+    facts,
+    {
+      id: "project_renewals",
+      also: "clients",
+      sense: "renewal_due",
+      plural: "project renewals",
+      access: "money",
+    },
+    sql`SELECT
       ${entryColumns(sql)}, json_extract(r.fields_json, '$.renewsOn') AS "renewsOn",
       json_extract(r.fields_json, '$.value') AS value, r.confirmed AS kept,
       json_extract(r.fields_json, '$.noticeDays') AS "noticeDays",
@@ -187,7 +234,8 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'projects' AND r.state = 'open'
       AND json_extract(r.fields_json, '$.renewsOn') IS NOT NULL
-    ORDER BY "renewsOn", r.key LIMIT ${SENSE_CAP}`;
+    ORDER BY "renewsOn", r.key`,
+  );
   // A suggested renewal is still a day to know, but its fee is nobody's yet.
   const renewals: Array<EntryRow> = listed.map((row) =>
     row.kept === 1 ? row : { ...row, amountMinor: null, currency: null },

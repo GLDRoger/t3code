@@ -255,6 +255,8 @@ export function KinTaskActivity(
     readonly names: KinWorkNames;
     readonly now: Date;
     readonly note: string | null;
+    /** Why its holder has it, quoted under the hand-over (`kinTaskActivity`). */
+    readonly reason?: string | null;
     readonly onOpenProject: (key: KinRecordKey) => void;
   },
 ) {
@@ -284,6 +286,7 @@ export function KinTaskActivity(
     { changes: props.item.changes, comments: thread.comments },
     names,
     props.now,
+    props.reason ?? null,
   );
   const previewKey = `kin-task:${environmentId}:${itemKey}`;
   const me = names.me === null ? null : ({ _tag: "person", personId: names.me } as const);
@@ -377,6 +380,9 @@ export function KinTaskActivity(
                     )}
                     {activityTail(line)}
                   </p>
+                  {line.quote === null ? null : (
+                    <p className="wrap-break-word text-foreground/80">“{line.quote}”</p>
+                  )}
                   {comment === null || comment.removed ? null : (
                     <>
                       {comment.body === "" ? null : (
@@ -805,7 +811,7 @@ export function KinTaskNoteComposer(props: TaskTarget) {
 }
 
 /**
- * The With line under "Who has it": each person's picture and first name, × for a reader who may
+ * Details' With line: each person's picture and first name, × for a reader who may
  * change the task and Leave on their own name, and + to put someone on it (`picker`, the holder's
  * people-and-agents list), absent once the task holds as many as it takes.
  */

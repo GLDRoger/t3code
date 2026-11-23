@@ -19,6 +19,7 @@ import { covers, endedHolds } from "./holds.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { teamHoursNow } from "./nudge.ts";
+import { lateReminders } from "./told.ts";
 import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
 
 export const PULSE_RULE =
@@ -44,6 +45,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   readonly agentId: KinAgentId;
   readonly now: number;
   readonly wokeFor: ReadonlyArray<string>;
+  readonly pulseEvents?: ReadonlyArray<string> | undefined;
   /** A check-in: the facts it was given to tell (`kin_pulse_told`). */
   readonly checkIn?: ReadonlySet<string> | undefined;
   /** The check-in events, so a fact first told since its hold ended says it was set aside. */
@@ -103,13 +105,19 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   const ended = checkIn
     ? yield* asideEnded(input.orgId, input.agentId, input.now, shown, input.checkInEvents ?? [])
     : new Map<string, string>();
+  const reminders = yield* lateReminders(
+    input.orgId,
+    input.pulseEvents ?? input.checkInEvents ?? [],
+    shown,
+    zone,
+  );
   const row = (fact: KinPulseFact) => ({
     key: fact.key,
     about:
       fact.subject.key === fact.subject.title
         ? fact.subject.title
         : `${recordName(fact.subject.key, fact.subject.number)} ${fact.subject.title}`,
-    consequence: fact.consequence,
+    consequence: [fact.consequence, reminders.get(fact.key)].filter(Boolean).join(" "),
     // A renewal's heads-up only mentions it; who drafts it acts from the draft day.
     ...(fact.stage === "heads_up" ? {} : { acts: who(fact.actor) }),
     ...(LOOKED_AFTER_SENSES.has(fact.sense) ? { heading: "Clients" } : {}),

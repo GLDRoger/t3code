@@ -57,6 +57,7 @@ const KIN_PULSE_SENSES = [
   "number_stale",
   "entry_late",
   "entry_check",
+  "sense_overflow",
   ...KIN_PROMISE_SENSES,
 ] as const;
 /**
@@ -74,6 +75,7 @@ export const KIN_PULSE_LATER_SENSES = [
   "number_stale",
   "entry_late",
   "entry_check",
+  "sense_overflow",
   ...KIN_PROMISE_SENSES,
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
@@ -152,8 +154,17 @@ export const KinPulseFact = Schema.Struct({
   /** Sense, subject and episode: a moved due date is a new key, so a new fact. */
   key: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
   subject: Schema.Struct({
-    // `bank` comes only with a later sense, so an older client never meets it.
-    kind: Schema.Literals(["record", "worker", "task", "budget", "agent", "pull_request", "bank"]),
+    // Bank and overflow subjects come only with later senses.
+    kind: Schema.Literals([
+      "record",
+      "worker",
+      "task",
+      "budget",
+      "agent",
+      "pull_request",
+      "bank",
+      "overflow",
+    ]),
     /** A record's key (INV-4), a task's thread, an agent id, a budget id, or owner/name#12 (PR). */
     key: TrimmedNonEmptyString,
     title: Schema.String.check(Schema.isMaxLength(280)),

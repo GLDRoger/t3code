@@ -177,6 +177,7 @@ export const sources = Effect.fn("KinOpen.sources")(function* (input: {
     sensed: input.sensed,
     viewer: viewer.ownerLevel ? { _tag: "owner" } : { _tag: "people", people: [viewer.personId] },
     includeHandled: true,
+    excludeOverflow: !input.acceptSenses?.includes("sense_overflow"),
     limit: FACT_CAP,
   });
   const facts = screenFacts(pulse.facts, input.acceptSenses);
