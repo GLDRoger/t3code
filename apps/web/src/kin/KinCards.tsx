@@ -714,7 +714,7 @@ function KinChoiceCard(props: {
         <>
           <CardNotice notice={status?.notice} />
           <div className="flex flex-col gap-1.5 pt-1">
-            {choice.options.map((option) => (
+            {(status?.behind === true ? [] : choice.options).map((option) => (
               <div key={option.id} className="flex flex-col gap-0.5">
                 <Button
                   variant="outline"
@@ -732,7 +732,7 @@ function KinChoiceCard(props: {
                 )}
               </div>
             ))}
-            {editable ? (
+            {editable && status?.behind !== true ? (
               <Button
                 variant="outline"
                 size="sm-multiline"

@@ -67,8 +67,6 @@ export function KinPresenceLine(props: {
   /** Null when the viewer can't stop this lead. */
   readonly onStop: (() => void) | null;
   readonly stop: KinStopState;
-  /** The pill above the composer is saying it: keep the row's height and its announcements only. */
-  readonly quiet?: boolean;
 }) {
   const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
   const line = kinPresenceLine(props.presence, now);
@@ -82,7 +80,6 @@ export function KinPresenceLine(props: {
   const animate = line !== null && props.visible && !reduceMotion;
 
   const { onStop } = props;
-  if (props.quiet === true) return <View className="h-8" />;
   const stoppable = line?.stalled === true && onStop !== null;
   const timerStart = kinPresenceTimerStart(props.presence);
   return (

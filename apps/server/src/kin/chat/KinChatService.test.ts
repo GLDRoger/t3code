@@ -896,6 +896,33 @@ describe("KinChatService", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("an agent's question asked in words and on its card waits as the card alone", () =>
+    Effect.gen(function* () {
+      const { repo, service, person, agent, chat } = yield* seed();
+      const words = (clientMessageId: string) =>
+        service.send(agent, {
+          chatId: chat.chatId,
+          body: "Shall I copy Dev on the reminder?",
+          intent: "question",
+          clientMessageId,
+        });
+      const open = () =>
+        repo.listOpenWaiting(person).pipe(Effect.map((rows) => rows.map((row) => row.widgetId)));
+      yield* words("before");
+      assert.deepStrictEqual(yield* open(), [null]);
+      const card = yield* service.ask(agent, {
+        chatId: chat.chatId,
+        clientMessageId: "card",
+        question: "Copy Dev on the reminder?",
+        options: [{ label: "Copy Dev" }, { label: "Just me" }],
+      });
+      assert.deepStrictEqual(yield* open(), [card.widgetId]);
+      // Asked again in words while its card is open: still the card alone.
+      yield* words("after");
+      assert.deepStrictEqual(yield* open(), [card.widgetId]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "settles a choice card on its first tap and refuses stale, foreign and expired taps",
     () =>
@@ -1005,7 +1032,7 @@ describe("KinChatService", () => {
         yield* TestClock.adjust("24 hours");
         assert.include(
           yield* service.act(person, tap("late", 1, later.widgetId)).pipe(Effect.flip),
-          { reason: "invalid_state", message: "This question expired." },
+          { reason: "widget_changed" },
         );
       }).pipe(Effect.provide(layer)),
   );
