@@ -122,6 +122,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
 
 /** Task lists kept while their screen is away, so coming back reads nothing the stream brought. */
 const kinTaskLists = createKinListKeeper<KinWorkList, KinWorkListState>(Date.now);
@@ -312,6 +313,8 @@ export function KinTasksList(
   // The whole company's tasks also find clients, projects and docs, and say what needs you.
   const everywhere = within === undefined;
   const { state: found, search } = useKinSearch(props, ELSEWHERE, true);
+  const clientsOn = useKinSectionOn(props.environmentId, "clients");
+  const named = useKinSectionNamed(props.environmentId);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the native search box comes back empty once the page was left (a result opened, another tab), so the words it narrowed by go with it
   useEffect(() => {
     const clear = () => {
@@ -496,7 +499,11 @@ export function KinTasksList(
               {searching ? (
                 <View className="gap-2 pt-4">
                   <View className="px-4">
-                    <ListSection title={KIN_WORK_HOME.elsewhere}>
+                    <ListSection
+                      title={
+                        clientsOn ? named(KIN_WORK_HOME.elsewhere) : KIN_WORK_HOME.elsewhereDocs
+                      }
+                    >
                       <KinWorkToggleRow
                         label={KIN_SEARCH.includeClosed}
                         value={found.closed}

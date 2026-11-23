@@ -668,7 +668,7 @@ export const KIN_PICKER_COPY = {
   searching: "Searching…",
   failed: "Couldn't search.",
   narrow: "Type more to narrow",
-  nothing: (noun: "client" | "project", words: string) => `No ${noun} named “${words}”`,
+  nothing: (noun: string, words: string) => `No ${noun} named “${words}”`,
 } as const;
 
 export interface KinPickerSearchState {
@@ -820,6 +820,8 @@ export function kinPickerSearchView(input: {
   readonly held: KinWorkRef | null;
   /** The only keys this viewer may pick, such as a teammate's led projects; null for any. */
   readonly only?: ReadonlySet<string> | null;
+  /** What the company calls one (`kinSectionNoun`), where it isn't `noun`. */
+  readonly called?: string;
 }) {
   const { search, held } = input;
   const words = search.text.trim();
@@ -854,7 +856,7 @@ export function kinPickerSearchView(input: {
     note: !settled
       ? null
       : open.length + shown.done.length === 0
-        ? KIN_PICKER_COPY.nothing(input.noun, words)
+        ? KIN_PICKER_COPY.nothing(input.called ?? input.noun, words)
         : search.found?.more === true
           ? KIN_PICKER_COPY.narrow
           : null,

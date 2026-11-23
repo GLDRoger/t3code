@@ -12,6 +12,8 @@ import { daysText, elapsed } from "./senses/shared.ts";
 import { thresholds, toMs } from "./thresholds.ts";
 
 /** Lines of each kind before the rest are counted: a list a person reads at a glance. */
+import * as KinShell from "../shell/KinShell.ts";
+
 const MONEY_SHOWN = 8;
 /** Past its due date "today", else for how many calendar days. */
 const overdueText = (days: number) =>
@@ -70,6 +72,7 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, now } = input;
+  if (!(yield* KinShell.sectionOnFor(orgId, "invoices"))) return [];
   const seen = seenBy(sql, input.viewer);
   const said = ` ${fold(input.said ?? "")} `;
   const saysName = (number: unknown, title: string) => {

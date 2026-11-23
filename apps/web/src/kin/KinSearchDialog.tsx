@@ -2,6 +2,7 @@ import { useKinViewerScope } from "./useKinOwnerLevel";
 import {
   KIN_SEARCH,
   kinSearchHint,
+  kinSearchPlaceholder,
   type KinSearchHitView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { useId } from "react";
@@ -20,6 +21,7 @@ import { KinSearchHits } from "./KinDocsList";
 import { KinWorkNotice } from "./KinWorkParts";
 import { useKinSearch } from "./useKinDocs";
 import type { KinWorkTarget } from "./useKinWork";
+import { useKinShell } from "./useKinShell";
 
 /** One search box over tasks, clients, contacts, projects, docs, money and, for the owner level, memory. */
 export function KinSearchDialog(
@@ -30,6 +32,8 @@ export function KinSearchDialog(
 ) {
   const { state, search } = useKinSearch(props, null);
   const scope = useKinViewerScope(props.environmentId);
+  const shell = useKinShell(props.environmentId);
+  const placeholder = kinSearchPlaceholder(shell);
   const closedId = useId();
   return (
     <Dialog
@@ -48,8 +52,8 @@ export function KinSearchDialog(
               type="search"
               autoFocus
               autoComplete="off"
-              aria-label={KIN_SEARCH.placeholder}
-              placeholder={KIN_SEARCH.placeholder}
+              aria-label={placeholder}
+              placeholder={placeholder}
               value={state.text}
               onChange={(event) => search.setText(event.currentTarget.value)}
             />
@@ -58,7 +62,7 @@ export function KinSearchDialog(
               <Label htmlFor={closedId}>{KIN_SEARCH.includeClosed}</Label>
             </div>
             {state.text.trim() === "" ? (
-              <KinWorkNotice {...kinSearchHint(scope)} />
+              <KinWorkNotice {...kinSearchHint(scope, shell)} />
             ) : (
               <KinSearchHits
                 state={state}

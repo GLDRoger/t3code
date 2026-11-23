@@ -8,11 +8,13 @@ import type * as SqlError from "effect/sql/SqlError";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRetention from "../persistence/KinRetention.ts";
 import { context } from "../pulse/KinPulse.ts";
 import { KinWatchdogGithubReader, type GithubItemState } from "../triggers/watchdogs.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { invoicePaid } from "./kinds/invoicePaid.ts";
 import type { CodeOutcome, WatchKind } from "./kinds/kind.ts";
 import { pr } from "./kinds/pr.ts";
@@ -348,8 +350,21 @@ describe("Kin watches", () => {
         assert.strictEqual((yield* looks).length, 8);
         assert.strictEqual((yield* watches)[0]!.nextLookAt, at + HOUR + MINUTE + 45 * MINUTE);
         // Paid in full: closed in the round the payment's change starts, with its words.
+        const toggle = (rev: number, id: "money" | "invoices", on: boolean) =>
+          KinShell.KinShell.use((shell) => shell.set(orgId, rhea, rev, [{ id, on }])).pipe(
+            Effect.provide(KinShell.layer),
+            Effect.provideService(KinRefreshObserver, { touch: () => Effect.void }),
+          );
+        yield* toggle(0, "invoices", false);
         yield* pay(at + 2 * HOUR);
         yield* runAt(at + 2 * HOUR + 5_000);
+        assert.strictEqual((yield* watches)[0]!.state, "open");
+        assert.strictEqual((yield* looks).length, 8);
+        yield* toggle(1, "money", false);
+        yield* runAt(at + 2 * HOUR + 6_000);
+        assert.strictEqual((yield* looks).length, 8);
+        yield* toggle(2, "money", true);
+        yield* runAt(at + 2 * HOUR + 7_000);
         assert.deepInclude((yield* watches)[0], {
           state: "closed",
           closedHow: "INV/26/011 was paid on 25 Nov",

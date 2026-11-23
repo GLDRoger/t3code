@@ -30,7 +30,8 @@ import { KIN_PLACE_PATH } from "./kinPlaces";
 import { kinClient } from "./kinClient";
 import { kinHostKeptTarget, useKinHost } from "./useKinHost";
 import { kinPlacesAtom } from "./kinPlacesAtom";
-import { useKinSectionOn } from "./useKinShell";
+import { useKinSectionOn, useKinShell } from "./useKinShell";
+import { kinSectionNamed } from "@t3tools/client-runtime/kin/kinShell";
 
 const PLACE: Record<
   KinDestination,
@@ -79,6 +80,8 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
     kinClient.importApply.permissionAtom(target?.environmentId ?? null),
   );
   const dealsOn = useKinSectionOn(target?.environmentId ?? null, "deals");
+  const shell = useKinShell(target?.environmentId ?? null);
+  const named = (text: string) => kinSectionNamed(shell, text);
   const destinations = shown?.destinations ?? [];
   if (target === null || destinations.length === 0) return [];
   const row = (
@@ -101,9 +104,10 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
     ...destinations.map((destination, index) => ({
       ...row(
         destination,
-        PLACE[destination].title,
+        named(PLACE[destination].title),
         PLACE[destination].icon,
-        ["go", "open", ...PLACE[destination].words],
+        // The company's own word for Clients finds it too.
+        ["go", "open", ...PLACE[destination].words.map(named), ...PLACE[destination].words],
         async () => {
           await navigate(kinDestinationLink(destination, target));
         },
@@ -131,9 +135,11 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
       ? [
           row(
             "import",
-            dealsOn
-              ? `${KIN_IMPORT.entry}: bring clients, contacts and deals in from a spreadsheet`
-              : `${KIN_IMPORT.entry}: bring clients and contacts in from a spreadsheet`,
+            named(
+              dealsOn
+                ? `${KIN_IMPORT.entry}: bring clients, contacts and deals in from a spreadsheet`
+                : `${KIN_IMPORT.entry}: bring clients and contacts in from a spreadsheet`,
+            ),
             FileUpIcon,
             [
               "import",
