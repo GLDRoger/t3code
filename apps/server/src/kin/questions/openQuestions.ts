@@ -1,5 +1,7 @@
 import {
+  formatKinWhen,
   KIN_DOC_CARD,
+  KIN_TEXT_LOCALE,
   KinAgentId,
   KinChatError,
   KinChatId,
@@ -318,10 +320,15 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   const safe = untaken === undefined;
   const actAt = safe ? dueAt : raiseAt(dueAt, clock.zone, clock.work);
   const intent = normaliseIntent(input.intent);
-  if (seen === undefined)
+  if (seen === undefined) {
     for (const open of yield* openFor(input.orgId, personId))
       if (repeats({ intent, about }, open))
         return yield* refuse(alreadyAsked(open, input.now, clock.zone));
+    if (about.length > 0) {
+      const text = yield* dismissedRepeat({ ...input, personId, intent, about }, clock.zone);
+      if (text !== undefined) return yield* refuse(text);
+    }
+  }
   return {
     questionId,
     orgId: input.orgId,
@@ -794,7 +801,8 @@ const wokenByTheirWords = Effect.fn("KinQuestions.wokenByTheirWords")(function* 
   orgId: KinOrgId,
   agentId: KinAgentId,
   wakeupId: string,
-  row: QuestionRow,
+  row: Pick<QuestionRow, "questionId" | "widgetId" | "chatId" | "personId" | "askedAt">,
+  after?: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const [card] =
@@ -821,11 +829,71 @@ const wokenByTheirWords = Effect.fn("KinQuestions.wokenByTheirWords")(function* 
       AND m.status = 'posted' AND trim(m.body) <> ''
       AND ${card === undefined ? sql`m.created_at > ${iso(row.askedAt)}` : sql`m.seq > ${card.seq}`}
       AND m.seq > ${undone?.seq ?? -1}
+      ${after === undefined ? sql`` : sql`AND m.created_at > ${iso(after)}`}
       -- A copy kin_take_private posted before copies were marked: its claim's key is its client id.
       AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = m.org_id
         AND m.client_message_id = ${storedClientId("send", "")} || h.message_id)
     LIMIT 1`;
   return rows.length > 0;
+});
+
+const DISMISSAL_WINDOW_MS = 7 * 86_400_000;
+
+const dismissedRepeat = Effect.fn("KinQuestions.dismissedRepeat")(function* (
+  input: {
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+    readonly chatId: KinChatId;
+    readonly personId: KinPersonId;
+    readonly key: string;
+    readonly intent: string;
+    readonly about: ReadonlyArray<string>;
+    readonly now: number;
+  },
+  zone: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    questionId: string;
+    widgetId: string | null;
+    chatId: KinChatId;
+    agentId: KinAgentId;
+    askedAt: number;
+    closedAt: number;
+    intent: string;
+    about: string;
+  }>`SELECT question_id AS "questionId", widget_id AS "widgetId", chat_id AS "chatId",
+      agent_id AS "agentId", asked_at AS "askedAt", closed_at AS "closedAt", intent, about
+    FROM kin_questions WHERE org_id = ${input.orgId} AND person_id = ${input.personId}
+      AND state = 'dismissed' AND closed_at BETWEEN ${input.now - DISMISSAL_WINDOW_MS} AND ${input.now}
+    ORDER BY closed_at DESC, question_id`;
+  // The kin_ask handler keys each call by its wake-up followed by the input hash.
+  const wakeupId = input.key.slice(0, input.key.lastIndexOf(":"));
+  for (const row of rows) {
+    const about = row.about.split(" ");
+    if (
+      !repeats(input, { intent: row.intent, about }) &&
+      !(
+        row.agentId === input.agentId &&
+        row.chatId === input.chatId &&
+        input.about.some((key) => about.includes(key))
+      )
+    )
+      continue;
+    if (
+      yield* wokenByTheirWords(
+        input.orgId,
+        input.agentId,
+        wakeupId,
+        { ...row, personId: input.personId },
+        row.closedAt,
+      )
+    )
+      continue;
+    const who = yield* personName(input.orgId, input.personId);
+    const when = formatKinWhen(row.closedAt, "dayTime", { zone, locale: KIN_TEXT_LOCALE });
+    return `${who} dismissed this question on ${when} without choosing. Do not ask it again or post another card about it. If it still matters, say in one line what is still open and that they dismissed the card; they will tell you in words what they want.`;
+  }
 });
 
 /** The Undo line on the note of an answer taken from someone's words. */

@@ -4319,6 +4319,10 @@ for (const [build, sparse] of [
           Effect.gen(function* () {
             const { sql, chats, owner, orgId, tally, widget, first, original, repo } =
               yield* dismissedPayment();
+            // A prior dismissal beyond the repeat window still leaves the new card tappable.
+            const now = yield* Clock.currentTimeMillis;
+            yield* sql`UPDATE kin_questions SET closed_at = ${now - 8 * 86_400_000}
+              WHERE org_id = ${orgId} AND question_id = ${String(first.value.question)}`;
             yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 25, 52));
             yield* tally();
             const again = yield* callAs("chief", "kin_ask", tallyAsk);
@@ -4411,7 +4415,7 @@ for (const state of [
             yield* sql`DELETE FROM kin_questions WHERE org_id = ${orgId} AND question_id = ${questionId}`;
           else if (state === "expired")
             yield* sql`UPDATE kin_widgets SET state_json = json_remove(state_json, '$.untilAnswered'),
-              updated_at = ${new Date(present - 86_400_000).toISOString()}
+              updated_at = ${DateTime.formatIso(DateTime.makeUnsafe(present - 86_400_000))}
               WHERE org_id = ${orgId} AND widget_id = ${widgetId}`;
           else
             yield* sql`UPDATE kin_questions SET state = ${state}, closed_at = ${present}
@@ -4463,3 +4467,72 @@ for (const state of [
         }).pipe(Effect.provide(layer)),
       ),
     );
+
+it.effect(
+  "refuses a dismissal's scheduled repeat but takes a new subject or the person's own word",
+  () =>
+    Effect.andThen(
+      TestClock.setTime(PAYMENT_TEST_START),
+      Effect.gen(function* () {
+        const { chats, owner, orgId, chatOf, wake, tally, repo } = yield* dismissedPayment();
+        yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 25, 52));
+        yield* tally();
+        const repeat = yield* callAs("chief", "kin_ask", tallyAsk);
+        assert.isFalse(repeat.ok, JSON.stringify(repeat.value));
+        assert.deepInclude(repeat.value, {
+          message:
+            "Rhea Rao dismissed this question on Mon 16 Nov, 19:38 without choosing. Do not ask it again or post another card about it. If it still matters, say in one line what is still open and that they dismissed the card; they will tell you in words what they want.",
+        });
+        assert.lengthOf(yield* repo.listOpenWaiting(owner), 0);
+
+        const elsewhere = { ...tallyAsk, about: ["INV-10"], question: "Apply the next receipt?" };
+        const separate = yield* callAs("chief", "kin_ask", elsewhere);
+        assert.isTrue(separate.ok, JSON.stringify(separate.value));
+        const widgetId = KinWidgetId.make(String(separate.value.widgetId));
+        const card = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId }));
+        yield* chats.act(owner, {
+          widgetId,
+          revision: card.revision,
+          actionId: "choose",
+          value: "option-2",
+          clientActionId: "answer-separate",
+        });
+        yield* tally();
+        const answered = yield* callAs("chief", "kin_ask", elsewhere);
+        assert.isTrue(answered.ok, JSON.stringify(answered.value));
+        assert.notStrictEqual(answered.value.widgetId, separate.value.widgetId);
+
+        yield* wake(
+          "chief",
+          yield* chats.send(owner, {
+            chatId: chatOf("chief"),
+            body: "Please put the two Corran Tiles invoices to me again.",
+            clientMessageId: "please-ask-again",
+          }),
+        );
+        const onRequest = yield* callAs("chief", "kin_ask", tallyAsk);
+        assert.isTrue(onRequest.ok, JSON.stringify(onRequest.value));
+      }).pipe(Effect.provide(layer)),
+    ),
+);
+
+it.effect("takes the same scheduled ask on day eight after a dismissal", () =>
+  Effect.andThen(
+    TestClock.setTime(PAYMENT_TEST_START),
+    Effect.gen(function* () {
+      const { sql, orgId, first, tally } = yield* dismissedPayment();
+      const day = 86_400_000;
+      const now = yield* Clock.currentTimeMillis;
+      // Put the fixture near the boundary without advancing every interval in the server.
+      yield* sql`UPDATE kin_questions SET closed_at = ${now - 7 * day + 60_000}
+        WHERE org_id = ${orgId} AND question_id = ${String(first.value.question)}`;
+      yield* tally();
+      const daySeven = yield* callAs("chief", "kin_ask", tallyAsk);
+      assert.isFalse(daySeven.ok, JSON.stringify(daySeven.value));
+      yield* TestClock.adjust("1 minute");
+      yield* tally();
+      const dayEight = yield* callAs("chief", "kin_ask", tallyAsk);
+      assert.isTrue(dayEight.ok, JSON.stringify(dayEight.value));
+    }).pipe(Effect.provide(layer)),
+  ),
+);

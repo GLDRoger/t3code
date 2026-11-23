@@ -88,6 +88,7 @@ import type * as Scope from "effect/Scope";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -1261,9 +1262,10 @@ const make = Effect.gen(function* () {
   ) =>
     transaction(effect).pipe(
       Effect.tapError((error) => refusedTap(caller, input, error)),
-      Effect.flatMap((result) =>
-        isKinChatError(result) ? Effect.fail(result) : Effect.succeed(result),
+      Effect.map((result) =>
+        isKinChatError(result) ? Result.fail(result) : Result.succeed(result),
       ),
+      Effect.flatMap(Effect.fromResult),
     );
   // A tap, or an owner's yes/no reaction mapped to its option: the same checks and compare-and-set.
   const actOn = Effect.fn("KinChatService.actOn")(function* (
