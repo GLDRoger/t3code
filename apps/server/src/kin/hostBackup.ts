@@ -12,6 +12,7 @@ import * as NodeOS from "node:os";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -112,7 +113,7 @@ export const checkLeadNotice = Effect.fn("KinHostBackup.checkLeadNotice")(functi
       if (chatId === undefined) {
         // A company that has never added an agent may have no chat for a private notice.
         chatId = KinChatId.make(`kin-notices:${orgId}:${owner.personId}`);
-        const at = new Date(now).toISOString();
+        const at = DateTime.formatIso(DateTime.makeUnsafe(now));
         yield* repo.createChat({
           orgId,
           chatId,

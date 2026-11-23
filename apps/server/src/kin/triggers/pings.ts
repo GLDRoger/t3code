@@ -329,7 +329,7 @@ const make = Effect.gen(function* () {
                 });
                 continue;
               }
-              const key = JSON.stringify([r.person, r.chatId]);
+              const key = `${r.person.length}:${r.person}${r.chatId}`;
               const batch = batches.get(key) ?? [];
               batch.push({ ...candidate, audience: shared ? "chat" : "owner" });
               batches.set(key, batch);
