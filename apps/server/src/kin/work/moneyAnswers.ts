@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { sectionOnFor } from "../shell/KinShell.ts";
 import { homeCurrency } from "./companyProfile.ts";
 import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth, timeIn } from "./money.ts";
 import { dates } from "./moneyViews.ts";
@@ -423,20 +424,22 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
   const bank = (yield* findBankList(orgId))?.id ?? "bank_transactions";
   const notOutgoing = ["invoices", "quotes", "receipts", "clients", "contacts", "projects", bank];
 
-  const invoices = yield* sql<{
-    key: string;
-    title: string;
-    minor: number;
-    currency: string;
-    paid: number;
-    dueAt: number | null;
-  }>`SELECT r.key, r.title, r.amount_minor AS minor, r.currency, ${invoiceDue(sql)} AS "dueAt",
+  const invoices = (yield* sectionOnFor(orgId, "invoices"))
+    ? yield* sql<{
+        key: string;
+        title: string;
+        minor: number;
+        currency: string;
+        paid: number;
+        dueAt: number | null;
+      }>`SELECT r.key, r.title, r.amount_minor AS minor, r.currency, ${invoiceDue(sql)} AS "dueAt",
       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND r.state = 'waiting'
       AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
-    ORDER BY r.due_at, r.key`;
+    ORDER BY r.due_at, r.key`
+    : [];
   const open = invoices
     .map((one) => ({ ...one, balance: one.minor - one.paid }))
     .filter((one) => one.balance > 0);

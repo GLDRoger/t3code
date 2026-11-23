@@ -130,7 +130,8 @@ export const sectionOnFor = Effect.fn("KinShell.sectionOn")(function* (
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const conflict = new KinChatError({
   reason: "conflict",
-  message: "Someone changed this since you opened it. Nothing was saved; open it again.",
+  message:
+    "Someone else changed the sections just now, so nothing was saved. Check them and save again.",
 });
 const set = Effect.fn("KinShell.set")(function* (
   orgId: KinOrgId,
