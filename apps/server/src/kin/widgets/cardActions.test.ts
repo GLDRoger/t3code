@@ -1169,7 +1169,9 @@ it.effect("a tap on a list proposal's own card makes the list once, for an owner
         agentId: KinAgentId.make("finance"),
       })).chatId;
       const lists = (id: string) =>
-        sql<{ name: string }>`SELECT name FROM kin_registers
+        sql<{ name: string; team: number | null; teamSince: number | null }>`SELECT name,
+          json_extract(definition_json, '$.team') AS team,
+          json_extract(definition_json, '$.teamSince') AS "teamSince" FROM kin_registers
           WHERE org_id = ${orgId} AND register_id = ${id}`;
       const proposals = (chatId: KinChatId) =>
         sql<{ id: string; widgetId: string | null; definedAt: number | null }>`SELECT
@@ -1186,7 +1188,7 @@ it.effect("a tap on a list proposal's own card makes the list once, for an owner
             { label: "Vendor", type: "text" },
             { label: extra, type: "text" },
           ],
-          amount: true,
+          team: true,
         });
       for (const [who, chatId, name] of [
         [meera, meeraChat, "Stationery"],
@@ -1204,7 +1206,9 @@ it.effect("a tap on a list proposal's own card makes the list once, for an owner
           WHERE org_id = ${orgId} AND chat_id = ${chatId} AND type = 'choice'`;
         assert.strictEqual(cards[0]!.n, 1);
         const widgetId = stored[0]!.widgetId;
-        assert.strictEqual(card(yield* kin.widget(widgetId)).options[0]?.label, "Create it");
+        const shown = card(yield* kin.widget(widgetId));
+        assert.strictEqual(shown.options[0]?.label, "Create it");
+        assert.include(shown.detail?.split("\n") ?? [], "The whole team will see and add entries.");
 
         const id = String(first.value.list);
         if (who === owner) {
@@ -1225,13 +1229,15 @@ it.effect("a tap on a list proposal's own card makes the list once, for an owner
           assert.include(refused, { reason: "not_found" });
           assert.lengthOf(yield* lists(id), 0);
         }
+        yield* TestClock.adjust("1 millis");
+        const confirmedAt = yield* Clock.currentTimeMillis;
         yield* kin.tap(who, widgetId, "option-1", `${name}-tap`);
-        assert.deepStrictEqual(yield* lists(id), [{ name }]);
+        assert.deepStrictEqual(yield* lists(id), [{ name, team: 1, teamSince: confirmedAt }]);
         assert.strictEqual(card(yield* kin.widget(widgetId)).outcome?.title, "List created");
         assert.isNotNull((yield* proposals(chatId))[0]!.definedAt);
         // A second tap, from another session, changes nothing.
         yield* kin.tap(who, widgetId, "option-1", `${name}-tap-again`);
-        assert.deepStrictEqual(yield* lists(id), [{ name }]);
+        assert.deepStrictEqual(yield* lists(id), [{ name, team: 1, teamSince: confirmedAt }]);
       }
     }).pipe(Effect.provide(layer)),
   ),

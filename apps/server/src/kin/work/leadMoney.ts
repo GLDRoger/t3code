@@ -194,6 +194,10 @@ export const DefineInput = Schema.Struct({
   }),
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
   sensitive: Schema.optional(Schema.Boolean),
+  team: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "True when the whole team works on this list: every teammate sees and adds its entries.",
+  }),
   dueLabel: Schema.optional(Label),
   dateLabel: Schema.optional(Label),
 });
@@ -334,6 +338,9 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
             `${one.label} (${one.type}${one.choices === undefined ? "" : `: ${one.choices.join(", ")}`})`,
         ),
         ...(shown.categories.length === 0 ? [] : [`Categories: ${shown.categories.join(", ")}`]),
+        ...((proposal._tag === "new" ? proposal.definition.team : proposal.team) === true
+          ? ["The whole team will see and add entries."]
+          : []),
       ].join("\n"),
       yes: proposal._tag === "new" ? "Create it" : "Add them",
       no: "Not now",
