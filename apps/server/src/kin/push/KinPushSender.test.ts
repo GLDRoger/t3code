@@ -468,6 +468,13 @@ describe("KinPushSender", () => {
         },
       });
       assert.isUndefined(apns.sent[0]?.collapseId);
+      // A due start asks first, so its heads-up promises no start.
+      apns.sent.length = 0;
+      const headsUp = yield* postWidget(sql, "deferral", { phase: "heads_up" }, [owner]);
+      yield* notify({ _tag: "widget", orgId, widgetId: headsUp });
+      assert.deepInclude(apns.sent[0]?.payload.aps, {
+        alert: { title: "Payments team", body: "A deferred task is due soon." },
+      });
 
       // A question card with no message of its own says what it asks, in the card's words.
       apns.sent.length = 0;
