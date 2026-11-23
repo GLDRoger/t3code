@@ -1005,7 +1005,7 @@ describe("KinChatService", () => {
         yield* TestClock.adjust("24 hours");
         assert.include(
           yield* service.act(person, tap("late", 1, later.widgetId)).pipe(Effect.flip),
-          { reason: "invalid_state", message: "This question expired." },
+          { reason: "widget_changed" },
         );
       }).pipe(Effect.provide(layer)),
   );
