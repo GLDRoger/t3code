@@ -146,7 +146,7 @@ it.effect.each([
     assert.isTrue(offered.has(keyOf("W-7")));
     assert.strictEqual(
       offered.has(keyOf("W-62")),
-      row.handle !== true && !row.kept.includes("W-62"),
+      row.handle !== true && !row.kept.some((key) => key === "W-62"),
     );
   }).pipe(Effect.provide(fixture())),
 );

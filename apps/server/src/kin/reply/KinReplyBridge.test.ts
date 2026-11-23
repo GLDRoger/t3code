@@ -220,13 +220,14 @@ const failure = (
   ordinal: number,
   code: string,
   runId: RunId,
+  message = "Claude could not authenticate.",
 ): OrchestrationV2TurnItem => ({
   ...base(id, ordinal, runId),
   status: "failed",
   type: "error",
   failure: {
     class: "provider_error",
-    message: "Claude could not authenticate.",
+    message,
     code,
     retryable: null,
   },
@@ -1707,25 +1708,73 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
   }).pipe(Effect.provide(layer)),
 );
 
-// QA Q3: the CLI's synthetic "API Error: …" reply reached the chat as the lead's own words.
-it.effect("keeps a provider's error text out of the chat when its run failed", () =>
-  Effect.gen(function* () {
-    const { fake, runId, bridge, owner, wakeupId, posted, projectId } = yield* setup({
-      ask: "Is CI green?",
-    });
-    fake.items = [
-      text("a", 1, "API Error: 529 Overloaded", runId),
-      failure("e", 2, "api_error_529", runId),
-    ];
-    yield* bridge.complete({
-      orgId: owner.orgId,
-      wakeupId,
-      projectId,
-      rootRunId: runId,
-      rescue: false,
-    });
-    assert.deepStrictEqual(yield* posted, []);
-  }).pipe(Effect.provide(layer)),
+it.effect.each([
+  { code: "api_error_529", diagnostic: "API Error: 529 Overloaded" },
+  { code: "api_error_503", diagnostic: "503 Service Unavailable: the provider is offline." },
+  {
+    code: "authentication_failed",
+    diagnostic: "Authentication failed.\n\nThe provider rejected the account's session.",
+    live: true,
+  },
+  {
+    code: "authentication_failed",
+    diagnostic: "Not logged in · Please run /login",
+    detail: "Sign in to use this provider.",
+    reply: "The payment is ready for your review.",
+  },
+])(
+  "keeps provider errors out of the chat and settles events only for a real reply ($code, $reply)",
+  ({ code, diagnostic, detail, live, reply }) =>
+    Effect.gen(function* () {
+      const { fake, runId, bridge, owner, wakeupId, posted, projectId, services, sql } =
+        yield* setup({ event: checkInEvent("checkin-afternoon") });
+      const finalText = text("error-text", 2, diagnostic, runId);
+      fake.items = [
+        ...(reply === undefined ? [] : [text("reply", 1, reply, runId)]),
+        finalText,
+        failure("e", 3, code, runId, detail ?? diagnostic),
+      ];
+      if (live === true) {
+        const all = yield* Context.get(services, KinChatHub).subscribeAll;
+        const sawFinalText = yield* all.pipe(
+          Stream.filter(
+            (event) => event.type === "presence.updated" && event.presence?.state === "thinking",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* Queue.offer(fake.live, itemEvent(finalText));
+        yield* Queue.offer(fake.live, turnEvent("after-error-text"));
+        yield* Fiber.join(sawFinalText);
+      }
+      yield* bridge.complete({
+        orgId: owner.orgId,
+        wakeupId,
+        projectId,
+        rootRunId: runId,
+        rescue: false,
+      });
+      const finished = yield* Context.get(services, KinEventQueue.KinEventQueue).finish({
+        orgId: owner.orgId,
+        wakeupId,
+        status: "failed",
+        ...(code === "authentication_failed" ? { holdUntil: 60_000 } : {}),
+      });
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => row.body),
+        reply === undefined ? [] : [reply],
+      );
+      assert.include(finished, {
+        replied: reply === undefined ? 0 : 1,
+        retried: reply === undefined ? 1 : 0,
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT state, replied_at IS NOT NULL AS replied
+          FROM kin_events WHERE org_id = ${owner.orgId} ORDER BY event_id`,
+        [reply === undefined ? { state: "queued", replied: 0 } : { state: "done", replied: 1 }],
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each([
