@@ -11,7 +11,7 @@ import type { ListShown } from "./words.ts";
  * The lists among `ids` this viewer reaches as Lists shows them (`ownerMoney.lists`): live, and for
  * a teammate not sensitive, and either a team list or one with Money on and an entry they see.
  */
-export const listsSeen = Effect.fn("KinShell.listsSeen")(function* (
+const listsSeen = Effect.fn("KinShell.listsSeen")(function* (
   orgId: KinOrgId,
   ids: ReadonlyArray<string>,
   viewer: KinViewer,
