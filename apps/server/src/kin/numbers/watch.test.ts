@@ -304,7 +304,7 @@ it.effect(
 
       // Its run asks for every number it keeps from that source, as of yesterday.
       assert.deepStrictEqual(yield* feedTurn(orgId, scheduleId, NOW), {
-        text: `Record "Daily users" (G-1) and "Weekly users" (G-2) from "${SOURCE}" as of 2026-11-11. If this is the first run, record up to 28 days back. If the source can't be read, say so in one line and record nothing.`,
+        text: `Record "Daily users" (G-1) and "Weekly users" (G-2) from "${SOURCE}" as of 2026-11-11. If this is the first run, record up to 28 days back. If the source can't be read, say so in one line and record nothing. When it is recorded, reply NO_REPLY: a fetch that worked needs no message, and Kin tells you separately if a number is outside its limit.`,
       });
       // The keeper's prompt says where and when it fetches them.
       yield* turn(2);

@@ -887,7 +887,7 @@ it.effect(
       yield* stored("feed-wake", [feedRun]);
       const fed = { ...input, wakeupId: KinWakeupId.make("feed-wake"), events: [feedRun] };
       expect(yield* prompt.build(fed)).toContain(
-        `\n\nRecord "DAU" (G-1) from "PostHog" as of 2026-11-20. If this is the first run, record up to 28 days back. If the source can't be read, say so in one line and record nothing.`,
+        `\n\nRecord "DAU" (G-1) from "PostHog" as of 2026-11-20. If this is the first run, record up to 28 days back. If the source can't be read, say so in one line and record nothing. When it is recorded, reply NO_REPLY: a fetch that worked needs no message, and Kin tells you separately if a number is outside its limit.`,
       );
       // An archived number is left out: here nothing is left, so the run stays silent.
       yield* sql`UPDATE kin_records SET state = 'dropped' WHERE org_id = ${orgId} AND key = 'G-1'`;

@@ -59,7 +59,7 @@ export const feedTurnText = (
   source: string,
   period: string,
 ) =>
-  `Record ${namedList(numbers)} from ${encoded(source)} as of ${period}. If this is the first run, record up to 28 days back. If the source can't be read, say so in one line and record nothing.`;
+  `Record ${namedList(numbers)} from ${encoded(source)} as of ${period}. If this is the first run, record up to 28 days back. If the source can't be read, say so in one line and record nothing. When it is recorded, reply NO_REPLY: a fetch that worked needs no message, and Kin tells you separately if a number is outside its limit.`;
 
 /** How often a feed runs, as the keeper's prompt line says it. */
 export const cadenceText = (every: "day" | "week" | "month") =>
