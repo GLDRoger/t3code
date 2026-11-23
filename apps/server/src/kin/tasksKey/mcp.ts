@@ -3,6 +3,7 @@ import type { SectionId } from "../shell/sections.ts";
 import { MATERIAL } from "../you/projection.ts";
 import {
   KinChatError,
+  KinDay,
   KinMoney,
   KinMoneySummary,
   KinMoneyTotals,
@@ -41,7 +42,19 @@ import {
   readsMoney,
   searchMemory,
 } from "./reads.ts";
-import { commentMine, getMine, listMine, setStateMine } from "./tasks.ts";
+import { CodingAgentCall } from "../work/keyCall.ts";
+import { listPeople } from "./people.ts";
+import {
+  commentMine,
+  createProject,
+  createTask,
+  getMine,
+  listMine,
+  listSeenBy,
+  setStateMine,
+  updateProject,
+  updateTask,
+} from "./tasks.ts";
 import { admit, type TasksKeyHolder } from "./TasksKeys.ts";
 
 /** Who this request's key acts as, and Kin's services: provided per request by `auth` below. */
@@ -207,12 +220,142 @@ const MemoryLines = Schema.Struct({
 
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 
+const Name = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120));
+const PersonName = Name.annotate({ description: "A name as list_people gives it, or me." });
+const Day = KinDay.annotate({ description: "A day, YYYY-MM-DD." });
+const TaskTitle = KinTrimmedText.check(Schema.isMinLength(1), Schema.isMaxLength(280));
+const Brief = Schema.String.check(Schema.isMaxLength(4_000)).annotate({
+  description: "What the task is, in plain words; replaces the brief.",
+});
+const AlsoOn = Schema.Array(PersonName)
+  .check(Schema.isMaxLength(20))
+  .annotate({ description: "Everyone else on it, by name; [] takes everyone off." });
+const ProjectKey = KinRecordKey.annotate({ description: "A project's key, such as P-3." });
+const ClientKey = KinRecordKey.annotate({ description: "A client's key, such as C-4." });
+const ProjectFields = {
+  client: Schema.optional(ClientKey),
+  lead: Schema.optional(PersonName.annotate({ description: "Who leads it, by name." })),
+  target: Schema.optional(Day.annotate({ description: "The day it should be done, YYYY-MM-DD." })),
+  notes: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(4_000)).annotate({ description: "Replaces its notes." }),
+  ),
+};
+
 const TasksKeyToolkit = Toolkit.make(
+  Tool.make("list_people", {
+    ...shared,
+    description:
+      "List the company's people and the agents the person this key belongs to may message, by name: kind is person or agent, and role is owner, co-owner, teammate or you for a person, what it does for an agent. Wherever a tool takes a holder, lead or someone on a task, pass a name from here.",
+    success: Schema.Struct({
+      people: Schema.Array(
+        Schema.Struct({
+          name: Schema.String,
+          kind: Schema.Literals(["person", "agent"]),
+          role: Schema.String,
+        }),
+      ),
+    }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("list_tasks", {
+    ...shared,
+    description:
+      "List the tasks the person this key belongs to can see in Kin, everyone's, soonest due first: by holder (a name from list_people), project key, or state (open, doing, waiting or done; all but done when left out). Each row gives the task's key, and its holder when that is not the person. A page at a time: pass next back as cursor.",
+    parameters: Schema.Struct({
+      holder: Schema.optional(PersonName.annotate({ description: "Only tasks this one holds." })),
+      project: Schema.optional(ProjectKey),
+      state: Schema.optional(Schema.Literals(["open", "doing", "waiting", "done"])),
+      cursor: Schema.optional(
+        Schema.String.check(Schema.isMaxLength(200)).annotate({
+          description: "The next value of the page before, for the page after it.",
+        }),
+      ),
+    }),
+    success: Schema.Struct({
+      tasks: Schema.Array(TaskSummary),
+      more: Schema.Boolean,
+      next: Schema.NullOr(Schema.String),
+      material: Schema.String,
+    }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("create_task", {
+    ...shared,
+    description:
+      "Make a task in Kin as the person this key belongs to, marked as from their coding agent, as they would in the app: whoever holds it is told, and an agent given it starts on it. holder is a name from list_people; left out, the task is the person's own. The same request again from this key makes nothing new and answers with the same task, by its key.",
+    parameters: Schema.Struct({
+      title: TaskTitle.annotate({ description: "What to do, in a few words." }),
+      brief: Schema.optional(Brief),
+      holder: Schema.optional(PersonName.annotate({ description: "Who it is for, by name." })),
+      project: Schema.optional(ProjectKey),
+      client: Schema.optional(ClientKey),
+      due: Schema.optional(Day.annotate({ description: "The day it is due, YYYY-MM-DD." })),
+      alsoOn: Schema.optional(AlsoOn),
+    }),
+    success: TaskDetail,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("update_task", {
+    ...shared,
+    description:
+      "Change a task as the person this key belongs to may in the app, marked as from their coding agent: title, brief, due day, project, client, who else is on it, and holder to give it to someone (they are told, as in the app). What is left out stays; null clears a due day, project or client. A change their app refuses them is refused here, saying who can; they may comment instead.",
+    parameters: Schema.Struct({
+      key: TaskKey,
+      title: Schema.optional(TaskTitle),
+      brief: Schema.optional(Brief),
+      holder: Schema.optional(PersonName.annotate({ description: "Give it to this one." })),
+      due: Schema.optional(Schema.NullOr(Day)),
+      project: Schema.optional(Schema.NullOr(ProjectKey)),
+      client: Schema.optional(Schema.NullOr(ClientKey)),
+      alsoOn: Schema.optional(AlsoOn),
+    }),
+    success: TaskDetail,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("create_project", {
+    ...shared,
+    description:
+      "For owners and co-owners: make a project as the person, marked as from their coding agent: title, client key, lead (a name from list_people; the person when left out), target day and notes. The same request again from this key makes nothing new. Answers as open_project does, with the project's key.",
+    parameters: Schema.Struct({ title: Name, ...ProjectFields }),
+    success: ProjectSheet,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("update_project", {
+    ...shared,
+    description:
+      "For owners and co-owners: change a project by its key, as the person, marked as from their coding agent: title, client, lead, target day, notes, or state (done, or open to reopen it; done is refused while open tasks point at it). What is left out stays. Answers as open_project does.",
+    parameters: Schema.Struct({
+      key: ProjectKey,
+      title: Schema.optional(Name),
+      ...ProjectFields,
+      state: Schema.optional(Schema.Literals(["open", "done"])),
+    }),
+    success: ProjectSheet,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   // No `parameters`: an empty Struct serializes to a schema MCP clients reject.
   Tool.make("list_my_tasks", {
     ...shared,
     description:
-      "List the open Kin tasks the person this key belongs to holds or is on, soonest due first: key, title, state, due date, project, and holder when someone else holds it.",
+      "List the open Kin tasks the person this key belongs to holds or is on, soonest due first: key, title, state, due date, project, and holder when someone else holds it. For everyone's tasks, or by holder, project or state: list_tasks.",
     success: Schema.Struct({
       tasks: Schema.Array(TaskSummary),
       more: Schema.Boolean,
@@ -226,7 +369,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("get_task", {
     ...shared,
     description:
-      "Read one of that person's tasks: title, brief, state, due date, project and the newest comments. A task they neither hold nor are on is not found.",
+      "Read one task the person this key belongs to can see in Kin, by its key: title, brief, state, due date, project, holder and the newest comments. One they can't see is not found.",
     parameters: Schema.Struct({ key: TaskKey }),
     success: TaskDetail,
   })
@@ -237,7 +380,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("comment_on_task", {
     ...shared,
     description:
-      "Add a comment to one of that person's tasks. It is posted as them, marked as from their coding agent. The same text again posts nothing new.",
+      "Add a comment to a task the person this key belongs to can see in Kin. It is posted as them, marked as from their coding agent, and whoever holds the task and whoever asked for it are told, as for a comment made in the app. The same text again posts nothing new.",
     parameters: Schema.Struct({
       key: TaskKey,
       text: KinTrimmedText.check(Schema.isMaxLength(4_000)).annotate({
@@ -253,7 +396,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("set_task_state", {
     ...shared,
     description:
-      "Set a task that person holds to doing (started), done, or open (not started). The change is theirs, marked as from their coding agent. A task they are only on is theirs to read and comment on, not to change.",
+      "Set a task to doing (started), done, or open (not started), as the person this key belongs to, marked as from their coding agent. Who may is as in the app: its holder, an owner or co-owner, or its project's lead; anyone else is told who can, and may comment instead.",
     parameters: Schema.Struct({
       key: TaskKey,
       state: Schema.Literals(["open", "doing", "done"]),
@@ -375,18 +518,26 @@ const TasksKeyToolkit = Toolkit.make(
     .annotate(Tool.OpenWorld, false),
 );
 export const TASKS_KEY_TOOLS = Object.keys(TasksKeyToolkit.tools);
+
+/** The one standing line an outside agent reads on connecting: who it acts as, and what it can't. */
+export const TASKS_KEY_INSTRUCTIONS =
+  "Kin, as the person this key belongs to: every tool acts as them, with what they can see and do in the Kin app, and what it writes is marked as from their coding agent. Name people and agents as list_people gives them. These stay a tap in the Kin app and have no tool here: answering a card (Confirm, a choice, an approval, Post it); anything that sends money or mail out of the company or records money as paid or received; people, roles, places and invitations (Settings → Team); connections, sign-ins and coding agent keys (Settings → Connections, Settings → Profile); updates, backups and the company's settings (Settings → Company details); deleting or archiving anything. When asked for one of these, say it is a tap in Kin and where, and don't look for a tool.";
 /** Listed, and callable, only for a person whose own screens open Money or Memory now. */
 const GATED: Partial<
   Record<string, (holder: TasksKeyHolder) => Effect.Effect<boolean, KinChatError, Services>>
 > = {
   money_summary: readsMoney,
   search_memory: readsMemory,
+  create_project: readsMemory,
+  update_project: readsMemory,
 };
 
 const TOOL_SECTIONS: Readonly<Partial<Record<string, SectionId>>> = {
   money_summary: "money",
   open_client: "clients",
   open_project: "clients",
+  create_project: "clients",
+  update_project: "clients",
 };
 const shellOf = Effect.fn("KinTasksKeyTools.shell")((holder: TasksKeyHolder) =>
   KinShell.get(holder.orgId).pipe(Effect.mapError(() => unavailable)),
@@ -411,8 +562,12 @@ const asHolder = Effect.fnUntraced(function* <A, R extends Services>(
 ) {
   const caller = yield* Effect.serviceOption(TasksKeyCaller);
   if (Option.isNone(caller)) return yield* unavailable;
+  const { holder, services } = caller.value;
   return cleaned(
-    yield* run(caller.value.holder).pipe(Effect.provideContext(caller.value.services)),
+    yield* run(holder).pipe(
+      Effect.provideContext(services),
+      Effect.provideService(CodingAgentCall, holder.sessionId),
+    ),
   );
 });
 
@@ -430,6 +585,44 @@ const cleanedValue = (value: unknown): unknown =>
 // The key's holder is the only authority here, checked by the service; T3's caller
 // declarations describe threads and clients, which a person's key is neither.
 const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
+  list_people: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.people")(() => asHolder(listPeople)),
+  ),
+  list_tasks: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.listTasks")((input) =>
+      asHolder((holder) => listSeenBy(holder, input)),
+    ),
+  ),
+  create_task: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.createTask")((input) =>
+      asHolder((holder) => createTask(holder, input)),
+    ),
+  ),
+  update_task: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.updateTask")((input) =>
+      asHolder((holder) => updateTask(holder, input)),
+    ),
+  ),
+  create_project: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.createProject")((input) =>
+      asHolder((holder) =>
+        requireSection(holder, "clients").pipe(
+          Effect.andThen(createProject(holder, input)),
+          Effect.flatMap((made) => openProject(holder, made.key)),
+        ),
+      ),
+    ),
+  ),
+  update_project: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.updateProject")((input) =>
+      asHolder((holder) =>
+        requireSection(holder, "clients").pipe(
+          Effect.andThen(updateProject(holder, input)),
+          Effect.andThen(openProject(holder, input.key)),
+        ),
+      ),
+    ),
+  ),
   list_my_tasks: McpToolAccess.reads(Effect.fn("KinTasksKeyTools.list")(() => asHolder(listMine))),
   get_task: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.get")((input) => asHolder((holder) => getMine(holder, input.key))),
@@ -588,6 +781,7 @@ const keyAsClient = Layer.mergeAll(
 /** `/kin/you/mcp`: these tools and nothing else, for a person's own coding agent. */
 const endpoint = McpHttpServer.layerMcpTransport(
   Layer.mergeAll(McpHttpServer.toolkitRegistration(TasksKeyToolkit, handlers), listed),
+  { instructions: TASKS_KEY_INSTRUCTIONS },
 ).pipe(
   Layer.provide(keyAsClient),
   Layer.fresh,

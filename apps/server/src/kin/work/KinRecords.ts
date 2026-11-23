@@ -141,6 +141,7 @@ import {
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
 import { directionOf, findBankList } from "./statements/bankList.ts";
+import { markedKey } from "./keyCall.ts";
 import { cleanTags } from "./tags.ts";
 import { notAVendor } from "./vendorName.ts";
 import {
@@ -200,10 +201,7 @@ export type Writer = {
   readonly deal?: true;
   /** A member's write in Clients: a name clashes only with what this person sees there (`crmSees`). */
   readonly namesSeenBy?: KinPersonId;
-  /**
-   * The person's own coding agent, with this key: the write reaches only a Work task that person
-   * holds now, whatever their level, and its history names the key.
-   */
+  /** The person's own coding agent, with this key: the change's history names the key. */
   readonly codingAgentKey?: string;
   /** Shared with the team when made; a turn others read shares its tasks too (`ROOM_LISTS`). */
   readonly teamShared?: boolean;
@@ -231,22 +229,11 @@ export type Writer = {
     readonly tappedBy?: KinPersonId;
   };
 };
-/** A Work task this writer, a person, holds or is on now, and nobody dropped. */
-const heldBy = (
-  row: {
-    readonly registerId: string;
-    readonly ownerKind: string;
-    readonly ownerId: string;
-    readonly state: KinRecordState;
-    readonly fieldsJson: string;
-  },
-  writer: Writer,
-) =>
-  row.registerId === "work" &&
-  row.state !== "dropped" &&
-  writer.actor._tag === "person" &&
-  ((row.ownerKind === "person" && row.ownerId === writer.actor.personId) ||
-    fieldList(parseFields(row.fieldsJson), "alsoOn").includes(`person:${writer.actor.personId}`));
+/** Deleting or archiving stays a person's own tap in the app: no coding agent's key does it. */
+const KEY_KEEPS = new KinChatError({
+  reason: "not_allowed",
+  message: "Deleting or archiving stays a tap in Kin: the person does it there.",
+});
 
 /** What an agent on a task hears when it tries what only its holder, or a person's word, may do. */
 export const ALSO_ON_UNASKED =
@@ -1000,7 +987,7 @@ const make = Effect.gen(function* () {
       wakeup_id: writer.wakeupId ?? null,
       chat_id: writer.chatId ?? null,
       asked_by_person_id: writer.actor._tag === "agent" ? (writer.askedBy ?? null) : null,
-      coding_agent_key: writer.codingAgentKey ?? null,
+      coding_agent_key: (yield* markedKey(writer)) ?? null,
     };
   });
 
@@ -1182,6 +1169,7 @@ const make = Effect.gen(function* () {
     )
       return false;
     if (assignedBy === null) return false;
+    const codingAgentKey = yield* markedKey(writer);
     const [lead] = yield* sql<{ memberId: string; ownerPersonId: string }>`
       SELECT m.member_id AS "memberId", a.owner_person_id AS "ownerPersonId"
       FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
@@ -1226,9 +1214,9 @@ const make = Effect.gen(function* () {
       .pipe(
         // Given out after an outside read, or by a coding agent: the receiving turn starts marked.
         Effect.tap(({ event }) =>
-          writer.codingAgentKey !== undefined
+          codingAgentKey !== undefined
             ? sql<{ label: string }>`SELECT label FROM kin_tasks_keys
-                WHERE org_id = ${orgId} AND session_id = ${writer.codingAgentKey}`.pipe(
+                WHERE org_id = ${orgId} AND session_id = ${codingAgentKey}`.pipe(
                 Effect.flatMap(([key]) =>
                   stampEvent(orgId, event.eventId, codingAgentSource(key?.label ?? "Coding agent")),
                 ),
@@ -2269,8 +2257,8 @@ const make = Effect.gen(function* () {
                 ...given,
                 fields: yield* cleanTags(orgId, row.registerId, given.fields).pipe(provideSql),
               };
-        if (writer.codingAgentKey !== undefined && !heldBy(row, writer))
-          return yield* notFound(key);
+        if (patch.state === "dropped" && (yield* markedKey(writer)) !== undefined)
+          return yield* KEY_KEEPS;
         const write = {
           row,
           changes: true,
@@ -2595,7 +2583,7 @@ const make = Effect.gen(function* () {
           list === "work" &&
           wanted === "done" &&
           !isClosed(row.state) &&
-          (writer.actor._tag === "agent" || writer.codingAgentKey !== undefined)
+          (writer.actor._tag === "agent" || (yield* markedKey(writer)) !== undefined)
             ? yield* sql<{ personId: string }>`SELECT person_id AS "personId" FROM kin_questions
                 WHERE org_id = ${orgId} AND state = 'open'
                   AND (' ' || about || ' ') LIKE ${`% ${row.key} %`}

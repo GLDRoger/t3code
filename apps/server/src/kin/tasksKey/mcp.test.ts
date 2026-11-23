@@ -189,26 +189,31 @@ it.effect(
           ]),
         );
       });
-      // A person's own terminal client asks before a call by these; a flip shows here. Only a
-      // task's comment and state are written; every other tool only reads.
+      // A person's own terminal client asks before a call by these; a flip shows here. Nothing
+      // here deletes, and every write is safe to repeat.
       const read = { readOnly: true, destructive: false, idempotent: true, openWorld: false };
       const write = { readOnly: false, destructive: false, idempotent: true, openWorld: false };
-      const reads = { find: read, open_project: read, open_client: read, read_doc: read };
-      // Zoya has no Money and no Memory page, so her key lists neither.
-      assert.deepStrictEqual(yield* toolsOf(issued.secret), {
+      const everyone = {
+        list_people: read,
+        list_tasks: read,
+        create_task: write,
+        update_task: write,
         list_my_tasks: read,
         get_task: read,
         comment_on_task: write,
         set_task_state: write,
-        ...reads,
-      });
+        find: read,
+        open_project: read,
+        open_client: read,
+        read_doc: read,
+      };
+      // Zoya has no Money and no Memory page and makes no projects, so her key lists none of them.
+      assert.deepStrictEqual(yield* toolsOf(issued.secret), everyone);
       const owners = yield* TasksKeys.issue(rhea.app, { orgId });
       assert.deepStrictEqual(yield* toolsOf(owners.secret), {
-        list_my_tasks: read,
-        get_task: read,
-        comment_on_task: write,
-        set_task_state: write,
-        ...reads,
+        ...everyone,
+        create_project: write,
+        update_project: write,
         money_summary: read,
         search_memory: read,
       });
@@ -234,11 +239,13 @@ it.effect(
       assert.notProperty(ownerTools, "money_summary");
       assert.notProperty(ownerTools, "open_project");
       assert.notProperty(ownerTools, "open_client");
+      assert.notProperty(ownerTools, "create_project");
       assert.property(ownerTools, "find");
       const calls = [
         ["money_summary", {}, "Money"],
         ["open_client", { key: "C-3" }, "Clients"],
         ["open_project", { key: "P-3" }, "Clients"],
+        ["create_project", { title: "Invented" }, "Clients"],
       ] as const;
       for (const [name, args, label] of calls) {
         const started = yield* call({
@@ -276,18 +283,34 @@ it.effect(
       }
       yield* setShell(1, true);
       // And called anyway, they answer as tools that aren't there.
-      for (const name of ["money_summary", "search_memory"]) {
+      const unknown = yield* text(
+        yield* call({
+          token: issued.secret,
+          method: "tools/call",
+          params: { name: "no_such_tool", arguments: {} },
+          ...(session === undefined ? {} : { session }),
+        }),
+      );
+      for (const [name, args] of [
+        ["money_summary", {}],
+        ["search_memory", { text: "kiln" }],
+        ["create_project", { title: "Invented: kiln" }],
+      ] as const) {
         const refused = yield* text(
           yield* call({
             token: issued.secret,
             method: "tools/call",
-            params: { name, arguments: name === "money_summary" ? {} : { text: "kiln" } },
+            params: { name, arguments: args },
             ...(session === undefined ? {} : { session }),
           }),
         );
         assert.include(refused, `"error"`);
         assert.notInclude(refused, "owed");
+        assert.strictEqual(refused.replaceAll(name, "no_such_tool"), unknown);
       }
+      const made = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
+        WHERE title = 'Invented: kiln'`;
+      assert.strictEqual(made[0]?.n, 0);
       // Rhea's key over the endpoint: a wrong kind, another company's entry and one never there
       // all answer the same; text a reader can't see is gone; and no read writes business data.
       const writer = {
@@ -392,3 +415,21 @@ it.effect(
       assert.strictEqual(after.status, 401);
     }).pipe(Effect.scoped, Effect.provide(layer)),
 );
+
+it("what stays a tap in Kin has no tool behind a key, and the connecting agent is told so", () => {
+  // Each group the app keeps to a person's own tap, by the words a tool for it would be named with.
+  const stays = {
+    cards: ["confirm", "approve", "reject", "answer", "choose", "choice", "decline", "post"],
+    moneyOrMailOut: ["send", "mail", "email", "pay", "paid", "payment", "issue", "receipt"],
+    people: ["invite", "role", "access", "places", "switch", "remove_person", "person"],
+    connections: ["connect", "sign_in", "signin", "github", "social", "key"],
+    host: ["backup", "update_host", "host", "settings", "section", "shell"],
+    deleteOrArchive: ["delete", "archive", "remove", "drop", "void", "forget", "clear"],
+  };
+  for (const [group, words] of Object.entries(stays))
+    for (const tool of KinTasksKeyMcp.TASKS_KEY_TOOLS)
+      for (const word of words)
+        assert.notInclude(tool.split("_").concat(tool), word, `${tool} reaches ${group}`);
+  for (const place of ["a card", "money or mail out", "Settings → Team", "deleting or archiving"])
+    assert.include(KinTasksKeyMcp.TASKS_KEY_INSTRUCTIONS, place);
+});

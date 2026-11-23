@@ -1,14 +1,31 @@
-import type { KinRecordState } from "@t3tools/contracts";
+import {
+  KinChatError,
+  type KinRecordKey,
+  type KinRecordState,
+  type KinWorkPrincipal,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
-import { type CodingAgentConnection, connectionOf } from "../work/codingAgent.ts";
-import { get, list, update } from "../work/ownerWork.ts";
+import { type CodingAgentConnection, connectionOf, keyHidden } from "../work/codingAgent.ts";
+import { CodingAgentCall } from "../work/keyCall.ts";
+import { requestHashOf as entryHashOf } from "../work/KinRecords.ts";
+import * as Clients from "../work/ownerClients.ts";
+import {
+  assign,
+  connectionViewer,
+  create,
+  get,
+  list,
+  listSeen,
+  update,
+} from "../work/ownerWork.ts";
 import { requestHashOf } from "../work/recordComments.ts";
 import { workFailure } from "../work/recordRows.ts";
 import { comment } from "../work/workComments.ts";
 import { commentResult, taskRows, taskSheet } from "../you/projection.ts";
+import { whoNamed } from "./people.ts";
 import type { TasksKeyHolder } from "./TasksKeys.ts";
 
 /** The states a coding agent may set: start, finish, or put a task back to open. */
@@ -24,6 +41,48 @@ export const asPerson = (holder: TasksKeyHolder) => {
   ];
   return { connection, people };
 };
+
+/**
+ * `run` as the key's person, as their own screen's method runs it, with the key's checks in the
+ * same transaction: the key still theirs and live.
+ */
+const keyed = Effect.fn("KinTasksKey.keyed")(function* <A, E extends { readonly _tag: string }, R>(
+  holder: TasksKeyHolder,
+  run: (people: ReadonlyArray<PersonIdentity>) => Effect.Effect<A, E, R>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { connection, people } = asPerson(holder);
+  return yield* connectionViewer(people, connection, holder.orgId).pipe(
+    Effect.andThen(run(people)),
+    sql.withTransaction,
+    workFailure,
+    Effect.provideService(CodingAgentCall, holder.sessionId),
+  );
+});
+
+/** A key a key never carries (labelled, or under a labelled client or project) is unknown. */
+const reachKey = Effect.fn("KinTasksKey.reachKey")(function* (
+  holder: TasksKeyHolder,
+  key: KinRecordKey,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ id: string }>`SELECT record_id AS id FROM kin_records
+    WHERE org_id = ${holder.orgId} AND key = ${key}`.pipe(workFailure);
+  if (row !== undefined && (yield* keyHidden(holder.orgId, [row.id]).pipe(workFailure)).size > 0)
+    return yield* new KinChatError({ reason: "not_found", message: `No ${key} here.` });
+  return key;
+});
+const reachable = <K extends KinRecordKey | null | undefined>(holder: TasksKeyHolder, key: K) =>
+  key === undefined || key === null
+    ? Effect.succeed(key)
+    : reachKey(holder, key).pipe(Effect.as(key));
+
+/** The same request from the same key is the same request id, so a retry makes nothing new. */
+const requestIdOf = (holder: TasksKeyHolder, kind: string, request: object) =>
+  `key:${holder.sessionId}:${kind}:${entryHashOf({ clientRequestId: "", ...request }).slice(0, 40)}`;
+
+const due = (day: string | null | undefined) =>
+  day === undefined ? {} : day === null ? { dueAt: null } : { dueAt: day, dueAllDay: true };
 
 /** The person's open tasks, soonest due first. */
 export const listMine = Effect.fn("KinTasksKey.list")(function* (holder: TasksKeyHolder) {
@@ -92,5 +151,200 @@ export const setStateMine = Effect.fn("KinTasksKey.setState")(function* (
     Effect.flatMap((sheet) => taskSheet(connection, sheet)),
     sql.withTransaction,
     workFailure,
+  );
+});
+
+const sheetOf = Effect.fn("KinTasksKey.sheetOf")(function* (holder: TasksKeyHolder, key: string) {
+  return yield* getMine(holder, key);
+});
+
+/**
+ * What the person's Tasks list shows them, by holder (a name `list_people` gives), project or
+ * state, soonest due first; open, doing and waiting unless a state is asked for.
+ */
+export const listSeenBy = Effect.fn("KinTasksKey.listSeen")(function* (
+  holder: TasksKeyHolder,
+  input: {
+    readonly holder?: string | undefined;
+    readonly project?: KinRecordKey | undefined;
+    readonly state?: Exclude<KinRecordState, "dropped"> | undefined;
+    readonly cursor?: string | undefined;
+  },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { connection, people } = asPerson(holder);
+  const owner = input.holder === undefined ? undefined : yield* whoNamed(holder, input.holder);
+  const project = yield* reachable(holder, input.project);
+  const page = yield* listSeen(
+    people,
+    {
+      orgId: holder.orgId,
+      limit: LIST_CAP,
+      ...(owner === undefined ? {} : { owner }),
+      ...(project === undefined ? {} : { project }),
+      ...(input.state === undefined ? { open: true } : { states: [input.state] }),
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+    },
+    connection,
+  ).pipe(workFailure);
+  if (!("records" in page)) return yield* Effect.die("Work answered a key's list in compact rows");
+  const rows = yield* taskRows(connection, page.records, page.nextCursor !== null).pipe(
+    sql.withTransaction,
+    workFailure,
+  );
+  return { ...rows, next: page.nextCursor };
+});
+
+export type TaskFields = {
+  readonly title?: string | undefined;
+  readonly brief?: string | undefined;
+  readonly project?: KinRecordKey | null | undefined;
+  readonly client?: KinRecordKey | null | undefined;
+  readonly due?: string | null | undefined;
+  readonly alsoOn?: ReadonlyArray<string> | undefined;
+};
+const principals = (holder: TasksKeyHolder, names: ReadonlyArray<string> | undefined) =>
+  names === undefined ? Effect.undefined : Effect.forEach(names, (name) => whoNamed(holder, name));
+
+/**
+ * A new task, as the person makes one in the app: given to a holder by name (the person when
+ * none), who is told as from the app. The same request again from this key is the same task.
+ */
+export const createTask = Effect.fn("KinTasksKey.createTask")(function* (
+  holder: TasksKeyHolder,
+  input: TaskFields & { readonly title: string; readonly holder?: string | undefined },
+) {
+  const { connection, people } = asPerson(holder);
+  const owner: KinWorkPrincipal | undefined =
+    input.holder === undefined ? undefined : yield* whoNamed(holder, input.holder);
+  const alsoOn = yield* principals(holder, input.alsoOn);
+  const project = yield* reachable(holder, input.project);
+  const party = yield* reachable(holder, input.client);
+  const request = {
+    title: input.title,
+    ...(input.brief === undefined ? {} : { notes: input.brief }),
+    ...(owner === undefined ? {} : { owner }),
+    ...(project === undefined || project === null ? {} : { project }),
+    ...(party === undefined || party === null ? {} : { party }),
+    ...(input.due === undefined || input.due === null ? {} : { dueAt: input.due, dueAllDay: true }),
+    ...(alsoOn === undefined ? {} : { alsoOn }),
+  };
+  const made = yield* create(
+    people,
+    { orgId: holder.orgId, clientRequestId: requestIdOf(holder, "task", request), ...request },
+    connection,
+  ).pipe(workFailure);
+  return yield* sheetOf(holder, made.key);
+});
+
+/**
+ * Changes a task as the person's screen may, and gives it to someone else by name; who it was
+ * given to is told as from the app. A field left out stays as it is.
+ */
+export const updateTask = Effect.fn("KinTasksKey.updateTask")(function* (
+  holder: TasksKeyHolder,
+  input: TaskFields & { readonly key: KinRecordKey; readonly holder?: string | undefined },
+) {
+  const { connection, people } = asPerson(holder);
+  const to = input.holder === undefined ? undefined : yield* whoNamed(holder, input.holder);
+  const alsoOn = yield* principals(holder, input.alsoOn);
+  const project = yield* reachable(holder, input.project);
+  const party = yield* reachable(holder, input.client);
+  const patch = {
+    ...(input.title === undefined ? {} : { title: input.title }),
+    ...(input.brief === undefined ? {} : { notes: input.brief }),
+    ...(project === undefined ? {} : { project }),
+    ...(party === undefined ? {} : { party }),
+    ...due(input.due),
+    ...(alsoOn === undefined ? {} : { alsoOn }),
+  };
+  if (Object.keys(patch).length === 0 && to === undefined)
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: "Nothing to change: give a field to change or someone to give it to.",
+    });
+  if (Object.keys(patch).length > 0)
+    yield* update(people, { orgId: holder.orgId, key: input.key, ...patch }, connection).pipe(
+      workFailure,
+    );
+  if (to !== undefined)
+    yield* assign(people, { orgId: holder.orgId, key: input.key, to }, connection).pipe(
+      workFailure,
+    );
+  return yield* sheetOf(holder, input.key);
+});
+
+export type ProjectFields = {
+  readonly title?: string | undefined;
+  readonly client?: KinRecordKey | null | undefined;
+  readonly lead?: string | undefined;
+  readonly target?: string | null | undefined;
+  readonly notes?: string | undefined;
+};
+const projectPatch = Effect.fn("KinTasksKey.projectPatch")(function* (
+  holder: TasksKeyHolder,
+  input: ProjectFields,
+) {
+  const party = yield* reachable(holder, input.client);
+  const owner = input.lead === undefined ? undefined : yield* whoNamed(holder, input.lead);
+  return {
+    ...(input.title === undefined ? {} : { name: input.title }),
+    ...(party === undefined ? {} : { party }),
+    ...(owner === undefined ? {} : { owner }),
+    ...(input.notes === undefined ? {} : { notes: input.notes }),
+  };
+});
+const target = (day: string | null | undefined) =>
+  day === undefined
+    ? {}
+    : day === null
+      ? { targetAt: null }
+      : { targetAt: day, targetAllDay: true };
+
+/** A new project, as the person's Projects screen makes one; the same request again is the same. */
+export const createProject = Effect.fn("KinTasksKey.createProject")(function* (
+  holder: TasksKeyHolder,
+  input: ProjectFields & { readonly title: string },
+) {
+  const { party, ...patch } = yield* projectPatch(holder, input);
+  const request = {
+    ...patch,
+    name: input.title,
+    ...(party === undefined || party === null ? {} : { party }),
+    ...(input.target === undefined || input.target === null
+      ? {}
+      : { targetAt: input.target, targetAllDay: true }),
+  };
+  return yield* keyed(holder, (people) =>
+    Clients.createProject(people, {
+      orgId: holder.orgId,
+      clientRequestId: requestIdOf(holder, "project", request),
+      ...request,
+    }),
+  );
+});
+
+/** Changes a project as the person's project page may, at its revision now. */
+export const updateProject = Effect.fn("KinTasksKey.updateProject")(function* (
+  holder: TasksKeyHolder,
+  input: ProjectFields & {
+    readonly key: KinRecordKey;
+    readonly state?: "open" | "done" | undefined;
+  },
+) {
+  yield* reachKey(holder, input.key);
+  const patch = yield* projectPatch(holder, input);
+  return yield* keyed(holder, (people) =>
+    Effect.gen(function* () {
+      const page = yield* Clients.project(people, { orgId: holder.orgId, key: input.key });
+      return yield* Clients.updateProject(people, {
+        orgId: holder.orgId,
+        key: input.key,
+        rev: page.project.rev,
+        ...patch,
+        ...target(input.target),
+        ...(input.state === undefined ? {} : { state: input.state }),
+      });
+    }),
   );
 });

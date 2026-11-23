@@ -296,12 +296,14 @@ the figures in the quote or the invoice.
 
 ### Your tasks in your own coding agent
 
-A coding agent key lets your own coding agent, such as Claude Code, Codex or Cursor, work from what
-you see in Kin. It reads the tasks you hold, adds comments to them, and sets them to to-do, in
-progress or done; those comments and states are the only things it can change. It can also read,
-never change, the projects, clients and docs you can see, your Money figures if you have Money, and,
-for the owner and co-owners only, what Kin remembers that the team may know. It can't reach anyone
-else's tasks, your chats, or anything your own screens don't show you.
+A coding agent key lets your own coding agent, such as Claude Code, Codex or Cursor, work in Kin as
+you. It sees what you can see in Kin and does what you can do there, under the same rules: it makes
+tasks and gives them to people or agents, changes them, comments on them and sets them going or done,
+and owners and co-owners can make and change projects. Everything it changes shows as from your coding
+agent. Some things stay a tap in Kin itself and have no way in through a key: answering cards
+(Confirm, choices, approvals), sending money or mail out of the company or marking money paid,
+people and their access, connections, sign-ins and keys, updates, backups and company settings, and
+deleting or archiving anything. It can't read your chats.
 
 Clients, projects, tasks, deals, docs and money entries marked private, and everything under a
 private client or project, stay in Kin: no key reads them, whoever holds it, the owner's included.

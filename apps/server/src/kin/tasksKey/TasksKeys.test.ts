@@ -64,8 +64,18 @@ import {
   searchMemory,
   unknownKey,
 } from "./reads.ts";
-import { commentMine, getMine, listMine, setStateMine } from "./tasks.ts";
-import { onlyOnIt } from "../work/codingAgent.ts";
+import { listPeople } from "./people.ts";
+import {
+  commentMine,
+  createProject,
+  createTask,
+  getMine,
+  listMine,
+  listSeenBy,
+  setStateMine,
+  updateProject,
+  updateTask,
+} from "./tasks.ts";
 import { admitted, layer, layerAt, team } from "./tasksKey.testkit.ts";
 import * as TasksKeys from "./TasksKeys.ts";
 import { KIN_GITHUB_HOOK_ROUTE } from "../github/appHook.ts";
@@ -151,7 +161,7 @@ it.effect("a person makes keys only for themself, three at most, even two at onc
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a key reaches only tasks its person holds, narrowly and as them, even the owner's", () =>
+it.effect("a key reaches the tasks its person's screen shows, and changes them as them", () =>
   Effect.gen(function* () {
     const { orgId, rhea, zoya, arjun } = yield* team;
     const records = yield* Records.KinRecords;
@@ -214,46 +224,31 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       more: false,
       material: MATERIAL,
     });
-    // No money, no client, nobody else's: the narrow view and nothing more.
+    // No money and no client on a task: what her Tasks screen shows of it.
     assert.deepStrictEqual(yield* getMine(zoyaKey, hers.key), {
       ...task,
       brief: "Invented brief: two rooms",
       material: MATERIAL,
       comments: [],
     });
-    for (const other of [shared, given, owners])
-      assert.strictEqual(yield* reason(getMine(zoyaKey, other.key)), "not_found");
-    // The owner's key is as narrow: only what Rhea holds.
+    // What her app shows her, her key reads: one shared with the team and one she gave away,
+    // never the owner's own.
+    assert.strictEqual((yield* getMine(zoyaKey, shared.key)).holder, "Arjun");
+    assert.strictEqual((yield* getMine(zoyaKey, given.key)).holder, "Arjun");
+    assert.strictEqual(yield* reason(getMine(zoyaKey, owners.key)), "not_found");
+    // `list_my_tasks` stays what the person holds or is on, the owner's too.
     assert.deepStrictEqual(
       (yield* listMine(rheaKey)).tasks.map((one) => one.key),
       [owners.key],
     );
-    assert.strictEqual(yield* reason(getMine(rheaKey, hers.key)), "not_found");
+    // The owner's key reads and comments on Zoya's task, as the owner's app does.
+    assert.strictEqual((yield* getMine(rheaKey, hers.key)).holder, "Zoya");
+    // A task only its holder changes stays Arjun's: refused as her screen is.
     assert.strictEqual(
-      yield* reason(setStateMine(rheaKey, { key: hers.key, state: "done" })),
-      "not_found",
+      yield* reason(setStateMine(zoyaKey, { key: shared.key, state: "done" })),
+      "not_allowed",
     );
-    // Zoya gave it, so her app may change it; her key may not, and neither may the writer.
-    assert.strictEqual(
-      yield* reason(setStateMine(zoyaKey, { key: given.key, state: "done" })),
-      "not_found",
-    );
-    assert.strictEqual(
-      yield* reason(
-        records.update(
-          orgId,
-          { ...writer(zoya.personId), codingAgentKey: zoyaKey.sessionId },
-          given.key,
-          { state: "done" },
-        ),
-      ),
-      "not_found",
-    );
-    assert.strictEqual(
-      yield* reason(commentMine(zoyaKey, { key: given.key, text: "Invented" })),
-      "not_found",
-    );
-    assert.strictEqual((yield* records.get(orgId, given.key))?.state, "open");
+    assert.strictEqual((yield* records.get(orgId, shared.key))?.state, "open");
 
     // A comment is hers, through the key; the same words again are the same comment.
     const said = { key: hers.key, text: "Invented: the hall is booked" };
@@ -313,17 +308,18 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       (yield* setStateMine(zoyaKey, { key: hers.key, state: "open" })).state,
       "open",
     );
-    // Once it is Arjun's, her key no longer reaches it.
+    // Once it is Arjun's, her key still reads it, as her app does on a project she is on, and
+    // its state is Arjun's to change.
     yield* records.update(orgId, writer(rhea.personId), hers.key, {
       owner: { _tag: "person", personId: arjun.personId },
     });
-    assert.strictEqual(yield* reason(getMine(zoyaKey, hers.key)), "not_found");
+    assert.strictEqual((yield* getMine(zoyaKey, hers.key)).holder, "Arjun");
     assert.strictEqual(
       yield* reason(setStateMine(zoyaKey, { key: hers.key, state: "done" })),
-      "not_found",
+      "not_allowed",
     );
     // Put on it beside Arjun, her key lists it, naming who holds it, reads it and comments on
-    // it; its state stays Arjun's to change.
+    // it; its state stays Arjun's to change, refused in the words her own screen gets.
     yield* records.update(orgId, writer(rhea.personId), hers.key, {
       fields: { alsoOn: [`person:${zoya.personId}`] },
     });
@@ -338,10 +334,136 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
     );
     assert.deepInclude(
       yield* Effect.flip(setStateMine(zoyaKey, { key: hers.key, state: "doing" })),
-      { reason: "not_allowed", message: onlyOnIt(hers.key) },
+      {
+        reason: "not_allowed",
+        message:
+          "You're on this task, not holding it: you can comment or leave. Arjun can change it.",
+      },
     );
     assert.strictEqual((yield* getMine(zoyaKey, hers.key)).state, "open");
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a key makes and changes tasks and projects as its person, as far as their screen does",
+  () =>
+    Effect.gen(function* () {
+      const { orgId, rhea, zoya } = yield* team;
+      const records = yield* Records.KinRecords;
+      const sql = yield* SqlClient.SqlClient;
+      const zoyaKey = yield* admitted((yield* TasksKeys.issue(zoya.app, { orgId })).secret);
+      const rheaKey = yield* admitted((yield* TasksKeys.issue(rhea.app, { orgId })).secret);
+      // Who "him" is: everyone by the name their screens use, a member's teammates as teammates.
+      assert.deepStrictEqual((yield* listPeople(zoyaKey)).people, [
+        { name: "Arjun", kind: "person", role: "teammate" },
+        { name: "Rhea", kind: "person", role: "owner" },
+        { name: "Zoya", kind: "person", role: "you" },
+      ]);
+      const asked = {
+        title: "Invented: send the quote",
+        brief: "Invented brief: two pages",
+        holder: "Arjun",
+        due: "2026-12-04",
+      };
+      const made = yield* createTask(rheaKey, asked);
+      assert.deepInclude(made, {
+        title: asked.title,
+        brief: asked.brief,
+        holder: "Arjun",
+        due: "2026-12-04",
+      });
+      // The same request again is the same task; another person's key makes its own.
+      assert.strictEqual((yield* createTask(rheaKey, asked)).key, made.key);
+      const history = (key: string) =>
+        sql<{ actor: string; viaKey: string | null }>`SELECT c.actor_id AS actor,
+          c.coding_agent_key AS "viaKey"
+        FROM kin_record_changes c JOIN kin_records r ON r.record_id = c.record_id
+        WHERE r.key = ${key} ORDER BY c.seq`;
+      assert.deepStrictEqual(yield* history(made.key), [
+        { actor: rhea.personId, viaKey: rheaKey.sessionId },
+      ]);
+      // Everyone's tasks, by holder: Arjun's new one reads to the owner's key.
+      assert.deepStrictEqual(
+        (yield* listSeenBy(rheaKey, { holder: "Arjun" })).tasks.map((one) => one.key),
+        [made.key],
+      );
+      assert.deepStrictEqual((yield* listSeenBy(zoyaKey, { holder: "Arjun" })).tasks, []);
+      // Zoya can't see the owner's task to Arjun, so her key can't change it or give it away.
+      assert.strictEqual(
+        yield* reason(updateTask(zoyaKey, { key: made.key, holder: "Zoya" })),
+        "not_found",
+      );
+      // Shared with the team she reads it; held by Arjun, it is not hers to give away.
+      yield* records.update(orgId, writerFor(rhea.personId), made.key, { team: true });
+      assert.strictEqual((yield* getMine(zoyaKey, made.key)).holder, "Arjun");
+      assert.strictEqual(
+        yield* reason(updateTask(zoyaKey, { key: made.key, holder: "Zoya", title: "Invented" })),
+        "not_allowed",
+      );
+      assert.strictEqual((yield* records.get(orgId, made.key))?.title, asked.title);
+      // The owner's key changes it and gives it to Zoya, each change marked as the key's.
+      const moved = yield* updateTask(rheaKey, {
+        key: made.key,
+        title: "Invented: send the revised quote",
+        due: null,
+        holder: "Zoya",
+      });
+      assert.deepInclude(moved, {
+        title: "Invented: send the revised quote",
+        due: null,
+        holder: "Zoya",
+      });
+      assert.strictEqual((yield* getMine(zoyaKey, made.key)).holder, undefined);
+      // Made, shared by Rhea's own app, then changed and given away through her key.
+      assert.deepStrictEqual(
+        (yield* history(made.key)).map((one) => one.viaKey),
+        [rheaKey.sessionId, null, rheaKey.sessionId, rheaKey.sessionId],
+      );
+      assert.strictEqual(
+        yield* reason(updateTask(rheaKey, { key: made.key, holder: "Nobody at all" })),
+        "not_found",
+      );
+      // Now hers, Zoya's key starts it.
+      assert.strictEqual(
+        (yield* setStateMine(zoyaKey, { key: made.key, state: "doing" })).state,
+        "doing",
+      );
+
+      // Projects are the owner level's to make, as in the app.
+      const fair = { title: "Invented: spring fair", lead: "Zoya", target: "2027-03-01" };
+      const project = yield* createProject(rheaKey, fair);
+      assert.strictEqual((yield* createProject(rheaKey, fair)).key, project.key);
+      assert.deepStrictEqual(
+        (yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
+        WHERE register_id = 'projects' AND title = ${fair.title}`)[0]?.n,
+        1,
+      );
+      assert.strictEqual(
+        yield* reason(createProject(zoyaKey, { title: "Invented" })),
+        "not_allowed",
+      );
+      yield* updateProject(rheaKey, { key: project.key, notes: "Invented: two stalls" });
+      assert.strictEqual((yield* records.get(orgId, project.key))?.notes, "Invented: two stalls");
+      assert.strictEqual(
+        yield* reason(updateProject(zoyaKey, { key: project.key, notes: "Invented" })),
+        "not_allowed",
+      );
+      assert.deepStrictEqual(yield* history(project.key), [
+        { actor: rhea.personId, viaKey: rheaKey.sessionId },
+        { actor: rhea.personId, viaKey: rheaKey.sessionId },
+      ]);
+
+      // Once revoked, the key makes nothing.
+      yield* TasksKeys.revoke(rhea.app, { orgId, sessionId: rheaKey.sessionId });
+      assert.strictEqual(
+        yield* reason(createTask(rheaKey, { title: "Invented: after revoking" })),
+        "not_allowed",
+      );
+      assert.isUndefined(
+        (yield* sql<{ key: string }>`SELECT key FROM kin_records
+        WHERE title = 'Invented: after revoking'`)[0],
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
