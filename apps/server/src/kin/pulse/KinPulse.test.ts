@@ -32,11 +32,13 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { wordOf } from "./holds.ts";
 import * as KinShell from "../shell/KinShell.ts";
+import * as Reach from "../lead/Reach.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { headStarts } from "./headStart.ts";
 import {
   DRAFT_CALL_NOTES,
   DRAFT_DOCUMENT,
+  draftWakeGone,
   DRAFT_FROM_MAILBOX,
   draftWakeText,
 } from "./draftWake.ts";
@@ -992,11 +994,14 @@ describe("KinPulse", () => {
       yield* TestClock.setTime(NOON_LA);
       yield* KinPulse.tick(orgId, NOON_LA);
       const [made] = yield* draftEvents;
-      // In her quiet hours now: nothing, and no slot taken.
+      // In her quiet hours now: nothing yet, and the slot it took as it queued stays its own.
       yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"11:00","to":"13:00"}'
         WHERE person_id = ${mate}`;
       assert.isUndefined(yield* draftWakeText(orgId, made!));
-      assert.lengthOf(yield* slots, 0);
+      assert.deepStrictEqual(
+        (yield* slots).map((slot) => slot.key),
+        ["task:r-W-30"],
+      );
       yield* sql`UPDATE kin_people SET quiet_hours_json = NULL WHERE person_id = ${mate}`;
       // Given to someone else meanwhile: nothing for her.
       // Given to someone else meanwhile, though the team still sees it: nothing for her.
@@ -1098,6 +1103,143 @@ describe("KinPulse", () => {
         yield* KinPulse.tick(orgId, NOON_LA + DAY);
         assert.deepInclude((yield* drafters).slice(3), ["W-30", chief]);
       }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect(
+    "a follow-up's drafter is one she may message now and that runs; unreachable work takes no room",
+    () =>
+      Effect.gen(function* () {
+        yield* salesDay;
+        yield* matesDocs;
+        const sql = yield* SqlClient.SqlClient;
+        const lateOf = (id: string) => `task_late:${id}:due=${B + 2 * DAY}`;
+        const agentFor = (id: string) =>
+          Effect.map(draftEvents, (events) =>
+            events.filter((event) => event.factKeys[0] === lateOf(id)).map((e) => e.agentId),
+          );
+        // She has used her chat with Growth, then was restricted from it: Growth gets no wake.
+        yield* TestClock.setTime(NOON_LA);
+        yield* KinPulse.tick(orgId, NOON_LA);
+        assert.deepStrictEqual(yield* agentFor("W-30"), [growth]);
+        const [first] = yield* draftEvents;
+        const restricted = yield* Reach.setLimit({
+          orgId,
+          by: owner,
+          a: Reach.person(mate),
+          b: Reach.agent(growth),
+          restricted: true,
+        });
+        assert.strictEqual(restricted._tag, "changed");
+        // Its queued wake brings none of her task's words to Growth.
+        assert.isUndefined(yield* draftWakeText(orgId, first!));
+        yield* TestClock.setTime(NOON_LA + DAY);
+        yield* KinPulse.tick(orgId, NOON_LA + DAY);
+        assert.deepStrictEqual(yield* agentFor("W-30"), [growth, chief]);
+        // A paused lead runs nothing: its project's task goes to the company's lead.
+        yield* insert({ id: "P-6", list: "projects", ownerKind: "agent", ownerId: finance });
+        yield* insert({
+          id: "W-33",
+          dueAt: B + 2 * DAY,
+          ownerKind: "person",
+          ownerId: mate,
+          projectId: "P-6",
+        });
+        yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+          VALUES (${orgId}, ${finance}, ${mate}, ${owner}, 0)`;
+        yield* sql`UPDATE kin_agents SET paused_at = 1 WHERE agent_id = ${finance}`;
+        yield* TestClock.setTime(NOON_LA + 2 * DAY);
+        yield* KinPulse.tick(orgId, NOON_LA + 2 * DAY);
+        assert.deepStrictEqual(yield* agentFor("W-33"), [chief]);
+        // Twenty tasks nobody she may message can draft leave room for the one Finance can.
+        yield* sql`UPDATE kin_agents SET paused_at = NULL WHERE agent_id = ${finance}`;
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id IN ('r-W-30', 'r-W-33')`;
+        yield* insert({ id: "P-7", list: "projects", ownerKind: "agent", ownerId: growth });
+        for (let n = 50; n < 70; n++)
+          yield* insert({
+            id: `W-${n}`,
+            dueAt: B + 2 * DAY,
+            ownerKind: "person",
+            ownerId: mate,
+            projectId: "P-7",
+          });
+        yield* Reach.setLimit({
+          orgId,
+          by: owner,
+          a: Reach.person(mate),
+          b: Reach.agent(chief),
+          restricted: true,
+        });
+        yield* insert({
+          id: "W-70",
+          dueAt: B + 2 * DAY,
+          ownerKind: "person",
+          ownerId: mate,
+          projectId: "P-6",
+        });
+        yield* TestClock.setTime(NOON_LA + 3 * DAY);
+        const later = yield* KinPulse.tick(orgId, NOON_LA + 3 * DAY);
+        assert.deepStrictEqual(later.drafted, [{ personId: mate, key: lateOf("W-70") }]);
+        assert.deepStrictEqual(yield* agentFor("W-70"), [finance]);
+      }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a follow-up to a client needs her Clients place on, whatever her access reads", () =>
+    Effect.gen(function* () {
+      yield* salesDay;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET sees_clients = 0, access = NULL WHERE person_id = ${mate}`;
+      yield* TestClock.setTime(NOON_LA);
+      assert.lengthOf((yield* KinPulse.tick(orgId, NOON_LA)).drafted, 0);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a route that changes while its wake is held loses no tick and drafts once", () =>
+    Effect.gen(function* () {
+      yield* salesDay;
+      const sql = yield* SqlClient.SqlClient;
+      // W-32's project is Finance's, and Meera is asleep: its wake waits for her morning.
+      yield* insert({ id: "P-6", list: "projects", ownerKind: "agent", ownerId: finance });
+      yield* insert({
+        id: "W-32",
+        dueAt: B + 2 * DAY,
+        ownerKind: "person",
+        ownerId: mate,
+        partyId: "r-C-1",
+        projectId: "P-6",
+      });
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-30'`;
+      yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"11:00","to":"13:00"}'
+        WHERE person_id = ${mate}`;
+      const w32 = Effect.map(draftEvents, (events) =>
+        events.filter((event) => event.factKeys[0]!.startsWith("task_late:W-32:")),
+      );
+      yield* TestClock.setTime(NOON_LA);
+      yield* KinPulse.tick(orgId, NOON_LA);
+      const [held] = yield* w32;
+      assert.strictEqual(held?.agentId, finance);
+      // The project goes to the Chief of staff before it runs; an unrelated task falls late.
+      yield* sql`UPDATE kin_records SET owner_id = ${chief} WHERE record_id = 'r-P-6'`;
+      yield* insert({ id: "W-41", dueAt: B + 2 * DAY });
+      yield* TestClock.setTime(NOON_LA + MINUTE);
+      yield* KinPulse.tick(orgId, NOON_LA + MINUTE);
+      const stored = yield* sql`SELECT 1 FROM kin_pulse_facts
+        WHERE org_id = ${orgId} AND fact_key LIKE 'task_late:W-41:%'`;
+      assert.lengthOf(stored, 1);
+      assert.lengthOf(yield* w32, 1);
+      // Claimed after her quiet hours, Finance may no longer draft it: dropped, its slot freed.
+      yield* sql`UPDATE kin_people SET quiet_hours_json = NULL WHERE person_id = ${mate}`;
+      assert.isTrue(yield* draftWakeGone(orgId, held!));
+      yield* TestClock.setTime(NOON_LA + 2 * MINUTE);
+      yield* KinPulse.tick(orgId, NOON_LA + 2 * MINUTE);
+      yield* TestClock.setTime(NOON_LA + 3 * MINUTE);
+      yield* KinPulse.tick(orgId, NOON_LA + 3 * MINUTE);
+      assert.deepStrictEqual(
+        (yield* w32).map((event) => event.agentId),
+        [finance, chief],
+      );
+      const [rerouted] = (yield* w32).slice(1);
+      assert.isFalse(yield* draftWakeGone(orgId, rerouted!));
+    }).pipe(Effect.provide(chatLayer)),
   );
 
   it.effect("a due task with no client gets a document head start, and none once one exists", () =>

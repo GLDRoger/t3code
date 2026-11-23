@@ -58,6 +58,7 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { feedTurn } from "../numbers/feeds.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
 import { isPrepareWake, prepareWakeText } from "../pulse/prepareWake.ts";
+import { draftWakeGone, isDraftWake } from "../pulse/draftWake.ts";
 import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
 import { dismissalGone } from "../questions/dismissed.ts";
@@ -497,6 +498,8 @@ const make = Effect.gen(function* () {
         return (
           (yield* offTurnTexts(orgId, event.factKeys, yield* Clock.currentTimeMillis)).length === 0
         );
+      // A person's own task: no longer theirs and due, or this agent may no longer draft it.
+      if (event._tag === "pulse" && isDraftWake(event)) return yield* draftWakeGone(orgId, event);
       // A head start Kin woke it for, on a fact handled or no longer true since it was queued.
       if (isPrepareWake(event))
         return (

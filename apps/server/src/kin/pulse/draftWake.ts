@@ -20,6 +20,8 @@ import type { SqlError } from "effect/sql/SqlError";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { personConnections } from "../connections/ConnectionRows.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
+import * as Reach from "../lead/Reach.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import * as KinShell from "../shell/KinShell.ts";
@@ -45,7 +47,8 @@ type DraftPath = "mail" | "doc";
 
 /**
  * Who may draft a follow-up, in order: the live lead its project names as its lead; for one to a
- * client, the first live lead whose domain sells; the company's own lead (`routing`).
+ * client, the first live lead whose domain sells; the company's own lead (`routing`). A paused
+ * lead runs nothing, so it drafts nothing.
  */
 const draftersFor = Effect.fnUntraced(function* (
   orgId: KinOrgId,
@@ -62,7 +65,7 @@ const draftersFor = Effect.fnUntraced(function* (
           AND p.owner_kind = 'agent' AND p.owner_id = l.agent_id) AS "leadsProject"
     FROM kin_leads l
     JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-      AND a.role = 'lead' AND a.retired_at IS NULL
+      AND a.role = 'lead' AND a.retired_at IS NULL AND a.paused_at IS NULL
     WHERE l.org_id = ${orgId} ORDER BY l.agent_id`;
   const live = new Set(leads.map((lead) => lead.agentId));
   const chosen = [
@@ -135,7 +138,7 @@ const stillDue = Effect.fnUntraced(function* (
       return undefined;
     return { zone, path: "doc" as const };
   }
-  if (row.seesClients === 0 || row.carded === 1) return undefined;
+  if (row.seesClients !== 1 || row.carded === 1) return undefined;
   const on = (section: "clients" | "deals") =>
     KinShell.sectionOnFor(orgId, section).pipe(Effect.orElseSucceed(() => false));
   if (!(yield* on("clients")) || (row.deal === 1 && !(yield* on("deals")))) return undefined;
@@ -160,7 +163,6 @@ export const draftWakes = Effect.fn("KinPulse.draftWakes")(function* (input: {
 }) {
   const { ctx } = input;
   const { orgId, at } = ctx;
-  const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   const chats = yield* Effect.serviceOption(KinChatService);
   const woken: Array<{ readonly personId: string; readonly key: string }> = [];
@@ -192,18 +194,12 @@ export const draftWakes = Effect.fn("KinPulse.draftWakes")(function* (input: {
     if (ready.length === 0) continue;
     const zone = ready[0]!.zone;
     const day = dayIn(at, zone);
-    const taken = new Set(
-      (yield* sql<{ key: string }>`SELECT DISTINCT fact_key AS key FROM kin_pulse_told
-        WHERE org_id = ${orgId} AND person_id = ${draftParty(personId)} AND sig = ${day}
-        ORDER BY fact_key`).map((row) => row.key),
-    );
-    const fresh = ready
-      .filter((one) => !taken.has(taskSlot(one.recordId)))
-      .slice(0, Math.max(0, DRAFT_WAKES_PER_DAY - taken.size));
-    if (fresh.length === 0) continue;
     const notBefore = yield* personQuietUntil(orgId, personId, at);
     const chatWith = new Map<KinAgentId, KinChatId | undefined>();
-    for (const { fact, recordId, path } of fresh) {
+    for (const { fact, recordId, path } of ready) {
+      // One wake a task and day, whichever agent holds it: a held one is checked as it starts.
+      if (yield* slotTaken(orgId, personId, recordId, day)) continue;
+      if (path === "doc" && (yield* triedOut(orgId, personId, recordId, day))) continue;
       let drafter: { agentId: KinAgentId; chatId: KinChatId } | undefined;
       for (const agentId of yield* draftersFor(orgId, recordId, path, ctx.chief)) {
         if (!chatWith.has(agentId))
@@ -216,14 +212,19 @@ export const draftWakes = Effect.fn("KinPulse.draftWakes")(function* (input: {
       }
       if (drafter === undefined) continue;
       const { agentId, chatId } = drafter;
-      const dedupeKey = `${draftParty(personId)}:${taskSlot(recordId)}:${day}`;
+      const dedupeKey = `${draftParty(personId)}:${taskSlot(recordId)}:${day}:${agentId}`;
+      const eventId = KinEventId.make(`pulse-${shortHash(`${orgId}\0${dedupeKey}\0${at}`)}`);
+      // The day's window is charged only for a wake that is queued: counted and taken at once.
+      if (!(yield* reserve(orgId, personId, recordId, day, eventId, at))) {
+        if (yield* windowFull(orgId, personId, day)) break;
+        continue;
+      }
       const queued = yield* queue
         .enqueue(
           yield* decodeEvent({
             _tag: "pulse",
             orgId,
-            // A later pass that day is the same wake: its dedupe key finds this one.
-            eventId: KinEventId.make(`pulse-${shortHash(`${orgId}\0${dedupeKey}\0${at}`)}`),
+            eventId,
             agentId,
             receivedAt: DateTime.formatIso(iso(at)),
             dedupeKey,
@@ -237,17 +238,106 @@ export const draftWakes = Effect.fn("KinPulse.draftWakes")(function* (input: {
         .pipe(
           Effect.map((result) => !result.duplicate),
           Effect.catchTags({
+            KinEventQueueConflict: () => Effect.succeed(false),
+            KinEventQueueUnknownEvent: () => Effect.succeed(false),
             KinEventQueueUnknownAgent: () => Effect.succeed(false),
             KinEventQueueRetiredAgent: () => Effect.succeed(false),
           }),
         );
-      if (queued) woken.push({ personId, key: fact.key });
+      if (!queued) {
+        yield* freeSlot(orgId, personId, eventId);
+        continue;
+      }
+      woken.push({ personId, key: fact.key });
     }
   }
   return woken;
 });
 
-/** Their direct chat with `agentId`, opened by the usual path when they may message it. */
+const daySlots = Effect.fnUntraced(function* (orgId: KinOrgId, personId: KinPersonId, day: string) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ key: string; eventId: string }>`SELECT fact_key AS key,
+      event_id AS "eventId" FROM kin_pulse_told
+    WHERE org_id = ${orgId} AND person_id = ${draftParty(personId)} AND sig = ${day}
+    ORDER BY fact_key, event_id`;
+});
+
+const slotTaken = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  recordId: string,
+  day: string,
+) {
+  return (yield* daySlots(orgId, personId, day)).some((row) => row.key === taskSlot(recordId));
+});
+
+const windowFull = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  day: string,
+) {
+  const keys = new Set((yield* daySlots(orgId, personId, day)).map((row) => row.key));
+  return keys.size >= DRAFT_WAKES_PER_DAY;
+});
+
+/** Takes the task's slot for the day if it is free and the day's window has room, in one write. */
+const reserve = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  recordId: string,
+  day: string,
+  eventId: string,
+  at: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const party = draftParty(personId);
+  const slot = taskSlot(recordId);
+  const taken = yield* sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id, sig,
+      told_at)
+    SELECT ${orgId}, ${party}, ${slot}, ${eventId}, ${day}, ${at}
+    WHERE NOT EXISTS (SELECT 1 FROM kin_pulse_told WHERE org_id = ${orgId}
+        AND person_id = ${party} AND fact_key = ${slot} AND sig = ${day})
+      AND (SELECT COUNT(DISTINCT fact_key) FROM kin_pulse_told WHERE org_id = ${orgId}
+        AND person_id = ${party} AND sig = ${day}) < ${DRAFT_WAKES_PER_DAY}
+    ON CONFLICT DO NOTHING RETURNING fact_key`;
+  return taken.length > 0;
+});
+
+/** Gives back the slot a wake took, so a later pass may route the task again. */
+const freeSlot = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  eventId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`DELETE FROM kin_pulse_told WHERE org_id = ${orgId}
+    AND person_id = ${draftParty(personId)} AND event_id = ${eventId}`;
+});
+
+/** Doc head starts a task gets before one stands: the first day and two more. */
+const DOC_TRIES = 3;
+/**
+ * Whether a task's doc head start was tried on `DOC_TRIES` other days since its title, notes,
+ * due day or holder last changed, with nothing made: it waits for one of those to change.
+ */
+const triedOut = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  recordId: string,
+  day: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ days: number }>`SELECT COUNT(DISTINCT t.sig) AS days
+    FROM kin_pulse_told t
+    WHERE t.org_id = ${orgId} AND t.person_id = ${draftParty(personId)}
+      AND t.fact_key = ${taskSlot(recordId)} AND t.sig <> ${day}
+      AND t.told_at > COALESCE((SELECT MAX(c.at) FROM kin_record_changes c, json_each(c.fields_json) f
+        WHERE c.org_id = t.org_id AND c.record_id = ${recordId}
+          AND json_extract(f.value, '$.field') IN ('title', 'notes', 'due', 'owner')), 0)`;
+  return (row?.days ?? 0) >= DOC_TRIES;
+});
+
+/** Their direct chat with `agentId`, opened by the usual path, while they may message it now. */
 const directChat = Effect.fnUntraced(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
@@ -255,6 +345,8 @@ const directChat = Effect.fnUntraced(function* (
   chats: Option.Option<KinChatService["Service"]>,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  if (!(yield* Reach.reaches(orgId, Reach.person(personId), Reach.agent(agentId))))
+    return undefined;
   const [found] = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c
     JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
       AND m.principal_kind = 'person' AND m.person_id = ${personId} AND m.left_at IS NULL
@@ -290,13 +382,65 @@ export const docHeadStart = Effect.fn("KinPulse.docHeadStart")(function* (
   const personId = KinPersonId.make(event.personId);
   const prefix = `${draftParty(personId)}:task:`;
   if (!event.dedupeKey.startsWith(prefix)) return undefined;
-  const recordId = event.dedupeKey.slice(prefix.length, -":YYYY-MM-DD".length);
+  // `draft:<person>:task:<record>:<day>`, and since slots are taken as they queue, `:<agent>`.
+  const rest = event.dedupeKey.slice(prefix.length);
+  const recordId = rest.endsWith(`:${agentId}`)
+    ? rest.slice(0, -`:YYYY-MM-DD:${agentId}`.length)
+    : rest.slice(0, -":YYYY-MM-DD".length);
   const at = yield* DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
   if ((yield* stillDue(orgId, personId, recordId, at))?.path !== "doc") return undefined;
   const [task] = yield* sql<{ key: string }>`SELECT key FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${recordId}`;
   return task === undefined ? undefined : { personId, recordId, key: task.key };
 });
+
+/** Whether `agentId` may draft this task for them now: a candidate still, and one they may message. */
+const mayDraft = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  recordId: string,
+  path: DraftPath,
+  agentId: KinAgentId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const routing = (yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN }))?.agentId;
+  return (
+    (yield* draftersFor(orgId, recordId, path, routing)).includes(agentId) &&
+    (yield* Reach.reaches(orgId, Reach.person(personId), Reach.agent(agentId)))
+  );
+});
+
+/**
+ * A draft wake checked as it is claimed: gone when its task is no longer theirs and due, or its
+ * agent may no longer draft it for them; then its slot is given back, so a later pass routes it.
+ */
+export const draftWakeGone = Effect.fn("KinPulse.draftWakeGone")(function* (
+  orgId: KinOrgId,
+  event: Extract<KinEvent, { readonly _tag: "pulse" }>,
+) {
+  const personId = event.origin?.personId;
+  if (personId === undefined) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const [fact] = yield* sql<{ recordId: string | null }>`SELECT subject_record_id AS "recordId"
+    FROM kin_pulse_facts WHERE org_id = ${orgId} AND fact_key = ${event.factKeys[0] ?? ""}`;
+  if (fact?.recordId == null) return true;
+  const at = yield* DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
+  const still = yield* stillDue(orgId, personId, fact.recordId, at);
+  if (
+    still !== undefined &&
+    (yield* mayDraft(orgId, personId, fact.recordId, still.path, event.agentId))
+  )
+    return false;
+  if (still !== undefined) yield* freeSlot(orgId, personId, event.eventId);
+  return true;
+});
+
+/** A wake Kin queued for one person's own task (`draftWakes`), in their chat. */
+export const isDraftWake = (event: Extract<KinEvent, { readonly _tag: "pulse" }>) =>
+  event.checkIn === undefined &&
+  event.origin !== undefined &&
+  event.chatId !== undefined &&
+  (event.dedupeKey ?? "").startsWith("draft:");
 
 /** A wake Kin checked again as it started, and found nothing to draft for now. */
 export const DRAFT_NOTHING_NOW =
@@ -332,20 +476,18 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
   if (still === undefined) return undefined;
   const { zone } = still;
   if ((yield* personQuietUntil(orgId, personId, at)) !== undefined) return undefined;
+  if (!(yield* mayDraft(orgId, personId, fact.recordId, still.path, event.agentId)))
+    return undefined;
   const day = dayIn(at, zone);
-  const party = draftParty(personId);
   const slot = taskSlot(fact.recordId);
-  const today = yield* sql<{ key: string; eventId: string }>`SELECT fact_key AS key,
-      event_id AS "eventId" FROM kin_pulse_told
-    WHERE org_id = ${orgId} AND person_id = ${party} AND sig = ${day} ORDER BY fact_key`;
-  const mine = today.find((row) => row.key === slot);
-  if (mine !== undefined && mine.eventId !== event.eventId) return undefined;
-  if (mine === undefined) {
-    if (new Set(today.map((row) => row.key)).size >= DRAFT_WAKES_PER_DAY) return undefined;
-    yield* sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id, sig, told_at)
-      VALUES (${orgId}, ${party}, ${slot}, ${event.eventId}, ${day}, ${at})
-      ON CONFLICT DO NOTHING`;
-  }
+  const mine = (yield* daySlots(orgId, personId, day)).filter((row) => row.key === slot);
+  // A wake queued before slots were taken as it was queued takes its own now.
+  if (
+    mine.length === 0 &&
+    !(yield* reserve(orgId, personId, fact.recordId, day, event.eventId, at))
+  )
+    return undefined;
+  if (mine.length > 0 && !mine.some((row) => row.eventId === event.eventId)) return undefined;
   const viewer = (yield* ownerLevel(orgId, personId))
     ? ({ _tag: "ownerLevel" } as const)
     : viewerOfPeople([personId]);
