@@ -11,10 +11,10 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevel } from "../people/KinAccess.ts";
 import { get, set } from "./KinShell.ts";
-import { wordsOf } from "./words.ts";
+import { BUILT_IN_SECTIONS, kinTitle } from "./words.ts";
 
 /**
- * An agent's change to the company's sections, waiting on the owner's card (`shell_propose` in
+ * An agent's change to the company's sections, waiting on the owner's card (`company_sections` in
  * `mcp.ts`). Its rows live in `kin_profile_changes` under `sc_` ids; the profile's answers skip them.
  */
 export const SHELL_CHANGE = "sc_";
@@ -24,10 +24,16 @@ export interface AskedSection {
   readonly name?: string | null | undefined;
   readonly noun?: string | null | undefined;
 }
-const SectionsJson = Schema.fromJsonString(Schema.Array(KinShellSection));
-const encodeSections = Schema.encodeEffect(SectionsJson);
-const decodeSections = Schema.decodeUnknownEffect(SectionsJson);
-const shown = (word: string) => `“${word}”`;
+// The shell the card was drawn against and the one Confirm saves: the card's words come from both.
+const ChangeJson = Schema.fromJsonString(
+  Schema.Struct({
+    before: Schema.Array(KinShellSection),
+    after: Schema.Array(KinShellSection),
+  }),
+);
+const encodeChange = Schema.encodeEffect(ChangeJson);
+const decodeChange = Schema.decodeUnknownEffect(ChangeJson);
+const quoted = (word: string) => `"${word}"`;
 
 /** The shell with each asked change made: a null name or noun goes back to Kin's. */
 export const applied = (shell: Shell, asked: ReadonlyArray<AskedSection>) =>
@@ -45,65 +51,149 @@ export const applied = (shell: Shell, asked: ReadonlyArray<AskedSection>) =>
     };
   });
 
-/** Each change, in the shell's order, as the owner's card says it: what it is now beside what it becomes. */
+type Change =
+  | { readonly kind: "on" | "off"; readonly what: string }
+  | { readonly kind: "name"; readonly what: string; readonly to: string; readonly from?: string }
+  | { readonly kind: "noun"; readonly to: string; readonly from?: string };
+
+/** Each change in the shell's order, by Kin's own title, the company's word quoted after it. */
+const changesOf = (
+  current: ReadonlyArray<KinShellSection>,
+  next: ReadonlyArray<KinShellSection>,
+): ReadonlyArray<Change> =>
+  BUILT_IN_SECTIONS.flatMap((id): ReadonlyArray<Change> => {
+    const before = current.find((one) => one.id === id);
+    const after = next.find((one) => one.id === id);
+    if (before === undefined || after === undefined) return [];
+    const title = kinTitle(id);
+    const what =
+      before.name === undefined ? title : `${title} (called ${quoted(before.name)} here)`;
+    const changes: Array<Change> = [];
+    if (after.on !== before.on) changes.push({ kind: after.on ? "on" : "off", what });
+    if (after.name !== before.name)
+      changes.push({
+        kind: "name",
+        what: title,
+        to: after.name ?? title,
+        ...(before.name === undefined ? {} : { from: before.name }),
+      });
+    if (after.noun !== before.noun)
+      changes.push({
+        kind: "noun",
+        to: after.noun ?? "client",
+        ...(before.noun === undefined ? {} : { from: before.noun }),
+      });
+    return changes;
+  });
+
+const was = (from: string | undefined) => (from === undefined ? "" : ` (now ${quoted(from)})`);
+const cardLine = (change: Change) => {
+  switch (change.kind) {
+    case "on":
+      return `Turn on ${change.what}`;
+    case "off":
+      return `Turn off ${change.what}`;
+    case "name":
+      return `Call ${change.what} ${quoted(change.to)}${was(change.from)}`;
+    case "noun":
+      return `Call one client ${quoted(change.to)}${was(change.from)}`;
+  }
+};
+const doneLine = (change: Change) => {
+  switch (change.kind) {
+    case "on":
+      return `Turned on ${change.what}.`;
+    case "off":
+      return `Turned off ${change.what}.`;
+    case "name":
+      return `Called ${change.what} ${quoted(change.to)}.`;
+    case "noun":
+      return `Called one client ${quoted(change.to)}.`;
+  }
+};
+const declinedLine = (change: Change) => {
+  switch (change.kind) {
+    case "on":
+      return `Said no to turning on ${change.what}.`;
+    case "off":
+      return `Said no to turning off ${change.what}.`;
+    case "name":
+      return `Said no to calling ${change.what} ${quoted(change.to)}.`;
+    case "noun":
+      return `Said no to calling one client ${quoted(change.to)}.`;
+  }
+};
+
+/** Each change as the owner's card lists it. */
 export const shellChangeLines = (
   current: ReadonlyArray<KinShellSection>,
   next: ReadonlyArray<KinShellSection>,
-) =>
-  next.flatMap((after) => {
-    const before = current.find((one) => one.id === after.id);
-    const words = wordsOf(after.id);
-    if (before === undefined || words === undefined) return [];
-    const { title, one } = words;
-    const now = (word: string | undefined) => (word === undefined ? "" : ` (now ${shown(word)})`);
-    return [
-      ...(after.on === before.on
-        ? []
-        : [`${after.on ? "Turn on" : "Turn off"} ${before.name ?? title}`]),
-      ...(after.name === before.name
-        ? []
-        : [`Call ${title} ${shown(after.name ?? title)}${now(before.name)}`]),
-      ...(after.noun === before.noun
-        ? []
-        : [`Call one ${one} ${shown(after.noun ?? one)}${now(before.noun)}`]),
-    ];
-  });
+) => changesOf(current, next).map(cardLine);
 
-/** The change as asked against the shell at `baseRev`; the same one twice is one. */
-export const storeShellChange = Effect.fn("KinShellChanges.store")(function* (input: {
+/**
+ * Stores the change as asked against the shell, bound to its card, and declines every older
+ * unanswered shell card, in the card's own transaction. Returns the older cards to close.
+ */
+export const bindShellChange = Effect.fn("KinShellChanges.bind")(function* (input: {
   readonly orgId: KinOrgId;
   readonly changeId: string;
   readonly agentId: string;
   readonly wakeupId: string;
-  readonly sections: ReadonlyArray<KinShellSection>;
+  readonly before: ReadonlyArray<KinShellSection>;
+  readonly after: ReadonlyArray<KinShellSection>;
   readonly baseRev: number;
+  readonly widgetId: string;
   readonly now: number;
 }) {
   const sql = yield* SqlClient.SqlClient;
+  const patch = yield* encodeChange({ before: input.before, after: input.after }).pipe(
+    Effect.orDie,
+  );
   yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id, patch_json,
-      base_rev, proposed_at)
-    VALUES (${input.orgId}, ${input.changeId}, ${input.agentId}, ${input.wakeupId},
-      ${yield* encodeSections(input.sections)}, ${input.baseRev}, ${input.now})
+      base_rev, widget_id, proposed_at)
+    VALUES (${input.orgId}, ${input.changeId}, ${input.agentId}, ${input.wakeupId}, ${patch},
+      ${input.baseRev}, ${input.widgetId}, ${input.now})
     ON CONFLICT (org_id, change_id) DO NOTHING`;
-});
-
-/** A newer card replaces every older one still unanswered, which can never be confirmed. Returns their cards. */
-export const replaceOlderShellChanges = Effect.fn("KinShellChanges.replaceOlder")(function* (
-  orgId: KinOrgId,
-  changeId: string,
-  now: number,
-) {
-  const sql = yield* SqlClient.SqlClient;
+  // Only cards stored before this one: a retry of an older card never declines a newer one.
   const older = yield* sql<{ changeId: string; widgetId: string }>`
     SELECT change_id AS "changeId", widget_id AS "widgetId" FROM kin_profile_changes
-    WHERE org_id = ${orgId} AND substr(change_id, 1, 3) = ${SHELL_CHANGE}
-      AND change_id != ${changeId} AND widget_id IS NOT NULL
-      AND applied_at IS NULL AND declined_at IS NULL
-    ORDER BY change_id`;
+    WHERE org_id = ${input.orgId} AND substr(change_id, 1, 3) = ${SHELL_CHANGE}
+      AND widget_id IS NOT NULL AND applied_at IS NULL AND declined_at IS NULL
+      AND rowid < (SELECT rowid FROM kin_profile_changes
+        WHERE org_id = ${input.orgId} AND change_id = ${input.changeId})
+    ORDER BY rowid`;
   if (older.length === 0) return [];
-  yield* sql`UPDATE kin_profile_changes SET declined_at = ${now} WHERE org_id = ${orgId}
-    AND change_id IN ${sql.in(older.map((row) => row.changeId))}`;
+  yield* sql`UPDATE kin_profile_changes SET declined_at = ${input.now}
+    WHERE org_id = ${input.orgId} AND change_id IN ${sql.in(older.map((row) => row.changeId))}`;
   return older.map((row) => row.widgetId);
+});
+
+const shellRow = Effect.fn("KinShellChanges.row")(function* (orgId: KinOrgId, widgetId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ changeId: string; patch: string; baseRev: number; done: number }>`
+    SELECT change_id AS "changeId", patch_json AS patch, base_rev AS "baseRev",
+      (applied_at IS NOT NULL OR declined_at IS NOT NULL) AS done
+    FROM kin_profile_changes
+    WHERE org_id = ${orgId} AND widget_id = ${widgetId}
+      AND substr(change_id, 1, 3) = ${SHELL_CHANGE}`;
+  return row;
+});
+
+/**
+ * What memory keeps of a settled shell card: Kin's own line from the sections and the answer,
+ * never the card's text. Undefined for any other card.
+ */
+export const shellDecision = Effect.fn("KinShellChanges.decision")(function* (
+  orgId: KinOrgId,
+  widgetId: string,
+  confirmed: boolean,
+) {
+  const row = yield* shellRow(orgId, widgetId);
+  if (row === undefined) return undefined;
+  const { before, after } = yield* decodeChange(row.patch).pipe(Effect.orDie);
+  return changesOf(before, after)
+    .map(confirmed ? doneLine : declinedLine)
+    .join(" ");
 });
 
 /**
@@ -119,12 +209,7 @@ export const answerShellChange = Effect.fn("KinShellChanges.answer")(function* (
   readonly now: number;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ changeId: string; patch: string; baseRev: number; done: number }>`
-    SELECT change_id AS "changeId", patch_json AS patch, base_rev AS "baseRev",
-      (applied_at IS NOT NULL OR declined_at IS NOT NULL) AS done
-    FROM kin_profile_changes
-    WHERE org_id = ${input.orgId} AND widget_id = ${input.widgetId}
-      AND substr(change_id, 1, 3) = ${SHELL_CHANGE}`;
+  const row = yield* shellRow(input.orgId, input.widgetId);
   if (row === undefined) return undefined;
   const personId = KinPersonId.make(input.personId);
   if (!(yield* ownerLevel(input.orgId, personId).pipe(Effect.orDie)))
@@ -153,7 +238,8 @@ export const answerShellChange = Effect.fn("KinShellChanges.answer")(function* (
       message:
         "How Kin is set up changed since this card was made, so nothing was changed. Ask for the change again.",
     });
-  yield* set(input.orgId, personId, row.baseRev, yield* decodeSections(row.patch));
+  const { after } = yield* decodeChange(row.patch).pipe(Effect.orDie);
+  yield* set(input.orgId, personId, row.baseRev, after);
   yield* sql`UPDATE kin_profile_changes SET applied_at = ${input.now}
     WHERE org_id = ${input.orgId} AND change_id = ${row.changeId}`;
   return {

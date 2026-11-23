@@ -913,7 +913,7 @@ features:
     web: [settings, section:Deals]
     phone: [SettingsKin, KinDealStages]
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    tools: [shell_propose]
+    tools: [company_sections]
     note: >-
       Off hides the Deals tab, deals on client and project pages, New deal, deal search hits,
       nudges, the Monday pipeline and deal tools for everyone; nothing is deleted, and on restores

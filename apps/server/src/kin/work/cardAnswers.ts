@@ -6,6 +6,7 @@ import {
   type KinPersonId,
   KinWidgetId,
 } from "@t3tools/contracts";
+import { shellDecision } from "../shell/changes.ts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -288,12 +289,22 @@ const saveDecision = Effect.fn("KinCardAnswers.saveDecision")(function* (
   const sql = yield* SqlClient.SqlClient;
   const [person] = yield* sql<{ handle: string }>`SELECT handle FROM kin_people
     WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`;
-  const decision = cardDecision({
+  const card = cardDecision({
     orgId: input.orgId,
     widget: input.widget,
     label: input.option.label,
     by: person?.handle ?? input.personId,
   });
+  // A sections card is remembered in Kin's own words, never its text.
+  const sections = yield* shellDecision(
+    input.orgId,
+    input.widget.widgetId,
+    input.option.kind === "yes",
+  );
+  const decision =
+    card === undefined || sections === undefined
+      ? card
+      : { ...card, title: "How Kin is set up for the company", body: sections };
   if (decision !== undefined)
     yield* sql.afterCommit(afterTap(memory.value.recordDecision(input.orgId, decision), scope));
 });

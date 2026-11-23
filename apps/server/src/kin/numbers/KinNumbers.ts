@@ -25,7 +25,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { effectiveAudience, SHARED_REFUSAL } from "../lead/Audience.ts";
 import { outsideToolAllowed, OUTSIDE_REFUSAL } from "../lead/OutsideContent.ts";
 import { accessOf } from "../people/KinAccess.ts";
-import { sectionOn } from "../shell/KinShell.ts";
+import { sectionOnFor } from "../shell/KinShell.ts";
 import type { SectionId } from "../shell/sections.ts";
 import { homeCurrency } from "../work/companyProfile.ts";
 import { requestHashOf } from "../work/KinRecords.ts";
@@ -152,7 +152,7 @@ const shownInShell = Effect.fn("KinNumbers.shownInShell")(function* (
       : spec.count === "deals"
         ? computedSections.count.deals
         : null;
-  return section === null || (yield* sectionOn(orgId, section));
+  return section === null || (yield* sectionOnFor(orgId, section));
 });
 
 const compute = Effect.fn("KinNumbers.compute")(function* (
@@ -232,7 +232,7 @@ const readSnapshot = Effect.fn("KinNumbers.readSnapshot")(function* <A, E, R>(
   return yield* who._tag === "person" ? readOnly(snapshot) : snapshot;
 });
 
-export const list = Effect.fn("KinNumbers.list")(
+const listing = Effect.fn("KinNumbers.listing")(
   function* (who: Viewer, keys?: ReadonlyArray<string>) {
     return yield* readSnapshot(
       who,
@@ -242,9 +242,17 @@ export const list = Effect.fn("KinNumbers.list")(
         const zone = yield* ownerZone(viewer.orgId);
         const today = dayIn(now, zone);
         const numbers: Array<KinNumber> = [];
+        const kept: Array<string> = [];
         for (const row of yield* definitions(viewer, keys)) {
           const fields = numberFields(parseFields(row.fields));
           if (fields === undefined || !(yield* shownInShell(viewer.orgId, fields.spec))) continue;
+          if (
+            who._tag === "agent" &&
+            fields.kind === "recorded" &&
+            row.ownerKind === "agent" &&
+            row.ownerId === who.agentId
+          )
+            kept.push(row.key);
           const recorded =
             fields.spec === undefined
               ? yield* latestValue(viewer.orgId, row.recordId, today)
@@ -276,12 +284,29 @@ export const list = Effect.fn("KinNumbers.list")(
               (viewer.member === undefined || fields.kind === "typed"),
           });
         }
-        return { numbers };
+        return { numbers, kept };
       }),
     );
   },
   Effect.catchTags({ SqlError: unavailable, PersistenceSqlError: unavailable }),
 );
+
+export const list = Effect.fn("KinNumbers.list")(function* (
+  who: Viewer,
+  keys?: ReadonlyArray<string>,
+) {
+  return { numbers: (yield* listing(who, keys)).numbers };
+});
+
+/**
+ * The numbers an agent's turn is told of, as `numbers_read` would list them for it, and the
+ * recorded ones it keeps. Refused, as that tool is, in a turn anyone below owner level reads.
+ */
+export const forAgent = Effect.fn("KinNumbers.forAgent")(function* (agent: Agent) {
+  const { numbers, kept } = yield* listing(agent);
+  const watched = numbers.map(({ key, name }) => ({ key, name }));
+  return { watched, kept: watched.filter(({ key }) => kept.includes(key)) };
+});
 
 export const values = Effect.fn("KinNumbers.values")(
   function* (who: Viewer, number: string, from: string, to: string) {

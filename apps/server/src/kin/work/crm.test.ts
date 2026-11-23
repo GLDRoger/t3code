@@ -1500,7 +1500,7 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
       deal_stages: [LeadWork.dealStages(scope, {}), false],
       company_profile: [LeadMoney.profile(scope, {}), true],
       // Section switches and names: nothing of an entry. No chat here, so no card either.
-      shell_propose: [
+      company_sections: [
         Effect.flip(ShellMcp.propose(scope, { sections: [{ id: "deals", on: false }] })),
         false,
       ],

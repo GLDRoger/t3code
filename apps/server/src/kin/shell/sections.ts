@@ -81,7 +81,7 @@ export const SECTIONS = {
     numbers_read: null,
     dates_query: null,
     company_profile: null,
-    shell_propose: null,
+    company_sections: null,
     statement_read: "money",
     statement_rows: "money",
     kin_document: null,

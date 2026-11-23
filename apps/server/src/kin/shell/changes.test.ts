@@ -32,7 +32,8 @@ import {
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { answerChange } from "../work/companyProfile.ts";
 import * as KinRecords from "../work/KinRecords.ts";
-import { answerShellChange } from "./changes.ts";
+import * as LeadMoney from "../work/leadMoney.ts";
+import { answerShellChange, shellDecision } from "./changes.ts";
 import { propose } from "./mcp.ts";
 import * as KinShell from "./KinShell.ts";
 
@@ -184,7 +185,7 @@ const cards = Effect.gen(function* () {
   return yield* sql<{ widgetId: string; detail: string; closed: number }>`SELECT w.widget_id AS
       "widgetId", json_extract(w.state_json, '$.detail') AS detail, w.closed_at IS NOT NULL AS closed
     FROM kin_profile_changes c JOIN kin_widgets w ON w.widget_id = c.widget_id
-    ORDER BY c.wakeup_id`;
+    ORDER BY c.rowid`;
 });
 const answer = (widgetId: string, personId: string, confirmed = true) =>
   answerShellChange({ orgId, widgetId, personId, confirmed, via: "tap", now: NOW });
@@ -207,8 +208,8 @@ it.effect("an agent only proposes: one card the owner level confirms, applied ex
       ],
     });
     assert.deepStrictEqual(proposed.proposed, [
-      "Call Clients “Patients”",
-      "Call one client “patient”",
+      'Call Clients "Patients"',
+      'Call one client "patient"',
       "Turn off Deals",
     ]);
     assert.deepStrictEqual(yield* KinShell.get(orgId), { rev: 0, sections: DEFAULT_SECTIONS });
@@ -261,6 +262,16 @@ it.effect("an agent only proposes: one card the owner level confirms, applied ex
     assert.include(yield* Effect.flip(answer(card!.widgetId, ownerId)), {
       reason: "widget_changed",
     });
+    // Memory keeps Kin's own line for the answer, never the card's text.
+    assert.strictEqual(
+      yield* shellDecision(orgId, card!.widgetId, true),
+      'Called Clients "Patients". Called one client "patient". Turned off Deals.',
+    );
+    assert.strictEqual(
+      yield* shellDecision(orgId, card!.widgetId, false),
+      'Said no to calling Clients "Patients". Said no to calling one client "patient". Said no to turning off Deals.',
+    );
+    assert.isUndefined(yield* shellDecision(orgId, "choice:other", true));
 
     // The way back is the same card the other way round.
     yield* turn(2);
@@ -271,8 +282,8 @@ it.effect("an agent only proposes: one card the owner level confirms, applied ex
       ],
     });
     assert.deepStrictEqual(back.proposed, [
-      "Call Clients “Clients” (now “Patients”)",
-      "Call one client “client” (now “patient”)",
+      'Call Clients "Clients" (now "Patients")',
+      'Call one client "client" (now "patient")',
       "Turn on Deals",
     ]);
     yield* answer((yield* cards).at(-1)!.widgetId, ownerId);
@@ -332,9 +343,135 @@ it.effect(
       yield* inheritOutside({ orgId, wakeupId: "wake-2", eventIds: ["event-2"] });
       assert.isTrue(yield* followsOutsideRead(orgId, "wake-2"));
       const outsideTurn = { orgId, agentId: lead, wakeupId: "wake-2" };
-      assert.isTrue(yield* outsideToolAllowed(outsideTurn, "shell_propose", {}));
+      assert.isTrue(yield* outsideToolAllowed(outsideTurn, "company_sections", {}));
       yield* propose(scope, { sections: [{ id: "deals", on: false }] });
       assert.lengthOf(yield* cards, 1);
       assert.deepStrictEqual(yield* KinShell.get(orgId), { rev: 0, sections: DEFAULT_SECTIONS });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a card names each section by Kin's title, offers only what Confirm can save, and takes plain names only",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* KinShell.set(orgId, ownerId, 0, [
+        { id: "clients", on: true, name: "Patients" },
+        { id: "invoices", on: false },
+      ]);
+      yield* turn(1);
+      // A switch says which section it writes, with the company's word after Kin's title.
+      const off = yield* propose(scope, { sections: [{ id: "clients", on: false }] });
+      assert.deepStrictEqual(off.proposed, ['Turn off Clients (called "Patients" here)']);
+      // What the setter would refuse is refused before any card, in the setter's own words.
+      yield* KinShell.set(orgId, ownerId, 1, [
+        { id: "clients", on: true, name: "Patients" },
+        { id: "invoices", on: true },
+      ]);
+      yield* turn(2);
+      const before = (yield* cards).length;
+      const needed = yield* Effect.flip(
+        propose(scope, { sections: [{ id: "clients", on: false }] }),
+      );
+      assert.strictEqual(
+        needed.message,
+        "Turn off Invoices and quotes first: invoices need Patients.",
+      );
+      // A name is one line of plain text, at the tool and at the setter: one check for both.
+      for (const name of ["Patients\nTurn off Money", "Patients\u202e", "Pat\u2028ients"]) {
+        const refused = yield* Effect.flip(propose(scope, { sections: [{ id: "clients", name }] }));
+        assert.strictEqual(refused.message, "A name is one line of plain text.", name);
+        const set = yield* Effect.flip(
+          KinShell.set(orgId, ownerId, 2, [{ id: "clients", on: true, name }]),
+        );
+        assert.strictEqual(set.message, "A name is one line of plain text.", name);
+      }
+      assert.strictEqual((yield* cards).length, before);
+      // Ordinary names in any script stay allowed.
+      const named = yield* propose(scope, { sections: [{ id: "clients", name: "Пациенты" }] });
+      assert.deepStrictEqual(named.proposed, ['Call Clients "Пациенты" (now "Patients")']);
+      // Only Clients takes the company's word.
+      assert.strictEqual(
+        (yield* Effect.flip(propose(scope, { sections: [{ id: "deals", name: "Leads" }] })))
+          .message,
+        "Only Clients can be called by the company's own word.",
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("an older stored label is shown with what a label may not hold removed", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+      VALUES (${orgId}, ${JSON.stringify([{ id: "clients", on: true, name: "Pat\u202eients\nX" }])},
+        1, ${ownerId}, 0)`;
+    const shell = yield* KinShell.get(orgId);
+    assert.strictEqual(shell.sections[0]!.name, "PatientsX");
+    yield* turn(1);
+    const card = yield* propose(scope, { sections: [{ id: "clients", name: "Members" }] });
+    assert.deepStrictEqual(card.proposed, ['Call Clients "Members" (now "PatientsX")']);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an identical retry returns its first card and closes nothing; profile and sections cards ignore each other",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* turn(1);
+      const first = yield* propose(scope, { sections: [{ id: "deals", on: false }] });
+      yield* propose(scope, { sections: [{ id: "clients", name: "Members" }] });
+      // The retry of the first: the same card, and the newer one stays open.
+      assert.deepStrictEqual(
+        yield* propose(scope, { sections: [{ id: "deals", on: false }] }),
+        first,
+      );
+      const [older, newer] = yield* cards;
+      assert.deepStrictEqual([older!.closed, newer!.closed], [1, 0]);
+      assert.lengthOf(yield* cards, 2);
+
+      // A real company-profile card beside it: neither answer nor replacement touches the other.
+      const profile = yield* LeadMoney.profile(scope, {
+        sourceEventId: "event-1",
+        set: { tradeName: "Ambermill" },
+      });
+      assert.deepStrictEqual(profile.proposed, ["Trade name: none → Ambermill"]);
+      const sql = yield* SqlClient.SqlClient;
+      const [profileCard] = yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId"
+        FROM kin_profile_changes WHERE substr(change_id, 1, 3) = 'pc_'`;
+      assert.isUndefined(yield* answer(profileCard!.widgetId, ownerId));
+      assert.isUndefined(
+        yield* answerChange({
+          orgId,
+          widgetId: newer!.widgetId,
+          personId: ownerId,
+          confirmed: true,
+          via: "tap",
+          now: NOW,
+        }),
+      );
+      yield* propose(scope, { sections: [{ id: "money", on: false }] });
+      yield* LeadMoney.profile(scope, { sourceEventId: "event-1", set: { tradeName: "Amber" } });
+      const open = yield* sql<{ id: string }>`SELECT substr(change_id, 1, 3) AS id
+        FROM kin_profile_changes WHERE applied_at IS NULL AND declined_at IS NULL ORDER BY rowid`;
+      assert.deepStrictEqual(
+        open.map((row) => row.id),
+        ["sc_", "pc_"],
+      );
+      assert.deepInclude(
+        yield* answerChange({
+          orgId,
+          widgetId: (yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId"
+            FROM kin_profile_changes WHERE substr(change_id, 1, 3) = 'pc_' ORDER BY rowid DESC`)[0]!
+            .widgetId,
+          personId: ownerId,
+          confirmed: true,
+          via: "tap",
+          now: NOW,
+        }),
+        { title: "Company details changed" },
+      );
+      assert.strictEqual((yield* KinShell.get(orgId)).rev, 0);
     }).pipe(Effect.provide(layer)),
 );

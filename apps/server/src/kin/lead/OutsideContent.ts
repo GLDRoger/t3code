@@ -124,7 +124,7 @@ export const OUTSIDE_TOOLS = {
   dates_query: "allowed",
   company_profile: "allowed",
   // Only a card: the owner's Confirm applies it, in their own tap.
-  shell_propose: "allowed",
+  company_sections: "allowed",
   statement_read: "allowed",
   statement_rows: "allowed",
   kin_document: recipeOnly,

@@ -101,8 +101,8 @@ import { socialRules } from "../social/instructions.ts";
 import { isSocialDomain } from "../social/seat.ts";
 import { salesRulesFor } from "../sales/seat.ts";
 import { buildSeat } from "./seat.ts";
-import * as KinShell from "../shell/KinShell.ts";
 import { thisCompanyLines } from "../shell/words.ts";
+import * as KinNumbers from "../numbers/KinNumbers.ts";
 import {
   answeredTurnText,
   askedForSection,
@@ -1610,11 +1610,24 @@ export class KinLeadPrompt extends Context.Service<
               ),
             )
           : [];
-        // Only a company set up unlike Kin's default has these lines, so the default prompt is unchanged.
+        // Watched numbers are owner level until shared: asked as numbers_read asks, else none.
+        const numbers = ownerOnly
+          ? yield* KinNumbers.forAgent({
+              _tag: "agent",
+              orgId,
+              agentId,
+              wakeupId: input.wakeupId,
+            }).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.orElseSucceed(() => undefined),
+            )
+          : undefined;
+        // Only a company set up unlike Kin's default, or watching a number, has these lines.
         const thisCompany = thisCompanyLines(
           yield* KinShell.getForDisplay(orgId).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           ),
+          numbers,
         );
         // What we sell, in every turn whose readers may see it: a shared turn's by stored rows.
         const offerings = yield* Effect.gen(function* () {

@@ -14,45 +14,52 @@ import { ThreadManagementService } from "../../orchestration-v2/ThreadManagement
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { turnChat } from "../lead/Audience.ts";
-import { attachChangeCard } from "../work/companyProfile.ts";
 import { askOwner } from "../work/leadMoney.ts";
 import { KinToolText } from "../work/leadSchemas.ts";
 import { admitted, type Lead, leadTool, retryKey } from "../work/leadWork.ts";
-import {
-  SHELL_CHANGE,
-  applied,
-  replaceOlderShellChanges,
-  shellChangeLines,
-  storeShellChange,
-} from "./changes.ts";
-import { get } from "./KinShell.ts";
+import { SHELL_CHANGE, applied, bindShellChange, shellChangeLines } from "./changes.ts";
+import { get, shellRefusal } from "./KinShell.ts";
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
-const SECTION_IDS = ["clients", "deals", "money", "invoices", "docs"] as const;
+const SECTION_IDS = ["clients", "deals", "money", "invoices"] as const;
 const Word = Schema.NullOr(KinToolText(40));
 
-export const ShellProposeInput = Schema.Struct({
+export const CompanySectionsInput = Schema.Struct({
   sections: Schema.Array(
     Schema.Struct({
       id: Schema.Literals(SECTION_IDS),
       on: Schema.optional(Schema.Boolean),
-      name: Schema.optional(Word).annotate({ description: "Plural, as shown; null for Kin's." }),
-      noun: Schema.optional(Word).annotate({ description: "One of them; null for Kin's." }),
+      name: Schema.optional(Word).annotate({
+        description: "Clients only: plural, as shown; null for Kin's.",
+      }),
+      noun: Schema.optional(Word).annotate({ description: "Clients only: one; null for Kin's." }),
     }),
   ).check(Schema.isMinLength(1)),
 });
-export const ShellProposeResult = Schema.Struct({
+export const CompanySectionsResult = Schema.Struct({
   /** Each change as the owner's card lists it. */
   proposed: Schema.Array(Schema.String),
   next: Schema.String,
 });
 
-const runPropose = Effect.fnUntraced(function* (lead: Lead, input: typeof ShellProposeInput.Type) {
-  yield* admitted(lead, "shell_propose", input);
+const runPropose = Effect.fnUntraced(function* (
+  lead: Lead,
+  input: typeof CompanySectionsInput.Type,
+) {
+  yield* admitted(lead, "company_sections", input);
   if (new Set(input.sections.map((one) => one.id)).size !== input.sections.length)
-    return yield* invalid("Name each section once. Nothing was asked.");
+    return yield* invalid("A section can only be set once.");
+  if (
+    input.sections.some(
+      (one) => one.id !== "clients" && (one.name !== undefined || one.noun !== undefined),
+    )
+  )
+    return yield* invalid("Only Clients can be called by the company's own word.");
   const shell = yield* get(lead.orgId);
   const next = applied(shell, input.sections);
+  // The setter's own checks, in its words, before the owner sees a card it would refuse.
+  const refusal = shellRefusal(shell.sections, next);
+  if (refusal !== undefined) return yield* invalid(refusal);
   const lines = shellChangeLines(shell.sections, next);
   if (lines.length === 0)
     return yield* invalid("The company is already set up that way. Nothing was asked.");
@@ -61,15 +68,7 @@ const runPropose = Effect.fnUntraced(function* (lead: Lead, input: typeof ShellP
   if (chat === undefined) return yield* invalid("There is no owner chat to confirm this in.");
   const now = yield* Clock.currentTimeMillis;
   const changeId = `${SHELL_CHANGE}${retryKey(`${lead.orgId}|${lead.agentId}|${lead.wakeupId}|${shell.rev}|${stableStringify(next)}`)}`;
-  yield* storeShellChange({
-    orgId: lead.orgId,
-    changeId,
-    agentId: lead.agentId,
-    wakeupId: lead.wakeupId,
-    sections: next,
-    baseRev: shell.rev,
-    now,
-  });
+  let older: ReadonlyArray<string> = [];
   const widgetId = yield* askOwner(
     lead,
     {
@@ -80,9 +79,23 @@ const runPropose = Effect.fnUntraced(function* (lead: Lead, input: typeof ShellP
       yes: "Confirm",
       no: "Cancel",
     },
-    (widgetId) => attachChangeCard(lead.orgId, changeId, widgetId),
+    (widgetId) =>
+      bindShellChange({
+        orgId: lead.orgId,
+        changeId,
+        agentId: lead.agentId,
+        wakeupId: lead.wakeupId,
+        before: shell.sections,
+        after: next,
+        baseRev: shell.rev,
+        widgetId,
+        now,
+      }).pipe(
+        Effect.map((replaced) => {
+          older = replaced;
+        }),
+      ),
   );
-  const older = yield* replaceOlderShellChanges(lead.orgId, changeId, now);
   if (older.length > 0)
     yield* (yield* KinLevelGate).closeReplaced(lead, older, KinWidgetId.make(widgetId));
   return {
@@ -106,7 +119,7 @@ const enabled = McpToolAccess.threadBoundGate(() => {
 });
 
 /** Served with the work tools (`work/mcp/tools.ts`), so a lead's session lists it beside them. */
-export const shellPropose = Tool.make("shell_propose", {
+export const companySections = Tool.make("company_sections", {
   failure: Schema.Union([KinChatError, OrchestratorMcpFailure]),
   failureMode: "return",
   dependencies: [
@@ -117,15 +130,15 @@ export const shellPropose = Tool.make("shell_propose", {
     SqlClient.SqlClient,
   ],
   description:
-    "Asks the owner to turn sections of Kin on or off for this company, or to call one by the company's own word. Kin shows them one card listing each change, old beside new; it applies only when they tap Confirm, and replaces an unanswered older card. Nothing changes before then. When someone else asks, pass it to the owner with kin_relay.",
-  parameters: ShellProposeInput,
-  success: ShellProposeResult,
+    "Proposes turning a section of Kin on or off for this company (Clients, Deals, Money, Invoices and quotes), or calling a section by the company's own word. Kin shows the owner or a co-owner one card listing each change; nothing changes until they tap Confirm, and a newer card replaces an unanswered one. When someone else asks, pass it to the owner with kin_relay.",
+  parameters: CompanySectionsInput,
+  success: CompanySectionsResult,
 }).annotate(McpSchema.EnabledWhen, enabled);
 
 const isKinChatError = Schema.is(KinChatError);
 export const proposeHandler = McpToolAccess.actsAsCaller(
   Effect.fn("KinShellToolkit.propose")(
-    function* (input: typeof ShellProposeInput.Type) {
+    function* (input: typeof CompanySectionsInput.Type) {
       return yield* propose(yield* McpInvocationContext, input);
     },
     Effect.mapError((error) =>

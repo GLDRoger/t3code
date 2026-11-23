@@ -141,5 +141,5 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
       return yield* Money.profile(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
-  shell_propose: proposeHandler,
+  company_sections: proposeHandler,
 });
