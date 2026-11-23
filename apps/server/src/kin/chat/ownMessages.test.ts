@@ -616,7 +616,11 @@ it.effect("an agent changes only a plain message of its own that no one has read
         "m-figure",
         "m-page",
       ]) {
-        refused(yield* withdraw(message), OWN_MESSAGE_REFUSALS.moreThanWords, `withdraw ${message}`);
+        refused(
+          yield* withdraw(message),
+          OWN_MESSAGE_REFUSALS.moreThanWords,
+          `withdraw ${message}`,
+        );
         refused(yield* replace(message), OWN_MESSAGE_REFUSALS.moreThanWords, `replace ${message}`);
       }
       const [draft] = yield* sql<{ state: string }>`SELECT state FROM kin_questions
@@ -785,9 +789,11 @@ it.effect("a shared turn changes only what its history shows, and once read is r
       const line = Option.getOrThrow(
         yield* repo.getMessage({ orgId: org, messageId: KinMessageId.make("m-later") }),
       );
-      const [forDev] = yield* withLinks(org, { _tag: "person", personId: KinPersonId.make("dev") }, [
-        line,
-      ]);
+      const [forDev] = yield* withLinks(
+        org,
+        { _tag: "person", personId: KinPersonId.make("dev") },
+        [line],
+      );
       assert.isUndefined(forDev!.withdrawn?.said);
       const [forRhea] = yield* withLinks(org, { _tag: "person", personId: owner.personId }, [line]);
       assert.strictEqual(forRhea!.withdrawn?.said, "The site copy is due Friday.");

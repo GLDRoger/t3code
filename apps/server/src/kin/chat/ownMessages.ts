@@ -60,7 +60,7 @@ export const amendable = (sql: SqlClient.SqlClient) => sql`m.author_kind = 'agen
   AND ${onlyOwnOpenQuestion(sql)} AND NOT ${everRead(sql)}`;
 
 /** In a shared turn, `m` is at or past its chat's history floor (`historyFloor`). */
-export const withinView = (sql: SqlClient.SqlClient, shared: boolean) =>
+const withinView = (sql: SqlClient.SqlClient, shared: boolean) =>
   shared ? sql`m.seq >= ${historyFloor(sql, sql`m.org_id`, sql`m.chat_id`)}` : sql`1 = 1`;
 
 export interface OwnUnread {
@@ -211,7 +211,9 @@ const ownMessage = Effect.fnUntraced(function* (
   if (member.length === 0) return yield* refuse(OWN_MESSAGE_REFUSALS.notMember);
   // A shared turn's history starts at the floor: before it, nothing is there to change.
   if ((yield* effectiveAudience(input)) !== "owner_only") {
-    const [seen] = yield* sql<{ seen: number }>`SELECT (m.seq >= ${historyFloor(sql, sql`m.org_id`, sql`m.chat_id`)}) AS seen
+    const [seen] = yield* sql<{
+      seen: number;
+    }>`SELECT (m.seq >= ${historyFloor(sql, sql`m.org_id`, sql`m.chat_id`)}) AS seen
       FROM kin_messages m WHERE m.org_id = ${input.orgId} AND m.message_id = ${input.messageId}`;
     if (seen?.seen !== 1) return yield* refuse(OWN_MESSAGE_REFUSALS.unknown, "not_found");
   }

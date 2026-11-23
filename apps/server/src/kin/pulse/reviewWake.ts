@@ -87,11 +87,9 @@ const namesTitle = (body: string, title: string) =>
   new RegExp(`(?<![\\p{L}\\p{N}])${escaped(title)}(?![\\p{L}\\p{N}])`, "iu").test(body);
 
 /**
- * What changed about an agent's unread messages in a chat since they were posted: an entry one
- * names changed state, a card on one closed, a pulse fact one was told for cleared, or a person
- * there is about to start their working day after quiet hours. An entry counts only when named
- * exactly (its key, its whole number, or a title no other entry has) and `viewer` may read it as
- * the Work and Money tools would show it. From stored rows.
+ * What changed about these unread messages since each was posted: a named entry's state, a card
+ * closed, a told fact cleared, or someone's working day about to start. An entry counts only
+ * named exactly (key, whole number, or a title no other entry has) and readable by `viewer`.
  */
 const reviewChanges = Effect.fn("KinReview.changes")(function* (input: {
   readonly orgId: KinOrgId;
@@ -138,8 +136,7 @@ const reviewChanges = Effect.fn("KinReview.changes")(function* (input: {
         AND t.record_id <> r.record_id AND lower(t.title) = lower(r.title))
     ORDER BY r.key`;
   for (const row of titled)
-    for (const one of messages)
-      if (namesTitle(one.body, row.title)) note(row.key, one.createdAt);
+    for (const one of messages) if (namesTitle(one.body, row.title)) note(row.key, one.createdAt);
   const shell = yield* KinShell.get(orgId);
   const records: Array<{ key: string; title: string; state: string; at: number }> = [];
   if (since.size > 0) {

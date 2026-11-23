@@ -435,10 +435,8 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
-    .replace(
-      /\{\{REVIEW_WAKE:([^|}]+)\|(\d+)\}\}/g,
-      (_, who: string, count: string) =>
-        REVIEW_WAKE_TEXT({ who: who.split(", "), count: Number(count) }),
+    .replace(/\{\{REVIEW_WAKE:([^|}]+)\|(\d+)\}\}/g, (_, who: string, count: string) =>
+      REVIEW_WAKE_TEXT({ who: who.split(", "), count: Number(count) }),
     )
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names))
     .replace(/\{\{JOINED_WORK:([^|}]+)\|([^}]+)\}\}/g, (_, adder: string, holder: string) =>
