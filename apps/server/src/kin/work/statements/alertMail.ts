@@ -8,10 +8,11 @@ import type {
   KinConnectionActivity,
   KinConnections,
 } from "../../connections/ConnectionsService.ts";
-import { addressesIn } from "../../connections/MailProvider.ts";
+import { toolsOf } from "../../connections/ConnectionRows.ts";
+import { MAIL_TOOL, addressesIn } from "../../connections/MailProvider.ts";
 import type { OnMail } from "../../pulse/outside.ts";
 import type { KinRecords } from "../KinRecords.ts";
-import { isBankAlertSender, takeAlerts, threadSeen } from "./bankAlerts.ts";
+import { isBankAlertSender, retryAlertThreads, takeAlerts, threadSeen } from "./bankAlerts.ts";
 
 /**
  * A connection's new mail, as the pulse reads it, checked for bank alerts: a thread whose sender
@@ -27,6 +28,7 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
 ) {
   const now = yield* Clock.currentTimeMillis;
   const tally = { threads: 0, recorded: 0, duplicate: 0, rejected: 0 };
+  const threads = new Set<string>();
   for (const mail of activity.mail) {
     if (!isBankAlertSender(addressesIn(mail.from)[0])) continue;
     const newest = mail.date === null ? Number.NaN : Date.parse(mail.date);
@@ -35,11 +37,45 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
       (yield* threadSeen(orgId, activity.connectionId, mail.threadId, newest))
     )
       continue;
+    threads.add(mail.threadId);
+  }
+  const retries = new Set<string>();
+  const pending = yield* retryAlertThreads(orgId, activity.connectionId, now);
+  if (pending.length > 0) {
+    const tools = yield* toolsOf(orgId, activity.connectionId);
+    const readable = new Set(
+      tools
+        .filter((tool) => tool.mode === "read" && tool.removedAt === null)
+        .map((tool) => tool.name),
+    );
+    if (
+      readable.has(MAIL_TOOL.read) &&
+      (readable.has(MAIL_TOOL.list) || readable.has(MAIL_TOOL.search))
+    )
+      for (const { threadId } of pending) retries.add(threadId);
+  }
+
+  for (const threadId of new Set([...threads, ...retries])) {
+    const retryOnly = !threads.has(threadId);
     tally.threads++;
-    const messages = yield* connections.readThread(orgId, activity.connectionId, mail.threadId);
+    const read = connections.readThread(orgId, activity.connectionId, threadId);
+    const messages = yield* retryOnly
+      ? read.pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Kin couldn't reopen a bank alert thread", {
+              orgId,
+              connectionId: activity.connectionId,
+              reason: error.reason,
+            }).pipe(Effect.as([])),
+          ),
+        )
+      : read;
+    if (messages.length === 0) continue;
     const taken = yield* takeAlerts(orgId, {
       connectionId: activity.connectionId,
-      threadId: mail.threadId,
+      threadId,
+      retryOnly,
+      recheckedThread: retries.has(threadId),
       messages: messages.flatMap((message) =>
         message.body === null
           ? []

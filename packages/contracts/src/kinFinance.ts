@@ -109,6 +109,8 @@ export const KinListDefinition = Schema.Struct({
   ),
   /** New entries are labelled sensitive. */
   sensitive: Schema.Boolean,
+  team: Schema.optional(Schema.Boolean),
+  teamSince: Schema.optional(Schema.NullOr(NonNegativeInt)),
   /** Its entries carry an amount, in `currency` unless they say otherwise. */
   amount: Schema.Boolean,
   currency: KinCurrency,
@@ -158,6 +160,7 @@ export const KinListUpdateInput = Schema.Struct({
    */
   payments: Schema.optional(Schema.Boolean),
   archived: Schema.optional(Schema.Boolean),
+  team: Schema.optional(Schema.Boolean),
   retireFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
   restoreFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
   /** Sets how it numbers what it issues from now on; numbers already issued stay. */
