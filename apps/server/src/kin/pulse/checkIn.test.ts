@@ -848,6 +848,28 @@ describe("pulse check-ins", () => {
           events.map((event) => event.agent),
           [chief, finance, chief],
         );
+        const sql = yield* SqlClient.SqlClient;
+        const wakeFor = (id: string) =>
+          events.find((event) => JSON.parse(event.json).outside[0].id === id)!;
+        const done = wakeFor("t2:a");
+        const failed = wakeFor("t5:a");
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at,
+            ended_at, status, event_ids)
+          VALUES ('mail-wake', ${orgId}, ${chief}, 'replay', ${SLOT}, ${SLOT + MINUTE},
+            'completed', '[]')`;
+        yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = 'mail-wake'
+          WHERE org_id = ${orgId} AND dedupe_key = ${done.key}`;
+        yield* sql`UPDATE kin_events SET state = 'failed'
+          WHERE org_id = ${orgId} AND dedupe_key = ${failed.key}`;
+        const outside = { lines: [...lines, ...unknown], seen: [] };
+        assert.include(yield* checkIn(SLOT + 5 * MINUTE, outside), { _tag: "queued", outside: 8 });
+        const checkInEvent = (yield* pulseEvents).find((event) =>
+          event.key.startsWith("checkin:"),
+        )!;
+        assert.notInclude(
+          JSON.parse(checkInEvent.json).outside.map((line: KinPulseOutsideLine) => line.id),
+          "t2:a",
+        );
       }).pipe(Effect.provide(layer)),
   );
 

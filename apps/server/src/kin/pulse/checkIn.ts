@@ -29,7 +29,7 @@ import {
 import { dayIn } from "../work/money.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
-import { matchLines, type OutsideRead } from "./outside.ts";
+import { matchLines, outsideKey, type OutsideRead } from "./outside.ts";
 import { importedSince } from "./personMorning.ts";
 import { markTold, toldBy, untold } from "./told.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
@@ -156,14 +156,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   // Only open facts: one in hand or set aside is not news, and comes back as news when it ends.
   const read = yield* KinPulse.read({ orgId, at, viewer: { _tag: "owner" }, limit: 200 });
   const facts = read.facts;
-  const matched = yield* matchLines(orgId, input.outside.lines);
-  const byId = new Map(matched.map(({ line }) => [`${line.source}\0${line.id}`, line]));
-  const lines = input.outside.lines
-    .map((line) => byId.get(`${line.source}\0${line.id}`) ?? line)
-    .toSorted((a, b) => Number(b.matched !== undefined) - Number(a.matched !== undefined))
-    .slice(0, OUTSIDE_CAP);
   const brief = BRIEFS.has(input.scheduleId);
-  if (!brief && facts.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   const slot = input.manualId ?? dayIn(input.dueAt, input.zone);
   const dedupeKey = `checkin:${input.scheduleId}:${slot}`;
   const eventId = KinEventId.make(`pulse-${sha(`${orgId}\0${dedupeKey}`).slice(0, 32)}`);
@@ -199,7 +192,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
     return {
       _tag: "duplicate",
       facts: (yield* toldBy(orgId, [eventId])).size,
-      outside: lines.length,
+      outside: input.outside.lines.length,
       notBefore: stored.notBefore ?? stored.queuedAt,
     } as const;
   const [agent] = yield* sql<{ owner: KinPersonId }>`SELECT owner_person_id AS owner
@@ -222,14 +215,35 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
     orgId,
     heldPast.map((row) => row.eventId),
   );
-  const sent = [
-    ...new Map(
-      [
-        ...heldPast.flatMap((row) => Option.getOrElse(decodeLines(row.outside), () => [])),
-        ...lines,
-      ].map((line) => [`${line.source}\0${line.id}`, line]),
-    ).values(),
-  ]
+  const outside = [
+    ...heldPast.flatMap((row) => Option.getOrElse(decodeLines(row.outside), () => [])),
+    ...input.outside.lines,
+  ];
+  const mailKeys = [...new Set(outside.filter((line) => line.source === "mail").map(outsideKey))];
+  const handled = new Set<string>();
+  if (mailKeys.length > 0) {
+    const [previous] = yield* sql<{ at: number | null }>`
+      SELECT MAX(received_at) AS at FROM kin_events
+      WHERE org_id = ${orgId} AND tag = 'pulse' AND received_at <= ${at}
+        AND event_id != ${eventId} AND json_extract(json, '$.checkIn') IS NOT NULL`;
+    for (let start = 0; start < mailKeys.length; start += 500) {
+      const done = yield* sql<{ key: string }>`
+        SELECT e.dedupe_key AS key FROM kin_events e JOIN kin_wakeups w
+          ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+        WHERE e.org_id = ${orgId} AND e.tag = 'pulse' AND e.state = 'done'
+          AND e.dedupe_key IN ${sql.in(mailKeys.slice(start, start + 500))}
+          AND w.ended_at >= ${previous?.at ?? 0} AND w.ended_at <= ${at}
+        ORDER BY e.dedupe_key`;
+      for (const row of done) handled.add(row.key);
+    }
+  }
+  const remaining = outside.filter(
+    (line) => line.source !== "mail" || !handled.has(outsideKey(line)),
+  );
+  const matched = yield* matchLines(orgId, remaining);
+  const byId = new Map(remaining.map((line) => [outsideKey(line), line]));
+  for (const { line } of matched) byId.set(outsideKey(line), line);
+  const sent = [...byId.values()]
     .toSorted((a, b) => Number(b.matched !== undefined) - Number(a.matched !== undefined))
     .slice(0, OUTSIDE_CAP);
   const open =
