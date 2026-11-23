@@ -12,7 +12,7 @@ const NEEDS: Readonly<Record<KinSectionId, ReadonlyArray<KinSectionId>>> = {
   clients: [],
   deals: ["clients"],
   money: [],
-  invoices: ["clients", "money"],
+  invoices: ["money"],
   docs: [],
 };
 
@@ -35,7 +35,7 @@ export function kinSectionSwitchOn(shell: KinShell | null | undefined, id: KinSe
 /**
  * Whether a section is on, from `kin.access.me`'s `shell`: the one rule every screen asks. A host
  * older than the shell (none sent), one not answered yet, and a section it doesn't name are all on.
- * Deals needs Clients, and Invoices and quotes needs Clients and Money, as the host decides.
+ * Deals needs Clients, and Invoices and quotes needs Money, as the host decides.
  */
 export function kinSectionOn(shell: KinShell | null | undefined, id: KinSectionId): boolean {
   return (
