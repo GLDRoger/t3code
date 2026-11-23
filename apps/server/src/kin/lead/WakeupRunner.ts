@@ -55,6 +55,9 @@ import * as Memory from "../memory/Memory.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { feedTurn } from "../numbers/feeds.ts";
+import { offTurnTexts } from "../pulse/senses/numbers.ts";
+import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
 import { dismissalGone } from "../questions/dismissed.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
@@ -484,6 +487,15 @@ const make = Effect.gen(function* () {
     function* (orgId: KinOrgId, event: KinEvent) {
       if (event._tag === "record.changed" && event.reason === "joined")
         return !(yield* stillJoined(orgId, event.agentId, event.recordId));
+      // A number's crossing whose episode ended, was handled or went quiet since it was queued.
+      if (
+        event._tag === "pulse" &&
+        event.factKeys.length > 0 &&
+        event.factKeys.every((key) => key.startsWith("number_off:"))
+      )
+        return (
+          (yield* offTurnTexts(orgId, event.factKeys, yield* Clock.currentTimeMillis)).length === 0
+        );
       if (event._tag !== "deferral.due") return false;
       const subject = event.subject;
       if (subject.type === "scheduled_task") {
@@ -491,7 +503,14 @@ const make = Effect.gen(function* () {
         if (schedule !== undefined) {
           // Paused, or its setter gone, since it was queued: the run is dropped.
           const task = yield* KinSchedules.readNativeTask(sql, schedule.taskId);
-          return task === undefined || !(yield* KinSchedules.runnable(sql, schedule, task));
+          if (task === undefined || !(yield* KinSchedules.runnable(sql, schedule, task)))
+            return true;
+          // A feed with every number already recorded for the period has nothing to fetch.
+          return (
+            (yield* feedOf(orgId, schedule.scheduleId)) !== undefined &&
+            (yield* feedTurn(orgId, schedule.scheduleId, yield* Clock.currentTimeMillis)) ===
+              undefined
+          );
         }
         return yield* memory
           .readItemQuietly(orgId, subject.itemId, "triggers")

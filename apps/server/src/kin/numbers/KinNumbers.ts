@@ -1,6 +1,7 @@
 import {
   KinAgentId,
   KinChatError,
+  KinNumberDecimal,
   KinNumberValueInput,
   KinPersonId,
   isKinCurrency,
@@ -26,10 +27,9 @@ import { effectiveAudience, SHARED_REFUSAL } from "../lead/Audience.ts";
 import { outsideToolAllowed, OUTSIDE_REFUSAL } from "../lead/OutsideContent.ts";
 import { accessOf } from "../people/KinAccess.ts";
 import { sectionOnFor } from "../shell/KinShell.ts";
-import type { SectionId } from "../shell/sections.ts";
+import { sectionOfList, type SectionId } from "../shell/sections.ts";
 import { homeCurrency } from "../work/companyProfile.ts";
-import { requestHashOf } from "../work/KinRecords.ts";
-import { openPipelineValue } from "../work/deals.ts";
+import { KinRecords, requestHashOf } from "../work/KinRecords.ts";
 import { ownerLevelProgressOf, ownerLevelReceivedByCurrency } from "../work/goals.ts";
 import { parseFields, fieldText } from "../work/lists.ts";
 import { addUp, dayIn, monthOf } from "../work/money.ts";
@@ -37,7 +37,7 @@ import { ownerLevelInvoicedInMonth } from "../work/moneyViews.ts";
 import { countedEntry, owedInvoices, ownerZone, startOfDay } from "../work/recordRows.ts";
 import { countListStates } from "../work/registers.ts";
 import { personSees } from "../work/teamView.ts";
-import { latestValue, numberFields, targetless, type NumberSpec } from "./numberRows.ts";
+import { latestValue, liveFeeds, numberFields, targetless, type NumberSpec } from "./numberRows.ts";
 
 type Agent = {
   readonly _tag: "agent";
@@ -92,6 +92,8 @@ type Definition = {
   readonly ownerKind: string;
   readonly ownerId: string | null;
   readonly createdAt: number;
+  readonly rev: number;
+  readonly teamShared: number;
 };
 
 const definitions = Effect.fn("KinNumbers.definitions")(function* (
@@ -103,7 +105,7 @@ const definitions = Effect.fn("KinNumbers.definitions")(function* (
   if (keys?.length === 0) return [];
   return yield* sql<Definition>`SELECT r.record_id AS "recordId", r.key, r.title AS name,
       r.fields_json AS fields, NOT (${targetless(sql)}) AS "hasTarget", r.owner_kind AS "ownerKind", r.owner_id AS "ownerId",
-      r.created_at AS "createdAt"
+      r.created_at AS "createdAt", r.rev, r.team_shared AS "teamShared"
     FROM kin_records r WHERE r.org_id = ${viewer.orgId} AND r.register_id = 'goals'
       AND ${countedEntry(sql)}
       AND (${targetless(sql)} AND json_extract(r.fields_json, '$.measure') = 'manual'
@@ -133,25 +135,24 @@ const computedSections = {
   invoiced_this_month: "invoices",
   clients_won: "clients",
   tasks_done: null,
-  count: { deals: "deals" },
 } satisfies Record<
   Extract<typeof NumberSpec.Type, { builtin: string }>["builtin"],
   SectionId | null
-> & {
-  count: { deals: SectionId };
-};
+>;
+
+/** The section a computed number reads, whose switch hides it; null for any other number. */
+const sectionOfSpec = (spec: typeof NumberSpec.Type | undefined): SectionId | null =>
+  spec === undefined
+    ? null
+    : "builtin" in spec
+      ? computedSections[spec.builtin]
+      : sectionOfList(spec.count);
 
 const shownInShell = Effect.fn("KinNumbers.shownInShell")(function* (
   orgId: KinOrgId,
   spec: typeof NumberSpec.Type | undefined,
 ) {
-  if (spec === undefined) return true;
-  const section =
-    "builtin" in spec
-      ? computedSections[spec.builtin]
-      : spec.count === "deals"
-        ? computedSections.count.deals
-        : null;
+  const section = sectionOfSpec(spec);
   return section === null || (yield* sectionOnFor(orgId, section));
 });
 
@@ -188,30 +189,47 @@ const compute = Effect.fn("KinNumbers.compute")(function* (
           .map((row) => row.balance),
         yield* homeCurrency(orgId),
       );
-    case "pipeline_open":
+    case "pipeline_open": {
+      // Loaded here: the pulse reads numbers, and deals and the pulse import each other at load.
+      const { openPipelineValue } = yield* Effect.promise(() => import("../work/deals.ts"));
       return yield* openPipelineValue(orgId);
+    }
     case "invoiced_this_month":
       return yield* ownerLevelInvoicedInMonth(orgId, monthOf(today), zone);
   }
 });
 
-const offBound = (
+/** The value compared with the limits: a decimal, or the one currency a money total counts in. */
+const comparable = (value: KinNumber["value"], unit: string | undefined) => {
+  if (value === null) return undefined;
+  if (typeof value === "string") return BigDecimal.fromStringUnsafe(value);
+  const currency = unit?.toUpperCase();
+  const counted = value.find(({ currency: code }) =>
+    currency === undefined ? value.length === 1 : code === currency,
+  );
+  return counted === undefined
+    ? undefined
+    : BigDecimal.make(BigInt(counted.minor), kinCurrency(counted.currency).decimals);
+};
+
+/** The side of its limits the value is on, when it is outside them. */
+const offSide = (
   value: KinNumber["value"],
   fields: NonNullable<ReturnType<typeof numberFields>>,
 ) => {
-  const off = (decimal: BigDecimal.BigDecimal) =>
-    (fields.above !== undefined &&
-      BigDecimal.Order(decimal, BigDecimal.fromStringUnsafe(fields.above)) > 0) ||
-    (fields.below !== undefined &&
-      BigDecimal.Order(decimal, BigDecimal.fromStringUnsafe(fields.below)) < 0);
-  if (value === null) return false;
-  if (typeof value === "string") return off(BigDecimal.fromStringUnsafe(value));
-  const currency = fields.unit?.toUpperCase();
-  return value.some(
-    ({ currency: code, minor }) =>
-      (currency === undefined ? value.length === 1 : code === currency) &&
-      off(BigDecimal.make(BigInt(minor), kinCurrency(code).decimals)),
-  );
+  const decimal = comparable(value, fields.unit);
+  if (decimal === undefined) return undefined;
+  if (
+    fields.above !== undefined &&
+    BigDecimal.Order(decimal, BigDecimal.fromStringUnsafe(fields.above)) > 0
+  )
+    return { side: "above" as const, limit: fields.above, value: BigDecimal.format(decimal) };
+  if (
+    fields.below !== undefined &&
+    BigDecimal.Order(decimal, BigDecimal.fromStringUnsafe(fields.below)) < 0
+  )
+    return { side: "below" as const, limit: fields.below, value: BigDecimal.format(decimal) };
+  return undefined;
 };
 
 const staleAt = (asOf: string, every: "day" | "week" | "month") => {
@@ -222,6 +240,76 @@ const staleAt = (asOf: string, every: "day" | "week" | "month") => {
       : DateTime.add(day, { days: every === "day" ? 2 : 14 });
   return DateTime.formatIsoDateUtc(after);
 };
+
+/** A number as it stands at `now`: its latest or computed value, and how that sits by its rules. */
+const evaluate = Effect.fn("KinNumbers.evaluate")(function* (
+  orgId: KinOrgId,
+  row: Definition,
+  fields: NonNullable<ReturnType<typeof numberFields>>,
+  now: number,
+  today: string,
+  zone: string,
+) {
+  const recorded =
+    fields.spec === undefined ? yield* latestValue(orgId, row.recordId, today) : undefined;
+  const value =
+    fields.spec === undefined
+      ? (recorded?.value ?? null)
+      : yield* compute(orgId, fields.spec, row, now, today, zone);
+  const asOf = fields.spec === undefined ? (recorded?.asOf ?? null) : today;
+  return {
+    value,
+    asOf,
+    /** The latest value's place among its day's corrections, for a recorded number. */
+    seq: recorded?.seq,
+    off: offSide(value, fields),
+    stale:
+      fields.every !== undefined &&
+      fields.spec === undefined &&
+      today > staleAt(asOf ?? dayIn(row.createdAt, zone), fields.every),
+    source: recorded?.source ?? fields.source,
+  };
+});
+
+/**
+ * Every watched number at owner level, whatever its section's switch, for Kin's own senses: its
+ * keeper (the agent holding it), the section a computed one reads, and how it stands at `now`.
+ */
+export const ownerLevelNumbers = Effect.fn("KinNumbers.ownerLevelNumbers")(function* (
+  orgId: KinOrgId,
+  now: number,
+  options?: { readonly recordedOnly?: boolean },
+) {
+  const zone = yield* ownerZone(orgId);
+  const today = dayIn(now, zone);
+  const out = [];
+  for (const row of yield* definitions({ orgId }, undefined)) {
+    const fields = numberFields(parseFields(row.fields));
+    if (fields === undefined || (options?.recordedOnly === true && fields.kind !== "recorded"))
+      continue;
+    out.push({
+      recordId: row.recordId,
+      key: row.key,
+      name: row.name,
+      unit: fields.unit,
+      every: fields.every,
+      kind: fields.kind,
+      above: fields.above,
+      below: fields.below,
+      /** The definition's source line, which a feed's card set; a value's own may differ. */
+      definedSource: fields.source,
+      keeper: row.ownerKind === "agent" && row.ownerId !== null ? row.ownerId : undefined,
+      holder: { kind: row.ownerKind, id: row.ownerId },
+      rev: row.rev,
+      spec: fields.spec,
+      direction: fields.direction,
+      teamShared: row.teamShared === 1,
+      section: sectionOfSpec(fields.spec),
+      ...(yield* evaluate(orgId, row, fields, now, today, zone)),
+    });
+  }
+  return out;
+});
 
 const readSnapshot = Effect.fn("KinNumbers.readSnapshot")(function* <A, E, R>(
   who: Viewer,
@@ -253,31 +341,19 @@ const listing = Effect.fn("KinNumbers.listing")(
             row.ownerId === who.agentId
           )
             kept.push(row.key);
-          const recorded =
-            fields.spec === undefined
-              ? yield* latestValue(viewer.orgId, row.recordId, today)
-              : undefined;
-          const value =
-            fields.spec === undefined
-              ? (recorded?.value ?? null)
-              : yield* compute(viewer.orgId, fields.spec, row, now, today, zone);
-          const asOf = fields.spec === undefined ? (recorded?.asOf ?? null) : today;
-          const source = recorded?.source ?? fields.source;
+          const standing = yield* evaluate(viewer.orgId, row, fields, now, today, zone);
           numbers.push({
             key: row.key,
             name: row.name,
             ...(fields.unit === undefined ? {} : { unit: fields.unit }),
-            value,
-            asOf,
+            value: standing.value,
+            asOf: standing.asOf,
             ...(fields.direction === undefined ? {} : { direction: fields.direction }),
             ...(fields.above === undefined ? {} : { above: fields.above }),
             ...(fields.below === undefined ? {} : { below: fields.below }),
-            off: offBound(value, fields),
-            stale:
-              fields.every !== undefined &&
-              fields.spec === undefined &&
-              today > staleAt(asOf ?? dayIn(row.createdAt, zone), fields.every),
-            ...(source === undefined ? {} : { source }),
+            off: standing.off !== undefined,
+            stale: standing.stale,
+            ...(standing.source === undefined ? {} : { source: standing.source }),
             canType:
               who._tag === "person" &&
               fields.kind !== "computed" &&
@@ -302,10 +378,52 @@ export const list = Effect.fn("KinNumbers.list")(function* (
  * The numbers an agent's turn is told of, as `numbers_read` would list them for it, and the
  * recorded ones it keeps. Refused, as that tool is, in a turn anyone below owner level reads.
  */
-export const forAgent = Effect.fn("KinNumbers.forAgent")(function* (agent: Agent) {
-  const { numbers, kept } = yield* listing(agent);
-  const watched = numbers.map(({ key, name }) => ({ key, name }));
-  return { watched, kept: watched.filter(({ key }) => kept.includes(key)) };
+export const forAgent = Effect.fn("KinNumbers.forAgent")(
+  function* (agent: Agent) {
+    const { numbers, kept } = yield* listing(agent);
+    const watched = numbers.map(({ key, name, unit, above, below }) => ({
+      key,
+      name,
+      ...(unit === undefined ? {} : { unit }),
+      ...(above === undefined ? {} : { above }),
+      ...(below === undefined ? {} : { below }),
+    }));
+    if (kept.length === 0) return { watched, kept: [] };
+    // Feeds are the agent's own schedules; the source each of its numbers names says which runs it.
+    const feeds = (yield* liveFeeds(agent.orgId)).filter((one) => one.agentId === agent.agentId);
+    const definitions = yield* sourcesOf(agent.orgId, kept);
+    return {
+      watched,
+      kept: numbers
+        .filter(({ key }) => kept.includes(key))
+        .map(({ key, name }) => {
+          const source = definitions.get(key);
+          const feed = feeds.find((one) => one.feed.source === source)?.feed;
+          return {
+            key,
+            name,
+            ...(feed === undefined
+              ? {}
+              : { feed: { source: feed.source, every: feed.every, at: feed.at } }),
+          };
+        }),
+    };
+  },
+  Effect.catchTags({ SqlError: unavailable }),
+);
+
+/** Each kept number's own source line, by key. */
+const sourcesOf = Effect.fn("KinNumbers.sources")(function* (
+  orgId: KinOrgId,
+  keys: ReadonlyArray<string>,
+) {
+  const rows = yield* definitions({ orgId }, keys);
+  return new Map(
+    rows.flatMap((row) => {
+      const source = numberFields(parseFields(row.fields))?.source;
+      return source === undefined ? [] : [[row.key, source] as const];
+    }),
+  );
 });
 
 export const values = Effect.fn("KinNumbers.values")(
@@ -464,6 +582,42 @@ export const record = Effect.fn("KinNumbers.record")(
   },
   Effect.catchTags({ SqlError: unavailable, PersistenceSqlError: unavailable }),
 );
+
+const isDecimal = Schema.is(KinNumberDecimal);
+
+/**
+ * The owner or a co-owner sets or clears a watched number's limits: a decimal sets one, null
+ * clears it, absent leaves it. The number as it then reads.
+ */
+export const setLimit = Effect.fn("KinNumbers.setLimit")(function* (
+  person: PersonIdentity,
+  key: string,
+  limits: { readonly above?: string | null; readonly below?: string | null },
+) {
+  const role = yield* accessOf(person.orgId, person.personId);
+  if (role === undefined) return yield* missing;
+  if (!kinOwnerLevel(role))
+    return yield* denied("Only the owner or a co-owner sets a number's limits.");
+  if ([limits.above, limits.below].some((limit) => typeof limit === "string" && !isDecimal(limit)))
+    return yield* invalid("A limit is a plain decimal, such as 1000 or 2.5.");
+  yield* definition({ orgId: person.orgId }, key);
+  yield* (yield* KinRecords).update(
+    person.orgId,
+    {
+      actor: { _tag: "person", personId: person.personId },
+      via: "owner",
+      askedBy: person.personId,
+    },
+    key,
+    {
+      fields: {
+        ...(limits.above === undefined ? {} : { above: limits.above }),
+        ...(limits.below === undefined ? {} : { below: limits.below }),
+      },
+    },
+  );
+  return (yield* list(person, [key])).numbers[0];
+});
 
 export const visibleValueRevision = Effect.fn("KinNumbers.visibleValueRevision")(function* (
   person: PersonIdentity,
