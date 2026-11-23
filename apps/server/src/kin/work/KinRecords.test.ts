@@ -4996,7 +4996,7 @@ it.effect(
       });
       for (const input of [
         { sourceEventId, key, fields: { price: "INR 42" } },
-        { sourceEventId, key, sensitive: true },
+        { sourceEventId, key, sensitive: true as const },
         { sourceEventId, key, state: "dropped" as const },
       ])
         assert.include(yield* Effect.flip(LeadWork.update(scope, input)), {
