@@ -1,5 +1,5 @@
 import { KIN_DOCS } from "@t3tools/client-runtime/kin/kinDocs";
-import { useKinOpensClients } from "./state/kinChatOnly";
+import { useKinIsOwnerLevel, useKinOpensClients } from "./state/kinChatOnly";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_LINKED,
@@ -11,6 +11,7 @@ import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kin
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinTaskProjectsAllowed } from "@t3tools/client-runtime/kin/kinWorkClients";
+import { kinSectionOf, kinSectionOffLine } from "@t3tools/client-runtime/kin/kinShell";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_TASK_LINK,
@@ -147,7 +148,7 @@ import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 import { KinWatchLine } from "./KinWatchLine";
 import { KinTaskWithRows } from "./components/KinTaskWithRows";
 import { kinTaskLeftAtom } from "./state/kinTaskLeft";
-import { useKinSectionOn } from "./state/useKinShell";
+import { useKinSectionOn, useKinShell } from "./state/useKinShell";
 
 export type KinWorkItemParams = {
   readonly environmentId: string;
@@ -308,6 +309,8 @@ function KinWorkItemBody(props: ItemTarget) {
   const opensClients = useKinOpensClients(environmentId);
   // With Clients off its pickers leave the task; it reads as it always did otherwise.
   const clientsOn = useKinSectionOn(environmentId, "clients");
+  const shell = useKinShell(environmentId);
+  const ownerLevel = useKinIsOwnerLevel(environmentId);
   const hostClients =
     kinWorkHostClients(work._tag === "ready" ? work.live.summary : null) && clientsOn;
   const choices = useKinWorkChoices(props, hostClients && canChange);
@@ -432,8 +435,16 @@ function KinWorkItemBody(props: ItemTarget) {
     );
   if (item.list !== undefined) {
     const read = kinWorkItemView(item, names, now, KIN_RECORD_CHANGES_CAP, place);
+    // A record of a section that is off, opened by its link, says so.
+    const section = kinSectionOf({ list: item.list });
+    const offLine = section === null ? null : kinSectionOffLine(shell, section, ownerLevel);
     return (
       <KinWorkFrame title={item.title} onBack={back}>
+        {offLine === null ? null : (
+          <Text textRole="footnote" className="px-2 text-foreground-muted">
+            {offLine}
+          </Text>
+        )}
         <KinListEntryBody
           {...props}
           onMake={setMaking}

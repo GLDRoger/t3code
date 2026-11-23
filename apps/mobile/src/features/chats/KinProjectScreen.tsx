@@ -237,6 +237,7 @@ function KinProjectBody(
       choices={null}
       initial={{ ...KIN_WORK_DEFAULT_FILTER, project: view.ref }}
       within={{
+        adds: view.adds,
         bar: canChange
           ? {
               actions: [
@@ -301,7 +302,7 @@ function KinProjectBody(
               onOpenTask={openTask}
               onOpenClient={(to) => openRecord("KinClient", { environmentId, orgId, party: to })}
               onAddMilestone={
-                (canChange || leads) && view.state === "open"
+                (canChange || leads) && view.adds && view.state === "open"
                   ? () =>
                       navigation.navigate("KinMilestoneForm", {
                         environmentId,

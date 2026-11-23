@@ -176,9 +176,9 @@ function ProjectPage(
   const leads =
     view.lead.personId !== null &&
     view.lead.personId === kinFeedViewer(props.directory.orgs, orgId).personId;
-  const addsMilestone = (canChange || leads) && view.closed === null;
+  const addsMilestone = (canChange || leads) && view.adds && view.closed === null;
   const addTask =
-    props.onAddTask === null || view.closed !== null
+    props.onAddTask === null || view.closed !== null || !view.adds
       ? null
       : () => props.onAddTask?.(kinWorkDraftFor({ party, project: view.ref }));
   const summary = (
