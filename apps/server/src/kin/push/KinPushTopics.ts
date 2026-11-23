@@ -57,6 +57,8 @@ export type KinPushSentRow = {
   readonly version: number;
   readonly chatId: KinChatId | null;
   readonly messageId: KinMessageId | null;
+  /** A chat's banner: the newest message position it covers. */
+  readonly seq: number | null;
   readonly sentAt: number;
   readonly withdrawnAt: number | null;
 };
@@ -74,7 +76,7 @@ export type KinPushSettled = {
 };
 
 const ROW = `person_id AS "personId", topic, version, chat_id AS "chatId", message_id AS "messageId",
-  sent_at AS "sentAt", withdrawn_at AS "withdrawnAt"`;
+  seq, sent_at AS "sentAt", withdrawn_at AS "withdrawnAt"`;
 const PRUNE_BATCH = 5_000;
 const PRUNE_BATCHES = 20;
 
@@ -97,15 +99,16 @@ export const makeKinPushTopics = Effect.gen(function* () {
     readonly topic: KinPushTopic;
     readonly chatId: KinChatId | undefined;
     readonly messageId: KinMessageId | undefined;
+    readonly seq?: number | undefined;
   }) {
     const now = yield* Clock.currentTimeMillis;
     const [row] = yield* sql<{ version: number }>`INSERT INTO kin_push_sent (org_id, person_id,
-        topic, version, chat_id, message_id, sent_at)
+        topic, version, chat_id, message_id, seq, sent_at)
       VALUES (${input.orgId}, ${input.personId}, ${input.topic}, 1, ${input.chatId ?? null},
-        ${input.messageId ?? null}, ${now})
+        ${input.messageId ?? null}, ${input.seq ?? null}, ${now})
       ON CONFLICT (org_id, person_id, topic) DO UPDATE SET version = kin_push_sent.version + 1,
         sent_at = excluded.sent_at, chat_id = excluded.chat_id, message_id = excluded.message_id,
-        withdrawn_at = NULL
+        seq = excluded.seq, withdrawn_at = NULL
       RETURNING version`;
     return row?.version ?? 1;
   });
@@ -193,12 +196,19 @@ export const makeKinPushTopics = Effect.gen(function* () {
         ? Effect.succeed(true)
         : unread(orgId, personId, row.chatId, row.messageId);
     switch (kind) {
+      // About the messages it covers, not the chat: one of them still unread for them.
       case "c": {
         const chatId = KinChatId.make(id);
         const memberId = yield* memberOf(orgId, personId, chatId);
-        return (
-          memberId !== undefined && (yield* chats.unreadCount({ orgId, chatId, memberId })) > 0
-        );
+        if (memberId === undefined) return false;
+        const [left] = yield* sql`SELECT 1 FROM kin_messages m
+          JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+          WHERE m.org_id = ${orgId} AND m.chat_id = ${chatId} AND m.status = 'posted'
+            AND m.seq <= ${row.seq ?? Number.MAX_SAFE_INTEGER} AND m.seq > c.cleared_seq
+            AND m.seq > COALESCE((SELECT r.last_read_seq FROM kin_read_state r
+              WHERE r.org_id = m.org_id AND r.chat_id = m.chat_id AND r.member_id = ${memberId}), 0)
+          LIMIT 1`;
+        return left !== undefined;
       }
       case "w": {
         const [card] = yield* sql<{ chatId: KinChatId; awaiting: string }>`SELECT w.chat_id AS

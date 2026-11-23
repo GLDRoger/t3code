@@ -17,6 +17,8 @@ export default Effect.gen(function* () {
     -- The chat message the last push came from, when it came from one.
     chat_id TEXT,
     message_id TEXT,
+    -- A chat's banner: the newest message position it covers. Read up to it, it is settled.
+    seq INTEGER,
     sent_at INTEGER NOT NULL,
     withdrawn_at INTEGER,
     PRIMARY KEY (org_id, person_id, topic)

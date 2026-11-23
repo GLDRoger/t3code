@@ -149,6 +149,8 @@ type Push = {
   readonly topic: KinPushTopic;
   /** A chat's name, titled "<name> · 3 new" when the reader has more than one unread there. */
   readonly countTitle?: string;
+  /** A chat's topic: the newest message position the banner covers, which settles it once read. */
+  readonly seq?: number;
   readonly data: KinPushData;
   readonly recipients: ReadonlyArray<Recipient>;
   /** A device the push is about, which needs no word of itself. */
@@ -858,7 +860,7 @@ const make = Effect.gen(function* () {
       collapseId: kinPushCollapseId(orgId, row.chat_id, messageId),
       topic,
       ...(topic === chatTopic(row.chat_id)
-        ? { countTitle: chat.direct ? (author ?? chat.name) : chat.name }
+        ? { countTitle: chat.direct ? (author ?? chat.name) : chat.name, seq: row.seq }
         : {}),
       data: {
         kin: 1,
@@ -1279,6 +1281,7 @@ const make = Effect.gen(function* () {
                   topic: push.topic,
                   chatId: push.chatId,
                   messageId: push.source,
+                  seq: push.seq,
                 })
                 .pipe(
                   Effect.catch((error) =>
@@ -1600,8 +1603,13 @@ const make = Effect.gen(function* () {
       (person) => person.personId === first.personId,
     );
     if (reader === undefined) return undefined;
-    const unread = yield* sql<{ messageId: KinMessageId; body: string; name: string | null }>`
-      SELECT m.message_id AS "messageId", m.body, p.display_name AS name FROM kin_messages m
+    const unread = yield* sql<{
+      messageId: KinMessageId;
+      seq: number;
+      body: string;
+      name: string | null;
+    }>`
+      SELECT m.message_id AS "messageId", m.seq, m.body, p.display_name AS name FROM kin_messages m
       LEFT JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = m.author_person_id
       WHERE m.org_id = ${orgId} AND m.chat_id = ${first.chatId} AND m.status = 'posted'
         AND m.message_id IN ${sql.in(held.filter((row) => row.chatId === first.chatId).map((row) => row.messageId))}
@@ -1622,6 +1630,7 @@ const make = Effect.gen(function* () {
       collapseId: kinPushCollapseId(orgId, first.chatId, oldest.messageId),
       topic: chatTopic(first.chatId),
       countTitle: name,
+      seq: unread.at(-1)!.seq,
       data: { kin: 1, orgId, chatId: first.chatId, deepLink: chatLink(orgId, first.chatId) },
       recipients: [
         {

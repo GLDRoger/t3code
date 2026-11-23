@@ -3105,6 +3105,59 @@ describe("KinPushSender withdrawals", () => {
     },
   );
 
+  it.effect("a chat's banner goes once its newest message is read, whatever came after", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql, sender } = yield* seedTopical;
+      yield* pairChat(sql);
+      const from = { personId: member, memberId: "m_priya_pair" };
+      const withdrawn = () =>
+        apns.sent
+          .filter((push) => push.token === ownerPhone)
+          .flatMap((push) => (payloadOf(push).body.withdraw as Array<unknown> | undefined) ?? []);
+      const readTo = (messageId: string) =>
+        sql`INSERT OR REPLACE INTO kin_read_state (org_id, chat_id, member_id, last_read_seq,
+            updated_at)
+          SELECT 'org_01', 'chat_pair', 'm_owner_pair', seq, ${T} FROM kin_messages
+          WHERE message_id = ${messageId}`.pipe(
+          Effect.andThen(
+            notify({
+              _tag: "read",
+              orgId,
+              chatId: KinChatId.make("chat_pair"),
+              memberId: KinMemberId.make("m_owner_pair"),
+            }),
+          ),
+        );
+      const a = yield* postMessage(sql, from, "posted", { chatId: "chat_pair", body: "A" });
+      yield* notify({ _tag: "message", orgId, messageId: a });
+      // Read A on the web; B lands before the batch goes, ringing no one: not part of A's banner.
+      yield* readTo(a);
+      yield* postMessage(sql, from, "posted", { chatId: "chat_pair", body: "B" });
+      apns.sent.length = 0;
+      yield* afterBatch(sender);
+      assert.deepStrictEqual(withdrawn(), [{ topic: "c:chat_pair", version: 1 }]);
+
+      // Held direct messages arrive as one banner covering both: read up to the first, it stays.
+      const c = yield* postMessage(sql, from, "posted", { chatId: "chat_pair", body: "C" });
+      const d = yield* postMessage(sql, from, "posted", { chatId: "chat_pair", body: "D" });
+      yield* sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind, body,
+          audience, held_at, deliver_at)
+        VALUES ('hold-c', 'org_01', 'chat_pair', ${owner}, ${`kin-dm-news:${c}`}, ${c}, 'chat',
+            ${T}, ${T}),
+          ('hold-d', 'org_01', 'chat_pair', ${owner}, ${`kin-dm-news:${d}`}, ${d}, 'chat',
+            ${T}, ${T})`;
+      yield* notify({ _tag: "dm", orgId, holdIds: ["hold-c", "hold-d"] });
+      apns.sent.length = 0;
+      yield* readTo(c);
+      yield* afterBatch(sender);
+      assert.deepStrictEqual(withdrawn(), []);
+      yield* readTo(d);
+      yield* afterBatch(sender);
+      assert.deepStrictEqual(withdrawn(), [{ topic: "c:chat_pair", version: 2 }]);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
   it.effect(
     "cards settling together are one silent push per phone, in quiet hours too, to who heard",
     () => {
