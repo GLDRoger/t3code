@@ -759,6 +759,7 @@ export type Additions = {
   readonly stateLabels: StoredDefinition["stateLabels"];
   readonly remindOn?: string | undefined;
   readonly check?: StoredDefinition["check"];
+  readonly unwatch?: ReadonlyArray<"remindOn" | "check"> | undefined;
 };
 /** Shown as a section of the company's own once made, and in the phone's dock when asked. */
 const Shown = {
@@ -782,6 +783,8 @@ const Proposal = Schema.Union([
     team: KinListDefinition.fields.team,
     remindOn: KinListDefinition.fields.remindOn,
     check: KinListDefinition.fields.check,
+    /** What Kin stops watching: the reminder day, the check, or both. */
+    unwatch: Schema.optional(Schema.Array(Schema.Literals(["remindOn", "check"]))),
     ...Shown,
   }),
 ]);
@@ -870,6 +873,13 @@ const checkFieldDefs = (fields: ReadonlyArray<FieldDef>): KinChatError | undefin
 
 /** Adds to a definition, never takes away: new fields, categories, choices and state names. */
 const extended = (def: StoredDefinition, additions: Additions) => {
+  const { remindOn, check, ...kept } = def;
+  const watched = {
+    ...(additions.unwatch?.includes("remindOn") === true || remindOn === undefined
+      ? {}
+      : { remindOn }),
+    ...(additions.unwatch?.includes("check") === true || check === undefined ? {} : { check }),
+  };
   const fields = [...def.fields];
   for (const spec of additions.fields) {
     const existing = fields.find((one) => one.key === spec.key);
@@ -885,7 +895,8 @@ const extended = (def: StoredDefinition, additions: Additions) => {
     fields[index] = { ...spec, choices: [...new Set([...(spec.choices ?? []), ...choices])] };
   }
   const next: StoredDefinition = {
-    ...def,
+    ...kept,
+    ...watched,
     fields,
     categories: [...new Set([...def.categories, ...additions.categories])],
     stateLabels: { ...def.stateLabels, ...additions.stateLabels },
@@ -969,15 +980,16 @@ export type ListInput = {
   readonly dateLabel?: string | undefined;
   readonly section?: boolean | undefined;
   readonly dock?: boolean | undefined;
-  /** A date field by label or key. */
-  readonly remindOn?: string | undefined;
-  /** A number field by label or key, below or above a number or another number field. */
+  /** A date field by label or key; null stops reminding. */
+  readonly remindOn?: string | null | undefined;
+  /** A number field by label or key, below or above a number or another number field; null stops it. */
   readonly check?:
     | {
         readonly field: string;
         readonly below?: string | number | undefined;
         readonly above?: string | number | undefined;
       }
+    | null
     | undefined;
 };
 
@@ -997,8 +1009,10 @@ const watchOf = (fields: ReadonlyArray<FieldDef>, input: ListInput) => {
   const below = other(input.check?.below);
   const above = other(input.check?.above);
   return {
-    ...(input.remindOn === undefined ? {} : { remindOn: fieldKey(fields, input.remindOn) }),
-    ...(input.check === undefined
+    ...(input.remindOn === undefined || input.remindOn === null
+      ? {}
+      : { remindOn: fieldKey(fields, input.remindOn) }),
+    ...(input.check === undefined || input.check === null
       ? {}
       : {
           check: {
@@ -1022,7 +1036,8 @@ const watchRefusal = Effect.fn("KinRegisters.watchRefusal")(function* (
 ) {
   if (input.dock !== undefined && input.section !== true)
     return invalid("dock comes with section true: the phone's dock holds sections.");
-  if (input.remindOn === undefined && input.check === undefined) return undefined;
+  if ((input.remindOn ?? undefined) === undefined && (input.check ?? undefined) === undefined)
+    return undefined;
   if (input.section === true) return undefined;
   const shell = yield* KinShell.get(orgId);
   return shell.sections.some((one) => one.id === KinShell.listSectionId(id))
@@ -1082,6 +1097,10 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     });
     const refused = yield* watchRefusal(orgId, def.id, input);
     if (refused !== undefined) return yield* refused;
+    const unwatch = [
+      ...(input.remindOn === null && def.remindOn !== undefined ? ["remindOn" as const] : []),
+      ...(input.check === null && def.check !== undefined ? ["check" as const] : []),
+    ];
     if (
       input.section === true &&
       listSectionRefused({ ...def, payments: def.payments === true ? 1 : null })
@@ -1100,6 +1119,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
         ? { team: input.team }
         : {}),
       ...watchOf([...def.fields, ...added], input),
+      ...(unwatch.length === 0 ? {} : { unwatch }),
       ...shownAs(input),
     } satisfies Proposal;
     const next = extended(def, extension);

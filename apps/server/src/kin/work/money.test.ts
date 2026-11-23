@@ -689,6 +689,17 @@ describe("lists through the tools", () => {
         { id: "list:bookings", on: true, dock: true },
         { id: "list:stock", on: true },
       ]);
+      // The way back: the same card stops the warning.
+      const stop = yield* turn(7, "Stop warning me about stock");
+      const unwatch = yield* LeadMoney.define(scope, {
+        sourceEventId: stop,
+        list: "stock",
+        check: null,
+      });
+      assert.include(yield* detail(unwatch.proposal!), "Kin will stop warning about its entries.");
+      const fine = yield* turn(8, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: fine, proposal: unwatch.proposal! });
+      assert.isUndefined((yield* listDef(orgId, "stock"))?.check);
     }).pipe(Effect.provide(layer)),
   );
 

@@ -207,17 +207,21 @@ export const DefineInput = Schema.Struct({
   dock: Schema.optional(Schema.Boolean).annotate({
     description: "With section: in the phone's dock too.",
   }),
-  remindOn: Schema.optional(Label).annotate({
-    description: "A date field Kin reminds an entry's holder on, as on a task's due day.",
+  remindOn: Schema.optional(Schema.NullOr(Label)).annotate({
+    description:
+      "A date field Kin reminds an entry's holder on, as on a task's due day; null stops.",
   }),
   check: Schema.optional(
-    Schema.Struct({
-      field: Label,
-      below: Schema.optional(Schema.Union([Label, Schema.Finite])),
-      above: Schema.optional(Schema.Union([Label, Schema.Finite])),
-    }),
+    Schema.NullOr(
+      Schema.Struct({
+        field: Label,
+        below: Schema.optional(Schema.Union([Label, Schema.Finite])),
+        above: Schema.optional(Schema.Union([Label, Schema.Finite])),
+      }),
+    ),
   ).annotate({
-    description: "Warn once per entry when a number field is below or above a number or field.",
+    description:
+      "Warn once per entry when a number field is below or above a number or field; null stops.",
   }),
 });
 const ShownField = Schema.Struct({
@@ -385,6 +389,12 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
         ...(watched.remindOn === undefined
           ? []
           : [`Kin will remind whoever holds an entry on its ${label(watched.remindOn)} day.`]),
+        ...(proposal._tag === "extend" && proposal.unwatch?.includes("check") === true
+          ? ["Kin will stop warning about its entries."]
+          : []),
+        ...(proposal._tag === "extend" && proposal.unwatch?.includes("remindOn") === true
+          ? ["Kin will stop reminding on its entries' date."]
+          : []),
       ].join("\n"),
       yes: proposal._tag === "new" ? "Create it" : "Add them",
       no: "Not now",
