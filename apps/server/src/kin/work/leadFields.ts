@@ -25,14 +25,12 @@ export const FieldInputs = Schema.Record(
   Schema.NullOr(
     Schema.Union([
       Schema.String.check(Schema.isMaxLength(500)),
-      Schema.Finite,
-      Schema.Boolean,
       Schema.Array(Schema.String.check(Schema.isMaxLength(200))).check(Schema.isMaxLength(10)),
     ]),
   ),
 ).annotate({
   description:
-    'The list\'s own fields by key, as list_define named them: text, a choice, a day (2026-11-20), "you"/"me" (whoever asked)/"owner"/an agentId, a client or project, an amount (4,200.50 or 12k), a number, true or false for yes or no, or file names from this turn\'s messages. null clears one.',
+    'The list\'s own fields by key, as list_define named them: text, a choice, a day (2026-11-20), "you"/"me" (whoever asked)/"owner"/an agentId, a client or project, an amount (4,200.50 or 12k), or file names from this turn\'s messages. null clears one.',
 });
 export type FieldInputs = typeof FieldInputs.Type;
 
@@ -93,10 +91,10 @@ export const typedFields = Effect.fn("KinWorkTools.typedFields")(function* (
     const spec = def.fields.find((one) => one.key === key);
     if (spec === undefined || raw === null) {
       // Unknown keys are refused, with the list's fields, where the entry is written.
-      out[key] = raw === null ? null : Array.isArray(raw) ? [...raw] : String(raw);
+      out[key] = raw === null ? null : typeof raw === "string" ? raw : [...raw];
       continue;
     }
-    const text = Array.isArray(raw) ? raw.join(", ") : String(raw).trim();
+    const text = typeof raw === "string" ? raw.trim() : raw.join(", ");
     const wrong = invalid(`${spec.label} takes ${describe(spec)}.`);
     switch (spec.type) {
       case "text":
@@ -125,19 +123,19 @@ export const typedFields = Effect.fn("KinWorkTools.typedFields")(function* (
         break;
       }
       case "number": {
-        const number = typeof raw === "number" ? String(raw) : text.replace(/[\s,]/g, "");
+        const number = text.replace(/[\s,]/g, "");
         if (!isFieldNumber(number)) return yield* wrong;
         out[key] = String(Number(number));
         break;
       }
       case "yesno": {
-        const answer = typeof raw === "boolean" ? raw : YES_NO.get(text.toLowerCase());
+        const answer = YES_NO.get(text.toLowerCase());
         if (answer === undefined) return yield* wrong;
         out[key] = answer ? "yes" : "no";
         break;
       }
       case "file": {
-        const names = Array.isArray(raw) ? raw : [text];
+        const names = typeof raw === "string" ? [raw] : raw;
         const files = yield* resolve.files();
         const ids = [];
         for (const name of names) {

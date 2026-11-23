@@ -2822,7 +2822,7 @@ describe("the owner's taps", () => {
         count: "1200.5",
         checked: "no",
       });
-      assert.deepStrictEqual(yield* typedFields(def, { count: -3, checked: true }, typed), {
+      assert.deepStrictEqual(yield* typedFields(def, { count: "-3", checked: "true" }, typed), {
         count: "-3",
         checked: "yes",
       });
@@ -2864,7 +2864,7 @@ describe("the owner's taps", () => {
           {
             list: "stock",
             title: "Blue mugs",
-            fields: { onHand: 3, reorderPoint: "10", active: true },
+            fields: { onHand: "3", reorderPoint: "10", active: "yes" },
           },
         ],
       });

@@ -2955,34 +2955,22 @@ const createRow = Effect.fnUntraced(function* (
   };
 });
 const DEAL_FIELDS = ["stage", "source", "lostReason", "concerns"];
-const dealFields = Effect.fn("KinWorkTools.dealFields")(function* (
-  fields: FieldInputs | undefined,
-) {
+const dealFields = (fields: FieldInputs | undefined) => {
   const given = fields ?? {};
   const extra = Object.keys(given).filter((key) => !DEAL_FIELDS.includes(key));
-  if (extra.length > 0) return yield* invalid(`A deal has no ${extra.join(", ")}.`);
+  if (extra.length > 0) return Effect.fail(invalid(`A deal has no ${extra.join(", ")}.`));
   const text = (key: string) => {
     const value = given[key];
-    return value === null
-      ? null
-      : value === undefined || typeof value === "object"
-        ? undefined
-        : String(value);
+    return typeof value === "string" ? value : value === null ? null : undefined;
   };
-  const concerns = given.concerns;
-  return {
+  return Effect.succeed({
     stage: text("stage"),
     source: text("source"),
     lostReason: text("lostReason"),
     // A list as given: one concern alone may come as text.
-    concerns:
-      concerns === undefined || concerns === null
-        ? concerns
-        : typeof concerns === "object"
-          ? concerns
-          : [String(concerns)],
-  };
-});
+    concerns: typeof given.concerns === "string" ? [given.concerns] : given.concerns,
+  });
+};
 /** A deal's value as the agent wrote it: in the currency named, else the deal's own, else home. */
 const dealValue = (
   def: ListDef,
