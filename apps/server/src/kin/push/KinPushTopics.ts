@@ -25,6 +25,8 @@ import { KinPendingActions } from "../approvals/PendingActions.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { withLinks } from "../chat/messageLinks.ts";
 import { memberReads } from "../chat/sharing.ts";
+import { factsStand } from "../pulse/factState.ts";
+import { aboutOf, noteAbout } from "./pushAbout.ts";
 import { canHearRecord } from "../work/recordComments.ts";
 
 /** How long the host remembers a push it sent. */
@@ -181,9 +183,20 @@ export const makeKinPushTopics = Effect.gen(function* () {
   });
 
   const keysOf = (orgId: KinOrgId, ref: string, prefix: string) =>
-    sql<{ key: string }>`SELECT key FROM kin_push_about
-      WHERE org_id = ${orgId} AND ref = ${ref} AND substr(key, 1, ${prefix.length}) = ${prefix}
-      ORDER BY key`.pipe(Effect.map((rows) => rows.map((row) => row.key.slice(prefix.length))));
+    provide(aboutOf(orgId, ref, prefix));
+
+  /** A notice of pulse facts stands while one of them does, as the pulse tells holders. */
+  const factsOk = Effect.fn("KinPushTopics.factsOk")(function* (
+    orgId: KinOrgId,
+    row: KinPushSentRow,
+  ) {
+    if (row.messageId === null) return true;
+    const facts = yield* keysOf(orgId, row.messageId, "fact:");
+    return (
+      facts.length === 0 ||
+      (yield* provide(factsStand(orgId, row.personId, facts, yield* Clock.currentTimeMillis)))
+    );
+  });
 
   /** Whether any task in `ref`'s keys still stands for them. */
   const anyTaskStands = Effect.fn("KinPushTopics.anyTaskStands")(function* (
@@ -282,9 +295,18 @@ export const makeKinPushTopics = Effect.gen(function* () {
         return open !== undefined && (yield* notRead());
       }
       case "r":
-        return (yield* notRead()) && (yield* taskStands(orgId, personId, id, row.sentAt));
+        return (
+          (yield* notRead()) &&
+          (yield* taskStands(orgId, personId, id, row.sentAt)) &&
+          (yield* factsOk(orgId, row))
+        );
       case "f":
-        return fromMessage && (yield* notRead()) && (yield* anyTaskStands(orgId, row));
+        return (
+          fromMessage &&
+          (yield* notRead()) &&
+          (yield* anyTaskStands(orgId, row)) &&
+          (yield* factsOk(orgId, row))
+        );
       case "b":
         return yield* anyTaskStands(orgId, row);
       // Nothing settles it but the person: the phone drops it when it is opened.
@@ -375,20 +397,6 @@ const awaits = (awaitingJson: string, personId: KinPersonId) =>
     onNone: () => false,
     onSome: (ids) => ids.includes(personId),
   });
-
-/** Notes what `ref` (a push's topic or a notice's message) is about, by key. */
-export const noteAbout = Effect.fn("KinPushTopics.noteAbout")(function* (
-  orgId: KinOrgId,
-  ref: string,
-  keys: ReadonlyArray<string>,
-) {
-  if (keys.length === 0) return;
-  const sql = yield* SqlClient.SqlClient;
-  const now = yield* Clock.currentTimeMillis;
-  for (const key of new Set(keys))
-    yield* sql`INSERT INTO kin_push_about (org_id, ref, key, at)
-      VALUES (${orgId}, ${ref}, ${key}, ${now}) ON CONFLICT (org_id, ref, key) DO NOTHING`;
-});
 
 /** Rows older than `KIN_PUSH_SENT_KEPT` go, a bounded batch at a time (`KinRetention`). */
 export const prunePushSent = Effect.fn("KinPushTopics.prune")(function* (now: number) {

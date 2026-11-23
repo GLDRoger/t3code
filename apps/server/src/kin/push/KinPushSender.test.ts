@@ -3361,6 +3361,60 @@ describe("KinPushSender withdrawals", () => {
     }).pipe(Effect.provide(build(apns)));
   });
 
+  it.effect("Kin's notice of a fact goes once the fact is handled, though its task is open", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql, sender, devices } = yield* seedTopical;
+      yield* devices.register(caller("sess-member", member), {
+        orgId,
+        token: memberPhone,
+        platform: "ios",
+        apsEnvironment: "development",
+        withdraws: true,
+      });
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at)
+        VALUES ('org_01', 'work', 'Work', 'W', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org_01', 'w1', 'work', 'W-1', 'Logo files', 'person', ${member}, 0, 'person',
+            'w1', 0, 0)`;
+      const fact = "task_late:W-1:due=1";
+      yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense, subject_record_id,
+          first_seen_at, last_seen_at)
+        VALUES ('org_01', ${fact}, 'task_late', 'w1', ${NOW}, ${NOW})`;
+      // The pulse notes what its notice is about as it posts it.
+      yield* sql`INSERT INTO kin_push_about (org_id, ref, key, at)
+        VALUES ('org_01', 'kin-holder-late', ${`fact:${fact}`}, ${NOW})`;
+      const messageId = yield* postMessage(sql, "system", "posted", {
+        messageId: "kin-holder-late",
+        kind: "system",
+        mentions: ["m_priya"],
+        body: "W-1 Logo files was due yesterday.",
+      });
+      yield* notify({ _tag: "message", orgId, messageId });
+      assert.deepStrictEqual(
+        (yield* sentRows(sql)).map((row) => row.topic),
+        ["r:W-1"],
+      );
+      const settleFact = sender
+        .settle(orgId, { keys: [`fact:${fact}`] })
+        .pipe(Effect.andThen(afterBatch(sender)));
+      apns.sent.length = 0;
+      yield* settleFact;
+      assert.deepStrictEqual(apns.sent, []);
+      // She says she has it in hand: the fact no longer needs her, and its notice goes.
+      yield* sql`UPDATE kin_pulse_facts SET handled_by_kind = 'person', handled_by_id = ${member},
+          handled_at = ${NOW}, handled_until = ${NOW + 3 * 24 * 60 * 60_000}
+        WHERE fact_key = ${fact}`;
+      yield* settleFact;
+      assert.deepStrictEqual(
+        apns.sent.map((push) => [push.token, payloadOf(push).body.withdraw]),
+        [[memberPhone, [{ topic: "r:W-1", version: 1 }]]],
+      );
+    }).pipe(Effect.provide(build(apns)));
+  });
+
   it.effect("a phone's reconcile answers only its person's topics, from what stands now", () => {
     const apns = makeApns();
     return Effect.gen(function* () {

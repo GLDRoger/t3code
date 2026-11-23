@@ -1072,6 +1072,36 @@ describe("KinPulse", () => {
     }).pipe(Effect.provide(chatLayer)),
   );
 
+  it.effect("a held notice whose facts all settled overnight is never posted", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* letMate;
+      const sql = yield* SqlClient.SqlClient;
+      const chats = yield* KinChatService;
+      const at = B + 3 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(at);
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-06' WHERE person_id = ${mate}`;
+      yield* KinPulse.tick(orgId, at);
+      // The held notice keeps which facts it tells, by key.
+      const [held] = yield* sql<{ kind: string }>`SELECT kind FROM kin_held_posts
+        WHERE org_id = ${orgId} AND person_id = ${mate} AND delivered_at IS NULL`;
+      assert.deepStrictEqual(yield* sql`SELECT key FROM kin_push_about WHERE ref = ${held!.kind}`, [
+        { key: `fact:task_late:W-8:due=${B + 2 * DAY}` },
+      ]);
+      // W-8 is done while she is away: its fact clears, and the notice has nothing left to say.
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-8'`;
+      yield* KinPulse.tick(orgId, at + HOUR);
+      const back = B + 5 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(back);
+      yield* deliverHeld(orgId, chats);
+      assert.deepStrictEqual(yield* mateNotices, []);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_held_posts WHERE org_id = ${orgId} AND person_id = ${mate}`,
+        0,
+      );
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
   it.effect("the owner's away holds only his own wake, and his coming back lets it go", () =>
     Effect.gen(function* () {
       yield* seed;

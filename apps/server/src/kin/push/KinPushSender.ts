@@ -393,36 +393,9 @@ const approvalPushText = (action: KinPendingAction) => {
   }
 };
 
-export class KinPushSender extends Context.Service<
-  KinPushSender,
-  {
-    readonly status: KinPushSendingStatus;
-    /** Whether pushes to this platform's devices go anywhere. */
-    readonly statusFor: (platform: KinPushPlatform) => KinPushSendingStatus;
-    /** Call after the commit; it sends in the background, outliving the request, and never fails. */
-    readonly notify: (
-      notification: KinPushNotification,
-    ) => Effect.Effect<Fiber.Fiber<KinPushOutcome>>;
-    /** Sends every push an approver key change still owes, then settles it. Returns how many. */
-    readonly flushKeyPushes: Effect.Effect<number>;
-    /**
-     * Call after a commit that may have settled what pushes told people of: each one that no longer
-     * needs its person is withdrawn from their phones, batched per person. Never fails.
-     */
-    readonly settle: (orgId: KinOrgId, settled: KinPushSettled) => Effect.Effect<void>;
-    /** Waits for every batch of withdrawals already started to be sent. */
-    readonly drainWithdrawals: Effect.Effect<void>;
-    /** Of the topics a phone of `personId` still shows, the settled ones, and their badge. */
-    readonly reconcile: (
-      orgId: KinOrgId,
-      personId: KinPersonId,
-      topics: ReadonlyArray<KinPushTopic>,
-    ) => Effect.Effect<
-      { readonly remove: ReadonlyArray<KinPushWithdrawn>; readonly badge: number },
-      KinPushError
-    >;
-  }
->()("t3/kin/push/KinPushSender") {}
+import { KinPushSender } from "./KinPushSenderService.ts";
+
+export { KinPushSender };
 
 const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
