@@ -120,9 +120,19 @@ const due = (
     });
   });
 
-/** The seven kinds of turn a lead is woken for, as `LeadPrompt.test.ts` builds each. */
+/** The eight kinds of turn a lead is woken for, as `LeadPrompt.test.ts` builds each. */
 const TURN_KINDS = {
   ownerReply: { mode: "reply", event: ownerAsks },
+  // The Chief of staff's set-up turn: the owner's first word to the company's first agent.
+  setUp: {
+    mode: "reply",
+    event: Effect.gen(function* () {
+      const event = yield* ownerAsks;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_leads SET domain = 'chief-of-staff' WHERE agent_id = ${agentId}`;
+      return event;
+    }),
+  },
   checkIn: { mode: "notice", event: checkIn("checkin-morning") },
   pulse: { mode: "notice", event: checkIn("checkin-afternoon") },
   scheduled: {

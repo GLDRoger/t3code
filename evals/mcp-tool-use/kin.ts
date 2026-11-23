@@ -107,13 +107,24 @@ import {
   proposedAnswer,
 } from "../../apps/server/src/kin/numbers/words.ts";
 import { thisCompanyLines } from "../../apps/server/src/kin/shell/words.ts";
+import {
+  applied,
+  shellChangeLines,
+  type AskedSection,
+} from "../../apps/server/src/kin/shell/changes.ts";
+import { defaultShell, shellRefusal } from "../../apps/server/src/kin/shell/KinShell.ts";
+import { SECTIONS_PROPOSED_NEXT } from "../../apps/server/src/kin/shell/mcp.ts";
 import { REVIEW_WAKE_TEXT } from "../../apps/server/src/kin/pulse/reviewWake.ts";
 import { OWN_MESSAGE_REFUSALS } from "../../apps/server/src/kin/chat/ownMessages.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
 import { DECLINED_RULE } from "../../apps/server/src/kin/lead/declinedSection.ts";
 import { UNDO_RULE } from "../../apps/server/src/kin/lead/undoSection.ts";
-import { defaultCharacterFor } from "../../apps/server/src/kin/lead/characterDefaults.ts";
+import {
+  CHIEF_OF_STAFF_SET_UP,
+  defaultCharacterFor,
+} from "../../apps/server/src/kin/lead/characterDefaults.ts";
+import { offeringsWithAnswer } from "../../apps/server/src/kin/work/offerings.ts";
 import { characterForTurn, colleagueLine } from "../../apps/server/src/kin/lead/characters.ts";
 import {
   CAPTION_PROMPT,
@@ -482,6 +493,7 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
       salesRulesFor(domain).join("\n\n"),
     )
     .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
+    .replaceAll("{{SET_UP}}", CHIEF_OF_STAFF_SET_UP)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
     .replaceAll("{{ASSIGNED_NOT_IN_PERSON}}", ASSIGNED_NOT_IN_PERSON)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
@@ -529,6 +541,47 @@ const STARTER_RECIPES = Object.entries(STARTER_FILES).flatMap(([file, text]) => 
   const recipe = parseRecipe(text);
   return "_tag" in recipe ? [] : [recipe];
 });
+// doc_read's answer from the doc's body, as runRead builds it: outline, whole body or sections.
+const docReadAnswer = (input: {
+  key: string;
+  title: string;
+  version: number;
+  latestVersion?: number;
+  updated: { at: string; by: string; summary: string };
+  body: string;
+  owner: string;
+  client?: string;
+  project?: string;
+  sections?: ReadonlyArray<string>;
+}) => {
+  const { body, sections, client, project, owner, latestVersion, ...head } = input;
+  const whole = sections === undefined && body.length <= WHOLE_DOC;
+  const all = sectionsOf(body);
+  return {
+    ...head,
+    latestVersion: latestVersion ?? input.version,
+    chars: body.length,
+    outline: [...outlineOf(body)],
+    ...(whole ? { body } : {}),
+    ...(sections === undefined
+      ? {}
+      : {
+          sections: sections.map((id) => {
+            const found = all.find((one) => one.id === id);
+            return found === undefined
+              ? { id, title: "", hash: "", text: "(no such section)" }
+              : { id: found.id, title: found.title, hash: found.hash, text: found.text };
+          }),
+        }),
+    ...(whole || sections !== undefined
+      ? {}
+      : { note: "A long doc: read the sections you need by id." }),
+    owner,
+    ...(client === undefined ? {} : { client }),
+    ...(project === undefined ? {} : { project }),
+  };
+};
+
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   // numbers_watch's answer for numbers not watched yet: the owner's card lines, as Kin draws them.
   numbersWatch: (input: { numbers: unknown; feed: unknown }) =>
@@ -625,46 +678,31 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       alertAccounts: [],
       timeZone: input.timeZone,
     } as never),
-  // doc_read's answer from the doc's body, as runRead builds it: outline, whole body or sections.
-  docRead: (input: {
-    key: string;
-    title: string;
-    version: number;
-    latestVersion?: number;
-    updated: { at: string; by: string; summary: string };
-    body: string;
-    owner: string;
-    client?: string;
-    project?: string;
-    sections?: ReadonlyArray<string>;
-  }) => {
-    const { body, sections, client, project, owner, latestVersion, ...head } = input;
-    const whole = sections === undefined && body.length <= WHOLE_DOC;
-    const all = sectionsOf(body);
+  docRead: docReadAnswer,
+  // company_sections' answer from a company set up as Kin's default, as runPropose words its card,
+  // or its refusal when the change would leave invoices without Clients.
+  shellProposed: (input: { sections: unknown }) => {
+    const shell = defaultShell();
+    const asked = Array.isArray(input.sections) ? (input.sections as Array<AskedSection>) : [];
+    const next = applied(shell, asked);
+    const refusal = shellRefusal(shell.sections, next);
+    if (refusal !== undefined)
+      return { $error: { _tag: "KinChatError", reason: "invalid_state", message: refusal } };
     return {
-      ...head,
-      latestVersion: latestVersion ?? input.version,
-      chars: body.length,
-      outline: [...outlineOf(body)],
-      ...(whole ? { body } : {}),
-      ...(sections === undefined
-        ? {}
-        : {
-            sections: sections.map((id) => {
-              const found = all.find((one) => one.id === id);
-              return found === undefined
-                ? { id, title: "", hash: "", text: "(no such section)" }
-                : { id: found.id, title: found.title, hash: found.hash, text: found.text };
-            }),
-          }),
-      ...(whole || sections !== undefined
-        ? {}
-        : { note: "A long doc: read the sections you need by id." }),
-      owner,
-      ...(client === undefined ? {} : { client }),
-      ...(project === undefined ? {} : { project }),
+      proposed: shellChangeLines(shell.sections, next),
+      next: SECTIONS_PROPOSED_NEXT,
     };
   },
+  // doc_read's answer for a What we sell a new company started from its answer, as Kin writes it.
+  whatWeSellDoc: (input: { key: string; at: string; by: string; owner: string; sells: string }) =>
+    docReadAnswer({
+      key: input.key,
+      title: "What we sell",
+      version: 1,
+      updated: { at: input.at, by: input.by, summary: "Started from the set-up question" },
+      body: offeringsWithAnswer(input.sells),
+      owner: input.owner,
+    }),
   // doc_create's and doc_edit's answer from the body written, as writeResult builds it.
   docWritten: (input: {
     key: string;

@@ -48,6 +48,9 @@ export const CompanySectionsResult = Schema.Struct({
   next: Schema.String,
 });
 
+export const SECTIONS_PROPOSED_NEXT =
+  "Nothing has changed yet. Kin showed this change on a card in this chat; it applies when they tap Confirm. Say so in one line.";
+
 const runPropose = Effect.fnUntraced(function* (
   lead: Lead,
   input: typeof CompanySectionsInput.Type,
@@ -110,7 +113,7 @@ const runPropose = Effect.fnUntraced(function* (
     yield* (yield* KinLevelGate).closeReplaced(lead, older, KinWidgetId.make(widgetId));
   return {
     proposed: lines,
-    next: "Nothing has changed yet. Kin showed this change on a card in this chat; it applies when they tap Confirm. Say so in one line.",
+    next: SECTIONS_PROPOSED_NEXT,
   };
 });
 export const propose = leadTool("KinShellTools.propose", runPropose);
