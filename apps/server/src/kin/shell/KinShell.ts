@@ -79,6 +79,11 @@ const cacheFor = (sql: SqlClient.SqlClient) => {
   return cache;
 };
 
+export const invalidate = Effect.fn("KinShell.invalidate")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  cacheFor(sql).delete(orgId);
+});
+
 const read = Effect.fn("KinShell.read")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ shellJson: string; rev: number }>`SELECT shell_json AS "shellJson", rev
@@ -201,11 +206,7 @@ export const set = Effect.fn("KinShell.set")(function* (
       VALUES (${orgId}, ${yield* encode(sections)}, ${next}, ${personId}, ${yield* Clock.currentTimeMillis})
       ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json, rev = excluded.rev,
         set_by = excluded.set_by, set_at = excluded.set_at`;
-        yield* sql.afterCommit(
-          Effect.sync(() => {
-            cacheFor(sql).delete(orgId);
-          }),
-        );
+        yield* sql.afterCommit(invalidate(orgId));
         yield* refresh.touch(orgId, "shell");
         // The open attention stream has its own counter, even though the sensed rows haven't moved.
         yield* refresh.touch(orgId, "pulse");
