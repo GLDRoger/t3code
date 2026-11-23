@@ -100,20 +100,38 @@ const sameDue = (plan: DeferralPlan, stored: Stored) =>
 const isUndone = (plan: DeferralPlan, stored: Stored | undefined) =>
   stored?.run.state === "undone" && plan.armed && sameDue(plan, stored);
 
-const isCurrent = (plan: DeferralPlan, stored: Stored | undefined) =>
-  isUndone(plan, stored) ||
-  (phases.every((phase) =>
-    triggerCurrent(
-      plan.phases.find((entry) => entry.phase === phase)?.runAt,
-      stored?.triggers.get(phase),
-    ),
-  ) &&
-    (plan.armed
-      ? stored !== undefined &&
-        stored.run.state !== "disarmed" &&
-        sameDue(plan, stored) &&
-        stored.run.onDue === plan.onDue
-      : stored === undefined || stored.run.state === "disarmed"));
+/** Memory's plan, or after a [Monday] tap the same plan moved to the run's due, fires included. */
+const effectivePlan = (plan: DeferralPlan, stored: Stored | undefined): DeferralPlan => {
+  const moved = stored?.run.dueAt;
+  if (stored === undefined || moved === null || moved === undefined || plan.dueAt === null)
+    return plan;
+  if (stored.run.movedFrom !== plan.dueAt || moved === plan.dueAt) return plan;
+  const shift = moved - plan.dueAt;
+  return {
+    ...plan,
+    dueAt: moved,
+    phases: plan.phases.map((entry) => ({ ...entry, runAt: entry.runAt + shift })),
+  };
+};
+
+const isCurrent = (memoryPlan: DeferralPlan, stored: Stored | undefined) => {
+  const plan = effectivePlan(memoryPlan, stored);
+  return (
+    isUndone(memoryPlan, stored) ||
+    (phases.every((phase) =>
+      triggerCurrent(
+        plan.phases.find((entry) => entry.phase === phase)?.runAt,
+        stored?.triggers.get(phase),
+      ),
+    ) &&
+      (plan.armed
+        ? stored !== undefined &&
+          stored.run.state !== "disarmed" &&
+          stored.run.dueAt === plan.dueAt &&
+          stored.run.onDue === plan.onDue
+        : stored === undefined || stored.run.state === "disarmed"))
+  );
+};
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -360,7 +378,8 @@ const make = Effect.gen(function* () {
         if (!isCurrent(plan, stored.get(item.id))) pending.push([item.id, item, plan]);
       }
       for (const [itemId, entry] of stored)
-        if (!present.has(itemId) && entry.run.state !== "disarmed")
+        // A cancelled run stays cancelled while its item is away, and when it comes back unchanged.
+        if (!present.has(itemId) && entry.run.state !== "disarmed" && entry.run.state !== "undone")
           pending.push([KinMemoryItemId.make(itemId), undefined, disarmedPlan]);
       if (pending.length === 0) return;
       const timeZone = yield* cache.ownerTimeZone(orgId);

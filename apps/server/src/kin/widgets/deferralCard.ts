@@ -5,6 +5,7 @@ import {
   type KinDeferralCardAction,
   KinMemoryItemId,
   type KinMemberId,
+  KinTriggerSchedule,
   type KinPersonId,
   type KinWidget,
   kinDeferralWidgetId,
@@ -29,6 +30,7 @@ import {
 import { pauseTriggers } from "../triggers/KinTriggerStore.ts";
 
 const decodeCard = Schema.decodeUnknownEffect(KinDeferralCard);
+const encodeSchedule = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSchedule));
 // Suspended: `deferrals.ts` reaches this module through the chat service, mid-load.
 const SnapshotJson = Schema.fromJsonString(Schema.suspend(() => DeferralSnapshot));
 const decodeSnapshot = Schema.decodeUnknownEffect(SnapshotJson);
@@ -146,17 +148,19 @@ export const applyDeferralTap = Effect.fn("KinDeferralCard.apply")(function* (
       yield* sql`UPDATE kin_deferral_runs SET state = 'armed', due_at = ${monday},
           snapshot_json = ${moved}, updated_at = ${now}
         WHERE org_id = ${orgId} AND item_id = ${itemId} AND state = ${run.state}`;
-      // The schedules keep memory's due time, so a sync finds them current; only the fires move.
       const fires: ReadonlyArray<readonly [string, number]> = [
         [deferralTriggerId(itemId, "due"), monday],
         ...(card.onDue === "start"
           ? [[deferralTriggerId(itemId, "heads_up"), monday - HEADS_UP_MS] as const]
           : []),
       ];
-      for (const [triggerId, at] of fires)
-        yield* sql`UPDATE kin_triggers SET enabled = 1, next_run_at = ${at},
-            updated_at = max(updated_at, ${now})
+      // Both columns carry the new instant, so a later replan from memory rewrites them whole.
+      for (const [triggerId, at] of fires) {
+        const schedule = yield* encodeSchedule({ type: "once", runAt: iso(at) });
+        yield* sql`UPDATE kin_triggers SET enabled = 1, schedule_json = ${schedule},
+            next_run_at = ${at}, updated_at = max(updated_at, ${now})
           WHERE org_id = ${orgId} AND trigger_id = ${triggerId}`;
+      }
       const { phase: _phase, graceEndsAt: _ends, ...confirm } = card;
       const cards = yield* makeDeferralCards;
       yield* cards.write({

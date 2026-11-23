@@ -508,6 +508,51 @@ it.effect(
   },
 );
 
+it.effect("after [Monday], memory's change of mode at the old time is a full replan that fires", () =>
+  Effect.gen(function* () {
+    yield* setup();
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(deferral);
+    yield* tick(headsUpAt);
+    assert.equal(outcome(yield* tap("monday")), "ok");
+    assert.equal(yield* service.syncItem(deferral), "unchanged");
+    // Memory now asks instead of starting, at the same Friday time.
+    const asking = makeDeferral("def-1", { on_due: "ask" });
+    assert.equal(yield* service.syncItem(asking), "armed");
+    assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt });
+    assert.deepStrictEqual(yield* triggersOf(), [
+      { id: "deferral:def-1:due", enabled: 1, nextRunAt: dueAt },
+      { id: "deferral:def-1:heads_up", enabled: 0, nextRunAt: null },
+    ]);
+    yield* tick(dueAt);
+    assert.equal((yield* runOf("def-1"))?.state, "asked");
+    // Nothing is left pointing at Monday.
+    yield* tick(nextMonday);
+    assert.deepStrictEqual(yield* runOf("def-1"), { state: "asked", dueAt });
+  }).pipe(Effect.provide(layerFor([deferral]))),
+);
+
+it.effect("a cancelled run stays cancelled while its item is away and when it comes back", () => {
+  const items = [deferral];
+  return Effect.gen(function* () {
+    yield* setup();
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(deferral);
+    yield* tick(headsUpAt);
+    assert.equal(outcome(yield* tap("cancel")), "ok");
+    yield* service.syncOrg(orgId, []);
+    assert.equal((yield* runOf("def-1"))?.state, "undone");
+    yield* service.syncOrg(orgId, items);
+    assert.equal((yield* runOf("def-1"))?.state, "undone");
+    yield* tick(dueAt);
+    assert.lengthOf(yield* starts(), 0);
+    assert.equal((yield* runOf("def-1"))?.state, "undone");
+    // Only a new due arms it again.
+    yield* service.syncOrg(orgId, [makeDeferral("def-1", { due: "2026-11-20T09:00+05:30" })]);
+    assert.equal((yield* runOf("def-1"))?.state, "armed");
+  }).pipe(Effect.provide(layerFor(items)));
+});
+
 it.effect("an Undo after [Monday] holds; a tap on a card drawn before a change is refused", () =>
   Effect.gen(function* () {
     yield* setup();
