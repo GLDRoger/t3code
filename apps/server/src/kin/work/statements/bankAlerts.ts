@@ -240,6 +240,26 @@ export const threadSeen = Effect.fn("KinBankAlerts.threadSeen")(function* (
   return row?.last !== null && row?.last !== undefined && row.last >= newest;
 });
 
+const RETRY_WINDOW = 14 * DAY_MS;
+// Only unparsed rows use reference for an ordered parser marker instead of a bank reference.
+const PARSER_MARKER = "parser:0002";
+
+const canRetryAlert = (sql: SqlClient.SqlClient, now: number) =>
+  sql`outcome = 'unparsed' AND sent_at BETWEEN ${now - RETRY_WINDOW} AND ${now}
+    AND COALESCE(reference, '') < ${PARSER_MARKER}`;
+
+export const retryAlertThreads = Effect.fn("KinBankAlerts.retryThreads")(function* (
+  orgId: KinOrgId,
+  connectionId: string,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ threadId: string }>`SELECT DISTINCT thread_id AS "threadId"
+    FROM kin_bank_alerts WHERE org_id = ${orgId} AND connection_id = ${connectionId}
+      AND ${canRetryAlert(sql, now)}
+    ORDER BY thread_id`;
+});
+
 /**
  * One thread's mail, each message once: an alert that reads is its bank transaction (new, or the
  * one it already is), anything else is counted by why. Mail of a mailbox with no owner waits.
@@ -251,41 +271,52 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
     readonly threadId: string;
     readonly messages: ReadonlyArray<AlertMessage>;
     readonly now: number;
+    readonly retryOnly?: boolean;
+    readonly recheckedThread?: boolean;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const tally = { recorded: 0, duplicate: 0, rejected: 0 };
   const owner = yield* orgOwner(orgId);
   if (owner === null) return tally satisfies AlertTally;
-  for (const message of input.messages) {
-    const alertId = alertIdOf(input.connectionId, input.threadId, message);
-    const [seen] = yield* sql`SELECT 1 AS seen FROM kin_bank_alerts
-      WHERE org_id = ${orgId} AND alert_id = ${alertId}`;
-    if (seen !== undefined) continue;
-    const format = formatSending(message.fromAddress);
-    const reading = format?.read(message);
-    const sentAt = message.date === null ? Number.NaN : Date.parse(message.date);
-    const base = {
-      org_id: orgId,
-      alert_id: alertId,
-      connection_id: input.connectionId,
-      thread_id: input.threadId,
-      sent_at: Number.isFinite(sentAt) ? sentAt : null,
-      seen_at: input.now,
-    };
-    if (format === undefined || reading === undefined || reading._tag === "rejected") {
-      const outcome = reading?._tag === "rejected" ? reading.reason : "sender";
-      yield* sql`INSERT INTO kin_bank_alerts ${sql.insert({ ...base, outcome })}`;
-      // Another sender's mail in the thread isn't an alert to count.
-      if (outcome !== "sender") tally.rejected++;
-      continue;
-    }
-    const { alert } = reading;
-    yield* sql.withTransaction(
-      Effect.gen(function* () {
+  const retryable = canRetryAlert(sql, input.now);
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      for (const message of input.messages) {
+        const alertId = alertIdOf(input.connectionId, input.threadId, message);
+        const [seen] = yield* sql<{ retry: number | null }>`SELECT
+            (${retryable} AND thread_id = ${input.threadId}) AS retry FROM kin_bank_alerts
+          WHERE org_id = ${orgId} AND alert_id = ${alertId}
+          ORDER BY alert_id`;
+        if (seen === undefined ? input.retryOnly : seen.retry !== 1) continue;
+        const format = formatSending(message.fromAddress);
+        const reading = format?.read(message);
+        if (format === undefined || reading === undefined || reading._tag === "rejected") {
+          if (seen !== undefined) {
+            yield* sql`UPDATE kin_bank_alerts SET reference = ${PARSER_MARKER}
+              WHERE org_id = ${orgId} AND alert_id = ${alertId}`;
+            tally.rejected++;
+            continue;
+          }
+          const outcome = reading?._tag === "rejected" ? reading.reason : "sender";
+          const sentAt = message.date === null ? Number.NaN : Date.parse(message.date);
+          yield* sql`INSERT INTO kin_bank_alerts ${sql.insert({
+            org_id: orgId,
+            alert_id: alertId,
+            connection_id: input.connectionId,
+            thread_id: input.threadId,
+            sent_at: Number.isFinite(sentAt) ? sentAt : null,
+            seen_at: input.now,
+            outcome,
+            reference: outcome === "unparsed" ? PARSER_MARKER : null,
+          })}`;
+          // Another sender's mail in the thread isn't an alert to count.
+          if (outcome !== "sender") tally.rejected++;
+          continue;
+        }
+        const { alert } = reading;
         const done = yield* recordAlert(orgId, KinPersonId.make(owner), format, alert, input.now);
-        yield* sql`INSERT INTO kin_bank_alerts ${sql.insert({
-          ...base,
+        const result = {
           outcome: done.outcome,
           bank: format.bank,
           account: alert.account,
@@ -293,11 +324,30 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
           record_id: done.recordId,
           currency: alert.currency,
           balance_minor: alert.balanceMinor,
-        })}`;
+        };
+        if (seen !== undefined) {
+          yield* sql`UPDATE kin_bank_alerts SET ${sql.update(result)}
+            WHERE org_id = ${orgId} AND alert_id = ${alertId}`;
+        } else {
+          yield* sql`INSERT INTO kin_bank_alerts ${sql.insert({
+            org_id: orgId,
+            alert_id: alertId,
+            connection_id: input.connectionId,
+            thread_id: input.threadId,
+            sent_at: alert.sentAt,
+            seen_at: input.now,
+            ...result,
+          })}`;
+        }
         tally[done.outcome]++;
-      }),
-    );
-  }
+      }
+      if (input.recheckedThread) {
+        yield* sql`UPDATE kin_bank_alerts SET reference = ${PARSER_MARKER}
+          WHERE org_id = ${orgId} AND connection_id = ${input.connectionId}
+            AND thread_id = ${input.threadId} AND ${retryable}`;
+      }
+    }),
+  );
   return tally satisfies AlertTally;
 });
 
