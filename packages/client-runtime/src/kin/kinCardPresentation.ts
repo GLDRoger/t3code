@@ -328,6 +328,7 @@ export function kinReminderCardView(
     phase: open ? "reminder" : "closed",
     eyebrow: "Reminder",
     title,
+    agent: null,
     lines,
     countdown: null,
     actions: open ? reminderActions(card, ownerLevel) : [],
@@ -440,6 +441,7 @@ export function kinScheduledTaskCardView(
     phase: open ? "scheduled" : "closed",
     eyebrow: "Scheduled task",
     title,
+    agent: null,
     lines,
     countdown:
       open && card.status === "active" && nextMs !== null ? { to: nextMs, kind: "run" } : null,

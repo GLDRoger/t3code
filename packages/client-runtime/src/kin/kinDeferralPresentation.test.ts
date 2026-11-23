@@ -3,6 +3,7 @@ import {
   KIN_ASKER_ONLY_REFUSAL,
   KinChatError,
   KinDeferralCard,
+  kinAgentPausedRefusal,
   type KinWidget,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
@@ -165,7 +166,13 @@ describe("kinDeferralCardView", () => {
       ["Due at Fri, Nov 13, 9:00 AM. Start it, move it to Monday, or cancel it?"],
       null,
     ],
-    ["started", { phase: "started", text: "" }, ["Started."], null],
+    ["started", { phase: "started", text: "" }, ["Asked your agent to start it."], null],
+    [
+      "started says who was asked, as the host wrote it",
+      { phase: "started", text: "Asked Lead to start it.", agent: "Lead" },
+      ["Asked Lead to start it."],
+      null,
+    ],
   ])("%s", (_name, state, lines, countdown) => {
     const card = view(deferral(state));
     expect(card.lines).toEqual(lines);
@@ -415,28 +422,41 @@ describe("kinCardStatusAfter", () => {
     expect(kinCardStatusAfter({ status: "failed", notice }, "remind", 3).holding).toBe(false);
   });
 
-  // Kin finishes these itself: no agent will update the card.
-  it.each<[KinDeferralActionId, string]>([
-    ["start_now", "Started."],
-    ["monday", "Moved to Monday."],
-    ["cancel", "Cancelled."],
-  ])("holds the card after %s until the host rewrites it", (actionId, text) => {
-    expect(kinCardStatusAfter({ status: "sent" }, actionId, 3)).toEqual({
+  // Kin finishes these itself: no agent will update the card. A start's turn may still wait.
+  it.each<[KinDeferralActionId, string | null, string]>([
+    ["start_now", "Lead", "Asked Lead to start it."],
+    ["start_now", null, "Asked your agent to start it."],
+    ["monday", null, "Moved to Monday."],
+    ["cancel", null, "Cancelled."],
+  ])("holds the card after %s (%s) until the host rewrites it", (actionId, agent, text) => {
+    expect(kinCardStatusAfter({ status: "sent" }, actionId, 3, agent)).toEqual({
       revision: 3,
       notice: { kind: "sent", text },
       holding: true,
     });
   });
 
-  it("hides a notice once the card moves to a new revision", () => {
+  // Another screen moved the card before this tap's refusal came back: the person still hears it.
+  it("keeps a refusal past a new revision, and hides what was sent once the card moves", () => {
     const status = kinCardStatusAfter(
       { status: "failed", notice: { kind: "stale", text: KIN_STALE_CARD_TEXT } },
       "remind",
       3,
     );
     expect(visibleKinCardStatus(status, 3)).toBe(status);
-    expect(visibleKinCardStatus(status, 4)).toBeNull();
+    expect(visibleKinCardStatus(status, 4)).toBe(status);
     const held = kinCardStatusAfter({ status: "sent" }, "remind", 3);
     expect(visibleKinCardStatus(held, 4)).toBeNull();
+  });
+
+  it("says a paused agent's refusal in its own words", () => {
+    const cause = new KinChatError({
+      reason: "invalid_state",
+      message: kinAgentPausedRefusal("Lead"),
+    });
+    expect(kinActionFailureNotice(cause).text).toBe("Lead is paused. Resume it, then start this.");
+    expect(
+      kinActionFailureNotice(new KinChatError({ reason: "invalid_state", message: "Nope." })).text,
+    ).toBe("This card can't take that answer any more.");
   });
 });

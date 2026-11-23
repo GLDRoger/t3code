@@ -1,5 +1,6 @@
 import { kinFailureText } from "./kinAnswers.ts";
 import {
+  KIN_AGENT_PAUSED_REFUSAL_END,
   KIN_ASKER_ONLY_REFUSAL,
   KIN_DEFERRAL_CARD_ACTIONS,
   type KinCardAsker,
@@ -23,6 +24,9 @@ export const KIN_CHANGE_SENT_TEXT = "Sent. Your agent will ask what to change.";
 export const KIN_SEND_FAILED_TEXT = "Couldn't send that.";
 const KIN_UNDONE_TEXT = "Undone. Kin won't act on this.";
 export const KIN_UNDO_TOO_LATE_TEXT = "Too late to undo: Kin already acted on this.";
+/** Start now hands the work to an agent whose turn may still wait (on the day's budget, say). */
+export const kinAskedToStart = (agent: string | null | undefined) =>
+  `Asked ${agent ?? "your agent"} to start it.`;
 
 /** The ids a deferral card's taps post (`KIN_DEFERRAL_CARD_ACTIONS`), and its kin cards'. */
 export type KinDeferralActionId =
@@ -62,6 +66,8 @@ export interface KinDeferralCardView {
   /** What the countdown runs to; null when nothing is pending. */
   readonly countdown: { readonly to: number; readonly kind: KinCountdownKind } | null;
   readonly actions: ReadonlyArray<KinDeferralAction>;
+  /** The agent a decision card's Start now asks, by name; null when the card doesn't say. */
+  readonly agent: string | null;
   /** The card's label without the countdown, which reads from its own line. */
   readonly accessibilityLabel: string;
 }
@@ -317,7 +323,13 @@ function cardBody(
         actions,
       };
     case "started":
-      return { phase: "started", lines: withText(["Started."]), countdown: null, actions: [] };
+      // The work was handed over; its turn may still wait, so the line says who was asked.
+      return {
+        phase: "started",
+        lines: [text === "" ? kinAskedToStart(card.agent) : text],
+        countdown: null,
+        actions: [],
+      };
   }
 }
 
@@ -347,6 +359,7 @@ export function kinDeferralCardView(
     itemId: card.itemId,
     eyebrow,
     title,
+    agent: card.agent ?? null,
     ...body,
     accessibilityLabel: kinSentences([`${kind}: ${title}`, ...body.lines]),
   };
@@ -405,7 +418,12 @@ export function kinActionFailureNotice(
         text: "Kin didn't take that answer. Tell your agent in the chat instead.",
       };
     case "invalid_state":
-      return { kind: "error", text: "This card can't take that answer any more." };
+      return {
+        kind: "error",
+        text: cause.message.endsWith(KIN_AGENT_PAUSED_REFUSAL_END)
+          ? cause.message
+          : "This card can't take that answer any more.",
+      };
     default:
       return { kind: "error", text: kinFailureText(cause, KIN_SEND_FAILED_TEXT) };
   }
@@ -495,7 +513,6 @@ const SERVER_DONE: Partial<Record<KinDeferralActionId, string>> = {
   snooze_1h: "Snoozed.",
   snooze_tomorrow: "Snoozed.",
   run_now: "Starting a run now.",
-  start_now: "Started.",
   monday: "Moved to Monday.",
   cancel: "Cancelled.",
   pause: "Paused.",
@@ -511,19 +528,30 @@ export function kinCardStatusAfter(
   outcome: Exclude<KinActionOutcome, { readonly status: "ignored" }>,
   actionId: KinDeferralActionId,
   revision: number,
+  /** The agent a Start now asks (`KinDeferralCardView.agent`). */
+  agent: string | null = null,
 ): KinCardStatus {
   if (outcome.status === "failed") return { revision, notice: outcome.notice, holding: false };
   if (actionId === "change" || actionId === "edit")
     return { revision, notice: { kind: "sent", text: KIN_CHANGE_SENT_TEXT }, holding: false };
   const text =
-    actionId === "undo" ? KIN_UNDONE_TEXT : (SERVER_DONE[actionId] ?? KIN_SENT_CARD_TEXT);
+    actionId === "undo"
+      ? KIN_UNDONE_TEXT
+      : actionId === "start_now"
+        ? kinAskedToStart(agent)
+        : (SERVER_DONE[actionId] ?? KIN_SENT_CARD_TEXT);
   return { revision, notice: { kind: "sent", text }, holding: true };
 }
 
-/** A status raised on an older revision no longer describes the card. */
+/**
+ * A status raised on an older revision no longer describes the card, except a refusal: the person
+ * who tapped is told it once, whatever the card shows by the time the answer arrives.
+ */
 export function visibleKinCardStatus<Status extends KinCardStatus>(
   status: Status | null,
   revision: number,
 ): Status | null {
-  return status !== null && status.revision === revision ? status : null;
+  if (status === null) return null;
+  if (status.revision === revision) return status;
+  return status.notice !== null && status.notice.kind !== "sent" && !status.holding ? status : null;
 }
