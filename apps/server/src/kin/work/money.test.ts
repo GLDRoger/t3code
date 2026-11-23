@@ -1,4 +1,3 @@
-import * as KinShell from "../shell/KinShell.ts";
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
 import * as NodeZlib from "node:zlib";
