@@ -37,6 +37,12 @@ export const approvalTopic = (actionId: KinActionId) => `a:${actionId}` as KinPu
 export const taskTopic = (key: KinRecordKey | string) => `r:${key}` as KinPushTopic;
 export const noticeTopic = (messageId: KinMessageId) => `f:${messageId}` as KinPushTopic;
 export const troubleTopic = (cause: string) => `t:${cause}` as KinPushTopic;
+/** Task news held through quiet hours, released as one banner: one per release. */
+export const bundleTopic = (holdIds: ReadonlyArray<string>) =>
+  `b:${NodeCrypto.createHash("sha256")
+    .update([...holdIds].toSorted().join("\u0000"))
+    .digest("hex")
+    .slice(0, 32)}` as KinPushTopic;
 export const uniqueTopic = (id: string) => `u:${id}` as KinPushTopic;
 
 /**
@@ -72,6 +78,8 @@ export type KinPushSettled = {
   readonly chatId?: KinChatId;
   /** Topics of these kinds, such as `f`. */
   readonly kinds?: ReadonlyArray<string>;
+  /** Notices and bundles about any of these (`task:<record key>`, `fact:<fact key>`). */
+  readonly keys?: ReadonlyArray<string>;
   readonly personId?: KinPersonId;
 };
 
@@ -100,8 +108,18 @@ export const makeKinPushTopics = Effect.gen(function* () {
     readonly chatId: KinChatId | undefined;
     readonly messageId: KinMessageId | undefined;
     readonly seq?: number | undefined;
+    /** What it is about (`task:` keys); Kin's notice of several tasks finds its own. */
+    readonly about?: ReadonlyArray<string> | undefined;
   }) {
     const now = yield* Clock.currentTimeMillis;
+    const about =
+      input.about ??
+      (input.topic.startsWith("f:") && input.messageId !== undefined
+        ? (yield* noticeTasks(input.orgId, input.personId, input.messageId)).map(
+            (key) => `task:${key}`,
+          )
+        : []);
+    yield* provide(noteAbout(input.orgId, input.topic, about));
     const [row] = yield* sql<{ version: number }>`INSERT INTO kin_push_sent (org_id, person_id,
         topic, version, chat_id, message_id, seq, sent_at)
       VALUES (${input.orgId}, ${input.personId}, ${input.topic}, 1, ${input.chatId ?? null},
@@ -160,6 +178,21 @@ export const makeKinPushTopics = Effect.gen(function* () {
       record.assignedAt !== null &&
       record.assignedAt >= since;
     return !handedOn && (yield* provide(canHearRecord(orgId, personId, record.recordId)));
+  });
+
+  const keysOf = (orgId: KinOrgId, ref: string, prefix: string) =>
+    sql<{ key: string }>`SELECT key FROM kin_push_about
+      WHERE org_id = ${orgId} AND ref = ${ref} AND substr(key, 1, ${prefix.length}) = ${prefix}
+      ORDER BY key`.pipe(Effect.map((rows) => rows.map((row) => row.key.slice(prefix.length))));
+
+  /** Whether any task in `ref`'s keys still stands for them. */
+  const anyTaskStands = Effect.fn("KinPushTopics.anyTaskStands")(function* (
+    orgId: KinOrgId,
+    row: KinPushSentRow,
+  ) {
+    for (const key of yield* keysOf(orgId, row.topic, "task:"))
+      if (yield* taskStands(orgId, row.personId, key, row.sentAt)) return true;
+    return false;
   });
 
   /** The tasks Kin's notice names for its reader (`subjectFor`'s read). */
@@ -250,12 +283,10 @@ export const makeKinPushTopics = Effect.gen(function* () {
       }
       case "r":
         return (yield* notRead()) && (yield* taskStands(orgId, personId, id, row.sentAt));
-      case "f": {
-        if (!fromMessage || !(yield* notRead())) return false;
-        for (const key of yield* noticeTasks(orgId, personId, row.messageId!))
-          if (yield* taskStands(orgId, personId, key, row.sentAt)) return true;
-        return false;
-      }
+      case "f":
+        return fromMessage && (yield* notRead()) && (yield* anyTaskStands(orgId, row));
+      case "b":
+        return yield* anyTaskStands(orgId, row);
       // Nothing settles it but the person: the phone drops it when it is opened.
       default:
         return true;
@@ -276,6 +307,14 @@ export const makeKinPushTopics = Effect.gen(function* () {
         : []),
       ...(settled.chatId === undefined ? [] : [sql`chat_id = ${settled.chatId}`]),
       ...(settled.kinds ?? []).map((kind) => sql`substr(topic, 1, 2) = ${`${kind}:`}`),
+      ...(settled.keys !== undefined && settled.keys.length > 0
+        ? [
+            sql`topic IN (SELECT ref FROM kin_push_about WHERE org_id = ${orgId}
+              AND key IN ${sql.in(settled.keys)})`,
+            sql`message_id IN (SELECT ref FROM kin_push_about WHERE org_id = ${orgId}
+              AND key IN ${sql.in(settled.keys)})`,
+          ]
+        : []),
     ];
     if (any.length === 0) return [];
     return yield* sql<KinPushSentRow>`SELECT ${sql.literal(ROW)} FROM kin_push_sent
@@ -337,6 +376,20 @@ const awaits = (awaitingJson: string, personId: KinPersonId) =>
     onSome: (ids) => ids.includes(personId),
   });
 
+/** Notes what `ref` (a push's topic or a notice's message) is about, by key. */
+export const noteAbout = Effect.fn("KinPushTopics.noteAbout")(function* (
+  orgId: KinOrgId,
+  ref: string,
+  keys: ReadonlyArray<string>,
+) {
+  if (keys.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  for (const key of new Set(keys))
+    yield* sql`INSERT INTO kin_push_about (org_id, ref, key, at)
+      VALUES (${orgId}, ${ref}, ${key}, ${now}) ON CONFLICT (org_id, ref, key) DO NOTHING`;
+});
+
 /** Rows older than `KIN_PUSH_SENT_KEPT` go, a bounded batch at a time (`KinRetention`). */
 export const prunePushSent = Effect.fn("KinPushTopics.prune")(function* (now: number) {
   const sql = yield* SqlClient.SqlClient;
@@ -345,6 +398,12 @@ export const prunePushSent = Effect.fn("KinPushTopics.prune")(function* (now: nu
     // Every org: a sweep by age, bounded by the batch size.
     const gone = yield* sql`DELETE FROM kin_push_sent WHERE rowid IN (
         SELECT rowid FROM kin_push_sent WHERE sent_at < ${before} ORDER BY sent_at LIMIT ${PRUNE_BATCH})
+      RETURNING 1`;
+    if (gone.length < PRUNE_BATCH) break;
+  }
+  for (let batch = 0; batch < PRUNE_BATCHES; batch++) {
+    const gone = yield* sql`DELETE FROM kin_push_about WHERE rowid IN (
+        SELECT rowid FROM kin_push_about WHERE at < ${before} LIMIT ${PRUNE_BATCH})
       RETURNING 1`;
     if (gone.length < PRUNE_BATCH) return;
   }

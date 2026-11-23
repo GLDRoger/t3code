@@ -65,6 +65,7 @@ import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDe
 import { KinPushPresence } from "./KinPushPresence.ts";
 import {
   approvalTopic,
+  bundleTopic,
   cardTopic,
   chatTopic,
   kinTopicCollapseId,
@@ -151,6 +152,8 @@ type Push = {
   readonly countTitle?: string;
   /** A chat's topic: the newest message position the banner covers, which settles it once read. */
   readonly seq?: number;
+  /** What a bundle is about (`task:<record key>`): it stands while any of them does. */
+  readonly about?: ReadonlyArray<string>;
   readonly data: KinPushData;
   readonly recipients: ReadonlyArray<Recipient>;
   /** A device the push is about, which needs no word of itself. */
@@ -1282,6 +1285,7 @@ const make = Effect.gen(function* () {
                   chatId: push.chatId,
                   messageId: push.source,
                   seq: push.seq,
+                  about: push.about,
                 })
                 .pipe(
                   Effect.catch((error) =>
@@ -1559,10 +1563,9 @@ const make = Effect.gen(function* () {
       body: news.body,
       chatId: undefined,
       source: undefined,
-      topic:
-        news.opens === undefined
-          ? uniqueTopic(SecureRandom.uuidV4Unsafe())
-          : taskTopic(news.opens.key),
+      // Several tasks: tracked by which, so it goes once the last no longer stands for them.
+      topic: news.opens === undefined ? bundleTopic(holdIds) : taskTopic(news.opens.key),
+      ...(news.opens === undefined ? { about: news.tasks.map((key) => `task:${key}`) } : {}),
       data: {
         kin: 1,
         orgId,

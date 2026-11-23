@@ -3279,7 +3279,7 @@ describe("KinPushSender withdrawals", () => {
       const doneWith = (key: string) =>
         sql`UPDATE kin_records SET state = 'done' WHERE key = ${key}`.pipe(
           Effect.andThen(
-            sender.settle(orgId, { topics: [`r:${key}` as KinPushTopic], kinds: ["f"] }),
+            sender.settle(orgId, { topics: [`r:${key}` as KinPushTopic], keys: [`task:${key}`] }),
           ),
           Effect.andThen(afterBatch(sender)),
         );
@@ -3295,6 +3295,68 @@ describe("KinPushSender withdrawals", () => {
       assert.deepStrictEqual(
         apns.sent.map((push) => [push.token, payloadOf(push).body.withdraw]),
         [[memberPhone, [{ topic: "f:kin-holder-two", version: 1 }]]],
+      );
+    }).pipe(Effect.provide(build(apns)));
+  });
+
+  it.effect("a quiet-hours bundle of tasks goes once the last of them is no longer hers", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql, sender, devices } = yield* seedTopical;
+      yield* devices.register(caller("sess-member", member), {
+        orgId,
+        token: memberPhone,
+        platform: "ios",
+        apsEnvironment: "development",
+        withdraws: true,
+      });
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at)
+        VALUES ('org_01', 'work', 'Work', 'W', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org_01', 'w1', 'work', 'W-1', 'Logo files', 'person', ${member}, 0, 'person',
+            'w1', 0, 0),
+          ('org_01', 'w2', 'work', 'W-2', 'Brand deck', 'person', ${member}, 0, 'person',
+            'w2', 0, 0)`;
+      // Two tasks the owner gave her while she slept, released as one banner.
+      for (const [hold, recordId, key] of [
+        ["news-1", "w1", "W-1"],
+        ["news-2", "w2", "W-2"],
+      ] as const)
+        yield* sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind, body,
+            audience, held_at, deliver_at)
+          VALUES (${hold}, 'org_01', '', ${member}, ${`kin-task-news:${hold}`},
+            ${JSON.stringify({ by: owner, name: "Owner", kind: "given", recordId, key, title: key, register: "work", to: null })},
+            'chat', ${T}, ${T})`;
+      yield* notify({ _tag: "tasks", orgId, holdIds: ["news-1", "news-2"] });
+      const [banner] = apns.sent.filter((push) => push.token === memberPhone);
+      const topic = payloadOf(banner!).body.topic as string;
+      assert.match(topic, /^b:/);
+      assert.deepStrictEqual(
+        (yield* sentRows(sql)).filter((row) => row.person_id === member),
+        [{ person_id: member, topic, withdrawn: 0 }],
+      );
+      // It keeps which tasks, never their words.
+      assert.deepStrictEqual(
+        (yield* sql<{ key: string }>`SELECT key FROM kin_push_about WHERE ref = ${topic}
+          ORDER BY key`).map((row) => row.key),
+        ["task:W-1", "task:W-2"],
+      );
+      const doneWith = (key: string) =>
+        sql`UPDATE kin_records SET state = 'done' WHERE key = ${key}`.pipe(
+          Effect.andThen(
+            sender.settle(orgId, { topics: [`r:${key}` as KinPushTopic], keys: [`task:${key}`] }),
+          ),
+          Effect.andThen(afterBatch(sender)),
+        );
+      apns.sent.length = 0;
+      yield* doneWith("W-1");
+      assert.deepStrictEqual(apns.sent, []);
+      yield* doneWith("W-2");
+      assert.deepStrictEqual(
+        apns.sent.map((push) => [push.token, payloadOf(push).body.withdraw]),
+        [[memberPhone, [{ topic, version: 1 }]]],
       );
     }).pipe(Effect.provide(build(apns)));
   });

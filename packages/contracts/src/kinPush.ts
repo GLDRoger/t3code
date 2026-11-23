@@ -101,8 +101,8 @@ export function kinMessageSubject(message: {
 /**
  * The one stable thing a push is about, which a newer push about it replaces and which is
  * withdrawn once it no longer needs the person: `c:` a chat's messages, `w:` a card, `q:` an open
- * question, `a:` an approval, `r:` a task, `f:` Kin's notice of several, `t:` a trouble on Kin's
- * computer, `u:` nothing else (never replaced). Ids only.
+ * question, `a:` an approval, `r:` a task, `f:` Kin's notice of several, `b:` task news held
+ * through quiet hours, `t:` a trouble on Kin's computer, `u:` nothing else (never replaced). Ids only.
  */
 export const KinPushTopic = Schema.String.check(
   Schema.makeFilter((value: string) => /^[a-z]:\S{1,200}$/.test(value), {

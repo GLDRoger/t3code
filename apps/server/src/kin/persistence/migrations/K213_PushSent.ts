@@ -25,6 +25,18 @@ export default Effect.gen(function* () {
   )`;
   yield* sql`CREATE INDEX IF NOT EXISTS idx_kin_push_sent_live
     ON kin_push_sent (org_id, topic) WHERE withdrawn_at IS NULL`;
+  // What a notice or bundle was about, by key (`task:W-1`, `fact:<key>`): a task done or a fact
+  // handled finds the notices it settles by index. Keys only, never words.
+  yield* sql`CREATE TABLE IF NOT EXISTS kin_push_about (
+    org_id TEXT NOT NULL,
+    -- A push's topic, or the message a notice was posted as.
+    ref TEXT NOT NULL,
+    key TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (org_id, ref, key)
+  )`;
+  yield* sql`CREATE INDEX IF NOT EXISTS idx_kin_push_about_key ON kin_push_about (org_id, key)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS idx_kin_push_about_at ON kin_push_about (at)`;
   yield* sql`CREATE INDEX IF NOT EXISTS idx_kin_push_sent_message
     ON kin_push_sent (org_id, message_id) WHERE withdrawn_at IS NULL AND message_id IS NOT NULL`;
   const devices = yield* sql<{ name: string }>`PRAGMA table_info(kin_push_devices)`;
