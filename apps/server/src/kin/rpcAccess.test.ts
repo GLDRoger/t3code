@@ -93,6 +93,8 @@ const MEMBER = [
   "kin.pulse.handle",
   "kin.pulse.read",
   "kin.pulse.subscribe",
+  // Only their own topics: `KinPushTopics.settledOf` reads the caller's rows and no one else's.
+  "kin.push.reconcile",
   "kin.push.registerDevice",
   "kin.push.unregisterDevice",
   "kin.push.watch",

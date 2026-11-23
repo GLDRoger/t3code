@@ -15,6 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
+import { noteAbout } from "../push/pushAbout.ts";
 import { HELD_ID } from "../triggers/heldDelivery.ts";
 import { holdFor, holdLine } from "../triggers/quietHold.ts";
 import { daysAgoText, type SenseContext } from "./senses/shared.ts";
@@ -136,7 +137,7 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
   // One pass's facts for one person are one message, so a retried pass posts nothing more; a fact
   // open again after it cleared is told in a later pass, so it is a new message.
   const keys = [...input.facts, ...input.unnamed].map((fact) => fact.key);
-  return yield* noticeHolder({
+  const noticeId = yield* noticeHolder({
     orgId,
     personId,
     agentId: input.agentId,
@@ -146,6 +147,14 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
       .digest("hex")
       .slice(0, 32),
   });
+  // Its push stands while one of its facts does (`factsStand`); held, it waits on them too.
+  if (noticeId !== undefined)
+    yield* noteAbout(
+      orgId,
+      noticeId,
+      keys.map((key) => `fact:${key}`),
+    );
+  return noticeId;
 });
 
 /**

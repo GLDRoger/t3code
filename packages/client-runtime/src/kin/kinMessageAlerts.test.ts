@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import type { KinChatListRow } from "./kinChatListRows.ts";
-import { kinArrivalNotices, kinNewArrivals, kinUnreadSeen } from "./kinMessageAlerts.ts";
+import {
+  kinArrivalNotices,
+  kinNewArrivals,
+  kinSettledAlertChats,
+  kinUnreadSeen,
+} from "./kinMessageAlerts.ts";
 
 const row = (chatId: string, unread: number, muted = false) =>
   ({
@@ -34,5 +39,22 @@ describe("kinArrivalNotices", () => {
     expect([ids(here.system), ids(here.inApp)]).toEqual([[], ["b"]]);
     const elsewhere = kinArrivalNotices(arrivals, { looking: true, onScreenChatId: null });
     expect(ids(elsewhere.inApp)).toEqual(["a", "b"]);
+  });
+});
+
+describe("kinSettledAlertChats", () => {
+  it("takes down a shown alert once its chat is read anywhere, or gone from the list", () => {
+    const rows = [row("read", 0), row("unread", 2), row("muted-read", 0, true)];
+    const here = (chatId: string) => ({ environmentId: "env-1", chatId });
+    expect(
+      kinSettledAlertChats([here("read"), here("unread"), here("left")], "env-1", rows),
+    ).toEqual([here("read"), here("left")]);
+  });
+
+  it("never takes down another host's alert because this host's list lacks its chat", () => {
+    const rows = [row("read", 0)];
+    const there = { environmentId: "env-2", chatId: "read" };
+    const other = { environmentId: "env-2", chatId: "elsewhere" };
+    expect(kinSettledAlertChats([there, other], "env-1", rows)).toEqual([]);
   });
 });

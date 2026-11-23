@@ -96,11 +96,14 @@ export const endedHolds = Effect.fn("KinHolds.ended")(function* (
     .toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
 });
 
+/** What a hold is matched on: a fact's record, and the client or project it is scoped to. */
+type Covered = {
+  readonly subject: Partial<KinPulseFact["subject"]>;
+  readonly scope: Partial<KinPulseFact["scope"]>;
+};
+
 /** Whether `hold` covers a fact about `fact.subject`, scoped as `fact.scope` says. */
-export const covers = (
-  hold: Pick<Hold, "recordId" | "recordKey" | "register">,
-  fact: Pick<KinPulseFact, "subject" | "scope">,
-) =>
+export const covers = (hold: Pick<Hold, "recordId" | "recordKey" | "register">, fact: Covered) =>
   fact.subject.recordId === hold.recordId ||
   (COVERS_ALL.has(hold.register) &&
     (fact.scope.clientKey === hold.recordKey || fact.scope.projectKey === hold.recordKey));
@@ -114,11 +117,8 @@ const counts = (hold: Hold, reader: Reader) =>
  * The hold that sets this fact aside for `reader` now, if any: the one function every reader
  * of the pulse goes through. Pass facts as sensed, before a teammate's view drops scope names.
  */
-export const asideOf = (
-  fact: Pick<KinPulseFact, "subject" | "scope">,
-  holds: ReadonlyArray<Hold>,
-  reader: Reader,
-) => holds.find((hold) => counts(hold, reader) && covers(hold, fact));
+export const asideOf = (fact: Covered, holds: ReadonlyArray<Hold>, reader: Reader) =>
+  holds.find((hold) => counts(hold, reader) && covers(hold, fact));
 
 /** The holds a reader sees, one per record: theirs and the company's. */
 export const holdsFor = (holds: ReadonlyArray<Hold>, reader: Reader) =>

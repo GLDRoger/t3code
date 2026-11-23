@@ -18,6 +18,8 @@ import type { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as Reach from "../lead/Reach.ts";
 import type { KinPushSender } from "../push/KinPushSender.ts";
+import { aboutOf, noteAbout } from "../push/pushAbout.ts";
+import { factsStand } from "../pulse/factState.ts";
 import { heldGivenBody, isGivenHeld, TASK_NEWS } from "../work/assignNotices.ts";
 import { ANSWERS_WITHIN_MS, personQuietUntil, relayWakeup, sameAsk } from "./quietHold.ts";
 
@@ -93,6 +95,12 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
       yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
       continue;
     }
+    // Kin's notice of facts that all settled while it waited says nothing true any more.
+    const facts = yield* aboutOf(orgId, first.kind, "fact:");
+    if (facts.length > 0 && !(yield* factsStand(orgId, first.personId, facts, now))) {
+      yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+      continue;
+    }
     if (yield* urgentSince(orgId, first)) {
       yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
       continue;
@@ -123,6 +131,12 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
           });
           yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
           WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+          // Its push is about what the held line was: the same facts.
+          yield* noteAbout(
+            orgId,
+            `${HELD_ID}${first.holdId}`,
+            facts.map((key) => `fact:${key}`),
+          );
         }),
       )
       .pipe(
