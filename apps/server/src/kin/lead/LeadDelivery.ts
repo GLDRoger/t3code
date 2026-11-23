@@ -467,9 +467,11 @@ const make = Effect.gen(function* () {
         const [event] = yield* sql<{
           state: string;
           budgetDeferred: number;
+          wakeupId: string | null;
           startedAt: number | null;
           endedAt: number | null;
-        }>`SELECT e.state, e.budget_deferred AS "budgetDeferred", w.started_at AS "startedAt",
+        }>`SELECT e.state, e.budget_deferred AS "budgetDeferred", w.wakeup_id AS "wakeupId",
+            w.started_at AS "startedAt",
             w.ended_at AS "endedAt"
           FROM kin_events e
           LEFT JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
@@ -494,14 +496,20 @@ const make = Effect.gen(function* () {
           lapsed = true;
           return yield* fallback;
         }
-        // Done: the lead's last message in its lane during that wake-up carries the card.
+        // Schedules link to the lead's message; reminders and routines need a free card slot.
         const from = iso(event.startedAt ?? now);
         const until = iso(event.endedAt ?? now);
         const [message] = yield* sql<{ messageId: string; body: string }>`
           SELECT message_id AS "messageId", body FROM kin_messages
           WHERE org_id = ${orgId} AND chat_id = ${row.chatId} AND author_kind = 'agent'
-            AND author_agent_id = ${row.agentId} AND status = 'posted' AND kind = 'text'
-            AND widget_id IS NULL AND created_at >= ${from} AND created_at <= ${until}
+            AND author_agent_id = ${row.agentId} AND status = 'posted'
+            ${
+              row.kind === "scheduled_task"
+                ? sql`AND (source_wakeup_id = ${event.wakeupId} OR
+                  (source_wakeup_id IS NULL AND created_at >= ${from} AND created_at <= ${until}))`
+                : sql`AND kind = 'text' AND widget_id IS NULL
+                  AND created_at >= ${from} AND created_at <= ${until}`
+            }
           ORDER BY seq DESC LIMIT 1`;
         if (message === undefined) {
           // A reminder is owed; a routine or scheduled run that found nothing to say posts nothing.
