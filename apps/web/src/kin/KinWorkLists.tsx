@@ -104,6 +104,8 @@ export function KinWorkListPage(
     readonly openKey: KinRecordKey | null;
     readonly onOpenKey: (key: KinRecordKey) => void;
     readonly onGone: () => void;
+    /** The page around it already says the list's name, so the list doesn't say it again. */
+    readonly titled?: boolean;
   },
 ) {
   // A list that was put away is still a page: that is where it is brought back.
@@ -206,7 +208,9 @@ function KinListEntries(
       >
         <div className="flex items-start gap-3">
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <h2 className="truncate text-base font-medium text-foreground">{def.name}</h2>
+            {props.titled === true ? null : (
+              <h2 className="truncate text-base font-medium text-foreground">{def.name}</h2>
+            )}
             {def.archivedAt === null ? null : (
               <p className="text-xs text-muted-foreground">
                 {KIN_LISTS.archived}. {KIN_LISTS.edit.archiveDetail}
