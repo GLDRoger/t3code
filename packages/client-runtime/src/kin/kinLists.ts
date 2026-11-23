@@ -25,6 +25,7 @@ import type {
 import {
   formatKinMoney,
   KIN_DEFAULT_HOME_CURRENCY,
+  KIN_LISTS_NEVER_TEAM,
   kinCurrency,
   parseKinMoney,
   kinWhenFormat,
@@ -244,6 +245,9 @@ export const KIN_LISTS = {
     categories: "What it calls each category",
     payments: "Entries are paid in parts",
     paymentsDetail: "Each entry keeps its payments and what is still owed, as invoices do.",
+    team: "The team works on this list",
+    teamDetail:
+      "Everyone on the team sees the entries added after this is turned on, and can add and update them. Entries marked sensitive stay private, and amounts and private details stay hidden from anyone without Money. Turn it off to hide the list from the team again.",
     archive: "Put this list away",
     archiveDetail:
       "It stops taking new entries. Nothing is deleted, and you can bring it back here in its settings.",
@@ -1622,6 +1626,7 @@ export interface KinListEditDraft {
   /** By category as stored. */
   readonly categoryLabels: Readonly<Record<string, string>>;
   readonly payments: boolean;
+  readonly team: boolean;
 }
 
 export const kinListEditDraftOf = (def: KinListDefinition): KinListEditDraft => ({
@@ -1633,11 +1638,20 @@ export const kinListEditDraftOf = (def: KinListDefinition): KinListEditDraft => 
     def.categories.map((category) => [category, kinCategoryLabel(category, def)]),
   ),
   payments: def.payments === true,
+  team: def.team === true,
 });
 
 /** Whether the list's settings offer "paid in parts": a list with amounts that isn't Invoices. */
 export const kinListCanTogglePayments = (def: KinListDefinition) =>
   def.amount && !def.builtIn && def.list !== "invoices";
+
+/** Whether the list's settings offer opening it to the team: a company-made list that isn't sensitive. */
+export const kinListCanOpenToTeam = (def: KinListDefinition) =>
+  def.team === true ||
+  (!def.builtIn &&
+    !def.sensitive &&
+    !(KIN_LISTS_NEVER_TEAM as ReadonlyArray<string>).includes(def.list) &&
+    def.name.trim().toLowerCase() !== "bank transactions");
 
 const LABEL_MAX = 60;
 export const KIN_LIST_LABEL_MAX = LABEL_MAX;
@@ -1667,9 +1681,11 @@ export function kinListEditInput(
   }
   const renamed = name !== def.name;
   const payments = draft.payments !== (def.payments === true);
+  const team = draft.team !== (def.team === true);
   if (
     !renamed &&
     !payments &&
+    !team &&
     Object.keys(labels).length === 0 &&
     Object.keys(categories).length === 0
   )
@@ -1688,6 +1704,7 @@ export function kinListEditInput(
         ? {}
         : { categoryLabels: categories as KinListUpdateInput["categoryLabels"] }),
       ...(payments ? { payments: draft.payments } : {}),
+      ...(team ? { team: draft.team } : {}),
     },
   };
 }

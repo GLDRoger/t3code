@@ -139,6 +139,16 @@ export type KinListsInput = typeof KinListsInput.Type;
 export const KinListsResult = Schema.Struct({ lists: Schema.Array(KinListDefinition) });
 export type KinListsResult = typeof KinListsResult.Type;
 
+/** Company-made lists that keep money or bank rows and are never opened to the team. */
+export const KIN_LISTS_NEVER_TEAM = [
+  "expenses",
+  "invoices",
+  "receipts",
+  "quotes",
+  "payments",
+  "bank_transactions",
+] as const;
+
 /**
  * The owner's changes to a defined list, which never delete: archiving hides it and refuses new
  * entries, a retired field keeps its values. Each has its way back. Built-in lists are refused.
