@@ -352,20 +352,10 @@ function KinSetUpRow(props: KinWorkTarget) {
   return (
     <KinSettingsSection problem={problem}>
       <KinSettingsRow
-        title={KIN_SET_UP.title}
+        title={KIN_SET_UP.action}
         wrap
         detail={chief === null ? KIN_SET_UP.noChief : KIN_SET_UP.detail}
-        control={
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={busy || chief === undefined || chief === null}
-            aria-busy={busy}
-            onClick={() => void ask()}
-          >
-            {KIN_SET_UP.action}
-          </Button>
-        }
+        {...(chief === undefined || chief === null || busy ? {} : { onOpen: () => void ask() })}
       />
     </KinSettingsSection>
   );

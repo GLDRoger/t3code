@@ -1,4 +1,4 @@
-import { KIN_SELLS_MAX } from "@t3tools/contracts";
+import { KIN_SELLS_MAX, kinCharacterSeat } from "@t3tools/contracts";
 
 /** Setting Kin up for the kind of company it is: the question a new company is asked, and the way back in. */
 export const KIN_SET_UP = {
@@ -17,6 +17,9 @@ export const KIN_SET_UP = {
   ask: "Set Kin up for my kind of company. Go by What we sell, and ask me what we sell if it doesn't say.",
 } as const;
 
+/** A lead in the Chief of staff's seat, by the same reading of its area as the host's. */
+export const kinIsChiefOfStaff = (domain: string) => kinCharacterSeat(domain) === "chief-of-staff";
+
 /** The live Chief of staff the action asks, by id so every client picks the same one. */
 export const kinSetUpChief = <
   Lead extends { readonly agentId: string; readonly domain: string; readonly retired?: unknown },
@@ -24,7 +27,7 @@ export const kinSetUpChief = <
   leads: ReadonlyArray<Lead>,
 ): Lead | null =>
   leads
-    .filter((lead) => lead.domain === "chief-of-staff" && lead.retired === undefined)
+    .filter((lead) => kinIsChiefOfStaff(lead.domain) && lead.retired === undefined)
     .toSorted((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0))[0] ?? null;
 
 /**
@@ -43,4 +46,4 @@ export function kinWhatWeSellAnswer(body: string): string | null {
 
 /** The intro's line in the Chief of staff's first chat when the company said what it sells. */
 export const kinIntroSetUpLine = (agentName: string, answer: string) =>
-  `You said you sell: ${answer}. Say hello and ${agentName} will suggest how to set Kin up for that.`;
+  `You said you sell: ${answer.replace(/[.!?\s]+$/, "")}. Say hello and ${agentName} will suggest how to set Kin up for that.`;
