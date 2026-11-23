@@ -896,6 +896,33 @@ describe("KinChatService", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("an agent's question asked in words and on its card waits as the card alone", () =>
+    Effect.gen(function* () {
+      const { repo, service, person, agent, chat } = yield* seed();
+      const words = (clientMessageId: string) =>
+        service.send(agent, {
+          chatId: chat.chatId,
+          body: "Shall I copy Dev on the reminder?",
+          intent: "question",
+          clientMessageId,
+        });
+      const open = () =>
+        repo.listOpenWaiting(person).pipe(Effect.map((rows) => rows.map((row) => row.widgetId)));
+      yield* words("before");
+      assert.deepStrictEqual(yield* open(), [null]);
+      const card = yield* service.ask(agent, {
+        chatId: chat.chatId,
+        clientMessageId: "card",
+        question: "Copy Dev on the reminder?",
+        options: [{ label: "Copy Dev" }, { label: "Just me" }],
+      });
+      assert.deepStrictEqual(yield* open(), [card.widgetId]);
+      // Asked again in words while its card is open: still the card alone.
+      yield* words("after");
+      assert.deepStrictEqual(yield* open(), [card.widgetId]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "settles a choice card on its first tap and refuses stale, foreign and expired taps",
     () =>
@@ -1005,7 +1032,7 @@ describe("KinChatService", () => {
         yield* TestClock.adjust("24 hours");
         assert.include(
           yield* service.act(person, tap("late", 1, later.widgetId)).pipe(Effect.flip),
-          { reason: "invalid_state", message: "This question expired." },
+          { reason: "widget_changed" },
         );
       }).pipe(Effect.provide(layer)),
   );
@@ -3293,8 +3320,9 @@ describe("KinChatService", () => {
 
   it.effect(
     "a sections card applies once through the real tap, for the owner and for a co-owner",
-    () =>
-      Effect.gen(function* () {
+    () => {
+      let announcements = 0;
+      return Effect.gen(function* () {
         const { service, person, agent, chat } = yield* seed();
         const sql = yield* SqlClient.SqlClient;
         const gate = yield* LevelGate.KinLevelGate;
@@ -3364,13 +3392,23 @@ describe("KinChatService", () => {
         assert.strictEqual(taps.filter(Exit.isSuccess).length, 1);
         const once = yield* KinShell.get(person.orgId);
         assert.strictEqual(once.rev, 1);
+        assert.strictEqual(announcements, 1);
         assert.isFalse(once.sections.find((one) => one.id === "deals")!.on);
         // A co-owner's Confirm applies too.
         yield* tap(coOwner, yield* card("sc_probe_on", true), "tap-c");
         const back = yield* KinShell.get(person.orgId);
         assert.strictEqual(back.rev, 2);
+        assert.strictEqual(announcements, 2);
         assert.isTrue(back.sections.find((one) => one.id === "deals")!.on);
-      }).pipe(Effect.provide(Layer.provideMerge(LevelGate.layer, layer))),
+      }).pipe(
+        Effect.provide(Layer.provideMerge(LevelGate.layer, layer)),
+        Effect.provideService(RefreshHub.KinWorkRefresh, () =>
+          Effect.sync(() => {
+            announcements += 1;
+          }),
+        ),
+      );
+    },
   );
 
   it.effect(

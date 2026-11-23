@@ -5,9 +5,10 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { formatMoneyPlain } from "../work/money.ts";
 import { fold } from "../work/nameMatch.ts";
-import { countedEntry, owedInvoices } from "../work/recordRows.ts";
+import { countedEntry, owedInvoices, ownerZone } from "../work/recordRows.ts";
 import { KIN_OWNER_LEVEL, type KinViewer, seenBy, viewerOfPeople } from "../work/teamView.ts";
 import { invoiceAsides } from "./invoiceAsides.ts";
+import { UNREADABLE_BANK_ALERTS_KEY, unreadableBankAlerts } from "./senses/bank.ts";
 import { daysText, elapsed } from "./senses/shared.ts";
 import { thresholds, toMs } from "./thresholds.ts";
 
@@ -69,16 +70,28 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
   readonly now: number;
   readonly viewer: KinViewer;
   readonly said?: string | undefined;
+  readonly offeredFacts?: ReadonlySet<string> | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, now } = input;
-  if (!(yield* KinShell.sectionOnFor(orgId, "invoices"))) return [];
+  const shell = yield* KinShell.get(orgId);
   const seen = seenBy(sql, input.viewer);
   const said = ` ${fold(input.said ?? "")} `;
   const saysName = (number: unknown, title: string) => {
     const name = fold(typeof number === "string" && number.trim() !== "" ? number : title);
     return name !== "" && said.includes(` ${name} `);
   };
+  const bankLines: Array<string> = [];
+  if (
+    input.viewer._tag === "ownerLevel" &&
+    input.offeredFacts?.has(UNREADABLE_BANK_ALERTS_KEY) &&
+    KinShell.sectionOn(shell, "money")
+  ) {
+    const alert = yield* unreadableBankAlerts({ orgId, at: now, zone: yield* ownerZone(orgId) });
+    if (alert !== undefined && !saysName(null, alert.subject.title))
+      bankLines.push(`${alert.subject.title}. ${alert.consequence}`);
+  }
+  if (!KinShell.sectionOn(shell, "invoices")) return bankLines;
   const shown = <T>(
     entries: ReadonlyArray<T>,
     line: (entry: T) => string,
@@ -154,7 +167,7 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
       return `and ${count} more unanswered quote${count === 1 ? "" : "s"}${sum === "" ? "" : `, ${sum} in all`}.`;
     },
   );
-  return [...invoices, ...unanswered];
+  return [...bankLines, ...invoices, ...unanswered];
 });
 
 /** `morningMoneyLines` for whoever reads `chatId`: every person in it, at what all of them see. */
@@ -163,6 +176,7 @@ export const morningMoneyFor = Effect.fn("KinMorningMoney.forChat")(function* (i
   readonly chatId: KinChatId;
   readonly now: number;
   readonly said?: string | undefined;
+  readonly offeredFacts?: ReadonlySet<string> | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const readers = yield* sql<{ personId: KinPersonId }>`SELECT person_id AS "personId"
@@ -175,6 +189,7 @@ export const morningMoneyFor = Effect.fn("KinMorningMoney.forChat")(function* (i
     orgId: input.orgId,
     now: input.now,
     said: input.said,
+    offeredFacts: input.offeredFacts,
     viewer: owners ? KIN_OWNER_LEVEL : viewerOfPeople(readers.map((reader) => reader.personId)),
   });
 });

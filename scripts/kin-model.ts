@@ -84,6 +84,7 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/pulse/senses/work.ts",
   ],
   stream: [
+    "apps/server/src/kin/shell/KinShell.ts",
     "apps/server/src/kin/work/workStream.ts",
     "apps/server/src/kin/work/KinRecords.ts",
     "apps/server/src/kin/work/teamView.ts",

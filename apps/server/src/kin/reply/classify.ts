@@ -23,8 +23,16 @@ export function setupFailure(failure: OrchestrationV2ProviderFailure): SetupFail
     return "model";
   return null;
 }
-/** The Claude CLI words a failed API call as the turn's own reply; it is the provider's text. */
-export const isProviderErrorText = (text: string) => text.trimStart().startsWith("API Error:");
+/** Some harnesses also put their terminal diagnostic in the assistant transcript. */
+export function isProviderErrorText(text: string, failure: OrchestrationV2ProviderFailure) {
+  const line = normalized(text);
+  return (
+    line !== "" &&
+    (line === normalized(failure.message) ||
+      line.startsWith("API Error:") ||
+      (setupFailure(failure) === "signin" && line === "Not logged in · Please run /login"))
+  );
+}
 /** The setup failure that ended a run from `rootRunId` on, if one did. */
 export function setupFailureIn(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">,

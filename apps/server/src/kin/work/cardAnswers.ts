@@ -5,7 +5,9 @@ import {
   type KinOrgId,
   type KinPersonId,
   KinWidgetId,
+  mentionsKinMoney,
 } from "@t3tools/contracts";
+import { answerNumbersChange } from "../numbers/answer.ts";
 import { shellDecision } from "../shell/changes.ts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -43,6 +45,14 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   scope: Scope.Scope,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const followOn = <E, R>(message: string, work: Effect.Effect<void, E, R>) =>
+    sql
+      .withTransaction(work)
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning(message, { widgetId: input.widget.widgetId, cause }),
+        ),
+      );
   // Kin's own route, suggestion and leaver cards answer nothing else; no decision to remember.
   if (
     input.plan?.kind === "let_talk" ||
@@ -61,6 +71,15 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
           records: yield* KinRecords,
           chat: yield* KinChatService,
         });
+  // A numbers card applies here, before anything else the tap answers, so a refusal stops it all.
+  const watched = yield* answerNumbersChange({
+    orgId: input.orgId,
+    widgetId: input.widget.widgetId,
+    personId: input.personId,
+    confirmed: input.option.kind === "yes",
+    via: input.via,
+    now: input.now,
+  });
   // An agent's open question on this card is answered: its default is never taken.
   const sentBack = yield* answerCard(
     {
@@ -74,7 +93,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
     yield* KinChatService,
   );
   if (input.plan === undefined && input.via === "tap" && input.option.kind === "yes")
-    yield* chosenWork(input);
+    yield* followOn("Kin couldn't track the card answer", chosenWork(input));
   const currency = yield* answerCurrencyCard({
     orgId: input.orgId,
     widgetId: input.widget.widgetId,
@@ -105,7 +124,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   if (asked?._tag === "declined") yield* sql.afterCommit(tasksReread(input.orgId));
   // An agent's question the owner level answered is a decision; Kin's own cards record elsewhere.
   if (asked === undefined && made === undefined && currency === undefined)
-    yield* saveDecision(input, scope);
+    yield* followOn("Kin couldn't prepare the card decision", saveDecision(input, scope));
   if (made?._tag === "made")
     yield* sql.afterCommit(
       afterTap(
@@ -120,6 +139,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
       ),
     );
   if (ran !== undefined) return ran;
+  if (watched !== undefined) return watched;
   if (made?._tag === "made") return made.outcome;
   if (made?._tag === "declined")
     return { title: "Not recorded", text: "You said no, so nothing was recorded or numbered." };
@@ -213,9 +233,16 @@ const chosenWork = Effect.fn("KinCardAnswers.chosenWork")(function* (
     return;
   }
   const asked = question.question.trim().replace(/[?？]+$/u, "");
+  const title = `${asked}: ${input.option.label}`.slice(0, CHOSEN_TITLE);
+  const questionTitle = `Follow up on question ${question.questionId}`;
+  const subjectTitle = keys.length === 0 ? questionTitle : `Follow up on ${keys.join(", ")}`;
   yield* records.create(input.orgId, writer, {
     originKey: `chosen:${question.questionId}`,
-    title: `${asked}: ${input.option.label}`.slice(0, CHOSEN_TITLE),
+    title: !mentionsKinMoney(title)
+      ? title
+      : mentionsKinMoney(subjectTitle)
+        ? questionTitle
+        : subjectTitle,
     owner: { _tag: "agent", agentId: KinAgentId.make(question.agentId) },
   });
 });

@@ -1,8 +1,24 @@
 import { assert, describe, it } from "@effect/vitest";
-import { KinAgentId, type KinPulseFact } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinChatId,
+  KinMemoryItemId,
+  KinWakeupId,
+  type KinPulseFact,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
-import { factSig } from "./told.ts";
+import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
+import { fixture, orgId, seed } from "../triggers/routines.testkit.ts";
+import { queueCheckIn } from "./checkIn.ts";
+import * as KinPulse from "./KinPulse.ts";
+import { morningMoneyLines } from "./morningMoney.ts";
+import { UNREADABLE_BANK_ALERTS_KEY } from "./senses/bank.ts";
+import { factSig, settleCheckInTold, toldBy } from "./told.ts";
+import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 
 // Invented facts only.
 const HOUR = 3_600_000;
@@ -23,6 +39,140 @@ const fact = (over: Partial<KinPulseFact>): KinPulseFact => ({
   handled: null,
   ...over,
 });
+
+it.effect.each([
+  { body: "W-62 is waiting.", kept: ["W-62"] },
+  { body: "Please SEND THE ERP FOLLOW-UP. W-620 is separate.", kept: ["W-62"] },
+  { body: "Pay is too short a title, and W-620 is another task.", kept: [] },
+  { body: "One decision is ready.", card: "Can we start W-62?", kept: ["W-62"] },
+  { body: "AMBERMILL STUDIO needs a decision.", client: "Ambermill Studio", kept: ["W-62"] },
+  { body: "One decision is ready.", handle: true, kept: ["W-62"] },
+  { body: undefined, handle: true, kept: [] },
+  { body: undefined, bank: true, kept: [] },
+])("records what a check-in tells or handles ($body, handle $handle, bank $bank)", (row) =>
+  Effect.gen(function* () {
+    yield* seed();
+    yield* TestClock.setTime(MONDAY);
+    const sql = yield* SqlClient.SqlClient;
+    const agentId = KinAgentId.make("lead-a");
+    const chatId = KinChatId.make("chat-a");
+    yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:30', '18:30',
+      '03:00', 0, 1, '09:00', '[]')`;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+      VALUES (${orgId}, 'work', 'Work', 'W', 1, 0), (${orgId}, 'clients', 'Clients', 'C', 1, 0)`;
+    if (row.client !== undefined)
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, fields_json, created_by_kind, origin_key, created_at, updated_at)
+        VALUES (${orgId}, 'client', 'clients', 'C-1', ${row.client}, 'open', 'agent', ${agentId},
+          '{}', 'person', 'client', ${MONDAY}, ${MONDAY})`;
+    const keys = ["W-62", "W-7"];
+    for (const [index, title] of [" Send the ERP follow-up ", "Pay"].entries()) {
+      const key = keys[index]!;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, party_id, due_at, fields_json, created_by_kind, origin_key, created_at, updated_at)
+        VALUES (${orgId}, ${key}, 'work', ${key}, ${title}, 'open', 'agent', ${agentId},
+          ${index === 0 && row.client !== undefined ? "client" : null},
+          ${MONDAY - DAY}, '{}', 'person', ${key}, 0, 0)`;
+    }
+    if (row.bank)
+      yield* sql`INSERT INTO kin_bank_alerts
+        (org_id, alert_id, connection_id, thread_id, sent_at, seen_at, outcome)
+        VALUES (${orgId}, 'invented-alert', 'invented-mail', 'invented-thread',
+          ${MONDAY}, ${MONDAY}, 'unparsed')`;
+    const queue = (at: number) =>
+      queueCheckIn({
+        orgId,
+        agentId,
+        scheduleId: KinMemoryItemId.make("checkin-afternoon"),
+        title: "Afternoon check-in",
+        what: "Afternoon check-in.",
+        dueAt: at,
+        looseAt: null,
+        at,
+        zone: "UTC",
+        outside: { lines: [], seen: [] },
+      });
+    assert.include(yield* queue(MONDAY), { _tag: "queued", facts: row.bank ? 3 : 2 });
+    const [event] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+      WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY queued_at`;
+    const eventId = event!.eventId;
+    const wakeupId = KinWakeupId.make(`wakeup-${eventId}`);
+    const factKeys = yield* toldBy(orgId, [eventId]);
+    const body = row.bank
+      ? (yield* morningMoneyLines({
+          orgId,
+          now: MONDAY,
+          viewer: KIN_OWNER_LEVEL,
+          offeredFacts: factKeys,
+        }))[0]
+      : row.body;
+    const messageId = yield* leadWakeup({
+      orgId,
+      eventId,
+      chatId,
+      ...(body === undefined ? {} : { body }),
+    });
+    if (row.bank)
+      yield* sql`UPDATE kin_messages SET client_message_id = ${`kin-money:${wakeupId}`}
+        WHERE org_id = ${orgId} AND message_id = ${messageId}`;
+    yield* sql`UPDATE kin_wakeups SET thread_id = 'thread-fixture'
+      WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`;
+    if (row.card !== undefined) {
+      yield* sql`INSERT INTO kin_widgets (org_id, chat_id, widget_id, message_id, widget_class,
+        type, revision, state_json, awaiting_json, updated_at)
+        VALUES (${orgId}, ${chatId}, 'choice', ${messageId}, 'native', 'choice', 1,
+          json_object('question', ${row.card}), '[]', '2026-11-16T09:00:01.000Z')`;
+    }
+    const keyOf = (key: string) => [...factKeys].find((factKey) => factKey.split(":")[1] === key)!;
+    if (row.handle === true) {
+      yield* sql`UPDATE kin_wakeups SET status = 'running', ended_at = NULL
+        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`;
+      yield* sql`UPDATE kin_events SET state = 'claimed'
+        WHERE org_id = ${orgId} AND event_id = ${eventId}`;
+      yield* KinPulse.handle({
+        orgId,
+        at: MONDAY + 1_000,
+        viewer: { _tag: "owner" },
+        by: { _tag: "agent", agentId },
+        factKey: keyOf("W-62"),
+        action: "got_it",
+        wakeupId,
+      });
+    }
+    yield* settleCheckInTold({
+      orgId,
+      wakeupId,
+      chatId,
+      completed: true,
+      readFacts: (factKeys) =>
+        KinPulse.read({
+          orgId,
+          at: MONDAY + 2_000,
+          viewer: { _tag: "owner" },
+          includeHandled: true,
+          factKeys,
+        }).pipe(Effect.map((result) => result.facts)),
+    });
+    yield* sql`UPDATE kin_events SET state = 'done'
+      WHERE org_id = ${orgId} AND event_id = ${eventId}`;
+    const kept = new Set(row.kept.map(keyOf));
+    if (row.bank) kept.add(UNREADABLE_BANK_ALERTS_KEY);
+    assert.deepStrictEqual(yield* toldBy(orgId, [eventId]), kept);
+    assert.include(yield* queue(MONDAY + DAY), { _tag: "queued" });
+    const next = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+      WHERE org_id = ${orgId} AND tag = 'pulse' AND event_id <> ${eventId} ORDER BY queued_at`;
+    const offered = yield* toldBy(
+      orgId,
+      next.map((one) => one.eventId),
+    );
+    assert.isTrue(offered.has(keyOf("W-7")));
+    assert.isFalse(offered.has(UNREADABLE_BANK_ALERTS_KEY));
+    assert.strictEqual(
+      offered.has(keyOf("W-62")),
+      row.handle !== true && !row.kept.some((key) => key === "W-62"),
+    );
+  }).pipe(Effect.provide(fixture())),
+);
 const overdue = (days: number) =>
   fact({ measure: { value: days, unit: "days", threshold: 7, from: { _tag: "default" } } });
 const dueIn = (hours: number) =>

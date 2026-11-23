@@ -30,11 +30,15 @@ export function useKinWorkingAgents(
   );
 }
 
-/** The Kin host's inbox as one screen state, plus a retry for whichever read failed. */
+/**
+ * The Kin host's inbox as one screen state, a retry for whichever read failed, and a re-read for
+ * a row the host says has moved on.
+ */
 export function useKinInbox(): {
   readonly host: KinHost;
   readonly state: KinInboxScreenState;
   readonly retry: () => void;
+  readonly reread: () => void;
 } {
   const host = useKinHost();
   const environmentId = host._tag === "host" ? host.environmentId : null;
@@ -47,5 +51,8 @@ export function useKinInbox(): {
       appAtomRegistry.refresh(kinClient.orgs({ environmentId, input: {} }));
     else appAtomRegistry.refresh(inboxAtom);
   };
-  return { host, state, retry };
+  const reread = () => {
+    if (environmentId !== null) appAtomRegistry.refresh(inboxAtom);
+  };
+  return { host, state, retry, reread };
 }

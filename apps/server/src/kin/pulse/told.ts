@@ -1,8 +1,15 @@
-import type { KinAgentId, KinOrgId, KinPulseFact } from "@t3tools/contracts";
+import type {
+  KinAgentId,
+  KinChatId,
+  KinOrgId,
+  KinPulseFact,
+  KinWakeupId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { dayIn } from "../work/money.ts";
+import { UNREADABLE_BANK_ALERTS_KEY } from "./senses/bank.ts";
 import { HOUR_MS, DAY_MS } from "./thresholds.ts";
 
 /** Facts about something coming due: their measure counts down to it. */
@@ -82,8 +89,11 @@ export const untold = Effect.fn("KinPulse.untold")(function* (input: {
       WHERE t.org_id = ${input.orgId} AND t.person_id = ${input.personId}
         AND t.fact_key IN ${sql.in(keys.slice(start, start + 500))}
         AND ${counted}
-      ORDER BY t.fact_key, t.told_at`)
+      ORDER BY t.fact_key, t.told_at DESC, t.rowid DESC`) {
+      // The unreadable count can go down and back up while the same fact stays open.
+      if (row.key === UNREADABLE_BANK_ALERTS_KEY && told.has(row.key)) continue;
       told.set(row.key, (told.get(row.key) ?? new Set()).add(row.sig));
+    }
   return input.facts.filter(
     (fact) => told.get(fact.key)?.has(factSig(fact, input.at, input.zone)) !== true,
   );
@@ -116,4 +126,112 @@ export const toldBy = Effect.fn("KinPulse.toldBy")(function* (
   const rows = yield* sql<{ key: string }>`SELECT DISTINCT fact_key AS key FROM kin_pulse_told
     WHERE org_id = ${orgId} AND event_id IN ${sql.in(eventIds)} ORDER BY fact_key`;
   return new Set(rows.map((row) => row.key));
+});
+
+/** Retain a check-in's reservation while recording which wake-up handled the fact. */
+export const checkInHandling = Effect.fn("KinPulse.checkInHandling")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: KinWakeupId;
+  readonly agentId: KinAgentId;
+  readonly factKey: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ event_id: string }>`UPDATE kin_events AS e
+    SET json = json_set(json, '$._handledPulse', json_patch(
+      COALESCE(json_extract(json, '$._handledPulse'), '{}'),
+      json_object(${input.factKey}, ${input.wakeupId})))
+    WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
+      AND e.wakeup_id = ${input.wakeupId} AND e.state = 'claimed' AND e.tag = 'pulse'
+      AND json_extract(e.json, '$.checkIn') IS NOT NULL
+      AND EXISTS (SELECT 1 FROM kin_pulse_told t WHERE t.org_id = e.org_id
+        AND t.event_id = e.event_id AND t.fact_key = ${input.factKey})
+    RETURNING event_id`;
+});
+
+export const settleCheckInTold = Effect.fn("KinPulse.settleCheckInTold")(function* <E>(input: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: KinWakeupId;
+  readonly chatId: KinChatId;
+  readonly completed: boolean;
+  readonly readFacts: (
+    keys: ReadonlySet<string>,
+  ) => Effect.Effect<ReadonlyArray<KinPulseFact>, E, SqlClient.SqlClient>;
+}) {
+  const { orgId, wakeupId, chatId } = input;
+  const sql = yield* SqlClient.SqlClient;
+  const offered = yield* sql<{ key: string; handled: number }>`SELECT DISTINCT t.fact_key AS key,
+      EXISTS (SELECT 1 FROM json_each(e.json, '$._handledPulse')
+        WHERE key = t.fact_key AND value = ${wakeupId}) AS handled
+    FROM kin_events e JOIN kin_pulse_told t ON t.org_id = e.org_id AND t.event_id = e.event_id
+    WHERE e.org_id = ${orgId} AND e.wakeup_id = ${wakeupId} AND e.tag = 'pulse'
+      AND json_extract(e.json, '$.checkIn') IS NOT NULL
+    ORDER BY t.fact_key`;
+  if (offered.length === 0) return;
+  const texts = yield* sql<{ text: string; automated: number }>`WITH posts AS (
+      SELECT m.message_id, m.widget_id, m.body,
+        (COALESCE(m.client_message_id, '') GLOB '*kin-page:' || w.wakeup_id
+          OR COALESCE(m.client_message_id, '') GLOB '*kin-money:' || w.wakeup_id) AS automated
+      FROM kin_wakeups w JOIN kin_messages m ON m.org_id = w.org_id AND m.author_agent_id = w.agent_id
+      WHERE w.org_id = ${orgId} AND w.wakeup_id = ${wakeupId}
+        AND m.chat_id = ${chatId} AND m.author_kind = 'agent' AND m.status = 'posted'
+        AND (m.source_wakeup_id = w.wakeup_id OR
+          (m.source_wakeup_id IS NULL AND m.author_thread_id = w.thread_id
+            AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch')
+            AND (w.ended_at IS NULL OR
+              m.created_at <= strftime('%Y-%m-%dT%H:%M:%fZ', w.ended_at / 1000.0, 'unixepoch'))))
+        AND COALESCE(m.client_message_id, '') NOT GLOB '*kin-week:' || w.wakeup_id || ':*'
+      ) SELECT body AS text, automated FROM posts WHERE trim(body) <> ''
+      UNION ALL
+      SELECT part.value AS text, p.automated FROM posts p JOIN kin_widgets g
+        ON g.org_id = ${orgId} AND g.chat_id = ${chatId}
+        AND (g.message_id = p.message_id OR g.widget_id = p.widget_id)
+      CROSS JOIN json_tree(g.state_json) part WHERE part.type = 'text' AND trim(part.value) <> ''
+      UNION ALL
+      SELECT json_extract(name.value, '$.key') AS text, p.automated FROM posts p JOIN kin_message_names n
+        ON n.org_id = ${orgId} AND n.message_id = p.message_id
+      CROSS JOIN json_each(n.names_json) name
+      ORDER BY text`;
+  const said = texts.filter((post) => !post.automated);
+  if (said.length === 0 && !input.completed) return;
+  const keys = new Set(offered.map((row) => row.key));
+  const named = new Set<string>();
+  if (texts.length > 0) {
+    const spoken = said.map(({ text }) => text.toLowerCase()).join("\n");
+    for (const fact of yield* input.readFacts(keys)) {
+      const key = RegExp.escape(fact.subject.key.toLowerCase());
+      const mentioned = new RegExp(`(?<![\\p{L}\\p{N}_])${key}(?![\\p{L}\\p{N}_])`, "u");
+      const title = fact.subject.title.trim().toLowerCase();
+      const client = fact.scope.clientTitle?.trim().toLowerCase();
+      if (
+        mentioned.test(spoken) ||
+        (title.length >= 4 && spoken.includes(title)) ||
+        (client && spoken.includes(client)) ||
+        (fact.key === UNREADABLE_BANK_ALERTS_KEY &&
+          texts.some(
+            ({ automated, text }) =>
+              automated && text.includes(`${fact.subject.title}. ${fact.consequence}`),
+          ))
+      )
+        named.add(fact.key);
+    }
+  }
+  const handled =
+    said.length > 0
+      ? offered.filter((row) => row.handled === 1 && !named.has(row.key)).map((row) => row.key)
+      : [];
+  const kept = new Set([...named, ...handled]);
+  const omitted = [...keys].filter((key) => !kept.has(key));
+  const rows = sql`org_id = ${orgId} AND event_id IN (
+    SELECT e.event_id FROM kin_events e WHERE e.org_id = ${orgId} AND e.wakeup_id = ${wakeupId}
+      AND e.tag = 'pulse' AND json_extract(e.json, '$.checkIn') IS NOT NULL)`;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      if (omitted.length > 0)
+        yield* sql`DELETE FROM kin_pulse_told WHERE ${rows} AND fact_key IN ${sql.in(omitted)}`;
+      // A fact taken in hand is news again when its hold expires, unless it was also named.
+      if (handled.length > 0)
+        yield* sql`UPDATE kin_pulse_told SET sig = 'handled:' || sig WHERE ${rows}
+        AND fact_key IN ${sql.in(handled)} AND sig NOT GLOB 'handled:*'`;
+    }),
+  );
 });

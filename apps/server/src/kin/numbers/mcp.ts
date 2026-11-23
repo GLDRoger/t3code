@@ -16,6 +16,8 @@ import { Tool } from "effect/ai";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { encoded } from "../lead/quote.ts";
+import { KinToolText } from "../work/leadSchemas.ts";
 import { leadTool } from "../work/leadWork.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Numbers from "./KinNumbers.ts";
@@ -28,9 +30,14 @@ const shared = {
 
 const NumberRecordInput = Schema.Struct({
   values: Schema.Array(
-    Schema.Struct({ ...KinNumberValueInput.fields, source: KinNumberSource }),
+    Schema.Struct({
+      ...KinNumberValueInput.fields,
+      number: KinToolText(80, "Its key (G-1) or name."),
+      source: KinNumberSource,
+    }),
   ).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
 });
+const isKey = Schema.is(KinRecordKey);
 
 const NumbersReadInput = Schema.Struct({
   numbers: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(50))),
@@ -62,7 +69,24 @@ export const numbersReadTool = Tool.make("numbers_read", {
 export const recordWatched = leadTool(
   "KinNumbers.mcp.record",
   Effect.fnUntraced(function* (lead, { values }: typeof NumberRecordInput.Type) {
-    return yield* Numbers.record(lead, values);
+    // A number named rather than keyed is found among the watched ones; else it isn't one yet.
+    const named = values.some(({ number }) => !isKey(number))
+      ? (yield* Numbers.list(lead)).numbers
+      : [];
+    const keyed = [];
+    for (const value of values) {
+      const wanted = value.number.trim().toLowerCase();
+      const key = isKey(value.number)
+        ? value.number
+        : named.find((number) => number.name.trim().toLowerCase() === wanted)?.key;
+      if (key === undefined)
+        return yield* new KinChatError({
+          reason: "not_found",
+          message: `${encoded(value.number)} isn't a watched number yet: propose it with numbers_watch.`,
+        });
+      keyed.push({ ...value, number: key });
+    }
+    return yield* Numbers.record(lead, keyed);
   }),
 );
 

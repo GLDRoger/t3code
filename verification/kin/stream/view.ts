@@ -4,7 +4,7 @@ type Vars = Record<string, Value>;
 export const title = "Work's live stream to one person";
 
 export const guide =
-  "Each box is what Ana's open Tasks screen holds and whether her socket is up. Each arrow is a change to a task, her level changing, the host sending what changed, her socket dropping, or her app coming back. Red boxes are where a rule below breaks.";
+  "Each box is what Ana's open Tasks screen holds and whether her socket is up. Each arrow is a change to a task or its deal, a section or her level changing, the host sending what changed, her socket dropping, or her app coming back. Red boxes are where a rule below breaks.";
 
 export const rules: Record<string, string> = {
   StreamEqualsRead:
@@ -16,6 +16,16 @@ export const rules: Record<string, string> = {
 };
 
 export const variants = [
+  {
+    name: "no-shell-refresh",
+    breaks: "StreamEqualsRead",
+    what: "a Deals section switch leaves the promise in a teammate’s open Tasks page",
+  },
+  {
+    name: "deal-no-dependent-row",
+    breaks: "StreamEqualsRead",
+    what: "the deal tick skips the promise, which stays on her screen after the deal is made private",
+  },
   {
     name: "close-at-top",
     breaks: "StreamEqualsRead",
@@ -55,6 +65,12 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "A task changes";
     case "Share":
       return "A task is shared with her, or taken from her view";
+    case "ShellSwitch":
+      return to["sectionsOn"] === true ? "The owner turns Deals on" : "The owner turns Deals off";
+    case "DealLabel":
+      return to["dealPrivate"] === true
+        ? "The owner makes the promise’s deal private"
+        : "The owner makes the promise’s deal public";
     case "Level":
       return to["member"] === true ? "She is made a member" : "She is made a co-owner";
     case "Next":
