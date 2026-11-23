@@ -73,6 +73,9 @@ import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
 import { salesRulesFor } from "../../apps/server/src/kin/sales/seat.ts";
 import { KinPulseToolkit } from "../../apps/server/src/kin/pulse/mcp.ts";
+import { TASKS_KEY_INSTRUCTIONS, TasksKeyToolkit } from "../../apps/server/src/kin/tasksKey/mcp.ts";
+import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
+import { Tool } from "effect/ai";
 import {
   MONEY_RULE,
   WITHDRAWN_WORK,
@@ -123,6 +126,8 @@ const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
 const text = (value: string): Block => ({ type: "text", text: value });
 
 /** Kin's toolkits, in the order T3's tool list carries them. */
+/** The tools a person's key reaches, by bare name, for mock checks. */
+export const KIN_KEY_TOOLKIT = TasksKeyToolkit;
 export const KIN_TOOLKITS = [
   KinChatToolkit,
   KinLeadToolkit,
@@ -276,11 +281,15 @@ export const kinDated = <
     readonly reminders: ReadonlyArray<Block>;
     readonly environment: { readonly date: string | undefined };
     readonly codex?: unknown;
+    readonly system: ReadonlyArray<Block>;
+    readonly deferred: ReadonlyArray<ApiTool>;
   },
 >(
   testCase: McpToolUseCase,
-  base: B,
+  given: B,
 ): B => {
+  // A person's own coding agent with their key: the "kin" server's tools and instructions.
+  const base = testCase.setup.world?.kinKey === true ? kinKeyed(given) : given;
   const day = isKinCase(testCase) ? kinOwnerDay(testCase) : undefined;
   if (day === undefined) return base;
   const line = `Today's date is ${day}`;
@@ -298,6 +307,44 @@ export const kinDated = <
       : base.codex === undefined
         ? [...base.reminders, text(`${line}.`)]
         : base.reminders,
+  };
+};
+
+/**
+ * A person's own coding agent with their Kin key: Kin's `/kin/you/mcp` server, named "kin" as its
+ * setup lines name it, lists these tools and gives its instructions on connect, which Claude Code
+ * adds to the system prompt. Its tools wait behind ToolSearch as any MCP server's do.
+ */
+export const KIN_KEY_PREFIX = "mcp__kin__";
+const KIN_KEY_TOOLS: ReadonlyArray<ApiTool> = Object.values(TasksKeyToolkit.tools).map(
+  (tool: Tool.Any) => ({
+    name: `${KIN_KEY_PREFIX}${tool.name}`,
+    description: Tool.getDescription(tool) ?? "",
+    input_schema: advertisedJsonSchema(tool),
+  }),
+);
+const KIN_KEY_INSTRUCTIONS = `# MCP Server Instructions
+
+The following MCP servers have provided instructions for how to use their tools and resources:
+
+## kin
+${TASKS_KEY_INSTRUCTIONS}`;
+const DEFERRED_HEADER = /(The following deferred tools are now available via ToolSearch\.[^\n]*\n)/;
+const kinKeyed = <
+  B extends { readonly system: ReadonlyArray<Block>; readonly deferred: ReadonlyArray<ApiTool> },
+>(
+  base: B,
+): B => {
+  const names = KIN_KEY_TOOLS.map((tool) => tool.name).join("\n");
+  const system = base.system.map((block) =>
+    typeof block.text === "string" && DEFERRED_HEADER.test(block.text)
+      ? { ...block, text: block.text.replace(DEFERRED_HEADER, (header) => `${header}${names}\n`) }
+      : block,
+  );
+  return {
+    ...base,
+    system: [...system, text(KIN_KEY_INSTRUCTIONS)],
+    deferred: [...base.deferred, ...KIN_KEY_TOOLS],
   };
 };
 
@@ -1085,7 +1132,7 @@ export const kinTurnBlocks = (files: KinTurnFiles | undefined, prompt: string, c
       ];
 
 /** Kin's tools, by bare name. */
-const KIN_TOOLS = names(...KIN_TOOLKITS);
+const KIN_TOOLS = names(...KIN_TOOLKITS, TasksKeyToolkit);
 export const isKinTool = (tool: string) => KIN_TOOLS.has(tool);
 /** A mock's answer to a call as the agent reads it: a Kin tool's is filled in by Kin's code. */
 export const kinAnswer = (
@@ -1144,4 +1191,4 @@ export const kinJudgedCall = (call: { readonly tool: string; readonly input: unk
   return `${kept} [cut: this call is ${bytes.byteLength} bytes; only its first ${JUDGED_CALL_BYTES} are shown]`;
 };
 export const isKinCase = ({ setup }: McpToolUseCase) =>
-  setup.world?.kinAgent === true || setup.world?.kinLead === true;
+  setup.world?.kinAgent === true || setup.world?.kinLead === true || setup.world?.kinKey === true;

@@ -312,7 +312,8 @@ const ChatLine = Schema.Struct({
   text: Schema.String,
 });
 
-const TasksKeyToolkit = Toolkit.make(
+/** Exported for the evals, which list these tools as a person's own coding agent sees them. */
+export const TasksKeyToolkit = Toolkit.make(
   Tool.make("list_people", {
     ...shared,
     description:
