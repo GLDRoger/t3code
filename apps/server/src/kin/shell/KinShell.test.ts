@@ -285,5 +285,26 @@ it.effect(
       const out = yield* shell.set(orgId, rhea, 4, [{ id: "list:payroll", on: true }]);
       assert.deepStrictEqual(out.sections.slice(5), [{ id: "list:payroll", on: true }]);
       assert.isTrue(KinShell.builtInsOn(out));
+      // A put-away list's section isn't shown to the setter: a save without it keeps it, in its
+      // place, and another list is still shown as a section meanwhile.
+      const both = yield* shell.set(orgId, rhea, out.rev, [
+        { id: "list:stock", on: true },
+        { id: "list:payroll", on: true },
+      ]);
+      yield* sql`UPDATE kin_registers SET archived_at = 9 WHERE register_id = 'stock'`;
+      const without = yield* shell.set(orgId, rhea, both.rev, [{ id: "list:payroll", on: false }]);
+      assert.deepStrictEqual(without.sections.slice(5), [
+        { id: "list:stock", on: true },
+        { id: "list:payroll", on: false },
+      ]);
+      const more = yield* sql.withTransaction(
+        KinShell.showList(orgId, "bookings", undefined, rhea),
+      );
+      assert.deepStrictEqual(
+        more.sections.slice(5).map(({ id }) => id),
+        ["list:stock", "list:payroll", "list:bookings"],
+      );
+      yield* sql`UPDATE kin_registers SET archived_at = NULL WHERE register_id = 'stock'`;
+      assert.deepStrictEqual(yield* lists(KIN_OWNER_LEVEL), ["stock", "payroll", "bookings"]);
     }).pipe(Effect.provide(layer)),
 );

@@ -67,7 +67,8 @@ const runPropose = Effect.fnUntraced(function* (
   const next = applied(shell, input.sections);
   // The setter's own checks, in its words, before the owner sees a card it would refuse.
   const refusal =
-    shellRefusal(shell.sections, next) ?? (yield* listSectionsRefusal(lead.orgId, next));
+    shellRefusal(shell.sections, next) ??
+    (yield* listSectionsRefusal(lead.orgId, next, shell.sections));
   if (refusal !== undefined) return yield* invalid(refusal);
   const lines = shellChangeLines(shell.sections, next, yield* listNames(lead.orgId, next));
   if (lines.length === 0)
