@@ -73,7 +73,7 @@ export const KinCanvasCard = memo(function KinCanvasCard(props: KinCanvasCardPro
         <View className="flex-1 gap-1">
           <KindMark card={card} size={12 * props.inv} />
           <Text
-            numberOfLines={2}
+            numberOfLines={titleLines(props.inv)}
             className="font-t3-medium"
             style={{ fontSize: 14 * props.inv, lineHeight: 18 * props.inv }}
           >
@@ -106,6 +106,10 @@ export const KinCanvasCard = memo(function KinCanvasCard(props: KinCanvasCardPro
     </Pressable>
   );
 });
+
+/** Whole lines of a zoomed-out title the card holds under its mark, so none is cut through. */
+const titleLines = (inv: number) =>
+  Math.max(1, Math.min(4, Math.floor((KIN_CANVAS_CARD_H - 24 - 16 * inv) / (18 * inv))));
 
 function dotTone(card: KinCanvasCardView) {
   if (card.working) return "bg-primary/60";

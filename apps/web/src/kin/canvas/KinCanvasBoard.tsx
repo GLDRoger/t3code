@@ -7,6 +7,7 @@ import {
 import { kinDocPieces } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinDocMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
+  KIN_CANVAS_CARD_H,
   kinCanvasOverlaps,
   type KinCanvasLayout,
 } from "@t3tools/client-runtime/kin/kinCanvasLayout";
@@ -36,6 +37,8 @@ import { attachKinCanvasGestures, type KinCanvasController } from "./kinCanvasCo
 const NEAR_READS = 3;
 /** How far past the screen cards stay mounted, as a share of the screen, so small pans add none. */
 const CULL_MARGIN = 0.5;
+/** Most cards mounted in one frame: zooming out over hundreds would otherwise commit them at once. */
+const MOUNT_BATCH = 40;
 /** Text read in place stops about here; the peek has the rest. */
 const NEAR_TEXT = 3000;
 
@@ -48,18 +51,26 @@ const STATE_OF_TONE: Record<KinCanvasTone, KinRecordState | null> = {
   doc: null,
 };
 
+/** A card's fill when zoomed out to dots: a CSS state on the map, so crossing it re-renders nothing. */
 const TONE_FILL: Record<KinCanvasTone, string> = {
-  late: "bg-destructive/70",
-  doing: "bg-info/70",
-  waiting: "bg-warning/70",
-  open: "bg-muted-foreground/40",
-  done: "bg-success/40",
-  doc: "bg-primary/45",
+  late: "group-data-dots/map:bg-destructive/70",
+  doing: "group-data-dots/map:bg-info/70",
+  waiting: "group-data-dots/map:bg-warning/70",
+  open: "group-data-dots/map:bg-muted-foreground/40",
+  done: "group-data-dots/map:bg-success/40",
+  doc: "group-data-dots/map:bg-primary/45",
 };
+
+/** What React draws at a zoom step; dots are titles with their text hidden by CSS. */
+const drawnAt = (step: KinCanvasDetail): KinCanvasDetail => (step === "dots" ? "titles" : step);
 
 /** How much bigger than the card's own type labels are drawn, so they stay readable zoomed out. */
 const inflation = (detail: KinCanvasDetail, scale: number) =>
   detail === "dots" ? Math.min(5, 1 / scale) : detail === "titles" ? Math.min(3.2, 1 / scale) : 1;
+
+/** Whole lines of a zoomed-out title the card holds at that size, so none is cut through. */
+const titleLines = (inv: number) =>
+  Math.max(1, Math.min(4, Math.floor((KIN_CANVAS_CARD_H - 24) / (14 * 1.25 * inv))));
 
 const sameKeys = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) =>
   a.length === b.length && a.every((key, i) => key === b[i]);
@@ -102,11 +113,18 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
         h: view.h + margin * 2,
       };
       const next: string[] = [];
+      const added: Array<{ key: string; d: number }> = [];
+      const was = new Set(held.current.shown);
       const docs: Array<{ key: string; d: number }> = [];
       const step = kinCanvasDetail(camera.scale, width);
       for (const box of (given ?? layout).cards.values()) {
         if (!kinCanvasOverlaps(box, near)) continue;
-        next.push(box.key);
+        if (was.has(box.key)) next.push(box.key);
+        else
+          added.push({
+            key: box.key,
+            d: Math.hypot(box.x + box.w / 2 - camera.x, box.y + box.h / 2 - camera.y),
+          });
         if (
           step === "near" &&
           model.cards.get(box.key)?.kind === "doc" &&
@@ -117,6 +135,10 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
             d: Math.hypot(box.x + box.w / 2 - camera.x, box.y + box.h / 2 - camera.y),
           });
       }
+      added.sort((a, b) => a.d - b.d);
+      for (const one of added.slice(0, MOUNT_BATCH)) next.push(one.key);
+      next.sort();
+      if (added.length > MOUNT_BATCH) controller.redraw();
       const read = docs
         .sort((a, b) => a.d - b.d)
         .slice(0, NEAR_READS)
@@ -140,7 +162,10 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
     if (el === null || inner === null) return;
     // Type is resized when the zoom crosses a step or the camera rests, never per frame.
     const retype = (camera: KinCanvasCamera, step: KinCanvasDetail) => {
-      inner.style.setProperty("--kc-inv", String(inflation(step, camera.scale)));
+      inner.toggleAttribute("data-dots", step === "dots");
+      const inv = inflation(step, camera.scale);
+      inner.style.setProperty("--kc-inv", String(inv));
+      inner.style.setProperty("--kc-lines", String(titleLines(inv)));
       inner.style.setProperty("--kc-zoom", String(camera.scale));
     };
     const stopFrames = controller.listen((camera, width, height) => {
@@ -152,7 +177,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
       if (held.current.detail !== step) {
         held.current.detail = step;
         retype(camera, step);
-        startTransition(() => setDetail(step));
+        startTransition(() => setDetail(drawnAt(step)));
       }
       recull(camera, width, height);
     });
@@ -255,7 +280,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
     >
       <div
         ref={world}
-        className="absolute top-0 left-0 origin-top-left [--kc-inv:1] [--kc-zoom:1]"
+        className="group/map absolute top-0 left-0 origin-top-left [--kc-inv:1] [--kc-lines:4] [--kc-zoom:1]"
         onClick={(event) => {
           if (event.target === event.currentTarget) props.onPeek(null);
         }}
@@ -273,7 +298,10 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
                 height: box.h,
               }}
             >
-              <div className="flex items-end px-6 pb-2" style={{ height: box.head }}>
+              <div
+                className="flex items-end overflow-x-clip px-6 pb-2"
+                style={{ height: box.head }}
+              >
                 <div className="flex min-w-0 items-baseline gap-2">
                   <h3
                     className="min-w-0 truncate font-semibold text-foreground leading-tight tracking-tight"
@@ -281,10 +309,10 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
                   >
                     {box.title}
                   </h3>
-                  {group?.line == null || detail === "dots" ? null : (
+                  {group?.line == null ? null : (
                     <span
                       className={cn(
-                        "shrink-0 truncate tabular-nums",
+                        "min-w-0 shrink-[4] truncate tabular-nums group-data-dots/map:hidden",
                         group.late ? "text-destructive-foreground" : "text-muted-foreground",
                       )}
                       style={{ fontSize: "calc(0.8125rem * var(--kc-inv))" }}
@@ -359,22 +387,20 @@ interface MapCardProps {
  */
 const MapCard = memo(function MapCard(props: MapCardProps) {
   const { card, detail } = props;
-  const dot = detail === "dots";
   return (
     <div
       data-canvas-card=""
       data-key={card.key}
       className={cn(
-        "absolute top-0 left-0 h-[132px] w-[240px] overflow-hidden",
-        dot
-          ? cn("rounded-4xl", TONE_FILL[card.tone])
-          : "rounded-xl border bg-card text-card-foreground shadow-xs/5",
-        !dot && (card.tone === "late" ? "border-destructive/45" : "border-border"),
+        "absolute top-0 left-0 h-[132px] w-[240px] overflow-hidden rounded-xl border bg-card text-card-foreground shadow-xs/5",
+        "group-data-dots/map:rounded-4xl group-data-dots/map:border-transparent group-data-dots/map:shadow-none",
+        TONE_FILL[card.tone],
+        card.tone === "late" ? "border-destructive/45" : "border-border",
         props.peeked && "ring-2 ring-ring",
       )}
       style={{ transform: `translate(${props.x}px, ${props.y}px)` }}
     >
-      {dot ? null : detail === "titles" ? (
+      {detail === "titles" ? (
         <Title card={card} />
       ) : (
         <div
@@ -413,18 +439,12 @@ const MapCard = memo(function MapCard(props: MapCardProps) {
 function Title(props: { readonly card: KinCanvasCardView }) {
   const { card } = props;
   return (
-    <div aria-hidden className="flex size-full flex-col gap-1 p-3">
-      <span
-        className={cn(
-          "tabular-nums",
-          card.tone === "late" ? "text-destructive-foreground" : "text-muted-foreground",
-        )}
-        style={{ fontSize: "calc(0.75rem * var(--kc-inv))" }}
-      >
-        {card.key}
-      </span>
+    <div aria-hidden className="flex size-full flex-col p-3 group-data-dots/map:hidden">
       <p
-        className="line-clamp-3 font-medium leading-tight [overflow-wrap:anywhere]"
+        className={cn(
+          "line-clamp-(--kc-lines) font-medium leading-tight [overflow-wrap:anywhere]",
+          card.tone === "late" && "text-destructive-foreground",
+        )}
         style={{ fontSize: "calc(0.875rem * var(--kc-inv))" }}
       >
         {card.title}

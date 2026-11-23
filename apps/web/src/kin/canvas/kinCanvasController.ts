@@ -104,6 +104,11 @@ export class KinCanvasController {
     this.settleListeners.clear();
   }
 
+  /** Tell the listeners again next frame though nothing moved, as when cards are still mounting. */
+  redraw() {
+    this.mark();
+  }
+
   private mark() {
     this.dirty = true;
     if (this.frame === 0 && typeof requestAnimationFrame !== "undefined")
