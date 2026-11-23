@@ -676,6 +676,8 @@ function parts(options: HarnessOptions) {
         ).pipe(Layer.provide(KinEventQueue.layer));
   const kin = Layer.mergeAll(
     queueLayer,
+    // As in production, the runner reads chats and cards (`WakeupRunner.staleStart`).
+    KinChatRepository.layer,
     KinStop.layer.pipe(
       Layer.provide(
         Layer.mergeAll(

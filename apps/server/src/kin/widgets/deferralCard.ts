@@ -6,12 +6,15 @@ import {
   KinMemoryItemId,
   type KinMemberId,
   KinTriggerSchedule,
+  type MemoryItemHead,
+  kinAgentPausedRefusal,
   type KinPersonId,
   type KinWidget,
   kinDeferralWidgetId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -21,12 +24,23 @@ import { ownerZone } from "../work/recordRows.ts";
 import {
   DeferralSnapshot,
   HEADS_UP_MS,
+  agentPaused,
   confirmText,
+  deferralFingerprint,
+  deferralLead,
+  deferralOpen,
   deferralTriggerId,
   makeDeferralCards,
+  makeDeferralRedraw,
   makeDeferralStarter,
   nextMondayDue,
 } from "../triggers/deferrals.ts";
+
+/** A deferral's committed item as a tap found it, or none when it is gone. */
+export type DeferralCommitted = Option.Option<{
+  readonly head: MemoryItemHead;
+  readonly body: string;
+}>;
 import { pauseTriggers } from "../triggers/KinTriggerStore.ts";
 
 const decodeCard = Schema.decodeUnknownEffect(KinDeferralCard);
@@ -90,6 +104,8 @@ export const applyDeferralTap = Effect.fn("KinDeferralCard.apply")(function* (
   widget: KinWidget,
   tap: Effect.Success<ReturnType<typeof describeDeferralTap>>,
   who: { readonly personId: KinPersonId; readonly memberId: KinMemberId; readonly owner: boolean },
+  /** The committed item, read before this transaction; `undefined` where no reader is attached. */
+  committed: DeferralCommitted | undefined,
   now: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -104,6 +120,28 @@ export const applyDeferralTap = Effect.fn("KinDeferralCard.apply")(function* (
   if (run === undefined || run.dueAt !== dueAt || !PENDING.includes(run.state))
     return yield* changed;
   const snapshot = yield* decodeSnapshot(run.snapshot).pipe(Effect.mapError(() => changed));
+  if (committed === undefined)
+    return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+  // The tap answers the card as drawn, on work that is still that work; otherwise the card is
+  // drawn again from the item as it is now, and that redraw commits with the refusal.
+  const item = Option.getOrUndefined(committed);
+  if (
+    item === undefined ||
+    !deferralOpen(item.head) ||
+    snapshot.drawn?.fingerprint !== deferralFingerprint(item)
+  ) {
+    const redraw = yield* makeDeferralRedraw;
+    yield* redraw({
+      orgId,
+      itemId,
+      run: { state: run.state, dueAt, onDue: card.onDue, snapshot },
+      item,
+      why: ["it changed since you were asked"],
+      clock: { zone: yield* ownerZone(orgId), locale: yield* textLocale(orgId) },
+      now,
+    });
+    return changed;
+  }
   switch (action) {
     case "start_now": {
       // Starting work for the company is the owner's or a co-owner's, as a due start is.
@@ -112,24 +150,26 @@ export const applyDeferralTap = Effect.fn("KinDeferralCard.apply")(function* (
           reason: "not_allowed",
           message: "Only the owner or a co-owner can start this.",
         });
-      if (snapshot.source === undefined) return yield* changed;
+      const lead = yield* deferralLead(sql, orgId, item.head);
+      if (lead !== undefined && (yield* agentPaused(sql, orgId, lead.agentId)))
+        return yield* invalid(kinAgentPausedRefusal(lead.name));
       const start = yield* makeDeferralStarter;
+      // The section check and the work handed off are the item's as committed now.
       const started = yield* start({
         orgId,
         itemId,
         dueAt,
-        card,
+        card: { ...card, title: item.head.title },
         provenance: { _tag: "human", personId: who.personId, memberId: who.memberId },
         at: now,
         now,
         from: run.state,
         item: {
-          ...(snapshot.source.chat === undefined ? {} : { chat: snapshot.source.chat }),
-          ...(snapshot.source.sourceEvent === undefined
-            ? {}
-            : { source_event: snapshot.source.sourceEvent }),
-          links: snapshot.links,
+          ...(item.head.chat === undefined ? {} : { chat: item.head.chat }),
+          ...(item.head.source_event === undefined ? {} : { source_event: item.head.source_event }),
+          links: item.head.links,
         },
+        ...(snapshot.restarts === undefined ? {} : { restarts: snapshot.restarts }),
       }).pipe(
         Effect.catchTags({
           KinEventQueueConflict: () => Effect.succeed(false),

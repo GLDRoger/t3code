@@ -19,6 +19,8 @@ import {
 } from "@t3tools/contracts";
 import * as KinShell from "../shell/KinShell.ts";
 import { looksLikeRecordReference, resolveSections } from "../shell/sections.ts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous fingerprint hash.
+import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -54,8 +56,8 @@ export const deferralTriggerId = (itemId: string, phase: DeferralPhase) =>
   KinTriggerId.make(`deferral:${itemId}:${phase}`);
 export const deferralWidgetId = kinDeferralWidgetId;
 /** The due fire's id: starting is keyed by it, so taps and replays share one start. */
-const deferralStartKey = (itemId: string, dueAt: number) =>
-  `${deferralTriggerId(itemId, "due")}:${dueAt}`;
+const deferralStartKey = (itemId: string, dueAt: number, restarts = 0) =>
+  `${deferralTriggerId(itemId, "due")}:${dueAt}${restarts === 0 ? "" : `:${restarts}`}`;
 
 // A deferral without on_due only reminds: silence never starts work. Pre-epoch run
 // times would fail every scheduler tick, so they leave the item unarmed.
@@ -97,8 +99,39 @@ export const DeferralSnapshot = Schema.Struct({
   ),
   /** The due time memory still holds after a [Monday] tap moved the run. */
   movedFrom: Schema.optional(Schema.Number),
+  /** The committed item a decision card was drawn from (`deferralFingerprint`); taps bind to it. */
+  drawn: Schema.optional(Schema.Struct({ fingerprint: Schema.String })),
+  /** Starts a changed item dropped before their turn; each new start takes its own key. */
+  restarts: Schema.optional(Schema.Number),
 });
 export type DeferralSnapshot = typeof DeferralSnapshot.Type;
+
+/** The work a committed deferral hands off: what it does, its body, links, due, mode and status. */
+export const deferralFingerprint = (item: {
+  readonly head: MemoryItemHead;
+  readonly body: string;
+}) =>
+  NodeCrypto.createHash("sha256")
+    .update(
+      JSON.stringify([
+        item.head.title,
+        item.head.what ?? null,
+        item.body,
+        item.head.links,
+        item.head.due,
+        item.head.on_due ?? null,
+        item.head.status,
+        item.head.invalid_at,
+        item.head.superseded_by,
+      ]),
+    )
+    .digest("hex");
+/** Whether a committed item still stands as an open deferral a tap may act on. */
+export const deferralOpen = (head: MemoryItemHead) =>
+  head.kind === "deferral" &&
+  head.status === "open" &&
+  head.invalid_at === null &&
+  head.superseded_by === null;
 export const deferralSnapshot = (
   item: MemoryItemHead,
   github: ReadonlyArray<GithubLinkState> | null,
@@ -365,6 +398,8 @@ export const makeDeferralStarter = Effect.gen(function* () {
     readonly from: string;
     /** The item: its chat's lead gets the work, capped by where it was asked from. */
     readonly item: (DeferralSource & { readonly links?: ReadonlyArray<string> }) | undefined;
+    /** A start after a dropped one (`DeferralSnapshot.restarts`). */
+    readonly restarts?: number;
   }) {
     const { orgId, itemId, dueAt, at, now } = input;
     if (
@@ -390,7 +425,7 @@ export const makeDeferralStarter = Effect.gen(function* () {
       WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
         AND state = ${input.from} RETURNING item_id`;
     if (moved.length === 0) return false;
-    const dedupeKey = deferralStartKey(itemId, dueAt);
+    const dedupeKey = deferralStartKey(itemId, dueAt, input.restarts);
     yield* queue
       .enqueue(
         yield* decodeEvent({
@@ -430,11 +465,134 @@ export const makeDeferralStarter = Effect.gen(function* () {
     yield* cards.write({
       orgId,
       itemId,
-      state: { ...input.card, text: `Started ${input.card.title}.`, phase: "started", actions: [] },
+      // Its turn may still wait on the day's budget, so the card says who was asked, not that it ran.
+      state: {
+        ...input.card,
+        text: `Asked ${lead.name} to start it.`,
+        phase: "started",
+        actions: [],
+        agent: lead.name,
+      },
       chatId: null,
       now,
     });
     return true;
+  });
+});
+
+/** The asked card's words: what a tap does, and why Kin won't or can't start it itself. */
+export function askText(input: {
+  readonly title: string;
+  readonly dueAt: number;
+  readonly now: number;
+  readonly clock: TextClock;
+  readonly startable: boolean;
+  readonly why: ReadonlyArray<string>;
+}): string {
+  const taps = input.startable
+    ? "Tap Start now to start it, Monday to move it, or Cancel."
+    : "Tap Monday to move it, or Cancel.";
+  const reason =
+    input.why.length === 0
+      ? ""
+      : input.startable
+        ? ` I won't start it on my own: ${input.why.join("; ")}.`
+        : ` I can't start it now: ${input.why.join("; ")}.`;
+  return `${input.title} is due at ${ownerTime(input.dueAt, input.now, input.clock)}. ${taps}${reason}${lateNote(input.dueAt, input.now, input.clock)}`;
+}
+
+/** Whether an agent is paused: a person's [Start now] never queues work for it then. */
+export const agentPaused = Effect.fn("Deferrals.agentPaused")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  agentId: string,
+) {
+  const rows = yield* sql`SELECT 1 FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId}
+    AND paused_at IS NOT NULL`;
+  return rows.length > 0;
+});
+
+/**
+ * Draws a pending run's decision card again from its committed item, with a new revision: the
+ * run asks, keeps the item's chat, source event, links and fingerprint, and lists the taps it can
+ * take. A gone or closed item closes the card instead. In the caller's transaction; no memory I/O.
+ */
+export const makeDeferralRedraw = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const repo = yield* Repository.KinChatRepository;
+  const cards = yield* makeDeferralCards;
+  const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(DeferralSnapshot));
+  return Effect.fn("Deferrals.redraw")(function* (input: {
+    readonly orgId: KinOrgId;
+    readonly itemId: KinMemoryItemId;
+    readonly run: {
+      readonly state: string;
+      readonly dueAt: number;
+      readonly onDue: KinDeferralCard["onDue"];
+      readonly snapshot: DeferralSnapshot;
+    };
+    readonly item: { readonly head: MemoryItemHead; readonly body: string } | undefined;
+    readonly why: ReadonlyArray<string>;
+    readonly clock: TextClock;
+    readonly now: number;
+  }) {
+    const { orgId, itemId, run, item, now } = input;
+    const widgetId = KinWidgetId.make(deferralWidgetId(orgId, itemId));
+    if (item === undefined || !deferralOpen(item.head)) {
+      const existing = yield* repo.getWidget({ orgId, widgetId });
+      if (Option.isNone(existing) || existing.value.closedAt !== null) return;
+      const at = iso(now);
+      const widget = yield* repo.updateWidget({
+        ...existing.value,
+        // Closing writes no words.
+        audience: "chat",
+        expectedRevision: existing.value.revision,
+        closedAt: at,
+        updatedAt: at,
+      });
+      return yield* cards.publish({ type: "widget.updated", orgId, widget });
+    }
+    const lead = yield* deferralLead(sql, orgId, item.head);
+    const snapshot: DeferralSnapshot = {
+      ...run.snapshot,
+      links: item.head.links,
+      source: {
+        ...(item.head.chat === undefined ? {} : { chat: item.head.chat }),
+        ...(item.head.source_event === undefined ? {} : { sourceEvent: item.head.source_event }),
+      },
+      drawn: { fingerprint: deferralFingerprint(item) },
+      ...(run.state === "started" ? { restarts: (run.snapshot.restarts ?? 0) + 1 } : {}),
+    };
+    const { graceEndsAt: _grace, ...kept } = snapshot;
+    const json = yield* encodeSnapshot(kept);
+    yield* sql`UPDATE kin_deferral_runs SET state = 'asked', snapshot_json = ${json},
+        updated_at = ${now}
+      WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${run.dueAt}
+        AND state = ${run.state}`;
+    const startable = lead !== undefined;
+    yield* cards.write({
+      orgId,
+      itemId,
+      state: {
+        itemId,
+        title: item.head.title,
+        dueAt: iso(run.dueAt),
+        onDue: run.onDue,
+        text: askText({
+          title: item.head.title,
+          dueAt: run.dueAt,
+          now,
+          clock: input.clock,
+          startable,
+          why: lead === undefined ? [...input.why, "there is no active agent"] : input.why,
+        }),
+        phase: "asked",
+        actions: decisionActions(startable),
+        ...(lead === undefined ? {} : { agent: lead.name }),
+      },
+      chatId: null,
+      now,
+    });
   });
 });
 

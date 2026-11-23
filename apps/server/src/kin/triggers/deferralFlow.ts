@@ -59,8 +59,11 @@ import {
   ownerDateTime,
   ownerTime,
   snapshotChanges,
+  askText,
   decisionActions,
+  deferralFingerprint,
   deferralLead,
+  makeDeferralRedraw,
   deferredSectionOff,
   startsAtLevel,
   makeDeferralCards,
@@ -161,6 +164,7 @@ const make = Effect.gen(function* () {
   const ticks = yield* Scheduler.Scheduler;
   const cards = yield* makeDeferralCards;
   const start = yield* makeDeferralStarter;
+  const redraw = yield* makeDeferralRedraw;
   const budget = yield* KinBudget.KinBudget;
   const deliveries = yield* LeadDelivery.KinLeadDelivery;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -361,6 +365,15 @@ const make = Effect.gen(function* () {
       FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = ${itemId} ORDER BY item_id`.pipe(
       Effect.map((rows) => rows[0]),
     );
+  /** The committed item with its body, which a decision card's fingerprint covers. */
+  const readCommitted = (orgId: KinOrgId, itemId: KinMemoryItemId) =>
+    memory.readItemQuietly(orgId, itemId, "triggers").pipe(
+      Effect.map((item): { head: MemoryItemHead; body: string } | undefined => item),
+      Effect.catchTags({
+        MemoryNotFound: () => Effect.undefined,
+        MemoryDuplicateId: () => Effect.undefined,
+      }),
+    );
   const readItem = (orgId: KinOrgId, itemId: KinMemoryItemId) =>
     memory.readItemQuietly(orgId, itemId, "triggers").pipe(
       Effect.map((item): MemoryItemHead | undefined => item.head),
@@ -522,7 +535,8 @@ const make = Effect.gen(function* () {
       return yield* inbox.markConsumed(orgId, [fire.fireId]).pipe(Effect.as(false));
 
     // Read-only or idempotent I/O; a replay repeats it.
-    const item = yield* readItem(orgId, itemId);
+    const committed = yield* readCommitted(orgId, itemId);
+    const item = committed?.head;
     const onDue = run.onDue;
     const decodedOnDue = yield* decodeOnDue(onDue);
     const gates: Array<string> = [];
@@ -586,15 +600,21 @@ const make = Effect.gen(function* () {
         const lead = onDue === "remind" ? undefined : yield* deferralLead(sql, orgId, item);
         // A tap's start needs the item's chat and source event, which the run keeps from here on.
         const startable = item !== undefined && lead !== undefined;
+        // What the card is drawn from: the links just checked and the committed work, which a
+        // tap must still find (`deferralFingerprint`).
         const kept: DeferralSnapshot =
-          item === undefined
+          committed === undefined
             ? snapshot
             : {
                 ...snapshot,
+                links: committed.head.links,
                 source: {
-                  ...(item.chat === undefined ? {} : { chat: item.chat }),
-                  ...(item.source_event === undefined ? {} : { sourceEvent: item.source_event }),
+                  ...(committed.head.chat === undefined ? {} : { chat: committed.head.chat }),
+                  ...(committed.head.source_event === undefined
+                    ? {}
+                    : { sourceEvent: committed.head.source_event }),
                 },
+                drawn: { fingerprint: deferralFingerprint(committed) },
               };
         const card = (phase: KinDeferralCard["phase"], text: string, graceEndsAt?: number) => ({
           itemId,
@@ -605,6 +625,7 @@ const make = Effect.gen(function* () {
           phase,
           ...(graceEndsAt === undefined ? {} : { graceEndsAt: iso(graceEndsAt) }),
           actions: phase === "started" ? [] : decisionActions(startable),
+          ...(lead === undefined ? {} : { agent: lead.name }),
         });
         const setState = Effect.fn("KinDeferralFlow.setState")(function* (
           state: string,
@@ -621,16 +642,7 @@ const make = Effect.gen(function* () {
           yield* cards.write({ orgId, itemId, state, chatId, now });
         });
         const ask = Effect.fn("KinDeferralFlow.ask")(function* (why: ReadonlyArray<string>) {
-          const reason = why.length === 0 ? "" : ` I won't start it on my own: ${why.join("; ")}.`;
-          const taps = startable
-            ? "Tap Start now to start it, Monday to move it, or Cancel."
-            : "Tap Monday to move it, or Cancel.";
-          yield* post(
-            card(
-              "asked",
-              `${title} is due at ${ownerTime(dueAt, now, clock)}. ${taps}${reason}${lateNote(dueAt, now, clock)}`,
-            ),
-          );
+          yield* post(card("asked", askText({ title, dueAt, now, clock, startable, why })));
           yield* setState("asked");
         });
 
@@ -753,6 +765,47 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Decision cards drawn before taps bound to their item (no fingerprint): drawn again from the
+   * committed item with a new revision, so their taps work and an old revision gains none.
+   */
+  const redrawUnbound = Effect.fn("KinDeferralFlow.redrawUnbound")(function* (
+    orgId: KinOrgId,
+    now: number,
+    clock: TextClock,
+  ) {
+    const rows = yield* sql<{ itemId: string }>`SELECT item_id AS "itemId" FROM kin_deferral_runs
+      WHERE org_id = ${orgId} AND state IN ('asked', 'heads_up', 'grace')
+        AND json_extract(snapshot_json, '$.drawn') IS NULL ORDER BY item_id`;
+    for (const row of rows) {
+      const itemId = KinMemoryItemId.make(row.itemId);
+      const committed = yield* readCommitted(orgId, itemId);
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const run = yield* readRun(orgId, itemId);
+          if (run === undefined || run.dueAt === null) return;
+          const snapshot = yield* decodeSnapshot(run.snapshot);
+          if (snapshot.drawn !== undefined || !["asked", "heads_up", "grace"].includes(run.state))
+            return;
+          yield* redraw({
+            orgId,
+            itemId,
+            run: {
+              state: run.state,
+              dueAt: run.dueAt,
+              onDue: yield* decodeOnDue(run.onDue),
+              snapshot,
+            },
+            item: committed,
+            why: [],
+            clock,
+            now,
+          });
+        }),
+      );
+    }
+  });
+
   const drain = Effect.fn("KinDeferralFlow.drain")(
     function* (orgId: KinOrgId) {
       const now = yield* Clock.currentTimeMillis;
@@ -789,6 +842,11 @@ const make = Effect.gen(function* () {
           zone: yield* cache.ownerTimeZone(orgId),
           locale: yield* textLocale(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
         };
+        yield* redrawUnbound(orgId, now, clock).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin couldn't redraw an older deferral card", { orgId, cause }),
+          ),
+        );
         const orgRetries = retries.get(orgId) ?? new Map();
         retries.set(orgId, orgRetries);
         const unseenRetries = new Set(orgRetries.keys());

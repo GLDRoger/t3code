@@ -539,6 +539,9 @@ export const KinCardAsker = Schema.Struct({
   left: Schema.optional(Schema.Literal(true)),
 });
 export type KinCardAsker = typeof KinCardAsker.Type;
+/** What a deferral card's [Start now] is refused with while the agent it asks is paused. */
+export const KIN_AGENT_PAUSED_REFUSAL_END = " is paused. Resume it, then start this.";
+export const kinAgentPausedRefusal = (agent: string) => `${agent}${KIN_AGENT_PAUSED_REFUSAL_END}`;
 /** What a tap on a shared chat's reminder or routine by anyone else is refused with. */
 export const KIN_ASKER_ONLY_REFUSAL =
   "Only the person who asked for it, the owner or a co-owner can change this.";
@@ -558,6 +561,8 @@ export const KinDeferralCard = Schema.Struct({
    * act on it. Plain strings, so a later action never fails an older client's decode.
    */
   actions: Schema.optional(Schema.Array(Schema.String)),
+  /** The agent a decision card's [Start now] asks to start it, by name. */
+  agent: Schema.optional(Schema.String),
 });
 export type KinDeferralCard = typeof KinDeferralCard.Type;
 
