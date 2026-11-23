@@ -69,6 +69,8 @@ import {
   UNREADABLE_FILE,
 } from "./ConnectionsService.ts";
 import { OWN_MAIL_TOUCH, sentMail } from "./Sending.ts";
+import { approvedWords } from "../lead/approvedDraft.ts";
+import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import {
   inheritPrivacy,
   PRIVATE_MEMORY,
@@ -1253,6 +1255,85 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.strictEqual(yield* marks, 2);
         }),
       ),
+  );
+
+  // The owner approved Meera's mail: its turn's Confirm card is that mail as approved, checked as
+  // Kin prepares it, and its heading's subject and address are the card's.
+  it.effect("an approved mail reaches its Confirm card only as it was approved", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* connect(fake, "google", ACCOUNTS);
+        const text =
+          "To: Ravi <ravi@lumen.example>\nSubject: The redesign\n\nHi Ravi,\nThe quote is attached.\n\nMeera";
+        const draft = JSON.stringify({
+          kind: "mail",
+          for: null,
+          text,
+          line: "Mail",
+          names: { owner: "Arjun", asker: "Meera", agent: "Chief of staff" },
+        });
+        yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id,
+            kind, question, safe, asked_at, due_at, act_at, state, answer, for_chat_id,
+            for_person_id, draft_json, approved_at)
+          VALUES ('q-mail', ${orgId}, ${lead}, ${owner}, 'cos-owner', 'card', 'Approve the mail?',
+            0, 0, 0, 0, 'answered', 'Approve', ${`cos-${member}`}, ${member}, ${draft}, 1)`;
+        const eventId = approvalEventId(orgId, "q-mail");
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, dedupe_key)
+          VALUES (${eventId}, ${orgId}, ${lead}, 'deferral.due', 'P1', ${JSON.stringify({
+            _tag: "deferral.due",
+            orgId,
+            agentId: lead,
+            eventId,
+            receivedAt: stamp,
+            dedupeKey: approvalDedupeKey("q-mail"),
+            provenance: { _tag: "system" },
+            subject: { type: "question", questionId: "q-mail", answered: true, approved: true },
+            lateByMs: 0,
+          })}, 0, 0, 'queued', ${approvalDedupeKey("q-mail")})`;
+        yield* wake({ eventId });
+        const body = "Hi Ravi,\nThe quote is attached.\n\nMeera";
+        const send = (changed: Record<string, unknown>) =>
+          callTool(ACCOUNTS, "mail_send", {
+            to: ["ravi@lumen.example"],
+            subject: "The redesign",
+            body,
+            ...changed,
+          }).pipe(
+            Effect.flip,
+            Effect.map((error) => error.message),
+          );
+        const asks = sql<{ n: number }>`SELECT count(*) AS n FROM kin_connection_asks`.pipe(
+          Effect.map(([row]) => row!.n),
+        );
+        // A closing line it added, a subject that is part of the heading's, another address.
+        for (const changed of [
+          { body: `${body}\n\nSent from Kin` },
+          { subject: "redesign" },
+          { to: ["dev@lumen.example"] },
+        ])
+          assert.strictEqual(
+            yield* send(changed),
+            approvedWords("kin_connection_call"),
+            JSON.stringify(changed),
+          );
+        assert.strictEqual(yield* asks, 0);
+        const before = cards.length;
+        // As approved: its Confirm card is made, and it is the approval's one result.
+        yield* callTool(ACCOUNTS, "mail_send", {
+          to: ["ravi@lumen.example"],
+          subject: "The redesign",
+          body,
+        });
+        assert.lengthOf(cards, before + 1);
+        assert.deepInclude(cards.at(-1)!.send, { subject: "The redesign", body });
+        const [made] = yield* sql<{ made: string }>`SELECT draft_made_json AS made
+          FROM kin_questions WHERE question_id = 'q-mail'`;
+        assert.include(made!.made, '"kind":"mail"');
+        assert.lengthOf(fake.sent(), 0);
+      }),
+    ),
   );
 
   // The chat card's Confirm and the Tasks row's "Approve and send" are the same tap.

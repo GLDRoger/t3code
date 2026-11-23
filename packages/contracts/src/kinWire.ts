@@ -159,14 +159,17 @@ export function kinPulsePage<F extends KinPulseFact>(
   facts: ReadonlyArray<F>,
   limit: number,
 ): { readonly facts: ReadonlyArray<F>; readonly outline: KinPulseOutline } {
-  const open = facts.filter((fact) => fact.handled === null);
+  // "N more not listed" closes its group on every page and is no thing to answer.
+  const more = facts.filter((fact) => fact.sense === "sense_overflow");
+  const open = facts.filter((fact) => fact.handled === null && fact.sense !== "sense_overflow");
   const rank = (fact: F) =>
     (fact.family === "money" ? 2 : 0) + (KIN_PULSE_URGENT.has(fact.sense) ? 0 : 1);
   const money = open.filter((fact) => fact.family === "money");
   return {
     facts: [
       ...[...open].sort((a, b) => rank(a) - rank(b)).slice(0, limit),
-      ...facts.filter((fact) => fact.handled !== null),
+      ...more,
+      ...facts.filter((fact) => fact.handled !== null && fact.sense !== "sense_overflow"),
     ],
     outline: {
       open: open.length,

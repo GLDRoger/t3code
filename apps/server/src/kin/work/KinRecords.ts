@@ -47,7 +47,7 @@ import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
-import { approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
+import { approvedClient, approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
 import {
   changeStampKey,
   codingAgentSource,
@@ -214,6 +214,8 @@ export type Writer = {
   };
   /** The cards a person's tap settles itself: closing the entry leaves them to the tap. */
   readonly answering?: ReadonlyArray<string>;
+  /** An agent's write with no turn of its own, made from what one read: that turn's stamp. */
+  readonly outside?: string;
   /**
    * Putting back a default `asker` took (`defaultTaken.ts`): reopened, a task is given to nobody
    * anew, and an agent holding it other than `asker` hears it is open again.
@@ -1003,7 +1005,9 @@ const make = Effect.gen(function* () {
       ${sql.insert(values)} RETURNING seq`;
     const seq = change?.seq ?? 0;
     // What the agent's turn had read from outside when it wrote this, for the entry's sheet.
-    if (writer.actor._tag === "agent" && writer.wakeupId !== undefined)
+    if (writer.actor._tag === "agent" && writer.outside !== undefined)
+      yield* stampEvent(orgId, changeStampKey(row.recordId, seq), writer.outside).pipe(provideSql);
+    else if (writer.actor._tag === "agent" && writer.wakeupId !== undefined)
       yield* outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
         Effect.flatMap((source) => stampEvent(orgId, changeStampKey(row.recordId, seq), source)),
         provideSql,
@@ -1717,11 +1721,11 @@ const make = Effect.gen(function* () {
     }).pipe(provideSql);
     if (approval === undefined) return undefined;
     const { draft } = approval;
-    const keeps =
-      approval.made === null &&
-      DRAFT_LIST[draft.kind] === list &&
-      (draft.for === null || draft.for.partyId === partyId);
-    return { questionId: approval.questionId, keeps };
+    const approved = approval.made === null && DRAFT_LIST[draft.kind] === list;
+    // The approved entry is for the card's client: another, or none, is refused before it is written.
+    if (approved && draft.for !== null && draft.for.partyId !== partyId)
+      return yield* invalid(approvedClient(draft.for.title));
+    return { questionId: approval.questionId, keeps: approved };
   });
 
   type InsertOptions = {

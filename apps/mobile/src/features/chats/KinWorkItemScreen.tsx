@@ -319,6 +319,10 @@ function KinWorkItemBody(props: ItemTarget) {
   const back = () => navigation.goBack();
   const task = state._tag === "ready" && state.item.list === undefined ? state.item : null;
   const asker = useKinAskRecord(props, task === null ? null : { key: task.key, title: task.title });
+  const leadChat = useKinLeadChatId(
+    props,
+    task !== null && task.owner._tag === "agent" ? task.owner.agentId : null,
+  );
 
   if (state._tag !== "ready") {
     return (
@@ -595,10 +599,8 @@ function KinWorkItemBody(props: ItemTarget) {
         },
       ];
   // The less-used moves; each is here only where the host takes it from this viewer.
+  // Giving it to someone is on Held by, so the menu doesn't offer it twice.
   const moreItems: ReadonlyArray<AppBarMenuItem> = [
-    ...(controls.menu.give && view.assignLabel !== null
-      ? [{ id: "give", title: view.assignLabel, onPress: giveTo }]
-      : []),
     ...repeatMenu,
     ...(controls.menu.handBack
       ? [{ id: "hand-back", title: KIN_WORK_HAND_BACK.button, onPress: handBack }]
@@ -791,6 +793,11 @@ function KinWorkItemBody(props: ItemTarget) {
         step={step}
         busy={saving}
         onAct={onStep}
+        chat={
+          leadChat === null || view.owner.principal._tag !== "agent"
+            ? null
+            : { label: `Chat with ${view.owner.name}`, onPress: () => openChat(leadChat) }
+        }
         footnote={
           step.acts.some((one) => one.id === "done" || one.id === "reopen") ? view.leadNote : null
         }
@@ -844,14 +851,6 @@ function KinWorkItemBody(props: ItemTarget) {
           disabled={saving}
           {...(peopleRows.held.opens ? { onPress: giveTo } : {})}
         />
-        {view.owner.principal._tag === "agent" ? (
-          <KinWorkLeadChat
-            {...props}
-            agentId={view.owner.principal.agentId}
-            name={view.owner.name}
-            onOpen={openChat}
-          />
-        ) : null}
         {peopleRows.with === null ? null : (
           <KinTaskWithRow
             value={peopleRows.with.value}
@@ -1683,14 +1682,9 @@ function KinWorkLink(props: {
   );
 }
 
-function KinWorkLeadChat(
-  props: KinWorkTarget & {
-    readonly agentId: KinAgentId;
-    readonly name: string;
-    readonly onOpen: (chatId: KinChatId) => void;
-  },
-) {
-  const { environmentId, orgId } = props;
+/** The chat with the agent holding a task; null when a person holds it or the agent isn't listed. */
+function useKinLeadChatId(target: KinWorkTarget, agentId: KinAgentId | null) {
+  const { environmentId, orgId } = target;
   // The owner's list keeps a retired agent, whose chat is where it is restored.
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
   const result = useAtomValue(
@@ -1698,15 +1692,10 @@ function KinWorkLeadChat(
       ? kinClient.agents({ environmentId, orgId })
       : kinClient.leads({ environmentId, input: { orgId } }),
   );
-  const lead = Option.getOrNull(AsyncResult.value(result))?.leads.find(
-    (held) => held.agentId === props.agentId,
-  );
-  if (lead === undefined) return null;
+  if (agentId === null) return null;
   return (
-    <ListActionRow
-      label={`Chat with ${props.name}`}
-      onPress={() => props.onOpen(lead.ownerChatId)}
-    />
+    Option.getOrNull(AsyncResult.value(result))?.leads.find((held) => held.agentId === agentId)
+      ?.ownerChatId ?? null
   );
 }
 

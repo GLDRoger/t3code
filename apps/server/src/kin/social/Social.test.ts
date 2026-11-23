@@ -34,7 +34,14 @@ import * as Chat from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinConnectionSecrets } from "../connections/ConnectionSecrets.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
+import {
+  APPROVED_REFUSAL,
+  approvedRefusal,
+  POST_ALONE,
+  POST_FIRST,
+} from "../lead/approvedDraft.ts";
 import { outsideStamp, stampReads } from "../lead/OutsideContent.ts";
+import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import { fixture, orgId, seed } from "../triggers/routines.testkit.ts";
 import { type FakeZernio, makeFakeZernio, memoryStore } from "./FakeZernio.ts";
 import { KinSocial, layer as socialLayer } from "./SocialService.ts";
@@ -636,6 +643,87 @@ it.effect("refuses Social's tools to any other agent and confirms only safe time
       assert.match(yield* failure(tap(card!, "confirm", card!.card.digest)), /too soon/);
       yield* sql`UPDATE kin_leads SET domain = 'finance' WHERE agent_id = ${lead}`;
       assert.match(yield* failure(social.read(scope, {})), /remit is social media/);
+    }),
+  );
+});
+
+// The owner approved Meera's post: its turn saves that post, and its card carries it alone.
+it.effect("an approved post's card carries only the saved post", () => {
+  const { fake, run } = harness();
+  return run(
+    Effect.gen(function* () {
+      yield* setUp;
+      const social = yield* KinSocial;
+      const sql = yield* SqlClient.SqlClient;
+      yield* connectGroup(fake, { kind: "own" }, OWN);
+      const post = Effect.fn("test.post")(function* (caption: string, day: number) {
+        const saved = (yield* social.draft(scope, {
+          group: "our own",
+          account: "linkedin",
+          caption,
+          at: iso(NOW + day * DAY),
+        })) as { readonly postId: string };
+        return saved;
+      });
+      // A draft of the group from before, then the approval this turn runs for.
+      const other = yield* post("An older idea", 2);
+      const text = "We open the new studio on Friday.";
+      yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id,
+          kind, question, safe, asked_at, due_at, act_at, state, answer, for_chat_id,
+          for_person_id, draft_json, approved_at)
+        VALUES ('q-post', ${orgId}, ${lead}, ${owner}, ${`chat-${orgId}`}, 'card',
+          'Approve the post?', 0, 0, 0, 0, 'answered', 'Approve', 'mate-chat', 'mate',
+          ${JSON.stringify({
+            kind: "post",
+            for: null,
+            text,
+            line: "Post",
+            names: { owner: "Owner", asker: "Meera", agent: "Social" },
+          })}, 1)`;
+      const eventId = approvalEventId(orgId, "q-post");
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id, dedupe_key)
+        VALUES (${eventId}, ${orgId}, ${lead}, 'deferral.due', 'P1', ${JSON.stringify({
+          _tag: "deferral.due",
+          orgId,
+          agentId: lead,
+          eventId,
+          receivedAt: iso(NOW),
+          dedupeKey: approvalDedupeKey("q-post"),
+          provenance: { _tag: "system" },
+          subject: { type: "question", questionId: "q-post", answered: true, approved: true },
+          lateByMs: 0,
+        })}, 0, 0, 'claimed', 'turn-1', ${approvalDedupeKey("q-post")})`;
+      const turn = { orgId, agentId: lead, wakeupId: "turn-1" };
+      const made = sql<{ made: string | null }>`SELECT draft_made_json AS made FROM kin_questions
+        WHERE question_id = 'q-post'`.pipe(Effect.map(([row]) => row!.made));
+      // A week card before the post is saved: refused at the gate and by the card, nothing made.
+      assert.strictEqual(
+        yield* approvedRefusal(turn, "social_week", { group: "our own" }),
+        POST_FIRST,
+      );
+      assert.strictEqual(yield* failure(social.week(scope, { group: "our own" })), POST_FIRST);
+      assert.lengthOf(yield* weekCard, 0);
+      assert.isNull(yield* made);
+      // Saved, the post is the approval's; a card that would carry the older draft too is refused.
+      const saved = yield* post(text, 1);
+      assert.include(yield* made, saved.postId);
+      assert.isUndefined(yield* approvedRefusal(turn, "social_week", { group: "our own" }));
+      assert.strictEqual(yield* failure(social.week(scope, { group: "our own" })), POST_ALONE);
+      assert.lengthOf(yield* weekCard, 0);
+      // With the older draft gone, the card carries the approved post alone, and is recorded.
+      yield* social.draft(scope, { postId: other.postId, remove: true });
+      yield* social.week(scope, { group: "our own" });
+      const [card] = yield* weekCard;
+      assert.deepStrictEqual(
+        card!.card.posts.map((one) => one.caption),
+        [text],
+      );
+      assert.include(yield* made, card!.widgetId);
+      assert.strictEqual(
+        yield* approvedRefusal(turn, "social_week", { group: "our own" }),
+        APPROVED_REFUSAL,
+      );
     }),
   );
 });

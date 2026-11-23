@@ -535,6 +535,8 @@ export function KinListEntry(
     readonly directory: KinWorkDirectory;
     readonly now: Date;
     readonly links: React.ReactNode;
+    /** That its section is off, for an entry opened by its link; null while it is on. */
+    readonly offLine?: string | null;
     readonly onOpenClient: (key: KinRecordKey) => void;
     readonly onOpenProject: (key: KinRecordKey) => void;
     readonly onOpenDoc: (key: KinRecordKey) => void;
@@ -633,6 +635,11 @@ export function KinListEntry(
           )}
           <KinAsideNote {...props} record={item.key} names={props.directory.names} />
           <KinWatchLine environmentId={environmentId} orgId={props.orgId} recordKey={item.key} />
+          {props.offLine == null ? null : (
+            <p role="note" className="text-pretty text-sm text-muted-foreground">
+              {props.offLine}
+            </p>
+          )}
         </div>
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">

@@ -105,6 +105,8 @@ export const KinMessageLink = Schema.Struct({
   text: KinTrimmedText,
   to: KinMessageLinkTarget,
   note: Schema.NullOr(KinText),
+  /** Where `text` is an entry's key: what this reader calls it (its number, else its title). */
+  name: Schema.optional(KinTrimmedText),
 });
 export type KinMessageLink = typeof KinMessageLink.Type;
 export const KIN_MESSAGE_LINKS_CAP = 24;

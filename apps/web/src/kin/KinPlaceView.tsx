@@ -961,7 +961,10 @@ export function KinPlaceView({
 /** The one line on a record whose section the company turned off; it still opens. */
 function KinSectionOffNote(props: { readonly line: string | null }) {
   return props.line === null ? null : (
-    <p role="note" className="px-4 pt-3 text-pretty text-sm text-muted-foreground">
+    <p
+      role="note"
+      className="mx-auto w-full max-w-3xl px-4 pt-3 text-pretty text-sm text-muted-foreground"
+    >
       {props.line}
     </p>
   );

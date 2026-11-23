@@ -17,6 +17,7 @@ import {
   kinListColumns,
   kinListWatches,
   kinListEditDraftOf,
+  kinListCanOpenToTeam,
   kinListEditInput,
   kinAmountAsking,
   kinAmountCheck,
@@ -591,6 +592,34 @@ describe("a list by its definition", () => {
     expect(
       kinListEditInput(orgId, def, { ...draft, stateLabels: { ...draft.stateLabels, open: " " } }),
     ).toEqual({ ok: false, problem: "Every status needs a name." });
+  });
+
+  it("offers the team switch only on a company-made list that isn't sensitive, and sends only a change", () => {
+    const def = list({});
+    expect(kinListCanOpenToTeam(def)).toBe(true);
+    for (const closed of [
+      list({ sensitive: true }),
+      list({ builtIn: true }),
+      list({ list: "quotes" as never }),
+      list({ name: "Bank transactions" as never }),
+    ])
+      expect(kinListCanOpenToTeam(closed)).toBe(false);
+    const draft = kinListEditDraftOf(def);
+    expect(draft.team).toBe(false);
+    expect(kinListEditInput(orgId, def, { ...draft, team: true })).toEqual({
+      ok: true,
+      input: { orgId, list: "equipment", rev: 3, team: true },
+    });
+    const open = list({ team: true });
+    expect(kinListCanOpenToTeam(open)).toBe(true);
+    expect(kinListEditInput(orgId, open, kinListEditDraftOf(open))).toEqual({
+      ok: true,
+      input: null,
+    });
+    expect(kinListEditInput(orgId, open, { ...kinListEditDraftOf(open), team: false })).toEqual({
+      ok: true,
+      input: { orgId, list: "equipment", rev: 3, team: false },
+    });
   });
 
   it("shows a category as it was written unless the list labels it, and saves only label changes", () => {
