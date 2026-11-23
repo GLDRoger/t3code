@@ -24,7 +24,7 @@ export const REVIEW_UNREAD_MS = 2 * 60 * 60_000;
 /** A record title shorter than this ("Retainer") names too much to count as naming the record. */
 const TITLE_MIN = 12;
 /** How long before someone's quiet hours end their coming working day counts as a change. */
-export const REVIEW_BEFORE_DAY_MS = 30 * 60_000;
+const REVIEW_BEFORE_DAY_MS = 30 * 60_000;
 
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const shortHash = (text: string) =>
@@ -59,7 +59,7 @@ export interface ReviewChanges {
 }
 
 /** The latest moment in `changes`, or undefined when nothing changed. */
-export const changedAt = (changes: ReviewChanges) => {
+const changedAt = (changes: ReviewChanges) => {
   const all = [
     ...changes.records.map((one) => one.at),
     changes.cardClosedAt,
@@ -74,7 +74,7 @@ export const changedAt = (changes: ReviewChanges) => {
  * names by key changed state, a card on one closed, a pulse fact one was told for cleared, or a
  * person there is about to start their working day after quiet hours. From stored rows.
  */
-export const reviewChanges = Effect.fn("KinReview.changes")(function* (input: {
+const reviewChanges = Effect.fn("KinReview.changes")(function* (input: {
   readonly orgId: KinOrgId;
   readonly chatId: string;
   readonly messages: ReadonlyArray<Pending>;

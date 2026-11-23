@@ -2775,7 +2775,7 @@ const eventFacts = (event: KinEvent) => ({
 });
 
 /** `PROMPT_HEADINGS.unread`'s body: the rule, then each message, newest first. */
-export const unreadLines = (
+const unreadLines = (
   unread: { readonly shown: ReadonlyArray<OwnMessages.OwnUnread>; readonly total: number },
   lane: string | undefined,
   clock: (at: number) => string,

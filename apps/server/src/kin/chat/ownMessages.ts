@@ -21,7 +21,7 @@ import { encodeNames, nameKeys, nameThreads } from "./messageLinks.ts";
 /** Unread messages of its own an agent's turn lists, newest first; older ones are counted. */
 export const OWN_UNREAD_SHOWN = 20;
 /** How much of each one's text a turn shows. */
-export const OWN_UNREAD_CLIP = 200;
+const OWN_UNREAD_CLIP = 200;
 
 /**
  * No person in the chat now has read message `m`: it is past every one's read mark. The same

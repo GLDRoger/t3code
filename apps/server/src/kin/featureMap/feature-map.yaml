@@ -40,6 +40,17 @@ features:
       - apps/server/src/kin/chat/KinChatService.test.ts
       - apps/server/src/kin/lead/ChatWake.test.ts
 
+  - id: chat-kept-true
+    name: An agent takes back or puts right its message nobody has read yet; the owner side can show what it said
+    tab: chats
+    web: [home, chat, button:Show what it said]
+    phone: [tab:chats, KinChat, button:Show what it said]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [message_withdraw, message_replace]
+    proof:
+      - apps/server/src/kin/chat/ownMessages.test.ts
+      - packages/client-runtime/src/kin/kinChatFeed.test.ts
+
   - id: chat-attachments
     name: Attach pictures, PDFs and documents in a chat
     tab: chats
