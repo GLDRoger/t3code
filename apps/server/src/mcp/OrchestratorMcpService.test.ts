@@ -77,6 +77,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
+import { WORKER_LAST_WORD } from "../kin/lead/delegationScratch.ts";
 import { McpProvidersOffered } from "../kin/mcp/toolPolicy.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { resolveRuntimeMode } from "./delegatedTaskModes.ts";
@@ -2908,8 +2909,10 @@ describe("OrchestratorMcpService provider resolution", () => {
         });
         const [request] = (yield* Ref.get(dispatched)) as ReadonlyArray<{
           readonly projectId?: string;
+          readonly task?: string;
           readonly workspaceStrategy?: unknown;
         }>;
+        assert.equal(request?.task, "Fix the README.");
         assert.equal(request?.projectId, otherProjectId);
         assert.deepEqual(request?.workspaceStrategy, {
           type: "worktree",
@@ -3023,8 +3026,11 @@ describe("OrchestratorMcpService provider resolution", () => {
         });
         const [request] = (yield* Ref.get(dispatched)) as ReadonlyArray<{
           readonly projectId?: string;
+          readonly task?: string;
           readonly workspaceStrategy?: { readonly type: string; readonly worktreePath?: string };
         }>;
+        // Kin closes every brief its agents delegate with the same line, once.
+        assert.equal(request?.task, `Clone the site and fix the README.\n\n${WORKER_LAST_WORD}`);
         assert.equal(request?.projectId, scratchProjectId);
         assert.equal(request?.workspaceStrategy?.type, "existing_worktree");
         assert.isTrue(request?.workspaceStrategy?.worktreePath?.startsWith("/scratch/"));

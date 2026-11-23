@@ -12,6 +12,10 @@ import { ServerConfig } from "../../config.ts";
 import * as ManagedProjectFolders from "../../project/ManagedProjectFolders.ts";
 import { isKinWorkspace } from "./kinWorkspace.ts";
 
+/** The line the server ends every brief a Kin agent delegates with. */
+export const WORKER_LAST_WORD =
+  "Don't end your turn while a command you started is still running, and make your last message the result, not a status.";
+
 /**
  * A Kin agent's checkout is its memory, never a task's workspace: a task it delegates without a
  * project works in Scratch. Optional services so test runtimes without them still build.
@@ -71,5 +75,18 @@ export const makeDelegationScratch = Effect.gen(function* () {
     });
   });
 
-  return { project, workspace };
+  /** The task as a Kin agent's worker reads it: its own brief, then `WORKER_LAST_WORD`. */
+  const brief = Effect.fn("KinDelegationScratch.brief")(function* <E>(
+    parent: OrchestrationV2ThreadProjection["thread"],
+    parentProject: Effect.Effect<{ readonly workspaceRoot: string }, E>,
+    task: string,
+  ) {
+    if (Option.isNone(serverConfig)) return task;
+    const parentRoot = parent.worktreePath ?? (yield* parentProject).workspaceRoot;
+    return isKinWorkspace(serverConfig.value.stateDir, parentRoot)
+      ? `${task}\n\n${WORKER_LAST_WORD}`
+      : task;
+  });
+
+  return { project, workspace, brief };
 });
