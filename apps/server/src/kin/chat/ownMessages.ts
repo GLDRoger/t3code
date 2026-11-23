@@ -387,7 +387,8 @@ export const replaceOwn = Effect.fn("KinOwnMessages.replace")(function* (
     row.chatId,
     yield* nameThreads(input.orgId, row.chatId, input.body.trim()),
   );
-  if (named.body === row.body) return { messageId: input.messageId, replaced: true } as const;
+  if (named.body === row.body)
+    return { messageId: input.messageId, replaced: true, changed: false } as const;
   yield* sql`UPDATE kin_messages SET body = ${named.body}, edited_at = ${iso(input.now)}
     WHERE org_id = ${input.orgId} AND message_id = ${input.messageId} AND status = 'posted'`;
   yield* named.names.length === 0
@@ -397,7 +398,7 @@ export const replaceOwn = Effect.fn("KinOwnMessages.replace")(function* (
         VALUES (${input.orgId}, ${input.messageId}, ${encodeNames(named.names)})
         ON CONFLICT (org_id, message_id) DO UPDATE SET names_json = excluded.names_json`;
   yield* told(input.orgId, input.messageId, []);
-  return { messageId: input.messageId, replaced: true } as const;
+  return { messageId: input.messageId, replaced: true, changed: true } as const;
 });
 
 /** Which chat a message is in, for the gate to check before the change; unknown reads as none. */

@@ -405,7 +405,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           reason: "not_found",
           message: OwnMessages.OWN_MESSAGE_REFUSALS.unknown,
         });
-      return yield* Context.get(services, KinLevelGate).amend(
+      const withdrawn = yield* Context.get(services, KinLevelGate).amend(
         { ...lead, wakeupId },
         chatId,
         OwnMessages.withdrawOwn(
@@ -414,6 +414,14 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           Context.get(services, KinEventQueue),
         ).pipe(Effect.provideContext(services), Effect.mapError(failure)),
       );
+      // Its chat's banner shows the words still unread there, quietly, or goes.
+      yield* Context.get(services, KinPushSender).notify({
+        _tag: "restate",
+        orgId: lead.orgId,
+        chatId,
+        messageId: input.messageId,
+      });
+      return withdrawn;
     }, Effect.mapError(failure)),
   ),
   message_replace: McpToolAccess.actsAsCaller(
@@ -429,7 +437,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           reason: "not_found",
           message: OwnMessages.OWN_MESSAGE_REFUSALS.unknown,
         });
-      const replaced = yield* Context.get(services, KinLevelGate).amend(
+      const { changed, ...replaced } = yield* Context.get(services, KinLevelGate).amend(
         { ...lead, wakeupId },
         chatId,
         OwnMessages.replaceOwn({ ...lead, ...input, now: yield* Clock.currentTimeMillis }).pipe(
@@ -437,12 +445,14 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           Effect.mapError(failure),
         ),
       );
-      // Its push names the chat, so the new words take the old notification's place.
-      yield* Context.get(services, KinPushSender).notify({
-        _tag: "message",
-        orgId: lead.orgId,
-        messageId: input.messageId,
-      });
+      // The banner showing it takes the new words quietly, never a new ring.
+      if (changed)
+        yield* Context.get(services, KinPushSender).notify({
+          _tag: "restate",
+          orgId: lead.orgId,
+          chatId,
+          messageId: input.messageId,
+        });
       return replaced;
     }, Effect.mapError(failure)),
   ),
