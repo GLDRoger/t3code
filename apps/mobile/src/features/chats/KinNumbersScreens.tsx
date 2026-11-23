@@ -16,7 +16,7 @@ import {
   type KinNumberLocale,
 } from "@t3tools/client-runtime/kin/kinNumbers";
 import type { KinNumber, KinNumberDefinition } from "@t3tools/contracts";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useState } from "react";
 import { TextInput, View } from "react-native";
 
@@ -590,8 +590,11 @@ function KinNumberForm(props: {
       ...(archived === undefined ? {} : { archived }),
     });
     setSaving(false);
-    if (outcome.ok) navigation.goBack();
-    else setProblem(outcome.problem);
+    if (!outcome.ok) setProblem(outcome.problem);
+    // An archived number's page has nothing left to show: back to the list it left.
+    else if (archived === true)
+      navigation.dispatch(StackActions.popTo("KinNumbers", paramsOf(props.target)));
+    else navigation.goBack();
   };
   const optional = KIN_NUMBERS.form.optional;
   return (
