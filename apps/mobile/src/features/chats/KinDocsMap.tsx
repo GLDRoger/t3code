@@ -85,7 +85,7 @@ export function KinDocsMap(props: KinWorkTarget & { readonly onList: () => void 
         action={<Button tone="secondary" label={KIN_RETRY} onPress={data.retry} />}
       />,
     );
-  if (data.status === "loading") return message(<KinWorkLoading label="Loading the map" />);
+  if (data.status === "loading") return message(<KinWorkLoading label={KIN_CANVAS.loading} />);
   return <KinDocsMapReady {...target} data={data} bar={bar} />;
 }
 
@@ -217,9 +217,7 @@ function KinDocsMapReady(
             style={{ bottom }}
           >
             <View className="min-w-0 shrink">
-              <KinCanvasPartial
-                lines={data.partial}
-              />
+              <KinCanvasPartial lines={data.partial} />
             </View>
             {empty ? null : (
               <KinCanvasZoomControls

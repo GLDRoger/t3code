@@ -119,7 +119,7 @@ export function KinDocsMap(
     ) : data.status === "loading" ? (
       <div
         role="status"
-        aria-label="Loading the map"
+        aria-label={KIN_CANVAS.loading}
         className="flex flex-1 items-center justify-center"
       >
         <Spinner />

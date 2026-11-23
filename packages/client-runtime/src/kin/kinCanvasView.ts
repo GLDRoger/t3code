@@ -26,6 +26,7 @@ export const KIN_CANVAS = {
   doing: "In progress",
   allOpen: "All open",
   agentWorking: "An agent is working on it now",
+  loading: "Loading the map",
   loadFailed: "Couldn't load the map",
   loadFailedDetail: "Tasks and docs didn't come through. Retry to read them again.",
   readFailed: "Couldn't load this doc",

@@ -28,11 +28,10 @@ const NO_INSETS: KinCanvasInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const CARD_W = 240;
 
 /** Where a card starts to read in place: about three quarters of the screen's width. */
-export const kinCanvasNearScale = (width: number) =>
-  Math.max(1, Math.min(1.6, (width * 0.75) / CARD_W));
+const kinCanvasNearScale = (width: number) => Math.max(1, Math.min(1.6, (width * 0.75) / CARD_W));
 
 /** The closest a screen zooms: one card just fitting its width, on a phone; a wide screen stops sooner. */
-export const kinCanvasMaxScale = (width = Infinity) =>
+const kinCanvasMaxScale = (width = Infinity) =>
   Math.max(kinCanvasNearScale(width) * 1.15, Math.min(KIN_CANVAS_MAX_SCALE, (width - 24) / CARD_W));
 
 export const kinCanvasClampScale = (scale: number, width?: number) =>
