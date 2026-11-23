@@ -448,9 +448,9 @@ it.effect("a review wake needs time unread, a change since, and no review pendin
       const { sql, owner, orgId, chatOf, say } = yield* ambermill;
       const org = KinOrgId.make(orgId);
       yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
-          owner_id, created_by_kind, origin_key, created_at, updated_at)
+          owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
         VALUES (${orgId}, 'rec-inv14', 'invoices', 'INV-14', 'Lumen Grove retainer', 'person',
-          ${owner.personId}, 'person', 'inv14', 0, 0)`;
+          ${owner.personId}, 'person', 'inv14', 0, 0, '{"number":"INV/26-27/014"}')`;
       let rev = 1;
       const moved = Effect.fn("test.moved")(function* (when: number) {
         rev += 1;
@@ -465,7 +465,8 @@ it.effect("a review wake needs time unread, a change since, and no review pendin
       });
       // A change from before the message is no change since it.
       yield* moved(IST_MON_0930 - HOUR);
-      yield* say("finance", "m-chase", "Lumen Grove still owes INV-14 (₹85,000).");
+      // Named by its invoice number, as agents write it, not its key.
+      yield* say("finance", "m-chase", "Lumen Grove still owes INV/26-27/014 (₹85,000).");
       yield* say("chief", "m-plan", "Your week has three client calls.");
 
       // Changed, but not unread long enough.
@@ -500,9 +501,24 @@ it.effect("a review wake needs time unread, a change since, and no review pendin
         "chief",
         "finance",
       ]);
+      // A record named by its title counts as named.
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE dedupe_key LIKE 'review:%'`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES (${orgId}, 'rec-inv15', 'invoices', 'INV-15', 'Patient onboarding copy', 'person',
+          ${owner.personId}, 'person', 'inv15', 0, 0)`;
+      yield* say("chief", "m-copy", "The patient onboarding copy still needs a budget.");
+      yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind,
+          actor_id, via, kind, fields_json)
+        VALUES (${orgId}, 'rec-inv15', 2, ${tuesday0945 + 2}, 'person', ${owner.personId},
+          'owner', 'updated', '[{"field":"state","from":"open","to":"done"}]')`;
+      assert.deepStrictEqual(
+        (yield* sweep(tuesday0945 + 3)).map((one) => one.agentId),
+        ["chief"],
+      );
       // Once read, nothing is reviewed.
       yield* sql`UPDATE kin_events SET state = 'done' WHERE dedupe_key LIKE 'review:%'`;
-      yield* moved(tuesday0945 + 1);
+      yield* moved(tuesday0945 + 4);
       const [latest] = yield* sql<{ seq: number }>`SELECT MAX(seq) AS seq FROM kin_messages
         WHERE chat_id = ${chatOf("finance")}`;
       const services = Option.getOrThrow((yield* Kin.KinServer).services);
@@ -510,7 +526,7 @@ it.effect("a review wake needs time unread, a change since, and no review pendin
         chatId: chatOf("finance"),
         seq: latest!.seq,
       });
-      assert.deepStrictEqual(yield* sweep(tuesday0945 + 2), []);
+      assert.deepStrictEqual(yield* sweep(tuesday0945 + 5), []);
     }).pipe(Effect.provide(layer)),
   ),
 );

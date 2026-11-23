@@ -21,6 +21,8 @@ import { listDef, stateLabel } from "../work/registers.ts";
 
 /** How long a person has had an agent's messages unread before Kin may wake it to look again. */
 export const REVIEW_UNREAD_MS = 2 * 60 * 60_000;
+/** A record title shorter than this ("Retainer") names too much to count as naming the record. */
+const TITLE_MIN = 12;
 /** How long before someone's quiet hours end their coming working day counts as a change. */
 export const REVIEW_BEFORE_DAY_MS = 30 * 60_000;
 
@@ -86,7 +88,13 @@ export const reviewChanges = Effect.fn("KinReview.changes")(function* (input: {
       json_extract(k.value, '$.key') AS key
     FROM kin_message_names n, json_each(n.names_json) k
     WHERE n.org_id = ${orgId} AND n.message_id IN ${sql.in(ids)}
-    ORDER BY n.message_id, key`;
+    UNION
+    -- Agents name a record by its number ("INV/26-27/004") or its title more often than its key.
+    SELECT m.message_id AS "messageId", r.key FROM kin_messages m JOIN kin_records r
+      ON r.org_id = m.org_id AND (instr(m.body, json_extract(r.fields_json, '$.number')) > 0
+        OR (length(r.title) >= ${TITLE_MIN} AND instr(lower(m.body), lower(r.title)) > 0))
+    WHERE m.org_id = ${orgId} AND m.message_id IN ${sql.in(ids)}
+    ORDER BY 1, 2`;
   const since = new Map<string, number>();
   const note = (key: string, at: number) => since.set(key, Math.min(since.get(key) ?? at, at));
   for (const one of messages) for (const key of keysIn(one.body)) note(key, one.createdAt);
