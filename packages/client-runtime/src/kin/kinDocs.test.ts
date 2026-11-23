@@ -39,6 +39,7 @@ import {
   kinDocEditOpen,
   kinDocEditOutcome,
   kinDocRestoreOutcome,
+  kinDocSameWords,
   kinDocSections,
   kinDocRow,
   kinWhatWeSellAgent,
@@ -96,6 +97,31 @@ const section = (id: string, title: string, level: number): KinDocSection => ({
   level,
   chars: 1,
   hash: "h",
+});
+
+describe("kinDocSameWords", () => {
+  const file = (sha256: string, mimeType = "image/png") => ({ sha256, mimeType });
+  type File = ReturnType<typeof file>;
+  const diff = (from: { file?: File }, to: { file?: File }) => ({ from, to });
+
+  it("says a new picture or file changed when the words read the same", () => {
+    expect(kinDocSameWords(diff({ file: file("a") }, { file: file("b") })).title).toBe(
+      "The picture changed",
+    );
+    expect(
+      kinDocSameWords(
+        diff({ file: file("a", "application/pdf") }, { file: file("b", "application/pdf") }),
+      ).title,
+    ).toBe("The file changed");
+    expect(kinDocSameWords(diff({}, { file: file("b") })).title).toBe("The picture changed");
+  });
+
+  it("says nothing changed when the file is the same too", () => {
+    expect(kinDocSameWords(diff({ file: file("a") }, { file: file("a") }))).toBe(
+      KIN_DOCS.noChanges,
+    );
+    expect(kinDocSameWords(diff({}, {}))).toBe(KIN_DOCS.noChanges);
+  });
 });
 
 describe("kinDocChangeLine", () => {

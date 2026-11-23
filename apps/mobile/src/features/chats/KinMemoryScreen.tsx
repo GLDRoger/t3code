@@ -342,6 +342,14 @@ function KinMemoryBody({
                   list={list}
                   actions={actions}
                   quoteOpen={opened.has(row.item.itemId)}
+                  onOpenMessage={(opens) =>
+                    navigation.navigate("KinChat", {
+                      environmentId,
+                      orgId,
+                      chatId: opens.chatId,
+                      message: opens.messageId,
+                    })
+                  }
                   onToggleQuote={() =>
                     setOpened((current) => {
                       const next = new Set(current);
@@ -443,6 +451,7 @@ function KinMemoryItem(props: {
   readonly actions: KinMemoryActions;
   readonly quoteOpen: boolean;
   readonly onToggleQuote: () => void;
+  readonly onOpenMessage: (opens: NonNullable<KinMemoryOriginView["opens"]>) => void;
 }) {
   const { item } = props.row;
   return (
@@ -466,6 +475,7 @@ function KinMemoryItem(props: {
             origin={item.origin}
             open={props.quoteOpen}
             onToggle={props.onToggleQuote}
+            onOpenMessage={props.onOpenMessage}
           />
         )}
       </View>
@@ -513,8 +523,10 @@ function KinMemoryOrigin(props: {
   readonly origin: KinMemoryOriginView;
   readonly open: boolean;
   readonly onToggle: () => void;
+  readonly onOpenMessage: (opens: NonNullable<KinMemoryOriginView["opens"]>) => void;
 }) {
   const { origin, open } = props;
+  const { opens } = origin;
   const line = (
     <>
       <View
@@ -534,7 +546,13 @@ function KinMemoryOrigin(props: {
         numberOfLines={open ? undefined : 2}
         className="min-w-0 flex-1 text-foreground-muted"
       >
-        {origin.line}
+        {opens === null ? (
+          origin.line
+        ) : (
+          <Text textRole="footnote" className="text-foreground-muted underline">
+            {origin.line}
+          </Text>
+        )}
         {origin.quote === null ? null : (
           <Text textRole="footnote" className="text-foreground">
             {` “${origin.quote}”`}
@@ -543,6 +561,20 @@ function KinMemoryOrigin(props: {
       </Text>
     </>
   );
+  if (opens !== null)
+    return (
+      <Pressable
+        accessibilityRole="link"
+        accessibilityLabel={
+          origin.quote === null ? origin.line : `${origin.line} “${origin.quote}”`
+        }
+        accessibilityHint="Opens the message in its chat"
+        onPress={() => props.onOpenMessage(opens)}
+        className="flex-row items-start gap-1.5 active:opacity-60"
+      >
+        {line}
+      </Pressable>
+    );
   return origin.quote === null ? (
     <View className="flex-row items-start gap-1.5">{line}</View>
   ) : (

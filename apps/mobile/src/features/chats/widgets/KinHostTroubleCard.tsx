@@ -126,7 +126,8 @@ export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
           {`${KIN_HOST_COPY.details}: ${view.detail}`}
         </Text>
       )}
-      {done === null ? null : (
+      {/* Once the trouble closes, the card's own line says how it ended. */}
+      {done === null || view.closed ? null : (
         <Text
           textRole="caption"
           accessibilityRole={done.failed ? "alert" : undefined}
