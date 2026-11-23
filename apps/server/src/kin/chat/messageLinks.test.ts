@@ -196,6 +196,16 @@ it.effect("links for each reader only what they may open; a hidden client leaves
       kind: "client",
     });
     assert.strictEqual(owner.find((link) => link.text === "W-1")?.note, "Logo files · Open");
+    // A key reads as its name to whoever may open it: the printed number, else the title.
+    assert.deepStrictEqual(
+      owner.filter((link) => link.name !== undefined).map((link) => [link.text, link.name]),
+      [
+        ["INV-1", "INV/26-27/004"],
+        ["W-1", "Logo files"],
+        ["C-3", "Lumen Grove"],
+        ["DL-1", "Pineglass window graphics"],
+      ],
+    );
 
     // An open task named by its exact title links as a task; a closed one stays words.
     assert.deepStrictEqual(owner.find((link) => link.text === "Set up the booking API")?.to, {
@@ -206,7 +216,12 @@ it.effect("links for each reader only what they may open; a hidden client leaves
     // Zoya has no Clients or Money place and no chat with Finance: only her own tasks link.
     const mate = yield* linksOf(mateId);
     assert.deepStrictEqual(mate, [
-      { text: "W-1", to: { _tag: "record", key: "W-1", kind: "task" }, note: "Logo files · Open" },
+      {
+        text: "W-1",
+        to: { _tag: "record", key: "W-1", kind: "task" },
+        note: "Logo files · Open",
+        name: "Logo files",
+      },
       {
         text: "Set up the booking API",
         to: { _tag: "record", key: "W-2", kind: "task" },

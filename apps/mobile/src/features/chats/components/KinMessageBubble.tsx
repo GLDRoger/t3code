@@ -321,7 +321,10 @@ export function KinMessageBubble(props: {
         accessible
         accessibilityLabel={kinMessageLabel(row, formatTime(message.createdAt))}
         accessibilityActions={[
-          ...inApp.map((link, index) => ({ name: `kin-${index}`, label: `Open ${link.text}` })),
+          ...inApp.map((link, index) => ({
+            name: `kin-${index}`,
+            label: `Open ${link.name === undefined ? link.text : `${link.name}, ${link.text}`}`,
+          })),
           ...links.map((link, index) => ({ name: `link-${index}`, label: `Open ${link.label}` })),
           ...sheetActions,
         ]}
