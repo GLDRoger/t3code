@@ -615,7 +615,7 @@ describe("lists through the tools", () => {
         ],
         [
           { ...bookings, section: true, remindOn: "Room" },
-          "remindOn names one of the list's date fields; room isn't one.",
+          "remindOn names a date field, the list's own date or its due day; room isn't one.",
         ],
         [
           { sourceEventId: asked, template: "expenses" as const, section: true },
@@ -700,6 +700,76 @@ describe("lists through the tools", () => {
       const fine = yield* turn(8, "Yes");
       yield* LeadMoney.define(scope, { sourceEventId: fine, proposal: unwatch.proposal! });
       assert.isUndefined((yield* listDef(orgId, "stock"))?.check);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("remind on a list's own date: late and due today reach the holder; null stops it", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const detail = (proposal: string) =>
+        sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+          WHERE widget_id = ${cardOf(`kin-list:${proposal}`)}`.pipe(
+          Effect.map(([row]) => (JSON.parse(row!.state) as { detail: string }).detail.split("\n")),
+        );
+      const asked = yield* turn(1, "Give me Bookings with a room, and remind me on the day");
+      const proposed = yield* LeadMoney.define(scope, {
+        sourceEventId: asked,
+        name: "Bookings",
+        fields: [{ label: "Room", type: "text" }],
+        dateLabel: "Booking date",
+        section: true,
+        remindOn: "Booking date",
+      });
+      assert.include(
+        yield* detail(proposed.proposal!),
+        "Kin will remind whoever holds an entry on its Booking date day.",
+      );
+      const yes = yield* turn(2, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: proposed.proposal! });
+      assert.strictEqual((yield* listDef(orgId, "bookings"))?.remindOn, "date");
+      const add = yield* turn(3, "Two bookings");
+      yield* LeadWork.create(scope, {
+        sourceEventId: add,
+        records: [
+          { list: "bookings", title: "Ananya Rao", date: "2026-11-11", fields: { room: "4" } },
+          { list: "bookings", title: "Kabir Sen", date: "2026-11-12", fields: { room: "2" } },
+        ],
+      });
+      const told = yield* KinPulse.tick(orgId, NOW);
+      const entryTold = told.told.filter((one) => one.key.startsWith("entry_late:"));
+      assert.deepStrictEqual(
+        entryTold.map((one) => [one.to, one.key.split("=")[0]]),
+        [
+          [`agent:${lead}`, "entry_late:BOO-1:due"],
+          [`agent:${lead}`, "entry_late:BOO-2:soon"],
+        ],
+      );
+      const stop = yield* turn(4, "Stop the reminders");
+      const unwatch = yield* LeadMoney.define(scope, {
+        sourceEventId: stop,
+        list: "bookings",
+        remindOn: null,
+      });
+      assert.include(
+        yield* detail(unwatch.proposal!),
+        "Kin will stop reminding on its entries' date.",
+      );
+      const sure = yield* turn(5, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: sure, proposal: unwatch.proposal! });
+      assert.isUndefined((yield* listDef(orgId, "bookings"))?.remindOn);
+      const after = yield* KinPulse.read({ orgId, at: NOW, viewer: { _tag: "owner" } });
+      assert.isFalse(after.facts.some((fact) => fact.sense === "entry_late"));
+      // The due day needs nothing stored: the card says so, as today's reminder line.
+      const onDue = yield* turn(6, "Remind on the due day");
+      const due = yield* LeadMoney.define(scope, {
+        sourceEventId: onDue,
+        list: "bookings",
+        remindOn: "due",
+      });
+      assert.deepStrictEqual(yield* detail(due.proposal!), [
+        "Kin will remind whoever holds an entry on its due day.",
+      ]);
     }).pipe(Effect.provide(layer)),
   );
 

@@ -1,6 +1,7 @@
 import type { KinShell } from "@t3tools/contracts";
 
 import { encoded } from "../lead/quote.ts";
+import { OWN_DATE } from "../work/registers.ts";
 import { cadenceText, limitText, named, namedList } from "../numbers/words.ts";
 import { sectionName, sectionOn } from "./KinShell.ts";
 import type { SectionId } from "./sections.ts";
@@ -78,7 +79,9 @@ const listLine = (list: ListShown) =>
     ...(list.check === undefined
       ? []
       : [`Kin warns when ${list.check.field} is ${list.check.side} ${list.check.other}`]),
-    ...(list.remindOn === undefined ? [] : [`reminds on ${list.remindOn}`]),
+    ...(list.remindOn === undefined
+      ? []
+      : [list.remindOn === OWN_DATE ? "reminds on its date" : `reminds on ${list.remindOn}`]),
   ].join("; ") + ".";
 
 /**
@@ -124,7 +127,7 @@ export const thisCompanyLines = (
     ...(lists.length === 0
       ? []
       : [
-          "These lists are sections of their own; read and write them with records_query, record_create and record_update:",
+          "These lists are sections of their own; read and write them with records_query, record_create and record_update. When asked to warn about an entry's number or to remind on its date, propose that with list_define (check, remindOn), not a routine or a task:",
           ...lists.map(listLine),
         ]),
     ...(watched.length === 0

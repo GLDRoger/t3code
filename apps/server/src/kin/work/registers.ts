@@ -937,8 +937,14 @@ const checkWatch = (
   def: Pick<StoredDefinition, "fields" | "remindOn" | "check">,
 ): KinChatError | undefined => {
   const live = (key: string) => def.fields.find((one) => one.key === key && one.retired !== true);
-  if (def.remindOn !== undefined && live(def.remindOn)?.type !== "date")
-    return invalid(`remindOn names one of the list's date fields; ${def.remindOn} isn't one.`);
+  if (
+    def.remindOn !== undefined &&
+    def.remindOn !== OWN_DATE &&
+    live(def.remindOn)?.type !== "date"
+  )
+    return invalid(
+      `remindOn names a date field, the list's own date or its due day; ${def.remindOn} isn't one.`,
+    );
   if (def.check === undefined) return undefined;
   const { field, below, above } = def.check;
   if (live(field)?.type !== "number")
@@ -1018,16 +1024,44 @@ const fieldKey = (fields: ReadonlyArray<FieldDef>, named: string) =>
       one.key === keyFor(named),
   )?.key ?? named.trim();
 
+/**
+ * `remindOn` naming each entry's own date rather than a field: `date` is every entry's own
+ * column, so no field can take the key, and an older client reads it as any field key.
+ */
+export const OWN_DATE = "date";
+/**
+ * What a reminder names: a date field by label or key (a field wins), the list's own date (its
+ * date label, or "date"), or its due day (its due label, or "due"), which needs nothing stored.
+ */
+export const remindTarget = (
+  fields: ReadonlyArray<FieldDef>,
+  labels: { readonly dateLabel?: string | undefined; readonly dueLabel?: string | undefined },
+  named: string,
+) => {
+  const word = named.trim().toLowerCase();
+  const field = fieldKey(fields, named);
+  if (fields.some((one) => one.key === field)) return field;
+  if (word === OWN_DATE || word === labels.dateLabel?.trim().toLowerCase()) return OWN_DATE;
+  if (word === "due" || word === labels.dueLabel?.trim().toLowerCase()) return "due";
+  return field;
+};
+
 /** The reminder field and check a call names, as the definition stores them. */
-const watchOf = (fields: ReadonlyArray<FieldDef>, input: ListInput) => {
+const watchOf = (
+  fields: ReadonlyArray<FieldDef>,
+  input: ListInput,
+  labels: { readonly dateLabel?: string | undefined; readonly dueLabel?: string | undefined },
+) => {
+  const reminder =
+    input.remindOn === undefined || input.remindOn === null
+      ? undefined
+      : remindTarget(fields, labels, input.remindOn);
   const other = (value: string | number | undefined) =>
     value === undefined ? undefined : typeof value === "number" ? value : fieldKey(fields, value);
   const below = other(input.check?.below);
   const above = other(input.check?.above);
   return {
-    ...(input.remindOn === undefined || input.remindOn === null
-      ? {}
-      : { remindOn: fieldKey(fields, input.remindOn) }),
+    ...(reminder === undefined || reminder === "due" ? {} : { remindOn: reminder }),
     ...(input.check === undefined || input.check === null
       ? {}
       : {
@@ -1113,8 +1147,14 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     });
     const refused = yield* watchRefusal(orgId, def.id, input);
     if (refused !== undefined) return yield* refused;
+    // A reminder on the due day stores none: the due day is sensed already.
+    const onDue =
+      typeof input.remindOn === "string" &&
+      remindTarget([...def.fields, ...added], def, input.remindOn) === "due";
     const unwatch = [
-      ...(input.remindOn === null && def.remindOn !== undefined ? ["remindOn" as const] : []),
+      ...((input.remindOn === null || onDue) && def.remindOn !== undefined
+        ? ["remindOn" as const]
+        : []),
       ...(input.check === null && def.check !== undefined ? ["check" as const] : []),
     ];
     if (
@@ -1134,7 +1174,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       ...(input.team === true || (input.team === false && def.team === true)
         ? { team: input.team }
         : {}),
-      ...watchOf([...def.fields, ...added], input),
+      ...watchOf([...def.fields, ...added], input, def),
       ...(unwatch.length === 0 ? {} : { unwatch }),
       ...shownAs(input),
     } satisfies Proposal;
@@ -1187,7 +1227,10 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     categories: [...new Set([...(preset?.categories ?? []), ...(input.categories ?? [])])],
     ...ownLabels(named, preset?.categoryLabels),
     fields: listFields,
-    ...watchOf(listFields, input),
+    ...watchOf(listFields, input, {
+      dateLabel: input.dateLabel ?? preset?.dateLabel,
+      dueLabel: input.dueLabel ?? preset?.dueLabel,
+    }),
     sensitive: input.sensitive ?? preset?.sensitive ?? amount,
     ...(input.team === undefined ? {} : { team: input.team }),
     amount,

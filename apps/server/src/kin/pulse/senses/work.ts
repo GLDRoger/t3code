@@ -8,7 +8,7 @@ import { validZone } from "../../triggers/quietHold.ts";
 import { stillAway } from "../../triggers/quietHours.ts";
 import { waitingSince } from "../../work/crm.ts";
 import { fieldDateAt, ownerZone } from "../../work/recordRows.ts";
-import { isFieldDate, isFieldNumber, listDef } from "../../work/registers.ts";
+import { isFieldDate, isFieldNumber, listDef, OWN_DATE } from "../../work/registers.ts";
 import { DAY_MS, type Threshold, thresholds, toMs } from "../thresholds.ts";
 import {
   dayOf,
@@ -298,7 +298,11 @@ const entrySenses = Effect.fn("KinPulse.entrySenses")(function* (
   const facts: Array<SensedFact> = [];
   for (const def of yield* sectionLists(orgId)) {
     const section = KinShell.listSectionId(def.id);
-    const remind = def.remindOn;
+    // A field the list really has wins; else `date` is each entry's own date (`OWN_DATE`).
+    const field = def.fields.some((one) => one.key === def.remindOn) ? def.remindOn : undefined;
+    const remind = field;
+    const column =
+      def.remindOn === OWN_DATE && field === undefined ? sql`r.date_at` : sql`r.due_at`;
     const until = dayOf(ctx, at + toMs(soon) + DAY_MS);
     // Only the owner level hears how many more there are: a member's count reads Work alone.
     const cap = (id: string, sense: "entry_late" | "entry_check", plural: string) => ({
@@ -318,8 +322,8 @@ const entrySenses = Effect.fn("KinPulse.entrySenses")(function* (
       WHERE r.org_id = ${orgId} AND r.register_id = ${def.id} AND r.state IN ${sql.in(OPEN)}
         AND ${
           remind === undefined
-            ? sql`r.due_at IS NOT NULL AND (r.due_at <= ${at - toMs(grace)} OR (r.state = 'open'
-                AND r.due_at > ${at} AND r.due_at <= ${at + toMs(soon)}))`
+            ? sql`${column} IS NOT NULL AND (${column} <= ${at - toMs(grace)} OR (r.state = 'open'
+                AND ${column} > ${at} AND ${column} <= ${at + toMs(soon)}))`
             : sql`substr(json_extract(r.fields_json, ${`$.${remind}`}), 1, 10) <= ${until}`
         }
       ORDER BY r.key`,
@@ -327,7 +331,9 @@ const entrySenses = Effect.fn("KinPulse.entrySenses")(function* (
     for (const row of dated) {
       const due =
         remind === undefined
-          ? row.dueAt
+          ? def.remindOn === OWN_DATE
+            ? row.dateAt
+            : row.dueAt
           : typeof row.remind === "string" && isFieldDate(row.remind)
             ? fieldDateAt(row.remind, ctx.zone).at
             : null;

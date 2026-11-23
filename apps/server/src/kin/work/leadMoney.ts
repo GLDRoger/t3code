@@ -86,6 +86,8 @@ import {
   carryOut,
   checkText,
   type FieldDef,
+  OWN_DATE,
+  remindTarget,
   isUnissuedDraft,
   listDef,
   PRESET_IDS,
@@ -209,7 +211,7 @@ export const DefineInput = Schema.Struct({
   }),
   remindOn: Schema.optional(Schema.NullOr(Label)).annotate({
     description:
-      "A date field Kin reminds an entry's holder on, as on a task's due day; null stops.",
+      "The date Kin reminds an entry's holder on, as on a task's due day: a date field or the list's own date; null stops.",
   }),
   check: Schema.optional(
     Schema.NullOr(
@@ -349,17 +351,27 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
         )
       : undefined;
   const teamChange = proposal._tag === "new" ? proposal.definition.team : proposal.team;
+  const had = proposal._tag === "new" ? undefined : yield* listDef(lead.orgId, proposal.id);
   const watched =
     proposal._tag === "new"
       ? proposal.definition
-      : {
-          ...proposal,
-          fields: [
-            ...((yield* listDef(lead.orgId, proposal.id))?.fields ?? []),
-            ...proposal.fields,
-          ],
-        };
+      : { ...proposal, fields: [...(had?.fields ?? []), ...proposal.fields] };
+  const labels: {
+    readonly dateLabel?: string | undefined;
+    readonly dueLabel?: string | undefined;
+  } = proposal._tag === "new" ? proposal.definition : (had ?? {});
   const label = (key: string) => watched.fields.find((one) => one.key === key)?.label ?? key;
+  const onDue =
+    typeof input.remindOn === "string" &&
+    remindTarget(watched.fields, labels, input.remindOn) === "due";
+  const reminder =
+    watched.remindOn === OWN_DATE
+      ? (labels.dateLabel ?? "date")
+      : watched.remindOn !== undefined
+        ? label(watched.remindOn)
+        : onDue
+          ? (labels.dueLabel ?? "due")
+          : undefined;
   // The card is how a tap answers this proposal and no other; a typed yes still works without it.
   const card = yield* askOwner(
     lead,
@@ -386,13 +398,13 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
         ...(watched.check === undefined
           ? []
           : [`Kin will warn about each entry whose ${checkText(watched.fields, watched.check)}.`]),
-        ...(watched.remindOn === undefined
+        ...(reminder === undefined
           ? []
-          : [`Kin will remind whoever holds an entry on its ${label(watched.remindOn)} day.`]),
+          : [`Kin will remind whoever holds an entry on its ${reminder} day.`]),
         ...(proposal._tag === "extend" && proposal.unwatch?.includes("check") === true
           ? ["Kin will stop warning about its entries."]
           : []),
-        ...(proposal._tag === "extend" && proposal.unwatch?.includes("remindOn") === true
+        ...(proposal._tag === "extend" && proposal.unwatch?.includes("remindOn") === true && !onDue
           ? ["Kin will stop reminding on its entries' date."]
           : []),
       ].join("\n"),

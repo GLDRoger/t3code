@@ -819,7 +819,7 @@ it.effect(
         })})`;
       yield* KinShell.set(orgId, personId, 4, [{ id: "list:stock", on: true }]);
       expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
-        '# This company\n\nThese lists are sections of their own; read and write them with records_query, record_create and record_update:\n- "Stock" (list stock): onHand number, reorderPoint number, counted yesno; states open "In stock", done, dropped; Kin warns when onHand is below reorderPoint.\n\n',
+        '# This company\n\nThese lists are sections of their own; read and write them with records_query, record_create and record_update. When asked to warn about an entry\'s number or to remind on its date, propose that with list_define (check, remindOn), not a routine or a task:\n- "Stock" (list stock): onHand number, reorderPoint number, counted yesno; states open "In stock", done, dropped; Kin warns when onHand is below reorderPoint.\n\n',
       );
       // Switched off, it is a list like any other.
       yield* KinShell.set(orgId, personId, 5, [{ id: "list:stock", on: false }]);
