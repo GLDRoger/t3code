@@ -8,9 +8,12 @@ import * as KinShell from "../shell/KinShell.ts";
 import {
   EnvironmentId,
   KinAgentId,
+  KinListDefinition,
+  KinListField,
   KinOrgId,
   KinPersonId,
   KinRecordKey,
+  KinWritableListFieldType,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -19,6 +22,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -566,6 +570,206 @@ describe("lists through the tools", () => {
         yield* sql`DELETE FROM kin_company_shell WHERE org_id = ${orgId}`;
         assert.equal((yield* LeadMoney.define(scope, input)).status, "defined");
       }
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("show a new or existing list as a section, with its check, on one card", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const listSections = sql<{ json: string | null }>`SELECT shell_json AS json
+        FROM kin_company_shell WHERE org_id = ${orgId}`.pipe(
+        Effect.map(([row]) =>
+          (
+            JSON.parse(row?.json ?? "[]") as ReadonlyArray<{
+              id: string;
+              on: boolean;
+              dock?: boolean;
+            }>
+          ).filter(({ id }) => id.startsWith("list:")),
+        ),
+      );
+      const detail = (proposal: string) =>
+        sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+          WHERE widget_id = ${cardOf(`kin-list:${proposal}`)}`.pipe(
+          Effect.map(([row]) => (JSON.parse(row!.state) as { detail: string }).detail.split("\n")),
+        );
+      const asked = yield* turn(1, "We don't do deals. Give me Bookings with a date and a room");
+      const bookings = {
+        sourceEventId: asked,
+        name: "Bookings",
+        fields: [
+          { label: "Booked for", type: "date" as const },
+          { label: "Room", type: "text" as const },
+        ],
+        remindOn: "Booked for",
+      };
+      for (const [input, message] of [
+        [
+          bookings,
+          "Kin reminds and warns only for a list shown as a section: pass section true as well.",
+        ],
+        [
+          { ...bookings, dock: true },
+          "dock comes with section true: the phone's dock holds sections.",
+        ],
+        [
+          { ...bookings, section: true, remindOn: "Room" },
+          "remindOn names a date field, the list's own date or its due day; room isn't one.",
+        ],
+        [
+          { sourceEventId: asked, template: "expenses" as const, section: true },
+          "Expenses has its place in Kin already, so it can't be a section of its own.",
+        ],
+      ] as const)
+        assert.include(yield* Effect.flip(LeadMoney.define(scope, input)), { message });
+      const proposed = yield* LeadMoney.define(scope, { ...bookings, section: true, dock: true });
+      assert.strictEqual(proposed.status, "proposed");
+      assert.includeMembers(yield* detail(proposed.proposal!), [
+        "Bookings will show as a section of its own, and in the phone's dock.",
+        "Kin will remind whoever holds an entry on its Booked for day.",
+      ]);
+      assert.deepStrictEqual(yield* listSections, []);
+      const yes = yield* turn(2, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: proposed.proposal! });
+      assert.deepStrictEqual(yield* listSections, [{ id: "list:bookings", on: true, dock: true }]);
+      assert.strictEqual((yield* listDef(orgId, "bookings"))?.remindOn, "bookedFor");
+      const [setBy] = yield* sql<{ by: string }>`SELECT set_by AS by FROM kin_company_shell`;
+      assert.strictEqual(setBy?.by, ownerId);
+
+      // An existing list asked to warn: the check and the section on one card, made on the yes.
+      yield* defined(3, {
+        name: "Stock",
+        fields: [
+          { label: "On hand", type: "number" },
+          { label: "Reorder point", type: "number" },
+          { label: "Shelf", type: "text" },
+        ],
+      });
+      const warn = yield* turn(5, "Warn me when any item's on-hand goes below its reorder point");
+      const check = { field: "On hand", below: "Reorder point" };
+      for (const [input, message] of [
+        [
+          { check },
+          "Kin reminds and warns only for a list shown as a section: pass section true as well.",
+        ],
+        [
+          { check: { field: "Shelf", below: 3 }, section: true },
+          "A check compares one of the list's number fields; shelf isn't one.",
+        ],
+        [
+          { check: { field: "On hand", below: 3, above: 9 }, section: true },
+          "A check is either below or above, not both.",
+        ],
+      ] as const)
+        assert.include(
+          yield* Effect.flip(
+            LeadMoney.define(scope, { sourceEventId: warn, list: "stock", ...input }),
+          ),
+          { message },
+        );
+      const change = yield* LeadMoney.define(scope, {
+        sourceEventId: warn,
+        list: "stock",
+        check,
+        section: true,
+      });
+      assert.includeMembers(yield* detail(change.proposal!), [
+        "Stock will show as a section of its own.",
+        "Kin will warn about each entry whose On hand is below Reorder point.",
+      ]);
+      assert.isUndefined((yield* listDef(orgId, "stock"))?.check);
+      const sure = yield* turn(6, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: sure, proposal: change.proposal! });
+      assert.deepStrictEqual((yield* listDef(orgId, "stock"))?.check, {
+        field: "onHand",
+        below: "reorderPoint",
+      });
+      assert.deepStrictEqual(yield* listSections, [
+        { id: "list:bookings", on: true, dock: true },
+        { id: "list:stock", on: true },
+      ]);
+      // The way back: the same card stops the warning.
+      const stop = yield* turn(7, "Stop warning me about stock");
+      const unwatch = yield* LeadMoney.define(scope, {
+        sourceEventId: stop,
+        list: "stock",
+        check: null,
+      });
+      assert.include(yield* detail(unwatch.proposal!), "Kin will stop warning about its entries.");
+      const fine = yield* turn(8, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: fine, proposal: unwatch.proposal! });
+      assert.isUndefined((yield* listDef(orgId, "stock"))?.check);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("remind on a list's own date: late and due today reach the holder; null stops it", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const detail = (proposal: string) =>
+        sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+          WHERE widget_id = ${cardOf(`kin-list:${proposal}`)}`.pipe(
+          Effect.map(([row]) => (JSON.parse(row!.state) as { detail: string }).detail.split("\n")),
+        );
+      const asked = yield* turn(1, "Give me Bookings with a room, and remind me on the day");
+      const proposed = yield* LeadMoney.define(scope, {
+        sourceEventId: asked,
+        name: "Bookings",
+        fields: [{ label: "Room", type: "text" }],
+        dateLabel: "Booking date",
+        section: true,
+        remindOn: "Booking date",
+      });
+      assert.include(
+        yield* detail(proposed.proposal!),
+        "Kin will remind whoever holds an entry on its Booking date day.",
+      );
+      const yes = yield* turn(2, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: proposed.proposal! });
+      assert.strictEqual((yield* listDef(orgId, "bookings"))?.remindOn, "date");
+      const add = yield* turn(3, "Two bookings");
+      yield* LeadWork.create(scope, {
+        sourceEventId: add,
+        records: [
+          { list: "bookings", title: "Ananya Rao", date: "2026-11-11", fields: { room: "4" } },
+          { list: "bookings", title: "Kabir Sen", date: "2026-11-12", fields: { room: "2" } },
+        ],
+      });
+      const told = yield* KinPulse.tick(orgId, NOW);
+      const entryTold = told.told.filter((one) => one.key.startsWith("entry_late:"));
+      assert.deepStrictEqual(
+        entryTold.map((one) => [one.to, one.key.split("=")[0]]),
+        [
+          [`agent:${lead}`, "entry_late:BOO-1:due"],
+          [`agent:${lead}`, "entry_late:BOO-2:soon"],
+        ],
+      );
+      const stop = yield* turn(4, "Stop the reminders");
+      const unwatch = yield* LeadMoney.define(scope, {
+        sourceEventId: stop,
+        list: "bookings",
+        remindOn: null,
+      });
+      assert.include(
+        yield* detail(unwatch.proposal!),
+        "Kin will stop reminding on its entries' date.",
+      );
+      const sure = yield* turn(5, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: sure, proposal: unwatch.proposal! });
+      assert.isUndefined((yield* listDef(orgId, "bookings"))?.remindOn);
+      const after = yield* KinPulse.read({ orgId, at: NOW, viewer: { _tag: "owner" } });
+      assert.isFalse(after.facts.some((fact) => fact.sense === "entry_late"));
+      // The due day needs nothing stored: the card says so, as today's reminder line.
+      const onDue = yield* turn(6, "Remind on the due day");
+      const due = yield* LeadMoney.define(scope, {
+        sourceEventId: onDue,
+        list: "bookings",
+        remindOn: "due",
+      });
+      assert.deepStrictEqual(yield* detail(due.proposal!), [
+        "Kin will remind whoever holds an entry on its due day.",
+      ]);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -2644,6 +2848,20 @@ describe("the owner's taps", () => {
         legacy?.fields.map(({ type }) => type),
         ["text", "text", "link", "date"],
       );
+      // A client built before number and yes/no reads the definition, each value as text.
+      const previous = Schema.decodeUnknownEffect(
+        Schema.Struct({
+          ...KinListDefinition.fields,
+          fields: Schema.Array(
+            Schema.Struct({
+              ...KinListField.fields,
+              type: KinWritableListFieldType,
+              link: Schema.optional(Schema.Literals(["clients", "projects"])),
+            }),
+          ),
+        }),
+      );
+      yield* previous(legacy);
       assert.strictEqual(legacy?.fields.find(({ key }) => key === "client")?.link, "clients");
       assert.notProperty(legacy, "remindOn");
       assert.notProperty(legacy, "check");
@@ -2655,6 +2873,7 @@ describe("the owner's taps", () => {
       );
 
       const current = yield* read(["number", "yesno", "list", "remindOn", "check"]);
+      assert.include(yield* Effect.flip(previous(current)), { _tag: "SchemaError" });
       assert.deepStrictEqual(
         current?.fields.map(({ type }) => type),
         ["number", "yesno", "link", "link", "date"],
@@ -2667,20 +2886,72 @@ describe("the owner's taps", () => {
       assert.deepStrictEqual(current?.check, { field: "count", below: 2 });
       const def = (yield* listDef(orgId, "expenses"))!;
       const unexpected = () => Effect.die("A read-only field must not reach a resolver");
-      const readOnly: ReadonlyArray<Readonly<Record<string, string>>> = [
-        { count: "42" },
-        { checked: "No" },
-        { shelf: "SH-1" },
-      ];
-      for (const fields of readOnly) {
-        assert.include(checkFields(def, fields), { reason: "invalid_state" });
-        assert.include(
-          yield* Effect.flip(
-            typedFields(def, fields, { who: unexpected, ref: unexpected, files: unexpected }),
-          ),
-          { reason: "invalid_state" },
-        );
+      const typed = { who: unexpected, ref: unexpected, files: unexpected };
+      // A number and a yes or no are stored as their plain words, so an old client shows text.
+      assert.deepStrictEqual(yield* typedFields(def, { count: "1,200.50", checked: "No" }, typed), {
+        count: "1200.5",
+        checked: "no",
+      });
+      assert.deepStrictEqual(yield* typedFields(def, { count: "-3", checked: "true" }, typed), {
+        count: "-3",
+        checked: "yes",
+      });
+      assert.isUndefined(checkFields(def, { count: "1200.5", checked: "no" }));
+      for (const [fields, message] of [
+        [{ count: "forty" }, "Count takes a number, such as 12 or 3.5."],
+        [{ checked: "maybe" }, "Checked takes yes or no."],
+        [{ shelf: "SH-1" }, "Shelf takes a client's key or name."],
+      ] as const) {
+        assert.include(checkFields(def, fields), { reason: "invalid_state", message });
+        assert.include(yield* Effect.flip(typedFields(def, fields, typed)), { message });
       }
+      assert.include(checkFields(def, { checked: "No" }), { message: "Checked takes yes or no." });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("give agents a list's numbers and yes or no as typed values, and refuse others", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, {
+        name: "Stock",
+        fields: [
+          { label: "On hand", type: "number" },
+          { label: "Reorder point", type: "number" },
+          { label: "Active", type: "yesno" },
+        ],
+      });
+      const asked = yield* turn(3, "Blue mugs: 3 on hand, reorder at 10");
+      const refused = yield* Effect.flip(
+        LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [{ list: "stock", title: "Blue mugs", fields: { onHand: "a few" } }],
+        }),
+      );
+      assert.include(refused.message, "On hand takes a number, such as 12 or 3.5.");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "stock",
+            title: "Blue mugs",
+            fields: { onHand: "3", reorderPoint: "10", active: "yes" },
+          },
+        ],
+      });
+      const [row] = (yield* LeadWork.query(scope, { list: "stock" })).records;
+      assert.deepStrictEqual(row?.fields, { onHand: 3, reorderPoint: 10, active: true });
+      const records = yield* KinRecords.KinRecords;
+      const stored = yield* records.get(orgId, row!.key);
+      assert.include(stored!.fieldsJson, '"onHand":"3"');
+      const ownerEdit = OwnerWork.update(people, {
+        orgId,
+        key: row!.key,
+        rev: stored!.rev,
+        fields: { onHand: "three" },
+      });
+      assert.include(yield* Effect.flip(ownerEdit), {
+        message: "On hand takes a number, such as 12 or 3.5.",
+      });
     }).pipe(Effect.provide(layer)),
   );
 

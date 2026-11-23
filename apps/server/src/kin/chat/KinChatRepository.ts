@@ -25,6 +25,7 @@ import {
   KinMessageOrigin,
   KinMessageRelay,
   KinMessageWhen,
+  KinMessageWithdrawn,
   KinMessageRef,
   type KinMessageRefInput,
   KIN_MESSAGE_REFS_CAP,
@@ -250,6 +251,7 @@ const {
   embeds: _embeds,
   form: _form,
   turnChanges: _turnChanges,
+  withdrawn: _withdrawn,
   ...messageRowFields
 } = KinMessage.fields;
 const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
@@ -262,6 +264,7 @@ const MessageRow = Schema.Struct({
   storedRelay: Schema.NullOr(Schema.fromJsonString(KinMessageRelay)),
   storedOrigin: Schema.NullOr(Schema.fromJsonString(KinMessageOrigin)),
   storedWhen: Schema.NullOr(Schema.fromJsonString(KinMessageWhen)),
+  storedWithdrawn: Schema.NullOr(Schema.fromJsonString(KinMessageWithdrawn)),
   storedClientMessageId: Schema.NullOr(Schema.String),
   storedAttachments: Schema.NullOr(Schema.fromJsonString(StoredAttachments)),
   storedRefs: Schema.NullOr(Schema.fromJsonString(StoredRefs)),
@@ -282,12 +285,14 @@ const MessageRow = Schema.Struct({
         storedRelay,
         storedOrigin,
         storedWhen,
+        storedWithdrawn,
         storedForm,
         storedEmbeds,
         ...message
       }): KinMessage => ({
         ...message,
         ...(storedWhen === null ? {} : { when: storedWhen }),
+        ...(storedWithdrawn === null ? {} : { withdrawn: storedWithdrawn }),
         ...(storedDiscussionId === null ? {} : { discussionId: storedDiscussionId }),
         ...(storedDiscussionOpen === null ? {} : { discussionOpen: storedDiscussionOpen === 1 }),
         ...(storedRelay === null ? {} : { relay: storedRelay }),
@@ -310,12 +315,14 @@ const MessageRow = Schema.Struct({
         when,
         links: _links,
         turnChanges: _turnChanges,
+        withdrawn,
         form,
         embeds,
         ...message
       }) => ({
         ...message,
         storedWhen: when ?? null,
+        storedWithdrawn: withdrawn === undefined ? null : { why: withdrawn.why, at: withdrawn.at },
         storedDiscussionId: discussionId ?? null,
         storedDiscussionOpen: null,
         storedRelay: relay ?? null,
@@ -330,7 +337,7 @@ const MessageRow = Schema.Struct({
     }),
   ),
 );
-const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", form AS "storedForm", embeds_json AS "storedEmbeds", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", discussion_id AS "storedDiscussionId", (SELECT 1 - final FROM kin_discussions d WHERE d.org_id = kin_messages.org_id AND d.discussion_id = kin_messages.discussion_id) AS "storedDiscussionOpen", relay_json AS "storedRelay", origin_json AS "storedOrigin", when_json AS "storedWhen", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
+const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", form AS "storedForm", embeds_json AS "storedEmbeds", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", discussion_id AS "storedDiscussionId", (SELECT 1 - final FROM kin_discussions d WHERE d.org_id = kin_messages.org_id AND d.discussion_id = kin_messages.discussion_id) AS "storedDiscussionOpen", relay_json AS "storedRelay", origin_json AS "storedOrigin", when_json AS "storedWhen", withdrawn_json AS "storedWithdrawn", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
  WHEN 'agent' THEN json_object('_tag', 'agent', 'agentId', author_agent_id, 'memberId', author_member_id,
  'ownerPersonId', author_owner_person_id, 'threadId', author_thread_id)
  ELSE json_object('_tag', author_kind) END AS author`;

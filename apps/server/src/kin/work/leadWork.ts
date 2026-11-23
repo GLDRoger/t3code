@@ -142,6 +142,7 @@ import {
 import {
   allLists,
   isBuiltIn,
+  isFieldNumber,
   isInvoiceDraft,
   type ListDef,
   listEntryFor,
@@ -376,7 +377,9 @@ const Row = Schema.Struct({
   balance: Schema.optional(Schema.String),
   date: Schema.optional(Schema.String),
   repeat: Schema.optional(Schema.String),
-  fields: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  fields: Schema.optional(
+    Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Finite, Schema.Boolean])),
+  ),
   deal: Schema.optional(DealShown).annotate({
     description: "A deal's, as its page shows the people this turn is for.",
   }),
@@ -1060,10 +1063,14 @@ const shownFields = (
   keys: ReadonlyMap<string, string>,
 ) => {
   if (def === undefined || def.builtIn !== null) return {};
-  const shown: Record<string, string> = {};
+  const shown: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(fields)) {
     const spec = def.fields.find((one) => one.key === key);
     if (isMoney(value)) shown[key] = formatMoney(value);
+    else if (spec?.type === "number" && typeof value === "string" && isFieldNumber(value))
+      shown[key] = Number(value);
+    else if (spec?.type === "yesno" && (value === "yes" || value === "no"))
+      shown[key] = value === "yes";
     else if (Array.isArray(value))
       shown[key] = `${value.length} file${value.length === 1 ? "" : "s"}`;
     else if (spec?.type === "person") {

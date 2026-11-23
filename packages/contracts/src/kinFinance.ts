@@ -101,10 +101,15 @@ export const KinListDefinition = Schema.Struct({
   categoryLabels: Schema.optional(Schema.Record(Schema.String, Label)),
   fields: Schema.Array(KinListField),
   remindOn: Schema.optional(KinListFieldKey),
+  /**
+   * One check on every entry: a number field below or above another number field or a fixed
+   * number. Sent only to a caller that accepts `check`, which reads one of `below` and `above`.
+   */
   check: Schema.optional(
     Schema.Struct({
       field: KinListFieldKey,
-      below: Schema.Union([KinListFieldKey, Schema.Finite]),
+      below: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
+      above: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
     }),
   ),
   /** New entries are labelled sensitive. */

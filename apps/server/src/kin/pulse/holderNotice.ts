@@ -19,6 +19,7 @@ import { noteAbout } from "../push/pushAbout.ts";
 import { HELD_ID } from "../triggers/heldDelivery.ts";
 import { holdFor, holdLine } from "../triggers/quietHold.ts";
 import { daysAgoText, type SenseContext } from "./senses/shared.ts";
+import { entryDueSoon } from "./told.ts";
 
 const SHOWN = 5;
 const HOLDER_ID = "kin-holder-";
@@ -57,6 +58,18 @@ export const holderLine = (
   };
 };
 
+/** A list section's entry: "BK-3 Room 4 was due 2026-11-19, yesterday", or off its check. */
+export const entryLine = (
+  fact: Pick<KinPulseFact, "sense" | "key" | "subject" | "consequence">,
+) => ({
+  key: fact.subject.key,
+  title: fact.subject.title,
+  state: entryDueSoon(fact)
+    ? "due today"
+    : `${fact.consequence.charAt(0).toLowerCase()}${fact.consequence.slice(1).replace(/\.$/, "")}`,
+  entry: true as const,
+});
+
 /** What the holder's view hides, such as "Only me": counted, never named, as an agent reads it. */
 const privateLine = (unnamed: ReadonlyArray<Pick<KinPulseFact, "sense">>) => {
   const today = unnamed.filter((fact) => fact.sense === "task_due_soon").length;
@@ -77,7 +90,7 @@ const privateLine = (unnamed: ReadonlyArray<Pick<KinPulseFact, "sense">>) => {
  * a count of the private ones.
  */
 export const holderBody = (
-  lines: ReadonlyArray<ReturnType<typeof holderLine>>,
+  lines: ReadonlyArray<ReturnType<typeof holderLine> & { readonly entry?: true }>,
   unnamed: ReadonlyArray<Pick<KinPulseFact, "sense">> = [],
 ) => {
   const rest = lines.length - SHOWN;
@@ -89,7 +102,9 @@ export const holderBody = (
             `${lines[0]!.key} ${lines[0]!.title} ${lines[0]!.state}.${lines[0]!.reminder === undefined ? "" : ` ${lines[0]!.reminder}`}`,
           ]
         : [
-            `${lines.length} of your tasks need you:`,
+            lines.some((one) => one.entry === true)
+              ? `${lines.length} things need you:`
+              : `${lines.length} of your tasks need you:`,
             ...lines
               .slice(0, SHOWN)
               .map(
@@ -130,6 +145,7 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
       ORDER BY record_id`)
       dueOf.set(row.recordId, row.dueAt);
   const lines = input.facts.flatMap((fact) => {
+    if (fact.sense === "entry_late" || fact.sense === "entry_check") return [entryLine(fact)];
     const due = fact.subject.recordId === undefined ? undefined : dueOf.get(fact.subject.recordId);
     return due === undefined ? [] : [holderLine(ctx, fact, due)];
   });

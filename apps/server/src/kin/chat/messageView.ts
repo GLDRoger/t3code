@@ -1,9 +1,26 @@
 import type { KinChatMember, KinMessage } from "@t3tools/contracts";
 
+/** A message its agent took back: only the line that says so, never its words (`withdrawnSaid`). */
+const withdrawnLine = (message: KinMessage): KinMessage => {
+  const {
+    attachments: _attachments,
+    refs: _refs,
+    links: _links,
+    embeds: _embeds,
+    turnChanges: _turnChanges,
+    ...rest
+  } = message;
+  return { ...rest, body: "" };
+};
+
 export function messageForViewer(
   message: KinMessage,
   viewer: KinChatMember["principal"] | undefined,
 ): KinMessage {
+  if (message.withdrawn !== undefined) {
+    const { clientMessageId: _, ...line } = withdrawnLine(message);
+    return line;
+  }
   if (
     (viewer?._tag === "person" &&
       message.author._tag === "human" &&

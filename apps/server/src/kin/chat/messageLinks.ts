@@ -68,7 +68,7 @@ export const keysIn = (body: string): ReadonlyArray<string> => [
 const NUMBER = /(?<![\p{L}\p{N}/-])([\p{L}\p{N}]+(?:[/-][\p{L}\p{N}]+)+)(?![\p{L}\p{N}/-])/gu;
 
 /** What in a message could be a printed number, for looking those up and no others. */
-const numbersIn = (body: string): ReadonlyArray<string> =>
+export const numbersIn = (body: string): ReadonlyArray<string> =>
   [...linkableText(body).matchAll(NUMBER)]
     .map((match) => match[1]!)
     .filter((token) => /\d/.test(token));
@@ -440,6 +440,33 @@ export const nameKeys = Effect.fn("KinMessageLinks.nameKeys")(function* (
 });
 
 /**
+ * What an agent's withdrawn message said, for the owner and co-owners only: every other reader
+ * gets just its line (`messageForViewer` takes the words off for everyone first).
+ */
+const withdrawnSaid = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  messages: ReadonlyArray<KinMessage>,
+  known?: boolean,
+) {
+  const taken = messages.filter((message) => message.withdrawn !== undefined);
+  if (taken.length === 0 || !(known ?? (yield* ownerLevel(orgId, personId)))) return messages;
+  const sql = yield* SqlClient.SqlClient;
+  const said = new Map(
+    (yield* sql<{ messageId: string; body: string }>`SELECT message_id AS "messageId", body
+      FROM kin_messages WHERE org_id = ${orgId}
+        AND message_id IN ${sql.in(taken.map((message) => message.messageId))}
+      ORDER BY message_id`).map((row) => [row.messageId, row.body] as const),
+  );
+  return messages.map((message) => {
+    const body = said.get(message.messageId);
+    return message.withdrawn === undefined || body === undefined || body === ""
+      ? message
+      : { ...message, withdrawn: { ...message.withdrawn, said: body } };
+  });
+});
+
+/**
  * Each message with the names in it this reader may open (`links`), worked out for this reader:
  * an entry they can't see, by name or number, yields nothing, the same as one that doesn't
  * exist. Agents read the text as written, so their messages come back unchanged.
@@ -455,7 +482,7 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
   const texts = messages.filter(
     (message) => message.kind === "text" && message.status !== "deleted",
   );
-  if (texts.length === 0) return messages;
+  if (texts.length === 0) return yield* withdrawnSaid(orgId, reader.personId, messages);
   const owner = yield* ownerLevel(orgId, reader.personId);
   const viewer = owner ? KIN_OWNER_LEVEL : viewerOfPeople([reader.personId]);
   const sql = yield* SqlClient.SqlClient;
@@ -499,7 +526,7 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
         agentTexts.map((message) => message.messageId),
       )
     : new Map<string, KinTurnChanges>();
-  return messages.map((message) => {
+  return (yield* withdrawnSaid(orgId, reader.personId, messages, owner)).map((message) => {
     if (message.kind !== "text" || message.status === "deleted") return message;
     // A person's own words keep their keys as typed; an agent's read as names.
     const links: ReadonlyArray<KinMessageLink> =

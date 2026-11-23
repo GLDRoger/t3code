@@ -33,9 +33,14 @@ const lateReminder = (fact: KinPulseFact, zone: string) =>
 
 const unitMs = (unit: string) => (unit === "hours" ? HOUR_MS : unit === "days" ? DAY_MS : 0);
 
+/** A list entry coming due (`entry_late:<key>:soon=<due>`), told as a task due soon is. */
+export const entryDueSoon = (fact: Pick<KinPulseFact, "sense" | "key">) =>
+  fact.sense === "entry_late" && fact.key.includes(":soon=");
+const comingDue = (fact: KinPulseFact) => DUE_SENSES.has(fact.sense) || entryDueSoon(fact);
+
 /** Whether a coming-due fact falls due on `at`'s day in `zone`. */
 const dueToday = (fact: KinPulseFact, at: number, zone: string) => {
-  if (!DUE_SENSES.has(fact.sense) || fact.measure === undefined) return false;
+  if (!comingDue(fact) || fact.measure === undefined) return false;
   const ms = unitMs(fact.measure.unit);
   return ms > 0 && dayIn(at + Math.max(0, fact.measure.value) * ms, zone) === dayIn(at, zone);
 };
@@ -45,6 +50,11 @@ export const forHolder = (fact: KinPulseFact, at: number, zone: string) =>
   fact.sense === "task_late" ||
   fact.sense === "theirs_late" ||
   (fact.sense === "task_due_soon" && dueToday(fact, at, zone));
+
+/** A list section's entry its holder must hear of, as a task: late, due today, or off its check. */
+export const entryForHolder = (fact: KinPulseFact, at: number, zone: string) =>
+  fact.sense === "entry_check" ||
+  (fact.sense === "entry_late" && (!entryDueSoon(fact) || dueToday(fact, at, zone)));
 
 export const SHELL_QUIET_EVENT_PREFIX = "shell:quiet:";
 
@@ -69,7 +79,12 @@ export const factSig = (fact: KinPulseFact, at: number, zone: string) => {
           : ""
       : fact.stage !== undefined
         ? fact.stage
-        : m === undefined || DUE_SENSES.has(fact.sense) || m.threshold <= 0
+        : // A list entry is no task: told once an episode, never again as it ages.
+          m === undefined ||
+            comingDue(fact) ||
+            fact.sense === "entry_late" ||
+            fact.sense === "entry_check" ||
+            m.threshold <= 0
           ? ""
           : String(Math.floor(m.value / m.threshold));
   // "open" stays so rows told before holds left the signature still match.

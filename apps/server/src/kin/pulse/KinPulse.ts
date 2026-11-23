@@ -57,6 +57,7 @@ import { morningPages, pageMinuteSince } from "./personMorning.ts";
 import {
   agentParty,
   checkInHandling,
+  entryForHolder,
   forHolder,
   markTold,
   SHELL_QUIET_EVENT_PREFIX,
@@ -64,6 +65,7 @@ import {
 } from "./told.ts";
 import { visibleOverflow } from "./senses/capped.ts";
 import { draftWakes } from "./draftWake.ts";
+import { reviewWakes } from "./reviewWake.ts";
 import {
   asideOf,
   asideView,
@@ -212,13 +214,20 @@ export const quiet = (
       readonly recordId?: string | undefined;
       readonly key?: string | undefined;
     };
-    readonly section?: SectionId | undefined;
+    readonly section?: SensedFact["section"] | undefined;
     readonly extraSection?: SectionId | undefined;
   },
   shell: Shell,
   onDeals: ReadonlySet<string> = new Set(),
 ) => {
-  if (fact.section !== undefined && !KinShell.sectionOn(shell, fact.section)) return true;
+  const list = fact.section === undefined ? undefined : KinShell.listOfSection(fact.section);
+  if (list !== undefined && !KinShell.listSectionOn(shell, list)) return true;
+  if (
+    fact.section !== undefined &&
+    list === undefined &&
+    !KinShell.sectionOn(shell, fact.section as SectionId)
+  )
+    return true;
   if (fact.extraSection !== undefined && !KinShell.sectionOn(shell, fact.extraSection)) return true;
   if (fact.subject?.recordId !== undefined && onDeals.has(fact.subject.recordId)) return true;
   const section = sectionOfSense(fact.sense);
@@ -272,14 +281,20 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
   if (candidates.length === 0 || viewer.people.length === 0) return [...counts, ...deals];
   const sql = yield* SqlClient.SqlClient;
   const ids = [...new Set(candidates.map((fact) => fact.subject.recordId!))];
+  // A list section's entry facts reach whoever sees the entry; others only on tasks and milestones.
+  const entries = new Set<string>(
+    candidates.filter((fact) => ENTRY_SENSES.has(fact.sense)).map((fact) => fact.subject.recordId!),
+  );
   const seen = new Set<string>();
   for (let start = 0; start < ids.length; start += 500)
-    for (const row of yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId"
+    for (const row of yield* sql<{ recordId: string; registerId: string }>`SELECT
+        r.record_id AS "recordId", r.register_id AS "registerId"
       FROM kin_records r WHERE r.org_id = ${orgId}
         AND r.record_id IN ${sql.in(ids.slice(start, start + 500))}
-        AND r.register_id IN ('work', 'milestones') AND ${viewSees(sql, viewer.people)}
+        AND ${viewSees(sql, viewer.people)}
       ORDER BY r.record_id`)
-      seen.add(row.recordId);
+      if (entries.has(row.recordId) || row.registerId === "work" || row.registerId === "milestones")
+        seen.add(row.recordId);
   // A meeting's alert asks how it went: only for the people who were in it.
   const meetingIds = [
     ...new Set(
@@ -460,6 +475,7 @@ const lastFacts = new Map<
 export const lastTick = (orgId: KinOrgId) => lastFacts.get(orgId);
 /** Facts that can't wait for the morning: they wake their agent whatever the hour. */
 const URGENT_SENSES = new Set<KinPulseFact["sense"]>(["client_waiting_on_us"]);
+const ENTRY_SENSES = new Set<string>(["entry_late", "entry_check"]);
 
 /**
  * Late and due-today work reaches whoever holds it, once (`kin_pulse_told`): an agent holder is
@@ -490,7 +506,7 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
     } = sensed;
     const open = { ...fact, handled: handledOf(stored.get(fact.key), at, sensed) };
     return open.handled === null &&
-      forHolder(open, at, zone) &&
+      (forHolder(open, at, zone) || entryForHolder(open, at, zone)) &&
       asideOf(fact, holds, { _tag: "owner" }) === undefined
       ? [open]
       : [];
@@ -836,6 +852,8 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         }),
         sees: (personId, some) => visibleTo(orgId, { _tag: "people", people: [personId] }, some),
       });
+      // An agent's unread messages whose subject moved on: one wake to keep them true.
+      const reviewed = yield* reviewWakes({ orgId, at });
       if (moved > 0 || sensedNow !== lastSensed.get(orgId)) yield* refreshes.touch(orgId, "pulse");
       yield* sql.afterCommit(
         Effect.sync(() => {
@@ -844,7 +862,15 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         }),
       );
       gone = cleared.map((row) => row.fact_key);
-      return { facts: facts.length, cleared: cleared.length, woken, told, pages, drafted };
+      return {
+        facts: facts.length,
+        cleared: cleared.length,
+        woken,
+        told,
+        pages,
+        drafted,
+        reviewed,
+      };
     }),
   );
   yield* settleNotices(orgId, gone);

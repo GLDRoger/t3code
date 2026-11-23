@@ -61,6 +61,7 @@ import { regionOf } from "./region.ts";
 import {
   checkFields,
   defineList,
+  describe,
   keyFor,
   type ListDef,
   listDef,
@@ -69,6 +70,7 @@ import {
   proposalFor,
   startState,
   storedCategoryLabels,
+  typedText,
 } from "./registers.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import {
@@ -833,6 +835,10 @@ const make = Effect.gen(function* () {
       }
       if (spec?.type === "file")
         return yield* invalid(`${spec.label} holds files; Kin doesn't import files.`);
+      if (spec?.type === "number" || spec?.type === "yesno")
+        return (
+          typedText(spec.type, value) ?? (yield* invalid(`${spec.label} takes ${describe(spec)}.`))
+        );
       if (spec?.type === "link") {
         const projectLink = spec.link === "projects";
         const id = projectLink
