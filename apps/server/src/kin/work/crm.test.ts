@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
 import { assert, it } from "@effect/vitest";
@@ -782,6 +783,26 @@ it.effect("an overdue invoice or a long silence with the client puts a project a
       summary.projects!.find((one) => one.project.key === build.key),
       { health: "at_risk" },
     );
+    // With Invoices and quotes off, an overdue invoice puts no project at risk, and back on it does.
+    const invoicesOn = (on: boolean) =>
+      KinShell.KinShell.use((shell) =>
+        shell
+          .get(orgId)
+          .pipe(
+            Effect.flatMap(({ rev }) => shell.set(orgId, ownerId, rev, [{ id: "invoices", on }])),
+          ),
+      ).pipe(Effect.provide(KinShell.layer));
+    yield* invoicesOn(false);
+    const unseen = yield* health(build.key);
+    assert.include(unseen, { health: "on_track" });
+    assert.deepInclude(unseen.healthBecause, { overdueInvoices: 0 });
+    assert.strictEqual(
+      (yield* Clients.projects([owner], { orgId })).projects.find((row) => row.key === build.key)
+        ?.health,
+      "on_track",
+    );
+    yield* invoicesOn(true);
+    assert.include(yield* health(build.key), { health: "at_risk" });
     // Another project for the client doesn't take the build's invoice.
     const second = yield* Clients.createProject([owner], {
       orgId,
