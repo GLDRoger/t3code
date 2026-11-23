@@ -135,7 +135,7 @@ export interface KinRecordWho {
   readonly avatar: KinAvatarView;
 }
 
-export function kinRecordWho(who: KinWorkPrincipal, names: KinWorkNames): KinRecordWho {
+function kinRecordWho(who: KinWorkPrincipal, names: KinWorkNames): KinRecordWho {
   const mine = who._tag === "person" && who.personId === names.me;
   const own = mine ? names.people.get(who.personId) : undefined;
   return {

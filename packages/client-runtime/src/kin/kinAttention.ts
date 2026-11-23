@@ -437,8 +437,7 @@ export const kinAttentionCount = (read: KinPulseScreenRead | null) =>
   read === null
     ? 0
     : (read.outline?.open ??
-      read.facts.filter((fact) => fact.handled === null && fact.sense !== "sense_overflow")
-        .length);
+      read.facts.filter((fact) => fact.handled === null && fact.sense !== "sense_overflow").length);
 
 /** The badge's text: nothing at zero, and "99+" past what fits. */
 export const kinAttentionBadge = (count: number) =>

@@ -251,7 +251,9 @@ function KinNeedsBlock(
           {shown.slice(lead).map(needRow)}
         </ul>
       )}
-      {total === 0 ? null : <KinAttentionNotListed lines={props.notListed} onOpen={openAttention} />}
+      {total === 0 ? null : (
+        <KinAttentionNotListed lines={props.notListed} onOpen={openAttention} />
+      )}
       <KinWaitsForFolds
         groups={props.waitsFor}
         chats={props.chats}

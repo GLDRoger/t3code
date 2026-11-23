@@ -252,10 +252,7 @@ export function KinAttentionSection(
   // Only Money's scope carries these, and this section already sits on Money.
   const notListed = more.map((line) => line.text).join("\n");
   return (
-    <ListSection
-      title={KIN_ATTENTION.title}
-      {...(notListed === "" ? {} : { footer: notListed })}
-    >
+    <ListSection title={KIN_ATTENTION.title} {...(notListed === "" ? {} : { footer: notListed })}>
       {open.map((row) => (
         <KinAttentionItem
           key={row.id}

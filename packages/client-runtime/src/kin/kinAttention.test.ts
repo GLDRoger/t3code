@@ -192,7 +192,11 @@ describe("kinAttention", () => {
     const listed = kinAttention(capped, { scope: { type: "all" }, names, now });
     expect(listed.open.map((row) => row.factKey)).not.toContain("sense_overflow:bills");
     expect(listed.more).toEqual([
-      { id: "sense_overflow:late tasks", text: "12 more late tasks not listed", open: { type: "none" } },
+      {
+        id: "sense_overflow:late tasks",
+        text: "12 more late tasks not listed",
+        open: { type: "none" },
+      },
       { id: "sense_overflow:bills", text: "12 more bills not listed", open: { type: "money" } },
     ]);
     expect(kinAttention(capped, { scope: { type: "money" }, names, now }).more).toHaveLength(1);

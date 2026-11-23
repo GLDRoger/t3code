@@ -581,7 +581,10 @@ describe("a list by its definition", () => {
     });
     const open = list({ team: true });
     expect(kinListCanOpenToTeam(open)).toBe(true);
-    expect(kinListEditInput(orgId, open, kinListEditDraftOf(open))).toEqual({ ok: true, input: null });
+    expect(kinListEditInput(orgId, open, kinListEditDraftOf(open))).toEqual({
+      ok: true,
+      input: null,
+    });
     expect(kinListEditInput(orgId, open, { ...kinListEditDraftOf(open), team: false })).toEqual({
       ok: true,
       input: { orgId, list: "equipment", rev: 3, team: false },
