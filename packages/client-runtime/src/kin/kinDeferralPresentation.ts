@@ -25,7 +25,7 @@ export const KIN_SEND_FAILED_TEXT = "Couldn't send that.";
 const KIN_UNDONE_TEXT = "Undone. Kin won't act on this.";
 export const KIN_UNDO_TOO_LATE_TEXT = "Too late to undo: Kin already acted on this.";
 /** Start now hands the work to an agent whose turn may still wait (on the day's budget, say). */
-export const kinAskedToStart = (agent: string | null | undefined) =>
+const kinAskedToStart = (agent: string | null | undefined) =>
   `Asked ${agent ?? "your agent"} to start it.`;
 
 /** The ids a deferral card's taps post (`KIN_DEFERRAL_CARD_ACTIONS`), and its kin cards'. */

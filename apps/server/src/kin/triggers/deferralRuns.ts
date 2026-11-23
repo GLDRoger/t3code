@@ -24,7 +24,7 @@ export type DeferralHead<H extends MemoryItemHead = MemoryItemHead> = H & {
   readonly started?: true;
 };
 
-export function withRun<H extends MemoryItemHead>(
+function withRun<H extends MemoryItemHead>(
   head: H,
   run: DeferralRun | undefined,
 ): DeferralHead<H> {
@@ -41,7 +41,7 @@ export function withRun<H extends MemoryItemHead>(
 }
 
 /** Every deferral run of the org, by item. */
-export const deferralRuns = Effect.fn("Deferrals.runs")(function* (orgId: KinOrgId) {
+const deferralRuns = Effect.fn("Deferrals.runs")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
     itemId: string;
