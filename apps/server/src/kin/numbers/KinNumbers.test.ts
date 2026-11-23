@@ -483,11 +483,14 @@ it.effect("the owner level watches, shares, archives and restores a number; a me
       clientRequestId: "restore",
     });
     assert.lengthOf((yield* Numbers.list(owner)).numbers, 1);
-    for (const refused of [
+    const refusedSave = yield* Effect.flip(
       Definitions.save([member], { orgId, name: "Mine", clientRequestId: "member" }),
-      Definitions.definitions([member], orgId),
-    ])
-      assert.strictEqual((yield* Effect.flip(refused)).reason, "not_allowed");
+    );
+    const refusedRead = yield* Effect.flip(Definitions.definitions([member], orgId));
+    assert.deepStrictEqual(
+      [refusedSave.reason, refusedRead.reason],
+      ["not_allowed", "not_allowed"],
+    );
     assert.strictEqual(
       (yield* Effect.flip(
         save({ key: KinRecordKey.make("G-9"), rev: 0, name: "Target", clientRequestId: "goal" }),

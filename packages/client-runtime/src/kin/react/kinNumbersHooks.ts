@@ -74,7 +74,10 @@ export function makeKinNumbersHooks<R, ER>(app: KinHookApp<R, ER>) {
     const read = useAtomValue(
       target === null || ownerLevel || !allowed
         ? noList
-        : kinClient.numbers({ environmentId: target.environmentId, input: { orgId: target.orgId } }),
+        : kinClient.numbers({
+            environmentId: target.environmentId,
+            input: { orgId: target.orgId },
+          }),
     );
     if (target === null) return false;
     if (ownerLevel) return true;
@@ -137,7 +140,10 @@ export function makeKinNumbersHooks<R, ER>(app: KinHookApp<R, ER>) {
       });
       if (outcome.ok) {
         registry.refresh(
-          kinClient.numbers({ environmentId: target.environmentId, input: { orgId: target.orgId } }),
+          kinClient.numbers({
+            environmentId: target.environmentId,
+            input: { orgId: target.orgId },
+          }),
         );
       }
       return outcome;

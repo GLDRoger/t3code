@@ -114,14 +114,14 @@ const groupDigits = (digits: string, locale: KinNumberLocale) =>
   ).replaceAll("\u0000", locale.group);
 
 /** An exact decimal string ("-1234.50") in this locale's separators; never rounded. */
-export function kinDecimalText(decimal: string, locale: KinNumberLocale): string {
+function kinDecimalText(decimal: string, locale: KinNumberLocale): string {
   const negative = decimal.startsWith("-");
   const [whole = "0", fraction] = (negative ? decimal.slice(1) : decimal).split(".");
   return `${negative ? MINUS : ""}${groupDigits(whole, locale)}${fraction === undefined ? "" : `${locale.decimal}${fraction}`}`;
 }
 
 /** The ISO currency a unit names ("inr", "USD"), else null. */
-export const kinNumberCurrency = (unit: string | undefined) => {
+const kinNumberCurrency = (unit: string | undefined) => {
   const code = unit?.trim().toUpperCase();
   return code !== undefined && /^[A-Z]{3}$/.test(code) && isKinCurrency(code) ? code : null;
 };
@@ -190,7 +190,7 @@ export function kinNumberToday(nowMs: number, zone: string | null): string {
   return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
 }
 
-export function kinShiftDay(day: string, days: number): string {
+function kinShiftDay(day: string, days: number): string {
   const at = new Date(`${day}T00:00:00Z`);
   at.setUTCDate(at.getUTCDate() + days);
   return at.toISOString().slice(0, 10);
@@ -337,7 +337,7 @@ export function kinNumberChange(
 const decimalsOf = (decimal: string) => decimal.split(".")[1]?.length ?? 0;
 
 /** The value each day ended on, oldest first: history is ascending, a day's last is its latest. */
-export function kinNumberDays<V extends { readonly asOf: string }>(
+function kinNumberDays<V extends { readonly asOf: string }>(
   values: ReadonlyArray<V>,
 ): ReadonlyArray<V> {
   const days = new Map<string, V>();

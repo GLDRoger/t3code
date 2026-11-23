@@ -150,7 +150,12 @@ describe("kinNumberHistory", () => {
     const rows = kinNumberHistory(
       [
         { value: "10", asOf: "2026-11-21", by },
-        { value: "120", asOf: "2026-11-22", source: "the Daily sales mail", by: { ...by, name: "Finance" } },
+        {
+          value: "120",
+          asOf: "2026-11-22",
+          source: "the Daily sales mail",
+          by: { ...by, name: "Finance" },
+        },
         { value: "12", asOf: "2026-11-22", by },
       ],
       undefined,
