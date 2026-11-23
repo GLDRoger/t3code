@@ -990,6 +990,21 @@ describe("KinLeadProvision", () => {
         yield* deferral("soon", "snoozed", "remind", due - 3_600_000, due);
         yield* deferral("given", "reminded", "remind", due, null);
         yield* deferral("fired", "armed", "remind", due - 1000, null);
+        // A room's reminder for this lead, in a room the viewer is not in: not on their list.
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+          VALUES ('room-x', ${orgId}, 'team_group', 'Invented room', 1, '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id,
+            role, joined_at)
+          VALUES ('room-x-lead', ${orgId}, 'room-x', 'agent', ${tech.agentId}, 'member',
+            '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('room-card', ${orgId}, 'room-x', 1, 'system', 'owner', 'system', '', '[]', 'posted', '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
+          VALUES (${orgId}, 'roomy', 'armed', ${due - 7_200_000}, 'remind', '{}', 0)`;
+        yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type, revision, state_json, awaiting_json, updated_at)
+          VALUES (${`deferral:${orgId}:roomy`}, ${orgId}, 'room-x', 'room-card', 'native', 'card', 1,
+            ${JSON.stringify({ title: "Invented: the room's own" })}, '[]', '2026-11-09T00:00:00.000Z')`;
+        yield* trigger("deferral:roomy:due", due - 7_200_000);
         const scheduled = (itemId: string, paused: number, nextRunAt: number | null = due) =>
           sql`INSERT INTO kin_scheduled_tasks (org_id, item_id, chat_id, state, paused, recorded_at, updated_at)
             VALUES (${orgId}, ${itemId}, ${tech.ownerChatId}, 'active', ${paused}, '2026-11-09T00:00:00.000Z', 0)`.pipe(

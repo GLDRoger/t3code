@@ -6,6 +6,7 @@ import {
   KinChatError,
   KinLead,
   type KinMemoryItemId,
+  KinPersonId,
   type KinOrgId,
   type MemoryItemEvery,
   ProjectId,
@@ -30,6 +31,7 @@ import * as ThreadManagementService from "../../orchestration-v2/ThreadManagemen
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import { leadProjectId } from "../lead/leadProject.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { isStrayKinTask, KIN_COMMAND_PREFIX, KIN_TASK_PREFIX } from "./taskIds.ts";
 
 const commandIdOf = (orgId: KinOrgId, scheduleId: string) =>
@@ -215,6 +217,8 @@ export interface SaveInput {
   /** True changes an existing schedule in place: same native task, same card. */
   readonly existing: boolean;
   readonly chatId: KinChatId;
+  /** 'shared': set for the chat it was asked in, so it runs there (`sharedChatOf`). */
+  readonly audience?: "shared" | undefined;
   readonly sourceEvent: string;
   readonly saidBy: string;
   readonly title: string;
@@ -333,7 +337,7 @@ const make = Effect.gen(function* () {
         source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at,
         loose_at, check_in, owner_time_json)
       VALUES (${taskId}, ${input.orgId}, ${input.scheduleId}, ${input.agentId}, ${input.chatId},
-        ${input.sourceEvent}, ${input.saidBy}, 'owner_only', ${hash}, ${inbox}, ${input.now},
+        ${input.sourceEvent}, ${input.saidBy}, ${input.audience ?? "owner_only"}, ${hash}, ${inbox}, ${input.now},
         ${input.now}, ${input.around === true ? input.every.at : null},
         ${input.checkIn === true ? 1 : 0},
         ${input.ownerTime === undefined ? null : yield* encodeOwnerTime({ ...input.ownerTime, host: input.every })})
@@ -412,3 +416,22 @@ function asChatError(cause: unknown) {
 }
 
 export const layer = Layer.effect(KinSchedules, make);
+
+/**
+ * Whether a run of `schedule` may still go on: not paused (a Run now included), and a room's own
+ * still has its setter in the company, owner or co-owner. Read at the fire and again at the claim.
+ */
+export const runnable = Effect.fn("KinSchedules.runnable")(function* (
+  sql: SqlClient.SqlClient,
+  schedule: KinSchedule,
+  task: NativeTask,
+) {
+  if ((schedule.pendingEnabled ?? task.enabled) !== 1) return false;
+  if (schedule.audience !== "shared") return true;
+  const [setter] = yield* sql<{ removed: number }>`SELECT removed_at IS NOT NULL AS removed
+    FROM kin_people WHERE org_id = ${schedule.orgId} AND person_id = ${schedule.saidBy}`;
+  if (setter === undefined || setter.removed === 1) return false;
+  return yield* ownerLevel(schedule.orgId, KinPersonId.make(schedule.saidBy)).pipe(
+    Effect.provideService(SqlClient.SqlClient, sql),
+  );
+});
