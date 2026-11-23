@@ -30,7 +30,6 @@ import { sectionOnFor } from "../shell/KinShell.ts";
 import type { SectionId } from "../shell/sections.ts";
 import { homeCurrency } from "../work/companyProfile.ts";
 import { KinRecords, requestHashOf } from "../work/KinRecords.ts";
-import { openPipelineValue } from "../work/deals.ts";
 import { ownerLevelProgressOf, ownerLevelReceivedByCurrency } from "../work/goals.ts";
 import { parseFields, fieldText } from "../work/lists.ts";
 import { addUp, dayIn, monthOf } from "../work/money.ts";
@@ -193,8 +192,11 @@ const compute = Effect.fn("KinNumbers.compute")(function* (
           .map((row) => row.balance),
         yield* homeCurrency(orgId),
       );
-    case "pipeline_open":
+    case "pipeline_open": {
+      // Loaded here: the pulse reads numbers, and deals and the pulse import each other at load.
+      const { openPipelineValue } = yield* Effect.promise(() => import("../work/deals.ts"));
       return yield* openPipelineValue(orgId);
+    }
     case "invoiced_this_month":
       return yield* ownerLevelInvoicedInMonth(orgId, monthOf(today), zone);
   }

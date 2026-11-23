@@ -1,11 +1,9 @@
 import {
-  KinAgentId,
   KinChatError,
   KinNumberCadence,
   KinNumberDecimal,
   KinNumberDirection,
   KinNumberSource,
-  KinPersonId,
   KinWidgetId,
   MemoryItemEvery,
   OrchestratorMcpFailure,
@@ -27,23 +25,18 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
-import { goalFields } from "../work/goals.ts";
-import { KinRecords } from "../work/KinRecords.ts";
 import { askOwner } from "../work/leadMoney.ts";
 import { KinToolText } from "../work/leadSchemas.ts";
 import { admitted, type Lead, leadTool, retryKey } from "../work/leadWork.ts";
-import { ownerWriter } from "../work/ownerWork.ts";
 import { ownerLevelNumbers } from "./KinNumbers.ts";
 import {
-  decodeNumbersChange,
   liveFeeds,
   NUMBERS_CHANGE,
   NumbersChangeJson,
   NumberSpec,
   type NumbersChange,
 } from "./numberRows.ts";
-import { cadenceText, figure } from "./words.ts";
+import { cardLine, WATCH_NEXT } from "./words.ts";
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const encodeChange = Schema.encodeEffect(NumbersChangeJson);
@@ -76,59 +69,9 @@ export const NumbersWatchResult = Schema.Struct({
   next: Schema.String,
 });
 
-type Watched = Effect.Success<ReturnType<typeof ownerLevelNumbers>>[number];
 const nameKey = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
-const quoted = (word: string) => `"${word}"`;
-const plain = (decimal: string, unit: string | undefined) =>
-  unit === undefined || unit === "%"
-    ? figure(decimal, unit)
-    : `${figure(decimal, undefined)} ${unit}`;
-const limitOf = (number: {
-  readonly unit?: string | undefined;
-  readonly above?: string | undefined;
-  readonly below?: string | undefined;
-}) => {
-  const sides = [
-    ...(number.below === undefined ? [] : [`below ${plain(number.below, number.unit)}`]),
-    ...(number.above === undefined ? [] : [`above ${plain(number.above, number.unit)}`]),
-  ];
-  return sides.length === 0 ? undefined : sides.join(" or ");
-};
-
-/** One card line per number: its limit, where its value comes from and when it is fetched. */
-const cardLine = (
-  number: NumbersChange["numbers"][number],
-  feed: NumbersChange["feed"],
-  existing: Watched | undefined,
-) => {
-  const unit = number.unit ?? existing?.unit;
-  const next = {
-    unit,
-    above: number.above ?? existing?.above,
-    below: number.below ?? existing?.below,
-  };
-  const sides = limitOf(next);
-  const limit = sides === undefined ? "no limit" : `speak up ${sides}`;
-  const before = existing === undefined ? undefined : (limitOf(existing) ?? "no limit");
-  const origin =
-    number.compute !== undefined
-      ? "Kin works it out from its own records"
-      : feed !== undefined
-        ? `from ${quoted(feed.source)}, fetched ${cadenceText(feed.every)} at ${feed.at}`
-        : existing === undefined
-          ? "typed in by you"
-          : undefined;
-  const parts = [
-    before !== undefined && before !== (sides ?? "no limit") ? `${limit} (now ${before})` : limit,
-    ...(origin === undefined ? [] : [origin]),
-  ];
-  return existing === undefined
-    ? `Watch ${quoted(number.name)}: ${parts.join("; ")}`
-    : `Change ${quoted(existing.name)} (${existing.key}): ${parts.join("; ")}`;
-};
-
 /** What the card is drawn against: each named number as it stands, and the source's feed. */
-const baseOf = Effect.fn("KinNumbersWatch.base")(function* (
+export const baseOf = Effect.fn("KinNumbersWatch.base")(function* (
   orgId: KinOrgId,
   names: ReadonlyArray<string>,
   source: string | undefined,
@@ -240,10 +183,7 @@ const runWatch = Effect.fnUntraced(function* (lead: Lead, input: typeof NumbersW
   );
   if (older.length > 0)
     yield* (yield* KinLevelGate).closeReplaced(lead, older, KinWidgetId.make(widgetId));
-  return {
-    proposed: lines,
-    next: "Nothing is watched yet. Kin showed this on a card in this chat; it applies when they tap Confirm. Say so in one line.",
-  };
+  return { proposed: lines, next: WATCH_NEXT };
 });
 export const watch = leadTool("KinNumbersWatch.propose", runWatch);
 
@@ -280,103 +220,6 @@ const bindNumbersChange = Effect.fn("KinNumbersWatch.bind")(function* (input: {
   yield* sql`UPDATE kin_profile_changes SET declined_at = ${input.now}
     WHERE org_id = ${input.orgId} AND change_id IN ${sql.in(older.map((row) => row.changeId))}`;
   return older.map((row) => row.widgetId);
-});
-
-/**
- * The answer on a numbers card: an owner-level Confirm makes or changes exactly the numbers it
- * lists, kept by the agent that asked, once, while nothing it names has changed. Its feed's one
- * schedule is made by the scheduled-tasks pass (`makeFeeds`). Undefined for any other card.
- */
-export const answerNumbersChange = Effect.fn("KinNumbersWatch.answer")(function* (input: {
-  readonly orgId: KinOrgId;
-  readonly widgetId: string;
-  readonly personId: KinPersonId;
-  readonly confirmed: boolean;
-  readonly via: "tap" | "reaction";
-  readonly now: number;
-}) {
-  const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ changeId: string; agentId: string; patch: string; done: number }>`
-    SELECT change_id AS "changeId", agent_id AS "agentId", patch_json AS patch,
-      (applied_at IS NOT NULL OR declined_at IS NOT NULL) AS done
-    FROM kin_profile_changes
-    WHERE org_id = ${input.orgId} AND widget_id = ${input.widgetId}
-      AND substr(change_id, 1, 3) = ${NUMBERS_CHANGE}`;
-  if (row === undefined) return undefined;
-  if (!(yield* ownerLevel(input.orgId, input.personId).pipe(Effect.orDie)))
-    return yield* new KinChatError({
-      reason: "not_allowed",
-      message: "Only the owner or a co-owner decides which numbers Kin watches.",
-    });
-  if (input.via === "reaction")
-    return yield* new KinChatError({
-      reason: "not_allowed",
-      message: "Tap Confirm or Cancel on the card to answer this.",
-    });
-  if (row.done === 1)
-    return yield* new KinChatError({
-      reason: "widget_changed",
-      message: "This card was already answered or replaced by a newer one.",
-    });
-  if (!input.confirmed) {
-    yield* sql`UPDATE kin_profile_changes SET declined_at = ${input.now}
-      WHERE org_id = ${input.orgId} AND change_id = ${row.changeId}`;
-    return { title: "Not watched", text: "You said no, so nothing is watched." };
-  }
-  const change = yield* decodeNumbersChange(row.patch).pipe(Effect.orDie);
-  const { matched, base } = yield* baseOf(
-    input.orgId,
-    change.numbers.map((number) => number.name),
-    change.feed?.source,
-    input.now,
-  );
-  if (
-    base !== change.base ||
-    change.numbers.some((number, index) => number.key !== matched[index]?.key)
-  )
-    return yield* new KinChatError({
-      reason: "conflict",
-      message:
-        "A number or feed on this card changed since it was made, so nothing was changed. Ask for it again.",
-    });
-  const records = yield* KinRecords;
-  const writer = ownerWriter({ _tag: "person", orgId: input.orgId, personId: input.personId });
-  const owner = { _tag: "agent" as const, agentId: KinAgentId.make(row.agentId) };
-  for (const [index, number] of change.numbers.entries()) {
-    const fed = number.compute === undefined && change.feed !== undefined;
-    const fields = yield* goalFields(input.orgId, {
-      ...(number.key === undefined ? { measure: "manual" } : {}),
-      ...(number.unit === undefined ? {} : { unit: number.unit }),
-      ...(number.direction === undefined ? {} : { direction: number.direction }),
-      ...(number.above === undefined ? {} : { above: number.above }),
-      ...(number.below === undefined ? {} : { below: number.below }),
-      ...(number.compute === undefined ? {} : { spec: number.compute }),
-      ...(fed ? { source: change.feed!.source, every: change.feed!.every } : {}),
-    });
-    if (number.key === undefined)
-      yield* records.create(input.orgId, writer, {
-        list: "goals",
-        originKey: `numbers:${row.changeId}:${index}`,
-        title: number.name,
-        owner,
-        fields,
-      });
-    else
-      yield* records.update(input.orgId, writer, number.key, {
-        fields,
-        ...(fed ? { owner } : {}),
-      });
-  }
-  yield* sql`UPDATE kin_profile_changes SET applied_at = ${input.now},
-      patch_json = json_set(patch_json, '$.by', ${input.personId})
-    WHERE org_id = ${input.orgId} AND change_id = ${row.changeId}`;
-  return {
-    title: "Watching",
-    text:
-      change.feed === undefined
-        ? "Saved. To stop watching a number, archive it."
-        : "Saved. To stop watching a number, archive it; to stop its feed, pause or delete the schedule's card in this chat.",
-  };
 });
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.

@@ -33,7 +33,8 @@ import * as KinRecords from "../work/KinRecords.ts";
 import { feedTurn, makeFeeds } from "./feeds.ts";
 import * as Numbers from "./KinNumbers.ts";
 import { recordWatched } from "./mcp.ts";
-import { answerNumbersChange, watch } from "./watch.ts";
+import { answerNumbersChange } from "./answer.ts";
+import { watch } from "./watch.ts";
 
 // Invented company, people and sources only.
 const orgId = KinOrgId.make("org");

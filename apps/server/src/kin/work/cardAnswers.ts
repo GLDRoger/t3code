@@ -6,7 +6,7 @@ import {
   type KinPersonId,
   KinWidgetId,
 } from "@t3tools/contracts";
-import { answerNumbersChange } from "../numbers/watch.ts";
+import { answerNumbersChange } from "../numbers/answer.ts";
 import { shellDecision } from "../shell/changes.ts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
