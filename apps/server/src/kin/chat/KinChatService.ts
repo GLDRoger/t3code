@@ -100,7 +100,12 @@ import * as ChartCard from "../widgets/chartCard.ts";
 import * as VisualCard from "../widgets/visualCard.ts";
 import * as CardPlans from "../widgets/cardPlans.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
-import { answerByReply, askedForCard } from "../questions/openQuestions.ts";
+import {
+  answerByReply,
+  askedForCard,
+  questionForCard,
+  STILL_OPEN,
+} from "../questions/openQuestions.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
@@ -1004,6 +1009,25 @@ const make = Effect.gen(function* () {
     yield* canWrite(identity, member);
     if (!(yield* readable(member, widget.messageId))) return yield* notFound;
     return { widget, member };
+  });
+  const restoreChoiceForTap = Effect.fn("KinChatService.restoreChoiceForTap")(function* (
+    widget: KinWidget,
+  ) {
+    const { state } = widget;
+    if (
+      widget.type !== "choice" ||
+      !Predicate.hasProperty(state, "untilAnswered") ||
+      state.untilAnswered !== true ||
+      (Predicate.hasProperty(state, "question") && Predicate.hasProperty(state, "detail"))
+    )
+      return widget;
+    const row = yield* questionForCard(widget).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(cardTapError),
+    );
+    if (row === undefined) return widget;
+    const question = row.raised === 1 ? `${STILL_OPEN}${row.question}`.slice(0, 240) : row.question;
+    return { ...widget, state: { question, detail: null, ...state } };
   });
   /** `readable`, and for a shared turn nothing below the chat's history floor, as `read` gives it. */
   const callerReads = Effect.fn("KinChatService.callerReads")(function* (
@@ -3576,7 +3600,9 @@ const make = Effect.gen(function* () {
     act: Effect.fn("KinChatService.act")(function* (identity, input) {
       identity = yield* personFor(identity, input);
       const request = yield* decodeAct(input).pipe(Effect.mapError(() => invalidState));
-      const { widget, member } = yield* tapTarget(identity, request.widgetId);
+      const target = yield* tapTarget(identity, request.widgetId);
+      const { member } = target;
+      const widget = yield* restoreChoiceForTap(target.widget);
       if (
         widget.type === "choice" &&
         (request.actionId === KIN_CHOICE_DISMISS_ACTION ||

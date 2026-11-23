@@ -9,6 +9,7 @@ import {
   KinMessageId,
   type KinOrgId,
   KinPersonId,
+  type KinWidget,
   KinWidgetId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -648,6 +649,21 @@ export const askedForCard = Effect.fn("KinQuestions.askedForCard")(function* (
     AND for_chat_id IS NOT NULL AND (widget_id = ${widgetId} OR raise_widget_id = ${widgetId})
     LIMIT 1`;
   return rows.length > 0;
+});
+
+export const questionForCard = Effect.fn("KinQuestions.questionForCard")(function* (
+  card: Pick<KinWidget, "orgId" | "chatId" | "widgetId">,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{
+    question: string;
+    state: QuestionState;
+    raised: number;
+  }>`SELECT question, state, (raise_widget_id IS ${card.widgetId}) AS raised FROM kin_questions
+    WHERE org_id = ${card.orgId} AND chat_id = ${card.chatId}
+      AND (widget_id = ${card.widgetId} OR raise_widget_id = ${card.widgetId})
+    ORDER BY asked_at DESC, question_id LIMIT 1`;
+  return row;
 });
 
 /** The card's first line, the server's own: who asks, and through which agent (`askedBy`). */

@@ -4212,3 +4212,175 @@ it.effect(
       }).pipe(Effect.provide(layer)),
     ),
 );
+
+const paymentAsk = {
+  question: "Record Corran Tiles' 95,000 as paid against two invoices?",
+  options: [
+    { label: "Yes, both paid in full", kind: "yes" },
+    { label: "No, leave them open", kind: "no" },
+  ],
+  default: "none",
+  about: ["INV-8", "INV-9"],
+  intent: "record the payment against both invoices",
+};
+const tallyAsk = {
+  question: "Apply the Corran Tiles bank alert to both invoices?",
+  options: [
+    { label: "Yes, record both", kind: "yes" },
+    { label: "Not yet", kind: "no" },
+  ],
+  default: "none",
+  about: ["INV-8", "INV-9", "C-4"],
+  intent: "apply today's receipt",
+};
+
+const PAYMENT_TEST_START = Date.UTC(2026, 10, 16, 14, 8);
+
+const dismissedPayment = Effect.fn("test.dismissedPayment")(function* () {
+  const fixture = yield* ambermill;
+  const { owner, orgId, chats, chatOf, wake, services, sql } = fixture;
+  const chatId = chatOf("chief");
+  const repo = Context.get(services, KinChatRepository);
+  const widget = Effect.fn("test.paymentWidget")(function* (widgetId: string) {
+    return Option.getOrThrow(
+      yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(widgetId) }),
+    );
+  });
+  yield* wake("chief");
+  const first = yield* callAs("chief", "kin_ask", paymentAsk);
+  assert.isTrue(first.ok, JSON.stringify(first.value));
+  const original = yield* widget(String(first.value.widgetId));
+
+  for (const [second, body] of [
+    [20, "Corran Tiles paid 95,000."],
+    [35, "That was for both invoices."],
+  ] as const) {
+    yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 8, second));
+    yield* wake("chief", yield* chats.send(owner, { chatId, body, clientMessageId: body }));
+  }
+  yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 8, 43));
+  yield* chats.act(owner, {
+    widgetId: original.widgetId,
+    revision: original.revision,
+    actionId: "dismiss",
+    clientActionId: "dismiss-original",
+  });
+  const agentId = KinAgentId.make("chief");
+  const threadId = ThreadId.make("chief-thread");
+  const dismissal = yield* startAgentWakeup({ orgId, agentId, threadId, queued: true });
+  const events = yield* sql<{ json: string }>`SELECT json FROM kin_events
+    WHERE org_id = ${orgId} AND wakeup_id = ${dismissal} ORDER BY rowid`;
+  assert.isTrue(
+    events.some(({ json }) => {
+      const event = decodeEvent(JSON.parse(json));
+      return (
+        event._tag === "deferral.due" &&
+        event.subject.type === "question" &&
+        event.subject.dismissed === true &&
+        event.subject.questionId === first.value.question
+      );
+    }),
+  );
+  const tally = Effect.fn("test.tally")(function* () {
+    yield* startAgentWakeup({
+      orgId,
+      agentId,
+      threadId,
+      event: (base) => ({
+        ...base,
+        _tag: "deferral.due",
+        provenance: { _tag: "system" },
+        subject: {
+          type: "scheduled_task",
+          itemId: KinMemoryItemId.make("daily-bank-alert-tally"),
+          runId: "tally-fire",
+        },
+        lateByMs: 0,
+        chatId,
+        origin: { agentId, chatId },
+      }),
+    });
+  });
+  return { ...fixture, repo, widget, first, original, tally };
+});
+
+for (const [build, sparse] of [
+  ["513d5c83667", false],
+  ["current", false],
+  ["513d5c83667", true],
+  ["current", true],
+] as const)
+  for (const choice of ["option-1", "option-2", "dismiss"] as const)
+    it.effect(
+      `takes ${choice} on the tally's new card from ${build} (${sparse ? "sparse" : "complete"} state)`,
+      () =>
+        Effect.andThen(
+          TestClock.setTime(PAYMENT_TEST_START),
+          Effect.gen(function* () {
+            const { sql, chats, owner, orgId, tally, widget, first, original, repo } =
+              yield* dismissedPayment();
+            yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 25, 52));
+            yield* tally();
+            const again = yield* callAs("chief", "kin_ask", tallyAsk);
+            assert.isTrue(again.ok, JSON.stringify(again.value));
+            const shown = yield* widget(String(again.value.widgetId));
+            assert.notStrictEqual(shown.widgetId, original.widgetId);
+            assert.strictEqual(shown.revision, 1);
+            assert.deepStrictEqual(shown.awaiting, [owner.personId]);
+            assert.isNull(shown.closedAt);
+            assert.include(shown.state, { untilAnswered: true, answer: null });
+
+            // Both builds' plain choice and Dismiss helpers send these same fields.
+            const tap = (card: typeof shown, clientActionId: string) => ({
+              widgetId: card.widgetId,
+              revision: card.revision,
+              ...(choice === "dismiss"
+                ? { actionId: "dismiss" }
+                : { actionId: "choose", value: choice }),
+              clientActionId,
+            });
+            yield* TestClock.setTime(Date.UTC(2026, 10, 16, 14, 28));
+            const stale = { ...tap(shown, "stale-new"), revision: shown.revision + 1 };
+            assert.include(yield* Effect.flip(chats.act(owner, stale)), {
+              reason: "widget_changed",
+            });
+
+            const old = tap(original, "old-target");
+            if (choice === "dismiss") yield* chats.act(owner, old);
+            else {
+              assert.include(yield* Effect.flip(chats.act(owner, old)), {
+                reason: "widget_changed",
+              });
+              assert.include(
+                yield* Effect.flip(
+                  chats.act(owner, tap(yield* widget(original.widgetId), "old-revision")),
+                ),
+                { reason: "invalid_state" },
+              );
+            }
+            assert.strictEqual(
+              (yield* questionRow(sql, String(first.value.question))).state,
+              "dismissed",
+            );
+
+            if (sparse)
+              yield* sql`UPDATE kin_widgets SET state_json = json_remove(state_json, '$.question', '$.detail')
+            WHERE org_id = ${orgId} AND widget_id = ${shown.widgetId}`;
+            const request = tap(shown, "new-target");
+            const posted = yield* chats.act(owner, request);
+            assert.strictEqual(posted.kind, choice === "dismiss" ? "text" : "widget_action");
+            assert.deepStrictEqual(yield* chats.act(owner, request), posted);
+            const settled = yield* widget(shown.widgetId);
+            assert.isNotNull(settled.closedAt);
+            assert.deepStrictEqual(settled.awaiting, []);
+            assert.notInclude(
+              (yield* repo.listOpenWaiting(owner)).map((item) => item.widgetId),
+              shown.widgetId,
+            );
+            assert.strictEqual(
+              (yield* questionRow(sql, String(again.value.question))).state,
+              choice === "dismiss" ? "dismissed" : "answered",
+            );
+          }).pipe(Effect.provide(layer)),
+        ),
+    );
