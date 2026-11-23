@@ -7,6 +7,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../../config.ts";
 import * as Sqlite from "../../../persistence/Sqlite.ts";
@@ -23,7 +24,7 @@ import { KinLevelGate } from "../../lead/LevelGate.ts";
 import * as KinPersistence from "../../persistence/KinPersistence.ts";
 import { parseFields } from "../lists.ts";
 import * as KinRecords from "../KinRecords.ts";
-import type { MailMessage } from "../../connections/MailProvider.ts";
+import { MAIL_TOOL, type MailMessage } from "../../connections/MailProvider.ts";
 import { takeAlertMail } from "./alertMail.ts";
 import {
   alertBalances,
@@ -322,6 +323,109 @@ it.layer(layer)((it) => {
       const again = yield* takeAlertMail(connections, orgId, activity);
       assert.deepStrictEqual(again, { threads: 0, recorded: 0, duplicate: 0, rejected: 0 });
       assert.deepStrictEqual(reads, ["t-hdfc"]);
+    }),
+  );
+
+  it.effect("revisits recent unresolved alerts once without needing new mail", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const sql = yield* SqlClient.SqlClient;
+      const connectionId = KinConnectionId.make("recovery-mail");
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+        url_host, auth, reach, state, created_at, updated_at)
+        VALUES (${orgId}, ${connectionId}, 'google', 'Accounts', 'builtin', 'example.test',
+          'oauth', 'closed', 'active', ${NOW}, ${NOW})`;
+      for (const tool of [MAIL_TOOL.list, MAIL_TOOL.read]) {
+        yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
+          definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at)
+          VALUES (${orgId}, ${connectionId}, ${tool}, '{}', 'digest', 'off', 'read', 0, ${NOW})`;
+      }
+
+      const legacy = (threadId: string, date?: string) =>
+        alert(`<${threadId}@invented>`, "Unreadable.", date);
+      for (const [mailbox, threadId, message] of [
+        [connectionId, "fixed", legacy("fixed")],
+        [connectionId, "unknown", legacy("unknown")],
+        [connectionId, "old", legacy("old", "Mon, 02 Nov 2026 10:00:00 +0530")],
+        ["other-mail", "elsewhere", legacy("elsewhere")],
+      ] as const) {
+        yield* takeAlerts(orgId, {
+          connectionId: mailbox,
+          threadId,
+          messages: [message],
+          now: NOW,
+        });
+      }
+      yield* sql`UPDATE kin_bank_alerts SET reference = NULL WHERE org_id = ${orgId}
+        AND outcome = 'unparsed' AND connection_id IN (${connectionId}, 'other-mail')`;
+
+      yield* takeAlerts(orgId, {
+        connectionId,
+        threadId: "current",
+        messages: [legacy("current")],
+        now: NOW,
+      });
+
+      const mail = (threadId: string, stub: ReturnType<typeof legacy>): MailMessage => ({
+        ...stub,
+        threadId,
+        from: "HDFC Bank <alerts@hdfcbank.net>",
+        to: [],
+        replyTo: [],
+        toLine: null,
+        ccLine: null,
+        deliveredTo: [],
+        unread: false,
+        preview: "",
+        references: null,
+        body: { text: stub.text, attachments: [] },
+      });
+      const reads: string[] = [];
+      const connections = {
+        readThread: (_orgId: KinOrgId, _connectionId: string, threadId: string) =>
+          Effect.sync(() => {
+            reads.push(threadId);
+            const message = legacy(threadId);
+            return threadId === "fixed"
+              ? [
+                  mail(threadId, {
+                    ...message,
+                    text: debit("632211119876").replace("**4821", "**7061"),
+                  }),
+                  mail(threadId, { ...legacy("not-listed"), text: debit("632211119877") }),
+                ]
+              : [mail(threadId, message)];
+          }),
+      };
+      const pass = takeAlertMail(connections, orgId, {
+        _tag: "mail",
+        connectionId,
+        since: NOW - 1,
+        until: NOW,
+        account: "accounts@lakeview.example",
+        cursor: null,
+        calendar: [],
+        mail: [],
+      });
+
+      yield* sql`UPDATE kin_connection_tools SET mode = 'read' WHERE org_id = ${orgId}
+        AND connection_id = ${connectionId} AND tool_name = ${MAIL_TOOL.read}`;
+      assert.deepStrictEqual(yield* pass, { threads: 0, recorded: 0, duplicate: 0, rejected: 0 });
+      assert.deepStrictEqual(reads, []);
+      yield* sql`UPDATE kin_connection_tools SET mode = 'read' WHERE org_id = ${orgId}
+        AND connection_id = ${connectionId} AND tool_name = ${MAIL_TOOL.list}`;
+      assert.deepStrictEqual(yield* pass, { threads: 2, recorded: 1, duplicate: 0, rejected: 1 });
+      assert.deepStrictEqual(reads, ["fixed", "unknown"]);
+      assert.deepStrictEqual(yield* pass, { threads: 0, recorded: 0, duplicate: 0, rejected: 0 });
+      assert.deepStrictEqual(reads, ["fixed", "unknown"]);
+      const rows = yield* sql`SELECT thread_id AS thread, outcome FROM kin_bank_alerts
+        WHERE org_id = ${orgId} AND connection_id = ${connectionId} ORDER BY thread_id`;
+      assert.deepStrictEqual(rows, [
+        { thread: "current", outcome: "unparsed" },
+        { thread: "fixed", outcome: "recorded" },
+        { thread: "old", outcome: "unparsed" },
+        { thread: "unknown", outcome: "unparsed" },
+      ]);
     }),
   );
 

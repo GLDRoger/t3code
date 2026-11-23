@@ -22,7 +22,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { turnChanges } from "../lead/turnChanges.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
-import { KIN_OWNER_LEVEL, seenBy, viewerOfPeople, type KinViewer } from "../work/teamView.ts";
+import {
+  KIN_OWNER_LEVEL,
+  seenBy,
+  viewerOfPeople,
+  listNumberSeenBy,
+  type KinViewer,
+} from "../work/teamView.ts";
 
 /** A name Kin knows and where it goes. */
 export interface LinkName {
@@ -209,7 +215,7 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
             json_extract(r.fields_json, '$.number') AS number FROM kin_records r
           WHERE r.org_id = ${orgId} AND json_extract(r.fields_json, '$.number') IS NOT NULL
             AND json_extract(r.fields_json, '$.number') IN ${sql.in(numbers)}
-            AND ${seenBy(sql, viewer)}`;
+            AND ${listNumberSeenBy(sql, viewer)} AND ${seenBy(sql, viewer)}`;
   const keyed =
     keys.length === 0
       ? []

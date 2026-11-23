@@ -92,7 +92,7 @@ import { OFFERINGS_NONE, offeringsArchived, offeringsPromptIndex } from "../work
 import { playbookIndex } from "../work/playbooks.ts";
 import { issuedNumber } from "../work/recordRows.ts";
 import { entriesShown, sensitiveShown, sourcesShown } from "../work/sensitiveReads.ts";
-import { KIN_OWNER_LEVEL, personSees, viewerOfPeople } from "../work/teamView.ts";
+import { KIN_OWNER_LEVEL, listNumberSeenBy, personSees, viewerOfPeople } from "../work/teamView.ts";
 import { personConnections, promptLine as connectionsLine } from "../connections/ConnectionRows.ts";
 import { mailboxPerson } from "../connections/turnMailbox.ts";
 import { companyAccounts } from "../github/githubWatchStore.ts";
@@ -2363,6 +2363,16 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
           WHEN 'co_owner' THEN 'a co-owner' ELSE 'a teammate' END
         FROM kin_people p WHERE p.org_id = r.org_id
         AND p.person_id = r.${sql(column)}), 'Someone') END`;
+  const viewer = ownerOnly
+    ? KIN_OWNER_LEVEL
+    : yield* turnPeople({ orgId, agentId: event.agentId, wakeupId: input.wakeupId }).pipe(
+        Effect.map((behind) =>
+          behind === undefined || behind.people.length === 0
+            ? undefined
+            : viewerOfPeople(behind.people),
+        ),
+        Effect.orElseSucceed(() => undefined),
+      );
   const [entry] = yield* sql<{
     title: string;
     notes: string;
@@ -2372,7 +2382,9 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
     number: unknown;
     holder: string | null;
   }>`SELECT r.title, r.notes, r.due_at AS "dueAt", ${writer("title_by")} AS "titleBy",
-      ${writer("notes_by")} AS "notesBy", json_extract(r.fields_json, '$.number') AS number,
+      ${writer("notes_by")} AS "notesBy",
+      CASE WHEN ${viewer === undefined ? sql`0 = 1` : listNumberSeenBy(sql, viewer)}
+        THEN json_extract(r.fields_json, '$.number') END AS number,
       CASE r.owner_kind
         WHEN 'person' THEN (SELECT hp.display_name FROM kin_people hp
           WHERE hp.org_id = r.org_id AND hp.person_id = r.owner_id)
@@ -2384,16 +2396,6 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
     Effect.orElseSucceed(() => []),
   );
   if (!ownerOnly && entry === undefined) return undefined;
-  const viewer = ownerOnly
-    ? KIN_OWNER_LEVEL
-    : yield* turnPeople({ orgId, agentId: event.agentId, wakeupId: input.wakeupId }).pipe(
-        Effect.map((behind) =>
-          behind === undefined || behind.people.length === 0
-            ? undefined
-            : viewerOfPeople(behind.people),
-        ),
-        Effect.orElseSucceed(() => undefined),
-      );
   const about =
     entry === undefined || withdrawn || viewer === undefined
       ? undefined
