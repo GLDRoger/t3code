@@ -1,4 +1,4 @@
-import { useKinOpensClients } from "./useKinOwnerLevel";
+import { useKinOpensClients, useKinOwnerLevel } from "./useKinOwnerLevel";
 import { KIN_DOCS } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { useAtomValue } from "@effect/atom-react";
@@ -166,7 +166,12 @@ import {
   type KinWorkTarget,
 } from "./useKinWork";
 import { useKinShell } from "./useKinShell";
-import { kinPickerNamed, kinSectionNoun } from "@t3tools/client-runtime/kin/kinShell";
+import {
+  kinPickerNamed,
+  kinSectionNoun,
+  kinSectionOf,
+  kinSectionOffLine,
+} from "@t3tools/client-runtime/kin/kinShell";
 
 const LINK_ICON: Record<KinWorkLinkView["kind"], typeof LinkIcon> = {
   pull_request: PullRequestGlyph.pullRequest,
@@ -235,6 +240,8 @@ export function KinWorkItemSheet(
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
   const canComment = useAtomValue(kinClient.workComment.permissionAtom(environmentId));
   const place = useKinWorkPlace(environmentId);
+  const shell = useKinShell(environmentId);
+  const ownerLevel = useKinOwnerLevel(environmentId);
   const now = new Date(useNowMinuteMs());
   const state = kinWorkItemState(result, changed.answers[itemKey] ?? null);
   useKinWorkItemWatch(
@@ -250,6 +257,12 @@ export function KinWorkItemSheet(
   const entry = state._tag === "ready" && state.item.list !== undefined;
   const sheet = props.frame === "sheet" || entry;
   const Frame = sheet ? SHEET_FRAME : PAGE_FRAME;
+  // An entry of a section that is off, opened by its link, says so, as its page on the phone does.
+  const section =
+    state._tag === "ready" && state.item.list !== undefined
+      ? kinSectionOf({ list: state.item.list })
+      : null;
+  const offLine = section === null ? null : kinSectionOffLine(shell, section, ownerLevel);
 
   const content =
     state._tag === "ready" && state.item.list !== undefined ? (
@@ -265,6 +278,7 @@ export function KinWorkItemSheet(
             links={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place).links}
           />
         }
+        offLine={offLine}
       />
     ) : state._tag === "ready" ? (
       <KinWorkItem

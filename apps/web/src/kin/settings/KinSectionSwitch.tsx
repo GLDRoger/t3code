@@ -210,13 +210,17 @@ function KinSectionRenameDialog(props: {
   const [name, setName] = useState(renamed ? kinSectionName(props.shell, "clients") : "");
   const [noun, setNoun] = useState(renamed ? kinSectionNoun(props.shell, "clients") : "");
   const notReady = kinSectionNameProblem(name, noun);
+  const unchanged =
+    renamed &&
+    name.trim() === kinSectionName(props.shell, "clients") &&
+    noun.trim() === kinSectionNoun(props.shell, "clients");
   return (
     <KinSettingsFormDialog
       title={words.title}
       description={words.detail}
       submitLabel={words.save}
       busy={props.busy}
-      notReady={name.trim() === "" ? "" : notReady}
+      notReady={name.trim() === "" || unchanged ? "" : notReady}
       problem={props.problem}
       typed={name !== "" || noun !== ""}
       onSubmit={() => props.onSave(name, noun)}
