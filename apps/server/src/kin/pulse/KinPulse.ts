@@ -60,6 +60,7 @@ import {
   SHELL_QUIET_EVENT_PREFIX,
   untold,
 } from "./told.ts";
+import { visibleOverflow } from "./senses/capped.ts";
 import { draftWakes } from "./draftWake.ts";
 import {
   asideOf,
@@ -143,7 +144,9 @@ const senseIn = Effect.fn("KinPulse.sense")(function* (ctx: SenseContext) {
   ];
   return facts.toSorted(
     (a, b) =>
-      DateTime.toEpochMillis(a.since) - DateTime.toEpochMillis(b.since) || (a.key < b.key ? -1 : 1),
+      Number(b.sense === "sense_overflow") - Number(a.sense === "sense_overflow") ||
+      DateTime.toEpochMillis(a.since) - DateTime.toEpochMillis(b.since) ||
+      (a.key < b.key ? -1 : 1),
   );
 });
 const sense = (orgId: KinOrgId, at: number) => context(orgId, at).pipe(Effect.flatMap(senseIn));
@@ -233,7 +236,14 @@ const withStored = (
   },
   hold?: Hold | undefined,
 ): KinPulseFact => {
-  const { yours, quietForMs: _quietForMs, section: _section, ...shared } = fact;
+  const {
+    yours,
+    quietForMs: _quietForMs,
+    section: _section,
+    overflow: _overflow,
+    extraSection: _extraSection,
+    ...shared
+  } = fact;
   // One person reading a fact that names them reads it as theirs; a shared view keeps names.
   const own =
     reader.viewer._tag === "people" && reader.viewer.people.length === 1
@@ -264,11 +274,13 @@ export const quiet = (
       readonly key?: string | undefined;
     };
     readonly section?: SectionId | undefined;
+    readonly extraSection?: SectionId | undefined;
   },
   shell: Shell,
   onDeals: ReadonlySet<string> = new Set(),
 ) => {
   if (fact.section !== undefined && !KinShell.sectionOn(shell, fact.section)) return true;
+  if (fact.extraSection !== undefined && !KinShell.sectionOn(shell, fact.extraSection)) return true;
   if (fact.subject?.recordId !== undefined && onDeals.has(fact.subject.recordId)) return true;
   const section = sectionOfSense(fact.sense);
   if (section === null) return false;
@@ -296,6 +308,7 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
   viewer: Viewer,
   sensed: ReadonlyArray<SensedFact>,
   shell?: Shell,
+  includeOverflow = false,
 ) {
   const current = shell ?? (yield* KinShell.get(orgId));
   const onDeals = yield* promisesOnDeals(orgId, current);
@@ -311,7 +324,13 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
       !fact.sensitive &&
       fact.subject.recordId !== undefined,
   );
-  if (candidates.length === 0 || viewer.people.length === 0) return deals;
+  const counts = includeOverflow
+    ? (yield* Effect.forEach(
+        facts.filter((fact) => fact.overflow !== undefined),
+        (fact) => visibleOverflow(orgId, viewer.people, fact),
+      )).flat()
+    : [];
+  if (candidates.length === 0 || viewer.people.length === 0) return [...counts, ...deals];
   const sql = yield* SqlClient.SqlClient;
   const ids = [...new Set(candidates.map((fact) => fact.subject.recordId!))];
   const seen = new Set<string>();
@@ -372,7 +391,7 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
       },
     };
   });
-  return [...work, ...deals];
+  return [...counts, ...work, ...deals];
 });
 
 /**
@@ -411,6 +430,7 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
   readonly viewer: Viewer;
   readonly scope?: KinPulseScope | undefined;
   readonly includeHandled?: boolean | undefined;
+  readonly excludeOverflow?: boolean | undefined;
   /** What is set aside, without the facts it covers: for an agent asked about one. */
   readonly withAside?: boolean | undefined;
   /** The person reading, for "by you" and "on your word". */
@@ -423,7 +443,10 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
 }) {
   const { orgId, at, scope } = input;
   const shell = input.shell ?? (yield* KinShell.getForDisplay(orgId));
-  const sensed = input.sensed ?? (yield* sense(orgId, at));
+  const current = input.sensed ?? (yield* sense(orgId, at));
+  const sensed = input.excludeOverflow
+    ? current.filter((fact) => fact.sense !== "sense_overflow")
+    : current;
   const holds = yield* liveHolds(orgId, at);
   // Before a teammate's view drops the scope it can't name: a hold on that client still counts.
   const asides = new Map(
@@ -432,7 +455,7 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
       return hold === undefined ? [] : [[fact.key, hold] as const];
     }),
   );
-  const visible = yield* visibleTo(orgId, input.viewer, sensed, shell);
+  const visible = yield* visibleTo(orgId, input.viewer, sensed, shell, !input.excludeOverflow);
   const scoped = visible.filter(
     (fact) =>
       (input.factKeys === undefined || input.factKeys.has(fact.key)) &&
@@ -518,7 +541,14 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
   const onDeals = yield* promisesOnDeals(orgId, shell);
   const due = facts.flatMap((sensed): Array<KinPulseFact> => {
     if (quiet(sensed, shell, onDeals)) return [];
-    const { yours: _yours, quietForMs: _quietForMs, section: _section, ...fact } = sensed;
+    const {
+      yours: _yours,
+      quietForMs: _quietForMs,
+      section: _section,
+      overflow: _overflow,
+      extraSection: _extraSection,
+      ...fact
+    } = sensed;
     const open = { ...fact, handled: handledOf(stored.get(fact.key), at, sensed) };
     return open.handled === null &&
       forHolder(open, at, zone) &&
@@ -664,7 +694,14 @@ const markQuiet = Effect.fn("KinPulse.markQuiet")(function* (
       (SELECT value FROM json_each(${yield* encodeKeys(muted.map((fact) => fact.key))}))`;
   const parties = new Map<string, Array<KinPulseFact>>();
   const owners = yield* ownerLevelPeople(orgId);
-  for (const { yours: _yours, quietForMs: _quietForMs, section: _section, ...fact } of muted) {
+  for (const {
+    yours: _yours,
+    quietForMs: _quietForMs,
+    section: _section,
+    overflow: _overflow,
+    extraSection: _extraSection,
+    ...fact
+  } of muted) {
     const destinations = new Set(owners);
     if (fact.actor._tag === "person") destinations.add(fact.actor.personId);
     if (fact.actor._tag === "agent") destinations.add(agentParty(fact.actor.agentId));
@@ -692,7 +729,9 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
   // Sensed from committed rows before the transaction, on a reader: off the writer it needs.
   const ctx = yield* context(orgId, at).pipe(NodeSqliteClient.readOnly);
   const facts = yield* senseIn(ctx).pipe(NodeSqliteClient.readOnly);
-  const sensedText = yield* encodeSensed(facts);
+  const sensedText = yield* encodeSensed(
+    facts.map((fact) => (fact.sense === "sense_overflow" ? { ...fact, since: iso(0) } : fact)),
+  );
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const shell = yield* KinShell.get(orgId);
@@ -748,20 +787,48 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
       const muted = facts.filter((fact) => quiet(fact, shell, onDeals));
       if (muted.length > 0) yield* markQuiet(ctx, muted);
       const woken: Array<string> = [];
+      const latestWakeKeys = facts.flatMap((fact) => {
+        const wokeAt = stored.get(fact.key)?.wokeAt;
+        return fact.wake === "now" && wokeAt != null && !quiet(fact, shell, onDeals)
+          ? [`${fact.key}:${wokeAt}`]
+          : [];
+      });
+      const failedWakes = new Set<string>();
+      for (let start = 0; start < latestWakeKeys.length; start += 500)
+        for (const row of yield* sql<{ key: string }>`SELECT dedupe_key AS key FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'pulse' AND state = 'failed'
+            AND dedupe_key IN ${sql.in(latestWakeKeys.slice(start, start + 500))}
+          ORDER BY dedupe_key`)
+          failedWakes.add(row.key);
       for (const fact of facts) {
         if (quiet(fact, shell, onDeals)) continue;
         const row = stored.get(fact.key);
         if (fact.wake !== "now" || fact.actor._tag !== "agent") continue;
-        if (row === undefined || row.wokeAt !== null || handledOf(row, at, fact) !== null) continue;
+        if (row === undefined || handledOf(row, at, fact) !== null) continue;
+        const personId = agentParty(fact.actor.agentId);
+        const delivery = {
+          orgId,
+          personId,
+          at,
+          zone: ctx.zone,
+          facts: [{ ...fact, handled: null }],
+        };
+        if (
+          row.wokeAt !== null &&
+          (!failedWakes.has(`${fact.key}:${row.wokeAt}`) ||
+            (yield* untold({ ...delivery, anyState: true })).length === 0)
+        )
+          continue;
         // Set aside: it wakes no one; when the hold ends, the check-in tells it once.
         if (asideOf(fact, holds, { _tag: "owner" }) !== undefined) continue;
+        const eventId = KinEventId.make(`pulse-${shortHash(`${orgId}\0${fact.key}\0${at}`)}`);
         const enqueued = yield* queue
           .enqueue(
             yield* decodeEvent({
               _tag: "pulse",
               orgId,
               // A fact that comes back wakes anew: `woke_at` keeps a fact from waking twice.
-              eventId: KinEventId.make(`pulse-${shortHash(`${orgId}\0${fact.key}\0${at}`)}`),
+              eventId,
               agentId: fact.actor.agentId,
               receivedAt: DateTime.formatIso(iso(at)),
               dedupeKey: `${fact.key}:${at}`,
@@ -783,6 +850,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
             }),
           );
         if (!enqueued) continue;
+        yield* markTold({ ...delivery, eventId });
         yield* sql`UPDATE kin_pulse_facts SET woke_at = ${at}
           WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
         woken.push(fact.key);
@@ -800,7 +868,14 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
       const drafted = yield* draftWakes({
         ctx,
         open: facts.flatMap((sensed): Array<KinPulseFact> => {
-          const { yours: _yours, quietForMs: _quietForMs, section: _section, ...fact } = sensed;
+          const {
+            yours: _yours,
+            quietForMs: _quietForMs,
+            section: _section,
+            overflow: _overflow,
+            extraSection: _extraSection,
+            ...fact
+          } = sensed;
           const handled = handledOf(stored.get(fact.key), at, sensed);
           const aside =
             asideOf(fact, holds, { _tag: "owner" }) !== undefined ||
