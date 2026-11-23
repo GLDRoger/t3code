@@ -1,6 +1,7 @@
 import * as KinShell from "../shell/KinShell.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { assert, it } from "@effect/vitest";
+import { Tool } from "effect/ai";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -189,26 +190,55 @@ it.effect(
           ]),
         );
       });
-      // A person's own terminal client asks before a call by these; a flip shows here. Only a
-      // task's comment and state are written; every other tool only reads.
+      // A person's own terminal client asks before a call by these; a flip shows here. Nothing
+      // here deletes, and every write is safe to repeat.
       const read = { readOnly: true, destructive: false, idempotent: true, openWorld: false };
       const write = { readOnly: false, destructive: false, idempotent: true, openWorld: false };
-      const reads = { find: read, open_project: read, open_client: read, read_doc: read };
-      // Zoya has no Money and no Memory page, so her key lists neither.
-      assert.deepStrictEqual(yield* toolsOf(issued.secret), {
+      const everyone = {
+        list_people: read,
+        list_tasks: read,
+        create_task: write,
+        update_task: write,
         list_my_tasks: read,
         get_task: read,
         comment_on_task: write,
         set_task_state: write,
-        ...reads,
-      });
+        find: read,
+        open_project: read,
+        open_client: read,
+        read_doc: read,
+        list_lists: read,
+        list_entries: read,
+        add_entry: write,
+        update_entry: write,
+        read_numbers: read,
+        record_number: write,
+        list_waiting: read,
+        ask_agent: write,
+      };
+      // A new teammate has Clients and Docs, so Zoya's key lists their tools; she has no Money or
+      // Memory and makes no projects, so it lists none of theirs.
+      const places = {
+        create_client: write,
+        update_client: write,
+        log_contact: write,
+        list_deals: read,
+        create_deal: write,
+        update_deal: write,
+        add_promise: write,
+        close_promise: write,
+        write_doc: write,
+      };
+      assert.deepStrictEqual(yield* toolsOf(issued.secret), { ...everyone, ...places });
       const owners = yield* TasksKeys.issue(rhea.app, { orgId });
       assert.deepStrictEqual(yield* toolsOf(owners.secret), {
-        list_my_tasks: read,
-        get_task: read,
-        comment_on_task: write,
-        set_task_state: write,
-        ...reads,
+        ...everyone,
+        ...places,
+        create_project: write,
+        update_project: write,
+        list_invoices: read,
+        open_invoice: read,
+        draft_invoice: write,
         money_summary: read,
         search_memory: read,
       });
@@ -234,20 +264,26 @@ it.effect(
       assert.notProperty(ownerTools, "money_summary");
       assert.notProperty(ownerTools, "open_project");
       assert.notProperty(ownerTools, "open_client");
+      for (const name of ["create_project", "create_client", "list_invoices"])
+        assert.notProperty(ownerTools, name);
       assert.property(ownerTools, "find");
+      // Called anyway, a tool of a section that is off answers as one that isn't there.
       const calls = [
-        ["money_summary", {}, "Money"],
-        ["open_client", { key: "C-3" }, "Clients"],
-        ["open_project", { key: "P-3" }, "Clients"],
+        ["money_summary", {}],
+        ["open_client", { key: "C-3" }],
+        ["open_project", { key: "P-3" }],
+        ["create_project", { title: "Invented" }],
+        ["create_client", { name: "Invented" }],
+        ["list_invoices", {}],
       ] as const;
-      for (const [name, args, label] of calls) {
+      const ownerCall = Effect.fn("test.ownerCall")(function* (name: string, args: object) {
         const started = yield* call({
           token: owners.secret,
           method: "initialize",
           params: initialize,
         });
         const session = started.headers["mcp-session-id"];
-        const body = yield* text(
+        return yield* text(
           yield* call({
             token: owners.secret,
             method: "tools/call",
@@ -255,8 +291,13 @@ it.effect(
             ...(session === undefined ? {} : { session }),
           }),
         );
-        assert.include(body, `${label} is turned off for this company.`);
-      }
+      });
+      const notThere = yield* ownerCall("no_such_tool", {});
+      for (const [name, args] of calls)
+        assert.strictEqual(
+          (yield* ownerCall(name, args)).replaceAll(name, "no_such_tool"),
+          notThere,
+        );
       const started = yield* call({
         token: owners.secret,
         method: "initialize",
@@ -276,18 +317,35 @@ it.effect(
       }
       yield* setShell(1, true);
       // And called anyway, they answer as tools that aren't there.
-      for (const name of ["money_summary", "search_memory"]) {
+      const unknown = yield* text(
+        yield* call({
+          token: issued.secret,
+          method: "tools/call",
+          params: { name: "no_such_tool", arguments: {} },
+          ...(session === undefined ? {} : { session }),
+        }),
+      );
+      for (const [name, args] of [
+        ["money_summary", {}],
+        ["search_memory", { text: "kiln" }],
+        ["create_project", { title: "Invented: kiln" }],
+        ["list_invoices", {}],
+      ] as const) {
         const refused = yield* text(
           yield* call({
             token: issued.secret,
             method: "tools/call",
-            params: { name, arguments: name === "money_summary" ? {} : { text: "kiln" } },
+            params: { name, arguments: args },
             ...(session === undefined ? {} : { session }),
           }),
         );
         assert.include(refused, `"error"`);
         assert.notInclude(refused, "owed");
+        assert.strictEqual(refused.replaceAll(name, "no_such_tool"), unknown);
       }
+      const made = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
+        WHERE title = 'Invented: kiln'`;
+      assert.strictEqual(made[0]?.n, 0);
       // Rhea's key over the endpoint: a wrong kind, another company's entry and one never there
       // all answer the same; text a reader can't see is gone; and no read writes business data.
       const writer = {
@@ -392,3 +450,18 @@ it.effect(
       assert.strictEqual(after.status, 401);
     }).pipe(Effect.scoped, Effect.provide(layer)),
 );
+
+it("the connecting agent is told what stays a tap in Kin, and no tool offers to mark a deal lost", () => {
+  // The six groups are tried through a key in reach.test.ts; this is the one line that says so.
+  for (const place of [
+    "a card",
+    "money or mail out",
+    "Settings → Team",
+    "deleting or archiving",
+    "ask_agent",
+  ])
+    assert.include(KinTasksKeyMcp.TASKS_KEY_INSTRUCTIONS, place);
+  const updateDeal = KinTasksKeyMcp.TasksKeyToolkit.tools.update_deal;
+  assert.notInclude(JSON.stringify(Tool.getJsonSchema(updateDeal)), '"lost"');
+  assert.include(Tool.getDescription(updateDeal) ?? "", "Marking a deal lost is done in Kin.");
+});

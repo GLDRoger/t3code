@@ -28,6 +28,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { markedKey } from "./keyCall.ts";
 import { PreparedJson, shownMail } from "../connections/Sending.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { CODING_AGENT_NAME } from "./recordRows.ts";
@@ -268,7 +269,7 @@ export const insertComment = Effect.fn("KinRecordComments.insert")(function* <E>
       ${input.author._tag}, ${authorId(input.author)},
       ${input.author._tag === "agent" ? input.author.askedBy : null}, ${input.body},
       ${yield* encodeFiles(input.files)}, ${input.requestHash}, ${input.now},
-      ${input.codingAgentKey ?? null})
+      ${(yield* markedKey(input)) ?? null})
     ON CONFLICT DO NOTHING
     RETURNING ${sql.literal(COLUMNS)}`;
   if (inserted === undefined)

@@ -1645,12 +1645,38 @@ features:
       - apps/server/src/kin/people/KinPeople.test.ts
 
   - id: coding-agent-keys
-    name: Coding agent keys for the tasks you hold
+    name: Coding agent keys that act as you
     tab: settings
     web: [home, sheet:Profile, section:Coding agent keys]
     roles: { owner: web, co_owner: web, lead: web, member: web }
     tools:
       [
+        list_people,
+        list_tasks,
+        create_task,
+        update_task,
+        create_project,
+        update_project,
+        create_client,
+        update_client,
+        log_contact,
+        list_deals,
+        create_deal,
+        update_deal,
+        add_promise,
+        close_promise,
+        write_doc,
+        list_invoices,
+        open_invoice,
+        draft_invoice,
+        list_lists,
+        list_entries,
+        add_entry,
+        update_entry,
+        read_numbers,
+        record_number,
+        list_waiting,
+        ask_agent,
         list_my_tasks,
         get_task,
         comment_on_task,
@@ -1663,14 +1689,19 @@ features:
         search_memory,
       ]
     note: >-
-      A person makes a key for their own coding agent (Claude Code, Codex, Cursor) to read the
-      tasks they hold, comment and set state through `/kin/you/mcp`. It also reads, never writes,
-      the projects, clients, docs, Money and team memory that person's own screens show them,
-      through the same reads, minus anything a person marked private and everything under a
-      private client or project, which stay in Kin for every key.
-      Money and memory are listed only for those whose screens open them. The key shows once; the
-      address and the setup lines, with the key left to fill, stay on their own section. At most
-      three live keys, 30 days each. Settings → Profile on the web shows the same section.
+      A person makes a key for their own coding agent (Claude Code, Codex, Cursor), which acts as
+      them through `/kin/you/mcp`: it reads what their own screens show them and does what those
+      screens let them do, through the same service methods, and every write is marked as from their
+      coding agent. It sends the person's words to their agents in their own direct chats (marked as
+      from their coding agent, never counted as their own word, answering nothing), and no agent's
+      reply comes back through the key. Anything a person marked private, and everything under a
+      private client or project, stays in Kin for every key. A tool whose section is off or whose
+      switch the person lacks is not listed. Answering cards, money or mail leaving the company,
+      people and access, connections and keys, the host and settings, and deleting or archiving have
+      no tool, and the repository refuses any key-marked write that drops anything or touches a
+      money list but making an invoice draft: the server's MCP instructions say so. The key shows
+      once; the address and the setup lines, with the key left to fill, stay on their own section.
+      At most three live keys, 30 days each. Settings → Profile on the web shows the same section.
     proof:
       - packages/client-runtime/src/kin/kinTasksKeys.test.ts
       - apps/web/src/kin/KinTasksKeys.browser.test.tsx

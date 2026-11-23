@@ -1,3 +1,4 @@
+import { keyRequestSql } from "../chat/keySent.ts";
 import {
   KinChatError,
   KinRecordId,
@@ -51,7 +52,9 @@ const touchColumns = (sql: Sql) =>
 
 /** One logged contact as a row of the union; removed ones only when `removed` is asked. */
 const loggedRows = (sql: Sql) => sql`SELECT t.party_id AS "partyId", t.touch_id AS id, t.at,
-      t.kind, t.note, COALESCE(wp.display_name, lp.display_name) AS who, 1 AS logged,
+      t.kind, t.note, COALESCE(wp.display_name, lp.display_name)
+        || CASE WHEN ${sql.literal(keyRequestSql("t.origin_key"))} THEN ' (coding agent)' ELSE '' END
+        AS who, 1 AS logged,
       t.logged_by_kind AS "byKind", COALESCE(lp.handle, t.logged_by_id) AS "byName",
       NULL AS "recordId", NULL AS key, NULL AS title, NULL AS "number", t.created_at AS recorded
     FROM kin_client_touches t
