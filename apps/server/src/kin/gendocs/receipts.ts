@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, paymentIdFor, type Writer } from "../work/KinRecords.ts";
+import { KIN_OWN_REFUSAL, refuseKinOwn } from "../people/KinAccess.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
 import {
   endOfDay,
@@ -328,6 +329,7 @@ const backed = Effect.fn("KinReceipts.backed")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.payment);
   const receipt = yield* records.get(orgId, key);
   if (receipt === undefined || receipt.registerId !== RECEIPTS)
     return yield* invalid(`${key} isn't a receipt. Nothing changed.`);

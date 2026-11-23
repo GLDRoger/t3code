@@ -14,7 +14,7 @@ import * as LeadAccess from "../lead/LeadAccess.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import * as Reach from "../lead/Reach.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
-import { isOwnerHimself, mayActAsOwner } from "../people/KinAccess.ts";
+import { isOwnerHimself, KIN_OWN_REFUSAL, kinOwnTurn, mayActAsOwner } from "../people/KinAccess.ts";
 import { boundReview, headKey, POSTING, receiptOf } from "./boundReview.ts";
 import {
   agentPostsOf,
@@ -396,7 +396,11 @@ export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
   input: Parameters<typeof sendReview>[1],
 ) {
   const bound = yield* boundReview(lead);
-  if (bound === undefined) return yield* ownerGitHubReview(lead, input);
+  if (bound === undefined) {
+    if (yield* kinOwnTurn(lead.orgId, lead.agentId, lead.wakeupId))
+      return yield* refuse(KIN_OWN_REFUSAL.review);
+    return yield* ownerGitHubReview(lead, input);
+  }
   const sql = yield* SqlClient.SqlClient;
   const ref = `${bound.repo}#${bound.number}`;
   if (input.repo.trim().toLowerCase() !== bound.repo.toLowerCase() || input.number !== bound.number)

@@ -8,6 +8,7 @@ import {
   KinAgentId,
   KinChatId,
   KinEvent,
+  KinEventId,
   KinPersonId,
   ProviderInstanceId,
   ThreadId,
@@ -15,6 +16,7 @@ import {
 import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -53,6 +55,7 @@ import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr, runGh } from "./fakeG
 import * as GitHubWatch from "./GitHubWatch.ts";
 import { headKey, POSTING } from "./boundReview.ts";
 import { ASK_REFUSAL, POST_REFUSAL, PULL_REFUSAL } from "./reviewAsk.ts";
+import { KIN_OWN_REFUSAL } from "../people/KinAccess.ts";
 
 /**
  * Ambermill (invented): Rhea owns it and the GitHub login Kin watches with; Dev, Zoya and Meera
@@ -882,6 +885,49 @@ it.effect(
     }).pipe(Effect.provide(layer));
   },
 );
+
+it.effect("a turn Kin woke by itself posts no review; the owner's own ask in his chat does", () => {
+  const { github, layer } = harness();
+  return Effect.gen(function* () {
+    github.openItem({
+      repo: APP,
+      pull: true,
+      author: "dev-gh",
+      association: "MEMBER",
+      title: "Parse invoice dates",
+    });
+    const { ask, end, runReview, directOf, owner, queue, sql, orgId } = yield* ambermill(github);
+    const post = callAs("tech", "kin_github_review", {
+      repo: APP,
+      number: 1,
+      body: "One nit.",
+      event: "COMMENT",
+    });
+    yield* sql`UPDATE kin_events SET state = 'done'
+      WHERE org_id = ${orgId} AND tag = 'github' AND state = 'queued'`;
+    const { event } = yield* queue.enqueue({
+      _tag: "pulse",
+      orgId,
+      eventId: KinEventId.make("pulse-own"),
+      agentId: tech,
+      receivedAt: DateTime.makeUnsafe(yield* Clock.currentTimeMillis),
+      dedupeKey: "pulse-own",
+      provenance: { _tag: "system" },
+      factKeys: ["task_stuck:W-1"],
+    });
+    yield* runReview(event.eventId);
+    const refused = yield* post;
+    assert.isFalse(refused.ok);
+    assert.strictEqual(refused.value.message, KIN_OWN_REFUSAL.review);
+    assert.lengthOf(github.world.reviews, 0);
+    yield* end("completed");
+
+    yield* ask(owner.personId, yield* directOf(owner.personId), "Post your review of #1");
+    const posted = yield* post;
+    assert.isTrue(posted.ok, JSON.stringify(posted.value));
+    assert.lengthOf(github.world.reviews, 1);
+  }).pipe(Effect.provide(layer));
+});
 
 // Restricting the pair, closing the chat or removing the person ends a review still waiting, as
 // it ends their waiting messages: nothing runs and nothing posts. One already running ends unheard.
