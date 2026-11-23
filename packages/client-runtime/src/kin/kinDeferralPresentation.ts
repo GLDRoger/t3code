@@ -1,9 +1,11 @@
 import { kinFailureText } from "./kinAnswers.ts";
 import {
   KIN_ASKER_ONLY_REFUSAL,
+  KIN_DEFERRAL_CARD_ACTIONS,
   type KinCardAsker,
   KinChatError,
   KinDeferralCard,
+  type KinDeferralCardAction,
   type KinReminderCardAction,
   type KinScheduledTaskCardAction,
   type KinWidget,
@@ -22,7 +24,7 @@ export const KIN_SEND_FAILED_TEXT = "Couldn't send that.";
 const KIN_UNDONE_TEXT = "Undone. Kin won't act on this.";
 export const KIN_UNDO_TOO_LATE_TEXT = "Too late to undo: Kin already acted on this.";
 
-/** The ids the host takes for each phase (`actionsFor` in the server's deferrals). */
+/** The ids a deferral card's taps post (`KIN_DEFERRAL_CARD_ACTIONS`), and its kin cards'. */
 export type KinDeferralActionId =
   | "undo"
   | "change"
@@ -65,7 +67,7 @@ export interface KinDeferralCardView {
 }
 
 const then: Record<KinDeferralCard["onDue"], string> = {
-  start: "I'll start then.",
+  start: "I'll ask you to start it then.",
   remind: "I'll remind you then.",
   ask: "I'll ask you then.",
   chase: "I'll chase it then.",
@@ -164,9 +166,23 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
   },
 };
 
-// The host refuses Start now, Monday and Cancel until its owner-tap dispatcher lands, and Undo
-// once the card has moved past confirm, so a decision card offers no buttons yet.
-const DECISION_ACTIONS: ReadonlyArray<KinDeferralAction> = [];
+const DEFERRAL_ACTIONS: ReadonlySet<string> = new Set(KIN_DEFERRAL_CARD_ACTIONS);
+
+/**
+ * The taps the host says it takes on this card. A card written before it said so offers Undo
+ * when confirmed and nothing after. Only an owner-level viewer is offered more than Undo; the
+ * card's asker sees a shared chat's own card, whose only tap is Undo.
+ */
+function hostActions(
+  card: KinDeferralCard,
+  ownerLevel: boolean | undefined,
+): ReadonlyArray<KinDeferralAction> {
+  const ids = card.actions ?? (card.phase === undefined ? ["undo"] : []);
+  return ids
+    .filter((id): id is KinDeferralCardAction => DEFERRAL_ACTIONS.has(id))
+    .filter((id) => id === "undo" || ownerLevel !== false)
+    .map((id) => KIN_DEFERRAL_ACTIONS[id]);
+}
 
 // Whole formatted strings only: Hermes leaves out `hour` and `minute` from `formatToParts`.
 const formatters = new Map<string, { date: Intl.DateTimeFormat; time: Intl.DateTimeFormat }>();
@@ -244,7 +260,12 @@ export function kinAskedByLine(askedBy: KinCardAsker | undefined): string | null
 
 type CardBody = Pick<KinDeferralCardView, "phase" | "lines" | "countdown" | "actions">;
 
-function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody {
+function cardBody(
+  card: KinDeferralCard,
+  timeZone: string | undefined,
+  ownerLevel: boolean | undefined,
+): CardBody {
+  const actions = hostActions(card, ownerLevel);
   const dueMs = Date.parse(card.dueAt);
   // The host writes `text` in the owner's zone; show it only when it adds to the local lines.
   const text = clamp(card.text, 280);
@@ -265,8 +286,7 @@ function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody
           }`,
         ]),
         countdown: { to: dueMs, kind: "due" },
-        // The host takes only Undo here until its owner-tap dispatcher lands for Change and Just remind me.
-        actions: [KIN_DEFERRAL_ACTIONS.undo],
+        actions,
       };
     case "heads_up": {
       // The host's text repeats the start time in the owner's zone, so the local lines replace it.
@@ -280,7 +300,7 @@ function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody
             ? [starting]
             : [`This was due at ${formatKinDeferralClock(dueMs, timeZone)}.`, starting],
         countdown: { to: startMs, kind: "start" },
-        actions: DECISION_ACTIONS,
+        actions,
       };
     }
     case "asked":
@@ -294,7 +314,7 @@ function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody
               ]
             : [text],
         countdown: null,
-        actions: DECISION_ACTIONS,
+        actions,
       };
     case "started":
       return { phase: "started", lines: withText(["Started."]), countdown: null, actions: [] };
@@ -305,6 +325,8 @@ export function kinDeferralCardView(
   widget: KinWidget,
   /** The device timezone when omitted; tests pass one. */
   timeZone?: string,
+  /** False for a teammate: they are offered Undo only. Unknown offers what the host says. */
+  ownerLevel?: boolean,
 ): KinDeferralCardView | null {
   const decoded = decodeDeferral(widget.state);
   if (Option.isNone(decoded)) return null;
@@ -312,7 +334,7 @@ export function kinDeferralCardView(
   const title = clamp(card.title, 200) || (card.onDue === "remind" ? "Reminder" : "Scheduled work");
   const shown: CardBody =
     widget.closedAt === null
-      ? cardBody(card, timeZone)
+      ? cardBody(card, timeZone, ownerLevel)
       : { phase: "closed", lines: ["Closed."], countdown: null, actions: [] };
   const asked = kinAskedByLine(card.askedBy);
   const body = asked === null ? shown : { ...shown, lines: [...shown.lines, asked] };
@@ -387,18 +409,6 @@ export function kinActionFailureNotice(
     default:
       return { kind: "error", text: kinFailureText(cause, KIN_SEND_FAILED_TEXT) };
   }
-}
-
-/** Why the host may refuse [Start now] (TRIG-8's `Deferrals.act`), in the owner's words. */
-export const KIN_START_NOW_REFUSALS = {
-  stopped: "Starts are paused for now. Ask your agent in the chat.",
-  below_l2: "Your agent can't start work from here. Ask it in the chat.",
-} as const satisfies Record<string, string>;
-
-export function kinStartNowRefusalNotice(
-  reason: keyof typeof KIN_START_NOW_REFUSALS,
-): KinCardNotice {
-  return { kind: "error", text: KIN_START_NOW_REFUSALS[reason] };
 }
 
 export type KinActionOutcome =
@@ -485,6 +495,9 @@ const SERVER_DONE: Partial<Record<KinDeferralActionId, string>> = {
   snooze_1h: "Snoozed.",
   snooze_tomorrow: "Snoozed.",
   run_now: "Starting a run now.",
+  start_now: "Started.",
+  monday: "Moved to Monday.",
+  cancel: "Cancelled.",
   pause: "Paused.",
   resume: "Resumed.",
   delete: "Deleted.",

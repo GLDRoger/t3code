@@ -1,12 +1,18 @@
 import {
   EnvironmentId,
+  KIN_CHOICE_CARD_ACTION,
+  KinChatError,
   KinPushCategory,
   KinPushData,
   kinDeferralItemIdFromWidgetId,
   type KinChatId,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
-import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
+import {
+  kinChoiceActInput,
+  kinChoiceFailureNotice,
+} from "@t3tools/client-runtime/kin/kinChoicePresentation";
+import { kinActionFailureNotice } from "@t3tools/client-runtime/kin/kinDeferralPresentation";
 import { kinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -222,6 +228,24 @@ export function kinNotificationRoute(response: unknown): KinNotificationRoute | 
     environmentId: EnvironmentId.make(target.environmentId),
     paths: landing(data, read.subject, target),
     act: action === undefined ? null : buttonAct(data, action, delivery),
+  };
+}
+
+const isKinChatError = Schema.is(KinChatError);
+
+/** What a notification button the host refused says, in its card's own words. */
+export function kinRefusedActionAlert(
+  actionId: string,
+  failure: { readonly message: string },
+): { readonly title: string; readonly message: string } {
+  if (actionId === KIN_CHOICE_CARD_ACTION)
+    return {
+      title: "Your answer wasn't recorded",
+      message: isKinChatError(failure) ? kinChoiceFailureNotice(failure).text : failure.message,
+    };
+  return {
+    title: "That wasn't done",
+    message: isKinChatError(failure) ? kinActionFailureNotice(failure).text : failure.message,
   };
 }
 

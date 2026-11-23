@@ -1,13 +1,22 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
-import { EnvironmentId, KinWidgetId } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  EnvironmentAuthorizationError,
+  EnvironmentId,
+  KIN_CHOICE_CARD_ACTION,
+  KinChatError,
+  KinWidgetId,
+} from "@t3tools/contracts";
 
+import { KIN_NOTIFICATION_CATEGORIES } from "./kinCategories";
 import {
   KIN_DEFAULT_ACTION_IDENTIFIER,
   kinActionDelivery,
   kinNotificationRoute,
   kinClearedChat,
+  kinRefusedActionAlert,
   kinSettledNotificationIds,
 } from "./kinPushPayload";
 
@@ -309,8 +318,30 @@ describe("kinNotificationRoute", () => {
     );
   });
 
+  it("shows a deferral's buttons only where its card takes them, on iOS and Android alike", () => {
+    const ids = (category: keyof typeof KIN_NOTIFICATION_CATEGORIES) =>
+      KIN_NOTIFICATION_CATEGORIES[category].map((action) => action.identifier);
+    expect(ids("kin.deferral.confirmed")).toEqual([]);
+    expect(ids("kin.deferral.heads_up")).toEqual(["start_now", "monday", "cancel"]);
+    // Android's banner comes from FCM's data under FCM's id: the same button, the same tap.
+    for (const identifier of ["note-1", "0:1794096000%fcm"])
+      expect(
+        kinNotificationRoute(
+          response({
+            data: deferral,
+            action: "start_now",
+            category: "kin.deferral.heads_up",
+            identifier,
+          }),
+        )?.act?.actionId,
+      ).toBe("start_now");
+  });
+
   it.each([
     ["a button the category doesn't show", "monday", "kin.deferral.confirmed", deferral],
+    // An older build registered these; the card no longer takes them, so the card just opens.
+    ["an older build's Change", "change", "kin.deferral.confirmed", deferral],
+    ["an older build's Just remind me", "remind", "kin.deferral.confirmed", deferral],
     ["Review, which only opens", "review", "kin.approval", deferral],
     [
       "a widget that isn't a deferral",
@@ -340,6 +371,43 @@ describe("kinNotificationRoute", () => {
     const route = kinNotificationRoute(response({ data, action, category }));
     expect(route?.paths).toEqual([chatLink]);
     expect(route?.act).toBeNull();
+  });
+});
+
+describe("kinRefusedActionAlert", () => {
+  it.each([
+    [
+      "a card that changed",
+      "start_now",
+      new KinChatError({ reason: "widget_changed", message: "Stale." }),
+      { title: "That wasn't done", message: "This card changed. Check it again." },
+    ],
+    [
+      "a tap the person may not make",
+      "cancel",
+      new KinChatError({ reason: "not_allowed", message: "No." }),
+      {
+        title: "That wasn't done",
+        message: "Kin didn't take that answer. Tell your agent in the chat instead.",
+      },
+    ],
+    [
+      "an answer on a question that changed",
+      KIN_CHOICE_CARD_ACTION,
+      new KinChatError({ reason: "widget_changed", message: "Stale." }),
+      { title: "Your answer wasn't recorded" },
+    ],
+    [
+      "a session that lost access",
+      "monday",
+      new EnvironmentAuthorizationError({
+        message: "Sign in again.",
+        requiredScope: AuthOrchestrationOperateScope,
+      }),
+      { title: "That wasn't done", message: "Sign in again." },
+    ],
+  ])("says what happened to %s", (_name, actionId, failure, expected) => {
+    expect(kinRefusedActionAlert(actionId, failure)).toMatchObject(expected);
   });
 });
 

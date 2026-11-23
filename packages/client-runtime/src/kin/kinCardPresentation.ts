@@ -574,7 +574,7 @@ function kinLiveCardView(
         : unknown(widget);
     }
     case "deferral": {
-      const deferral = kinDeferralCardView(widget);
+      const deferral = kinDeferralCardView(widget, undefined, ownerLevel);
       return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case "reminder": {
