@@ -1748,6 +1748,19 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
         ],
       );
 
+      for (const emoji of ["👍", "👎"] as const) {
+        const reaction = yield* Effect.result(
+          chats.react(owner, { messageId: drawn.messageId, emoji, on: true }),
+        );
+        assert.include(reaction._tag === "Failure" ? reaction.failure : {}, {
+          reason: "not_allowed",
+          message: "Tap Approve or Changes first on the card.",
+        });
+        assert.strictEqual((yield* questionRow(sql, zoya.questionId)).state, "open");
+        assert.isNull(yield* approvedAt(zoya.questionId));
+        assert.deepStrictEqual(yield* draftWakes, []);
+      }
+
       // Meera, a co-owner, isn't in Rhea's chat: she can't answer it for Rhea.
       assert.isTrue(
         Exit.isFailure(
