@@ -443,7 +443,7 @@ describe("recipe documents", () => {
         draft: true,
         documents: [{ key: "D-1", title: "Invoice INV-1", version: 1 }],
         sensitive: true,
-        next: 'Filed, with its card in the chat. Call it "Invoice INV-1" in your reply, never by its key.',
+        next: 'Filed, with its card in the chat, which shows what is in it. Say in one line that "Invoice INV-1" is ready, never its key, and nothing the card shows.',
         record: { key: "INV-1", state: UNISSUED_INVOICE, total: "₹1,000.01" },
       });
       // What the agent says of it is the record, and what the company details lack, the first time.
