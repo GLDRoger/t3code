@@ -989,11 +989,14 @@ export const create = Effect.fn("KinWork.create")(function* (
   // Before anything about the task is read, so its outcome turns on the agent alone.
   if (viewer.teammate) yield* teamAgent(person, owner);
   const write = Effect.gen(function* () {
-    if (custom !== undefined && !(yield* teamLists(input.orgId).pipe(workFailure)).has(custom))
+    if (custom !== undefined && !(yield* teamLists(input.orgId).pipe(workFailure)).has(custom)) {
+      if ((yield* listDef(input.orgId, custom).pipe(workFailure))?.team === true)
+        return yield* TEAM_REFUSED;
       return yield* new KinChatError({
         reason: "invalid_state",
         message: 'Expected "milestones" | undefined\n  at ["list"]',
       });
+    }
     if (custom !== undefined && input.fields !== undefined)
       yield* ownFiles(person, "{}", input.fields).pipe(workFailure);
     const { row } = yield* records.create(input.orgId, writerOf(viewer), {
