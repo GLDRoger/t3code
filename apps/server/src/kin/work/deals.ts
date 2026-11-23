@@ -490,15 +490,15 @@ export const updateAs = Effect.fn("KinDeals.update")(function* (
 });
 
 /**
- * The deal's open next steps its keeper holds, which go with it to a person who takes it on; one
- * held by anyone else, or kept private, stays.
+ * The deal's open next steps and promises its keeper holds, which go with it to whoever takes it
+ * on, person or agent; one held by anyone else, or kept private, stays.
  */
 const keepersSteps = Effect.fn("KinDeals.keepersSteps")(function* (
   orgId: KinOrgId,
   deal: RecordRow,
   to: KinWorkPrincipal,
 ) {
-  if (to._tag !== "person" || samePrincipal(to, ownerOf(deal))) return [];
+  if (samePrincipal(to, ownerOf(deal))) return [];
   const sql = yield* SqlClient.SqlClient;
   const keys = yield* sql<{ key: string }>`SELECT r.key FROM kin_record_links l
       JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
