@@ -12,6 +12,7 @@ import {
 import type { KinTaskPageStatus } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import { View } from "react-native";
 
+import { SymbolView } from "../../../components/ui/AppSymbol";
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { Menu } from "../../../components/ui/Menu";
 
@@ -87,6 +88,15 @@ export function KinWorkStatusRow(props: {
           detail={view.status}
           detailEllipsizeMode="tail"
           disabled={props.disabled}
+          accessory={
+            <SymbolView
+              name="chevron.right"
+              size={16}
+              tintColorClassName="accent-chevron"
+              type="monochrome"
+              weight="semibold"
+            />
+          }
         />
       </View>
     </Menu>
