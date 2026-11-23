@@ -519,14 +519,25 @@ export interface KinListIndexRow {
   readonly amount: boolean;
 }
 
-/** The lists people defined, by name; Work and the clients directory have screens of their own. */
-export function kinListsIndex(lists: ReadonlyArray<KinListDefinition>): {
+/**
+ * The lists people defined, by name; Work and the clients directory have screens of their own.
+ * `first`: lists shown as sections, which lead in that order (the phone's way in to those it
+ * has no dock place for).
+ */
+export function kinListsIndex(
+  lists: ReadonlyArray<KinListDefinition>,
+  first: ReadonlyArray<string> = [],
+): {
   readonly active: ReadonlyArray<KinListIndexRow>;
   readonly archived: ReadonlyArray<KinListIndexRow>;
 } {
+  const rank = (list: string) => {
+    const at = first.indexOf(list);
+    return at < 0 ? first.length : at;
+  };
   const rows = lists
     .filter((def) => !def.builtIn)
-    .sort((a, b) => a.name.localeCompare(b.name))
+    .sort((a, b) => rank(a.list) - rank(b.list) || a.name.localeCompare(b.name))
     .map((def) => ({
       list: def.list,
       name: def.name,

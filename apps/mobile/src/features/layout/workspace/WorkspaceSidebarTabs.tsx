@@ -16,6 +16,7 @@ export function SidebarTabBar<Tab extends string>(_props: {
   readonly compact?: boolean;
   readonly reserveComposeSpace?: boolean;
   readonly showsLabels?: boolean;
+  readonly titles?: Readonly<Record<string, string>>;
 }) {
   return null;
 }

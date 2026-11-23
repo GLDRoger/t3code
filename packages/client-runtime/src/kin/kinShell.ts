@@ -255,6 +255,9 @@ export function kinListOfSection(id: string): string | null {
   return LIST_SECTION.exec(id)?.[1] ?? null;
 }
 
+export const kinIsListSection = (id: string): id is KinListSectionId =>
+  kinListOfSection(id) !== null;
+
 export interface KinListSection {
   readonly id: KinListSectionId;
   readonly list: string;
