@@ -215,22 +215,28 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
 
   /** Where the client stands: the first counts, nothing missed, the gap, or a fresh read. */
   const start = Effect.fn("KinWorkStream.start")(function* (now: number) {
-    if (viewer.teammate) seen = yield* teamKeyLists(orgId, own(viewer)).pipe(workFailure);
-    const seq = viewer.teammate ? yield* numberNow(viewer) : now;
-    heardFrom(seq);
     const after = input.afterSeq;
+    if (viewer.teammate) seen = yield* teamKeyLists(orgId, own(viewer)).pipe(workFailure);
+    let seq = viewer.teammate ? yield* numberNow(viewer) : now;
+    if (!viewer.teammate && after !== undefined) {
+      // Announcements reserve numbers without change rows. Replay must check through the allocator.
+      const [allocated] = yield* sql<{ seq: number }>`SELECT seq FROM sqlite_sequence
+        WHERE name = 'kin_record_changes'`.pipe(workFailure);
+      seq = Math.max(seq, allocated?.seq ?? 0);
+    }
+    heardFrom(seq);
     if (after === undefined) {
       const whole = yield* counts(seq);
       return whole === null ? [] : [whole];
     }
     // A number from before their level changed counts something else: start over.
-    if ((input.afterTeam === true) !== viewer.teammate) return yield* restart();
+    if ((input.afterTeam === true) !== viewer.teammate) return yield* restart(seq);
     // Their counts are as of `after`; ours drift with the clock, so the next counts are whole.
     if (after === seq) return [{ _tag: "synchronized", seq, ...team() } satisfies Out];
     // A teammate's own view is small: they read it again rather than replay a log of theirs.
-    if (viewer.teammate || after > seq) return yield* restart();
+    if (viewer.teammate || after > seq) return yield* restart(seq);
     const replay = yield* ownerLevelReplay(orgId, after, seq).pipe(workFailure);
-    if (replay === null) return yield* restart();
+    if (replay === null) return yield* restart(seq);
     const rows = yield* rowsNow(replay.map((one) => ({ ...one, created: false, level })));
     const whole = yield* counts(seq);
     return [...rows, whole ?? ({ _tag: "synchronized", seq, ...team() } satisfies Out)];

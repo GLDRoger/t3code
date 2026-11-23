@@ -585,6 +585,64 @@ it.effect(
 );
 
 it.effect(
+  "an owner and a teammate who reconnect after Clients goes off are told to read Tasks again",
+  () =>
+    Effect.gen(function* () {
+      const { corran, deal } = yield* seed;
+      const entry = yield* OwnerWork.create([zoya], promise("Invented plan", { deal }));
+      const records = yield* KinRecords.KinRecords;
+      const shell = yield* KinShell.KinShell;
+      const start = Effect.fn("test.start")(function* (
+        who: typeof rhea,
+        after?: { readonly seq: number; readonly team?: true | undefined },
+      ) {
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const pull = yield* Stream.toPull(records.changes(orgId));
+            const session = yield* WorkStream.makeWorkStream([who], {
+              orgId,
+              acceptRows: true,
+              ...(after === undefined
+                ? {}
+                : { afterSeq: after.seq, ...(after.team === true ? { afterTeam: true } : {}) }),
+            });
+            return yield* session.start((yield* pull)[0]!.seq);
+          }),
+        );
+      });
+      const filter = { orgId, text: "Invented plan", open: true };
+      const page = yield* OwnerWork.list([rhea], filter);
+      assert.strictEqual(page.records[0]?.party?.key, corran);
+      const teammatePage = yield* OwnerWork.list([zoya], filter);
+      assert.strictEqual(teammatePage.records[0]?.key, entry.key);
+      const cursors = yield* Effect.forEach([rhea, zoya], (who) =>
+        start(who).pipe(
+          Effect.map(([opening]) => {
+            assert.strictEqual(opening?._tag, "counts");
+            return { who, opening: opening! };
+          }),
+        ),
+      );
+
+      yield* shell.set(orgId, rheaId, 0, [
+        { id: "clients", on: false },
+        { id: "invoices", on: false },
+      ]);
+      const fresh = yield* OwnerWork.list([rhea], filter);
+      assert.strictEqual(fresh.records[0]?.key, entry.key);
+      assert.isUndefined(fresh.records[0]?.party);
+      assert.isEmpty((yield* OwnerWork.list([zoya], filter)).records);
+      for (const { who, opening } of cursors) {
+        const [resumed] = yield* start(who, opening);
+        assert.strictEqual(resumed?._tag, "snapshot-required");
+        assert.isAbove(resumed!.seq, opening.seq);
+        const [again] = yield* start(who, resumed);
+        assert.strictEqual(again?._tag, "synchronized");
+      }
+    }).pipe(Effect.provide(KinShell.layer.pipe(Layer.provideMerge(layer)))),
+);
+
+it.effect(
   "a promise on a deal is hidden from members while Deals (or Clients) is off and back when it is on; one on no deal stays",
   () =>
     Effect.gen(function* () {
