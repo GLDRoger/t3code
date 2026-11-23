@@ -72,6 +72,7 @@ import { Route as ChatKinEnvironmentIdOrgIdPlacesRouteImport } from './routes/_c
 import { Route as ChatKinEnvironmentIdOrgIdChatIdRouteImport } from './routes/_chat.kin.$environmentId.$orgId.$chatId'
 import { Route as ChatKinEnvironmentIdOrgIdSettingsIndexRouteImport } from './routes/_chat.kin.$environmentId.$orgId.settings.index'
 import { Route as ChatKinEnvironmentIdOrgIdSettingsPageRouteImport } from './routes/_chat.kin.$environmentId.$orgId.settings.$page'
+import { Route as ChatKinEnvironmentIdOrgIdListListRouteImport } from './routes/_chat.kin.$environmentId.$orgId.list.$list'
 import { Route as ChatKinEnvironmentIdOrgIdPlacesTasksRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places.tasks'
 import { Route as ChatKinEnvironmentIdOrgIdPlacesMoneyRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places.money'
 import { Route as ChatKinEnvironmentIdOrgIdPlacesDocsRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places.docs'
@@ -407,6 +408,12 @@ const ChatKinEnvironmentIdOrgIdSettingsPageRoute =
     path: '/$page',
     getParentRoute: () => ChatKinEnvironmentIdOrgIdSettingsRoute,
   } as any)
+const ChatKinEnvironmentIdOrgIdListListRoute =
+  ChatKinEnvironmentIdOrgIdListListRouteImport.update({
+    id: '/$environmentId/$orgId/list/$list',
+    path: '/$environmentId/$orgId/list/$list',
+    getParentRoute: () => ChatKinRoute,
+  } as any)
 const ChatKinEnvironmentIdOrgIdPlacesTasksRoute =
   ChatKinEnvironmentIdOrgIdPlacesTasksRouteImport.update({
     id: '/tasks',
@@ -497,6 +504,7 @@ export interface FileRoutesByFullPath {
   '/kin/$environmentId/$orgId/docs': typeof ChatKinEnvironmentIdOrgIdPlacesDocsRoute
   '/kin/$environmentId/$orgId/money': typeof ChatKinEnvironmentIdOrgIdPlacesMoneyRoute
   '/kin/$environmentId/$orgId/tasks': typeof ChatKinEnvironmentIdOrgIdPlacesTasksRoute
+  '/kin/$environmentId/$orgId/list/$list': typeof ChatKinEnvironmentIdOrgIdListListRoute
   '/kin/$environmentId/$orgId/settings/$page': typeof ChatKinEnvironmentIdOrgIdSettingsPageRoute
   '/kin/$environmentId/$orgId/settings/': typeof ChatKinEnvironmentIdOrgIdSettingsIndexRoute
 }
@@ -563,6 +571,7 @@ export interface FileRoutesByTo {
   '/kin/$environmentId/$orgId/docs': typeof ChatKinEnvironmentIdOrgIdPlacesDocsRoute
   '/kin/$environmentId/$orgId/money': typeof ChatKinEnvironmentIdOrgIdPlacesMoneyRoute
   '/kin/$environmentId/$orgId/tasks': typeof ChatKinEnvironmentIdOrgIdPlacesTasksRoute
+  '/kin/$environmentId/$orgId/list/$list': typeof ChatKinEnvironmentIdOrgIdListListRoute
   '/kin/$environmentId/$orgId/settings/$page': typeof ChatKinEnvironmentIdOrgIdSettingsPageRoute
   '/kin/$environmentId/$orgId/settings': typeof ChatKinEnvironmentIdOrgIdSettingsIndexRoute
 }
@@ -633,6 +642,7 @@ export interface FileRoutesById {
   '/_chat/kin/$environmentId/$orgId/_places/docs': typeof ChatKinEnvironmentIdOrgIdPlacesDocsRoute
   '/_chat/kin/$environmentId/$orgId/_places/money': typeof ChatKinEnvironmentIdOrgIdPlacesMoneyRoute
   '/_chat/kin/$environmentId/$orgId/_places/tasks': typeof ChatKinEnvironmentIdOrgIdPlacesTasksRoute
+  '/_chat/kin/$environmentId/$orgId/list/$list': typeof ChatKinEnvironmentIdOrgIdListListRoute
   '/_chat/kin/$environmentId/$orgId/settings/$page': typeof ChatKinEnvironmentIdOrgIdSettingsPageRoute
   '/_chat/kin/$environmentId/$orgId/settings/': typeof ChatKinEnvironmentIdOrgIdSettingsIndexRoute
 }
@@ -703,6 +713,7 @@ export interface FileRouteTypes {
     | '/kin/$environmentId/$orgId/docs'
     | '/kin/$environmentId/$orgId/money'
     | '/kin/$environmentId/$orgId/tasks'
+    | '/kin/$environmentId/$orgId/list/$list'
     | '/kin/$environmentId/$orgId/settings/$page'
     | '/kin/$environmentId/$orgId/settings/'
   fileRoutesByTo: FileRoutesByTo
@@ -769,6 +780,7 @@ export interface FileRouteTypes {
     | '/kin/$environmentId/$orgId/docs'
     | '/kin/$environmentId/$orgId/money'
     | '/kin/$environmentId/$orgId/tasks'
+    | '/kin/$environmentId/$orgId/list/$list'
     | '/kin/$environmentId/$orgId/settings/$page'
     | '/kin/$environmentId/$orgId/settings'
   id:
@@ -838,6 +850,7 @@ export interface FileRouteTypes {
     | '/_chat/kin/$environmentId/$orgId/_places/docs'
     | '/_chat/kin/$environmentId/$orgId/_places/money'
     | '/_chat/kin/$environmentId/$orgId/_places/tasks'
+    | '/_chat/kin/$environmentId/$orgId/list/$list'
     | '/_chat/kin/$environmentId/$orgId/settings/$page'
     | '/_chat/kin/$environmentId/$orgId/settings/'
   fileRoutesById: FileRoutesById
@@ -1298,6 +1311,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdSettingsPageRouteImport
       parentRoute: typeof ChatKinEnvironmentIdOrgIdSettingsRoute
     }
+    '/_chat/kin/$environmentId/$orgId/list/$list': {
+      id: '/_chat/kin/$environmentId/$orgId/list/$list'
+      path: '/$environmentId/$orgId/list/$list'
+      fullPath: '/kin/$environmentId/$orgId/list/$list'
+      preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdListListRouteImport
+      parentRoute: typeof ChatKinRoute
+    }
     '/_chat/kin/$environmentId/$orgId/_places/tasks': {
       id: '/_chat/kin/$environmentId/$orgId/_places/tasks'
       path: '/tasks'
@@ -1380,6 +1400,7 @@ interface ChatKinRouteChildren {
   ChatKinEnvironmentIdOrgIdSettingsRoute: typeof ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren
   ChatKinEnvironmentIdOrgIdTeamRoute: typeof ChatKinEnvironmentIdOrgIdTeamRoute
   ChatKinEnvironmentIdOrgIdWorkRoute: typeof ChatKinEnvironmentIdOrgIdWorkRoute
+  ChatKinEnvironmentIdOrgIdListListRoute: typeof ChatKinEnvironmentIdOrgIdListListRoute
 }
 
 const ChatKinRouteChildren: ChatKinRouteChildren = {
@@ -1393,6 +1414,8 @@ const ChatKinRouteChildren: ChatKinRouteChildren = {
     ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren,
   ChatKinEnvironmentIdOrgIdTeamRoute: ChatKinEnvironmentIdOrgIdTeamRoute,
   ChatKinEnvironmentIdOrgIdWorkRoute: ChatKinEnvironmentIdOrgIdWorkRoute,
+  ChatKinEnvironmentIdOrgIdListListRoute:
+    ChatKinEnvironmentIdOrgIdListListRoute,
 }
 
 const ChatKinRouteWithChildren =

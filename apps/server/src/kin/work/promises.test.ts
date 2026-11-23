@@ -208,7 +208,22 @@ it.effect(
           [theirs.key, "theirs"],
         ],
       );
-      // Its follow-ups stay what they were: a promise is not a next step.
+      // With no next step of its own, the deal's next is its earliest open promise of ours.
+      const nextOf = Deals.page([zoya], { orgId, key: deal }).pipe(
+        Effect.map((one) => one.deal.next?.key),
+      );
+      assert.strictEqual(yield* nextOf, ours.key);
+      // Its own next step wins, though the promise is due sooner.
+      const own = yield* OwnerWork.create([zoya], {
+        orgId,
+        title: "Invented call to agree the plan",
+        deal,
+        dueAt: "2026-11-28",
+        dueAllDay: true,
+        clientRequestId: "own-step",
+      });
+      assert.strictEqual(yield* nextOf, own.key);
+      yield* OwnerWork.update([zoya], { orgId, key: own.key, rev: own.rev, state: "done" });
       // Dropped, it leaves the deal; reopened, it is back.
       const dropped = yield* OwnerWork.update([zoya], {
         orgId,

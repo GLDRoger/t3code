@@ -15,7 +15,9 @@ import {
   KIN_LIST_DEFAULT_FILTER,
   kinFieldText,
   kinListColumns,
+  kinListWatches,
   kinListEditDraftOf,
+  kinListCanOpenToTeam,
   kinListEditInput,
   kinAmountAsking,
   kinAmountCheck,
@@ -302,7 +304,7 @@ describe("a list by its definition", () => {
       value: { minor: 4_500_000, currency: "INR" },
       photo: ["att-1"],
       count: "42",
-      checked: "No",
+      checked: "no",
       shelf: "rec-acme",
     };
     const row = kinListRow(record({ fields }), def, context);
@@ -360,8 +362,8 @@ describe("a list by its definition", () => {
       key: "C-1",
     });
     expect(entry.fields.slice(-3)).toMatchObject([
-      { key: "count", type: "text", text: "42", link: null, opens: null },
-      { key: "checked", type: "text", text: "No", link: null, opens: null },
+      { key: "count", type: "number", text: "42", draft: "42", link: null, opens: null },
+      { key: "checked", type: "yesno", text: "No", value: "no", link: null, opens: null },
       { key: "shelf", type: "text", text: "rec-acme", link: null, opens: null },
     ]);
     expect([entry.finish?.label, entry.finish?.pays, entry.balance]).toEqual([
@@ -372,6 +374,36 @@ describe("a list by its definition", () => {
     expect(kinFieldText({ type: "link" }, "rec-gone", context)).toBe(
       "Something that isn't here any more",
     );
+  });
+
+  it("says what Kin watches on a list: its check and the day it reminds on", () => {
+    const fields = [
+      { key: "onHand", label: "On hand" as never, type: "number" as const, sensitive: false },
+      {
+        key: "reorder",
+        label: "Reorder point" as never,
+        type: "number" as const,
+        sensitive: false,
+      },
+      { key: "bookedFor", label: "Booked for" as never, type: "date" as const, sensitive: false },
+    ];
+    expect(
+      kinListWatches({
+        fields,
+        check: { field: "onHand", below: "reorder" },
+        remindOn: "bookedFor",
+      }),
+    ).toEqual(["Kin warns when On hand is below Reorder point", "Kin reminds on Booked for"]);
+    expect(
+      kinListWatches({
+        fields,
+        check: { field: "onHand", above: 500 },
+        remindOn: "date",
+        dateLabel: "Booking date" as never,
+      }),
+    ).toEqual(["Kin warns when On hand is above 500", "Kin reminds on Booking date"]);
+    // An older host sends neither: nothing is watched as far as this screen can say.
+    expect(kinListWatches({ fields })).toEqual([]);
   });
 
   it("finishes a part-paid entry by receiving exactly what is left", () => {
@@ -562,6 +594,34 @@ describe("a list by its definition", () => {
     ).toEqual({ ok: false, problem: "Every status needs a name." });
   });
 
+  it("offers the team switch only on a company-made list that isn't sensitive, and sends only a change", () => {
+    const def = list({});
+    expect(kinListCanOpenToTeam(def)).toBe(true);
+    for (const closed of [
+      list({ sensitive: true }),
+      list({ builtIn: true }),
+      list({ list: "quotes" as never }),
+      list({ name: "Bank transactions" as never }),
+    ])
+      expect(kinListCanOpenToTeam(closed)).toBe(false);
+    const draft = kinListEditDraftOf(def);
+    expect(draft.team).toBe(false);
+    expect(kinListEditInput(orgId, def, { ...draft, team: true })).toEqual({
+      ok: true,
+      input: { orgId, list: "equipment", rev: 3, team: true },
+    });
+    const open = list({ team: true });
+    expect(kinListCanOpenToTeam(open)).toBe(true);
+    expect(kinListEditInput(orgId, open, kinListEditDraftOf(open))).toEqual({
+      ok: true,
+      input: null,
+    });
+    expect(kinListEditInput(orgId, open, { ...kinListEditDraftOf(open), team: false })).toEqual({
+      ok: true,
+      input: { orgId, list: "equipment", rev: 3, team: false },
+    });
+  });
+
   it("shows a category as it was written unless the list labels it, and saves only label changes", () => {
     const def = list({
       amount: true,
@@ -716,6 +776,15 @@ describe("a list by its definition", () => {
       value: { minor: 12_050, currency: "USD" },
     });
     expect(check("money", "lots").ok).toBe(false);
+    expect(check("number", " 1,200.5 ")).toEqual({ ok: true, value: "1200.5" });
+    expect(check("number", "-3")).toEqual({ ok: true, value: "-3" });
+    expect(check("number", "a dozen")).toEqual({
+      ok: false,
+      problem: "Detail takes a number, such as 12 or 3.5.",
+    });
+    expect(check("yesno", "Yes")).toEqual({ ok: true, value: "yes" });
+    expect(check("yesno", "")).toEqual({ ok: true, value: null });
+    expect(check("yesno", "maybe")).toEqual({ ok: false, problem: "Detail takes yes or no." });
     expect(check("file", ["a", "b"])).toEqual({ ok: true, value: ["a", "b"] });
     expect(check("file", [])).toEqual({ ok: true, value: null });
     expect(

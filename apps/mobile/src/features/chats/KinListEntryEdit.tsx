@@ -148,7 +148,10 @@ function KinEntryEditGate(
     return <DayEdit {...shared} label={entry.dateLabel} day={entry.dateDay} which="date" />;
   if (what === "due" && entry.dueLabel !== null)
     return <DayEdit {...shared} label={entry.dueLabel} day={entry.dueDay} which="due" />;
-  if (field !== null && (field.type === "text" || field.type === "money"))
+  if (
+    field !== null &&
+    (field.type === "text" || field.type === "money" || field.type === "number")
+  )
     return <TypedEdit {...shared} label={field.label} field={field} />;
   if (field !== null && field.type === "date")
     return (
@@ -189,9 +192,10 @@ function TypedEdit(
   const currency = amount?.currency ?? KIN_DEFAULT_HOME_CURRENCY;
   const [text, setText] = useState(field === null ? (amount?.draft ?? "") : field.draft);
   const [problem, setProblem] = useState<string | null>(null);
-  const numeric = field === null || field.type === "money";
+  const isAmount = field === null || field.type === "money";
+  const numeric = isAmount || field.type === "number";
   // An amount waits on the company's country; the field gives way to that step.
-  const waiting = useKinCountryNeeded(props) && numeric;
+  const waiting = useKinCountryNeeded(props) && isAmount;
   const save = async () => {
     const checked =
       field === null
@@ -248,7 +252,7 @@ function TypedEdit(
             multiline={!numeric}
             keyboard={numeric ? "numbers" : "plain"}
             disabled={changes.busy}
-            {...(numeric ? { placeholder: KIN_LISTS.entry.amountPlaceholder } : {})}
+            {...(isAmount ? { placeholder: KIN_LISTS.entry.amountPlaceholder } : {})}
             onChangeText={setText}
           />
         </KinCountryFirstField>

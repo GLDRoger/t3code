@@ -599,7 +599,9 @@ function EditDialog(props: {
         : MAIL.keyNeeded
       : value.trim().length > max
         ? MAIL.tooLong
-        : null;
+        : rename && value.trim() === opened.trim()
+          ? ""
+          : null;
   return (
     <KinSettingsFormDialog
       title={rename ? COPY.renameTitle : note ? COPY.noteTitle : COPY.replaceKeyTitle}

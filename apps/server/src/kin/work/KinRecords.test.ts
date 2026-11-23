@@ -5226,6 +5226,54 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("on a team list whoever holds an entry may still archive it or give it away", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    const sql = yield* SqlClient.SqlClient;
+    const dev = { ...mate, personId: KinPersonId.make("dev") };
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access, sees_money)
+      VALUES (${dev.personId}, ${orgId}, 'dev', 'Dev', ${at}, 'member', 1)`;
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('dev-session', ${orgId}, ${dev.personId}, 0)`;
+    yield* setBookingTeam(true, 1);
+    const toZoya = { _tag: "person" as const, personId: zoya.personId };
+    const made = yield* addBooking("Arjun's booking for Zoya");
+    yield* OwnerWork.assign([owner], { orgId, key: made.key, to: toZoya });
+    const can = (who: typeof mate) =>
+      OwnerWork.get([who], { orgId, key: made.key }).pipe(Effect.map((one) => one.can));
+    const drop = (who: typeof mate) =>
+      OwnerWork.get([who], { orgId, key: made.key }).pipe(
+        Effect.flatMap((one) =>
+          OwnerWork.update([who], { orgId, key: made.key, rev: one.rev, state: "dropped" }),
+        ),
+      );
+    const give = (who: typeof mate, personId: KinPersonId) =>
+      OwnerWork.assign([who], { orgId, key: made.key, to: { _tag: "person", personId } });
+    // Neither made nor holds it: neither archive nor give.
+    assert.include(yield* can(dev), { give: false });
+    assert.notInclude((yield* can(dev))?.states ?? [], "dropped");
+    assert.deepStrictEqual(yield* flipped(drop(dev)), [
+      "not_allowed",
+      "Only the owner or a co-owner can do that on this list.",
+    ]);
+    assert.strictEqual((yield* flipped(give(dev, dev.personId)))[0], "not_allowed");
+    // Made it but doesn't hold it: archive as before, no give.
+    assert.include(yield* can(arjun), { give: false });
+    assert.include((yield* can(arjun))?.states ?? [], "dropped");
+    assert.strictEqual((yield* flipped(give(arjun, arjun.personId)))[0], "not_allowed");
+    // Holds it: archive it and give it away, and nothing more.
+    assert.include(yield* can(zoya), { give: true });
+    assert.include((yield* can(zoya))?.states ?? [], "dropped");
+    assert.deepInclude(yield* give(zoya, dev.personId), {
+      owner: { _tag: "person", personId: dev.personId },
+    });
+    const held = yield* OwnerWork.get([dev], { orgId, key: made.key });
+    assert.strictEqual((yield* flipped(give(zoya, zoya.personId)))[0], "not_allowed");
+    assert.include(yield* drop(dev), { state: "dropped" });
+    assert.strictEqual(held.can?.give, true);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("a team list assigned to Money follows the company's Money section", () =>
   Effect.gen(function* () {
     yield* bookingList();
