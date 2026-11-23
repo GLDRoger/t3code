@@ -72,6 +72,9 @@ import {
   proposalFor,
 } from "../work/registers.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
+import { DAY_MS } from "../pulse/thresholds.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import * as CardActions from "./cardActions.ts";
 import { plansOf, takesAsDefault } from "./cardPlans.ts";
 import { FEWER_THAN_TWO, NOTHING_TIMED } from "./choiceCard.ts";
@@ -565,6 +568,108 @@ it.effect("a tap on an action option runs it once, as the server wrote it", () =
 
 // The plan binds the entry's revision: a change in the same clock tick, a retired drawer or a
 // reaction runs nothing; the timer never takes an action as a default; another org's key is unknown.
+it.effect("a tap closes or cancels a list section's entry, and its late fact clears", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { owner, orgId, sql } = kin;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json, rev)
+        VALUES (${orgId}, 'bookings', 'Bookings', 'BK', 0, 0, ${JSON.stringify({
+          noun: "booking",
+          states: ["open", "done", "dropped"],
+          stateLabels: { open: "Booked", done: "Held", dropped: "Cancelled" },
+          defaultState: "open",
+          categories: [],
+          fields: [],
+          sensitive: false,
+          amount: false,
+          currency: "INR",
+          dateLabel: "Booking date",
+          remindOn: "date",
+        })}, 1)`;
+      yield* KinShell.set(orgId, owner.personId, 0, [{ id: "list:bookings", on: true }]).pipe(
+        Effect.provide(kin.services),
+      );
+      const booking = Effect.fn("test.booking")(function* (title: string) {
+        const made = yield* kin.records.create(
+          orgId,
+          {
+            actor: { _tag: "person", personId: owner.personId },
+            via: "owner",
+            askedBy: owner.personId,
+          },
+          {
+            list: "bookings",
+            title,
+            owner: { _tag: "person", personId: owner.personId },
+            originKey: title,
+            dateAt: MON - DAY_MS,
+            dateAllDay: true,
+          },
+        );
+        return made.row;
+      });
+      const held = yield* booking("Ananya Rao, room 4");
+      const missed = yield* booking("Kabir Sen, room 2");
+      const lateKeys = Effect.gen(function* () {
+        const ticked = yield* KinPulse.tick(orgId, yield* Clock.currentTimeMillis).pipe(
+          Effect.provide(kin.services),
+        );
+        const open = yield* kin.sql<{ key: string }>`SELECT fact_key AS key FROM kin_pulse_facts
+          WHERE org_id = ${orgId} AND cleared_at IS NULL AND sense = 'entry_late'
+          ORDER BY fact_key`;
+        return { ticked, keys: open.map((row) => row.key.split(":")[1]) };
+      });
+      assert.deepStrictEqual((yield* lateKeys).keys, [held.key, missed.key]);
+      const ask = (key: string, kind: "done" | "drop") =>
+        Effect.gen(function* () {
+          yield* kin.turn("chief", kin.chatOf("chief"), `Did ${key} go ahead?`);
+          return yield* callAs("chief", "kin_ask", {
+            question: `Did ${key} go ahead?`,
+            options: [{ label: "Yes", action: { kind, target: key } }, { label: "Not sure" }],
+            default: "none",
+            about: [key],
+          });
+        });
+      const yes = yield* ask(held.key, "done");
+      assert.isTrue(yes.ok, JSON.stringify(yes.value));
+      assert.strictEqual(
+        card(yield* kin.widget(yes.value.widgetId)).options[0]?.label,
+        `Mark ${held.key} done`,
+      );
+      yield* kin.tap(owner, yes.value.widgetId, "option-1", "tap-held");
+      const no = yield* ask(missed.key, "drop");
+      assert.isTrue(no.ok, JSON.stringify(no.value));
+      yield* kin.tap(owner, no.value.widgetId, "option-1", "tap-missed");
+      assert.deepStrictEqual(
+        [yield* kin.stateOf(held.key), yield* kin.stateOf(missed.key)],
+        [
+          { state: "done", rev: held.rev + 1 },
+          { state: "dropped", rev: missed.rev + 1 },
+        ],
+      );
+      assert.deepStrictEqual((yield* lateKeys).keys, []);
+      // Dev, a member, can't change the company's Bookings: his turn's card is refused.
+      const third = yield* booking("Mira Das, room 1");
+      const dev = kin.person("dev");
+      const devChat = (yield* kin.chats.createDirect(dev, {
+        orgId,
+        agentId: KinAgentId.make("chief"),
+      })).chatId;
+      yield* kin.turn("chief", devChat, "Close the room 1 booking", dev);
+      const refused = yield* callAs("chief", "kin_ask", {
+        question: `Close ${third.key}?`,
+        options: [{ label: "Yes", action: { kind: "done", target: third.key } }, { label: "No" }],
+        default: "none",
+      });
+      assert.isFalse(refused.ok);
+      assert.deepStrictEqual(yield* kin.stateOf(third.key), { state: "open", rev: third.rev });
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing", () =>
   Effect.andThen(
     TestClock.setTime(MON),

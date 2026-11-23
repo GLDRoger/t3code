@@ -331,7 +331,7 @@ const sectionAdmitted = McpToolPolicy.toolCallRefusal(
       (turn) =>
         Effect.gen(function* () {
           const shell = yield* KinShell.get(turn.orgId);
-          if (shell.sections.every(({ on }) => on)) return undefined;
+          if (KinShell.builtInsOn(shell)) return undefined;
           const viewer =
             references.size === 0 || (yield* effectiveAudience(turn)) === "owner_only"
               ? KIN_OWNER_LEVEL

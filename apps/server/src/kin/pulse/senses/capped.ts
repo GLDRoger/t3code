@@ -17,6 +17,8 @@ type Cap = {
   readonly sense: KinPulseFact["sense"];
   readonly plural: string;
   readonly also?: SectionId;
+  /** The section that silences it when its sense alone doesn't say, such as a list's own. */
+  readonly section?: SensedFact["section"];
   readonly access: MemberAccess | "owner" | "money" | "system";
   readonly cap?: number;
 };
@@ -45,7 +47,7 @@ export const cappedRows = Effect.fn("KinPulse.cappedRows")(function* <Row extend
   const count = total!.count;
   if (count === 0) return rows.slice(0, cap);
   const key = `sense_overflow:${kind.id ?? kind.sense}`;
-  const section = sectionOfSense(kind.sense);
+  const section = kind.section ?? sectionOfSense(kind.sense);
   const members =
     kind.access === "owner" || kind.access === "money" || kind.access === "system"
       ? undefined

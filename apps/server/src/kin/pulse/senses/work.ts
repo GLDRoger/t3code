@@ -1,13 +1,15 @@
-import { KinAgentId, KinPersonId, type KinPulseActor } from "@t3tools/contracts";
+import { KinAgentId, type KinOrgId, KinPersonId, type KinPulseActor } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { cappedRows, SENSE_CAP } from "./capped.ts";
 
+import * as KinShell from "../../shell/KinShell.ts";
 import { validZone } from "../../triggers/quietHold.ts";
 import { stillAway } from "../../triggers/quietHours.ts";
 import { waitingSince } from "../../work/crm.ts";
-import { ownerZone } from "../../work/recordRows.ts";
-import { DAY_MS, thresholds, toMs } from "../thresholds.ts";
+import { fieldDateAt, ownerZone } from "../../work/recordRows.ts";
+import { isFieldDate, isFieldNumber, listDef, OWN_DATE } from "../../work/registers.ts";
+import { DAY_MS, type Threshold, thresholds, toMs } from "../thresholds.ts";
 import {
   dayOf,
   daysAgoText,
@@ -32,7 +34,7 @@ const workFact = (
   ctx: SenseContext,
   row: EntryRow,
   fact: Pick<SensedFact, "sense" | "key" | "since" | "consequence" | "wake"> &
-    Partial<Pick<SensedFact, "measure" | "actor" | "yours">>,
+    Partial<Pick<SensedFact, "measure" | "actor" | "yours" | "section">>,
 ): SensedFact => ({
   family: "work",
   subject: entrySubject(row),
@@ -262,5 +264,144 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
         wake: "brief",
       }),
     );
+  facts.push(...(yield* entrySenses(ctx, { grace, soon })));
+  return facts;
+});
+
+/** The live lists the shell shows as sections, on or off: their switch silences their facts. */
+const sectionLists = Effect.fn("KinPulse.sectionLists")(function* (orgId: KinOrgId) {
+  const shell = yield* KinShell.getForDisplay(orgId);
+  const defs = yield* Effect.forEach(
+    shell.sections.flatMap((section) => KinShell.listOfSection(section.id) ?? []),
+    (id) => listDef(orgId, id),
+  );
+  return defs.flatMap((def) =>
+    def === undefined || def.builtIn !== null || def.archivedAt !== null ? [] : [def],
+  );
+});
+
+const numberOf = (value: unknown) =>
+  typeof value === "string" && isFieldNumber(value) ? Number(value) : undefined;
+
+/**
+ * entry_late: an open entry of a list section whose due day (or its `remindOn` date) comes within
+ * the due-soon window, or has passed by the late grace, as for a task. entry_check: an open entry
+ * outside its list's check, one fact per entry and check until it is back inside.
+ */
+const entrySenses = Effect.fn("KinPulse.entrySenses")(function* (
+  ctx: SenseContext,
+  limits: { readonly grace: Threshold; readonly soon: Threshold },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { orgId, at } = ctx;
+  const { grace, soon } = limits;
+  const facts: Array<SensedFact> = [];
+  for (const def of yield* sectionLists(orgId)) {
+    const section = KinShell.listSectionId(def.id);
+    // A field the list really has wins; else `date` is each entry's own date (`OWN_DATE`).
+    const field = def.fields.some((one) => one.key === def.remindOn) ? def.remindOn : undefined;
+    const remind = field;
+    const column =
+      def.remindOn === OWN_DATE && field === undefined ? sql`r.date_at` : sql`r.due_at`;
+    const until = dayOf(ctx, at + toMs(soon) + DAY_MS);
+    // Only the owner level hears how many more there are: a member's count reads Work alone.
+    const cap = (id: string, sense: "entry_late" | "entry_check", plural: string) => ({
+      id: `${id}:${def.id}`,
+      sense,
+      plural: `${plural} in ${def.name}`,
+      section,
+      access: "owner" as const,
+    });
+    const dated = yield* cappedRows<EntryRow & { state: string; remind: unknown }>(
+      ctx,
+      facts,
+      { ...cap("entry_late", "entry_late", "entries late or due soon"), cap: SENSE_CAP * 2 },
+      sql`SELECT ${entryColumns(sql)}, r.state,
+        ${remind === undefined ? sql`NULL` : sql`json_extract(r.fields_json, ${`$.${remind}`})`} AS remind
+      FROM ${entryJoins(sql)}
+      WHERE r.org_id = ${orgId} AND r.register_id = ${def.id} AND r.state IN ${sql.in(OPEN)}
+        AND ${
+          remind === undefined
+            ? sql`${column} IS NOT NULL AND (${column} <= ${at - toMs(grace)} OR (r.state = 'open'
+                AND ${column} > ${at} AND ${column} <= ${at + toMs(soon)}))`
+            : sql`substr(json_extract(r.fields_json, ${`$.${remind}`}), 1, 10) <= ${until}`
+        }
+      ORDER BY r.key`,
+    );
+    for (const row of dated) {
+      const due =
+        remind === undefined
+          ? def.remindOn === OWN_DATE
+            ? row.dateAt
+            : row.dueAt
+          : typeof row.remind === "string" && isFieldDate(row.remind)
+            ? fieldDateAt(row.remind, ctx.zone).at
+            : null;
+      if (due === null) continue;
+      const fact = { section, wake: "sweep" as const, sense: "entry_late" as const };
+      if (due <= at - toMs(grace))
+        facts.push(
+          workFact(ctx, row, {
+            ...fact,
+            key: `entry_late:${row.key}:due=${due}`,
+            since: iso(due + toMs(grace)),
+            measure: measure(elapsed(due, at, "hours"), grace),
+            consequence: `Was due ${dayOf(ctx, due)}, ${daysAgoText(ctx, due)}.`,
+          }),
+        );
+      else if (row.state === "open" && due > at && due <= at + toMs(soon)) {
+        const left = elapsed(at, due, "hours");
+        facts.push(
+          workFact(ctx, row, {
+            ...fact,
+            key: `entry_late:${row.key}:soon=${due}`,
+            since: iso(due - toMs(soon)),
+            measure: measure(left, soon),
+            consequence: `Due ${dayOf(ctx, due)}, in ${left < 1 ? "under an hour" : hoursText(left)}.`,
+          }),
+        );
+      }
+    }
+    const check = def.check;
+    if (check === undefined) continue;
+    const other = check.below ?? check.above;
+    if (other === undefined) continue;
+    const label = (key: string) => def.fields.find((one) => one.key === key)?.label ?? key;
+    const value = sql`CAST(json_extract(r.fields_json, ${`$.${check.field}`}) AS REAL)`;
+    const bound =
+      typeof other === "number"
+        ? sql`${other}`
+        : sql`CAST(json_extract(r.fields_json, ${`$.${other}`}) AS REAL)`;
+    const rows = yield* cappedRows<EntryRow & { value: unknown; other: unknown }>(
+      ctx,
+      facts,
+      cap("entry_check", "entry_check", "entries off their check"),
+      sql`SELECT ${entryColumns(sql)}, json_extract(r.fields_json, ${`$.${check.field}`}) AS value,
+        ${typeof other === "number" ? sql`NULL` : sql`json_extract(r.fields_json, ${`$.${other}`})`} AS other
+      FROM ${entryJoins(sql)}
+      WHERE r.org_id = ${orgId} AND r.register_id = ${def.id} AND r.state IN ${sql.in(OPEN)}
+        AND json_extract(r.fields_json, ${`$.${check.field}`}) IS NOT NULL
+        AND ${check.below === undefined ? sql`${value} > ${bound}` : sql`${value} < ${bound}`}
+      ORDER BY r.key`,
+    );
+    for (const row of rows) {
+      const value = numberOf(row.value);
+      const limit = typeof other === "number" ? other : numberOf(row.other);
+      if (value === undefined || limit === undefined) continue;
+      const below = check.below !== undefined;
+      if (below ? value >= limit : value <= limit) continue;
+      const side = below ? "below" : "above";
+      facts.push(
+        workFact(ctx, row, {
+          section,
+          sense: "entry_check",
+          key: `entry_check:${row.key}:${check.field}:${side}=${other}`,
+          since: iso(row.updatedAt),
+          consequence: `${label(check.field)} is ${value}, ${side} ${typeof other === "number" ? other : `${label(other)} (${limit})`}.`,
+          wake: "sweep",
+        }),
+      );
+    }
+  }
   return facts;
 });

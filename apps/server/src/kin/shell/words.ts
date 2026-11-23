@@ -1,6 +1,7 @@
 import type { KinShell } from "@t3tools/contracts";
 
 import { encoded } from "../lead/quote.ts";
+import { OWN_DATE } from "../work/registers.ts";
 import { cadenceText, limitText, named, namedList } from "../numbers/words.ts";
 import { sectionName, sectionOn } from "./KinShell.ts";
 import type { SectionId } from "./sections.ts";
@@ -55,10 +56,39 @@ const keptLines = (kept: ReadonlyArray<NumberKept>) => {
     });
 };
 
+/** A list shown as a section, as the prompt names it: its fields, states and what Kin watches. */
+export interface ListShown {
+  readonly id: string;
+  readonly name: string;
+  readonly fields: ReadonlyArray<{ readonly key: string; readonly type: string }>;
+  /** Each state it uses, with what the list calls it where that differs. */
+  readonly states: ReadonlyArray<{ readonly state: string; readonly label?: string | undefined }>;
+  readonly check?: { readonly field: string; readonly side: string; readonly other: string };
+  readonly remindOn?: string | undefined;
+}
+const listLine = (list: ListShown) =>
+  [
+    `- ${encoded(list.name)} (list ${list.id}): ${
+      list.fields.length === 0
+        ? "no fields"
+        : list.fields.map((one) => `${one.key} ${one.type}`).join(", ")
+    }`,
+    `states ${list.states
+      .map(({ state, label }) => (label === undefined ? state : `${state} ${encoded(label)}`))
+      .join(", ")}`,
+    ...(list.check === undefined
+      ? []
+      : [`Kin warns when ${list.check.field} is ${list.check.side} ${list.check.other}`]),
+    ...(list.remindOn === undefined
+      ? []
+      : [list.remindOn === OWN_DATE ? "reminds on its date" : `reminds on ${list.remindOn}`]),
+  ].join("; ") + ".";
+
 /**
- * What an agent is told of a company set up unlike Kin's default: what is off, its own words, and
- * the numbers it watches (given only in a turn whose whole audience is owner level). Nothing for
- * the default sections and no numbers, so that prompt stays as it was.
+ * What an agent is told of a company set up unlike Kin's default: what is off, its own words, the
+ * lists it shows as sections (those the turn's readers see), and the numbers it watches (given
+ * only in a turn whose whole audience is owner level). Nothing for the default sections, no list
+ * sections and no numbers, so that prompt stays as it was.
  */
 export const thisCompanyLines = (
   shell: KinShell,
@@ -66,6 +96,7 @@ export const thisCompanyLines = (
     readonly watched: ReadonlyArray<NumberShown>;
     readonly kept: ReadonlyArray<NumberKept>;
   } = { watched: [], kept: [] },
+  lists: ReadonlyArray<ListShown> = [],
 ): ReadonlyArray<string> => {
   const clients = shell.sections.find((section) => section.id === "clients");
   const called = (id: SectionId) =>
@@ -93,6 +124,12 @@ export const thisCompanyLines = (
           `${listed(off)} ${off.length === 1 ? "is" : "are"} turned off for this company: don't offer, mention or ask about ${off.length === 1 ? "it" : "them"}.`,
         ]),
     ...words,
+    ...(lists.length === 0
+      ? []
+      : [
+          "These lists are sections of their own; read and write them with records_query, record_create and record_update. When asked to warn about an entry's number or to remind on its date, propose that with list_define (check, remindOn), not a routine or a task:",
+          ...lists.map(listLine),
+        ]),
     ...(watched.length === 0
       ? []
       : [
