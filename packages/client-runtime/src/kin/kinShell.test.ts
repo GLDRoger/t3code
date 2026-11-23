@@ -90,6 +90,8 @@ describe("kinSectionOn follows what each section needs, as the host's sectionOn"
     );
     expect(kinSectionHeldOffLine(off("clients"), "deals")).toBe("Off because Clients is off.");
     expect(kinSectionHeldOffLine(defaults, "deals")).toBeNull();
+    // Its own switch is off too: turning Money on would not bring it back.
+    expect(kinSectionHeldOffLine(off("money", "invoices"), "invoices")).toBeNull();
     // Named as the company names it.
     const named: KinShell = {
       rev: 7,

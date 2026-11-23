@@ -382,6 +382,13 @@ describe("kinClientPageView", () => {
       nextStep: { next: null },
     });
     expect(kinClientPageView(page({}), names, now, true).line).toBe("Client");
+    // Opened by its link while Clients is off: its record stays editable, nothing new is offered.
+    expect(kinClientPageView(page({}), names, now, true).adds).toBe(true);
+    const clientsOff = { rev: 3, sections: [{ id: "clients", on: false }] };
+    expect(kinClientPageView(page({}), names, now, true, clientsOff)).toMatchObject({
+      adds: false,
+      can: { edit: true },
+    });
   });
 
   it("opens with the soonest thing owed, and a vendor has no Next step row", () => {
@@ -765,6 +772,12 @@ describe("kinProjectPageView", () => {
     const hidden = kinProjectPageView(billed, names, now, invoicesOff);
     expect(hidden.money).toEqual([]);
     expect(hidden.why).not.toContain("1 invoice for this project is overdue.");
+  });
+
+  it("offers nothing new under a project opened by its link while Clients is off", () => {
+    const clientsOff = { rev: 3, sections: [{ id: "clients", on: false }] };
+    expect(kinProjectPageView(page([]), names, now).adds).toBe(true);
+    expect(kinProjectPageView(page([]), names, now, clientsOff).adds).toBe(false);
   });
 });
 

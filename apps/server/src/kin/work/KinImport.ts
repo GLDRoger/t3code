@@ -142,6 +142,7 @@ export type ImportReport = {
   readonly payments: Counts;
   readonly contacts: Counts;
   readonly deals: Counts;
+  readonly fileProblems: number;
   /** Fields filled on clients and contacts Kin had, which had none. */
   readonly filled: number;
   /** Of the clients made, how many as prospects. */
@@ -315,6 +316,7 @@ const make = Effect.gen(function* () {
     watched.of = scan.rows;
 
     const problems: Array<ImportProblem> = [];
+    let fileProblems = 0;
     let more = 0;
     const counts = {
       clients: zero(),
@@ -339,6 +341,7 @@ const make = Effect.gen(function* () {
       reason: string,
     ) => {
       if (kind in SECTION) counts[SECTION[kind as Kind]].problems += 1;
+      if (kind === "file") fileProblems += 1;
       if (problems.length < MAX_LISTED) problems.push({ line, kind, source, reason });
       else more += 1;
       return undefined;
@@ -1490,6 +1493,7 @@ const make = Effect.gen(function* () {
       rows: scan.rows,
       lists: listReport,
       ...counts,
+      fileProblems,
       changed,
       taxIdLabel: regionOf(company.country)?.taxIdLabel ?? "tax id",
       clientMatches,

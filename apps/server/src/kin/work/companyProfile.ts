@@ -489,6 +489,7 @@ export const proposeChange = Effect.fn("KinCompanyProfile.proposeChange")(functi
     ON CONFLICT (org_id, change_id) DO NOTHING`;
 });
 
+// Shell change cards (`shell/changes.ts`) share this table under `sc_` ids; these skip them.
 /**
  * A newer change card replaces every older one still unanswered: they can never be confirmed, so
  * an emptier, older card can't overwrite what the newer one shows. Returns their cards to close.
@@ -502,7 +503,7 @@ export const replaceOlderChanges = Effect.fn("KinCompanyProfile.replaceOlderChan
   const older = yield* sql<{ changeId: string; widgetId: string }>`
     SELECT change_id AS "changeId", widget_id AS "widgetId" FROM kin_profile_changes
     WHERE org_id = ${orgId} AND change_id != ${changeId} AND widget_id IS NOT NULL
-      AND applied_at IS NULL AND declined_at IS NULL
+      AND applied_at IS NULL AND declined_at IS NULL AND substr(change_id, 1, 3) != 'sc_'
     ORDER BY change_id`;
   if (older.length === 0) return [];
   yield* sql`UPDATE kin_profile_changes SET declined_at = ${now}
@@ -542,7 +543,8 @@ export const answerChange = Effect.fn("KinCompanyProfile.answerChange")(function
   }>`SELECT c.change_id AS "changeId", c.patch_json AS patch, c.base_rev AS "baseRev",
       (c.applied_at IS NOT NULL OR c.declined_at IS NOT NULL) AS done
     FROM kin_profile_changes c
-    WHERE c.org_id = ${input.orgId} AND c.widget_id = ${input.widgetId}`;
+    WHERE c.org_id = ${input.orgId} AND c.widget_id = ${input.widgetId}
+      AND substr(c.change_id, 1, 3) != 'sc_'`;
   if (row === undefined) return;
   if (!(yield* ownerLevel(input.orgId, KinPersonId.make(input.personId)).pipe(Effect.orDie)))
     return yield* new KinChatError({

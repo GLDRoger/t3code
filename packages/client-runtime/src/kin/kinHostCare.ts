@@ -40,7 +40,7 @@ export const KIN_HOST_COPY = {
   details: "Technical details",
   unreadable: "Couldn't load how Kin's computer is doing.",
   onlyOwner: {
-    title: "Not available",
+    title: "Kin's computer isn't open to you",
     detail: "Kin's computer is looked after by whoever runs this Kin.",
   },
   measuring: "Kin is still measuring what uses the space.",

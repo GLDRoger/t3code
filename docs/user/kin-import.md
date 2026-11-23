@@ -62,8 +62,9 @@ lines above it:
 - A deal is a `deal` row naming its `client`, `title` and `stage` (one of your stage ids), with
   `value` (`{"amount":"18000","currency":"EUR"}`), `expected` (a day) and `owner` if you have
   them. Deals come in through **Import a file** in Kin; the command reports deal rows as left out.
-- Amounts are plain decimals in the list's currency unless a row names another. Dates are days
-  (`2026-04-30`) or times with an offset.
+- Amounts in the JSON Lines file use a decimal point and can group digits with commas, as in
+  `1450.50`, `1,450.50`, or `12,34,567`. They use the list's currency unless a row names
+  another. Dates are days (`2026-04-30`) or times with an offset.
 - An entry whose amount is over a thousand times the largest in its list, or an invoice dated after
   its own due day, is refused as a likely slip. Add `"confirmed":true` to the entry if it is right.
 - `"suggested":true` marks an entry an agent suggested that nobody has kept yet. Download

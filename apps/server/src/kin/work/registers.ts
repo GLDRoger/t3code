@@ -26,6 +26,7 @@ import {
   type FieldValue,
   isMoney,
   LISTS,
+  WATCHED_NUMBER_FIELDS,
   type ListName,
   parseFields,
   sensitiveFields,
@@ -46,6 +47,7 @@ import {
 import { companyRegion, NEUTRAL_PAID_WITH } from "./statements/statementRegion.ts";
 import { dayIn, isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
+import { countedEntry } from "./recordRows.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
 /**
@@ -634,6 +636,7 @@ export const toDefinition = (
     defaultState: def.defaultState,
     categories: def.categories,
     fields: def.fields.flatMap((field): ReadonlyArray<FieldDef> => {
+      if (def.id === "goals" && WATCHED_NUMBER_FIELDS.includes(field.key)) return [];
       if (field.type === "link" && field.link === "list")
         return accept?.includes("list") ? [field] : [];
       const type = accept?.includes(field.type) ? field.type : legacyFieldType(field);
@@ -1270,6 +1273,18 @@ export const openCounts = Effect.fn("KinRegisters.openCounts")(function* (
     }
     GROUP BY r.register_id ORDER BY r.register_id`;
   return new Map(rows.map((row) => [row.id, row.open]));
+});
+
+export const countListStates = Effect.fn("KinRegisters.countListStates")(function* (
+  orgId: KinOrgId,
+  list: string,
+  states: ReadonlyArray<KinRecordState>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = ${list} AND r.state IN ${sql.in(states)}
+      AND ${countedEntry(sql, states)}`;
+  return row?.count ?? 0;
 });
 
 /** Lists a built-in recipe needs: made from the preset on first use, with no card to approve. */

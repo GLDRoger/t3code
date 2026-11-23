@@ -202,8 +202,12 @@ export const SHARED_TOOLS = {
   money_summary: "view",
   money_query: "refused",
   budget_set: "refused",
+  number_record: "refused",
+  numbers_read: "refused",
   dates_query: "view",
   company_profile: "refused",
+  // How Kin is set up for the company is the owner level's to change.
+  company_sections: "refused",
   // A statement is the owner's bank account; reading one marks the turn as a sensitive read.
   statement_read: "refused",
   statement_rows: "refused",

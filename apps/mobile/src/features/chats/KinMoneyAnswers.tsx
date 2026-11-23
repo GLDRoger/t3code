@@ -83,6 +83,7 @@ import { useKinHostAt } from "./state/useKinHost";
 import { useKinWorkChoices, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import { useKinShell } from "./state/useKinShell";
 
 const PEEK = 5;
 type Section = KinWorkTarget & { readonly seq: number | null; readonly rates: KinRates | null };
@@ -843,7 +844,12 @@ export function KinQuoteActions(
     invoice: useAtomValue(kinClient.workInvoiceFromQuote.permissionAtom(environmentId)),
   };
   const invoiced = invoicing.invoice ?? kinQuoteInvoice(item.links);
-  const can = kinQuoteActions(quote.state, props.def?.numbering !== undefined, invoiced !== null);
+  const can = kinQuoteActions(
+    quote.state,
+    props.def?.numbering !== undefined,
+    invoiced !== null,
+    useKinShell(environmentId),
+  );
   const [requestId] = useState(uuidv4);
   const busy = props.busy || actions.busy || invoicing.busy;
   const numbered = quote.number !== item.key;
