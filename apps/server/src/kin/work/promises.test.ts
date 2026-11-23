@@ -8,6 +8,10 @@ import {
   KinOrgId,
   KinPersonId,
   KinRecordKey,
+  kinApplyWorkRow,
+  kinPatchWorkPage,
+  kinWorkHeldPage,
+  kinWorkRowsStart,
   ThreadId,
   type KinPartyPage,
 } from "@t3tools/contracts";
@@ -16,6 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
@@ -30,6 +35,7 @@ import * as Clients from "./ownerClients.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import * as Search from "./search.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
+import * as WorkStream from "./workStream.ts";
 
 // Invented company, people, clients and deals only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -395,6 +401,13 @@ it.effect(
         promise("Invented signed terms", { deal, side: "theirs", from: "At the board lunch" }),
       );
       const ours = yield* OwnerWork.create([zoya], promise("Invented terms sheet", { deal }));
+      yield* OwnerWork.update([rhea], {
+        orgId,
+        key: ours.key,
+        rev: ours.rev,
+        alsoOn: [asPrincipal(devId)],
+      });
+      assert.strictEqual(yield* refusal(Deals.page([dev], { orgId, key: deal })), "not_allowed");
       const keys = [theirs.key, ours.key];
       const stored = (yield* Deals.page([rhea], { orgId, key: deal })).deal;
       const keep = (sensitive: boolean, rev: number) =>
@@ -431,7 +444,77 @@ it.effect(
       assert.sameMembers(before.tasks, keys);
       assert.sameMembers(before.opened, keys);
       assert.sameMembers(before.search, keys);
+      const records = yield* KinRecords.KinRecords;
+      const filter = { orgId, text: "Invented terms sheet", open: true };
+      const readTasks = Effect.fn("test.readTasks")(function* (who: typeof rhea) {
+        const read = yield* OwnerWork.list([who], filter);
+        return kinWorkHeldPage(
+          { ...read, more: read.nextCursor !== null },
+          { seq: read.seq, asOf: read.asOf ?? null, epoch: 0 },
+        );
+      });
+      const screens = yield* Effect.forEach([zoya, dev, rhea], (who) =>
+        Effect.gen(function* () {
+          const session = yield* WorkStream.makeWorkStream([who], { orgId, acceptRows: true });
+          yield* session.start(yield* records.seq(orgId));
+          const page = yield* readTasks(who);
+          assert.deepStrictEqual(
+            page.records.map((row) => row.key),
+            [ours.key],
+            who.personId,
+          );
+          return { who, session, rows: kinWorkRowsStart(page.readSeq), page };
+        }),
+      );
+      const assertTasks = (visible: boolean) => {
+        for (const { who, page } of screens)
+          assert.deepStrictEqual(
+            page.records.map((row) => row.key),
+            visible || who === rhea ? [ours.key] : [],
+            `the open filtered Tasks page for ${who.personId}`,
+          );
+      };
+      const pull = yield* Stream.toPull(records.changes(orgId));
+      yield* pull;
+      const updateTasks = Effect.fn("test.updateTasks")(function* (
+        count: number,
+        expectBothRemovals = false,
+      ) {
+        const ticks = (yield* Effect.forEach(Array.from({ length: count }), () => pull)).flat();
+        for (const screen of screens) {
+          for (const tick of ticks) {
+            const pending = screen.session.pendingOf(tick);
+            for (const item of pending) {
+              const events = yield* screen.session.batch([item]);
+              if (
+                expectBothRemovals &&
+                screen.who === zoya &&
+                tick === ticks[0] &&
+                item === pending[0]
+              )
+                assert.sameMembers(
+                  events.flatMap((event) =>
+                    event._tag === "removed" && event.list === "work" ? [event.key] : [],
+                  ),
+                  keys,
+                  "the first burst carries both removals before its resume cursor",
+                );
+              for (const event of events) {
+                assert.notStrictEqual(event._tag, "snapshot-required");
+                if (event._tag === "upsert" || event._tag === "removed")
+                  screen.rows = kinApplyWorkRow(screen.rows, event, orgId);
+              }
+            }
+            const patched = kinPatchWorkPage(screen.page, filter, screen.rows);
+            // An upsert makes a text search reread. A removal can be applied directly.
+            screen.page = patched?.page ?? (yield* readTasks(screen.who));
+          }
+        }
+      });
       const kept = yield* keep(true, stored.rev);
+      // Deals.update commits the row change, then announces the deal.
+      yield* updateTasks(2, true);
+      assertTasks(false);
       for (const who of [zoya, arjun]) {
         const now = yield* seen(who);
         assert.deepStrictEqual(
@@ -454,9 +537,20 @@ it.effect(
         );
       }
       // Kept private no more: they show again where they showed.
-      yield* keep(false, kept.deal.rev);
+      const publicAgain = yield* keep(false, kept.deal.rev);
+      yield* updateTasks(2);
+      assertTasks(true);
       const after = yield* seen(zoya);
       assert.deepStrictEqual(after, before);
+      // Both deal ticks can arrive after the public change. The promise may have changed while hidden.
+      const privateAgain = yield* keep(true, publicAgain.deal.rev);
+      const title = "Invented terms sheet, revised";
+      yield* OwnerWork.update([rhea], { orgId, key: ours.key, title });
+      yield* keep(false, privateAgain.deal.rev);
+      yield* updateTasks(5);
+      assertTasks(true);
+      for (const { who, page } of screens)
+        assert.strictEqual(page.records[0]?.title, title, who.personId);
       // A deal kept private from the start: a member can't make a promise on it.
       const quiet = yield* Deals.create([rhea], {
         orgId,
@@ -486,7 +580,7 @@ it.effect(
           "not_found",
         );
       }
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.scoped, Effect.provide(layer)),
 );
 
 it.effect(

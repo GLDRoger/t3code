@@ -162,7 +162,7 @@ import {
 import {
   alsoOnIt,
   bumpTeamSeqs,
-  dependents,
+  dependentRows,
   teamGuard,
   crmSees,
   teamPairs,
@@ -503,6 +503,8 @@ export type Tick = {
   readonly created?: true;
   /** Each person who could see what changed, before or after it, and their own number now. */
   readonly team?: ReadonlyMap<string, number>;
+  /** Rows to read again for a teammate because this write can change their visibility. */
+  readonly dependents?: ReadonlyArray<{ readonly key: string; readonly registerId: string }>;
   /** People whose level or places changed, so what they may see may have (`peopleMoved`). */
   readonly people?: ReadonlyArray<string>;
   /**
@@ -515,6 +517,7 @@ export type Tick = {
 type TeamScope = {
   readonly scope: ReadonlyArray<string>;
   readonly before: ReadonlyArray<{ readonly personId: string; readonly recordId: string }>;
+  readonly dependents?: Tick["dependents"];
   /** People joined to or taken off a project: their tasks there read differently, seen or not. */
   readonly joined?: ReadonlyArray<string>;
 };
@@ -1089,6 +1092,7 @@ const make = Effect.gen(function* () {
         ...(stored === undefined ? {} : { registerId: stored.registerId }),
         ...(kind === "created" ? { created: true as const } : {}),
         team: numbers,
+        ...(team?.dependents === undefined ? {} : { dependents: team.dependents }),
         ...(projects.length === 0 ? {} : { projects }),
       }),
     );
@@ -2962,18 +2966,23 @@ const make = Effect.gen(function* () {
         const rev = row.rev + 1;
         set("rev", rev);
         set("updated_at", now);
-        // Who saw what before this change, for who it moves: the entry, and what a client's or
-        // project's label, client, lead or people show or hide.
-        const scope = [
-          row.recordId,
-          ...((list === "clients" || list === "projects") &&
+        // A viewer may see a dependent row without seeing the record that changes it.
+        const directoryChanged =
+          (list === "clients" || list === "projects") &&
           (patch.sensitive !== undefined ||
             patch.partyId !== undefined ||
             patch.owner !== undefined ||
-            (list === "projects" && patch.fields?.["members"] !== undefined))
-            ? yield* dependents(orgId, row.recordId).pipe(provideSql)
-            : []),
-        ];
+            (list === "projects" && patch.fields?.["members"] !== undefined));
+        const changesIndirectRows =
+          (list === "deals" && changes.some((field) => field.field === "sensitive")) ||
+          (row.takesPayments === 1 &&
+            list !== "receipts" &&
+            (partyId !== row.partyId || projectId !== row.projectId));
+        const dependents =
+          directoryChanged || changesIndirectRows
+            ? yield* dependentRows(orgId, row.recordId, list).pipe(provideSql)
+            : [];
+        const scope = [row.recordId, ...dependents.map((dependent) => dependent.recordId)];
         const members = (fields: Record<string, FieldValue>) =>
           fieldList(fields, "members").flatMap((text) =>
             text.startsWith("person:") ? [text.slice("person:".length)] : [],
@@ -2987,6 +2996,7 @@ const make = Effect.gen(function* () {
         const team: TeamScope = {
           scope,
           before: yield* teamPairs(orgId, scope).pipe(provideSql),
+          ...(changesIndirectRows && dependents.length > 0 ? { dependents } : {}),
           joined,
         };
         // Each update rewrites only the fields it changed, so two changes to one entry both land.

@@ -1338,32 +1338,44 @@ export const teamPairs = Effect.fn("KinTeamView.pairs")(function* (
     ORDER BY p.person_id, r.record_id`;
 });
 
-/**
- * The entries whose visibility a client's or project's label, client or lead can change: theirs
- * by any route, and a project's client and that client's contacts.
- */
-export const dependents = Effect.fn("KinTeamView.dependents")(function* (
-  orgId: KinOrgId,
-  recordId: string,
-) {
-  return (yield* dependentRows(orgId, recordId)).map((row) => row.recordId);
-});
-
-/** `dependents`, with each entry's key and list. */
+/** Rows whose visibility can follow a client, project, deal or a receipt's payment source. */
 export const dependentRows = Effect.fn("KinTeamView.dependentRows")(function* (
   orgId: KinOrgId,
   recordId: string,
+  registerId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql<{ recordId: string; key: string; registerId: string }>`SELECT
-      r.record_id AS "recordId", r.key, r.register_id AS "registerId" FROM kin_records r
-    WHERE r.org_id = ${orgId} AND (r.party_id = ${recordId}
+  if (registerId === "deals")
+    return yield* sql<{ recordId: string; key: string; registerId: string }>`SELECT
+        r.record_id AS "recordId", r.key, r.register_id AS "registerId"
+      FROM kin_record_links l JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
+      WHERE l.org_id = ${orgId} AND l.kind = 'record' AND l.target = ${recordId}
+        AND r.register_id = 'work' AND r.category = 'obligation'
+      ORDER BY r.record_id`;
+  const directory = registerId === "clients" || registerId === "projects";
+  const relatedPayments = directory
+    ? sql`OR p.record_id IN (SELECT source.record_id FROM kin_records source
+        WHERE source.org_id = ${orgId} AND (source.party_id = ${recordId}
+          OR source.project_id = ${recordId}
+          OR source.project_id IN (SELECT project.record_id FROM kin_records project
+            WHERE project.org_id = ${orgId} AND project.register_id = 'projects'
+              AND project.party_id = ${recordId})))`
+    : sql``;
+  const receipts = sql`(r.register_id = 'receipts' AND json_extract(r.fields_json, '$.payment') IN (
+    SELECT p.payment_id FROM kin_record_payments p
+    WHERE p.org_id = ${orgId} AND (p.record_id = ${recordId} ${relatedPayments})))`;
+  const linked = directory
+    ? sql`${receipts} OR r.party_id = ${recordId}
       OR r.project_id = ${recordId} OR r.project_id IN (SELECT p.record_id FROM kin_records p
         WHERE p.org_id = r.org_id AND p.register_id = 'projects' AND p.party_id = ${recordId})
       OR r.record_id IN (SELECT p.party_id FROM kin_records p
         WHERE p.org_id = r.org_id AND p.record_id = ${recordId})
       OR (r.register_id = 'contacts' AND r.party_id IN (SELECT p.party_id FROM kin_records p
-        WHERE p.org_id = r.org_id AND p.record_id = ${recordId})))
+        WHERE p.org_id = r.org_id AND p.record_id = ${recordId}))`
+    : receipts;
+  return yield* sql<{ recordId: string; key: string; registerId: string }>`SELECT
+      r.record_id AS "recordId", r.key, r.register_id AS "registerId" FROM kin_records r
+    WHERE r.org_id = ${orgId} AND (${linked})
     ORDER BY r.record_id`;
 });
 
