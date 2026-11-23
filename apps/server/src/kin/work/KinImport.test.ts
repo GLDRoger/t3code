@@ -581,8 +581,58 @@ describe("KinImport", () => {
       assert.include(report.problems[6]!.reason, "is far above anything in Invoices");
       assert.include(report.problems[7]!.reason, "can't fall due 2026-06-01, before it");
       assert.deepStrictEqual([report.entries.create, report.entries.problems], [8, 8]);
+      assert.strictEqual(report.fileProblems, 1);
     }).pipe(Effect.provide(layer)),
   );
+
+  for (const kind of ["expense", "payment"] as const) {
+    it.effect(`imports grouped ${kind} amounts and counts each unreadable row`, () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const imports = yield* KinImport.KinImport;
+        const amounts = ["1450", "1,450", "1,450.50", "12,34,567", "1,45", "1.450,50"];
+        const inputs = amounts.map((amount, index) => ({
+          entry: {
+            source: `grouped-${index}`,
+            title: `Imported ${kind} ${index + 1}`,
+            confirmed: true,
+            ...(kind === "expense"
+              ? { list: "expenses", amount }
+              : {
+                  list: "invoices",
+                  amount: "2000000",
+                  payments: [{ source: `pay-${index}`, amount, paidOn: "2026-06-01" }],
+                }),
+          },
+        }));
+        const report = yield* imports.apply(orgId, ownerId, linesOf(header, inputs));
+        assert.strictEqual(report.rows, 6);
+        assert.deepStrictEqual([report.entries.create, report.fileProblems], [4, 2]);
+        assert.strictEqual(report.entries.create + report.fileProblems, report.rows);
+        assert.deepStrictEqual(
+          report.problems.map((one) => one.line),
+          [6, 7],
+        );
+        for (const [index, problem] of report.problems.entries()) {
+          assert.include(problem.reason, "amount");
+          assert.include(problem.reason, amounts[index + 4]!);
+        }
+        const sql = yield* SqlClient.SqlClient;
+        const added =
+          kind === "expense"
+            ? yield* sql<{ minor: number }>`SELECT amount_minor AS minor FROM kin_records
+                WHERE org_id = ${orgId} AND origin_key LIKE 'import:oldbooks:entry:grouped-%'
+                ORDER BY origin_key`
+            : yield* sql<{ minor: number }>`SELECT amount_minor AS minor FROM kin_record_payments
+                WHERE org_id = ${orgId} AND origin_key LIKE 'import:oldbooks:payment:pay-%'
+                ORDER BY origin_key`;
+        assert.deepStrictEqual(
+          added.map((one) => one.minor),
+          [145_000, 145_000, 145_050, 123_456_700],
+        );
+      }).pipe(Effect.provide(layer)),
+    );
+  }
 
   it.effect("refuses impossible entry days like malformed dates", () =>
     Effect.gen(function* () {
