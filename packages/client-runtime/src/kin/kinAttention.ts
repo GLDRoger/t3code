@@ -83,6 +83,13 @@ export interface KinAttentionRow {
   readonly whatsNext: KinRecordKey | null;
 }
 
+/** "N more … not listed": the quiet last line of a group, opening the full list where one exists. */
+export interface KinAttentionMore {
+  readonly id: string;
+  readonly text: string;
+  readonly open: KinAttentionOpen;
+}
+
 /** A record set aside, one row in Handled whatever it covers, with its Undo when it is yours. */
 export interface KinAsideRow {
   readonly id: string;
@@ -111,6 +118,29 @@ export const KIN_DEAL_SENSES: ReadonlySet<KinPulseFact["sense"]> = new Set<KinPu
   "deal_quiet",
   "deal_date_passed",
 ]);
+
+/** An entry of a list shown as a section that is late, due today, or off its check. */
+export const KIN_ENTRY_SENSES: ReadonlySet<KinPulseFact["sense"]> = new Set<KinPulseFact["sense"]>([
+  "entry_late",
+  "entry_check",
+]);
+
+/**
+ * What the host says of each list entry that is late, due today or off its check, by its key, in
+ * the fact's own words, for its row and its page. Empty from a host older than list sections.
+ */
+export function kinEntryFacts(
+  read: KinPulseScreenRead | null | undefined,
+): ReadonlyMap<string, ReadonlyArray<string>> {
+  const byKey = new Map<string, Array<string>>();
+  for (const fact of read?.facts ?? []) {
+    if (!KIN_ENTRY_SENSES.has(fact.sense) || fact.subject.kind !== "record") continue;
+    const lines = byKey.get(fact.subject.key) ?? [];
+    lines.push(kinPlainDates(fact.consequence));
+    byKey.set(fact.subject.key, lines);
+  }
+  return byKey;
+}
 
 /** A client's own matters, and its tasks that are late or due. */
 const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
@@ -304,9 +334,12 @@ export function kinAttention(
   readonly asides: ReadonlyArray<KinAsideRow>;
   /** The facts those cover: not drawn, but what they are about is answered. */
   readonly held: ReadonlyArray<KinAttentionRow>;
+  /** What the host counted past its cap, drawn last and needing nothing. */
+  readonly more: ReadonlyArray<KinAttentionMore>;
 } {
-  if (read === null) return { open: [], handled: [], asides: [], held: [] };
-  const facts = read.facts.filter((fact) => inScope(fact, input.scope));
+  if (read === null) return { open: [], handled: [], asides: [], held: [], more: [] };
+  const scoped = read.facts.filter((fact) => inScope(fact, input.scope));
+  const facts = scoped.filter((fact) => fact.sense !== "sense_overflow");
   const covering = new Set(facts.flatMap((fact) => (fact.aside ? [fact.aside.record.key] : [])));
   const scopeKey =
     input.scope.type === "client" || input.scope.type === "project" ? input.scope.key : null;
@@ -336,6 +369,13 @@ export function kinAttention(
     held: rows(
       facts.filter((fact) => fact.aside !== undefined && listed.has(fact.aside.record.key)),
     ),
+    more: scoped
+      .filter((fact) => fact.sense === "sense_overflow")
+      .map((fact) => ({
+        id: fact.key,
+        text: fact.subject.title,
+        open: fact.family === "money" ? { type: "money" as const } : { type: "none" as const },
+      })),
   };
 }
 
@@ -419,7 +459,8 @@ export function kinAttentionProblem(failure: unknown | null): string | null {
 export const kinAttentionCount = (read: KinPulseScreenRead | null) =>
   read === null
     ? 0
-    : (read.outline?.open ?? read.facts.filter((fact) => fact.handled === null).length);
+    : (read.outline?.open ??
+      read.facts.filter((fact) => fact.handled === null && fact.sense !== "sense_overflow").length);
 
 /** The badge's text: nothing at zero, and "99+" past what fits. */
 export const kinAttentionBadge = (count: number) =>

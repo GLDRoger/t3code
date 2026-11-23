@@ -50,7 +50,10 @@ import { afterSay, opened, sayRefusal, type Said } from "../../apps/server/src/k
 import { concernsLine, mineLine, totalsLine } from "../../apps/server/src/kin/sales/text.ts";
 import { whenLabel } from "../../apps/server/src/kin/social/rows.ts";
 import { moneySection } from "../../apps/server/src/kin/work/moneyViews.ts";
-import { notRegisteredFact } from "../../apps/server/src/kin/work/companyProfile.ts";
+import {
+  countryFirstMessage,
+  notRegisteredFact,
+} from "../../apps/server/src/kin/work/companyProfile.ts";
 import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
@@ -67,12 +70,21 @@ import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
 import { KinPictureToolkit } from "../../apps/server/src/kin/pictures/mcp.ts";
 import { GENERATE_SENTENCES } from "../../apps/server/src/kin/pictures/KinPictures.ts";
 import { pictureNote } from "../../apps/server/src/kin/work/leadDocs.ts";
+import { APPROVED_TURN_TEXT } from "../../apps/server/src/kin/questions/sentUpDraft.ts";
+import {
+  APPROVED_REFUSAL,
+  approvedWords,
+  ONE_ENTRY,
+} from "../../apps/server/src/kin/lead/approvedDraft.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
 import { salesRulesFor } from "../../apps/server/src/kin/sales/seat.ts";
 import { KinPulseToolkit } from "../../apps/server/src/kin/pulse/mcp.ts";
+import { TASKS_KEY_INSTRUCTIONS, TasksKeyToolkit } from "../../apps/server/src/kin/tasksKey/mcp.ts";
+import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
+import { Tool } from "effect/ai";
 import {
   MONEY_RULE,
   WITHDRAWN_WORK,
@@ -80,7 +92,9 @@ import {
 } from "../../apps/server/src/kin/work/workPrompt.ts";
 import {
   githubTriggerEvent,
+  ASSIGNED_NOT_IN_PERSON,
   HANDED_BACK_WORK,
+  UNREAD_RULE,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
   joinedWork,
@@ -97,6 +111,8 @@ import {
   proposedAnswer,
 } from "../../apps/server/src/kin/numbers/words.ts";
 import { thisCompanyLines } from "../../apps/server/src/kin/shell/words.ts";
+import { REVIEW_WAKE_TEXT } from "../../apps/server/src/kin/pulse/reviewWake.ts";
+import { OWN_MESSAGE_REFUSALS } from "../../apps/server/src/kin/chat/ownMessages.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
 import { DECLINED_RULE } from "../../apps/server/src/kin/lead/declinedSection.ts";
@@ -133,6 +149,8 @@ const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
 const text = (value: string): Block => ({ type: "text", text: value });
 
 /** Kin's toolkits, in the order T3's tool list carries them. */
+/** The tools a person's key reaches, by bare name, for mock checks. */
+export const KIN_KEY_TOOLKIT = TasksKeyToolkit;
 export const KIN_TOOLKITS = [
   KinChatToolkit,
   KinLeadToolkit,
@@ -286,11 +304,15 @@ export const kinDated = <
     readonly reminders: ReadonlyArray<Block>;
     readonly environment: { readonly date: string | undefined };
     readonly codex?: unknown;
+    readonly system: ReadonlyArray<Block>;
+    readonly deferred: ReadonlyArray<ApiTool>;
   },
 >(
   testCase: McpToolUseCase,
-  base: B,
+  given: B,
 ): B => {
+  // A person's own coding agent with their key: the "kin" server's tools and instructions.
+  const base = testCase.setup.world?.kinKey === true ? kinKeyed(given) : given;
   const day = isKinCase(testCase) ? kinOwnerDay(testCase) : undefined;
   if (day === undefined) return base;
   const line = `Today's date is ${day}`;
@@ -308,6 +330,44 @@ export const kinDated = <
       : base.codex === undefined
         ? [...base.reminders, text(`${line}.`)]
         : base.reminders,
+  };
+};
+
+/**
+ * A person's own coding agent with their Kin key: Kin's `/kin/you/mcp` server, named "kin" as its
+ * setup lines name it, lists these tools and gives its instructions on connect, which Claude Code
+ * adds to the system prompt. Its tools wait behind ToolSearch as any MCP server's do.
+ */
+export const KIN_KEY_PREFIX = "mcp__kin__";
+const KIN_KEY_TOOLS: ReadonlyArray<ApiTool> = Object.values(TasksKeyToolkit.tools).map(
+  (tool: Tool.Any) => ({
+    name: `${KIN_KEY_PREFIX}${tool.name}`,
+    description: Tool.getDescription(tool) ?? "",
+    input_schema: advertisedJsonSchema(tool),
+  }),
+);
+const KIN_KEY_INSTRUCTIONS = `# MCP Server Instructions
+
+The following MCP servers have provided instructions for how to use their tools and resources:
+
+## kin
+${TASKS_KEY_INSTRUCTIONS}`;
+const DEFERRED_HEADER = /(The following deferred tools are now available via ToolSearch\.[^\n]*\n)/;
+const kinKeyed = <
+  B extends { readonly system: ReadonlyArray<Block>; readonly deferred: ReadonlyArray<ApiTool> },
+>(
+  base: B,
+): B => {
+  const names = KIN_KEY_TOOLS.map((tool) => tool.name).join("\n");
+  const system = base.system.map((block) =>
+    typeof block.text === "string" && DEFERRED_HEADER.test(block.text)
+      ? { ...block, text: block.text.replace(DEFERRED_HEADER, (header) => `${header}${names}\n`) }
+      : block,
+  );
+  return {
+    ...base,
+    system: [...system, text(KIN_KEY_INSTRUCTIONS)],
+    deferred: [...base.deferred, ...KIN_KEY_TOOLS],
   };
 };
 
@@ -429,22 +489,30 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     )
     .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
+    .replaceAll("{{ASSIGNED_NOT_IN_PERSON}}", ASSIGNED_NOT_IN_PERSON)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
     .replaceAll("{{DECLINED_RULE}}", DECLINED_RULE)
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
     .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK)
     .replaceAll("{{PEOPLE_LABEL}}", PEOPLE_LABEL)
     .replaceAll("{{UNISSUED_INVOICE}}", UNISSUED_INVOICE)
+    .replaceAll("{{APPROVED_TURN_TEXT}}", APPROVED_TURN_TEXT)
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
+    .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
+    .replace(/\{\{REVIEW_WAKE:([^|}]+)\|(\d+)\}\}/g, (_, who: string, count: string) =>
+      REVIEW_WAKE_TEXT({ who: who.split(", "), count: Number(count) }),
+    )
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names))
     .replace(/\{\{JOINED_WORK:([^|}]+)\|([^}]+)\}\}/g, (_, adder: string, holder: string) =>
       joinedWork(adder, holder),
     )
-    // Watched numbers' lines and turn texts as Kin writes them, each placeholder on its own line.
-    .replace(/^\{\{NUMBERS_LINES:(.+)\}\}$/gm, (_, json: string) =>
-      thisCompanyLines({ rev: 0, sections: [] }, JSON.parse(json) as never).join("\n"),
-    )
+    // Watched numbers' and list sections' lines and turn texts as Kin writes them, each
+    // placeholder on its own line.
+    .replace(/^\{\{NUMBERS_LINES:(.+)\}\}$/gm, (_, json: string) => {
+      const given = JSON.parse(json) as { lists?: never };
+      return thisCompanyLines({ rev: 0, sections: [] }, given as never, given.lists).join("\n");
+    })
     .replace(/^\{\{NUMBER_OFF:(.+)\}\}$/gm, (_, json: string) =>
       offTurnText(JSON.parse(json) as never),
     )
@@ -511,14 +579,48 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       message: helperRefusal(input.holder, input.key),
     },
   }),
+  // An approved draft's one make that changed the approved words, refused at Kin's gate.
+  approvedWords: (input: { tool: string }) => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: approvedWords(input.tool) },
+  }),
+  // An approved quote or invoice made as more than one entry, refused at Kin's gate.
+  approvedOneEntry: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: ONE_ENTRY },
+  }),
+  // Anything but the approved make or a read, refused in an approved draft's turn.
+  approvedRefusal: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: APPROVED_REFUSAL },
+  }),
+  // message_withdraw or message_replace refused, as `chat/ownMessages.ts` says it.
+  ownMessageRefusal: (input: {
+    readonly why: "read" | "otherAuthor" | "outside" | "moreThanWords";
+    readonly name?: string;
+  }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_allowed",
+      message:
+        input.why === "read"
+          ? OWN_MESSAGE_REFUSALS.read(input.name ?? "")
+          : OWN_MESSAGE_REFUSALS[input.why],
+    },
+  }),
   // An agent with no person asking in its turn, refused a change to who is on a task.
   alsoOnUnasked: () => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: ALSO_ON_UNASKED },
   }),
-  // kin_hand_off to an agent this turn put on a task: nothing more is passed on.
-  alreadyOnIt: (input: { keys: ReadonlyArray<string> }) => ({
+  // kin_hand_off to an agent this turn gave a task or put on one: nothing more is passed on.
+  alreadyOnIt: (input: { agent: string; titles: ReadonlyArray<string> }) => ({
     passed: false,
-    note: alreadyOnIt(input.keys),
+    note: alreadyOnIt(input.agent, input.titles),
+  }),
+  // A money write refused while the company's country isn't chosen, as the turn's caller words it.
+  countryFirst: (input: { owner: string; saved?: boolean; answeringChooser?: boolean }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "invalid_state",
+      message: countryFirstMessage(input.owner, input),
+    },
   }),
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),
@@ -1130,7 +1232,7 @@ export const kinTurnBlocks = (files: KinTurnFiles | undefined, prompt: string, c
       ];
 
 /** Kin's tools, by bare name. */
-const KIN_TOOLS = names(...KIN_TOOLKITS);
+const KIN_TOOLS = names(...KIN_TOOLKITS, TasksKeyToolkit);
 export const isKinTool = (tool: string) => KIN_TOOLS.has(tool);
 /** A mock's answer to a call as the agent reads it: a Kin tool's is filled in by Kin's code. */
 export const kinAnswer = (
@@ -1189,4 +1291,4 @@ export const kinJudgedCall = (call: { readonly tool: string; readonly input: unk
   return `${kept} [cut: this call is ${bytes.byteLength} bytes; only its first ${JUDGED_CALL_BYTES} are shown]`;
 };
 export const isKinCase = ({ setup }: McpToolUseCase) =>
-  setup.world?.kinAgent === true || setup.world?.kinLead === true;
+  setup.world?.kinAgent === true || setup.world?.kinLead === true || setup.world?.kinKey === true;

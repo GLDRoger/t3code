@@ -62,7 +62,7 @@ it("the batch-write tools advertise every free-text field's bound", () => {
     );
 });
 
-it("list writers still reject read-only and unknown field types", () => {
+it("list_define takes number and yes or no fields; imports and unknown types stay refused", () => {
   const define = Schema.is(DefineInput);
   const importHeader = Schema.is(ImportHeader);
   const accepted = (type: string) => {
@@ -78,6 +78,7 @@ it("list writers still reject read-only and unknown field types", () => {
     ];
   };
   assert.deepStrictEqual(accepted("text"), [true, true]);
-  for (const type of ["unknown", "number", "yesno"])
-    assert.deepStrictEqual(accepted(type), [false, false], type);
+  assert.deepStrictEqual(accepted("unknown"), [false, false]);
+  for (const type of ["number", "yesno"])
+    assert.deepStrictEqual(accepted(type), [true, false], type);
 });

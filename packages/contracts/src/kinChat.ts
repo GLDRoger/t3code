@@ -105,6 +105,8 @@ export const KinMessageLink = Schema.Struct({
   text: KinTrimmedText,
   to: KinMessageLinkTarget,
   note: Schema.NullOr(KinText),
+  /** Where `text` is an entry's key: what this reader calls it (its number, else its title). */
+  name: Schema.optional(KinTrimmedText),
 });
 export type KinMessageLink = typeof KinMessageLink.Type;
 export const KIN_MESSAGE_LINKS_CAP = 24;
@@ -234,6 +236,20 @@ export type KinMessageKind = typeof KinMessageKind.Type;
 export const KinMessageStatus = Schema.Literals(["posted", "suggested", "dismissed", "deleted"]);
 export type KinMessageStatus = typeof KinMessageStatus.Type;
 
+/** Longest reason an agent gives when it takes a message back; people read it in the chat. */
+export const KIN_WITHDRAW_WHY_MAX = 80;
+/**
+ * An agent's message it took back before anyone in the chat read it, kept and shown as one line
+ * (`status` is "deleted", so an older client draws "Message deleted"). `said` is the original
+ * text, sent to the owner and co-owners only.
+ */
+export const KinMessageWithdrawn = Schema.Struct({
+  why: KinText.check(Schema.isMaxLength(KIN_WITHDRAW_WHY_MAX)),
+  at: IsoDateTime,
+  said: Schema.optional(KinText),
+});
+export type KinMessageWithdrawn = typeof KinMessageWithdrawn.Type;
+
 /**
  * A message one agent sent into another's chat (`sent_by`, drawn on the viewer's side as "Sent by
  * <agent>", as a T3 thread draws a message from another thread), or the answer carried back to the
@@ -352,6 +368,8 @@ export const KinMessage = Schema.Struct({
   when: Schema.optional(KinMessageWhen),
   // An agent's reply from a wake-up, for each reader; absent on every other message.
   turnChanges: Schema.optional(KinTurnChanges),
+  // Absent on every message its agent didn't take back.
+  withdrawn: Schema.optional(KinMessageWithdrawn),
 });
 export type KinMessage = typeof KinMessage.Type;
 

@@ -52,6 +52,8 @@ import {
   renderSource,
   stampKey,
   stampReads,
+  codingAgentSource,
+  followsCodingAgent,
 } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { readProfile } from "../work/companyProfile.ts";
@@ -1294,6 +1296,20 @@ describe("KinConnections", () => {
         assert.strictEqual(stampKey(handed), id);
         assert.strictEqual(renderSource(handed, true), "PostHog (query)");
         assert.strictEqual(renderSource(handed, false), "a connected service");
+        // A coding agent's words woken beside a check-in's outside text: the mark holds, and
+        // travels with a hand-off made in that turn.
+        yield* stampEvent(orgId, "from-key", codingAgentSource("Invented laptop"));
+        yield* inheritOutside({
+          orgId,
+          wakeupId: "mixed",
+          eventIds: ["from-key"],
+          shows: "check-in",
+        });
+        assert.isTrue(yield* followsCodingAgent({ orgId, wakeupId: "mixed" }));
+        yield* stampEvent(orgId, "passed-on", yield* outsideStamp({ orgId, wakeupId: "mixed" }));
+        yield* inheritOutside({ orgId, wakeupId: "after", eventIds: ["passed-on"] });
+        assert.isTrue(yield* followsCodingAgent({ orgId, wakeupId: "after" }));
+        assert.isFalse(yield* followsCodingAgent({ orgId, wakeupId: "handed" }));
       }),
     ),
   );

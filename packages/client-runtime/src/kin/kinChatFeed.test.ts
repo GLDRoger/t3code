@@ -831,14 +831,23 @@ describe("message labels", () => {
       "Tech lead, agent. Merge it? 9:30. Suggestion, not sent yet.",
     ],
     [
-      "an edit",
+      "an agent's update",
       row({ body: "Done", editedAt: "2026-11-08T09:31:00.000Z" }),
-      "Tech lead, agent. Done. 9:30. Edited.",
+      "Tech lead, agent. Done. 9:30. Updated.",
     ],
     [
       "a deleted message",
       row({ body: "secret", status: "deleted" }),
       "Tech lead, agent. Message deleted. 9:30.",
+    ],
+    [
+      "a message its agent withdrew, as its one line",
+      row({
+        body: "",
+        status: "deleted",
+        withdrawn: { why: "the client paid", at: "2026-11-08T11:00:00.000Z" },
+      }),
+      "Tech lead withdrew a message: the client paid. 9:30.",
     ],
     [
       "a card with a caption, which the card itself labels",

@@ -1258,7 +1258,7 @@ export const KIN_DOC_COMPANY = {
 const CATEGORY_LABEL = {
   task: null,
   issue: "Issue",
-  obligation: "Commitment",
+  obligation: "Promise",
   meeting: "Meeting",
 } as const;
 

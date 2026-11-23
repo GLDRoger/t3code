@@ -8,6 +8,7 @@ import { turnChat } from "../lead/Audience.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { mailboxPerson } from "./turnMailbox.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -76,7 +77,10 @@ export const callPrivacy = Effect.fn("KinPrivateTurn.callPrivacy")(function* (tu
 });
 
 /** Whether `personId`'s own message, tap or reaction in their own chat with this agent woke it. */
-const startedBy = Effect.fn("KinPrivateTurn.startedBy")(function* (turn: Turn, personId: string) {
+export const startedBy = Effect.fn("KinPrivateTurn.startedBy")(function* (
+  turn: Turn,
+  personId: string,
+) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql`SELECT 1 FROM kin_events e
     JOIN kin_chats c ON c.org_id = e.org_id AND c.chat_id = json_extract(e.json, '$.chatId')
@@ -87,6 +91,7 @@ const startedBy = Effect.fn("KinPrivateTurn.startedBy")(function* (turn: Turn, p
       AND ((e.tag IN ('chat.message', 'widget.action') AND EXISTS (SELECT 1 FROM kin_messages m
           WHERE m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
             AND m.chat_id = c.chat_id AND m.author_kind = 'human'
+            AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
             AND m.author_person_id = ${personId}))
         OR (e.tag = 'chat.reaction' AND json_extract(e.json, '$.provenance._tag') = 'human'
           AND json_extract(e.json, '$.provenance.personId') = ${personId}))

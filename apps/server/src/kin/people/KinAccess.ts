@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 // The one owner-level rule: `kin_people.access` is owner or co_owner; a row with none set yet is
 // the owner when it owns a lead, as before kinds were stored. Read per request; no agent writes it.
@@ -63,6 +64,8 @@ export const ownerLevelAsked = Effect.fn("KinAccess.ownerLevelAsked")(function* 
         AND m.author_kind = 'human' AND m.chat_id = json_extract(e.json, '$.chatId')
         -- Kin's copy of group words (KinHandoff.takePrivate) was asked among others, not here.
         AND COALESCE(m.client_message_id, '') NOT LIKE 'send:private:%'
+        -- Words a person's coding agent sent through its key are never theirs in person.
+        AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
         AND ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))})
       OR (e.tag = 'record.changed' AND ${sql.literal(OWN_TASK_ACT)})
       OR (e.tag = 'record.changed' AND ${sql.literal(KEPT_BY_HAND)}), 0) AS direct

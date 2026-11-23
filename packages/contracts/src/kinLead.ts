@@ -926,6 +926,9 @@ export const KinEvent = Schema.Union([
     // chat with this agent, `origin` naming them, so the turn is theirs alone. From stored rows.
     chatId: Schema.optional(KinChatId),
     origin: Schema.optional(KinEventOrigin),
+    // Kin's wake to look again at the agent's messages no one in `chatId` has read yet, once what
+    // they are about changed (`chat/ownMessages.ts`); `factKeys` is empty.
+    review: Schema.optional(Schema.Literal(true)),
   }),
   // An entry given to this lead (`assigned`), closed or taken back (`withdrawn`), come back
   // (`handed_back`), commented on (`commented`, `note` their words), or someone else's it is put on

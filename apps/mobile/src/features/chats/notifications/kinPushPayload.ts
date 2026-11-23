@@ -1,9 +1,14 @@
 import {
   EnvironmentId,
+  KIN_PUSH_KEPT_MS,
   KinPushCategory,
   KinPushData,
   kinDeferralItemIdFromWidgetId,
   type KinChatId,
+  type KinOrgId,
+  type KinPushTopic,
+  type KinPushReconcileResult,
+  type KinPushWithdrawn,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
 import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
@@ -225,7 +230,11 @@ export function kinNotificationRoute(response: unknown): KinNotificationRoute | 
   };
 }
 
-/** Delivered notifications from this host's chats that `settled` says are done, by id. */
+/**
+ * Delivered notifications from this host's chats that `settled` says are done, by id: only those
+ * from a host or build before topics. One that names its topic (a question still waiting in a read
+ * chat) goes only by its own withdrawal or reconcile answer.
+ */
 export function kinSettledNotificationIds(
   presented: ReadonlyArray<unknown>,
   environmentId: EnvironmentId,
@@ -236,9 +245,144 @@ export function kinSettledNotificationIds(
     const identifier = field(request, "identifier");
     const data = pushData(field(field(request, "content"), "data"))?.data;
     if (typeof identifier !== "string" || data?.chatId === undefined) return [];
+    if (data.topic !== undefined) return [];
     const target = linkTarget(data);
     return target?.environmentId === environmentId && settled(data.chatId) ? [identifier] : [];
   });
+}
+
+/** This host's delivered notifications that name what they are about, by org. */
+export function kinDeliveredTopics(
+  presented: ReadonlyArray<unknown>,
+  environmentId: EnvironmentId,
+): ReadonlyArray<{
+  readonly identifier: string;
+  readonly orgId: KinOrgId;
+  readonly topic: KinPushTopic;
+  /** 0 when the push named none: any withdrawal of its topic covers it. */
+  readonly version: number;
+  /** When it was delivered, if the OS says. */
+  readonly date: number | undefined;
+}> {
+  return presented.flatMap((notification) => {
+    const request = field(notification, "request");
+    const identifier = field(request, "identifier");
+    const data = pushData(field(field(request, "content"), "data"))?.data;
+    if (typeof identifier !== "string" || data?.topic === undefined) return [];
+    const date = field(notification, "date");
+    return linkTarget(data)?.environmentId === environmentId
+      ? [
+          {
+            identifier,
+            orgId: data.orgId,
+            topic: data.topic,
+            version: data.version ?? 0,
+            date: typeof date === "number" ? date : undefined,
+          },
+        ]
+      : [];
+  });
+}
+
+/**
+ * Of this host's delivered notifications for `where.orgId`, the ids of those the host settled: its
+ * topic at the version shown or a later one. A newer push that overtook the withdrawal stays, and
+ * a topic is one company's on one host, so another's is never touched.
+ */
+export function kinWithdrawnIds(
+  presented: ReadonlyArray<unknown>,
+  where: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId },
+  settled: ReadonlyArray<KinPushWithdrawn>,
+): ReadonlyArray<string> {
+  const upTo = new Map<string, number>();
+  for (const one of settled) upTo.set(one.topic, Math.max(one.version, upTo.get(one.topic) ?? 0));
+  return kinDeliveredTopics(presented, where.environmentId).flatMap((one) =>
+    one.orgId === where.orgId && one.version <= (upTo.get(one.topic) ?? -1) ? [one.identifier] : [],
+  );
+}
+
+/**
+ * What the host's reconcile answer takes off the phone: what it settled, by version, and what it
+ * keeps no record of once delivered longer ago than it remembers (`KIN_PUSH_KEPT_MS`). One it
+ * doesn't know that is younger may be another host's sending, so it stays.
+ */
+export function kinReconcileRemovals(
+  presented: ReadonlyArray<unknown>,
+  where: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId },
+  answer: Pick<KinPushReconcileResult, "remove" | "unknown">,
+  now: number,
+): ReadonlyArray<string> {
+  const settled = new Set(kinWithdrawnIds(presented, where, answer.remove));
+  const forgotten = new Set<string>(answer.unknown);
+  for (const one of kinDeliveredTopics(presented, where.environmentId))
+    if (
+      one.orgId === where.orgId &&
+      forgotten.has(one.topic) &&
+      one.date !== undefined &&
+      now - one.date > KIN_PUSH_KEPT_MS
+    )
+      settled.add(one.identifier);
+  return kinDeliveredTopics(presented, where.environmentId).flatMap((one) =>
+    settled.has(one.identifier) ? [one.identifier] : [],
+  );
+}
+
+/**
+ * Whether a push that just arrived is already settled, so it should not be shown: the host is
+ * asked about its own topic (`ask`, the reconcile call; null when it didn't answer in time, which
+ * shows it). Another host's push, or one with no topic, is never asked about.
+ */
+export async function kinIncomingSettled(
+  notification: unknown,
+  environmentId: EnvironmentId,
+  ask: (input: {
+    readonly orgId: KinOrgId;
+    readonly topics: ReadonlyArray<KinPushTopic>;
+  }) => Promise<Pick<KinPushReconcileResult, "remove" | "unknown"> | null>,
+): Promise<boolean> {
+  const [one] = kinDeliveredTopics([notification], environmentId);
+  if (one === undefined) return false;
+  const answer = await ask({ orgId: one.orgId, topics: [one.topic] });
+  if (answer === null) return false;
+  const where = { environmentId, orgId: one.orgId };
+  return kinReconcileRemovals([notification], where, answer, one.date ?? 0).length > 0;
+}
+
+/**
+ * What a host's silent push withdraws, from a background push's task payload (`data.dataString`
+ * is the push's `body`): its host and company, and the settled topics with their versions. Null
+ * for anything else.
+ */
+export function kinWithdrawal(payload: unknown): {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly withdraw: ReadonlyArray<KinPushWithdrawn>;
+  /** iOS: the badge to set, which Apple's background push can't carry in `aps`. */
+  readonly badge: number | undefined;
+} | null {
+  const data = pushData(field(field(payload, "data"), "dataString"))?.data;
+  if (data === undefined) return null;
+  const withdraw = data.withdraw ?? [];
+  if (withdraw.length === 0 && data.badge === undefined) return null;
+  const target = linkTarget(data);
+  return target === null
+    ? null
+    : {
+        environmentId: EnvironmentId.make(target.environmentId),
+        orgId: data.orgId,
+        withdraw,
+        badge: data.badge,
+      };
+}
+
+/** A Kin push with nothing to show: a withdrawal or a read's badge. It is never drawn. */
+export function kinIsSilentPush(notification: unknown): boolean {
+  const content = field(field(notification, "request"), "content");
+  const said = (key: string) => {
+    const value = field(content, key);
+    return typeof value === "string" && value.trim() !== "";
+  };
+  return pushData(field(content, "data")) !== null && !said("title") && !said("body");
 }
 
 /**

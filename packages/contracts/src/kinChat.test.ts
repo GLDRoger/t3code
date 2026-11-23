@@ -294,6 +294,11 @@ const samples = {
     },
     ...authors.map((author) => ({ ...message, author })),
     { ...message, changeSeq: 2, clientMessageId: "pending" },
+    { ...message, body: "", status: "deleted", withdrawn: { why: "The client paid", at } },
+  ],
+  KinMessageWithdrawn: [
+    { why: "The client paid", at },
+    { why: "The client paid", at, said: "Lumen Grove still owes INV-14." },
   ],
   KinWidget: [
     widget,

@@ -68,7 +68,7 @@ export const keysIn = (body: string): ReadonlyArray<string> => [
 const NUMBER = /(?<![\p{L}\p{N}/-])([\p{L}\p{N}]+(?:[/-][\p{L}\p{N}]+)+)(?![\p{L}\p{N}/-])/gu;
 
 /** What in a message could be a printed number, for looking those up and no others. */
-const numbersIn = (body: string): ReadonlyArray<string> =>
+export const numbersIn = (body: string): ReadonlyArray<string> =>
   [...linkableText(body).matchAll(NUMBER)]
     .map((match) => match[1]!)
     .filter((token) => /\d/.test(token));
@@ -219,8 +219,16 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   const keyed =
     keys.length === 0
       ? []
-      : yield* sql<{ key: string; title: string; register: string; state: string }>`SELECT
-          r.key, r.title, r.register_id AS register, r.state FROM kin_records r
+      : yield* sql<{
+          key: string;
+          title: string;
+          register: string;
+          state: string;
+          number: string | null;
+        }>`SELECT r.key, r.title, r.register_id AS register, r.state,
+          CASE WHEN ${listNumberSeenBy(sql, viewer)}
+            THEN json_extract(r.fields_json, '$.number') END AS number
+        FROM kin_records r
         WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(keys)} AND ${seenBy(sql, viewer)}`;
   const record = (row: { key: string; title: string; register: string; state: string }) => ({
     to: { _tag: "record" as const, key: row.key, kind: kindOf(row.register) },
@@ -261,7 +269,14 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   for (const one of names) counts.set(one.name, (counts.get(one.name) ?? 0) + 1);
   return {
     names: names.filter((one) => counts.get(one.name) === 1),
-    keys: new Map(keyed.map((row) => [row.key, record(row)])),
+    keys: new Map(
+      keyed.map((row) => {
+        const name = (typeof row.number === "string" ? row.number : row.title)
+          .replace(/\s+/g, " ")
+          .trim();
+        return [row.key, { ...record(row), ...(name === "" ? {} : { name }) }];
+      }),
+    ),
   };
 });
 
@@ -425,6 +440,33 @@ export const nameKeys = Effect.fn("KinMessageLinks.nameKeys")(function* (
 });
 
 /**
+ * What an agent's withdrawn message said, for the owner and co-owners only: every other reader
+ * gets just its line (`messageForViewer` takes the words off for everyone first).
+ */
+const withdrawnSaid = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  messages: ReadonlyArray<KinMessage>,
+  known?: boolean,
+) {
+  const taken = messages.filter((message) => message.withdrawn !== undefined);
+  if (taken.length === 0 || !(known ?? (yield* ownerLevel(orgId, personId)))) return messages;
+  const sql = yield* SqlClient.SqlClient;
+  const said = new Map(
+    (yield* sql<{ messageId: string; body: string }>`SELECT message_id AS "messageId", body
+      FROM kin_messages WHERE org_id = ${orgId}
+        AND message_id IN ${sql.in(taken.map((message) => message.messageId))}
+      ORDER BY message_id`).map((row) => [row.messageId, row.body] as const),
+  );
+  return messages.map((message) => {
+    const body = said.get(message.messageId);
+    return message.withdrawn === undefined || body === undefined || body === ""
+      ? message
+      : { ...message, withdrawn: { ...message.withdrawn, said: body } };
+  });
+});
+
+/**
  * Each message with the names in it this reader may open (`links`), worked out for this reader:
  * an entry they can't see, by name or number, yields nothing, the same as one that doesn't
  * exist. Agents read the text as written, so their messages come back unchanged.
@@ -440,7 +482,7 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
   const texts = messages.filter(
     (message) => message.kind === "text" && message.status !== "deleted",
   );
-  if (texts.length === 0) return messages;
+  if (texts.length === 0) return yield* withdrawnSaid(orgId, reader.personId, messages);
   const owner = yield* ownerLevel(orgId, reader.personId);
   const viewer = owner ? KIN_OWNER_LEVEL : viewerOfPeople([reader.personId]);
   const sql = yield* SqlClient.SqlClient;
@@ -474,7 +516,7 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
   for (const one of named) {
     const link = sources.keys.get(one.key);
     if (link !== undefined && !taken.has(one.text) && !written.has(one.text))
-      written.set(one.text, { name: one.text, ...link });
+      written.set(one.text, { name: one.text, to: link.to, note: link.note });
   }
   const match = linkMatcher([...sources.names, ...written.values()], sources.keys, owner);
   const receipts = options.receipts
@@ -484,9 +526,13 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
         agentTexts.map((message) => message.messageId),
       )
     : new Map<string, KinTurnChanges>();
-  return messages.map((message) => {
+  return (yield* withdrawnSaid(orgId, reader.personId, messages, owner)).map((message) => {
     if (message.kind !== "text" || message.status === "deleted") return message;
-    const links = match(message.body);
+    // A person's own words keep their keys as typed; an agent's read as names.
+    const links: ReadonlyArray<KinMessageLink> =
+      message.author._tag === "agent"
+        ? match(message.body)
+        : match(message.body).map(({ name: _name, ...link }) => link);
     const turn = receipts.get(message.messageId);
     return {
       ...message,

@@ -4269,13 +4269,39 @@ it.effect(
         owner: toLead,
         clientRequestId: "his",
       });
+      // Read in a wake-up of his act alone, it is his ask in person.
+      const sql = yield* SqlClient.SqlClient;
+      const event = (yield* lastGiven)!;
+      const firstGiven = decodeEvent(JSON.parse((yield* assignedEvents)[0]!.json));
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+          status, event_ids)
+        VALUES ('owner-wake', ${orgId}, ${event.agentId}, 'lead-thread', 'test', 0, 'completed', '[]'),
+          ('mixed-wake', ${orgId}, ${event.agentId}, 'lead-thread', 'test', 0, 'completed', '[]')`;
+      yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'owner-wake'
+        WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
       const his = (yield* told)!;
       assert.include(his, "as if the owner had asked you");
       assert.notInclude(his, TEAMMATE_WORDS);
       assert.notInclude(his, '"number"');
+      // Woken beside other news, it is his task but not his ask in person: what it makes waits.
+      yield* sql`UPDATE kin_events SET wakeup_id = 'mixed-wake'
+        WHERE org_id = ${orgId} AND event_id IN (${event.eventId}, ${firstGiven.eventId})`;
+      assert.isFalse(yield* ownerLevelAsked(orgId, event.agentId, "mixed-wake"));
+      const mixed = (yield* workEventText({
+        orgId,
+        event,
+        ownerOnly: true,
+        wakeupId: "mixed-wake",
+      }))!;
+      assert.match(
+        mixed,
+        /^The owner gave you this Work entry to do, but this turn is not his ask in person/,
+      );
+      assert.include(mixed, "what you make from it waits to be kept");
+      assert.notInclude(mixed, "as if the owner had asked you");
+      yield* sql`UPDATE kin_events SET wakeup_id = 'owner-wake'
+        WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
       // An entry with the number people see carries it beside its key.
-      const sql = yield* SqlClient.SqlClient;
-      const event = (yield* lastGiven)!;
       yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/004')
         WHERE org_id = ${orgId} AND record_id = ${event.recordId}`;
       assert.include(
@@ -5198,6 +5224,54 @@ it.effect(
       assert.deepStrictEqual(yield* seen, [made.key, newest.key]);
       assert.lengthOf((yield* OwnerWork.list([owner], bookings)).records, 4);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("on a team list whoever holds an entry may still archive it or give it away", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    const sql = yield* SqlClient.SqlClient;
+    const dev = { ...mate, personId: KinPersonId.make("dev") };
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access, sees_money)
+      VALUES (${dev.personId}, ${orgId}, 'dev', 'Dev', ${at}, 'member', 1)`;
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('dev-session', ${orgId}, ${dev.personId}, 0)`;
+    yield* setBookingTeam(true, 1);
+    const toZoya = { _tag: "person" as const, personId: zoya.personId };
+    const made = yield* addBooking("Arjun's booking for Zoya");
+    yield* OwnerWork.assign([owner], { orgId, key: made.key, to: toZoya });
+    const can = (who: typeof mate) =>
+      OwnerWork.get([who], { orgId, key: made.key }).pipe(Effect.map((one) => one.can));
+    const drop = (who: typeof mate) =>
+      OwnerWork.get([who], { orgId, key: made.key }).pipe(
+        Effect.flatMap((one) =>
+          OwnerWork.update([who], { orgId, key: made.key, rev: one.rev, state: "dropped" }),
+        ),
+      );
+    const give = (who: typeof mate, personId: KinPersonId) =>
+      OwnerWork.assign([who], { orgId, key: made.key, to: { _tag: "person", personId } });
+    // Neither made nor holds it: neither archive nor give.
+    assert.include(yield* can(dev), { give: false });
+    assert.notInclude((yield* can(dev))?.states ?? [], "dropped");
+    assert.deepStrictEqual(yield* flipped(drop(dev)), [
+      "not_allowed",
+      "Only the owner or a co-owner can do that on this list.",
+    ]);
+    assert.strictEqual((yield* flipped(give(dev, dev.personId)))[0], "not_allowed");
+    // Made it but doesn't hold it: archive as before, no give.
+    assert.include(yield* can(arjun), { give: false });
+    assert.include((yield* can(arjun))?.states ?? [], "dropped");
+    assert.strictEqual((yield* flipped(give(arjun, arjun.personId)))[0], "not_allowed");
+    // Holds it: archive it and give it away, and nothing more.
+    assert.include(yield* can(zoya), { give: true });
+    assert.include((yield* can(zoya))?.states ?? [], "dropped");
+    assert.deepInclude(yield* give(zoya, dev.personId), {
+      owner: { _tag: "person", personId: dev.personId },
+    });
+    const held = yield* OwnerWork.get([dev], { orgId, key: made.key });
+    assert.strictEqual((yield* flipped(give(zoya, zoya.personId)))[0], "not_allowed");
+    assert.include(yield* drop(dev), { state: "dropped" });
+    assert.strictEqual(held.can?.give, true);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("a team list assigned to Money follows the company's Money section", () =>

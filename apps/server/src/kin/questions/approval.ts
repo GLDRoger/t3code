@@ -1,4 +1,4 @@
-import { KinEventId, type KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { type KinDocKind, KinEventId, type KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -21,6 +21,10 @@ export const DRAFT_WORDS: Record<DraftKind, string> = {
   mail: "mail",
   post: "post",
 };
+
+/** An approved quote or invoice whose entry names another client than its card did. */
+export const approvedClient = (title: string) =>
+  `Nothing was made: the approved draft is for ${title}, so make the entry for that client.`;
 
 /** The one list an approved quote or invoice is made on; every other kind makes no entry. */
 export const DRAFT_LIST: Partial<Record<DraftKind, "quotes" | "invoices">> = {
@@ -77,6 +81,73 @@ export const draftLine = (kind: DraftKind, on: string | undefined, party: string
   return party === undefined ? `${what} for ${on}` : `${what} for ${on}, for ${party}`;
 };
 
+/** Text as compared with an approved draft: line endings and the space around it aside. */
+const asWords = (text: string) => text.replace(/\r\n?/g, "\n").trim();
+/** Whether what a make writes is the approved draft's text, word for word and nothing else. */
+export const keepsDraft = (made: unknown, draft: string) =>
+  typeof made === "string" && asWords(made) === asWords(draft);
+
+const HEADER = /^(subject|to|cc):[ \t]*(.*)$/i;
+const ADDRESS = /[^\s<>(),;"']+@[^\s<>(),;"']+/g;
+const addresses = (values: ReadonlyArray<string>) =>
+  new Set(values.flatMap((value) => value.toLowerCase().match(ADDRESS) ?? []));
+const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) =>
+  a.size === b.size && [...a].every((one) => b.has(one));
+
+/**
+ * A mail draft's own heading: consecutive `Subject:`, `To:` or `Cc:` lines at its very start,
+ * ended by its first blank line, and the rest below it. Undefined when it opens with none.
+ */
+const headingOf = (draft: string) => {
+  const lines = asWords(draft).split("\n");
+  const blank = lines.findIndex((line) => line.trim() === "");
+  if (blank <= 0) return undefined;
+  const fields = lines.slice(0, blank).map((line) => HEADER.exec(line));
+  if (fields.some((field) => field === null)) return undefined;
+  const values = (name: string) =>
+    fields.flatMap((field) => (field![1]!.toLowerCase() === name ? [field![2]!.trim()] : []));
+  return {
+    subject: values("subject"),
+    to: values("to"),
+    cc: values("cc"),
+    rest: lines.slice(blank + 1).join("\n"),
+  };
+};
+
+/**
+ * Whether a prepared mail is its approved draft. With no heading, the body is the whole draft and
+ * the subject is free. With one, the body is the rest; a send's subject is its `Subject:` value;
+ * a `To:` or `Cc:` naming addresses names the mail's own. A reply's subject is its thread's.
+ */
+export const mailKeepsDraft = (
+  mail: {
+    readonly to: ReadonlyArray<string>;
+    readonly cc: ReadonlyArray<string>;
+    readonly subject: string;
+    readonly body: string;
+  },
+  draft: string,
+  reply: boolean,
+) => {
+  const heading = headingOf(draft);
+  if (heading === undefined) return keepsDraft(mail.body, draft);
+  if (!keepsDraft(mail.body, heading.rest) && !(reply && keepsDraft(mail.body, draft)))
+    return false;
+  if (!reply && heading.subject.some((subject) => subject !== mail.subject.trim())) return false;
+  const named = (said: ReadonlyArray<string>, sent: ReadonlyArray<string>) => {
+    const wanted = addresses(said);
+    return wanted.size === 0 || sameSet(wanted, addresses(sent));
+  };
+  return named(heading.to, mail.to) && named(heading.cc, mail.cc);
+};
+
+/** The kinds Kin writes itself on the owner's Approve, word for word and with no turn: a doc each. */
+const WRITTEN: Partial<Record<DraftKind, KinDocKind>> = { proposal: "proposal", terms: "other" };
+export const writtenDocKind = (kind: DraftKind) => WRITTEN[kind];
+export const writtenOnApprove = (kind: DraftKind) => WRITTEN[kind] !== undefined;
+/** The origin of the doc an Approve wrote: one per question, so a retry finds it. */
+export const approvedDocOrigin = (questionId: string) => `approved-draft:${questionId}`;
+
 /** The one thing an approval made, recorded against it at its write (`recordMade`). */
 const MadeJson = Schema.fromJsonString(
   Schema.Union([
@@ -88,7 +159,12 @@ const MadeJson = Schema.fromJsonString(
     }),
     Schema.Struct({ kind: Schema.Literal("doc"), recordId: Schema.String, key: Schema.String }),
     Schema.Struct({ kind: Schema.Literal("mail"), askId: Schema.String }),
-    Schema.Struct({ kind: Schema.Literal("post"), cardId: Schema.String }),
+    // The saved post (`postId`), then the week card that carries it alone (`cardId`).
+    Schema.Struct({
+      kind: Schema.Literal("post"),
+      postId: Schema.optional(Schema.String),
+      cardId: Schema.optional(Schema.String),
+    }),
   ]),
 );
 export type Made = typeof MadeJson.Type;
@@ -236,8 +312,8 @@ export const recordMade = Effect.fn("KinApproval.recordMade")(function* (
 });
 
 /**
- * What a write in this wake makes under its approval, if it is the approved kind's first: a doc for
- * a proposal or client terms, the mail's Confirm card for a mail, the week's card for a post.
+ * What a write in this wake makes under its approval, if it is the approved kind's first: the
+ * mail's Confirm card for a mail, the saved post for a post.
  */
 export const madeUnderApproval = Effect.fn("KinApproval.madeUnder")(function* (
   turn: Turn,
@@ -246,13 +322,36 @@ export const madeUnderApproval = Effect.fn("KinApproval.madeUnder")(function* (
   const approval = yield* approvedFor(turn);
   if (approval === undefined || approval.made !== null) return;
   const kind = approval.draft.kind;
-  const fits =
-    made.kind === "doc"
-      ? kind === "proposal" || kind === "terms"
-      : made.kind === "mail"
-        ? kind === "mail"
-        : made.kind === "post"
-          ? kind === "post"
-          : false;
-  if (fits) yield* recordMade(turn.orgId, approval.questionId, made);
+  if ((made.kind === "mail" && kind === "mail") || (made.kind === "post" && kind === "post"))
+    yield* recordMade(turn.orgId, approval.questionId, made);
+});
+
+/** The post an approval in this wake saved and no card carries yet: what its week card may hold. */
+export const boundPost = (turn: Turn) =>
+  approvedFor(turn).pipe(
+    Effect.map((approval) =>
+      approval?.draft.kind !== "post"
+        ? undefined
+        : approval.made?.kind === "post" &&
+            approval.made.postId !== undefined &&
+            approval.made.cardId === undefined
+          ? { questionId: approval.questionId, postId: approval.made.postId }
+          : { questionId: approval.questionId, postId: undefined },
+    ),
+  );
+
+/** The week card that carries an approval's bound post, recorded beside it once. */
+export const recordPostCard = Effect.fn("KinApproval.recordPostCard")(function* (
+  orgId: KinOrgId,
+  questionId: string,
+  postId: string,
+  cardId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const was = yield* encodeMade({ kind: "post", postId });
+  const rows = yield* sql`UPDATE kin_questions
+    SET draft_made_json = ${yield* encodeMade({ kind: "post", postId, cardId })}
+    WHERE org_id = ${orgId} AND question_id = ${questionId} AND draft_made_json = ${was}
+    RETURNING question_id`;
+  return rows.length > 0;
 });

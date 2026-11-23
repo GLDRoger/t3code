@@ -101,10 +101,15 @@ export const KinListDefinition = Schema.Struct({
   categoryLabels: Schema.optional(Schema.Record(Schema.String, Label)),
   fields: Schema.Array(KinListField),
   remindOn: Schema.optional(KinListFieldKey),
+  /**
+   * One check on every entry: a number field below or above another number field or a fixed
+   * number. Sent only to a caller that accepts `check`, which reads one of `below` and `above`.
+   */
   check: Schema.optional(
     Schema.Struct({
       field: KinListFieldKey,
-      below: Schema.Union([KinListFieldKey, Schema.Finite]),
+      below: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
+      above: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
     }),
   ),
   /** New entries are labelled sensitive. */
@@ -138,6 +143,16 @@ export const KinListsInput = Schema.Struct({
 export type KinListsInput = typeof KinListsInput.Type;
 export const KinListsResult = Schema.Struct({ lists: Schema.Array(KinListDefinition) });
 export type KinListsResult = typeof KinListsResult.Type;
+
+/** Company-made lists that keep money or bank rows and are never opened to the team. */
+export const KIN_LISTS_NEVER_TEAM = [
+  "expenses",
+  "invoices",
+  "receipts",
+  "quotes",
+  "payments",
+  "bank_transactions",
+] as const;
 
 /**
  * The owner's changes to a defined list, which never delete: archiving hides it and refuses new

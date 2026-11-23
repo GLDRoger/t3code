@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  KinActionId,
   KinAgentId,
   KinChatId,
   KinMemberId,
@@ -19,9 +20,11 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
 import { ApproverKeys } from "../approvals/ApproverKeys.ts";
+import { KinPendingActions, type ActionRef } from "../approvals/PendingActions.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import * as Dispatch from "./KinPushDispatch.ts";
 import { KinPushSender, type KinPushNotification } from "./KinPushSender.ts";
+import type { KinPushSettled } from "./KinPushTopics.ts";
 
 const orgId = KinOrgId.make("org_01");
 const chatId = KinChatId.make("chat_dm");
@@ -94,15 +97,19 @@ const dispatching = Effect.gen(function* () {
   const events = yield* Queue.unbounded<KinChatHubEvent>();
   const asked = yield* Queue.unbounded<KinPushNotification>();
   const keyChanges = yield* PubSub.unbounded<void>();
+  const actionChanges = yield* PubSub.unbounded<ActionRef>();
+  const settled = yield* Queue.unbounded<KinPushSettled>();
   const layer = Dispatch.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(KinChatHub)({ subscribeAll: Effect.succeed(Stream.fromQueue(events)) }),
         Layer.mock(ApproverKeys)({ changes: PubSub.subscribe(keyChanges) }),
+        Layer.mock(KinPendingActions)({ changes: PubSub.subscribe(actionChanges) }),
         Layer.mock(KinPushSender)({
           status: "ready",
           statusFor: () => "ready",
           flushKeyPushes: Effect.succeed(0),
+          settle: (_, what) => Queue.offer(settled, what).pipe(Effect.asVoid),
           notify: (notification) =>
             Queue.offer(asked, notification).pipe(
               Effect.andThen(
@@ -115,7 +122,7 @@ const dispatching = Effect.gen(function* () {
       ),
     ),
   );
-  return { events, asked, layer };
+  return { events, asked, settled, actionChanges, layer };
 });
 
 it.effect("a turn's card is sent when its turn ends, though its line went on to the next", () =>
@@ -207,6 +214,47 @@ it.effect("a trouble card rings once, by its message: its count going up rings n
       assert.deepStrictEqual(got, [
         { _tag: "message", orgId, messageId: KinMessageId.make("msg_trouble") },
         { _tag: "message", orgId, messageId: KinMessageId.make("msg_after") },
+      ]);
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
+it.effect("each commit that settles something asks to withdraw just what it settled", () =>
+  Effect.gen(function* () {
+    const { events, settled, actionChanges, layer } = yield* dispatching;
+    yield* Effect.gen(function* () {
+      const member = {
+        orgId,
+        chatId,
+        memberId: KinMemberId.make("m_owner"),
+        principal: { _tag: "person", personId: owner },
+        role: "member",
+        joinedAt: T,
+        leftAt: T,
+        mutedUntil: null,
+      } as const;
+      for (const event of [
+        { type: "widget.updated", orgId, widget: card("msg_card") },
+        // A redraw still waiting on her settles nothing; her answer does.
+        { type: "widget.updated", orgId, widget: { ...card("msg_card"), revision: 2 } },
+        { type: "widget.updated", orgId, widget: { ...card("msg_card"), awaiting: [] } },
+        { type: "chat.cleared", orgId, chatId, lastSeq: 9, lastChangeSeq: 9 },
+        { type: "member.removed", orgId, member },
+        // An edit, still posted, settles nothing; a deletion does.
+        { type: "message.changed", orgId, message: said("msg_edited") },
+        { type: "message.changed", orgId, message: { ...said("msg_gone"), status: "deleted" } },
+      ] satisfies ReadonlyArray<KinChatHubEvent>)
+        yield* Queue.offer(events, event);
+      const got = [];
+      for (let index = 0; index < 4; index++) got.push(yield* Queue.take(settled));
+      yield* PubSub.publish(actionChanges, { orgId, actionId: KinActionId.make("act-1") });
+      got.push(yield* Queue.take(settled));
+      assert.deepStrictEqual(got, [
+        { topics: ["w:choice:msg_card"], messageIds: [KinMessageId.make("msg_card")] },
+        { chatId, topics: ["c:chat_dm"] },
+        { chatId, topics: ["c:chat_dm"], personId: owner },
+        { messageIds: [KinMessageId.make("msg_gone")], topics: ["c:chat_dm"] },
+        { topics: ["a:act-1"] },
       ]);
     }).pipe(Effect.provide(layer));
   }),

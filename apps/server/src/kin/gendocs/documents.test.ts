@@ -52,6 +52,7 @@ import * as Amounts from "./amounts.ts";
 import { computeData } from "./compute.ts";
 import * as AgentFiles from "./agentFiles.ts";
 import { gatherFacts, jobSensitive } from "./facts.ts";
+import { codingAgentSource } from "../lead/OutsideContent.ts";
 import * as LeadDocuments from "./leadDocuments.ts";
 import { answerReceiptCard } from "./receiptProposals.ts";
 import { assembleInputs, needsEntry, parseRecipe } from "./recipe.ts";
@@ -654,6 +655,48 @@ describe("recipe documents", () => {
           Effect.flip,
         );
         assert.match(unknown.message, /No recipe is called nothing/);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "are never issued or voided in a turn that follows words a person's coding agent sent",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* LeadDocuments.make(scope, invoice({ inputs: { billTo: "9 Invented Road, Pune" } }));
+        const sql = yield* SqlClient.SqlClient;
+        const follows = (source: string) =>
+          sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+            VALUES (${orgId}, 'wake-3', 0, ${source})
+            ON CONFLICT (org_id, wakeup_id) DO UPDATE SET source = excluded.source`;
+        const state = sql<{ state: string; numbered: number }>`SELECT r.state,
+            (SELECT COUNT(*) FROM kin_issued_numbers n WHERE n.record_id = r.record_id) AS numbered
+          FROM kin_records r WHERE r.org_id = ${orgId} AND r.key = 'INV-1'`;
+        const before = yield* state;
+        yield* follows(codingAgentSource("Invented laptop"));
+        for (const more of [{}, { void: true }])
+          assert.deepInclude(
+            yield* Effect.flip(
+              LeadDocuments.issue(scope, {
+                entry: KinRecordKey.make("INV-1"),
+                sourceEventId: "event-3",
+                ...more,
+              }),
+            ),
+            {
+              reason: "not_allowed",
+              message:
+                "Words from a person's coding agent can't issue or void an entry: the person issues or voids it in Kin.",
+            },
+          );
+        assert.deepStrictEqual(yield* state, before);
+        // Any other outside read keeps today's behaviour.
+        yield* follows("web:invented.example");
+        const issued = yield* LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make("INV-1"),
+          sourceEventId: "event-3",
+        });
+        assert.strictEqual(issued.number, "INV/26-27/001");
       }).pipe(Effect.provide(layer)),
   );
 

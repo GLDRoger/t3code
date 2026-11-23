@@ -1497,6 +1497,36 @@ describe("KinPulse", () => {
       }).pipe(Effect.provide(chatLayer)),
   );
 
+  it.effect("a held notice whose facts all settled overnight is never posted", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* letMate;
+      const sql = yield* SqlClient.SqlClient;
+      const chats = yield* KinChatService;
+      const at = B + 3 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(at);
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-06' WHERE person_id = ${mate}`;
+      yield* KinPulse.tick(orgId, at);
+      // The held notice keeps which facts it tells, by key.
+      const [held] = yield* sql<{ kind: string }>`SELECT kind FROM kin_held_posts
+        WHERE org_id = ${orgId} AND person_id = ${mate} AND delivered_at IS NULL`;
+      assert.deepStrictEqual(yield* sql`SELECT key FROM kin_push_about WHERE ref = ${held!.kind}`, [
+        { key: `fact:task_late:W-8:due=${B + 2 * DAY}` },
+      ]);
+      // W-8 is done while she is away: its fact clears, and the notice has nothing left to say.
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-8'`;
+      yield* KinPulse.tick(orgId, at + HOUR);
+      const back = B + 5 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(back);
+      yield* deliverHeld(orgId, chats);
+      assert.deepStrictEqual(yield* mateNotices, []);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_held_posts WHERE org_id = ${orgId} AND person_id = ${mate}`,
+        0,
+      );
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
   it.effect("the owner's away holds only his own wake, and his coming back lets it go", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -2756,5 +2786,209 @@ describe("watched numbers", () => {
         { key: "number_off:G-14:below=5:since=2026-10-30#g0", cleared: 0, woke: 1 },
       ]);
     }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("list sections", () => {
+  /** A company's own list, as `list_define` stores it. */
+  const defineList = (id: string, prefix: string, more: object) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const definition = {
+        noun: id,
+        states: ["open", "doing", "done", "dropped"],
+        stateLabels: {},
+        defaultState: "open",
+        categories: [],
+        sensitive: false,
+        amount: false,
+        currency: "INR",
+        ...more,
+      };
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, ${id}, ${id}, ${prefix}, 0, 0, ${JSON.stringify(definition)})`;
+    });
+  const showLists = (rev: number, sections: ReadonlyArray<{ id: string; on: boolean }>) =>
+    KinShell.set(orgId, owner, rev - 1, sections);
+  const entryFacts = (at: number, viewer?: KinPulse.Viewer) =>
+    read(at, viewer).pipe(
+      Effect.map(({ facts }) =>
+        facts
+          .filter((fact) => fact.sense.startsWith("entry_"))
+          .map((fact) => ({ key: fact.key, actor: fact.actor, consequence: fact.consequence })),
+      ),
+    );
+
+  it.effect(
+    "a section's late and due entries reach their holder once; off, or no section, nothing",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* letMate;
+        yield* defineList("bookings", "BK", {
+          fields: [{ key: "bookedFor", label: "Booked for", type: "date", sensitive: false }],
+          remindOn: "bookedFor",
+        });
+        yield* defineList("visits", "VIS", { fields: [] });
+        // Meera sees the list's shared entries with Money on, as Lists shows them to her.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${mate}`;
+        const booking = (id: string, day: string, more: Partial<Entry> = {}) =>
+          insert({ id, list: "bookings", fields: JSON.stringify({ bookedFor: day }), ...more });
+        yield* booking("BK-1", "2026-11-02", { ownerKind: "person", ownerId: mate, teamShared: 1 });
+        yield* booking("BK-2", "2026-11-04");
+        yield* booking("BK-3", "2026-11-01", { state: "done" });
+        // Its own due day counts only where the list names no date to remind on.
+        yield* booking("BK-4", "2026-12-30", { dueAt: B });
+        yield* insert({ id: "VIS-1", list: "visits", dueAt: B + DAY });
+        const at = B + 3 * DAY + 12 * HOUR;
+        yield* TestClock.setTime(at);
+        assert.deepStrictEqual(yield* entryFacts(at), []);
+        yield* showLists(1, [
+          { id: "list:bookings", on: true },
+          { id: "list:visits", on: false },
+        ]);
+        const late = `entry_late:BK-1:due=${B + 2 * DAY - 1}`;
+        const soon = `entry_late:BK-2:soon=${B + 4 * DAY - 1}`;
+        assert.deepStrictEqual(yield* entryFacts(at), [
+          {
+            key: late,
+            actor: { _tag: "person", personId: mate },
+            consequence: "Was due 2026-11-02, 2 days ago.",
+          },
+          {
+            key: soon,
+            actor: { _tag: "agent", agentId: chief },
+            consequence: "Due 2026-11-04, in 11 hours.",
+          },
+        ]);
+        // The holder sees it on their own screen too.
+        assert.deepStrictEqual(
+          (yield* entryFacts(at, { _tag: "people", people: [mate] })).map((fact) => fact.key),
+          [late],
+        );
+        const first = yield* KinPulse.tick(orgId, at);
+        assert.deepStrictEqual(
+          first.told.filter((one) => one.key.startsWith("entry_")),
+          [
+            { agentId: chief, to: mate, key: late },
+            { agentId: chief, to: `agent:${chief}`, key: soon },
+          ],
+        );
+        // In one notice with her late task, by the entry's name and its list's date.
+        assert.deepStrictEqual(yield* mateNotices, [
+          [
+            "2 things need you:",
+            "• BK-1 Invented BK-1, was due 2026-11-02, 2 days ago",
+            "• W-8 Invented W-8, was due yesterday",
+          ].join("\n"),
+        ]);
+        const again = yield* KinPulse.tick(orgId, at + HOUR);
+        assert.lengthOf(
+          again.told.filter((one) => one.key.startsWith("entry_")),
+          0,
+        );
+        // Off: nothing is said, and on again nothing old is said either.
+        yield* showLists(2, [{ id: "list:bookings", on: false }]);
+        yield* booking("BK-5", "2026-11-03", { ownerKind: "person", ownerId: mate, teamShared: 1 });
+        assert.deepStrictEqual(yield* entryFacts(at + 2 * HOUR), []);
+        const off = yield* KinPulse.tick(orgId, at + 2 * HOUR);
+        assert.lengthOf(
+          off.told.filter((one) => one.key.startsWith("entry_")),
+          0,
+        );
+        yield* showLists(3, [{ id: "list:bookings", on: true }]);
+        const on = yield* KinPulse.tick(orgId, at + 3 * HOUR);
+        assert.lengthOf(
+          on.told.filter((one) => one.key.startsWith("entry_")),
+          0,
+        );
+        assert.lengthOf(yield* mateNotices, 1);
+        assert.include(
+          (yield* entryFacts(at + 3 * HOUR)).map((fact) => fact.key),
+          `entry_late:BK-5:due=${B + 3 * DAY - 1}`,
+        );
+      }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect(
+    "each entry off its list's check is one fact; a fifth that drops later is a fifth",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* letMate;
+        yield* defineList("stock", "STK", {
+          fields: [
+            { key: "onHand", label: "On hand", type: "number", sensitive: false },
+            { key: "reorderPoint", label: "Reorder point", type: "number", sensitive: false },
+          ],
+          check: { field: "onHand", below: "reorderPoint" },
+        });
+        yield* showLists(1, [{ id: "list:stock", on: true }]);
+        const item = (id: string, onHand: string, more: Partial<Entry> = {}) =>
+          insert({
+            id,
+            list: "stock",
+            fields: JSON.stringify({ onHand, reorderPoint: "10" }),
+            ...more,
+          });
+        for (const [id, onHand] of [
+          ["STK-1", "3"],
+          ["STK-2", "0"],
+          ["STK-3", "9.5"],
+          ["STK-4", "-1"],
+          ["STK-6", "10"],
+          ["STK-7", "40"],
+        ] as const)
+          yield* item(id, onHand);
+        // Held by Meera, who can't see Stock: she is never told of it.
+        yield* item("STK-5", "20", { ownerKind: "person", ownerId: mate, teamShared: 1 });
+        const at = B + 3 * DAY;
+        const checked = (when: number) =>
+          entryFacts(when).pipe(Effect.map((facts) => facts.map((fact) => fact.key)));
+        const keyOf = (id: string) => `entry_check:${id}:onHand:below=reorderPoint`;
+        assert.deepStrictEqual(yield* checked(at), ["STK-1", "STK-2", "STK-3", "STK-4"].map(keyOf));
+        assert.strictEqual(
+          (yield* entryFacts(at))[0]!.consequence,
+          "On hand is 3, below Reorder point (10).",
+        );
+        const first = yield* KinPulse.tick(orgId, at);
+        assert.deepStrictEqual(
+          (yield* holderWakes())
+            .flatMap((wake) => wake.keys)
+            .filter((key) => key.startsWith("entry_")),
+          ["STK-1", "STK-2", "STK-3", "STK-4"].map(keyOf),
+        );
+        assert.deepStrictEqual(
+          first.told.filter((one) => one.key.startsWith("entry_")).map((one) => one.to),
+          ["STK-1", "STK-2", "STK-3", "STK-4"].map(() => `agent:${chief}`),
+        );
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.onHand', '2')
+        WHERE record_id = 'r-STK-5'`;
+        assert.deepStrictEqual(
+          yield* checked(at + HOUR),
+          ["STK-1", "STK-2", "STK-3", "STK-4", "STK-5"].map(keyOf),
+        );
+        const fifth = yield* KinPulse.tick(orgId, at + HOUR);
+        assert.deepStrictEqual(
+          fifth.told.filter((one) => one.key.startsWith("entry_")),
+          [],
+        );
+        assert.deepStrictEqual(yield* mateNotices, []);
+        // Back inside: it clears; off again later, it is a new episode, told again.
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.onHand', '50')
+        WHERE record_id = 'r-STK-1'`;
+        const cleared = yield* KinPulse.tick(orgId, at + 2 * HOUR);
+        assert.strictEqual(cleared.cleared, 1);
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.onHand', '1')
+        WHERE record_id = 'r-STK-1'`;
+        const back = yield* KinPulse.tick(orgId, at + 3 * HOUR);
+        assert.deepStrictEqual(
+          back.told.filter((one) => one.key.startsWith("entry_")),
+          [{ agentId: chief, to: `agent:${chief}`, key: keyOf("STK-1") }],
+        );
+      }).pipe(Effect.provide(chatLayer)),
   );
 });

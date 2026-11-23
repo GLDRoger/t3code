@@ -14,12 +14,13 @@ import * as McpToolPolicy from "./toolPolicy.ts";
 import { McpInvocationContext, type McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { KinServer, type Services } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { OWN_MESSAGE_REFUSALS } from "../chat/ownMessages.ts";
 import { effectiveAudience, SHARED_REFUSAL, turnPeople } from "../lead/Audience.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { PRIVATE_WRITE, privateRefusal } from "../connections/privateTurn.ts";
 import { REVIEW_REFUSAL, reviewToolAllowed } from "../lead/outsideReview.ts";
-import { APPROVED_REFUSAL, approvedToolAllowed } from "../lead/approvedDraft.ts";
+import { APPROVED_REFUSAL, approvedRefusal, approvedToolAllowed } from "../lead/approvedDraft.ts";
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
@@ -330,7 +331,7 @@ const sectionAdmitted = McpToolPolicy.toolCallRefusal(
       (turn) =>
         Effect.gen(function* () {
           const shell = yield* KinShell.get(turn.orgId);
-          if (shell.sections.every(({ on }) => on)) return undefined;
+          if (KinShell.builtInsOn(shell)) return undefined;
           const viewer =
             references.size === 0 || (yield* effectiveAudience(turn)) === "owner_only"
               ? KIN_OWNER_LEVEL
@@ -493,9 +494,15 @@ export const layer = ReadTools.layer.pipe(
         REMOTE_REFUSAL,
       ),
       McpToolPolicy.toolCallGate(gate("KinToolGate.review", reviewOnly), REVIEW_REFUSAL),
-      McpToolPolicy.toolCallGate(gate("KinToolGate.approved", approvedOnly), APPROVED_REFUSAL),
+      McpToolPolicy.toolCallRefusal(
+        Effect.succeed(inRunningTurn("KinToolGate.approved", approvedRefusal, APPROVED_REFUSAL)),
+      ),
       McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", admitted), SHARED_REFUSAL),
-      McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outside), OUTSIDE_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outside), (_args, tool) =>
+        tool === "message_withdraw" || tool === "message_replace"
+          ? OWN_MESSAGE_REFUSALS.outside
+          : OUTSIDE_REFUSAL,
+      ),
       McpToolPolicy.toolCallRefusal(Effect.succeed(privateGate)),
       McpToolPolicy.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
       helperModels,

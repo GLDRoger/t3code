@@ -56,12 +56,15 @@ import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { feedTurn } from "../numbers/feeds.ts";
+import { reviewStillDue } from "../pulse/reviewWake.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
 import { isPrepareWake, prepareWakeText, wakeHeldUntil } from "../pulse/prepareWake.ts";
 import { draftWakeGone, isDraftWake } from "../pulse/draftWake.ts";
 import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
 import { dismissalGone } from "../questions/dismissed.ts";
+import { writeQueuedApproval } from "../questions/sentUpDraft.ts";
+import { KinRecords } from "../work/KinRecords.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
@@ -365,6 +368,7 @@ const make = Effect.gen(function* () {
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const chat = yield* Effect.serviceOption(KinChatService);
+  const records = yield* Effect.serviceOption(KinRecords);
   const scope = yield* Effect.scope;
   const spaceChecks = new Set<KinOrgId>();
   const spaceFolders = Option.map(yield* Effect.serviceOption(ServerConfig), (config) =>
@@ -486,7 +490,7 @@ const make = Effect.gen(function* () {
    * it starts no turn. A failed read keeps the event for the turn.
    */
   const goneBeforeTurn = Effect.fn("WakeupRunner.goneBeforeTurn")(
-    function* (orgId: KinOrgId, event: KinEvent) {
+    function* (orgId: KinOrgId, wakeupId: KinWakeupId, event: KinEvent) {
       if (event._tag === "record.changed" && event.reason === "joined")
         return !(yield* stillJoined(orgId, event.agentId, event.recordId));
       // A number's crossing whose episode ended, was handled or went quiet since it was queued.
@@ -498,6 +502,9 @@ const make = Effect.gen(function* () {
         return (
           (yield* offTurnTexts(orgId, event.factKeys, yield* Clock.currentTimeMillis)).length === 0
         );
+      // A review whose messages were all read or taken back since it was queued.
+      if (event._tag === "pulse" && event.review === true)
+        return !(yield* reviewStillDue(orgId, event));
       // A person's own task: no longer theirs and due, or this agent may no longer draft it.
       if (event._tag === "pulse" && isDraftWake(event)) return yield* draftWakeGone(orgId, event);
       // A head start Kin woke it for, on a fact handled or no longer true since it was queued.
@@ -526,6 +533,17 @@ const make = Effect.gen(function* () {
           .readItemQuietly(orgId, subject.itemId, "triggers")
           .pipe(Effect.as(false), Effect.catchTags({ MemoryNotFound: () => Effect.succeed(true) }));
       }
+      // A proposal or client terms approved before Kin wrote them itself: written now, no turn.
+      if (
+        subject.type === "question" &&
+        subject.approved === true &&
+        Option.isSome(records) &&
+        Option.isSome(chat)
+      )
+        return yield* writeQueuedApproval(
+          { orgId, agentId: event.agentId, wakeupId },
+          chat.value,
+        ).pipe(Effect.provideService(KinRecords, records.value));
       if (subject.type !== "question" || subject.undone === true || subject.answered === true)
         return false;
       if (subject.dismissed === true) return yield* dismissalGone(orgId, subject);
@@ -1330,7 +1348,7 @@ const make = Effect.gen(function* () {
                 : Effect.succeed(true),
             );
             events = yield* Effect.filter(events, (event) =>
-              goneBeforeTurn(orgId, event).pipe(Effect.map((gone) => !gone)),
+              goneBeforeTurn(orgId, wakeupId, event).pipe(Effect.map((gone) => !gone)),
             );
             if (events.length === 0) {
               yield* queue.finish({ orgId, wakeupId, status: "completed" });

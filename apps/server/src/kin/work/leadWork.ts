@@ -48,7 +48,7 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import { codingAgentSource, codingAgentTextShown } from "../lead/OutsideContent.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { heldUntil } from "../triggers/quietHold.ts";
-import { ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
+import { ownerLevel, ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
 import {
   countryFirst,
@@ -60,6 +60,7 @@ import {
 } from "./companyProfile.ts";
 import { campaignsNamed, partyPage, projectDetail, sourceShown } from "./crm.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
+import { keyEventSql, keySentSql } from "../chat/keySent.ts";
 import { fold, matchName } from "./nameMatch.ts";
 import { lastContacts } from "./touches.ts";
 import {
@@ -142,6 +143,7 @@ import {
 import {
   allLists,
   isBuiltIn,
+  isFieldNumber,
   isInvoiceDraft,
   type ListDef,
   listEntryFor,
@@ -376,7 +378,9 @@ const Row = Schema.Struct({
   balance: Schema.optional(Schema.String),
   date: Schema.optional(Schema.String),
   repeat: Schema.optional(Schema.String),
-  fields: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  fields: Schema.optional(
+    Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Finite, Schema.Boolean])),
+  ),
   deal: Schema.optional(DealShown).annotate({
     description: "A deal's, as its page shows the people this turn is for.",
   }),
@@ -834,6 +838,8 @@ export const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) 
   const rows = yield* sql<{ person: string | null; owner: string }>`
     SELECT CASE
         WHEN json_extract(e.json, '$.origin.personId') IS NOT NULL THEN NULL
+        -- What a coding agent's key sent or wrote is nobody's own ask.
+        WHEN ${sql.literal(keyEventSql("e"))} THEN NULL
         WHEN e.tag IN ('chat.message', 'widget.action') AND m.author_kind = 'human'
           AND m.chat_id = json_extract(e.json, '$.chatId') THEN m.author_person_id
         WHEN e.tag IN ('chat.reaction', 'record.changed')
@@ -1060,10 +1066,14 @@ const shownFields = (
   keys: ReadonlyMap<string, string>,
 ) => {
   if (def === undefined || def.builtIn !== null) return {};
-  const shown: Record<string, string> = {};
+  const shown: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(fields)) {
     const spec = def.fields.find((one) => one.key === key);
     if (isMoney(value)) shown[key] = formatMoney(value);
+    else if (spec?.type === "number" && typeof value === "string" && isFieldNumber(value))
+      shown[key] = Number(value);
+    else if (spec?.type === "yesno" && (value === "yes" || value === "no"))
+      shown[key] = value === "yes";
     else if (Array.isArray(value))
       shown[key] = `${value.length} file${value.length === 1 ? "" : "s"}`;
     else if (spec?.type === "person") {
@@ -3199,17 +3209,29 @@ const dealUpdate = Effect.fnUntraced(function* (
 
 const orList = (items: ReadonlyArray<string>) =>
   items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`;
-/** The country refusal as the call reads it: in a batch nothing was saved; whose choice it is. */
-const countryWorded = <A, E, R>(lead: Lead, saved: boolean, call: Effect.Effect<A, E, R>) =>
+/**
+ * The country refusal as the call reads it: in a batch nothing was saved; whose choice it is, and
+ * whether the one person this turn answers is who chooses it.
+ */
+export const countryWorded = <A, E, R>(lead: Lead, saved: boolean, call: Effect.Effect<A, E, R>) =>
   call.pipe(
     Effect.catchIf(
       (error) => isKinChatError(error) && isCountryFirst(error),
       () =>
         Effect.gen(function* () {
           const team = yield* viewOf(lead).pipe(Effect.orElseSucceed(() => undefined));
+          const asker =
+            team === undefined
+              ? yield* turnAsker(lead).pipe(Effect.orElseSucceed(() => null))
+              : null;
           return yield* yield* countryRefusal(lead.orgId, {
             saved,
             forTeammate: team !== undefined,
+            answeringChooser:
+              asker !== null &&
+              (yield* ownerLevel(lead.orgId, KinPersonId.make(asker)).pipe(
+                Effect.orElseSucceed(() => false),
+              )),
           });
         }),
     ),
@@ -3650,7 +3672,7 @@ const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
       AND m.chat_id = json_extract(e.json, '$.chatId')
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId}
       AND e.wakeup_id = ${lead.wakeupId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
-      AND m.origin_json IS NULL
+      AND m.origin_json IS NULL AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       AND m.author_person_id IN ${sql.in(owners.length === 0 ? [""] : owners)}
     LIMIT 1`;
   if (said.length > 0) return;

@@ -72,7 +72,10 @@ import {
   draftDetail,
   DRAFT_WORDS,
   type StoredDraft,
+  writtenOnApprove,
 } from "./approval.ts";
+import { keySentSql } from "../chat/keySent.ts";
+import { capital, inDocs, tellMade, writeApproved } from "./sentUpDraft.ts";
 
 /** The fixed headings of the open-questions sections; Kin's evals check a case's against these. */
 export const OPEN_QUESTION_HEADINGS = {
@@ -383,6 +386,9 @@ export const recordAsk = Effect.fn("KinQuestions.recordAsk")(function* (
     ON CONFLICT (question_id) DO NOTHING`;
 });
 
+/** A question asked in words, by the turn that asked it: its message carries the same turn. */
+export const textQuestionId = (wakeupId: string) => `q-${hash(`text:${wakeupId}`).slice(0, 12)}`;
+
 /**
  * A reply that ended on a question to the one person in a direct chat, with no card: stored
  * with no default, so every agent sees it is open. Their next message in that chat answers it,
@@ -400,7 +406,7 @@ export const recordTextQuestion = Effect.fn("KinQuestions.recordText")(function*
   const personId = yield* personOfChat(input.orgId, input.chatId);
   if (personId === undefined) return undefined;
   const clock = yield* personClock(input.orgId, personId);
-  const questionId = `q-${hash(`text:${input.wakeupId}`).slice(0, 12)}`;
+  const questionId = textQuestionId(input.wakeupId);
   const dueAt = defaultDue(input.now, clock.zone, clock.work);
   yield* sql`UPDATE kin_questions SET state = 'withdrawn', closed_at = ${input.now}
     WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND chat_id = ${input.chatId}
@@ -450,9 +456,9 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
   if (row?.forChatId == null) return undefined;
   const queue = yield* KinEventQueue.KinEventQueue;
   const approved =
-    input.approves === true &&
-    row.draft !== null &&
-    (yield* approveDraft(input.orgId, row, input.now, queue));
+    input.approves === true && row.draft !== null
+      ? yield* approveDraft(input.orgId, row, row.draft, input.now, queue)
+      : undefined;
   const asker = yield* sendBack(
     input.orgId,
     row,
@@ -462,9 +468,37 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
     input.now,
     chat,
     queue,
-    approved,
+    approved !== undefined,
   );
-  if (approved)
+  if (approved?._tag === "written" && row.draft !== null) {
+    if (row.forPersonId !== null)
+      yield* tellMade(
+        input.orgId,
+        {
+          questionId: row.questionId,
+          agentId: row.agentId,
+          ownerId: row.personId,
+          askerId: row.forPersonId,
+          forChatId: row.forChatId,
+          draft: row.draft,
+          made: approved.made,
+        },
+        chat,
+      ).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Kin couldn't tell the asker an approved draft is made", {
+            orgId: input.orgId,
+            questionId: row.questionId,
+            cause,
+          }),
+        ),
+      );
+    return {
+      title: "Approved",
+      text: `Sent to ${asker}. ${capital(inDocs(row.draft.kind, approved.made.key))}.`,
+    } satisfies KinChoiceOutcome;
+  }
+  if (approved !== undefined)
     return {
       title: "Approved",
       text: `Sent to ${asker}. ${row.agentName} is making it now.`,
@@ -507,25 +541,38 @@ const changesFirst = Effect.fn("KinQuestions.changesFirst")(function* (
 
 /**
  * The owner's Approve on a teammate's sent-up draft, in the tap's transaction, once per question
- * (`approved_at`) and only while he is the agent's owner: one turn of the agent in his own chat
- * with it, at his level (no origin), to make the draft (`sentUpDraft.ts`). False when it queued none.
+ * (`approved_at`) and only while he is the agent's owner. A proposal or client terms Kin writes
+ * itself, word for word (`writeApproved`); any other kind is one turn of the agent in his own chat
+ * with it, at his level (no origin), to make it (`sentUpDraft.ts`). Undefined when it did neither.
  */
 const approveDraft = Effect.fn("KinQuestions.approveDraft")(function* (
   orgId: KinOrgId,
   row: QuestionRow,
+  draft: StoredDraft,
   now: number,
   queue: Pick<KinEventQueue.KinEventQueue["Service"], "enqueue">,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [agent] = yield* sql<{ owner: string }>`SELECT a.owner_person_id AS owner FROM kin_agents a
+  const [agent] = yield* sql<{ owner: string; ownerChatId: string }>`SELECT
+      a.owner_person_id AS owner, l.owner_chat_id AS "ownerChatId" FROM kin_agents a
     JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
     WHERE a.org_id = ${orgId} AND a.agent_id = ${row.agentId} AND a.retired_at IS NULL`;
-  if (agent?.owner !== row.personId || !(yield* ownerLevel(orgId, row.personId))) return false;
+  if (agent?.owner !== row.personId || !(yield* ownerLevel(orgId, row.personId))) return undefined;
   const marked = yield* sql`UPDATE kin_questions SET approved_at = ${now}
     WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'answered'
       AND draft_json IS NOT NULL AND approved_at IS NULL
     RETURNING question_id`;
-  if (marked.length === 0) return false;
+  if (marked.length === 0) return undefined;
+  if (writtenOnApprove(draft.kind))
+    return {
+      _tag: "written" as const,
+      made: yield* writeApproved(orgId, {
+        questionId: row.questionId,
+        agentId: row.agentId,
+        ownerChatId: agent.ownerChatId,
+        draft,
+      }),
+    };
   const event = yield* decodeEvent({
     _tag: "deferral.due",
     eventId: approvalEventId(orgId, row.questionId),
@@ -547,7 +594,7 @@ const approveDraft = Effect.fn("KinQuestions.approveDraft")(function* (
   );
   // Shaped on a turn that read outside text, the draft's turn has read it too.
   yield* stampEvent(orgId, event.eventId, yield* storedStamp(orgId, row.questionId));
-  return true;
+  return { _tag: "queued" as const };
 });
 
 /**
@@ -803,7 +850,7 @@ const cardIds = (row: QuestionRow) =>
  * from. A copy passed on from elsewhere, another chat, another person, a schedule or another agent
  * never counts.
  */
-const wokenByTheirWords = Effect.fn("KinQuestions.wokenByTheirWords")(function* (
+export const wokenByTheirWords = Effect.fn("KinQuestions.wokenByTheirWords")(function* (
   orgId: KinOrgId,
   agentId: KinAgentId,
   wakeupId: string,
@@ -831,6 +878,7 @@ const wokenByTheirWords = Effect.fn("KinQuestions.wokenByTheirWords")(function* 
     WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
       AND e.tag = 'chat.message' AND json_extract(e.json, '$.origin') IS NULL
       AND m.chat_id = ${row.chatId} AND m.author_kind = 'human'
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       AND m.author_person_id = ${row.personId} AND m.origin_json IS NULL
       AND m.status = 'posted' AND trim(m.body) <> ''
       AND ${card === undefined ? sql`m.created_at > ${iso(row.askedAt)}` : sql`m.seq > ${card.seq}`}

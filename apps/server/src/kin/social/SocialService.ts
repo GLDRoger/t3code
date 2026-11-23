@@ -33,7 +33,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
-import { madeUnderApproval } from "../questions/approval.ts";
+import { boundPost, madeUnderApproval, recordPostCard } from "../questions/approval.ts";
+import { POST_ALONE, POST_FIRST } from "../lead/approvedDraft.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -874,6 +875,8 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
             RETURNING post_id`).length === 0
       )
         return false;
+      // A post saved under the owner's Approve is that approval's one result.
+      if (existing === undefined) yield* madeUnderApproval(lead, { kind: "post", postId });
       // A changed post leaves the card it was on: that card no longer shows what would go.
       if (existing?.cardId != null && existing.state === "proposed")
         yield* Cards.refreshWeekCard(lead.orgId, existing.cardId, (card) => ({
@@ -908,6 +911,13 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     const now = yield* Clock.currentTimeMillis;
     const group = yield* groupNamed(lead.orgId, input.group);
     const drafts = yield* draftsOfGroup(lead.orgId, group.groupId, now + CONFIRM_LEAD_MS);
+    // Under the owner's Approve its card carries the saved post alone, so his Confirm sends only it.
+    const bound = yield* boundPost(lead).pipe(Effect.provide(context));
+    if (bound !== undefined) {
+      if (bound.postId === undefined || !drafts.some((one) => one.postId === bound.postId))
+        return yield* invalid(POST_FIRST);
+      if (drafts.some((one) => one.postId !== bound.postId)) return yield* invalid(POST_ALONE);
+    }
     if (drafts.length === 0)
       return yield* invalid(
         `${group.label} has no drafts still to come. Save some with social_draft first.`,
@@ -923,8 +933,12 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       drafts,
       title,
     }).pipe(
-      // A post made under the owner's Approve: its week card is that approval's one result.
-      Effect.tap((card) => madeUnderApproval(lead, { kind: "post", cardId: card.cardId })),
+      // The card that carries an approval's bound post is recorded beside it.
+      Effect.tap((card) =>
+        bound?.postId === undefined
+          ? Effect.void
+          : recordPostCard(lead.orgId, bound.questionId, bound.postId, card.cardId),
+      ),
       sql.withTransaction,
       Effect.provide(context),
       Effect.tapError((error) =>

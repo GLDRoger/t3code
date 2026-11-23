@@ -6,13 +6,16 @@ import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
+import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
 import {
+  KIN_YES_NO,
   KIN_LISTS,
   KIN_LIST_LABEL_MAX,
   kinListEditDraftOf,
   kinListEditInput,
   KIN_FIELD_FILES_MAX,
   kinCategoryLabel,
+  kinListCanOpenToTeam,
   kinListCanTogglePayments,
   kinListEntryView,
   kinListStateLabel,
@@ -106,6 +109,7 @@ import {
   useKinMoneyActions,
   useKinRates,
 } from "./state/useKinMoney";
+import { useKinAttention } from "./state/useKinAttention";
 import { KinInvoiceCurrency } from "./KinMoneyEstimate";
 import {
   kinWorkChoicesAtom,
@@ -265,6 +269,7 @@ export function KinListEntryBody(
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
+  const said = kinEntryFacts(useKinAttention(props)).get(item.key);
   const invoice = kinIsInvoice(item)
     ? kinInvoiceView(item, def, props.now, props.directory.names)
     : null;
@@ -378,6 +383,11 @@ export function KinListEntryBody(
             </Text>
           ) : null}
         </View>
+        {said === undefined ? null : (
+          <Text textRole="footnote" className="text-danger-foreground">
+            {said.join(" ")}
+          </Text>
+        )}
         {invoice !== null ? (
           <>
             <KinInvoiceCurrency
@@ -730,7 +740,10 @@ export function KinListEntryBody(
                 );
               if (
                 editable &&
-                (field.type === "choice" || field.type === "person" || field.type === "link")
+                (field.type === "choice" ||
+                  field.type === "person" ||
+                  field.type === "link" ||
+                  field.type === "yesno")
               )
                 return (
                   <PickRow
@@ -740,20 +753,25 @@ export function KinListEntryBody(
                     current={current}
                     disabled={busy}
                     choices={
-                      field.type === "person"
-                        ? kinPersonChoices(field.key, people)
-                        : field.type === "choice"
-                          ? field.choices.map((choice) => ({ value: choice, label: choice }))
-                          : (field.link === "projects" ? projects : clients).map((row) => ({
-                              value: row.recordId,
-                              label: row.name,
-                            }))
+                      field.type === "yesno"
+                        ? KIN_YES_NO
+                        : field.type === "person"
+                          ? kinPersonChoices(field.key, people)
+                          : field.type === "choice"
+                            ? field.choices.map((choice) => ({ value: choice, label: choice }))
+                            : (field.link === "projects" ? projects : clients).map((row) => ({
+                                value: row.recordId,
+                                label: row.name,
+                              }))
                     }
                     onOpen={openLink}
                     onPick={(value) => setField(field.key, value)}
                   />
                 );
-              if (editable && (field.type === "text" || field.type === "money"))
+              if (
+                editable &&
+                (field.type === "text" || field.type === "money" || field.type === "number")
+              )
                 return (
                   <ListRow
                     key={field.key}
@@ -1244,6 +1262,16 @@ function KinListSettingsForm(props: KinWorkTarget & { readonly def: KinListDefin
             value={draft.payments}
             disabled={changes.busy}
             onValueChange={(payments) => setDraft({ ...draft, payments })}
+          />
+        </ListSection>
+      )}
+      {!kinListCanOpenToTeam(def) ? null : (
+        <ListSection footer={KIN_LISTS.edit.teamDetail}>
+          <KinWorkToggleRow
+            label={KIN_LISTS.edit.team}
+            value={draft.team}
+            disabled={changes.busy}
+            onValueChange={(team) => setDraft({ ...draft, team })}
           />
         </ListSection>
       )}
