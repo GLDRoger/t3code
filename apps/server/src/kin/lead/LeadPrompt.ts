@@ -96,7 +96,7 @@ import { companyAccounts } from "../github/githubWatchStore.ts";
 import { inheritOutside, itemSource, renderSource, storedStamp } from "./OutsideContent.ts";
 import { outsideReview } from "./outsideReview.ts";
 import { askedWhereOthersRead, wordsReadable } from "../triggers/deferralOrigin.ts";
-import { setInChat } from "./KinLeadProvision.ts";
+import { setInChat } from "./tracked.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules, teamRules } from "./instructions.ts";
 import { socialRules } from "../social/instructions.ts";
