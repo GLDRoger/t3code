@@ -4086,7 +4086,7 @@ describe("the company profile", () => {
       const answeredSaved = countryFirstMessage("Owner", { saved: true, answeringChooser: true });
       assert.include(
         answered,
-        "The person you're answering chooses it themselves, in Settings, Company details: tell them so in your reply.",
+        "The person you're answering chooses it themselves, in Settings, Company details: tell them so in your reply, and to tell you once it is chosen: nothing wakes you then, so promise nothing before they do.",
       );
       assert.notInclude(answered, "Ask Owner");
       // A budget's limit is a change to a setting: nothing was saved.
