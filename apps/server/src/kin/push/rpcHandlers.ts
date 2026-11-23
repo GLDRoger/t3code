@@ -46,6 +46,21 @@ export const makeKinPushHandlers = Effect.fn("makeKinPushHandlers")(function* (
       ),
     "kin.push.unregisterDevice": (input) =>
       caller.pipe(Effect.flatMap(({ devices, caller }) => devices.unregister(caller, input))),
+    // Only the caller's own topics are answered, each from what they may still see.
+    "kin.push.reconcile": (input) =>
+      caller.pipe(
+        Effect.flatMap(({ sender, caller }) => {
+          const person = caller.people.find((one) => one.orgId === input.orgId);
+          return person === undefined
+            ? Effect.fail(
+                new KinPushError({
+                  reason: "not_member",
+                  message: "Only a person in this org can get its notifications.",
+                }),
+              )
+            : sender.reconcile(input.orgId, person.personId, input.topics);
+        }),
+      ),
     "kin.push.watch": (input) =>
       Stream.unwrap(
         caller.pipe(Effect.map(({ presence, caller }) => presence.watch(caller, input.chatId))),
