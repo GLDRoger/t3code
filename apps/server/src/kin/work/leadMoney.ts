@@ -55,6 +55,7 @@ import {
   sourceOf,
   viewOf,
   writerFor,
+  countryWorded,
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { partnersAnswer, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
@@ -683,7 +684,7 @@ const runBudget = Effect.fnUntraced(function* (lead: Lead, input: typeof BudgetI
     });
   if (input.category === undefined && input.project === undefined)
     return yield* invalid("A budget is for a category, a project, or a category in a project.");
-  if (input.limit !== null) yield* countryFirst(lead.orgId, { saved: true });
+  if (input.limit !== null) yield* countryWorded(lead, true, countryFirst(lead.orgId));
   const expenses = yield* listDef(lead.orgId, "expenses");
   if (expenses === undefined)
     return yield* invalid("There is no expenses list yet: track expenses first.");

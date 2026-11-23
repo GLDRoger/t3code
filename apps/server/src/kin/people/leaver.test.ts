@@ -764,6 +764,8 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_pulse_told: "person_id",
   kin_push_devices: "person_id",
   kin_push_rings: "person_id",
+  // Their devices go with their access, so nothing is withdrawn to them; the rows age out in 7 days.
+  kin_push_sent: "person_id",
   kin_questions: "agent_id for_person_id person_id",
   kin_reach_limits: "lifted_by_person_id one_id other_id set_by_person_id",
   kin_reactions: "member_id",

@@ -476,10 +476,33 @@ it.effect("a hand-off to an agent this turn put on a task passes nothing more", 
       };
       assert.deepStrictEqual(yield* handoff.handOff(scopeFor(chief), input), {
         passed: false,
-        note: Handoff.alreadyOnIt([row.key]),
+        note: Handoff.alreadyOnIt("Tech lead", ["Invented: fix CI on the app repo"]),
       });
       assert.lengthOf(yield* passedOn(sql, orgId, tech), 0);
       assert.lengthOf(yield* sql`SELECT 1 FROM kin_handoffs WHERE org_id = ${orgId}`, 0);
+      // Taken off it again, and given another task to hold: that one is what they already have.
+      const chiefWrites = {
+        actor: { _tag: "agent" as const, agentId: chief },
+        via: "lead" as const,
+        askedBy: owner.personId,
+        wakeupId: "chief-wake",
+      };
+      yield* records.update(orgId, chiefWrites, row.key, { fields: { alsoOn: [] } });
+      const { row: held } = yield* records.create(orgId, chiefWrites, {
+        originKey: "lead:ci-held",
+        title: "Invented: pin the CI image",
+        owner: { _tag: "agent", agentId: tech },
+      });
+      assert.deepStrictEqual(yield* handoff.handOff(scopeFor(chief), input), {
+        passed: false,
+        note: Handoff.alreadyOnIt("Tech lead", ["Invented: pin the CI image"]),
+      });
+      // Once they hold and are on neither, the hand-off goes as any other.
+      yield* records.update(orgId, chiefWrites, held.key, { owner });
+      assert.deepStrictEqual(yield* handoff.handOff(scopeFor(chief), input), {
+        to: "Tech lead",
+        passed: true,
+      });
     }),
   ),
 );

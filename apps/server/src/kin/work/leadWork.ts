@@ -48,7 +48,7 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import { codingAgentSource, codingAgentTextShown } from "../lead/OutsideContent.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { heldUntil } from "../triggers/quietHold.ts";
-import { ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
+import { ownerLevel, ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
 import {
   countryFirst,
@@ -3206,17 +3206,29 @@ const dealUpdate = Effect.fnUntraced(function* (
 
 const orList = (items: ReadonlyArray<string>) =>
   items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`;
-/** The country refusal as the call reads it: in a batch nothing was saved; whose choice it is. */
-const countryWorded = <A, E, R>(lead: Lead, saved: boolean, call: Effect.Effect<A, E, R>) =>
+/**
+ * The country refusal as the call reads it: in a batch nothing was saved; whose choice it is, and
+ * whether the one person this turn answers is who chooses it.
+ */
+export const countryWorded = <A, E, R>(lead: Lead, saved: boolean, call: Effect.Effect<A, E, R>) =>
   call.pipe(
     Effect.catchIf(
       (error) => isKinChatError(error) && isCountryFirst(error),
       () =>
         Effect.gen(function* () {
           const team = yield* viewOf(lead).pipe(Effect.orElseSucceed(() => undefined));
+          const asker =
+            team === undefined
+              ? yield* turnAsker(lead).pipe(Effect.orElseSucceed(() => null))
+              : null;
           return yield* yield* countryRefusal(lead.orgId, {
             saved,
             forTeammate: team !== undefined,
+            answeringChooser:
+              asker !== null &&
+              (yield* ownerLevel(lead.orgId, KinPersonId.make(asker)).pipe(
+                Effect.orElseSucceed(() => false),
+              )),
           });
         }),
     ),

@@ -141,16 +141,24 @@ export const countryNeeded = Effect.fn("KinCompanyProfile.countryNeeded")(functi
 });
 
 const NOT_CHOSEN = "this company's country isn't chosen yet";
-/** How the agent's call reads it: a batch or a change saved nothing; a teammate's turn asks no one. */
+/**
+ * How the agent's call reads it: a batch or a change saved nothing; a teammate's turn asks no one;
+ * a turn answering an owner-level person tells it they choose it.
+ */
 export interface CountryAsk {
   readonly saved?: boolean;
   readonly forTeammate?: boolean;
+  readonly answeringChooser?: boolean;
 }
 export const countryFirstMessage = (owner: string, ask: CountryAsk = {}) =>
   `Nothing was ${ask.saved === true ? "saved" : "created"}: ${NOT_CHOSEN}, ${
     ask.forTeammate === true
       ? "and Kin records no money until an owner chooses it in Settings, Company details."
-      : `so Kin can't tell its currency or tax. Ask ${owner} to choose it in Settings, Company details.`
+      : `so Kin can't tell its currency or tax. ${
+          ask.answeringChooser === true
+            ? "The person you're answering chooses it themselves, in Settings, Company details: tell them so in your reply, and to tell you once it is chosen: nothing wakes you then, so promise nothing before they do. No question or tool of yours can set it."
+            : `Ask ${owner} to choose it in Settings, Company details.`
+        }`
   }`;
 /** A refusal no fix to the call itself answers: the company's country comes first. */
 export const isCountryFirst = (error: { readonly message: string }) =>

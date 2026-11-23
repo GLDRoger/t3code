@@ -488,6 +488,7 @@ const KIN_RPC_ACCESS = {
   "kin.push.registerDevice": "person",
   "kin.push.unregisterDevice": "person",
   "kin.push.watch": "person",
+  "kin.push.reconcile": "person",
   "kin.people.listInvites": "owner_level",
   "kin.people.revokeInvite": "owner_level",
   // A member reads names only; the service keeps access and places to owner level.
@@ -824,6 +825,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
   "kin.push.watch": "kin-push",
+  "kin.push.reconcile": "kin-push",
   "kin.visuals.hosts.list": "kin-chat",
   "kin.visuals.hosts.allow": "kin-chat",
   "kin.visuals.hosts.remove": "kin-chat",

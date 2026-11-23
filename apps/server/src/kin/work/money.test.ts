@@ -4352,8 +4352,16 @@ describe("the company profile", () => {
         ]);
       // A batch, such as a client with its invoice, saved nothing; one entry wasn't created.
       const saved = countryFirstMessage("Owner", { saved: true });
+      // The agent answering the owner's own message is told he chooses it, not to ask him.
+      const answered = countryFirstMessage("Owner", { answeringChooser: true });
+      const answeredSaved = countryFirstMessage("Owner", { saved: true, answeringChooser: true });
+      assert.include(
+        answered,
+        "The person you're answering chooses it themselves, in Settings, Company details: tell them so in your reply, and to tell you once it is chosen: nothing wakes you then, so promise nothing before they do.",
+      );
+      assert.notInclude(answered, "Ask Owner");
       // A budget's limit is a change to a setting: nothing was saved.
-      const refused = [saved, refusal, saved, refusal, refusal];
+      const refused = [answeredSaved, answered, answeredSaved, refusal, refusal];
       const asked = yield* turn(1, "Invoice Invented Kestrel 1,200 for the brand kit");
       assert.deepStrictEqual(yield* refusedIn(asked), refused);
       // A task works as before; an amount on it is money, and waits too.
@@ -4386,7 +4394,28 @@ describe("the company profile", () => {
           ],
         });
       yield* deadline("Invented domain renewal");
-      assert.strictEqual(yield* said(deadline("Invented licence renewal", "90")), refusal);
+      assert.strictEqual(yield* said(deadline("Invented licence renewal", "90")), answered);
+      // A turn no person started (a routine) still names who chooses it.
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+          status, event_ids, audience)
+        VALUES ('wake-routine', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
+          '["event-routine"]', 'owner_only')`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id)
+        VALUES ('event-routine', ${orgId}, ${lead}, 'schedule.fired', 'P0', ${JSON.stringify({
+          _tag: "schedule.fired",
+          provenance: { _tag: "system" },
+        })}, 0, 0, 'claimed', 'wake-routine')`;
+      assert.strictEqual(
+        yield* said(
+          LeadWork.create(scope, {
+            sourceEventId: "event-routine",
+            records: [{ list: "dates", title: "Invented fee", due: "2026-12-31", amount: "90" }],
+          }),
+        ),
+        refusal,
+      );
       const tracking = yield* turn(5, "Start tracking expenses");
       const expenses = yield* LeadMoney.define(scope, {
         sourceEventId: tracking,
