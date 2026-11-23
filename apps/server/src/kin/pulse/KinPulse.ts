@@ -796,7 +796,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         shell,
       });
       const told = yield* tellHolders(ctx, facts, stored, holds, shell);
-      // A teammate's own follow-up to a client, due now: the sales agent drafts it for them.
+      // A person's own task, due now: an agent makes its first piece for them (`draftWake.ts`).
       const drafted = yield* draftWakes({
         ctx,
         open: facts.flatMap((sensed): Array<KinPulseFact> => {

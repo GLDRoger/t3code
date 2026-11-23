@@ -34,7 +34,12 @@ import { wordOf } from "./holds.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { headStarts } from "./headStart.ts";
-import { DRAFT_CALL_NOTES, DRAFT_FROM_MAILBOX, draftWakeText } from "./draftWake.ts";
+import {
+  DRAFT_CALL_NOTES,
+  DRAFT_DOCUMENT,
+  DRAFT_FROM_MAILBOX,
+  draftWakeText,
+} from "./draftWake.ts";
 import { buildPulseSection } from "./prompt.ts";
 import { screenFacts } from "./people.ts";
 import { factSig, markTold, untold } from "./told.ts";
@@ -791,9 +796,9 @@ describe("KinPulse", () => {
         event?.type === "message.posted" ? event.message.body : "",
         "W-8 Invented W-8 was due yesterday.",
       );
-      const ownerChats = yield* sql`SELECT 1 FROM kin_chats
-        WHERE org_id = ${orgId} AND direct_key LIKE ${`${owner}:%`}`;
-      assert.lengthOf(ownerChats, 0);
+      assert.deepStrictEqual(yield* noticesTo(owner), []);
+      // Told of it, she also gets its head start: a wake to make its first piece, once that day.
+      assert.deepInclude(first.drafted, { personId: mate, key });
       // Later passes, in the same minute or the next day, add nothing.
       for (const later of [at + 1, at + MINUTE, at + DAY]) {
         yield* TestClock.setTime(later);
@@ -802,6 +807,8 @@ describe("KinPulse", () => {
           again.told.filter((one) => one.key === key),
           0,
         );
+        // Once a day: the next day may bring its next head start.
+        if (later < at + DAY) assert.notDeepInclude(again.drafted, { personId: mate, key });
       }
       assert.lengthOf(yield* mateNotices, 1);
       const told = yield* sql<{ person: string }>`SELECT person_id AS person FROM kin_pulse_told
@@ -843,6 +850,8 @@ describe("KinPulse", () => {
       VALUES (${orgId}, ${growth}, ${mate}, ${owner}, 0)`;
     yield* sql`UPDATE kin_people SET sees_clients = 1, time_zone = 'America/Los_Angeles'
       WHERE person_id = ${mate}`;
+    // Her other late task is done: the follow-up is all she has open.
+    yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-8'`;
     yield* insert({
       id: "W-30",
       dueAt: B + 2 * DAY,
@@ -1006,6 +1015,78 @@ describe("KinPulse", () => {
         ticked.drafted.map((one) => one.personId),
         [owner],
       );
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect(
+    "who drafts a follow-up: its project's agent lead, else the seat that sells, else the company's",
+    () =>
+      Effect.gen(function* () {
+        yield* salesDay;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+          VALUES (${orgId}, ${finance}, ${mate}, ${owner}, 0)`;
+        // W-32 is in a project Finance leads; W-33 has no client at all.
+        yield* insert({ id: "P-6", list: "projects", ownerKind: "agent", ownerId: finance });
+        yield* insert({
+          id: "W-32",
+          dueAt: B + 2 * DAY,
+          ownerKind: "person",
+          ownerId: mate,
+          partyId: "r-C-1",
+          projectId: "P-6",
+        });
+        yield* insert({ id: "W-33", dueAt: B + 2 * DAY, ownerKind: "person", ownerId: mate });
+        const drafters = Effect.map(draftEvents, (events) =>
+          events.map((event) => [event.factKeys[0]!.split(":")[1], event.agentId]),
+        );
+        yield* TestClock.setTime(NOON_LA);
+        yield* KinPulse.tick(orgId, NOON_LA);
+        assert.sameDeepMembers(yield* drafters, [
+          ["W-30", growth],
+          ["W-32", finance],
+          ["W-33", chief],
+        ]);
+        // A company with no seat that sells: its own lead drafts the follow-up to a client.
+        yield* sql`UPDATE kin_agents SET retired_at = 1 WHERE agent_id = ${growth}`;
+        yield* TestClock.setTime(NOON_LA + DAY);
+        yield* KinPulse.tick(orgId, NOON_LA + DAY);
+        assert.deepInclude((yield* drafters).slice(3), ["W-30", chief]);
+      }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a due task with no client gets a document head start, and none once one exists", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* letMate;
+      const sql = yield* SqlClient.SqlClient;
+      const at = B + 3 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(at);
+      const late = `task_late:W-8:due=${B + 2 * DAY}`;
+      assert.deepInclude((yield* KinPulse.tick(orgId, at)).drafted, { personId: mate, key: late });
+      const [made] = (yield* draftEvents).filter((event) => event.factKeys[0] === late);
+      assert.strictEqual(made?.agentId, chief);
+      const read = yield* draftWakeText(orgId, made!);
+      assert.strictEqual(read?.text, DRAFT_DOCUMENT("Meera"));
+      assert.deepStrictEqual(read?.data, { task: "W-8", title: "Invented W-8", late: true });
+      // Its first piece, a doc linked to it: the next day's wake has nothing to add.
+      yield* insert({ id: "D-9", list: "docs", createdAt: at });
+      yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation,
+          created_at)
+        VALUES (${orgId}, 'r-D-9', 'record', 'r-W-8', 'relates', ${at + HOUR})`;
+      yield* TestClock.setTime(at + DAY);
+      assert.notDeepInclude((yield* KinPulse.tick(orgId, at + DAY)).drafted, {
+        personId: mate,
+        key: late,
+      });
+      assert.isUndefined(yield* draftWakeText(orgId, { ...made!, eventId: KinEventId.make("d2") }));
+      // A doc linked before it fell due is no head start: the next day it is made.
+      yield* sql`UPDATE kin_record_links SET created_at = ${B} WHERE record_id = 'r-D-9'`;
+      yield* TestClock.setTime(at + 2 * DAY);
+      assert.deepInclude((yield* KinPulse.tick(orgId, at + 2 * DAY)).drafted, {
+        personId: mate,
+        key: late,
+      });
     }).pipe(Effect.provide(chatLayer)),
   );
 
