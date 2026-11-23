@@ -30,7 +30,6 @@ import { checkInIndex } from "../pulse/prompt.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Budget from "../lead/KinBudget.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
-import * as RoutineContent from "../lead/RoutineContent.ts";
 import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
@@ -73,10 +72,7 @@ const identity = Layer.mock(KinIdentity)({
 /** Kin's consumer over the real native scheduler; `recorded` holds what would be bare threads. */
 const harness = (
   projects?: Set<string>,
-  routine:
-    | Layer.Layer<never>
-    | Layer.Layer<RoutineContent.KinRoutineContent>
-    | Layer.Layer<KinHostCare> = Layer.empty,
+  hostCare: Layer.Layer<never> | Layer.Layer<KinHostCare> = Layer.empty,
 ) => {
   const recorded = {
     launches: [] as ThreadLaunchService.ThreadLaunchInput[],
@@ -100,7 +96,7 @@ const harness = (
         }),
       }),
     ),
-    Layer.provideMerge(routine),
+    Layer.provideMerge(hostCare),
   );
   return { recorded, workers, kinTicks, layer };
 };
@@ -1034,14 +1030,7 @@ it.effect(
 it.effect(
   "briefs are their receiver's own: Settings and the chat move one schedule, and days and off reach it",
   () => {
-    // What the evening summary would sum up today, as `KinRoutineContent` gathers it.
-    const today: { evening: string | null } = { evening: null };
-    const { layer, kinTicks, workers } = harness(
-      undefined,
-      Layer.mock(RoutineContent.KinRoutineContent)({
-        eveningFacts: () => Effect.sync(() => today.evening),
-      }),
-    );
+    const { layer, kinTicks, workers } = harness();
     return Effect.gen(function* () {
       yield* setup();
       const sql = yield* SqlClient.SqlClient;
@@ -1062,16 +1051,20 @@ it.effect(
         { kind: "evening", at: "18:30", days: weekdays, around: true, on: true },
       ]);
 
-      // A day with nothing to sum up brings no evening summary; a day with something does.
       const summaries = sql<{ key: string }>`SELECT dedupe_key AS key FROM kin_events
         WHERE org_id = ${orgId} AND tag = 'pulse' AND dedupe_key LIKE 'checkin:checkin-evening:%'
         ORDER BY queued_at`;
-      for (const [facts, queued] of [
-        [null, 0],
-        ['{"routine":"evening_summary"}', 1],
-      ] as const) {
-        today.evening = facts;
-        yield* TestClock.setTime(Date.parse((yield* native("Evening summary")).nextRunAt!));
+      for (const queued of [0, 1]) {
+        const at = Date.parse((yield* native("Evening summary")).nextRunAt!);
+        if (queued === 1) {
+          yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+            VALUES (${orgId}, 'work', 'Work', 'W', 1, 0) ON CONFLICT DO NOTHING`;
+          yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+              owner_kind, owner_id, due_at, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+            VALUES (${orgId}, 'invented-task', 'work', 'W-91', 'Invented handoff', 'doing', 'person',
+              ${owner.personId}, ${at + 60 * 60_000}, 'person', ${owner.personId}, 'invented-task', ${at}, ${at})`;
+        }
+        yield* TestClock.setTime(at);
         yield* workers.get("scheduled-tasks")!;
         yield* drain;
         assert.lengthOf(yield* summaries, queued);

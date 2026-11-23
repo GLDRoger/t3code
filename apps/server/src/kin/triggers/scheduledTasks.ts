@@ -38,7 +38,6 @@ import { bootstrapLeadProject, leadProjectId } from "../lead/leadProject.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import * as Memory from "../memory/Memory.ts";
-import * as RoutineContent from "../lead/RoutineContent.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import {
   nextRun,
@@ -330,7 +329,6 @@ const make = Effect.gen(function* () {
       Effect.provideService(KinEventQueue.KinEventQueue, eventQueue),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
-  const routineContent = yield* Effect.serviceOption(RoutineContent.KinRoutineContent);
   const connections = yield* Effect.serviceOption(KinConnections);
   const outsideSource = Option.isNone(connections)
     ? noOutside
@@ -443,17 +441,6 @@ const make = Effect.gen(function* () {
       schedule.checkIn === 1 && confirmed && admitted && !paused
         ? yield* outsideSource.read(orgId)
         : undefined;
-    // The evening summary comes only on a day with something to sum up, as it always did.
-    const nothingToSum =
-      outside !== undefined &&
-      !manual &&
-      schedule.scheduleId === "checkin-evening" &&
-      lead !== undefined &&
-      Option.isSome(routineContent)
-        ? (yield* routineContent.value
-            .eveningFacts(orgId, lead.agentId)
-            .pipe(Effect.orElseSucceed(() => ""))) === null
-        : false;
     let checkedIn = false;
     yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -508,10 +495,6 @@ const make = Effect.gen(function* () {
         if (paused) return yield* skip("Kin is paused.");
         if (lead === undefined) return yield* skip("there is no agent to run it.");
         if (!admitted) return yield* skip("today's budget is used up.");
-        if (row.checkIn === 1 && confirmed && outside !== undefined && nothingToSum) {
-          yield* settleCard({ at, status: "skipped", note: "Nothing to sum up today." });
-          return yield* consume;
-        }
         if (row.checkIn === 1 && confirmed && outside !== undefined) {
           const result = yield* withQueue(
             queueCheckIn({
