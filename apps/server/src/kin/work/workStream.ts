@@ -41,6 +41,7 @@ type Pending = {
   readonly key: string;
   readonly list: string | null;
   readonly created: boolean;
+  readonly dependents?: Tick["dependents"];
   /** The level the tick was read for; one read before a level change is dropped. */
   readonly level: number;
 };
@@ -268,7 +269,9 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
       ...rescan,
       ...(mine ? [{ ...base, sequence, key: PLACES }] : []),
       ...projects,
-      ...(tick.key === undefined ? [] : [{ ...base, sequence, key: tick.key }]),
+      ...(tick.key === undefined
+        ? []
+        : [{ ...base, sequence, key: tick.key, dependents: tick.dependents }]),
     ];
   };
 
@@ -286,20 +289,18 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     if (gaps.length > 0) return yield* restart(Math.max(...gaps.map((one) => one.sequence)));
     if (viewer.teammate && items.some((one) => one.key === PLACES)) return yield* restart();
     const top = Math.max(...items.map((one) => one.sequence));
-    const keyed = items.filter((one) => one.key !== RESCAN);
+    const keyed = new Map(items.filter((one) => one.key !== RESCAN).map((one) => [one.key, one]));
+    const at = { sequence: top, created: false, level };
+    const add = (key: string, list: string) => {
+      if (!keyed.has(key)) keyed.set(key, { ...at, key, list });
+    };
+    for (const one of items) for (const row of one.dependents ?? []) add(row.key, row.registerId);
     const place = (one: Pending) =>
       one.key !== RESCAN && (one.list === "clients" || one.list === "projects");
     // A place's own change can reach a burst apart from its rescan, so either one looks again.
     if (viewer.teammate && items.some((one) => one.key === RESCAN || place(one))) {
       // A label or a place shows or hides entries with no change of their own.
       const sees = yield* teamKeyLists(orgId, own(viewer)).pipe(workFailure);
-      const named = new Set(keyed.map((one) => one.key));
-      const at = { sequence: top, created: false, level };
-      const add = (key: string, list: string) => {
-        if (named.has(key)) return;
-        named.add(key);
-        keyed.push({ ...at, key, list });
-      };
       for (const [key, list] of seen) if (!sees.has(key)) add(key, list);
       for (const [key, list] of sees) if (!seen.has(key)) add(key, list);
       // Their entries under a client or project that moved read differently now: a task shows
@@ -308,11 +309,13 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
         if (place(one)) {
           const moved = yield* records.get(orgId, one.key);
           if (moved === undefined) continue;
-          for (const row of yield* dependentRows(orgId, moved.recordId).pipe(workFailure))
+          for (const row of yield* dependentRows(orgId, moved.recordId, moved.registerId).pipe(
+            workFailure,
+          ))
             if (sees.has(row.key)) add(row.key, row.registerId);
         }
     }
-    const rows = yield* rowsNow(keyed);
+    const rows = yield* rowsNow([...keyed.values()]);
     const close = yield* resumable(top).pipe(workFailure);
     const moved = yield* counts(close, newest);
     if (rows.length === 0) return moved === null ? [] : [moved];
@@ -339,7 +342,10 @@ export const subscribeRows = (
         }),
         Stream.flattenIterable,
       );
-      return bufferLatestLiveStream(pending, (one) => one.key).pipe(
+      // Keep dependents in the parent's burst before its cursor, even if an ordinary tick follows.
+      return bufferLatestLiveStream(pending, (one) =>
+        one.dependents === undefined ? one.key : `*dependents:${one.key}`,
+      ).pipe(
         Stream.groupedWithin(BATCH, BATCH_WINDOW),
         Stream.mapEffect((group) => {
           const first = group.find((one) => one.key === START);
