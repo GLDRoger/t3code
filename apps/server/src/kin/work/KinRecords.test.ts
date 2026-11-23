@@ -67,7 +67,13 @@ import * as LeadDocs from "./leadDocs.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { dayIn } from "./money.ts";
-import { KIN_OWNER_LEVEL, type KinViewer, teamVisible, viewerOfPeople } from "./teamView.ts";
+import {
+  KIN_OWNER_LEVEL,
+  type KinViewer,
+  personSees,
+  teamVisible,
+  viewerOfPeople,
+} from "./teamView.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { sensitiveShown } from "./sensitiveReads.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
@@ -5163,6 +5169,26 @@ it.effect("a team list assigned to Money follows the company's Money section", (
     assert.include(yield* Effect.flip(read), { reason: "not_found" });
     assert.lengthOf((yield* OwnerDocs.search([arjun], { orgId, text: "Appointment" })).hits, 0);
     assert.include(yield* Effect.flip(addBooking("Section off")), { reason: "not_allowed" });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("member list reads build team register membership once in SQLite", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* book("Owner's booking");
+    const sql = yield* SqlClient.SqlClient;
+    const query = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = ${bookings.list}
+        AND ${personSees(sql, arjun.personId)}`;
+    const [text, params] = query.compile();
+    const plan = yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${text}`, params);
+    assert.match(
+      plan.map((row) => row.detail).join("\n"),
+      /LIST SUBQUERY[^\n]*\n(?:[^\n]*\n)*?SCAN g/,
+    );
+    assert.deepStrictEqual(yield* query, [{ n: 0 }]);
+    yield* storedTeamList();
+    assert.deepStrictEqual(yield* query, [{ n: 1 }]);
   }).pipe(Effect.provide(layer)),
 );
 

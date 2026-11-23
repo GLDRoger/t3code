@@ -192,10 +192,10 @@ const teamListRow = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement
 
 /** A defined team list `g`. */
 const teamRegister = (sql: SqlClient.SqlClient) =>
-  sql`(g.built_in = 0 AND g.register_id NOT IN ${sql.in(TEAM_LIST_RESERVED)}
+  sql`(g.built_in = 0 AND json_type(g.definition_json, '$.team') = 'true'
+    AND g.register_id NOT IN ${sql.in(TEAM_LIST_RESERVED)}
     AND lower(trim(g.name)) <> 'bank transactions'
     AND json_type(g.definition_json, '$.sensitive') = 'false'
-    AND json_type(g.definition_json, '$.team') = 'true'
     AND json_type(g.definition_json, '$.teamSince') = 'integer'
     AND json_extract(g.definition_json, '$.teamSince') >= 0)`;
 
@@ -215,22 +215,10 @@ export const teamLists = Effect.fn("KinTeamView.lists")(function* (orgId: KinOrg
   return new Set(rows.map((row) => row.id));
 });
 
+// All org/list pairs let SQLite build membership once, even in a query whose rows span orgs.
 const onTeamList = (sql: SqlClient.SqlClient) =>
-  sql`(r.register_id NOT IN ${sql.in(TEAM_LIST_RESERVED)}
-    AND EXISTS (SELECT 1 FROM kin_registers g WHERE g.org_id = r.org_id
-      AND g.register_id = r.register_id AND ${teamRegister(sql)}))`;
-
-const teamListHidden = (sql: SqlClient.SqlClient) =>
-  sql`EXISTS (SELECT 1 FROM kin_registers g WHERE g.org_id = r.org_id
-    AND g.register_id = r.register_id AND ${teamRegister(sql)}
-    AND (${teamSectionOff(sql)} OR NOT ${ownLabelOff(sql)} OR ${inheritedSensitive(sql)}))`;
-
-const openedListRow = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
-  sql`(${ownLabelOff(sql)} AND NOT ${inheritedSensitive(sql)}
-    AND EXISTS (SELECT 1 FROM kin_registers g WHERE g.org_id = r.org_id
-      AND g.register_id = r.register_id AND ${teamRegister(sql)}
-      AND (r.created_at >= json_extract(g.definition_json, '$.teamSince')
-        OR (r.created_by_kind = 'person' AND r.created_by_id = ${personId}))))`;
+  sql`((r.org_id, r.register_id) IN (SELECT g.org_id, g.register_id FROM kin_registers g
+    WHERE ${teamRegister(sql)}))`;
 
 export const allSeeMoney = Effect.fn("KinTeamView.allSeeMoney")(function* (
   orgId: KinOrgId,
@@ -275,11 +263,14 @@ const legacyPersonSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Stat
   OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND ${teamListRow(sql, personId)})) END)`;
 
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
-  sql`(CASE WHEN r.register_id NOT IN ${sql.in(TEAM_LIST_RESERVED)} AND ${teamListHidden(sql)}
-      THEN 0
-    ELSE (${legacyPersonSees(sql, personId)} OR
-      (r.register_id NOT IN ${sql.in(TEAM_LIST_RESERVED)} AND ${openedListRow(sql, personId)}))
-    END)`;
+  sql`COALESCE(CASE WHEN ${onTeamList(sql)} THEN
+    CASE WHEN r.sensitive <> 0 OR ${inheritedSensitive(sql)} THEN 0 ELSE
+      (SELECT CASE WHEN ${teamSectionOff(sql)} THEN 0
+          WHEN r.created_at >= json_extract(g.definition_json, '$.teamSince')
+            OR (r.created_by_kind = 'person' AND r.created_by_id = ${personId}) THEN 1 END
+        FROM kin_registers g WHERE g.org_id = r.org_id AND g.register_id = r.register_id)
+    END
+  END, ${legacyPersonSees(sql, personId)})`;
 
 /** Version `pv` of doc `r` as this person reads it: the doc, and a picture's version by its own rule. */
 export const docVersionSeen = (
