@@ -63,7 +63,14 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { handlers as documentHandlers, KinDocumentToolkit } from "../gendocs/mcp.ts";
-import { listPlace, presetDefinition, propose } from "../work/registers.ts";
+import {
+  defineList,
+  listDef,
+  listPlace,
+  presetDefinition,
+  propose,
+  proposalFor,
+} from "../work/registers.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import * as CardActions from "./cardActions.ts";
 import { plansOf, takesAsDefault } from "./cardPlans.ts";
@@ -1238,6 +1245,56 @@ it.effect("a tap on a list proposal's own card makes the list once, for an owner
         // A second tap, from another session, changes nothing.
         yield* kin.tap(who, widgetId, "option-1", `${name}-tap-again`);
         assert.deepStrictEqual(yield* lists(id), [{ name, team: 1, teamSince: confirmedAt }]);
+      }
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("a list change card says when it closes a team list", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { orgId, sql } = kin;
+      const chatId = kin.chatOf("finance");
+      const closedLine = "The team will no longer see this list.";
+      for (const name of ["Bookings", "Supplies", "Stock"]) {
+        const team = name === "Bookings";
+        yield* defineList(orgId, yield* proposalFor(orgId, { name, team }), MON);
+      }
+      for (const [list, team, detail, staysOpen] of [
+        ["bookings", undefined, ["Note (text)"], true],
+        ["supplies", false, ["Note (text)"], false],
+        ["bookings", false, ["Extra (text)", closedLine], false],
+        ["stock", false, ["Note (text)"], true],
+      ] as const) {
+        const label = list === "bookings" && team === false ? "Extra" : "Note";
+        const asked = yield* kin.turn("finance", chatId, `Add ${label} to ${list}`);
+        const proposed = yield* callAs("finance", "list_define", {
+          sourceEventId: `event:${asked}`,
+          list,
+          fields: [{ label, type: "text" }],
+          ...(team === undefined ? {} : { team }),
+        });
+        assert.strictEqual(proposed.value.status, "proposed", JSON.stringify(proposed.value));
+        const [row] = yield* sql<{
+          widgetId: string;
+        }>`SELECT widget_id AS "widgetId" FROM kin_list_proposals
+          WHERE org_id = ${orgId} AND proposal_id = ${String(proposed.value.proposal)}`;
+        assert.deepStrictEqual(card(yield* kin.widget(row!.widgetId)).detail?.split("\n"), [
+          ...detail,
+        ]);
+        if (list === "stock")
+          yield* defineList(orgId, yield* proposalFor(orgId, { list, team: true }), MON);
+        const yes = yield* kin.turn("finance", chatId, `Yes to ${label} on ${list}`);
+        const applied = yield* callAs("finance", "list_define", {
+          sourceEventId: `event:${yes}`,
+          proposal: proposed.value.proposal,
+        });
+        assert.strictEqual(applied.value.status, "defined", JSON.stringify(applied.value));
+        const def = yield* listDef(orgId, list);
+        assert.strictEqual(def?.team === true, staysOpen);
+        assert.include(def?.fields.map((field) => field.label) ?? [], label);
       }
     }).pipe(Effect.provide(layer)),
   ),

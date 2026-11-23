@@ -325,6 +325,7 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
           Effect.catchTags({ KinChatError: () => Effect.undefined }),
         )
       : undefined;
+  const teamChange = proposal._tag === "new" ? proposal.definition.team : proposal.team;
   // The card is how a tap answers this proposal and no other; a typed yes still works without it.
   const card = yield* askOwner(
     lead,
@@ -338,9 +339,11 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
             `${one.label} (${one.type}${one.choices === undefined ? "" : `: ${one.choices.join(", ")}`})`,
         ),
         ...(shown.categories.length === 0 ? [] : [`Categories: ${shown.categories.join(", ")}`]),
-        ...((proposal._tag === "new" ? proposal.definition.team : proposal.team) === true
+        ...(teamChange === true
           ? ["The whole team will see and add entries."]
-          : []),
+          : teamChange === false && proposal._tag === "extend"
+            ? ["The team will no longer see this list."]
+            : []),
       ].join("\n"),
       yes: proposal._tag === "new" ? "Create it" : "Add them",
       no: "Not now",

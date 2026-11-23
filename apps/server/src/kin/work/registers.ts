@@ -968,7 +968,9 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       categories: input.categories ?? [],
       choices,
       stateLabels: input.stateNames ?? {},
-      ...(input.team === undefined ? {} : { team: input.team }),
+      ...(input.team === true || (input.team === false && def.team === true)
+        ? { team: input.team }
+        : {}),
     } satisfies Proposal;
   }
   const named =
