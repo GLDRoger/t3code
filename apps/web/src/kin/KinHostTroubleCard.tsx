@@ -145,7 +145,8 @@ export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
           <p className="mt-1 break-words font-mono">{view.detail}</p>
         </details>
       )}
-      {done === null ? null : (
+      {/* Once the trouble closes, the card's own line says how it ended. */}
+      {done === null || view.closed ? null : (
         <p
           role={done.failed ? "alert" : "status"}
           className={

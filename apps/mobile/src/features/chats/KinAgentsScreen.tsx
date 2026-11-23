@@ -100,7 +100,7 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
   const { environmentId, orgId } = props;
   // Only a session that may restore an agent asks the host for the retired ones.
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
-  const working = useKinWorkingAgents(environmentId);
+  const working = useKinWorkingAgents(environmentId, orgId);
   const atom = canRestore
     ? kinClient.agents({ environmentId, orgId })
     : kinClient.leads({ environmentId, input: { orgId } });

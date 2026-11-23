@@ -21,6 +21,7 @@ import {
   kinDocEditOutcome,
   type KinDocEditOpened,
   kinDocDiffSummary,
+  kinDocSameWords,
   kinDocPdfInput,
   kinDocRestoreOutcome,
   kinDocVersionView,
@@ -623,7 +624,7 @@ function KinDocChanges(
           )}
         </header>
         {patch === null ? (
-          <KinWorkNotice {...KIN_DOCS.noChanges} />
+          <KinWorkNotice {...kinDocSameWords(diff)} />
         ) : !source ? (
           <KinDocChangesView
             environmentId={props.environmentId}

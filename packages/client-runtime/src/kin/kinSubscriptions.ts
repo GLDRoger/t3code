@@ -33,7 +33,6 @@ import {
 export const KIN_SUBSCRIPTIONS = {
   loadFailed: "Couldn't load subscriptions",
   askAbout: "About our subscriptions: ",
-  moneyKept: "Money is kept by whoever runs this Kin.",
   title: "Subscriptions",
   renewing: "Renewing in the next 30 days",
   nothingRenewing: "Nothing renews in the next 30 days.",
