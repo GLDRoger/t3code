@@ -28,6 +28,7 @@ import { chatShared } from "../chat/sharing.ts";
 import { reaches, storedLabels } from "../memory/sensitivity.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "./quietHours.ts";
 import { retiredOwnerChat } from "../lead/Retirement.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 const text = Schema.String.check(
   Schema.isTrimmed(),
@@ -297,6 +298,7 @@ const make = Effect.gen(function* () {
               ON d.org_id = m.org_id AND d.person = ${r.person} AND d.item_id = ${r.itemId}
               WHERE m.org_id = ${orgId} AND m.chat_id = ${r.chatId} AND m.author_person_id = ${r.person}
               AND m.author_kind = 'human' AND m.status = 'posted' AND m.origin_json IS NULL
+              AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
               AND m.seq > d.seq
               AND (m.reply_to = d.message_id OR d.item_count = 1) ORDER BY m.seq LIMIT 1`;
 

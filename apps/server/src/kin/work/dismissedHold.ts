@@ -1,6 +1,7 @@
 import { KIN_DISMISSED_FIELD } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import { keySentSql } from "../chat/keySent.ts";
 
 /**
  * Who dismissed the question that released this task, while that question stays dismissed and
@@ -22,7 +23,8 @@ export const dismissedHold = Effect.fn("KinDismissedHold.of")(function* (
     WHERE c.org_id = ${orgId} AND c.record_id = ${recordId}
       AND NOT EXISTS (SELECT 1 FROM kin_record_changes later
         WHERE later.org_id = c.org_id AND later.record_id = c.record_id AND later.seq > c.seq
-          AND later.actor_kind = 'person' AND later.actor_id = ${personId})
+          AND later.actor_kind = 'person' AND later.actor_id = ${personId}
+          AND later.coding_agent_key IS NULL)
     ORDER BY c.seq DESC LIMIT 1`;
   return held?.name;
 });
@@ -43,6 +45,7 @@ export const personInTurn = Effect.fn("KinDismissedHold.personInTurn")(function*
     WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
       AND e.tag IN ('chat.message', 'widget.action')
       AND m.author_kind = 'human' AND m.author_person_id IS NOT NULL
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       ${personId === undefined ? sql`` : sql`AND m.author_person_id = ${personId}`}
     LIMIT 1`;
   return rows.length > 0;
@@ -67,7 +70,7 @@ export const personSpokeInTurn = Effect.fn("KinDismissedHold.personSpokeInTurn")
       AND e.tag IN ('chat.message', 'widget.action') AND json_extract(e.json, '$.origin') IS NULL
       AND m.author_kind = 'human' AND m.author_person_id IS NOT NULL
       AND COALESCE(m.client_message_id, '') NOT LIKE 'send:private:%'
-      AND COALESCE(m.client_message_id, '') NOT LIKE 'key:%'
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     LIMIT 1`;
   return rows.length > 0;
 });

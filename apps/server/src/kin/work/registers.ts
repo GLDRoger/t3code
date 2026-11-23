@@ -52,6 +52,7 @@ import { dayIn, isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
 import { countedEntry } from "./recordRows.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 /**
  * KinRegisters: what a list is. Work and the light CRM are fixed in code; every other list,
@@ -1226,6 +1227,7 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
       AND json_extract(e.json, '$.provenance._tag') = 'human'
       AND json_extract(e.json, '$.provenance.personId') = m.author_person_id
       AND m.author_kind = 'human' AND ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))}
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       AND ((e.tag = 'chat.message' AND m.kind = 'text' AND m.seq > ${row.chatSeq})
         OR (e.tag = 'widget.action' AND m.kind = 'widget_action'
           AND m.widget_id = ${row.widgetId ?? ""} AND ${tapped === "yes" ? 1 : 0} = 1))

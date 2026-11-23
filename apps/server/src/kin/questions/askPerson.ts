@@ -72,6 +72,7 @@ import {
   waitingRedrafts,
 } from "./openQuestions.ts";
 import { defaultDue, namedDue, normaliseAbout, normaliseIntent, raiseAt } from "./rules.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 /** What an agent asks someone outside the chat: `kin_ask`'s card, with no default or actions. */
 export const AskPersonInput = Schema.Struct({
@@ -876,7 +877,7 @@ const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
 });
 
 /** What this person wrote themselves in that chat, in the messages this turn answers. */
-const ownMessages = Effect.fn("KinQuestions.ownMessages")(function* (
+export const ownMessages = Effect.fn("KinQuestions.ownMessages")(function* (
   turn: { readonly orgId: string; readonly agentId: string; readonly wakeupId: string },
   chatId: string,
   personId: KinPersonId,
@@ -889,6 +890,7 @@ const ownMessages = Effect.fn("KinQuestions.ownMessages")(function* (
       AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message'
       AND json_extract(e.json, '$.origin') IS NULL AND m.chat_id = ${chatId}
       AND m.author_kind = 'human' AND m.author_person_id = ${personId} AND m.origin_json IS NULL
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     ORDER BY e.event_id`;
   return rows.map((one) => one.body);
 });

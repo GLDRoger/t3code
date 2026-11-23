@@ -20,6 +20,7 @@ import { personSees } from "../work/teamView.ts";
 import { turnAsker } from "./Audience.ts";
 import { directKey } from "./LeadAccess.ts";
 import type { resolveLead } from "./LeadMemory.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 export const AwaySetInput = Schema.Struct({
   until: Schema.optional(Schema.NullOr(KinDay)).annotate({
@@ -72,7 +73,7 @@ const ownSpeaker = Effect.fn("KinAwaySet.speaker")(function* (
         AND e.tag = 'chat.message' AND m.message_id = json_extract(e.json, '$.messageId')
         AND m.chat_id = json_extract(e.json, '$.chatId') AND m.author_kind = 'human'
         AND m.kind = 'text' AND m.status = 'posted' AND m.relay_json IS NULL
-        AND m.origin_json IS NULL
+        AND m.origin_json IS NULL AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
         -- A copy kin_take_private posts is sent with its claim's key as its client id.
         AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = m.org_id
           AND m.client_message_id = ${storedClientId("send", "")} || h.message_id)) AS speaker

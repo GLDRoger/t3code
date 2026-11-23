@@ -46,6 +46,7 @@ import {
 import { type Review, reviewHash } from "./statements/statementCard.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { fileNamed as namedIn } from "../gendocs/brand.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 /** The lead tools for statements. Kin reads and matches; the owner confirms on Kin's card. */
 
@@ -192,6 +193,7 @@ const fileNamed = Effect.fn("KinStatements.fileNamed")(function* (
       json_each(COALESCE(m.attachments_json, '[]')) f
     WHERE m.org_id = ${lead.orgId} AND m.chat_id = ${chatId} AND m.status <> 'deleted'
       AND m.author_kind = 'human' AND m.author_person_id = a.owner_person_id
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     ORDER BY m.seq DESC`;
   const row = namedIn(earlier, named);
   if (row === undefined)
@@ -335,6 +337,7 @@ const hideTyped = Effect.fn("KinStatements.hideTyped")(function* (
     WHERE m.org_id = ${lead.orgId} AND m.chat_id = ${chatId} AND m.kind = 'text'
       AND m.status <> 'deleted' AND m.author_kind = 'human'
       AND m.author_person_id = a.owner_person_id AND instr(m.body, ${words}) > 0
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     ORDER BY m.seq DESC LIMIT 200`;
   for (const row of rows) {
     yield* sql`UPDATE kin_messages SET body = ${row.body.replaceAll(words, HIDDEN)}
@@ -379,6 +382,7 @@ const ownerWrote = Effect.fn("KinStatements.ownerWrote")(function* (
     WHERE m.org_id = ${lead.orgId} AND m.chat_id = ${chatId} AND m.kind = 'text'
       AND m.status <> 'deleted' AND m.author_kind = 'human'
       AND m.author_person_id = a.owner_person_id AND m.origin_json IS NULL
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       AND m.seq >= COALESCE((SELECT MIN(f.seq) FROM kin_messages f,
           json_each(COALESCE(f.attachments_json, '[]')) one
         WHERE f.org_id = m.org_id AND f.chat_id = m.chat_id

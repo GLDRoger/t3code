@@ -94,6 +94,7 @@ import { stillAway } from "../triggers/quietHours.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { pauseTriggers } from "../triggers/KinTriggerStore.ts";
 import { DAY_MS } from "../durations.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -722,6 +723,7 @@ const make = Effect.gen(function* () {
         c.title, c.kind
       FROM kin_events e
       JOIN kin_messages m ON m.org_id = e.org_id AND m.author_kind = 'human'
+        AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
         AND m.message_id = json_extract(e.json, '$.messageId')
         AND m.chat_id = json_extract(e.json, '$.chatId') AND m.origin_json IS NULL
       JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = m.author_person_id
@@ -746,6 +748,7 @@ const make = Effect.gen(function* () {
       FROM kin_events e
       JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
       JOIN kin_messages m ON m.org_id = e.org_id AND m.author_kind = 'human'
+        AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
         AND m.message_id = json_extract(e.json, '$.messageId')
         AND m.chat_id = json_extract(e.json, '$.chatId') AND m.origin_json IS NULL
         AND (m.author_person_id = a.owner_person_id
