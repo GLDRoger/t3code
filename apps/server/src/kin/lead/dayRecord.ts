@@ -7,7 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { sentMail } from "../connections/Sending.ts";
 import { formatMoney } from "../work/money.ts";
 import { countedPayment, recordName } from "../work/recordRows.ts";
-import { seenBy, type KinViewer } from "../work/teamView.ts";
+import { listMoneySeenBy, seenBy, type KinViewer } from "../work/teamView.ts";
 import { leadNamer, toolNameOfText } from "../work/toolNames.ts";
 
 /**
@@ -184,7 +184,7 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
       json_extract(r.fields_json, '$.number') AS number
     FROM kin_record_payments p JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND p.created_at >= ${from} AND p.created_at < ${until}
-      AND ${countedPayment(sql)} AND ${seenBy(sql, viewer)}
+      AND ${countedPayment(sql)} AND ${seenBy(sql, viewer)} AND ${listMoneySeenBy(sql, viewer)}
     ORDER BY p.created_at, p.payment_id`;
   const money = payments.map(
     (one) =>

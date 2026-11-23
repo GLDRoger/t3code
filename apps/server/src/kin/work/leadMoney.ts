@@ -194,6 +194,10 @@ export const DefineInput = Schema.Struct({
   }),
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
   sensitive: Schema.optional(Schema.Boolean),
+  team: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "True when the whole team works on this list: every teammate sees and adds its entries.",
+  }),
   dueLabel: Schema.optional(Label),
   dateLabel: Schema.optional(Label),
 });
@@ -321,6 +325,7 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
           Effect.catchTags({ KinChatError: () => Effect.undefined }),
         )
       : undefined;
+  const teamChange = proposal._tag === "new" ? proposal.definition.team : proposal.team;
   // The card is how a tap answers this proposal and no other; a typed yes still works without it.
   const card = yield* askOwner(
     lead,
@@ -334,6 +339,11 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
             `${one.label} (${one.type}${one.choices === undefined ? "" : `: ${one.choices.join(", ")}`})`,
         ),
         ...(shown.categories.length === 0 ? [] : [`Categories: ${shown.categories.join(", ")}`]),
+        ...(teamChange === true
+          ? ["The whole team will see and add entries."]
+          : teamChange === false && proposal._tag === "extend"
+            ? ["The team will no longer see this list."]
+            : []),
       ].join("\n"),
       yes: proposal._tag === "new" ? "Create it" : "Add them",
       no: "Not now",
