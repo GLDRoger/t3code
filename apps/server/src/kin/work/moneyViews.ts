@@ -52,7 +52,7 @@ import {
   listEntryFor,
   stateLabel,
 } from "./registers.ts";
-import { allSeeMoney, seenBy, type KinViewer } from "./teamView.ts";
+import { listMoneySeenBy, seenBy, type KinViewer } from "./teamView.ts";
 import { DAY_MS } from "../durations.ts";
 import type { SetAsideInvoice } from "../pulse/invoiceAsides.ts";
 
@@ -107,7 +107,6 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
     readonly money?: boolean | undefined;
     readonly viewer: KinViewer;
   },
-  money: boolean,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
@@ -118,15 +117,14 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
   const toDay = dayIn(input.to + DAY_MS, zone);
   for (const def of lists.values()) {
     if (asked !== undefined && !asked.includes(def.id)) continue;
-    const fields = def.fields.filter(
-      (one) =>
-        one.type === "date" &&
-        one.retired !== true &&
-        (money || TEAM_LIST_RESERVED.includes(def.id) || !one.sensitive),
-    );
+    const fields = def.fields.filter((one) => one.type === "date" && one.retired !== true);
     if (fields.length === 0) continue;
-    const rows = yield* sql<{ id: string; key: string; fieldsJson: string }>`SELECT
-        r.record_id AS id, r.key, r.fields_json AS "fieldsJson" FROM kin_records r
+    const access =
+      input.viewer._tag === "ownerLevel" || TEAM_LIST_RESERVED.includes(def.id)
+        ? sql`1`
+        : listMoneySeenBy(sql, input.viewer);
+    const rows = yield* sql<{ id: string; key: string; fieldsJson: string; full: number }>`SELECT
+        r.record_id AS id, r.key, r.fields_json AS "fieldsJson", ${access} AS full FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = ${def.id}
         ${input.open === true ? sql`AND r.state NOT IN ('done', 'dropped')` : sql``}
         ${input.kept === true ? sql`AND ${keptEntry(sql)}` : sql``}
@@ -143,6 +141,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
     for (const row of rows) {
       const values = parseFields(row.fieldsJson);
       for (const one of fields) {
+        if (one.sensitive && row.full !== 1) continue;
         const value = values[one.key];
         if (typeof value !== "string" || !isFieldDate(value)) continue;
         const { at, allDay } = fieldDateAt(value, zone);
@@ -215,13 +214,10 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM (${hits})`;
   const limit = Math.min(Math.max(input.limit ?? 100, 1), DATES_CAP);
   const offset = Math.max(input.offset ?? 0, 0);
-  const money =
-    input.viewer._tag === "ownerLevel" || (yield* allSeeMoney(orgId, input.viewer.people));
   const fielded = yield* fieldHits(
     orgId,
     hidden.length === 0 ? lists : new Map([...lists].filter(([id]) => !hidden.includes(id))),
     { ...input, lists: asked },
-    money,
   );
   const page = [
     ...(yield* sql<DateHit>`SELECT id, key, kind, at FROM (${hits})
@@ -234,7 +230,12 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   const rows =
     ids.length === 0
       ? []
-      : yield* sql<RecordRow>`${selectRecords(sql)}
+      : yield* sql<RecordRow>`${selectRecords(
+          sql,
+          input.viewer._tag === "ownerLevel"
+            ? sql``
+            : sql`, ${listMoneySeenBy(sql, input.viewer)} AS "listMoneyVisible"`,
+        )}
           WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(ids)} ORDER BY r.record_id`;
   const byId = new Map(rows.map((row) => [row.recordId, row]));
   return {
@@ -242,7 +243,7 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
     rows: page.flatMap((hit): ReadonlyArray<KinDateRow> => {
       const row = byId.get(hit.id);
       const def = row === undefined ? undefined : lists.get(row.registerId);
-      return row === undefined || def === undefined ? [] : [dateRow(row, def, hit, now, money)];
+      return row === undefined || def === undefined ? [] : [dateRow(row, def, hit, now)];
     }),
   };
 });
@@ -255,14 +256,8 @@ const dayLabel = (def: ListDef, row: RecordRow) =>
     ? "Date"
     : def.dateLabel;
 
-const dateRow = (
-  row: RecordRow,
-  def: ListDef,
-  hit: DateHit,
-  now: number,
-  money: boolean,
-): KinDateRow => ({
-  record: listEntryFor(toRecord(row, now), row.registerId, def, money),
+const dateRow = (row: RecordRow, def: ListDef, hit: DateHit, now: number): KinDateRow => ({
+  record: listEntryFor(toRecord(row, now), row.registerId, def, row.listMoneyVisible !== 0),
   listName: def.name,
   stateLabel: stateLabel(def, row.state),
   kind: hit.kind,

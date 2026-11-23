@@ -77,7 +77,6 @@ import {
   workFailure,
 } from "./recordRows.ts";
 import {
-  allSeeMoney,
   KIN_OWNER_LEVEL,
   TEAM_REFUSED,
   viewerOfPeople,
@@ -91,6 +90,7 @@ import {
   teamRecordIn,
   linkedFromOf,
   personSees,
+  recordFieldAccess,
   placesOf,
   teamLists,
   teamSeq,
@@ -463,9 +463,10 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
   const companyList = input.list !== undefined && !TEAM_LIST_RESERVED.includes(input.list);
   const moneyOff =
     viewer.teammate &&
-    (companyList ||
-      (typeof partyId === "string" && input.list !== undefined && !isBuiltIn(input.list))) &&
-    !(yield* allSeeMoney(input.orgId, [viewer.person.personId]).pipe(workFailure));
+    typeof partyId === "string" &&
+    input.list !== undefined &&
+    !isBuiltIn(input.list) &&
+    !(yield* placesOf(input.orgId, viewer.person.personId).pipe(workFailure)).money;
   const listOpen =
     moneyOff &&
     typeof partyId === "string" &&
@@ -532,11 +533,7 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
     at,
   };
   const byMove = input.byMove === true && (input.list === undefined || input.list === "work");
-  const nothing =
-    party.none ||
-    project.none ||
-    (moneyOff && typeof partyId === "string" && !listOpen) ||
-    (moneyOff && companyList && (input.paidFrom !== undefined || input.paidTo !== undefined));
+  const nothing = party.none || project.none || (moneyOff && !listOpen);
   const page = nothing
     ? {
         rows: [],
@@ -565,10 +562,7 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
         });
   // The sums are of every match and the same on each page, so only the first page pays for them.
   const totals =
-    nothing ||
-    (moneyOff && companyList) ||
-    input.totalsBy === undefined ||
-    input.cursor !== undefined
+    nothing || input.totalsBy === undefined || input.cursor !== undefined
       ? undefined
       : yield* records.totals(
           input.orgId,
@@ -583,7 +577,7 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
     nextCursor: next < page.total ? `o:${next}:${at}` : null,
     seq: page.seq,
     asOf: iso(at),
-    ...(totals === undefined ? {} : { totals: listTotals(totals) }),
+    ...(totals === undefined || totals.withheld === true ? {} : { totals: listTotals(totals) }),
     ...("moves" in page && page.moves !== undefined ? { moves: page.moves } : {}),
     ...("counts" in page && page.counts !== undefined ? { counts: page.counts } : {}),
   };
@@ -627,22 +621,16 @@ export const shownRecords = Effect.fn("KinWork.shownRecords")(function* (
     shown.some(
       ({ row, record }) => row.registerId === "work" && (record.party || record.project),
     ) && !(yield* sectionOnFor(orgId, "clients").pipe(workFailure));
-  const companyLists = new Set(
-    rows.map((row) => row.registerId).filter((id) => !TEAM_LIST_RESERVED.includes(id)),
+  const restricted = new Set(
+    rows.filter((row) => row.listMoneyVisible === 0).map((row) => row.registerId),
   );
-  const money =
-    !viewer.teammate ||
-    companyLists.size === 0 ||
-    (yield* allSeeMoney(orgId, [viewer.person.personId]).pipe(workFailure));
   const defs = new Map(
-    money
-      ? []
-      : yield* Effect.forEach(companyLists, (id) =>
-          listDef(orgId, id).pipe(
-            Effect.map((def) => [id, def] as const),
-            workFailure,
-          ),
-        ),
+    yield* Effect.forEach(restricted, (id) =>
+      listDef(orgId, id).pipe(
+        Effect.map((def) => [id, def] as const),
+        workFailure,
+      ),
+    ),
   );
   return shown.map(({ row, record: whole }): KinRecord => {
     // Only the task's own sheet sets a repeat or links, so its rows don't carry the answers.
@@ -660,7 +648,7 @@ export const shownRecords = Effect.fn("KinWork.shownRecords")(function* (
       Object.keys(fields).length === 0 ? record : { ...record, fields },
       row.registerId,
       defs.get(row.registerId),
-      money,
+      row.listMoneyVisible !== 0,
     );
   });
 });
@@ -806,10 +794,17 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   /** Their own write just made it private: they saw it until then, so the answer still reads. */
   justHidden = false,
 ) {
+  const access = viewer.teammate
+    ? yield* recordFieldAccess(
+        read.orgId,
+        viewerOfPeople([viewer.person.personId]),
+        read.recordId,
+      ).pipe(workFailure)
+    : undefined;
+  if (viewer.teammate && access === undefined && !justHidden)
+    return yield* notFound("key" in ref ? ref.key : "with that id");
   const withheld =
-    viewer.teammate &&
-    !TEAM_LIST_RESERVED.includes(row.registerId) &&
-    !(yield* allSeeMoney(read.orgId, [viewer.person.personId]).pipe(workFailure));
+    viewer.teammate && access?.full !== 1 && !TEAM_LIST_RESERVED.includes(row.registerId);
   const safe = withheld
     ? listEntryFor(
         read,
@@ -843,9 +838,6 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   };
   if (!viewer.teammate) return { ...detail, ...extras, can };
   const { personId } = viewer.person;
-  const seen = yield* teamVisible(detail.orgId, personId, [detail.recordId]).pipe(workFailure);
-  if (!seen.has(detail.recordId) && !justHidden)
-    return yield* notFound("key" in ref ? ref.key : "with that id");
   const number = seq ?? (yield* teamSeq(detail.orgId, personId).pipe(workFailure));
   const whole = !plainTask(row, yield* ledIds(viewer));
   // A client's terms and tax details are the owner's, whoever else sees its name; a contact's email

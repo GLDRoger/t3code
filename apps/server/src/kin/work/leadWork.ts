@@ -104,7 +104,6 @@ import {
   listOf,
   parseFields,
   shownField,
-  TEAM_LIST_RESERVED,
 } from "./lists.ts";
 import {
   addUp,
@@ -158,6 +157,7 @@ import {
 import { memberAdds, memberAddsContact, memberChangesContact } from "./ownerClients.ts";
 import {
   allSeeMoney,
+  recordFieldAccess,
   listLinksFor,
   crmSeenBy,
   crmVisible,
@@ -1114,7 +1114,6 @@ type Shown = {
   readonly lists: Lists;
   readonly keys: ReadonlyMap<string, string>;
   readonly zone: string;
-  readonly money: boolean;
   /** Clients, projects and link targets on these rows the turn's people may not name. */
   readonly unseen: ReadonlySet<string>;
 };
@@ -1123,11 +1122,6 @@ const viewFor = Effect.fn("KinWorkTools.view")(function* (
   rows: ReadonlyArray<RecordRow>,
 ) {
   const lists = yield* allLists(lead.orgId);
-  const team = yield* viewOf(lead);
-  const money =
-    team === undefined ||
-    !rows.some((row) => !TEAM_LIST_RESERVED.includes(row.registerId)) ||
-    (yield* allSeeMoney(lead.orgId, team.people));
   const links = linkIds(rows, lists);
   const unseen = yield* unseenOf(lead, [
     ...rows.flatMap((row) => [row.partyId, row.projectId]),
@@ -1142,7 +1136,6 @@ const viewFor = Effect.fn("KinWorkTools.view")(function* (
     lists,
     keys: yield* linkKeys(lead, links, unseen),
     zone: yield* ownerZone(lead.orgId),
-    money,
     unseen,
   } satisfies Shown;
 });
@@ -1204,7 +1197,7 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     { ...toRecord(row, now), fields: parseFields(row.fieldsJson) },
     list,
     def,
-    view.money,
+    row.listMoneyVisible !== 0,
   );
   const { sensitiveFields, ...marks } = marksOf(view.lists, row);
   const waitingOn = name(record.waitingOn);
@@ -1289,9 +1282,7 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...(list === "goals" ? goalShown(fields) : {}),
     ...(list === "work" ? stepsShown(row) : {}),
     ...marks,
-    ...(sensitiveFields !== undefined && (view.money || TEAM_LIST_RESERVED.includes(list))
-      ? { sensitiveFields }
-      : {}),
+    ...(sensitiveFields !== undefined && row.listMoneyVisible !== 0 ? { sensitiveFields } : {}),
     rev: record.rev,
   } as typeof Row.Type;
 };
@@ -2272,22 +2263,24 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
   const byExactKey = yield* records.get(lead.orgId, input.key);
-  const row = byExactKey ?? (yield* byNumber(lead.orgId, input.key));
-  if (row === undefined) return yield* notFound(input.key);
-  if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, row.recordId)))
-    return yield* notFound(input.key);
-  if (listOf(row.registerId) === "docs") return yield* isDoc(input.key);
+  const found = byExactKey ?? (yield* byNumber(lead.orgId, input.key));
+  if (found === undefined) return yield* notFound(input.key);
   const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const access =
+    team === undefined ? undefined : yield* recordFieldAccess(lead.orgId, viewer, found.recordId);
+  if (team !== undefined && access === undefined) return yield* notFound(input.key);
+  const row = { ...found, ...(access === undefined ? {} : { listMoneyVisible: access.full }) };
+  if (listOf(row.registerId) === "docs") return yield* isDoc(input.key);
   const view = yield* viewFor(lead, [row]);
   const def = defOf(view.lists, row);
+  const money = row.listMoneyVisible !== 0;
   if (
     byExactKey === undefined &&
-    !view.money &&
-    !TEAM_LIST_RESERVED.includes(row.registerId) &&
+    !money &&
     (def === undefined || sensitiveKeys(def).includes("number"))
   )
     return yield* notFound(input.key);
-  const safe = listEntryFor(yield* records.detail(row, 10), row.registerId, def, view.money);
+  const safe = listEntryFor(yield* records.detail(row, 10), row.registerId, def, money);
   const detail = {
     ...safe,
     links: yield* listLinksFor(lead.orgId, viewer, safe.links),

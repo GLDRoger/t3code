@@ -4854,6 +4854,61 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("keeps a project lead's legacy list fields and totals separate from the team grant", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* turn("mate", "shared");
+    const project = yield* ownerTask("Invented project", {
+      list: "projects",
+      owner: { _tag: "person", personId: arjun.personId },
+    });
+    const price = { minor: 123456, currency: "INR" };
+    const original = yield* book("Led booking", {
+      projectId: project.recordId,
+      amount: price,
+      fields: { note: "First", price },
+    });
+    const records = yield* KinRecords.KinRecords;
+    yield* records.update(orgId, ownerWrites, original.key, {
+      fields: { privateNote: "Original detail" },
+    });
+    const read = OwnerWork.get([arjun], { orgId, key: original.key });
+    const browse = (filter = {}) =>
+      OwnerWork.list([arjun], { ...bookings, totalsBy: "none", ...filter });
+    const page = yield* browse();
+    const sheet = yield* read;
+    assert.deepInclude(page.records[0], {
+      amount: price,
+      fields: { note: "First", price, privateNote: "Original detail" },
+    });
+    assert.include(JSON.stringify(sheet.changes), "Original detail");
+    assert.deepStrictEqual(page.totals?.total, [price]);
+    const scope = scopeOf(lead);
+    const legacyAgentSheet = yield* encodeGet(yield* LeadWork.get(scope, { key: original.key }));
+    assert.property(legacyAgentSheet.fields, "price");
+
+    yield* TestClock.adjust("1 millis");
+    yield* setBookingTeam(true, 1);
+    const opened = yield* book("Outside the project", {
+      amount: price,
+      fields: { note: "Second", price },
+    });
+    const mixed = yield* browse({ limit: 1 });
+    assert.notProperty(mixed, "totals");
+    assert.deepStrictEqual((yield* browse({ project: project.key })).totals, page.totals);
+    assert.deepStrictEqual((yield* read).fields, sheet.fields);
+    assert.deepStrictEqual((yield* read).changes, sheet.changes);
+    assert.deepStrictEqual((yield* OwnerWork.get([arjun], { orgId, key: opened.key })).fields, {
+      note: "Second",
+    });
+    const agentRows = yield* encodeQuery(yield* LeadWork.query(scope, { list: bookings.list }));
+    assert.property(agentRows.records?.find((row) => row.key === original.key)?.fields, "price");
+    assert.deepStrictEqual(agentRows.records?.find((row) => row.key === opened.key)?.fields, {
+      note: "Second",
+    });
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("withholds money fields, history and totals from a teammate and their agent", () =>
   Effect.gen(function* () {
     yield* bookingList();
@@ -4862,6 +4917,7 @@ it.effect("withholds money fields, history and totals from a teammate and their 
     const price = { minor: 987654, currency: "INR" };
     const amount = { minor: 234567, currency: "INR" };
     const record = yield* book("Published booking", {
+      team: true,
       amount,
       fields: { note: "Calendula", price, privateNote: "Concealed" },
     });

@@ -68,11 +68,18 @@ const listMoneyFor = (
   sql`(r.register_id IN ${sql.in(TEAM_LIST_RESERVED)} OR ${
     people.length === 0
       ? sql`0 = 1`
-      : sql.and(people.map((person) => placeOn(sql, person, "sees_money")))
+      : sql.and(
+          people.map(
+            (person) =>
+              sql`(${placeOn(sql, person, "sees_money")} OR ${legacyPersonSees(sql, person)})`,
+          ),
+        )
   })`;
 
 export const listMoneySeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
-  viewer._tag === "ownerLevel" ? sql`1 = 1` : listMoneyFor(sql, viewer.people);
+  viewer._tag === "ownerLevel"
+    ? sql`1 = 1`
+    : sql`CASE WHEN ${listMoneyFor(sql, viewer.people)} THEN 1 ELSE 0 END`;
 
 export const privateListField = (sql: SqlClient.SqlClient, key: string | Statement.Fragment) =>
   sql`EXISTS (SELECT 1 FROM kin_registers g, json_each(g.definition_json, '$.fields') spec
@@ -241,14 +248,12 @@ export const allSeeMoney = Effect.fn("KinTeamView.allSeeMoney")(function* (
 /**
  * What a non-owner-level person sees: a picture by `pictureReader` alone; else a task they hold, are
  * on, attend or marked private; what they made, gave or share; their projects' entries and docs;
- * their drafts; company docs with Docs on; with Clients on, the deals of clients they see; and
- * unlabelled entries from a team list's opening or made by the teammate.
+ * their drafts; company docs with Docs on; with Clients on, the deals of clients they see.
  */
-export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+const legacyPersonSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`(CASE WHEN ${isPicture(sql)} THEN ${pictureReader(sql, personId)}
   WHEN r.register_id = 'goals' AND ${targetless(sql)}
     THEN json_type(r.fields_json, '$.spec') IS NULL AND ${teamListRow(sql, personId)}
-  WHEN r.register_id NOT IN ${sql.in(TEAM_LIST_RESERVED)} AND ${teamListHidden(sql)} THEN 0
   ELSE ((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
       OR ${attends(sql, personId)} OR ${alsoOnIt(sql, personId)} OR r.marked_by_person_id = ${personId}
       OR (r.sensitive = 0 AND ((r.created_by_kind = 'person' AND r.created_by_id = ${personId})
@@ -267,8 +272,14 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
       AND ${placeOn(sql, personId, "sees_docs")})))
   OR (r.register_id = 'deals' AND NOT ${keySensitive(sql)}
     AND ${placeOn(sql, personId, "sees_clients")})
-  OR (r.register_id NOT IN ${sql.in(NOT_LISTS)}
-    AND (${teamListRow(sql, personId)} OR ${openedListRow(sql, personId)}))) END)`;
+  OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND ${teamListRow(sql, personId)})) END)`;
+
+export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+  sql`(CASE WHEN r.register_id NOT IN ${sql.in(TEAM_LIST_RESERVED)} AND ${teamListHidden(sql)}
+      THEN 0
+    ELSE (${legacyPersonSees(sql, personId)} OR
+      (r.register_id NOT IN ${sql.in(TEAM_LIST_RESERVED)} AND ${openedListRow(sql, personId)}))
+    END)`;
 
 /** Version `pv` of doc `r` as this person reads it: the doc, and a picture's version by its own rule. */
 export const docVersionSeen = (
@@ -480,6 +491,25 @@ export const keyedAs = (sql: SqlClient.SqlClient, viewer: KinViewer, alias = "r"
 /** Entries `r` this viewer sees. */
 export const seenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
   sql`(${viewer._tag === "ownerLevel" ? sql`1 = 1` : viewSees(sql, viewer.people)} AND ${keyedAs(sql, viewer)})`;
+
+export const legacySeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  viewer._tag === "ownerLevel"
+    ? sql`1 = 1`
+    : viewer.people.length === 0
+      ? sql`0 = 1`
+      : sql.and(viewer.people.map((person) => legacyPersonSees(sql, person)));
+
+export const recordFieldAccess = Effect.fn("KinTeamView.recordFieldAccess")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ full: number }>`SELECT ${listMoneySeenBy(sql, viewer)} AS full
+    FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id = ${recordId}
+      AND ${seenBy(sql, viewer)} LIMIT 1`;
+  return row;
+});
 
 /** Whether every one of these people may see this entry now. */
 export const viewVisible = Effect.fn("KinTeamView.viewVisible")(function* (

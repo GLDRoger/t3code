@@ -49,6 +49,7 @@ import { entryAfterReading } from "../lead/OutsideContent.ts";
 export type Principal = KinWorkPrincipal;
 export type Actor = KinWorkActor;
 export type RecordRow = {
+  readonly listMoneyVisible?: number;
   readonly orgId: string;
   readonly recordId: string;
   readonly registerId: string;
@@ -382,7 +383,7 @@ export const moneyDay = (sql: SqlClient.SqlClient) => sql`COALESCE(r.date_at, r.
  * The columns every read selects, with the derived ones: an old worker run, the last PR, the client
  * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
  */
-export const selectRecords = (sql: SqlClient.SqlClient) => sql`
+export const selectRecords = (sql: SqlClient.SqlClient, extra = sql``) => sql`
   SELECT r.org_id AS "orgId", r.record_id AS "recordId", r.register_id AS "registerId", r.key,
     r.title, r.state,
     r.waiting_on_kind AS "waitingOnKind", r.waiting_on_id AS "waitingOnId",
@@ -417,7 +418,7 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
         AND k.ended_at IS NULL) AS working,
     (SELECT l.target FROM kin_record_links l WHERE l.org_id = r.org_id
       AND l.record_id = r.record_id AND l.kind = 'pull_request'
-      ORDER BY l.created_at DESC, l.target LIMIT 1) AS "pullUrl"
+      ORDER BY l.created_at DESC, l.target LIMIT 1) AS "pullUrl"${extra}
   FROM kin_records r
   LEFT JOIN kin_records pa ON pa.org_id = r.org_id AND pa.record_id = r.party_id
   LEFT JOIN kin_records pj ON pj.org_id = r.org_id AND pj.record_id = r.project_id`;
