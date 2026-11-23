@@ -699,8 +699,8 @@ describe("pulse check-ins", () => {
           facts: 1,
         },
       );
-      assert.include(yield* morning(2), { _tag: "queued", facts: 1, outside: 1 });
-      assert.include(yield* morning(3), { _tag: "queued", facts: 1, outside: 1 });
+      assert.include(yield* morning(2), { _tag: "queued", facts: 2, outside: 1 });
+      assert.include(yield* morning(3), { _tag: "queued", facts: 2, outside: 1 });
       const briefs = yield* sql<{ key: string; state: string }>`SELECT dedupe_key AS key, state
         FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'checkin:checkin-morning:%'
         ORDER BY dedupe_key`;

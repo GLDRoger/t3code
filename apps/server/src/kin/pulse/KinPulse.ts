@@ -748,20 +748,48 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
       const muted = facts.filter((fact) => quiet(fact, shell, onDeals));
       if (muted.length > 0) yield* markQuiet(ctx, muted);
       const woken: Array<string> = [];
+      const latestWakeKeys = facts.flatMap((fact) => {
+        const wokeAt = stored.get(fact.key)?.wokeAt;
+        return fact.wake === "now" && wokeAt != null && !quiet(fact, shell, onDeals)
+          ? [`${fact.key}:${wokeAt}`]
+          : [];
+      });
+      const failedWakes = new Set<string>();
+      for (let start = 0; start < latestWakeKeys.length; start += 500)
+        for (const row of yield* sql<{ key: string }>`SELECT dedupe_key AS key FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'pulse' AND state = 'failed'
+            AND dedupe_key IN ${sql.in(latestWakeKeys.slice(start, start + 500))}
+          ORDER BY dedupe_key`)
+          failedWakes.add(row.key);
       for (const fact of facts) {
         if (quiet(fact, shell, onDeals)) continue;
         const row = stored.get(fact.key);
         if (fact.wake !== "now" || fact.actor._tag !== "agent") continue;
-        if (row === undefined || row.wokeAt !== null || handledOf(row, at, fact) !== null) continue;
+        if (row === undefined || handledOf(row, at, fact) !== null) continue;
+        const personId = agentParty(fact.actor.agentId);
+        const delivery = {
+          orgId,
+          personId,
+          at,
+          zone: ctx.zone,
+          facts: [{ ...fact, handled: null }],
+        };
+        if (
+          row.wokeAt !== null &&
+          (!failedWakes.has(`${fact.key}:${row.wokeAt}`) ||
+            (yield* untold({ ...delivery, anyState: true })).length === 0)
+        )
+          continue;
         // Set aside: it wakes no one; when the hold ends, the check-in tells it once.
         if (asideOf(fact, holds, { _tag: "owner" }) !== undefined) continue;
+        const eventId = KinEventId.make(`pulse-${shortHash(`${orgId}\0${fact.key}\0${at}`)}`);
         const enqueued = yield* queue
           .enqueue(
             yield* decodeEvent({
               _tag: "pulse",
               orgId,
               // A fact that comes back wakes anew: `woke_at` keeps a fact from waking twice.
-              eventId: KinEventId.make(`pulse-${shortHash(`${orgId}\0${fact.key}\0${at}`)}`),
+              eventId,
               agentId: fact.actor.agentId,
               receivedAt: DateTime.formatIso(iso(at)),
               dedupeKey: `${fact.key}:${at}`,
@@ -783,6 +811,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
             }),
           );
         if (!enqueued) continue;
+        yield* markTold({ ...delivery, eventId });
         yield* sql`UPDATE kin_pulse_facts SET woke_at = ${at}
           WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
         woken.push(fact.key);
