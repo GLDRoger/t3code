@@ -10,7 +10,12 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinCanvasDetail, kinCanvasFit, kinCanvasZoom } from "./kinCanvasCamera.ts";
+import {
+  kinCanvasClampScale,
+  kinCanvasDetail,
+  kinCanvasFit,
+  kinCanvasZoom,
+} from "./kinCanvasCamera.ts";
 import { kinCanvasLayout, kinCanvasOverlaps } from "./kinCanvasLayout.ts";
 import { kinCanvasModel } from "./kinCanvasView.ts";
 import type { KinWorkNames } from "./kinWork.ts";
@@ -139,14 +144,15 @@ describe("canvas camera", () => {
     expect((600 - 400) / cam.scale + cam.x).toBeCloseTo(200);
   });
 
-  it("reads a card in place once it is about as wide as a phone, sooner than on a wide screen", () => {
-    expect(kinCanvasDetail(0.1, 390)).toBe("dots");
-    expect(kinCanvasDetail(0.4, 390)).toBe("titles");
-    expect(kinCanvasDetail(1, 390)).toBe("cards");
-    expect(kinCanvasDetail(1.45, 390)).toBe("cards");
-    expect(kinCanvasDetail(1.5, 390)).toBe("near");
-    expect(kinCanvasDetail(1.5, 1440)).toBe("cards");
+  it("reads a card in place once it fills most of a phone, and never zooms past one card's width", () => {
+    expect(kinCanvasDetail(0.1, 402)).toBe("dots");
+    expect(kinCanvasDetail(0.4, 402)).toBe("titles");
+    expect(kinCanvasDetail(1, 402)).toBe("cards");
+    expect(kinCanvasDetail(1.3, 402)).toBe("near");
+    expect(kinCanvasDetail(1.3, 1440)).toBe("cards");
     expect(kinCanvasDetail(1.6, 1440)).toBe("near");
+    expect(kinCanvasClampScale(9, 402)).toBeCloseTo((402 - 24) / 240);
+    expect(kinCanvasClampScale(9, 1440)).toBe(2.5);
   });
 });
 

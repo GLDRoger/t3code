@@ -132,8 +132,8 @@ export type KinDocPoint = (ref: KinMessageRef, intent: KinDocAsk) => void;
 const FILE_IMAGE = "#kin-file:";
 // The sanitizer drops a source with a scheme it doesn't know; a fragment reaches the renderer,
 // which loads nothing else from one.
-const fileImageSource = (id: string) => `${FILE_IMAGE}${id}`;
-const fileImageAttachment = (src: string) =>
+export const fileImageSource = (id: string) => `${FILE_IMAGE}${id}`;
+export const fileImageAttachment = (src: string) =>
   src.startsWith(FILE_IMAGE) ? kinDocFileId(src.slice(1)) : null;
 
 /**

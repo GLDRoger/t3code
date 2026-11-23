@@ -40,17 +40,12 @@ export class KinCanvasController {
   private listeners = new Set<KinCanvasFrameListener>();
   private settleListeners = new Set<(camera: KinCanvasCamera) => void>();
 
-  /** A moment after it stops moving: save the view, rework detail. */
+  /** A moment after it stops moving: sharpen the text and rework detail. */
   settled(listener: (camera: KinCanvasCamera) => void) {
     this.settleListeners.add(listener);
     return () => {
       this.settleListeners.delete(listener);
     };
-  }
-
-  /** Someone chose this view (or it was restored): resizes no longer refit it. */
-  keep() {
-    this.touched = true;
   }
 
   listen(listener: KinCanvasFrameListener) {
@@ -69,7 +64,7 @@ export class KinCanvasController {
 
   set(camera: KinCanvasCamera) {
     this.flight = null;
-    this.camera = { ...camera, scale: kinCanvasClampScale(camera.scale) };
+    this.camera = { ...camera, scale: kinCanvasClampScale(camera.scale, this.width) };
     this.mark();
   }
 
@@ -89,7 +84,7 @@ export class KinCanvasController {
 
   flyTo(target: KinCanvasCamera) {
     this.touched = true;
-    const to = { ...target, scale: kinCanvasClampScale(target.scale) };
+    const to = { ...target, scale: kinCanvasClampScale(target.scale, this.width) };
     if (reducedMotion()) return this.set(to);
     this.flight = {
       from: this.camera,

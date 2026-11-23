@@ -215,7 +215,8 @@ export function AppBar(props: AppBarProps) {
                       onCancelButtonPress: () => reportSearchText(""),
                     },
               }
-            : undefined),
+            : // Options merge: a bar without search on a screen that had one must clear it.
+              { headerSearchBarOptions: undefined }),
         }}
       />
       {props.onClose ? (

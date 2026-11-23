@@ -50,7 +50,7 @@ export function useCanvasCamera(
   };
   const set = (camera: KinCanvasCamera) => {
     stop();
-    const to = { ...camera, scale: kinCanvasClampScale(camera.scale) };
+    const to = { ...camera, scale: kinCanvasClampScale(camera.scale, width.get()) };
     x.set(to.x);
     y.set(to.y);
     scale.set(to.scale);
@@ -63,7 +63,7 @@ export function useCanvasCamera(
   };
   const flyTo = (target: KinCanvasCamera) => {
     moved.set(true);
-    const to = { ...target, scale: kinCanvasClampScale(target.scale) };
+    const to = { ...target, scale: kinCanvasClampScale(target.scale, width.get()) };
     if (reduceMotion) return set(to);
     stop();
     const timing = {

@@ -119,6 +119,8 @@ export interface KinPlaceSearch {
   tab?: "deals" | "projects";
   /** Tasks opens narrowed to what this person holds, as their page's "See all in Tasks" asks. */
   person?: KinPersonId;
+  /** Docs shown as the map instead of the list. */
+  view?: "map";
 }
 
 /** `import` is Clients' Import a file, which opens in the place itself. */
@@ -172,6 +174,7 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
       : {}),
     ...(raw.tab === "projects" || raw.tab === "deals" ? { tab: raw.tab } : {}),
     ...(isPerson(raw.person) ? { person: raw.person } : {}),
+    ...(raw.view === "map" ? { view: "map" as const } : {}),
   };
 }
 

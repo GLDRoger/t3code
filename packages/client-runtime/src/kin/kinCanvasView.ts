@@ -27,6 +27,7 @@ export const KIN_CANVAS = {
   allOpen: "All open",
   agentWorking: "An agent is working on it now",
   loadFailed: "Couldn't load the map",
+  loadFailedDetail: "Tasks and docs didn't come through. Retry to read them again.",
   readFailed: "Couldn't load this doc",
   offlineTitle: "You're offline",
   offlineDetail: "The map comes back when the connection does.",
@@ -188,7 +189,11 @@ export function kinCanvasModel(input: {
       status: "Doc",
       working: false,
       holder: null,
-      summary: doc.latest.summary.trim() === "" ? null : doc.latest.summary,
+      // A first version's line only says it was made, which the card already shows.
+      summary:
+        doc.latest.kind === "created" || doc.latest.summary.trim() === ""
+          ? null
+          : doc.latest.summary,
       accessibilityLabel: `Doc ${doc.key}: ${doc.title}. Kept by ${kinMidSentence(keeper)}, updated ${changed}`,
     });
     add(areaOf(doc), doc.key);

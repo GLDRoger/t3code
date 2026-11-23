@@ -22,6 +22,8 @@ import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { EnvironmentId, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { Atom } from "effect/reactivity";
+import { useState } from "react";
 import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -32,6 +34,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { KinDocsList } from "./KinDocsList";
+import { KinDocsMap } from "./KinDocsMap";
 import { KinTasksList } from "./KinTasksList";
 import { KinClientsList } from "./KinWorkLists";
 import { KinMoneyArea } from "./KinWorkMoney";
@@ -255,7 +258,7 @@ export function KinPlace(
         </KinWorkMessage>
       );
     }
-    if (place.place === "docs") return <KinDocsList {...shared} />;
+    if (place.place === "docs") return <KinDocsPlace {...shared} />;
     if (place.place === "clients") return <KinClientsList {...shared} projects={place.projects} />;
     if (place.place === "money") return <KinMoneyArea {...shared} />;
     return (
@@ -299,5 +302,29 @@ export function KinPlace(
         </View>
       )}
     </KinWorkMessage>
+  );
+}
+
+/** Which of Docs' two views each company's Docs shows, kept while the app runs. */
+const kinDocsViewAtom = Atom.family((_company: string) =>
+  Atom.make<"list" | "map">("list").pipe(Atom.keepAlive),
+);
+
+/** Docs, as the list or as the map of what's being worked on; the bar switches between them. */
+function KinDocsPlace(props: React.ComponentProps<typeof KinDocsList>) {
+  const held = kinDocsViewAtom(`${props.environmentId}:${props.orgId}`);
+  const [view, setView] = useState(() => appAtomRegistry.get(held));
+  const choose = (next: "list" | "map") => {
+    appAtomRegistry.set(held, next);
+    setView(next);
+  };
+  return view === "map" ? (
+    <KinDocsMap
+      environmentId={props.environmentId}
+      orgId={props.orgId}
+      onList={() => choose("list")}
+    />
+  ) : (
+    <KinDocsList {...props} onMap={() => choose("map")} />
   );
 }

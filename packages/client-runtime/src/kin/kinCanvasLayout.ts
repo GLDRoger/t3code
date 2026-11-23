@@ -2,7 +2,7 @@ import type { KinCanvasBox } from "./kinCanvasCamera.ts";
 
 export const KIN_CANVAS_CARD_W = 240;
 export const KIN_CANVAS_CARD_H = 132;
-export const KIN_CANVAS_GAP = 24;
+const KIN_CANVAS_GAP = 24;
 const GROUP_PAD = 24;
 const GROUP_HEAD = 52;
 const GROUP_GAP = 96;
@@ -40,7 +40,7 @@ export interface KinCanvasLayout {
 export const kinCanvasOverlaps = (a: KinCanvasBox, b: KinCanvasBox, pad = 0) =>
   a.x < b.x + b.w + pad && a.x + a.w + pad > b.x && a.y < b.y + b.h + pad && a.y + a.h + pad > b.y;
 
-export function kinCanvasUnion(boxes: Iterable<KinCanvasBox>): KinCanvasBox | null {
+function kinCanvasUnion(boxes: Iterable<KinCanvasBox>): KinCanvasBox | null {
   let x0 = Infinity;
   let y0 = Infinity;
   let x1 = -Infinity;

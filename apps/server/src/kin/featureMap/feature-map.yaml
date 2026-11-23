@@ -1048,6 +1048,17 @@ features:
       - apps/server/src/kin/work/docs.test.ts
       - packages/client-runtime/src/kin/kinDocs.test.ts
 
+  - id: docs-map
+    name: See what is being worked on as a map, grouped by project, and read a card in place
+    tab: docs
+    web: [docs, "?view"]
+    phone: [tab:docs, button:Map]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      Read only, from the viewer's own Work and Docs reads: tasks in progress (or all open) and
+      docs, up to 300 tasks and 400 docs, saying where it stops.
+    proof: [packages/client-runtime/src/kin/kinCanvas.test.ts]
+
   - id: doc
     name: Read and write a doc
     tab: docs

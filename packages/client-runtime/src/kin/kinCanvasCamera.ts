@@ -24,8 +24,19 @@ export const KIN_CANVAS_MIN_SCALE = 0.08;
 export const KIN_CANVAS_MAX_SCALE = 2.5;
 const NO_INSETS: KinCanvasInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 
-export const kinCanvasClampScale = (scale: number) =>
-  Math.min(KIN_CANVAS_MAX_SCALE, Math.max(KIN_CANVAS_MIN_SCALE, scale));
+/** A card's width in canvas units, which the closest zooms measure against the screen. */
+const CARD_W = 240;
+
+/** Where a card starts to read in place: about three quarters of the screen's width. */
+export const kinCanvasNearScale = (width: number) =>
+  Math.max(1, Math.min(1.6, (width * 0.75) / CARD_W));
+
+/** The closest a screen zooms: one card just fitting its width, on a phone; a wide screen stops sooner. */
+export const kinCanvasMaxScale = (width = Infinity) =>
+  Math.max(kinCanvasNearScale(width) * 1.15, Math.min(KIN_CANVAS_MAX_SCALE, (width - 24) / CARD_W));
+
+export const kinCanvasClampScale = (scale: number, width?: number) =>
+  Math.min(kinCanvasMaxScale(width), Math.max(KIN_CANVAS_MIN_SCALE, scale));
 
 /** The camera that shows `box` in the part of a `width` × `height` screen the chrome leaves free. */
 export function kinCanvasFit(
@@ -40,7 +51,7 @@ export function kinCanvasFit(
   const h = height - insets.top - insets.bottom - pad * 2;
   if (box.w <= 0 || box.h <= 0 || w <= 0 || h <= 0)
     return { x: box.x + box.w / 2, y: box.y + box.h / 2, scale: 1 };
-  const scale = kinCanvasClampScale(Math.min(w / box.w, h / box.h, maxScale));
+  const scale = kinCanvasClampScale(Math.min(w / box.w, h / box.h, maxScale), width);
   return {
     x: box.x + box.w / 2 - (insets.left - insets.right) / 2 / scale,
     y: box.y + box.h / 2 - (insets.top - insets.bottom) / 2 / scale,
@@ -86,7 +97,7 @@ export function kinCanvasZoom(
   width: number,
   height: number,
 ): KinCanvasCamera {
-  const scale = kinCanvasClampScale(camera.scale * factor);
+  const scale = kinCanvasClampScale(camera.scale * factor, width);
   const at = kinCanvasToWorld(camera, width, height, sx, sy);
   return { scale, x: at.x - (sx - width / 2) / scale, y: at.y - (sy - height / 2) / scale };
 }
@@ -121,8 +132,8 @@ export const kinCanvasTweenMs = (from: KinCanvasCamera, to: KinCanvasCamera) =>
 
 /**
  * How much a card says at a zoom. `dots`: only its colour. `titles`: key and title. `cards`: the
- * whole card. `near`: the card is about as wide as the screen, so it shows what it says (a doc's
- * text, a task's notes) to read in place. `width` is the screen's, in points.
+ * whole card. `near`: the card fills most of the screen's width, so it shows what it says (a doc's
+ * text) to read in place. `width` is the screen's, in points.
  */
 export type KinCanvasDetail = "dots" | "titles" | "cards" | "near";
 export const kinCanvasDetail = (scale: number, width = Infinity): KinCanvasDetail =>
@@ -130,9 +141,6 @@ export const kinCanvasDetail = (scale: number, width = Infinity): KinCanvasDetai
     ? "dots"
     : scale < 0.55
       ? "titles"
-      : scale < Math.max(1.1, Math.min(1.6, (width - 32) / KIN_CANVAS_NEAR_CARD_W))
+      : scale < kinCanvasNearScale(width)
         ? "cards"
         : "near";
-
-/** A card's width in canvas units, which `near` measures against the screen. */
-const KIN_CANVAS_NEAR_CARD_W = 240;

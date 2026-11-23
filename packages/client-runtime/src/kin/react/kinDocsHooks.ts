@@ -310,3 +310,4 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
     useKinSearch,
   };
 }
+export type KinDocsHooks = ReturnType<typeof makeKinDocsHooks>;

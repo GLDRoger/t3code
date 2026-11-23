@@ -1,97 +1,175 @@
-import { kinCanvasDetail } from "@t3tools/client-runtime/kin/kinCanvasCamera";
-import { kinCanvasSnap, type KinCanvasLayout } from "@t3tools/client-runtime/kin/kinCanvasLayout";
+import {
+  kinCanvasDetail,
+  kinCanvasVisible,
+  type KinCanvasCamera,
+  type KinCanvasDetail,
+} from "@t3tools/client-runtime/kin/kinCanvasCamera";
+import { kinDocPieces } from "@t3tools/client-runtime/kin/kinDocs";
+import { kinDocMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
+import {
+  kinCanvasOverlaps,
+  type KinCanvasLayout,
+} from "@t3tools/client-runtime/kin/kinCanvasLayout";
 import {
   KIN_CANVAS,
   type KinCanvasCardView,
   type KinCanvasModel,
-  type KinCanvasWidgetView,
+  type KinCanvasTone,
 } from "@t3tools/client-runtime/kin/kinCanvasView";
-import type { KinRecordState } from "@t3tools/contracts";
-import {
-  CalendarClockIcon,
-  FileTextIcon,
-  GaugeIcon,
-  ListTodoIcon,
-  MoreHorizontalIcon,
-} from "lucide-react";
-import { memo, useEffect, useRef, type ReactNode } from "react";
+import { kinWorkAvatar } from "@t3tools/client-runtime/kin/kinWork";
+import type { KinRecordKey, KinRecordState, KinWorkPrincipal } from "@t3tools/contracts";
+import { BotIcon, FileTextIcon } from "lucide-react";
+import { memo, startTransition, useEffect, useRef, useState } from "react";
 
+import ChatMarkdown from "../../components/ChatMarkdown";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { observeResize } from "../../lib/observeResize";
 import { cn } from "../../lib/utils";
+import { KinAvatar } from "../KinAvatar";
+import { fileImageAttachment, fileImageSource } from "../KinDocReader";
 import { KinWorkStateIcon } from "../KinWorkStateIcon";
+import { useKinDoc } from "../useKinDocs";
+import type { KinWorkTarget } from "../useKinWork";
 import { attachKinCanvasGestures, type KinCanvasController } from "./kinCanvasController";
 
-export interface KinCanvasBoardProps {
-  readonly controller: KinCanvasController;
-  readonly layout: KinCanvasLayout;
-  readonly model: KinCanvasModel;
-  readonly selected: ReadonlySet<string>;
-  readonly peek: string | null;
-  readonly highlight: ReadonlySet<string>;
-  /** Cards glide to a lens's places and back; never while dragging or panning. */
-  readonly gliding: boolean;
-  readonly canArrange: boolean;
-  /** Groups are projects (not a lens's columns), so each has a menu. */
-  readonly groupMenus: boolean;
-  readonly onPeek: (key: string | null) => void;
-  readonly onToggleSelect: (key: string) => void;
-  readonly onMove: (key: string, x: number, y: number) => void;
-  readonly onGroup: (key: string | null, anchor: HTMLElement) => void;
-  /** The board has a size for the first time: place the camera. */
-  readonly onSized: (width: number, height: number) => void;
-  readonly children?: ReactNode;
-}
+/** Docs read whole at the nearest zoom at once, nearest the middle first. */
+const NEAR_READS = 3;
+/** How far past the screen cards stay mounted, as a share of the screen, so small pans add none. */
+const CULL_MARGIN = 0.5;
+/** Text read in place stops about here; the peek has the rest. */
+const NEAR_TEXT = 3000;
 
-const STATE_OF_TONE: Record<KinCanvasCardView["tone"], KinRecordState | null> = {
+const STATE_OF_TONE: Record<KinCanvasTone, KinRecordState | null> = {
   late: "open",
-  done: "done",
   doing: "doing",
   waiting: "waiting",
   open: "open",
+  done: "done",
   doc: null,
 };
 
-const WIDGET_ICON = { progress: GaugeIcon, facts: ListTodoIcon, countdown: CalendarClockIcon };
+const TONE_FILL: Record<KinCanvasTone, string> = {
+  late: "bg-destructive/70",
+  doing: "bg-info/70",
+  waiting: "bg-warning/70",
+  open: "bg-muted-foreground/40",
+  done: "bg-success/40",
+  doc: "bg-primary/45",
+};
 
-/** Writes the camera onto the world and tells the cards how much to say, without rendering. */
-function useCameraWriter(
-  controller: KinCanvasController,
-  viewport: React.RefObject<HTMLDivElement | null>,
-  world: React.RefObject<HTMLDivElement | null>,
-  onSized: (width: number, height: number) => void,
-) {
+/** How much bigger than the card's own type labels are drawn, so they stay readable zoomed out. */
+const inflation = (detail: KinCanvasDetail, scale: number) =>
+  detail === "dots" ? Math.min(5, 1 / scale) : detail === "titles" ? Math.min(3.2, 1 / scale) : 1;
+
+const sameKeys = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) =>
+  a.length === b.length && a.every((key, i) => key === b[i]);
+
+export interface KinCanvasBoardProps extends KinWorkTarget {
+  readonly controller: KinCanvasController;
+  readonly layout: KinCanvasLayout;
+  readonly model: KinCanvasModel;
+  readonly holders: ReadonlyMap<string, KinWorkPrincipal>;
+  readonly peek: string | null;
+  readonly onPeek: (key: string | null) => void;
+  readonly onOpen: (key: string) => void;
+  /** The board has a size: place the camera. */
+  readonly onSized: (width: number, height: number) => void;
+}
+
+/**
+ * The map's surface. The camera moves one transform per frame; cards mount only near the screen,
+ * and how much each says changes only when the zoom crosses a step.
+ */
+export function KinCanvasBoard(props: KinCanvasBoardProps) {
+  const viewport = useRef<HTMLDivElement | null>(null);
+  const world = useRef<HTMLDivElement | null>(null);
+  const { controller, layout, model, onSized } = props;
+  const [detail, setDetail] = useState<KinCanvasDetail>("cards");
+  const [shown, setShown] = useState<ReadonlyArray<string>>([]);
+  const [reading, setReading] = useState<ReadonlyArray<string>>([]);
+  const held = useRef({ shown, reading, detail });
+
+  // `given` is the layout just drawn; from a camera frame, the latest one.
+  const recull = useStableCallback(
+    (camera: KinCanvasCamera, width: number, height: number, given?: KinCanvasLayout) => {
+      if (width === 0) return;
+      const view = kinCanvasVisible(camera, width, height);
+      const margin = Math.max(view.w, view.h) * CULL_MARGIN;
+      const near = {
+        x: view.x - margin,
+        y: view.y - margin,
+        w: view.w + margin * 2,
+        h: view.h + margin * 2,
+      };
+      const next: string[] = [];
+      const docs: Array<{ key: string; d: number }> = [];
+      const step = kinCanvasDetail(camera.scale, width);
+      for (const box of (given ?? layout).cards.values()) {
+        if (!kinCanvasOverlaps(box, near)) continue;
+        next.push(box.key);
+        if (
+          step === "near" &&
+          model.cards.get(box.key)?.kind === "doc" &&
+          kinCanvasOverlaps(box, view)
+        )
+          docs.push({
+            key: box.key,
+            d: Math.hypot(box.x + box.w / 2 - camera.x, box.y + box.h / 2 - camera.y),
+          });
+      }
+      const read = docs
+        .sort((a, b) => a.d - b.d)
+        .slice(0, NEAR_READS)
+        .map((doc) => doc.key)
+        .sort();
+      if (!sameKeys(held.current.shown, next)) {
+        held.current.shown = next;
+        startTransition(() => setShown(next));
+      }
+      if (!sameKeys(held.current.reading, read)) {
+        held.current.reading = read;
+        startTransition(() => setReading(read));
+      }
+    },
+  );
+
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes the DOM to the camera, which lives outside React and moves every frame
   useEffect(() => {
     const el = viewport.current;
     const inner = world.current;
     if (el === null || inner === null) return;
-    // Type that stays readable zoomed out is resized when the detail changes or the camera rests,
-    // never per frame: at full detail it is the card's own size.
-    const invert = (scale: number) =>
-      inner.style.setProperty(
-        "--kc-inv",
-        kinCanvasDetail(scale) === "cards" ? "1" : String(Math.min(3.2, 1 / scale)),
-      );
+    // Type is resized when the zoom crosses a step or the camera rests, never per frame.
+    const retype = (camera: KinCanvasCamera, step: KinCanvasDetail) => {
+      inner.style.setProperty("--kc-inv", String(inflation(step, camera.scale)));
+      inner.style.setProperty("--kc-zoom", String(camera.scale));
+    };
     const stopFrames = controller.listen((camera, width, height) => {
       const tx = width / 2 - camera.x * camera.scale;
       const ty = height / 2 - camera.y * camera.scale;
       inner.style.transform = `translate3d(${tx}px, ${ty}px, 0) scale(${camera.scale})`;
-      const detail = kinCanvasDetail(camera.scale);
-      if (el.dataset.detail !== detail) {
-        el.dataset.detail = detail;
-        invert(camera.scale);
+      inner.style.willChange = "transform";
+      const step = kinCanvasDetail(camera.scale, width);
+      if (held.current.detail !== step) {
+        held.current.detail = step;
+        retype(camera, step);
+        startTransition(() => setDetail(step));
       }
+      recull(camera, width, height);
     });
-    const stopSettle = controller.settled((camera) => invert(camera.scale));
+    // At rest the layer is drawn again at its real size, so text is sharp.
+    const stopSettle = controller.settled((camera) => {
+      inner.style.willChange = "auto";
+      retype(camera, kinCanvasDetail(camera.scale, controller.width));
+    });
     let sized = false;
     const stopResize = observeResize(el, ([entry]) => {
       if (entry === undefined) return;
-      controller.resize(entry.contentRect.width, entry.contentRect.height);
+      const { width, height } = entry.contentRect;
+      controller.resize(width, height);
       // Until someone moves it, the view keeps fitting the board as the window changes.
-      if (entry.contentRect.width > 0 && (!sized || !controller.touched)) {
+      if (width > 0 && (!sized || !controller.touched)) {
         sized = true;
-        onSized(entry.contentRect.width, entry.contentRect.height);
+        onSized(width, height);
       }
     });
     return () => {
@@ -99,104 +177,50 @@ function useCameraWriter(
       stopSettle();
       stopResize();
     };
-  }, [controller, viewport, world, onSized]);
-}
+  }, [controller, recull, onSized]);
 
-export function KinCanvasBoard(props: KinCanvasBoardProps) {
-  const viewport = useRef<HTMLDivElement | null>(null);
-  const world = useRef<HTMLDivElement | null>(null);
-  const { controller, canArrange } = props;
-  useCameraWriter(controller, viewport, world, props.onSized);
-
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- binds pointer and wheel gestures on the canvas element to the camera
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- binds pointer and wheel gestures on the map element to the camera
   useEffect(() => {
     const el = viewport.current;
     if (el === null) return;
-    return attachKinCanvasGestures(el, controller, (target) => {
-      if (target.closest("[data-canvas-control]")) return false;
-      return !(canArrange && target.closest("[data-canvas-card]"));
-    });
-  }, [controller, canArrange]);
+    return attachKinCanvasGestures(el, controller, () => true);
+  }, [controller]);
 
-  const justDragged = useRef<string | null>(null);
-  const drag = useRef<{
-    key: string;
-    el: HTMLElement;
-    startX: number;
-    startY: number;
-    left: number;
-    top: number;
-    moved: boolean;
-    pointerId: number;
-  } | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- new rows move cards, so which are near the screen is worked out again against the camera
+  useEffect(() => {
+    recull(controller.camera, controller.width, controller.height, layout);
+  }, [layout, controller, recull]);
 
   // Stable, so a board render doesn't render every card again; the card names itself by data-key.
-  const onCardDown = useStableCallback((event: React.PointerEvent<HTMLElement>) => {
-    if (!canArrange || event.button !== 0 || event.shiftKey || event.metaKey || event.ctrlKey)
-      return;
-    const key = event.currentTarget.dataset.key ?? "";
-    const box = props.layout.cards.get(key);
+  const keyOf = (event: React.SyntheticEvent<HTMLElement>) =>
+    event.currentTarget.closest<HTMLElement>("[data-canvas-card]")?.dataset.key ?? "";
+  const onCardClick = useStableCallback((event: React.MouseEvent<HTMLElement>) =>
+    props.onPeek(keyOf(event)),
+  );
+  const onCardOpen = useStableCallback((event: React.MouseEvent<HTMLElement>) =>
+    props.onOpen(keyOf(event)),
+  );
+  const onCardKey = useStableCallback((event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    props.onOpen(keyOf(event));
+  });
+  // A card reached by keyboard comes into view.
+  const onCardFocus = useStableCallback((event: React.FocusEvent<HTMLElement>) => {
+    if (!event.currentTarget.matches(":focus-visible")) return;
+    const box = layout.cards.get(keyOf(event));
     if (box === undefined) return;
-    drag.current = {
-      key,
-      el: event.currentTarget,
-      startX: event.clientX,
-      startY: event.clientY,
-      left: box.x,
-      top: box.y,
-      moved: false,
-      pointerId: event.pointerId,
-    };
-  });
-  const onCardMove = useStableCallback((event: React.PointerEvent<HTMLElement>) => {
-    const held = drag.current;
-    if (held === null || held.pointerId !== event.pointerId) return;
-    const dx = event.clientX - held.startX;
-    const dy = event.clientY - held.startY;
-    if (!held.moved && Math.hypot(dx, dy) < 5) return;
-    if (!held.moved) {
-      held.moved = true;
-      held.el.setPointerCapture(event.pointerId);
-      held.el.dataset.dragging = "";
-    }
-    const scale = controller.camera.scale;
-    held.el.style.transform = `translate(${held.left + dx / scale}px, ${held.top + dy / scale}px)`;
-  });
-  const onCardCancel = useStableCallback(() => {
-    const held = drag.current;
-    drag.current = null;
-    if (held === null || !held.moved) return;
-    delete held.el.dataset.dragging;
-    held.el.style.transform = `translate(${held.left}px, ${held.top}px)`;
-  });
-  const onCardUp = useStableCallback((event: React.PointerEvent<HTMLElement>) => {
-    const held = drag.current;
-    drag.current = null;
-    if (held === null || !held.moved) return;
-    delete held.el.dataset.dragging;
-    const scale = controller.camera.scale;
-    const at = kinCanvasSnap(
-      held.left + (event.clientX - held.startX) / scale,
-      held.top + (event.clientY - held.startY) / scale,
-    );
-    held.el.style.transform = `translate(${at.x}px, ${at.y}px)`;
-    // The click that ends a drag doesn't open the card.
-    justDragged.current = held.key;
-    setTimeout(() => {
-      justDragged.current = null;
-    }, 0);
-    props.onMove(held.key, at.x, at.y);
-  });
-  const onCardClick = useStableCallback((event: React.MouseEvent<HTMLElement>) => {
-    const key = event.currentTarget.dataset.key ?? "";
-    if (justDragged.current === key) return;
-    if (event.shiftKey || event.metaKey || event.ctrlKey) props.onToggleSelect(key);
-    else props.onPeek(key);
+    const { camera, width, height } = controller;
+    if (kinCanvasOverlaps(box, kinCanvasVisible(camera, width, height), -box.w / 2)) return;
+    controller.flyTo({
+      x: box.x + box.w / 2,
+      y: box.y + box.h / 2,
+      scale: Math.max(camera.scale, 0.6),
+    });
   });
 
   const onKeyDown = (event: React.KeyboardEvent) => {
-    if ((event.target as HTMLElement).closest("[data-canvas-card]") && event.key === "Enter")
-      return;
+    if (event.target !== event.currentTarget) return;
     const step = 80;
     const keys: Record<string, () => void> = {
       ArrowLeft: () => controller.panBy(step, 0),
@@ -206,7 +230,6 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
       "+": () => controller.zoomAt(1.25),
       "=": () => controller.zoomAt(1.25),
       "-": () => controller.zoomAt(0.8),
-      Escape: () => props.onPeek(null),
     };
     const run = keys[event.key];
     if (run === undefined || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -214,261 +237,291 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
     run();
   };
 
+  const readSet = new Set(reading);
   return (
     <div
       ref={viewport}
       role="application"
       aria-label={KIN_CANVAS.title}
-      aria-roledescription="canvas"
+      aria-roledescription="map"
       tabIndex={0}
       onKeyDown={onKeyDown}
       onClick={(event) => {
         if (event.target === event.currentTarget || event.target === world.current)
           props.onPeek(null);
       }}
-      data-detail="cards"
-      className="group/canvas absolute inset-0 cursor-grab touch-none overflow-hidden bg-muted/40 outline-none select-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-panning:cursor-grabbing"
+      data-detail={detail}
+      className="absolute inset-0 cursor-grab touch-none overflow-hidden bg-background outline-none select-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-panning:cursor-grabbing"
     >
       <div
         ref={world}
-        className="absolute top-0 left-0 origin-top-left [--kc-inv:1]"
-        style={{ willChange: "transform" }}
+        className="absolute top-0 left-0 origin-top-left [--kc-inv:1] [--kc-zoom:1]"
         onClick={(event) => {
           if (event.target === event.currentTarget) props.onPeek(null);
         }}
       >
-        {props.layout.groups.map((group) => (
-          <div
-            key={group.key ?? "none"}
-            className="pointer-events-none absolute rounded-2xl border border-border/70 bg-background/60"
-            style={{
-              transform: `translate(${group.x}px, ${group.y}px)`,
-              width: group.w,
-              height: group.h,
-            }}
-          >
-            <div className="pointer-events-auto flex h-[52px] items-center gap-2 px-6">
-              <h2
-                className="min-w-0 truncate font-semibold text-foreground tracking-tight"
-                style={{ fontSize: "min(calc(1.125rem * var(--kc-inv)), 34px)" }}
-              >
-                {group.title}
-              </h2>
-              {props.groupMenus ? (
-                <button
-                  type="button"
-                  data-canvas-control=""
-                  aria-label={`${group.title}: more`}
-                  className="ms-auto inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset focus-visible:outline-none group-data-[detail=dots]/canvas:hidden"
-                  onClick={(event) => props.onGroup(group.key, event.currentTarget)}
-                >
-                  <MoreHorizontalIcon className="size-4" />
-                </button>
-              ) : null}
-            </div>
-          </div>
-        ))}
-        {[...props.layout.cards.values()].map((box) => {
-          const card = props.model.cards.get(box.key);
-          const widget = props.model.widgets.get(box.key);
-          if (card === undefined && widget === undefined) return null;
+        {layout.groups.map((box) => {
+          const group = model.groups.find((held) => held.key === box.key);
           return (
-            <CanvasCard
+            <section
               key={box.key}
+              aria-label={box.title}
+              className="pointer-events-none absolute top-0 left-0 rounded-3xl bg-muted/60"
+              style={{
+                transform: `translate(${box.x}px, ${box.y}px)`,
+                width: box.w,
+                height: box.h,
+              }}
+            >
+              <div className="flex items-end px-6 pb-2" style={{ height: box.head }}>
+                <div className="flex min-w-0 items-baseline gap-2">
+                  <h3
+                    className="min-w-0 truncate font-semibold text-foreground leading-tight tracking-tight"
+                    style={{ fontSize: "calc(1.125rem * var(--kc-inv))" }}
+                  >
+                    {box.title}
+                  </h3>
+                  {group?.line == null || detail === "dots" ? null : (
+                    <span
+                      className={cn(
+                        "shrink-0 truncate tabular-nums",
+                        group.late ? "text-destructive-foreground" : "text-muted-foreground",
+                      )}
+                      style={{ fontSize: "calc(0.8125rem * var(--kc-inv))" }}
+                    >
+                      {group.line}
+                    </span>
+                  )}
+                  {group === undefined || group.working === 0 ? null : (
+                    <span
+                      role="img"
+                      aria-label={KIN_CANVAS.agentWorking}
+                      className="flex shrink-0 items-center gap-0.5 self-center text-info-foreground tabular-nums"
+                      style={{ fontSize: "calc(0.8125rem * var(--kc-inv))" }}
+                    >
+                      <BotIcon aria-hidden className="size-[1.1em]" />
+                      {group.working}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </section>
+          );
+        })}
+        {shown.map((key) => {
+          const box = layout.cards.get(key);
+          const card = model.cards.get(key);
+          if (box === undefined || card === undefined) return null;
+          return (
+            <MapCard
+              key={key}
               x={box.x}
               y={box.y}
               card={card}
-              widget={widget}
-              selected={props.selected.has(box.key)}
-              peeked={props.peek === box.key}
-              highlighted={props.highlight.has(box.key)}
-              gliding={props.gliding}
-              draggable={canArrange}
-              onPointerDown={onCardDown}
-              onPointerMove={onCardMove}
-              onPointerUp={onCardUp}
-              onPointerCancel={onCardCancel}
+              holder={props.holders.get(key) ?? null}
+              detail={detail}
+              read={readSet.has(key)}
+              environmentId={props.environmentId}
+              orgId={props.orgId}
+              peeked={props.peek === key}
               onClick={onCardClick}
+              onDoubleClick={onCardOpen}
+              onKeyDown={onCardKey}
+              onFocus={onCardFocus}
             />
           );
         })}
       </div>
-      {props.children}
     </div>
   );
 }
 
-interface CanvasCardProps {
+interface MapCardProps {
   readonly x: number;
   readonly y: number;
-  readonly card: KinCanvasCardView | undefined;
-  readonly widget: KinCanvasWidgetView | undefined;
-  readonly selected: boolean;
+  readonly card: KinCanvasCardView;
+  readonly holder: KinWorkPrincipal | null;
+  readonly detail: KinCanvasDetail;
+  /** A doc near enough to read: its text is fetched and shown. */
+  readonly read: boolean;
+  readonly environmentId: KinWorkTarget["environmentId"];
+  readonly orgId: KinWorkTarget["orgId"];
   readonly peeked: boolean;
-  readonly highlighted: boolean;
-  readonly gliding: boolean;
-  readonly draggable: boolean;
-  readonly onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
-  readonly onPointerMove: (event: React.PointerEvent<HTMLElement>) => void;
-  readonly onPointerUp: (event: React.PointerEvent<HTMLElement>) => void;
-  readonly onPointerCancel: () => void;
   readonly onClick: (event: React.MouseEvent<HTMLElement>) => void;
+  readonly onDoubleClick: (event: React.MouseEvent<HTMLElement>) => void;
+  readonly onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void;
+  readonly onFocus: (event: React.FocusEvent<HTMLElement>) => void;
 }
 
-const CanvasCard = memo(function CanvasCard(props: CanvasCardProps) {
-  const { card, widget } = props;
-  const label = card?.accessibilityLabel ?? widget?.accessibilityLabel ?? "";
-  const late = card?.tone === "late" || widget?.tone === "late";
+/**
+ * One task or doc. A button covers it, so it is one stop for the keyboard and one name for a
+ * screen reader; what it shows beneath depends on the zoom.
+ */
+const MapCard = memo(function MapCard(props: MapCardProps) {
+  const { card, detail } = props;
+  const dot = detail === "dots";
   return (
-    <button
-      type="button"
+    <div
       data-canvas-card=""
-      data-key={card?.key ?? widget?.key}
-      aria-label={label}
-      aria-pressed={props.selected}
-      onPointerDown={props.onPointerDown}
-      onPointerMove={props.onPointerMove}
-      onPointerUp={props.onPointerUp}
-      onPointerCancel={props.onPointerCancel}
-      onClick={props.onClick}
+      data-key={card.key}
       className={cn(
-        "absolute top-0 left-0 flex h-[132px] w-[240px] flex-col overflow-hidden rounded-xl border bg-card p-3 text-start text-card-foreground shadow-xs outline-none",
-        "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-        "data-dragging:z-10 data-dragging:shadow-lg data-dragging:cursor-grabbing",
-        props.draggable && "cursor-grab",
-        props.gliding && "transition-transform duration-300 ease-out motion-reduce:transition-none",
-        late ? "border-destructive/45" : "border-border",
-        card?.tone === "done" && "bg-card/70",
-        widget !== undefined && "bg-background",
-        props.selected && "ring-2 ring-primary",
-        props.peeked && !props.selected && "ring-2 ring-ring",
-        props.highlighted && !props.selected && !props.peeked && "ring-2 ring-warning",
+        "absolute top-0 left-0 h-[132px] w-[240px] overflow-hidden",
+        dot
+          ? cn("rounded-4xl", TONE_FILL[card.tone])
+          : "rounded-xl border bg-card text-card-foreground shadow-xs/5",
+        !dot && (card.tone === "late" ? "border-destructive/45" : "border-border"),
+        props.peeked && "ring-2 ring-ring",
       )}
       style={{ transform: `translate(${props.x}px, ${props.y}px)` }}
     >
-      {card !== undefined ? <TaskOrDoc card={card} /> : <Widget widget={widget!} />}
-    </button>
+      {dot ? null : detail === "titles" ? (
+        <Title card={card} />
+      ) : (
+        <div
+          aria-hidden
+          className={cn(
+            "flex size-full flex-col",
+            // At the nearest zoom the card is drawn at the screen's own size, so its type is real-size.
+            detail === "near" &&
+              "h-[calc(132px*var(--kc-zoom))] w-[calc(240px*var(--kc-zoom))] origin-top-left scale-[calc(1/var(--kc-zoom))]",
+          )}
+        >
+          {props.read ? (
+            <NearDoc
+              card={card}
+              target={{ environmentId: props.environmentId, orgId: props.orgId }}
+            />
+          ) : (
+            <Full card={card} holder={props.holder} near={detail === "near"} />
+          )}
+        </div>
+      )}
+      <button
+        type="button"
+        aria-label={card.accessibilityLabel}
+        aria-pressed={props.peeked}
+        onClick={props.onClick}
+        onDoubleClick={props.onDoubleClick}
+        onKeyDown={props.onKeyDown}
+        onFocus={props.onFocus}
+        className="absolute inset-0 cursor-pointer rounded-[inherit] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      />
+    </div>
   );
 });
 
-function Marks(props: { readonly card: KinCanvasCardView }) {
+function Title(props: { readonly card: KinCanvasCardView }) {
+  const { card } = props;
   return (
-    <span className="ms-auto flex shrink-0 items-center gap-1">
-      {props.card.needsYou ? (
-        <span className="rounded-full bg-warning/15 px-1.5 py-0.5 font-medium text-2xs text-warning-foreground">
-          {KIN_CANVAS.needsYou}
-        </span>
-      ) : null}
-      {props.card.changed !== null ? (
-        <span aria-hidden className="size-2 rounded-full bg-primary" />
-      ) : null}
-    </span>
+    <div aria-hidden className="flex size-full flex-col gap-1 p-3">
+      <span
+        className={cn(
+          "tabular-nums",
+          card.tone === "late" ? "text-destructive-foreground" : "text-muted-foreground",
+        )}
+        style={{ fontSize: "calc(0.75rem * var(--kc-inv))" }}
+      >
+        {card.key}
+      </span>
+      <p
+        className="line-clamp-3 font-medium leading-tight [overflow-wrap:anywhere]"
+        style={{ fontSize: "calc(0.875rem * var(--kc-inv))" }}
+      >
+        {card.title}
+      </p>
+    </div>
   );
 }
 
-function TaskOrDoc(props: { readonly card: KinCanvasCardView }) {
+function Head(props: { readonly card: KinCanvasCardView }) {
   const { card } = props;
   const state = STATE_OF_TONE[card.tone];
   return (
-    <>
-      <div className="flex items-center gap-1.5 text-muted-foreground text-xs group-data-[detail=dots]/canvas:hidden group-data-[detail=titles]/canvas:hidden">
-        {state === null ? (
-          <FileTextIcon aria-hidden className="size-4 shrink-0" />
-        ) : (
-          <KinWorkStateIcon state={state} />
-        )}
-        <span className="tabular-nums">{card.key}</span>
-        <span aria-hidden>·</span>
-        <span className={cn("truncate", card.tone === "late" && "text-destructive-foreground")}>
-          {card.tone === "late" ? "Late" : card.status}
+    <div className="flex min-w-0 items-center gap-1.5 text-muted-foreground text-xs">
+      {state === null ? (
+        <FileTextIcon aria-hidden className="size-4 shrink-0" />
+      ) : (
+        <KinWorkStateIcon state={state} />
+      )}
+      <span className="shrink-0 tabular-nums">{card.key}</span>
+      <span aria-hidden>·</span>
+      <span className={cn("truncate", card.tone === "late" && "text-destructive-foreground")}>
+        {card.tone === "late" ? "Late" : card.status}
+      </span>
+      {card.working ? (
+        <span className="ms-auto flex shrink-0 items-center gap-1 rounded-full bg-info/12 px-1.5 py-0.5 text-2xs text-info-foreground">
+          <BotIcon aria-hidden className="size-3" />
+          Agent
         </span>
-        <Marks card={card} />
-      </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Full(props: {
+  readonly card: KinCanvasCardView;
+  readonly holder: KinWorkPrincipal | null;
+  readonly near: boolean;
+}) {
+  const { card, holder } = props;
+  return (
+    <div className="flex size-full flex-col gap-1.5 p-3">
+      <Head card={card} />
       <p
-        style={{ fontSize: "calc(0.875rem * var(--kc-inv))" }}
         className={cn(
-          "mt-1.5 line-clamp-2 font-medium text-sm leading-snug",
-          "group-data-[detail=titles]/canvas:mt-0 group-data-[detail=titles]/canvas:line-clamp-3",
-          "group-data-[detail=dots]/canvas:hidden",
-          card.tone === "done" && "text-muted-foreground",
+          "font-medium text-sm leading-snug [overflow-wrap:anywhere]",
+          props.near ? "line-clamp-4" : "line-clamp-2",
         )}
       >
         {card.title}
       </p>
-      <p className="mt-1 truncate text-muted-foreground text-xs group-data-[detail=dots]/canvas:hidden group-data-[detail=titles]/canvas:hidden">
-        {card.line}
-      </p>
-      <p
-        className={cn(
-          "mt-auto truncate text-xs group-data-[detail=dots]/canvas:hidden group-data-[detail=titles]/canvas:hidden",
-          card.working !== null ? "font-medium text-foreground" : "text-muted-foreground",
-        )}
-      >
-        {card.working ?? card.changed ?? ""}
-      </p>
-      <span
-        aria-hidden
-        className={cn(
-          "hidden size-full rounded-lg group-data-[detail=dots]/canvas:block",
-          card.tone === "late"
-            ? "bg-destructive/40"
-            : card.tone === "done"
-              ? "bg-muted"
-              : card.tone === "doc"
-                ? "bg-info/25"
-                : card.working !== null
-                  ? "bg-primary/40"
-                  : "bg-foreground/15",
-        )}
-      />
-    </>
+      <div className="mt-auto flex min-w-0 items-center gap-1.5 text-muted-foreground text-xs">
+        {holder === null ? null : <KinAvatar avatar={kinWorkAvatar(holder)} size="xs" />}
+        <span className="truncate">{card.line}</span>
+      </div>
+      {props.near && card.summary !== null ? (
+        <p className="line-clamp-2 text-muted-foreground text-xs">{card.summary}</p>
+      ) : null}
+      {props.near && card.working ? (
+        <p className="text-info-foreground text-xs">{KIN_CANVAS.agentWorking}</p>
+      ) : null}
+    </div>
   );
 }
 
-function Widget(props: { readonly widget: KinCanvasWidgetView }) {
-  const { widget } = props;
-  const Icon = WIDGET_ICON[widget.widget.kind];
+/** A doc near enough to read: its latest text, as the doc page draws it, cut where the card ends. */
+function NearDoc(props: { readonly card: KinCanvasCardView; readonly target: KinWorkTarget }) {
+  const { card, target } = props;
+  const { state } = useKinDoc(target, card.key as KinRecordKey, null);
+  const doc = state._tag === "ready" ? state.value : null;
+  let room = NEAR_TEXT;
+  const text: string[] = [];
+  for (const piece of doc === null ? [] : kinDocPieces(doc.body, doc)) {
+    if (room <= 0) break;
+    if (piece.type !== "text") continue;
+    text.push(piece.text.slice(0, room));
+    room -= piece.text.length;
+  }
   return (
-    <>
-      <div className="flex items-center gap-1.5 text-muted-foreground text-xs group-data-[detail=dots]/canvas:hidden">
-        <Icon aria-hidden className="size-4 shrink-0" />
-        <span className="truncate">{widget.title}</span>
-      </div>
-      <p
-        style={widget.tone === "gone" ? undefined : { fontSize: "calc(1.5rem * var(--kc-inv))" }}
-        className={cn(
-          "mt-2 font-semibold text-2xl tabular-nums tracking-tight group-data-[detail=dots]/canvas:hidden",
-          widget.tone === "late" && "text-destructive-foreground",
-          widget.tone === "gone" && "text-base text-muted-foreground",
-        )}
-      >
-        {widget.headline}
+    <div className="flex size-full flex-col gap-1.5 p-3">
+      <Head card={card} />
+      <p className="line-clamp-2 font-medium text-sm leading-snug [overflow-wrap:anywhere]">
+        {card.title}
       </p>
-      <p className="mt-0.5 truncate text-muted-foreground text-xs group-data-[detail=dots]/canvas:hidden group-data-[detail=titles]/canvas:hidden">
-        {widget.detail}
-      </p>
-      {widget.fraction !== null ? (
-        <div
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(widget.fraction * 100)}
-          aria-label={widget.headline}
-          className="mt-auto h-1.5 overflow-hidden rounded-full bg-muted group-data-[detail=dots]/canvas:hidden"
-        >
-          <div
-            className={cn(
-              "h-full rounded-full",
-              widget.tone === "done" ? "bg-success" : "bg-primary",
-            )}
-            style={{ width: `${Math.round(widget.fraction * 100)}%` }}
+      <div className="relative min-h-0 flex-1 overflow-hidden text-sm leading-relaxed [mask-image:linear-gradient(to_bottom,black_70%,transparent)]">
+        {doc === null ? (
+          <p className="text-muted-foreground text-xs">
+            {state._tag === "failed" ? KIN_CANVAS.readFailed : (card.summary ?? card.line)}
+          </p>
+        ) : (
+          <ChatMarkdown
+            text={kinDocMarkdown(text.join("\n\n"), fileImageSource)}
+            cwd={undefined}
+            environmentId={target.environmentId}
+            imageAttachment={fileImageAttachment}
           />
-        </div>
-      ) : null}
-      <span
-        aria-hidden
-        className="hidden size-full rounded-lg bg-primary/25 group-data-[detail=dots]/canvas:block"
-      />
-    </>
+        )}
+      </div>
+    </div>
   );
 }

@@ -1,6 +1,7 @@
 import {
   KIN_CANVAS_MAX_SCALE,
   KIN_CANVAS_MIN_SCALE,
+  kinCanvasDetail,
   kinCanvasVisible,
   type KinCanvasCamera,
   type KinCanvasDetail,
@@ -9,9 +10,9 @@ import {
   kinCanvasOverlaps,
   type KinCanvasLayout,
 } from "@t3tools/client-runtime/kin/kinCanvasLayout";
-import { KIN_CANVAS, type KinCanvasModel } from "@t3tools/client-runtime/kin/kinCanvasView";
+import type { KinCanvasModel } from "@t3tools/client-runtime/kin/kinCanvasView";
 import { useState, type ReactNode } from "react";
-import { Pressable, View } from "react-native";
+import { View } from "react-native";
 import {
   GestureDetector,
   usePanGesture,
@@ -27,45 +28,68 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { AppText as Text } from "../../../components/ui/AppText";
-import { SymbolView } from "../../../components/ui/AppSymbol";
+import { cn } from "../../../lib/cn";
+import type { KinWorkTarget } from "../state/useKinWork";
 import { KinCanvasCard, KIN_CANVAS_WORLD_HALF } from "./KinCanvasCard";
 import type { CanvasCamera } from "./useCanvasCamera";
 
 /** Past this many cards, only those near the view are mounted. */
 const CULL_FROM = 60;
-const DETAILS: ReadonlyArray<KinCanvasDetail> = ["dots", "titles", "cards"];
+const DETAILS: ReadonlyArray<KinCanvasDetail> = ["dots", "titles", "cards", "near"];
+
+/** `kinCanvasNearScale` and `kinCanvasMaxScale` again, as worklets for the UI thread. */
+const nearScale = (width: number) => {
+  "worklet";
+  return Math.max(1, Math.min(1.6, (width * 0.75) / 240));
+};
+const maxScale = (width: number) => {
+  "worklet";
+  return Math.max(nearScale(width) * 1.15, Math.min(KIN_CANVAS_MAX_SCALE, (width - 24) / 240));
+};
 
 export interface KinCanvasBoardProps {
+  readonly target: KinWorkTarget;
   readonly camera: CanvasCamera;
   readonly layout: KinCanvasLayout;
   readonly model: KinCanvasModel;
-  /** Where the camera rests, and where a flight is headed: cards near either stay mounted. */
-  readonly views: ReadonlyArray<KinCanvasCamera>;
-  readonly selected: ReadonlySet<string>;
+  /** Where a flight is headed: cards near it mount before the camera arrives. */
+  readonly heading: KinCanvasCamera | null;
   readonly peek: string | null;
-  readonly highlight: ReadonlySet<string>;
-  readonly gliding: boolean;
-  readonly reduceMotion: boolean;
-  readonly canArrange: boolean;
   readonly onCard: (key: string) => void;
-  readonly onGroup: (key: string) => void;
-  readonly onMove: (key: string, x: number, y: number) => void;
   /** The board has a size for the first time: place the camera. */
   readonly onSized: (size: { readonly w: number; readonly h: number }) => void;
   readonly children?: ReactNode;
 }
 
 export function KinCanvasBoard(props: KinCanvasBoardProps) {
-  const { camera, layout, views } = props;
+  const { camera, layout } = props;
   const { x, y, scale, width, height } = camera;
   const [size, setSize] = useState<{ readonly w: number; readonly h: number } | null>(null);
-  const [detail, setDetail] = useState<KinCanvasDetail>("cards");
+  const [detail, setDetail] = useState<KinCanvasDetail>(() =>
+    kinCanvasDetail(camera.get().scale, width.get()),
+  );
+  // Where the camera is, a step at a time: React re-culls as a pan crosses a quarter screen.
+  const [view, setView] = useState<KinCanvasCamera | null>(null);
 
-  // kinCanvasDetail's bands, read on the UI thread; React hears only a change of band.
+  // kinCanvasDetail's bands, worked out again on the UI thread; React hears only a change of band.
   useAnimatedReaction(
-    () => (scale.get() < 0.22 ? 0 : scale.get() < 0.55 ? 1 : 2),
+    () => {
+      const s = scale.get();
+      return s < 0.22 ? 0 : s < 0.55 ? 1 : s < nearScale(width.get()) ? 2 : 3;
+    },
     (band, previous) => {
       if (band !== previous) runOnJS(setDetail)(DETAILS[band] ?? "cards");
+    },
+  );
+  useAnimatedReaction(
+    () => {
+      const s = scale.get();
+      const stepX = Math.max(1, width.get() / s / 4);
+      const stepY = Math.max(1, height.get() / s / 4);
+      return `${Math.round(x.get() / stepX)}:${Math.round(y.get() / stepY)}:${Math.round(Math.log2(s) * 2)}`;
+    },
+    (cell, previous) => {
+      if (cell !== previous) runOnJS(setView)({ x: x.get(), y: y.get(), scale: scale.get() });
     },
   );
 
@@ -103,7 +127,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
   });
   const zoomIn = (sx: number, sy: number) => {
     const s = camera.get();
-    const next = Math.min(KIN_CANVAS_MAX_SCALE, s.scale * 1.6);
+    const next = Math.min(maxScale(width.get()), s.scale * 1.8);
     const fx = sx - width.get() / 2;
     const fy = sy - height.get() / 2;
     camera.flyTo({
@@ -126,18 +150,20 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
     ],
   }));
 
-  const rest = views[0];
-  const inv = detail === "cards" || rest === undefined ? 1 : Math.min(3.2, 1 / rest.scale);
+  const at = view ?? camera.get();
+  // Zoomed out, type is drawn larger so the names of things stay readable.
+  const inv = detail === "cards" || detail === "near" ? 1 : Math.min(3.2, 1 / at.scale);
   const boxes = [...layout.cards.values()];
   const near =
-    boxes.length <= CULL_FROM || size === null || views.length === 0
+    boxes.length <= CULL_FROM || size === null
       ? null
-      : views.map((view) => {
-          const seen = kinCanvasVisible(view, size.w, size.h);
-          return { x: seen.x - seen.w, y: seen.y - seen.h, w: seen.w * 3, h: seen.h * 3 };
+      : [at, ...(props.heading === null ? [] : [props.heading])].map((one) => {
+          const seen = kinCanvasVisible(one, size.w, size.h);
+          return { x: seen.x - seen.w / 2, y: seen.y - seen.h / 2, w: seen.w * 2, h: seen.h * 2 };
         });
   const shown =
     near === null ? boxes : boxes.filter((box) => near.some((n) => kinCanvasOverlaps(box, n)));
+  const groupOf = new Map(props.model.groups.map((group) => [group.key, group]));
 
   return (
     <View
@@ -155,8 +181,8 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
         <View
           collapsable={false}
           className="absolute inset-0"
-          accessibilityLabel={KIN_CANVAS.title}
-          accessibilityHint="Drag to move around, pinch to zoom"
+          accessibilityLabel="Map of tasks and docs"
+          accessibilityHint="Drag to move around, pinch or double-tap to zoom"
         >
           <Animated.View
             style={[
@@ -170,47 +196,47 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
               world,
             ]}
           >
-            {layout.groups.map((group) => {
-              const groupKey = group.key;
+            {layout.groups.map((box) => {
+              const group = groupOf.get(box.key);
               return (
                 <View
-                  key={group.key ?? "none"}
-                  pointerEvents="box-none"
-                  className="absolute rounded-2xl border border-border bg-screen/60"
+                  key={box.key}
+                  pointerEvents="none"
+                  className={cn(
+                    "absolute rounded-3xl border",
+                    group !== undefined && group.working > 0
+                      ? "border-primary/30 bg-primary/5"
+                      : "border-border bg-screen/70",
+                  )}
                   style={{
-                    left: group.x + KIN_CANVAS_WORLD_HALF,
-                    top: group.y + KIN_CANVAS_WORLD_HALF,
-                    width: group.w,
-                    height: group.h,
+                    left: box.x + KIN_CANVAS_WORLD_HALF,
+                    top: box.y + KIN_CANVAS_WORLD_HALF,
+                    width: box.w,
+                    height: box.h,
                   }}
                 >
-                  <View className="flex-row items-center gap-2 px-6" style={{ height: group.head }}>
+                  <View className="justify-center px-6" style={{ height: box.head }}>
                     <Text
                       numberOfLines={1}
-                      className="min-w-0 shrink font-t3-semibold"
+                      className="font-t3-semibold"
+                      // Zoomed out the name grows to stay readable, never past the band it sits in.
                       style={{
-                        fontSize: Math.min(18 * inv, 34),
-                        lineHeight: Math.min(23 * inv, 42),
+                        fontSize: Math.min(17 * inv, 30),
+                        lineHeight: Math.min(22 * inv, 36),
                       }}
                     >
-                      {group.title}
+                      {box.title}
                     </Text>
-                    {groupKey !== null &&
-                    detail !== "dots" &&
-                    props.model.groups.some((g) => g.key === groupKey) ? (
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={`${group.title}: more`}
-                        onPress={() => props.onGroup(groupKey)}
-                        hitSlop={8}
-                        className="ml-auto size-11 items-center justify-center rounded-full active:bg-subtle-strong"
+                    {group?.line != null && inv === 1 ? (
+                      <Text
+                        textRole="caption"
+                        numberOfLines={1}
+                        className={cn(
+                          group.late ? "text-danger-foreground" : "text-foreground-muted",
+                        )}
                       >
-                        <SymbolView
-                          name="ellipsis"
-                          size={18}
-                          tintColorClassName="accent-icon-muted"
-                        />
-                      </Pressable>
+                        {group.line}
+                      </Text>
                     ) : null}
                   </View>
                 </View>
@@ -218,27 +244,18 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
             })}
             {shown.map((box) => {
               const card = props.model.cards.get(box.key);
-              const widget = props.model.widgets.get(box.key);
-              if (card === undefined && widget === undefined) return null;
+              if (card === undefined) return null;
               return (
                 <KinCanvasCard
                   key={box.key}
-                  cardKey={box.key}
+                  target={props.target}
                   x={box.x}
                   y={box.y}
                   card={card}
-                  widget={widget}
                   detail={detail}
                   inv={inv}
-                  selected={props.selected.has(box.key)}
                   peeked={props.peek === box.key}
-                  highlighted={props.highlight.has(box.key)}
-                  gliding={props.gliding}
-                  reduceMotion={props.reduceMotion}
-                  draggable={props.canArrange}
-                  scale={scale}
                   onPress={props.onCard}
-                  onMove={props.onMove}
                 />
               );
             })}
