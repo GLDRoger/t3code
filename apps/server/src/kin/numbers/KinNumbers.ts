@@ -1,3 +1,4 @@
+import { keyRequestSql } from "../chat/keySent.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -444,7 +445,8 @@ export const values = Effect.fn("KinNumbers.values")(
           agentId: string | null;
           name: string;
         }>`SELECT as_of AS "asOf", value, source, person_id AS "personId", agent_id AS "agentId",
-      recorder_name AS name FROM kin_number_values
+      recorder_name || CASE WHEN ${sql.literal(keyRequestSql("COALESCE(write_key, '')"))}
+        THEN ' (coding agent)' ELSE '' END AS name FROM kin_number_values
     WHERE org_id = ${viewer.orgId} AND record_id = ${row.recordId} AND as_of BETWEEN ${from} AND ${to}
     ORDER BY as_of, seq`;
         return {
@@ -470,7 +472,7 @@ export const values = Effect.fn("KinNumbers.values")(
 );
 
 const validValue = Schema.is(KinNumberValueInput);
-const normalizeDecimal = (value: string) =>
+export const normalizeDecimal = (value: string) =>
   value.replace(/^(-?)0+(?=\d)/, "$1").replace(/^-(?=0(?:\.0+)?$)/, "");
 
 export const record = Effect.fn("KinNumbers.record")(
@@ -512,6 +514,7 @@ export const record = Effect.fn("KinNumbers.record")(
               ? undefined
               : stableStringify(["person", by.personId, clientRequestId]);
         let changed = false;
+        let inserted = 0;
         for (const [index, entry] of entries.entries()) {
           const { row, fields } = yield* definition(viewer, entry.number, true);
           if (fields.kind === "computed")
@@ -574,9 +577,11 @@ export const record = Effect.fn("KinNumbers.record")(
         VALUES (${orgId}, ${row.recordId}, ${entry.asOf}, ${(last?.seq ?? 0) + 1}, ${value},
           ${personId}, ${agentId}, ${author.name}, ${source}, ${now}, ${writeKey}, ${hash})`;
           changed = true;
+          inserted += 1;
         }
         if (changed) yield* refresh.touch(orgId, "numbers");
-        return { recorded: entries.length };
+        // What was written now: a retry or the same value again records nothing.
+        return { recorded: inserted };
       }),
     );
   },

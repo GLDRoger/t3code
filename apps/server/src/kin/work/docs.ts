@@ -1,3 +1,4 @@
+import { isKeyRequest } from "../chat/keySent.ts";
 import {
   KIN_DOC_KINDS,
   KinChatError,
@@ -713,7 +714,9 @@ export const editSectionByHand = Effect.fn("KinDocs.editSectionByHand")(function
         title: row.title,
         body: applied.body,
         kind: "edited",
-        summary: `Changed ${section.id === "top" ? "the introduction" : `"${section.title}"`} by hand`,
+        summary: `Changed ${section.id === "top" ? "the introduction" : `"${section.title}"`} ${
+          isKeyRequest(input.originKey) ? "through their coding agent" : "by hand"
+        }`,
         operations: [{ op: "replace_section", section: section.id }],
         originKey: input.originKey,
       });
