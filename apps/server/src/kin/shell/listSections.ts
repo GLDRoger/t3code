@@ -2,8 +2,10 @@ import type { KinOrgId, KinShell as Shell } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { listDef } from "../work/registers.ts";
 import { allSeeMoney, seenBy, teamLists, type KinViewer } from "../work/teamView.ts";
 import { getForDisplay, listOfSection } from "./KinShell.ts";
+import type { ListShown } from "./words.ts";
 
 /**
  * The lists among `ids` this viewer reaches as Lists shows them (`ownerMoney.lists`): live, and for
@@ -56,4 +58,40 @@ export const shellFor = Effect.fn("KinShell.shellFor")(function* (
       return list === undefined || seen.has(list);
     }),
   };
+});
+
+/** The list sections switched on that this viewer reaches, as an agent's prompt names them. */
+export const listSectionsShown = Effect.fn("KinShell.listSectionsShown")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+) {
+  const shell = yield* shellFor(orgId, viewer);
+  const ids = shell.sections.flatMap((section) =>
+    section.on ? (listOfSection(section.id) ?? []) : [],
+  );
+  const defs = yield* Effect.forEach(ids, (id) => listDef(orgId, id));
+  return defs.flatMap((def): ReadonlyArray<ListShown> => {
+    if (def === undefined) return [];
+    const other = def.check?.below ?? def.check?.above;
+    return [
+      {
+        id: def.id,
+        name: def.name,
+        fields: def.fields
+          .filter((one) => one.retired !== true)
+          .map((one) => ({ key: one.key, type: one.type })),
+        states: def.states.map((state) => ({ state, label: def.stateLabels[state] })),
+        ...(def.check === undefined || other === undefined
+          ? {}
+          : {
+              check: {
+                field: def.check.field,
+                side: def.check.below === undefined ? "above" : "below",
+                other: String(other),
+              },
+            }),
+        ...(def.remindOn === undefined ? {} : { remindOn: def.remindOn }),
+      },
+    ];
+  });
 });

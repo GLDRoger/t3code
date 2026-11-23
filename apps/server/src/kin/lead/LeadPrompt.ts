@@ -106,6 +106,7 @@ import { socialRules } from "../social/instructions.ts";
 import { isSocialDomain } from "../social/seat.ts";
 import { salesRulesFor } from "../sales/seat.ts";
 import { buildSeat } from "./seat.ts";
+import { listSectionsShown } from "../shell/listSections.ts";
 import { thisCompanyLines } from "../shell/words.ts";
 import * as KinNumbers from "../numbers/KinNumbers.ts";
 import { feedTurn } from "../numbers/feeds.ts";
@@ -1815,13 +1816,29 @@ export class KinLeadPrompt extends Context.Service<
               Effect.orElseSucceed(() => undefined),
             )
           : undefined;
-        // Only a company set up unlike Kin's default, or watching a number, has these lines.
-        const thisCompany = thisCompanyLines(
-          yield* KinShell.getForDisplay(orgId).pipe(
-            Effect.provideService(SqlClient.SqlClient, sql),
-          ),
-          numbers,
+        const shell = yield* KinShell.getForDisplay(orgId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
         );
+        // The list sections every reader of this turn reaches; none where they can't be told.
+        const lists = yield* Effect.gen(function* () {
+          if (!shell.sections.some((section) => KinShell.listOfSection(section.id) !== undefined))
+            return [];
+          if (ownerOnly) return yield* listSectionsShown(orgId, KIN_OWNER_LEVEL);
+          const behind = review === undefined ? yield* turnPeople(input) : undefined;
+          if (behind === undefined) return [];
+          return yield* listSectionsShown(
+            orgId,
+            behind.people.length === 0 ? KIN_OWNER_LEVEL : viewerOfPeople(behind.people),
+          );
+        }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin list sections unavailable", cause).pipe(Effect.as([])),
+          ),
+        );
+        // Only a company set up unlike Kin's default, showing a list as a section, or watching
+        // a number, has these lines.
+        const thisCompany = thisCompanyLines(shell, numbers, lists);
         // What we sell, in every turn whose readers may see it: a shared turn's by stored rows.
         const offerings = yield* Effect.gen(function* () {
           if (ownerOnly) return yield* offeringsPromptIndex(orgId, KIN_OWNER_LEVEL);

@@ -797,8 +797,35 @@ it.effect(
       expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
         "# This company\n\nMoney and Invoices and quotes are turned off for this company: don't offer, mention or ask about them.\n\n",
       );
+      // A list shown as a section: one line with its fields, states and check.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'stock', 'Stock', 'STK', 0, 0, ${JSON.stringify({
+          noun: "item",
+          states: ["open", "done", "dropped"],
+          stateLabels: { open: "In stock" },
+          defaultState: "open",
+          categories: [],
+          fields: [
+            { key: "onHand", label: "On hand", type: "number", sensitive: false },
+            { key: "reorderPoint", label: "Reorder point", type: "number", sensitive: false },
+            { key: "counted", label: "Counted", type: "yesno", sensitive: false },
+          ],
+          check: { field: "onHand", below: "reorderPoint" },
+          sensitive: false,
+          amount: false,
+          currency: "INR",
+        })})`;
+      yield* KinShell.set(orgId, personId, 4, [{ id: "list:stock", on: true }]);
+      expect((yield* prompt.build(input)).split(TURN_DIVIDER)[1]).toContain(
+        '# This company\n\nThese lists are sections of their own; read and write them with records_query, record_create and record_update:\n- "Stock" (list stock): onHand number, reorderPoint number, counted yesno; states open "In stock", done, dropped; Kin warns when onHand is below reorderPoint.\n\n',
+      );
+      // Switched off, it is a list like any other.
+      yield* KinShell.set(orgId, personId, 5, [{ id: "list:stock", on: false }]);
+      expect(yield* prompt.build(input)).toBe(before);
       // Back to Kin's default, with its row still stored: byte for byte what it was.
-      yield* KinShell.set(orgId, personId, 4, []);
+      yield* KinShell.set(orgId, personId, 6, []);
       expect(yield* prompt.build(input)).toBe(before);
     }).pipe(Effect.provide(layer)),
 );
