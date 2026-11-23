@@ -1,18 +1,29 @@
-import { KinMessageId, KinOrgId } from "@t3tools/contracts";
+import {
+  KinChatId,
+  KinMemberId,
+  KinMessageId,
+  KinOrgId,
+  KinPersonId,
+  KinWaitingId,
+} from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect has no free-space query.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { ownerPrivateChat } from "./chat/executionNotices.ts";
+import * as Repository from "./chat/KinChatRepository.ts";
 import * as Chat from "./chat/KinChatService.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./lead/orgLeads.ts";
 import { DAY_MS, HOUR_MS } from "./durations.ts";
+import { accessSql } from "./people/KinAccess.ts";
 
 /** Written by ops/kin/host/backup.sh into the server's state directory after every run. */
 export const BACKUP_STATUS_FILE = "kin-backup-status.json";
@@ -63,6 +74,78 @@ const tellOwners = Effect.fn("KinHostBackup.tellOwners")(function* (
     audience: "owner",
     body,
   });
+});
+
+const NO_LEAD_NOTICE =
+  "No agent is running\n\nNobody is watching for you right now: every agent is paused or retired. Resume one, or add one, in Settings, Agents.";
+
+export const checkLeadNotice = Effect.fn("KinHostBackup.checkLeadNotice")(function* (
+  orgId: KinOrgId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const chat = yield* Chat.KinChatService;
+  const repo = yield* Repository.KinChatRepository;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const live = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
+      const prefix = `kin-no-lead:${orgId}:`;
+      const now = yield* Clock.currentTimeMillis;
+      const messageId = KinMessageId.make(`${prefix}${Math.floor(now / DAY_MS)}`);
+      const notices = yield* sql<{ waitingId: string }>`SELECT waiting_id AS "waitingId"
+        FROM kin_waiting WHERE org_id = ${orgId} AND resolved_at IS NULL
+          AND substr(message_id, 1, ${prefix.length}) = ${prefix}
+          AND (${live === undefined ? 0 : 1} OR message_id <> ${messageId})
+        ORDER BY waiting_id`;
+      for (const { waitingId } of notices)
+        yield* chat.resolveNotice({
+          orgId,
+          waitingId: KinWaitingId.make(waitingId),
+          resolution: "closed",
+        });
+      if (live !== undefined) return;
+      if (Option.isSome(yield* repo.getMessage({ orgId, messageId }))) return;
+      const [owner] = yield* sql<{ personId: KinPersonId }>`SELECT p.person_id AS "personId"
+        FROM kin_people p WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
+          AND ${sql.literal(accessSql("p"))} = 'owner'
+        ORDER BY p.created_at, p.person_id LIMIT 1`;
+      if (owner === undefined) return;
+      let chatId = yield* ownerPrivateChat(sql, orgId, owner.personId);
+      if (chatId === undefined) {
+        // A company that has never added an agent may have no chat for a private notice.
+        chatId = KinChatId.make(`kin-notices:${orgId}:${owner.personId}`);
+        const at = DateTime.formatIso(DateTime.makeUnsafe(now));
+        yield* repo.createChat({
+          orgId,
+          chatId,
+          kind: "router",
+          title: "Kin notices",
+          teamId: null,
+          directKey: null,
+          lastMessageAt: null,
+          createdAt: at,
+          archivedAt: null,
+        });
+        yield* repo.addMember({
+          orgId,
+          chatId,
+          memberId: KinMemberId.make(chatId),
+          principal: { _tag: "person", personId: owner.personId },
+          role: "owner",
+          joinedAt: at,
+          leftAt: null,
+          mutedUntil: null,
+        });
+      }
+      yield* chat.notice({
+        orgId,
+        chatId,
+        messageId,
+        body: NO_LEAD_NOTICE,
+        audience: "owner",
+        waitingFor: owner.personId,
+      });
+    }),
+  );
 });
 
 export const LOW_ON_SPACE =
