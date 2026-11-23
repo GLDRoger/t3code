@@ -74,6 +74,12 @@ describe("kinQuoteState", () => {
     });
     expect(kinQuoteActions("draft", false).send).toBe(false);
     expect(kinQuoteActions("accepted", true, true).makeInvoice).toBe(false);
+    // Opened by its link while Invoices and quotes is off (or Money): no new invoice from it.
+    const moneyOff = { rev: 2, sections: [{ id: "money", on: false }] };
+    expect(kinQuoteActions("accepted", true, false, moneyOff)).toMatchObject({
+      makeInvoice: false,
+      unaccept: true,
+    });
   });
 });
 

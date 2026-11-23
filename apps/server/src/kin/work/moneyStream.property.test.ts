@@ -46,7 +46,13 @@ import * as Pulse from "../pulse/people.ts";
 import * as Goals from "./goals.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
-import { demandOfTick, makeMoneyStream, type MoneyDemand, subscribe } from "./moneyStream.ts";
+import {
+  demandOfTick,
+  demandOfTopics,
+  makeMoneyStream,
+  type MoneyDemand,
+  subscribe,
+} from "./moneyStream.ts";
 import * as Money from "./ownerMoney.ts";
 import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as Work from "./ownerWork.ts";
@@ -403,6 +409,13 @@ const moneyCase = (ops: ReadonlyArray<Op>) =>
   );
 
 describe("Money's live stream", () => {
+  it("builds every part again when the company's sections change", () => {
+    assert.deepStrictEqual(
+      [...demandOfTopics({ shell: 1 }, { shell: 2 })].toSorted(),
+      [...KIN_MONEY_PARTS].toSorted(),
+    );
+  });
+
   it.effect("a co-owner made a member mid-stream is sent no more figures", () =>
     Effect.gen(function* () {
       yield* seed;

@@ -1,5 +1,10 @@
 import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
-import { KinChatError, type KinWidget, type KinWidgetsActInput } from "@t3tools/contracts";
+import {
+  KIN_ASKER_ONLY_REFUSAL,
+  KinChatError,
+  type KinWidget,
+  type KinWidgetsActInput,
+} from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -70,6 +75,10 @@ describe("kinDeferralCardView", () => {
     expect(view(deferral({ onDue: "remind", text: "" })).lines).toEqual([
       "Set for Fri, Nov 13, 9:00 AM. I'll remind you then.",
     ]);
+    expect(
+      view(deferral({ onDue: "remind", text: "", askedBy: { personId: "dev", name: "Dev" } }))
+        .lines,
+    ).toEqual(["Set for Fri, Nov 13, 9:00 AM. I'll remind this chat then.", "Asked by Dev."]);
     expect(view(deferral({ text: "Waiting on the API review." })).lines).toEqual([
       "Set for Fri, Nov 13, 9:00 AM. I'll start then.",
       "Waiting on the API review.",
@@ -236,10 +245,13 @@ describe("createKinCardActions", () => {
     return { posted, act };
   };
   const ok = () => Promise.resolve({ ok: true } as const);
-  const refused = (reason: "widget_changed" | "not_allowed" | "invalid_state") =>
+  const refused = (
+    reason: "widget_changed" | "not_allowed" | "invalid_state",
+    message = "Refused.",
+  ) =>
     Promise.resolve({
       ok: false,
-      cause: new KinChatError({ reason, message: "Refused." }),
+      cause: new KinChatError({ reason, message }),
     } as const);
   const dropped = () => Promise.reject(new Error("socket hang up ECONNRESET"));
 
@@ -341,6 +353,12 @@ describe("createKinCardActions", () => {
         kind: "error",
         text: "Kin didn't take that answer. Tell your agent in the chat instead.",
       },
+    });
+    // A shared chat's own, tapped by someone who didn't ask: the host's words, as they are.
+    const notAsker = setup(() => refused("not_allowed", KIN_ASKER_ONLY_REFUSAL));
+    expect(await notAsker.act(view(deferral()), "undo")).toEqual({
+      status: "failed",
+      notice: { kind: "error", text: KIN_ASKER_ONLY_REFUSAL },
     });
     const lost = setup(dropped);
     expect(await lost.act(view(deferral()), "remind")).toEqual({

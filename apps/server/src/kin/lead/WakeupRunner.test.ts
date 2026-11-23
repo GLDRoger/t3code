@@ -670,6 +670,8 @@ describe("WakeupRunner", () => {
   it.effect.each([
     ["a scheduled task gone from memory", "gone", 0],
     ["a scheduled task whose native task was deleted", "deleted", 0],
+    ["a scheduled task paused since its run was queued", "paused", 0],
+    ["a room's routine whose setter left since its run was queued", "left", 0],
     ["a question answered or withdrawn before its day", "question", 0],
     ["a scheduled task whose memory read failed, in a turn", "unread", 1],
   ] as const)(
@@ -686,6 +688,25 @@ describe("WakeupRunner", () => {
               source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
             VALUES ('deleted-task', ${orgId}, 'schedule-item', ${agentId}, 'owner-chat', 'ask',
               'owner', 'owner_only', 'sha', 'inbox', 0, 0)`;
+          if (kind === "paused" || kind === "left") {
+            yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
+                project_id, workspace_strategy_json, model_selection_json, runtime_mode,
+                interaction_mode, created_by, creation_source, created_at, updated_at,
+                last_run_status, run_count)
+              VALUES ('live-task', 'Invented', 'Invented', 1, '{}', 'p', '{}', '{}',
+                'approval-required', 'plan', 'system', 'server', '2026-11-08T00:00:00.000Z',
+                '2026-11-08T00:00:00.000Z', 'never', 0)`;
+            yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+                removed_at, access)
+              VALUES ('invented-setter', ${orgId}, 'invented-setter', 'Setter',
+                '2026-11-08T00:00:00.000Z', ${kind === "left" ? 1 : null}, 'co_owner')`;
+            yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+                source_event, said_by, audience, content_sha256, inbox_thread_id, created_at,
+                updated_at, pending_enabled)
+              VALUES ('live-task', ${orgId}, 'schedule-item', ${agentId}, 'owner-chat', 'ask',
+                'invented-setter', ${kind === "left" ? "shared" : "owner_only"}, 'sha', 'inbox', 0,
+                0, ${kind === "paused" ? 0 : null})`;
+          }
           yield* queue.enqueue(
             decodeEvent({
               _tag: "deferral.due",

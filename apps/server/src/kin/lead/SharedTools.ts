@@ -51,10 +51,38 @@ const ownReminder: Condition = Effect.fnUntraced(function* (turn, args) {
   return typeof chatId === "string" && (yield* askersDirectChat(turn, chatId));
 });
 
-/** Asked in the asker's own chat with this agent; `LeadMemory.cancelOwn` checks the item is theirs. */
+/** `chatId` is a chat with other people, not a direct one, that this turn was asked in. */
+const sharedAsked = Effect.fnUntraced(function* (turn: Turn, chatId: unknown) {
+  if (typeof chatId !== "string" || !(yield* askedIn(turn, chatId))) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${turn.orgId}
+    AND chat_id = ${chatId} AND kind <> 'direct' AND archived_at IS NULL LIMIT 1`;
+  return rows.length > 0;
+});
+
+/**
+ * A reminder for the asker in their own chat with this agent, for the chat it was asked in, or for
+ * the asker alone; `LeadMemory.placeFor` checks the speaker and source in the write.
+ */
+const chatReminder: Condition = Effect.fnUntraced(function* (turn, args) {
+  if (field(args, "onDue") !== "remind") return false;
+  if (field(args, "alone") === true) return true;
+  return (yield* ownReminder(turn, args)) || (yield* sharedAsked(turn, field(args, "chatId")));
+});
+
+/** A routine for the chat it was asked in, or the asker alone; who may set one is `LeadMemory`'s. */
+const chatRoutine: Condition = Effect.fnUntraced(function* (turn, args) {
+  return field(args, "alone") === true || (yield* sharedAsked(turn, field(args, "chatId")));
+});
+
+/**
+ * Asked in the asker's own chat with this agent, or in a chat with other people;
+ * `LeadMemory.cancelOwn` and `chatsOwn` check the item and who may change it.
+ */
 const ownReminderCancel: Condition = Effect.fnUntraced(function* (turn) {
   const chat = yield* turnChat(turn);
-  return chat !== undefined && (yield* askersDirectChat(turn, chat.chatId));
+  if (chat === undefined) return false;
+  return (yield* askersDirectChat(turn, chat.chatId)) || (yield* sharedAsked(turn, chat.chatId));
 });
 
 /** The turn is one person's own (`mailboxPerson`): it may reach their own mailbox, never the company's. */
@@ -123,8 +151,8 @@ export const SHARED_TOOLS = {
   kin_journal: "team_memory",
   // Who may know an item is the owner's to decide.
   memory_label: "refused",
-  kin_defer: ownReminder,
-  kin_schedule: "refused",
+  kin_defer: chatReminder,
+  kin_schedule: chatRoutine,
   kin_cancel: ownReminderCancel,
   kin_github_review: "refused",
   // Only from the asker's own direct chat with this agent, checked by the service (`askReview`).

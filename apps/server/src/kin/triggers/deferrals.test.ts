@@ -13,6 +13,7 @@ import {
   KinWakeupId,
   KinWidgetId,
   kinReminderWidgetId,
+  KIN_ASKER_ONLY_REFUSAL,
   type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -1024,6 +1025,208 @@ it.effect("a reminder set privately in a group later shared fires into the owner
       WHERE m.chat_id = 'group-a' AND m.seq >= c.shared_from_seq`;
     assert.lengthOf(inGroup, 0);
   }).pipe(Effect.provide(layerFor([remind])));
+});
+
+it.effect("a group's own reminder fires into the group as its agent, else to whoever asked", () => {
+  const here = makeDeferral("def-s", {
+    on_due: "remind",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-event"),
+    said_by: "teammate",
+    for_chat: true,
+  });
+  const partners = makeDeferral("def-c", {
+    on_due: "remind",
+    due: "2026-11-13T11:00+05:30",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-event"),
+    said_by: "teammate",
+    for_chat: true,
+  });
+  // Due after someone joined who couldn't read where it was set; and one asked by Bystander, who
+  // has no chat with the agent.
+  const late = makeDeferral("def-w", {
+    on_due: "remind",
+    due: "2026-11-13T09:30+05:30",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-event"),
+    said_by: "teammate",
+    for_chat: true,
+  });
+  const unreached = makeDeferral("def-u", {
+    on_due: "remind",
+    due: "2026-11-13T10:30+05:30",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-event"),
+    said_by: "bystander",
+    for_chat: true,
+  });
+  const gone = makeDeferral("def-m", {
+    on_due: "remind",
+    due: "2026-11-13T10:00+05:30",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-event"),
+    said_by: "teammate",
+    for_chat: true,
+  });
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Repository.KinChatRepository;
+    const lead = KinAgentId.make(`lead-${orgId}`);
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES
+      ('teammate', ${orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z'),
+      ('bystander', ${orgId}, 'bystander', 'Bystander', '1970-01-01T00:00:00.000Z'),
+      ('latecomer', ${orgId}, 'latecomer', 'Latecomer', '1970-01-01T00:00:00.000Z')`;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES ('partner', ${orgId}, 'partner', 'Partner', '1970-01-01T00:00:00.000Z', 'co_owner')`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at, direct_key)
+      VALUES ('group-a', ${orgId}, 'team_group', 'Plans', 0, '1970-01-01T00:00:00.000Z', NULL),
+        ('teammate-direct', ${orgId}, 'direct', NULL, 0, '1970-01-01T00:00:00.000Z',
+          ${`teammate:${lead}`})`;
+    const join = (
+      chatId: string,
+      memberId: string,
+      principal: Parameters<typeof repo.addMember>[0]["principal"],
+      role: "owner" | "member" = "member",
+    ) =>
+      repo.addMember({
+        orgId,
+        chatId: KinChatId.make(chatId),
+        memberId: KinMemberId.make(memberId),
+        principal,
+        role,
+        joinedAt: "1970-01-01T00:00:00.000Z",
+        leftAt: null,
+        mutedUntil: null,
+      });
+    const person = (id: string) => ({ _tag: "person", personId: KinPersonId.make(id) }) as const;
+    yield* join("group-a", "group-owner", person(`owner-${orgId}`), "owner");
+    yield* join("group-a", "group-lead", { _tag: "agent", agentId: lead });
+    yield* join("group-a", "group-teammate", person("teammate"));
+    yield* join("group-a", "group-bystander", person("bystander"));
+    // A co-owner who is a plain member of the group, and did not ask.
+    yield* join("group-a", "group-partner", person("partner"));
+    yield* join("teammate-direct", "direct-teammate", person("teammate"));
+    yield* join("teammate-direct", "direct-lead", { _tag: "agent", agentId: lead });
+    // The teammate asked in the group, which everyone there read: a shared turn.
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
+        event_ids, audience) VALUES ('set-wake', ${orgId}, ${lead}, 'test', 0, 'completed',
+        '["set-event"]', 'shared')`;
+    const asked = {
+      _tag: "chat.message",
+      orgId,
+      agentId: lead,
+      eventId: "set-event",
+      receivedAt: "1970-01-01T00:00:00.000Z",
+      dedupeKey: null,
+      provenance: { _tag: "human", personId: "teammate", memberId: "group-teammate" },
+      chatId: "group-a",
+      messageId: "set-message",
+    };
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+        queued_at, state, wakeup_id)
+      VALUES ('set-event', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(asked)}, 0, 0,
+        'done', 'set-wake')`;
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+        author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+      VALUES ('set-message', ${orgId}, 'group-a', 1, 'human', 'teammate', 'group-teammate',
+        'member', 'text', 'remind us to send the report', '[]', 'posted', '1970-01-01T00:00:00.000Z')`;
+    yield* sql`UPDATE kin_chats SET last_seq = 1 WHERE chat_id = 'group-a'`;
+    const triggers = yield* TriggerService.KinTriggerService;
+    yield* triggers.syncItem(here);
+    yield* triggers.syncItem(gone);
+    yield* triggers.syncItem(partners);
+    yield* triggers.syncItem(late);
+    yield* triggers.syncItem(unreached);
+
+    // Everyone there sees it, with who asked; only they, the owner or a co-owner stop it.
+    const set = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: widgetFor("def-s") }));
+    assert.equal(set.chatId, "group-a");
+    assert.deepStrictEqual((yield* cardOf("def-s")).askedBy, {
+      personId: KinPersonId.make("teammate"),
+      name: "Teammate",
+    });
+    const chat = yield* Chat.KinChatService;
+    const undo = (personId: string, itemId = "def-m") =>
+      chat.act(
+        { _tag: "person", orgId, personId: KinPersonId.make(personId) },
+        {
+          widgetId: widgetFor(itemId),
+          revision: 1,
+          actionId: "undo",
+          value: itemId,
+          clientActionId: `undo-${personId}`,
+        },
+      );
+    const refused = yield* undo("bystander").pipe(Effect.flip);
+    assert.deepInclude(refused, { reason: "not_allowed", message: KIN_ASKER_ONLY_REFUSAL });
+    yield* undo("partner", "def-c");
+    assert.strictEqual((yield* runOf("def-c"))?.state, "undone");
+
+    yield* tick(dueAt);
+    const eventId = yield* reminderEvent();
+    const [due] = yield* sql<{
+      json: string;
+    }>`SELECT json FROM kin_events WHERE event_id = ${eventId}`;
+    assert.deepInclude(JSON.parse(due!.json), {
+      chatId: "group-a",
+      origin: { agentId: lead, chatId: "group-a" },
+    });
+    // Read by who is in the group when it fires, not when it was set.
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
+        event_ids) VALUES ('fire-wake', ${orgId}, ${lead}, 'test', 0, 'running', json_array(${eventId}))`;
+    yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'fire-wake' WHERE event_id = ${eventId}`;
+    const turn = { orgId, agentId: lead, wakeupId: KinWakeupId.make("fire-wake") };
+    assert.equal(yield* turnAudience(turn), "shared");
+    assert.deepInclude(Option.getOrThrow(yield* laneFor(turn)), {
+      chatId: KinChatId.make("group-a"),
+    });
+    yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL WHERE event_id = ${eventId}`;
+    yield* sql`DELETE FROM kin_wakeups WHERE wakeup_id = 'fire-wake'`;
+    yield* leadWakeup({ orgId, eventId, chatId: "group-a", body: "Time to send the report." });
+    yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+    const fired = yield* reminderCard("def-s", dueAt);
+    assert.equal(fired.chatId, "group-a");
+    assert.deepInclude(fired.state, { askedBy: { personId: "teammate", name: "Teammate" } });
+
+    // Someone joined who couldn't read where it was set: the group gets only that it is due, and
+    // the teammate the reminder, in her own chat. No turn reads its words for the group.
+    yield* join("group-a", "group-latecomer", person("latecomer"));
+    yield* tick(dueAt + 30 * 60_000);
+    assert.lengthOf(yield* handedReminders(), 1);
+    const told = yield* sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+      FROM kin_messages WHERE org_id = ${orgId} AND (body LIKE 'A reminder %'
+        OR body LIKE 'Reminder: def-w.%') ORDER BY chat_id, seq`;
+    assert.lengthOf(told, 2);
+    assert.match(told[0]!.body, /^A reminder Teammate set on .* is due\.$/);
+    assert.deepInclude(told[0], { chatId: "group-a" });
+    assert.deepInclude(told[1], { chatId: "teammate-direct" });
+    assert.include(told[1]!.body, "Plans got only that it is due");
+    yield* sql`UPDATE kin_chat_members SET left_at = '1970-01-02T00:00:00.000Z'
+      WHERE org_id = ${orgId} AND member_id = 'group-latecomer'`;
+
+    // Its agent left the group: Kin tells whoever asked, in their own chat, where it was for.
+    yield* sql`UPDATE kin_chat_members SET left_at = '1970-01-02T00:00:00.000Z'
+      WHERE org_id = ${orgId} AND member_id = 'group-lead'`;
+    yield* tick(dueAt + 60 * 60_000);
+    assert.lengthOf(yield* handedReminders(), 1);
+    const [moved] = yield* sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+      FROM kin_messages WHERE org_id = ${orgId} AND body LIKE 'Reminder: def-m.%' ORDER BY seq`;
+    assert.equal(moved?.chatId, "teammate-direct");
+    assert.include(moved?.body ?? "", "It was for Plans, which");
+    // Bystander has no chat with the agent: the owner gets one bare line, never its words.
+    yield* tick(dueAt + 2 * 60 * 60_000);
+    const unreachedLines = yield* sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId",
+        body FROM kin_messages WHERE org_id = ${orgId}
+        AND (body LIKE '%def-u%' OR body LIKE 'A reminder Bystander%') ORDER BY seq`;
+    assert.lengthOf(unreachedLines, 1);
+    assert.deepInclude(unreachedLines[0], { chatId: `chat-${orgId}` });
+    assert.match(
+      unreachedLines[0]!.body,
+      /^A reminder Bystander set on .* for Plans is due, but it couldn't reach them or that chat\.$/,
+    );
+  }).pipe(Effect.provide(layerFor([here, gone, partners, late, unreached])));
 });
 
 it.effect("a teammate's own reminder comes to them in their chat, never the owner's", () => {

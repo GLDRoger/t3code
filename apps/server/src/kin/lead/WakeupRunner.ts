@@ -490,14 +490,18 @@ const make = Effect.gen(function* () {
       const subject = event.subject;
       if (subject.type === "scheduled_task") {
         const schedule = yield* KinSchedules.readSchedule(sql, orgId, subject.itemId);
-        if (schedule !== undefined)
+        if (schedule !== undefined) {
+          // Paused, or its setter gone, since it was queued: the run is dropped.
+          const task = yield* KinSchedules.readNativeTask(sql, schedule.taskId);
+          if (task === undefined || !(yield* KinSchedules.runnable(sql, schedule, task)))
+            return true;
+          // A feed with every number already recorded for the period has nothing to fetch.
           return (
-            (yield* KinSchedules.readNativeTask(sql, schedule.taskId)) === undefined ||
-            // A feed with every number already recorded for the period has nothing to fetch.
-            (isFeedSchedule(schedule.scheduleId) &&
-              (yield* feedTurn(orgId, schedule.scheduleId, yield* Clock.currentTimeMillis)) ===
-                undefined)
+            isFeedSchedule(schedule.scheduleId) &&
+            (yield* feedTurn(orgId, schedule.scheduleId, yield* Clock.currentTimeMillis)) ===
+              undefined
           );
+        }
         return yield* memory
           .readItemQuietly(orgId, subject.itemId, "triggers")
           .pipe(Effect.as(false), Effect.catchTags({ MemoryNotFound: () => Effect.succeed(true) }));

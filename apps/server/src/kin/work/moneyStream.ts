@@ -52,10 +52,12 @@ const TOPIC_PARTS: Partial<Record<keyof KinRefreshes, ReadonlyArray<KinMoneyPart
   timeZone: KIN_MONEY_PARTS,
   company: KIN_MONEY_PARTS,
   people: KIN_MONEY_PARTS,
+  // A section switched leaves out or brings back what Money counts (invoices in the outlook).
+  shell: KIN_MONEY_PARTS,
 };
 
 /** What a move of the refresh topics can move. */
-const demandOfTopics = (before: KinRefreshes, after: KinRefreshes): MoneyDemand => {
+export const demandOfTopics = (before: KinRefreshes, after: KinRefreshes): MoneyDemand => {
   const parts = new Set<KinMoneyPart>();
   for (const [topic, moves] of Object.entries(TOPIC_PARTS) as Array<
     [keyof KinRefreshes, ReadonlyArray<KinMoneyPart>]

@@ -37,6 +37,8 @@ import {
   kinWorkAudienceMove,
   kinWorkHostEdits,
   kinWorkClientStays,
+  kinWorkAnswerKept,
+  kinWorkAnswerOf,
   kinWorkItemState,
   kinWorkItemView,
   kinWorkListFooter,
@@ -940,6 +942,18 @@ describe("kinWorkItemState", () => {
     // A read from before the change still gives way to its answer.
     expect(shown(detail({ rev: 3, seq: 6 }), answer)).toBe(answer);
     expect(shown(detail({ rev: 4, seq: 6 }), answer)).toBe(answer);
+  });
+});
+
+describe("kinWorkAnswerOf", () => {
+  it("keeps one person's answer from the next person signed in on the same host", () => {
+    const rheas = kinWorkAnswerKept({}, detail({ rev: 4 }), "rhea");
+    expect(kinWorkAnswerOf(rheas, detail().key, "rhea")?.rev).toBe(4);
+    expect(kinWorkAnswerOf(rheas, detail().key, "arjun")).toBeUndefined();
+    // Arjun's own answer replaces hers at the same rev; an older one of hers changes nothing.
+    const arjuns = kinWorkAnswerKept(rheas, detail({ rev: 4 }), "arjun");
+    expect(kinWorkAnswerOf(arjuns, detail().key, "arjun")?.rev).toBe(4);
+    expect(kinWorkAnswerKept(rheas, detail({ rev: 3 }), "rhea")).toBe(rheas);
   });
 });
 

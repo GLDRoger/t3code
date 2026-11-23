@@ -1281,6 +1281,31 @@ describe("reminder and scheduled task cards", () => {
     expect(teammate({ theirs: false })).toContain("done");
     expect(teammate({})).toEqual([]);
     expect(kinReminderCardView(reminder({ status: "due" }), zone, true)!.actions).toHaveLength(5);
+    // A group's own says who asked, to everyone there, and offers no Change.
+    const asked = { askedBy: { personId: "meera", name: "Meera" } };
+    const group = kinReminderCardView(reminder({ status: "due", ...asked }), zone, false)!;
+    expect(group.lines).toEqual(["Due Fri, Nov 13, 9:00 AM.", "Asked by Meera."]);
+    expect(group.actions.map((action) => action.id)).not.toContain("change");
+    expect(group.actions).toHaveLength(4);
+    const routine = kinScheduledTaskCardView(
+      scheduled({ askedBy: { personId: "meera", name: "Meera", left: true } }),
+      zone,
+    )!;
+    expect(routine.lines.at(-1)).toBe("Asked by someone who has left.");
+    // Slots skipped while the run before was still going are counted on it.
+    const busy = kinScheduledTaskCardView(
+      scheduled({
+        lastRun: {
+          at: "2026-11-09T02:30:00.000Z",
+          status: "skipped",
+          note: "the last run was still going",
+        },
+        overlapSkipped: 3,
+      }),
+      zone,
+    )!;
+    expect(busy.lines).toContain("Skipped 3 runs in a row.");
+    expect(routine.actions.map((action) => action.id)).toContain("pause");
   });
 
   it("shows when a scheduled task runs, how the last run went, and its controls", () => {

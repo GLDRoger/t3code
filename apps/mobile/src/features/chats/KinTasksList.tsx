@@ -146,6 +146,8 @@ export function KinTasksList(
     readonly within?: {
       readonly header: React.ReactNode;
       readonly bar: Pick<React.ComponentProps<typeof AppBar>, "actions" | "menus">;
+      /** False while the project's section is off: no New task under it. */
+      readonly adds: boolean;
     };
   },
 ) {
@@ -309,19 +311,20 @@ export function KinTasksList(
     listState.more,
     hostEdits,
   );
-  const add = canAdd
-    ? () =>
-        navigation.navigate("KinWorkNew", {
-          environmentId,
-          orgId,
-          ...(filter.party === null
-            ? {}
-            : { party: filter.party.key, partyName: filter.party.title }),
-          ...(filter.project === null
-            ? {}
-            : { project: filter.project.key, projectName: filter.project.title }),
-        })
-    : null;
+  const add =
+    canAdd && within?.adds !== false
+      ? () =>
+          navigation.navigate("KinWorkNew", {
+            environmentId,
+            orgId,
+            ...(filter.party === null
+              ? {}
+              : { party: filter.party.key, partyName: filter.party.title }),
+            ...(filter.project === null
+              ? {}
+              : { project: filter.project.key, projectName: filter.project.title }),
+          })
+      : null;
   // The whole company's tasks also find clients, projects and docs, and say what needs you.
   const everywhere = within === undefined;
   const { state: found, search } = useKinSearch(props, ELSEWHERE, true);

@@ -287,6 +287,20 @@ describe("createKinWorkPageWatch", () => {
     expect(rereads()).toBe(2);
   });
 
+  it("reads once when the company's sections change, which the host's page answers with", () => {
+    const { watch, page, rereads } = watching();
+    watch.shell(4, page);
+    watch.shell(4, page);
+    expect(rereads()).toBe(0);
+    watch.shell(5, page);
+    watch.shell(5, page);
+    expect(rereads()).toBe(1);
+    // The same read, opened again after another change, is read again too.
+    const reopened = watching();
+    reopened.watch.shell(6, page);
+    expect(reopened.rereads()).toBe(1);
+  });
+
   it("reads a campaign's page for any client, contact or deal, which its counts read", () => {
     let rereads = 0;
     const watch = createKinWorkPageWatch({
