@@ -1,3 +1,4 @@
+import { KEY_SENT } from "../chat/keySent.ts";
 import {
   KinChatError,
   type KinDocDeleteInput,
@@ -473,7 +474,12 @@ export const editSection = Effect.fn("KinDocs.editSection")(
         section: input.section,
         hash: input.hash,
         text: input.text,
-        originKey: `person-edit:${personId}:${NodeCrypto.createHash("sha256").update(asked).digest("hex").slice(0, 32)}`,
+        // A coding agent's request keeps its key's id, so the version reads as its.
+        originKey: `person-edit:${personId}:${
+          input.clientRequestId.startsWith(KEY_SENT)
+            ? input.clientRequestId.split(":").slice(0, 2).join(":") + ":"
+            : ""
+        }${NodeCrypto.createHash("sha256").update(asked).digest("hex").slice(0, 32)}`,
       },
     );
     // The version this request wrote, a replay's included, in the view they read now.

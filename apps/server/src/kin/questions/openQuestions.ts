@@ -74,6 +74,7 @@ import {
   type StoredDraft,
   writtenOnApprove,
 } from "./approval.ts";
+import { keySentSql } from "../chat/keySent.ts";
 import { capital, inDocs, tellMade, writeApproved } from "./sentUpDraft.ts";
 
 /** The fixed headings of the open-questions sections; Kin's evals check a case's against these. */
@@ -849,7 +850,7 @@ const cardIds = (row: QuestionRow) =>
  * from. A copy passed on from elsewhere, another chat, another person, a schedule or another agent
  * never counts.
  */
-const wokenByTheirWords = Effect.fn("KinQuestions.wokenByTheirWords")(function* (
+export const wokenByTheirWords = Effect.fn("KinQuestions.wokenByTheirWords")(function* (
   orgId: KinOrgId,
   agentId: KinAgentId,
   wakeupId: string,
@@ -877,6 +878,7 @@ const wokenByTheirWords = Effect.fn("KinQuestions.wokenByTheirWords")(function* 
     WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
       AND e.tag = 'chat.message' AND json_extract(e.json, '$.origin') IS NULL
       AND m.chat_id = ${row.chatId} AND m.author_kind = 'human'
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       AND m.author_person_id = ${row.personId} AND m.origin_json IS NULL
       AND m.status = 'posted' AND trim(m.body) <> ''
       AND ${card === undefined ? sql`m.created_at > ${iso(row.askedAt)}` : sql`m.seq > ${card.seq}`}

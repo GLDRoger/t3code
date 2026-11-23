@@ -37,6 +37,7 @@ import {
   sensitiveNow,
   wordsOf,
 } from "./recordRows.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 /** Lists a project's lead writes in, inside that project; quotes and invoices only as drafts. */
 const LEAD_LISTS = ["work", "milestones", "docs", "quotes", "invoices"] as const;
@@ -672,6 +673,7 @@ const ownDirectAsk = Effect.fn("KinTeamView.ownDirectAsk")(function* (
     seq: number | null;
   }>`SELECT CASE e.tag WHEN 'chat.message' THEN
         (m.author_kind = 'human' AND m.author_person_id = ${personId} AND m.origin_json IS NULL
+          AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
           AND json_extract(e.json, '$.origin') IS NULL AND c.kind = 'direct'
           AND c.archived_at IS NULL AND c.direct_key = ${key})
       ELSE (json_extract(e.json, '$.origin.personId') = ${personId}

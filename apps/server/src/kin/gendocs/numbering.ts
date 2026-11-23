@@ -11,6 +11,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { Documented } from "./amounts.ts";
+import { followsCodingAgent } from "../lead/OutsideContent.ts";
+import { markedKey } from "../work/keyCall.ts";
 import { companyMoney } from "../work/companyProfile.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { isMoney, parseFields } from "../work/lists.ts";
@@ -188,6 +190,7 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
   /** What the entry's documents come to (`amounts.ts`): the amount and tax it is issued with. */
   documented?: Documented,
 ) {
+  yield* byAPerson(orgId, writer);
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
   return yield* sql.withTransaction(
@@ -479,12 +482,32 @@ export const unvoidEntry = Effect.fn("KinNumbers.unvoid")(function* (
   );
 }, workFailure);
 
+const BY_THE_PERSON = new KinChatError({
+  reason: "not_allowed",
+  message:
+    "Words from a person's coding agent can't issue or void an entry: the person issues or voids it in Kin.",
+});
+/**
+ * Issuing and voiding need a person: never a write through a coding agent's key, nor a turn that
+ * follows words it sent or wrote, directly or passed on.
+ */
+const byAPerson = Effect.fn("KinNumbers.byAPerson")(function* (orgId: KinOrgId, writer: Writer) {
+  if ((yield* markedKey(writer)) !== undefined) return yield* BY_THE_PERSON;
+  if (
+    writer.actor._tag === "agent" &&
+    writer.wakeupId !== undefined &&
+    (yield* followsCodingAgent({ orgId, wakeupId: writer.wakeupId }))
+  )
+    return yield* BY_THE_PERSON;
+});
+
 /** Voids the entry: kept, with its number if it was issued. Voiding a void entry changes nothing. */
 export const voidEntry = Effect.fn("KinNumbers.void")(function* (
   orgId: KinOrgId,
   writer: Writer,
   key: string,
 ) {
+  yield* byAPerson(orgId, writer);
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
   return yield* sql.withTransaction(
