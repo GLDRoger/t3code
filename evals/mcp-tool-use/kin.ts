@@ -53,6 +53,7 @@ import { moneySection } from "../../apps/server/src/kin/work/moneyViews.ts";
 import { notRegisteredFact } from "../../apps/server/src/kin/work/companyProfile.ts";
 import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
+import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
 import { formatKinPicturesDay, KIN_TEXT_LOCALE, KinMoneySummary } from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
@@ -715,6 +716,27 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
         spentSince: BigInt(one.spentSince as number),
       })),
     } as never),
+  // money_query view partners, as partnersAnswer writes it from what partnersOwed read.
+  partners: (input: {
+    partners: ReadonlyArray<
+      Record<string, unknown> & { entries: ReadonlyArray<{ key: string; on: string }> }
+    >;
+    zone: string;
+  }) =>
+    partnersAnswer(
+      input.partners.map((one) => ({
+        personId: null,
+        address: null,
+        ...one,
+        entries: one.entries.map(({ on, ...entry }) => ({
+          recordId: `rec_${entry.key}`,
+          at: Date.parse(`${on}T06:30:00.000Z`),
+          ...entry,
+        })),
+      })) as never,
+      [],
+      input.zone,
+    ),
   outlook: (input: Record<string, unknown> & { windows: ReadonlyArray<Record<string, unknown>> }) =>
     outlookAnswer({
       incoming: [],
@@ -723,6 +745,8 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       laterIn: [],
       dueOut: [],
       overdueOut: [],
+      partners: [],
+      unsaid: [],
       incomplete: [],
       datesWithoutAmount: [],
       runway: [],

@@ -42,6 +42,8 @@ import * as Watches from "../watches/readRpcs.ts";
 import * as Deals from "../work/deals.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as Clients from "../work/ownerClients.ts";
+import { partnersOwed } from "../work/partnersOwed.ts";
+import { presetList } from "../work/registers.ts";
 import { viewerOfPeople } from "../work/teamView.ts";
 import * as People from "./KinPeople.ts";
 
@@ -552,6 +554,35 @@ it.effect(
         });
       }),
     ),
+);
+
+it.effect("what the company owes a partner who leaves stays owed to them, by name", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      yield* presetList(ctx.orgId, "expenses", 0);
+      yield* ctx.records.create(
+        ctx.orgId,
+        { actor: { _tag: "person", personId: ctx.owner.personId }, via: "owner" },
+        {
+          list: "expenses",
+          originKey: "invented-domain",
+          title: "Invented domain renewal",
+          owner: { _tag: "person", personId: ctx.owner.personId },
+          state: "done",
+          amount: { minor: 420_000, currency: "INR" },
+          dateAt: 0,
+          fields: { fundedBy: `person:${arjunId}` },
+        },
+      );
+      const owed = Effect.map(partnersOwed(ctx.orgId, "INR"), (partners) =>
+        partners.map((one) => [one.personId, one.name, one.owed]),
+      );
+      const before = yield* owed;
+      yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: arjunId });
+      assert.deepStrictEqual(before, [[arjunId, "Arjun", [{ minor: 420_000, currency: "INR" }]]]);
+      assert.deepStrictEqual(yield* owed, before);
+    }),
+  ),
 );
 
 it.effect(

@@ -1,5 +1,6 @@
 import { KIN_QUOTES_LIST, kinQuoteRow } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { useAtomValue } from "@effect/atom-react";
+import { kinPersonChoices } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
@@ -740,7 +741,7 @@ export function KinListEntryBody(
                     disabled={busy}
                     choices={
                       field.type === "person"
-                        ? people
+                        ? kinPersonChoices(field.key, people)
                         : field.type === "choice"
                           ? field.choices.map((choice) => ({ value: choice, label: choice }))
                           : (field.link === "projects" ? projects : clients).map((row) => ({

@@ -224,6 +224,10 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
       : fit === "part"
         ? " (part payment)"
         : "";
+  const target = (one: (typeof entries)[number][1]["candidates"][number]) =>
+    one.repays === undefined
+      ? `${one.key}${note(one.fit, one.tdsMinor)}`
+      : `${one.repays.map((each) => each.key).join(", ")} (${one.title}, marked repaid on Confirm)`;
   const matched = of("matched");
   const choose = of("choose");
   const unmatched = of("unmatched");
@@ -248,11 +252,11 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
     },
     matched: matched.slice(0, LIST).map(([index, match]) => ({
       ...shown(index),
-      to: `${match.candidates[0]!.key}${note(match.candidates[0]!.fit, match.candidates[0]!.tdsMinor)}`,
+      to: target(match.candidates[0]!),
     })),
     choose: choose.slice(0, LIST).map(([index, match]) => ({
       ...shown(index),
-      options: match.candidates.map((one) => `${one.key}${note(one.fit, one.tdsMinor)}`),
+      options: match.candidates.map(target),
     })),
     unmatched: unmatched.slice(0, LIST).map(([index, match]) => ({
       ...shown(index),

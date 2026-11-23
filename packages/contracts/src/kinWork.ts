@@ -560,13 +560,20 @@ export const KinWorkListInput = Schema.Struct({
   listCategory: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(60)))),
   /**
    * Its own date, or the day it was added when it has none, on or after this day and on or
-   * before `dateTo`, in the owner's time zone: the rule Money's "spent" uses.
+   * before `dateTo`, in the owner's time zone.
    */
   dateFrom: Schema.optional(KinDay),
   dateTo: Schema.optional(KinDay),
   /** A payment was received against it on or after this day, and on or before `paidTo`. */
   paidFrom: Schema.optional(KinDay),
   paidTo: Schema.optional(KinDay),
+  /**
+   * A Paid expense whose money left the company's accounts on or after this day, and on or before
+   * `spentTo`, in the owner's time zone: exactly what Money's "spent" counts. A partner's counts
+   * on the day it was paid back, never while owed. Ignored by older servers.
+   */
+  spentFrom: Schema.optional(KinDay),
+  spentTo: Schema.optional(KinDay),
   /**
    * `true`: only entries a figure counts, so a list opened from one matches it. `false`: only
    * suggestions nobody kept or dropped yet. Ignored by older servers.

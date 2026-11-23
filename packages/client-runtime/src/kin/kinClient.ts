@@ -1953,6 +1953,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.work.newExpense",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
     }),
+    /** In order per address: a second pick runs after the first and says if nothing is left. */
+    workMatchPartner: createKinRpcCommand(runtime, {
+      label: "kin:work:match-partner",
+      tag: "kin.work.matchPartner",
+      concurrency: { mode: "serial", key: ({ input }) => `${input.orgId}:${input.address}` },
+    }),
     /** One page of everything dated in a window; the Dates view decides when. */
     workDates: workDatesRead,
     workListUpdate: createKinRpcCommand(runtime, {

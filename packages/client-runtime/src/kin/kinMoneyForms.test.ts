@@ -8,6 +8,7 @@ import {
   kinExpenseDraft,
   kinExpenseInput,
   kinExpenseTyped,
+  kinPersonChoices,
   kinInvoiceBeforeTax,
   kinInvoiceDraft,
   kinInvoiceDueChoices,
@@ -155,10 +156,42 @@ describe("an expense typed by hand", () => {
     });
     expect(kinExpenseTyped(draft, draft)).toBe(false);
     expect(kinExpenseTyped({ ...draft, paidOn: "2026-11-20" }, draft)).toBe(true);
+    // A partner who paid it themselves goes as who funded it; left empty, the company did.
+    const funded = kinExpenseInput(orgId, { ...named, amount: "12", fundedBy: "meera" }, send);
+    expect(funded.ok && funded.input.fundedBy).toBe("meera");
+    expect(kinExpenseTyped({ ...draft, fundedBy: "meera" }, draft)).toBe(true);
+  });
+
+  it("offers only people, and only on a list that has Funded by, as who funded an expense", () => {
+    const people = new Map([
+      ["zoya", "Zoya"],
+      ["meera", "Meera"],
+    ]);
+    expect(kinExpenseChoices(null, people).fundedBy).toEqual([
+      { value: "meera", label: "Meera" },
+      { value: "zoya", label: "Zoya" },
+    ]);
+    // An Expenses list with no room for Funded by says so in a line, and offers no picker.
+    const full = {
+      fields: Array.from({ length: 20 }, (_, n) => ({ key: `extra${n}`, retired: false })),
+      categories: [],
+    } as unknown as Parameters<typeof kinExpenseChoices>[0];
+    expect(kinExpenseChoices(full, people)).toMatchObject({
+      fundedBy: [],
+      fundedByNote: KIN_MONEY_FORMS.expense.fundedByNoRoom,
+    });
+    expect(
+      kinPersonChoices("fundedBy", [{ value: "person:meera" }, { value: "agent:finance" }]),
+    ).toEqual([{ value: "person:meera" }]);
+    expect(kinPersonChoices("paidBy", [{ value: "agent:finance" }])).toEqual([
+      { value: "agent:finance" },
+    ]);
   });
 
   it("offers no categories before the Expenses list exists, which the first one makes", () => {
     expect(kinExpenseChoices(null)).toEqual({
+      fundedByNote: null,
+      fundedBy: [],
       categories: [],
       paidWith: [],
       receipt: true,

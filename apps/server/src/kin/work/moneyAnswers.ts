@@ -18,6 +18,8 @@ import {
   startOfDay,
 } from "./recordRows.ts";
 import { nextDates, repeatsBetween } from "./repeat.ts";
+import { companyCashOut, partnerRepaidDay, repaidDay } from "./reimbursement.ts";
+import { fundable, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
 import { alertsBeside, type AlertBalance } from "./statements/bankAlerts.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
 import {
@@ -83,6 +85,8 @@ const recordedMoney = Effect.fn("KinMoneyAnswers.recorded")(function* (
   orgId: KinOrgId,
   sinceDay: string,
   zone: string,
+  /** The estimate's own day: money recorded for a later day hasn't moved yet. */
+  untilDay: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const received = yield* sql<{ minor: number; currency: string; day: string }>`
@@ -91,21 +95,26 @@ const recordedMoney = Effect.fn("KinMoneyAnswers.recorded")(function* (
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
       AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${sinceDay}
+      AND p.paid_on <= ${untilDay}
     ORDER BY p.paid_on, p.payment_id`;
-  const spent = yield* sql<{ minor: number; currency: string; at: number }>`
-    SELECT r.amount_minor AS minor, r.currency, ${moneyDay(sql)} AS at
+  // A partner's expense leaves the company's accounts on the day it is paid back, if ever.
+  const spent = yield* sql<{ minor: number; currency: string; at: number; repaid: string | null }>`
+    SELECT r.amount_minor AS minor, r.currency, ${moneyDay(sql)} AS at,
+      ${partnerRepaidDay(sql)} AS repaid
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
-      AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
-      AND ${moneyDay(sql)} >= ${startOfDay(sinceDay, zone)}
+      AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${companyCashOut(sql)}
+      AND (${moneyDay(sql)} >= ${startOfDay(sinceDay, zone)} OR ${repaidDay(sql)} >= ${sinceDay})
     ORDER BY at, r.key`;
   return {
     received: received.map((one) => ({ minor: one.minor, currency: one.currency, day: one.day })),
-    spent: spent.map((one) => ({
-      minor: one.minor,
-      currency: one.currency,
-      day: dayIn(one.at, zone),
-    })),
+    spent: spent
+      .map((one) => ({
+        minor: one.minor,
+        currency: one.currency,
+        day: one.repaid ?? dayIn(one.at, zone),
+      }))
+      .filter((one) => one.day >= sinceDay && one.day <= untilDay),
   };
 });
 
@@ -248,7 +257,7 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
   const recorded =
     earliest === undefined
       ? { received: [], spent: [] }
-      : yield* recordedMoney(orgId, earliest, zone);
+      : yield* recordedMoney(orgId, earliest, zone, today);
   const byCurrency = currencies.map((currency) => {
     const these = held.filter((one) => one.currency === currency);
     const since = these.map((one) => one.on).toSorted()[0]!;
@@ -396,8 +405,8 @@ type Expected = {
 /**
  * What is expected in and out from now to `days` ahead (each of `HORIZONS` by default): issued
  * invoices by due date, with overdue ones apart and never counted as coming; open amounts we owe by
- * their due date or date, past-due ones counted as going out; and the next occurrences of entries
- * set to repeat. Then runway from the last three complete months.
+ * their due date or date, past-due ones and what partners are owed back counted as going out; and
+ * the next occurrences of entries set to repeat. Then runway from the last three complete months.
  */
 export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
   orgId: KinOrgId,
@@ -548,14 +557,27 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
     now,
   );
 
+  // What the company owes partners back is due now, in every window. Each partner's balance
+  // stands alone: one owed back goes out, one holding refunds returns them, never netted.
+  const partners = yield* partnersOwed(orgId, home);
+  const balances = partners.flatMap((one) => one.owed);
+  const toPartners = balances.filter((money) => money.minor > 0);
+  const fromPartners = balances
+    .filter((money) => money.minor < 0)
+    .map((money) => ({ minor: -money.minor, currency: money.currency }));
+
   const windows = ends.map(({ days: span, end }) => {
     const inWindow = (one: Expected) => one.at <= end;
     const expectedIn = addUp(
-      incoming.filter(inWindow).map((one) => one.money),
+      [...incoming.filter(inWindow).map((one) => one.money), ...fromPartners],
       home,
     );
     const expectedOut = addUp(
-      [...overdueOut.map((one) => one.money), ...dueOut.filter(inWindow).map((one) => one.money)],
+      [
+        ...overdueOut.map((one) => one.money),
+        ...toPartners,
+        ...dueOut.filter(inWindow).map((one) => one.money),
+      ],
       home,
     );
     const currencies = [...new Set([...expectedIn, ...expectedOut].map((one) => one.currency))];
@@ -593,6 +615,9 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
     ),
     dueOut,
     overdueOut,
+    partners,
+    // With no Funded by to record them in, there is nobody to say: no picker that can't save.
+    unsaid: (yield* fundable(orgId)) ? yield* partnersUnsaid(orgId, home) : [],
     datesWithoutAmount: undated.rows,
     incomplete,
     runway: yield* runway(orgId, now, zone, today),
@@ -616,7 +641,7 @@ const runway = Effect.fn("KinMoneyAnswers.runway")(function* (
   const thisMonth = monthOf(today);
   const months = [-3, -2, -1].map((back) => shiftMonth(thisMonth, back));
   const first = `${months[0]!}-01`;
-  const recorded = yield* recordedMoney(orgId, first, zone);
+  const recorded = yield* recordedMoney(orgId, first, zone, today);
   const inWindow = (one: { readonly day: string }) => one.day < `${thisMonth}-01`;
   const paidFirst = yield* sql<{ currency: string; day: string }>`SELECT p.currency,
       MIN(p.paid_on) AS day
@@ -624,15 +649,25 @@ const runway = Effect.fn("KinMoneyAnswers.runway")(function* (
     WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
       AND r.register_id IN ('invoices', 'receipts')
     GROUP BY p.currency ORDER BY p.currency`;
-  const spentFirst = yield* sql<{ currency: string; at: number }>`SELECT r.currency,
-      MIN(${moneyDay(sql)}) AS at
+  const repaid = partnerRepaidDay(sql);
+  const spentFirst = yield* sql<{ currency: string; at: number | null; repaid: string | null }>`
+    SELECT r.currency, MIN(CASE WHEN ${repaid} IS NULL THEN ${moneyDay(sql)} END) AS at,
+      MIN(${repaid}) AS repaid
     FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'expenses'
       AND r.state = 'done' AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
+      AND ${companyCashOut(sql)}
     GROUP BY r.currency ORDER BY r.currency`;
   const sinceOf = (currency: string) =>
     [
       ...paidFirst.filter((one) => one.currency === currency).map((one) => one.day),
-      ...spentFirst.filter((one) => one.currency === currency).map((one) => dayIn(one.at, zone)),
+      ...spentFirst.flatMap((one) =>
+        one.currency !== currency
+          ? []
+          : [
+              ...(one.at === null ? [] : [dayIn(one.at, zone)]),
+              ...(one.repaid === null ? [] : [one.repaid]),
+            ],
+      ),
     ].toSorted()[0];
   const cash = yield* cashPosition(orgId, now);
   const currencies = [
@@ -693,6 +728,28 @@ const itemsShown = (items: ReadonlyArray<Expected>, zone: string) =>
   }));
 
 /** The outlook as an agent quotes it, inputs included so it can say how a figure was reached. */
+/** Each partner's balance on its own: owed back counts going out, refunds they hold coming in. */
+const partnerBalances = (partners: Outlook["partners"]) => {
+  const named = (one: Outlook["partners"][number]) =>
+    one.personId === null ? `${one.name} (unmatched)` : one.name;
+  const owing = partners.flatMap((one) => {
+    const owed = one.owed.filter((money) => money.minor > 0);
+    return owed.length === 0
+      ? []
+      : [{ partner: named(one), owed: shown(owed), expenses: one.entries.length }];
+  });
+  const holding = partners.flatMap((one) => {
+    const held = one.owed
+      .filter((money) => money.minor < 0)
+      .map((money) => ({ minor: -money.minor, currency: money.currency }));
+    return held.length === 0 ? [] : [{ partner: named(one), returns: shown(held) }];
+  });
+  return {
+    ...(owing.length === 0 ? {} : { owedToPartnersCountedAsGoingOut: owing }),
+    ...(holding.length === 0 ? {} : { refundsPartnersHoldCountedAsComingIn: holding }),
+  };
+};
+
 export const outlookAnswer = (view: Outlook) => ({
   today: view.today,
   windows: view.windows.map((one) => ({
@@ -722,6 +779,16 @@ export const outlookAnswer = (view: Outlook) => ({
   ...(view.overdueOut.length === 0
     ? {}
     : { pastDueCountedAsGoingOut: itemsShown(view.overdueOut, view.timeZone) }),
+  ...partnerBalances(view.partners),
+  ...(view.unsaid.length === 0
+    ? {}
+    : {
+        paidPersonallyNotYetSaid: view.unsaid.map((one) => ({
+          address: one.address,
+          total: shown(one.total),
+          expenses: one.expenses,
+        })),
+      }),
   ...(view.incomplete.length === 0
     ? {}
     : {
@@ -769,5 +836,5 @@ export const outlookAnswer = (view: Outlook) => ({
         }),
   })),
   basis:
-    "Expected in is issued invoices' unpaid balances by due date; overdue ones are listed, never counted. Expected out is open amounts we owe by due date, past-due ones counted, and the next dates of entries set to repeat. Runway is cash divided by the average monthly net of the last three complete months, from payments and paid expenses recorded in Kin; TDS is never cash.",
+    "Expected in is issued invoices' unpaid balances by due date; overdue ones are listed, never counted. Expected out is open amounts we owe by due date, past-due ones counted, what partners are owed back for expenses they paid, and the next dates of entries set to repeat. Paid personally, not yet said: imported expenses an address paid that nobody has said are owed, counted as the company's own until an owner says. Runway is cash divided by the average monthly net of the last three complete months, from payments and paid expenses recorded in Kin; a partner's expense counts on the day it was paid back, never before; TDS is never cash.",
 });
