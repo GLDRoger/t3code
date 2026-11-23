@@ -9,6 +9,7 @@ import {
   KinMessageId,
   KinPersonId,
   KinScheduledTaskCard,
+  KinWidgetId,
   type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -512,6 +513,35 @@ it.effect(
       yield* leadWakeup({ orgId, eventId: run!.eventId, chatId: "chat-a" });
       yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
       assert.include((yield* nativeCard()).state.lastRun, { status: "skipped" });
+
+      yield* runNow();
+      const [, next] = yield* nativeRuns();
+      const body = "Approve the bank-alert tally?";
+      const messageId = KinMessageId.make(
+        (yield* leadWakeup({ orgId, eventId: next!.eventId, chatId: "chat-a", body }))!,
+      );
+      yield* (yield* Repository.KinChatRepository).insertWidget({
+        audience: "chat",
+        orgId,
+        chatId: KinChatId.make("chat-a"),
+        messageId,
+        widgetId: KinWidgetId.make("bank-alert-question"),
+        widgetClass: "native",
+        type: "choice",
+        state: { question: body },
+        source: null,
+        feed: null,
+        awaiting: [],
+        pinnedAt: null,
+        closedAt: null,
+        updatedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+      });
+      yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+      assert.include((yield* nativeCard()).state.lastRun, {
+        status: "posted",
+        note: body,
+        messageId,
+      });
 
       yield* (yield* KinSchedules.KinSchedules).cancel(orgId, scheduleId);
       assert.lengthOf((yield* tasks.list()).tasks, 0);
