@@ -629,6 +629,8 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_company_shell: "set_by",
   kin_connection_asks: "agent_id decided_by",
   kin_connection_calls: "agent_id",
+  // A person's own mailbox: removing them removes it and stales its asks (`KinPeople.test.ts`).
+  kin_connections: "person_id",
   kin_discussions: "ask_agent_id decider_agent_id opened_by_agent_id",
   kin_doc_jobs: "agent_id answered_author_id asked_by_person_id",
   kin_doc_versions: "actor_id answered_author_id",
@@ -660,6 +662,8 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_ping_items: "person",
   kin_ping_ledger: "person",
   kin_pr_review_posts: "agent_id",
+  // Whose own mailbox a turn read: a mark that keeps that turn's writes in their chat.
+  kin_private_turns: "person_id",
   kin_profile_changes: "agent_id",
   kin_pull_requests: "author",
   kin_pulse_facts: "handled_by_id",

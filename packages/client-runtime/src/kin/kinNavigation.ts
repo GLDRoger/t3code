@@ -186,14 +186,15 @@ export function kinSettingsGroups(input: {
     title: KIN_SETTINGS_GROUP_TITLES.you,
     pages: ["profile", ...(input.notifications ? (["notifications"] as const) : []), "appearance"],
   };
-  // A teammate's What Kin checked holds the watches on their own things, or says there are none.
+  // A teammate's What Kin checked holds the watches on their own things, or says there are none;
+  // their Connections holds only their own mailbox.
   if (!input.ownerLevel)
     return [
       you,
       {
         id: "company",
         title: KIN_SETTINGS_GROUP_TITLES.company,
-        pages: [...(input.deals === true ? (["deals"] as const) : []), "watches"],
+        pages: [...(input.deals === true ? (["deals"] as const) : []), "watches", "connections"],
       },
     ];
   return [
@@ -234,6 +235,7 @@ export type KinPhoneSettingsRow =
   | "deals"
   | "watches"
   | "host"
+  | "mailbox"
   | "stop";
 
 /**
@@ -245,7 +247,7 @@ export function kinPhoneSettingsRows(input: { readonly ownerLevel: boolean }): {
   readonly company: ReadonlyArray<KinPhoneSettingsRow>;
 } {
   return {
-    you: ["profile", "notifications", "appearance"],
+    you: ["profile", "notifications", "appearance", "mailbox"],
     company: input.ownerLevel
       ? ["team", "agents", "company", "sections", "deals", "watches", "host", "stop"]
       : ["watches"],
