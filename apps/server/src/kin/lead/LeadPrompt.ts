@@ -879,15 +879,22 @@ export class KinLeadPrompt extends Context.Service<
           // Kin's wake to keep this agent's unread messages true (`reviewWake.ts`), in their chat.
           if (event._tag === "pulse" && event.review === true) {
             fromOwner = false;
-            const made = yield* reviewWakeText(orgId, event, yield* Clock.currentTimeMillis).pipe(
+            const made = yield* reviewWakeText(
+              { orgId, agentId, wakeupId: input.wakeupId },
+              event,
+              yield* Clock.currentTimeMillis,
+            ).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.catch((cause) =>
                 Effect.logWarning("Kin review unreadable", cause).pipe(Effect.as(undefined)),
               ),
             );
-            const eventQuote = quote(QUOTE_LABELS.eventData, { event: event.eventId });
+            const eventQuote = quote(QUOTE_LABELS.eventData, {
+              event: event.eventId,
+              ...(made === undefined ? {} : { changed: made.changed }),
+            });
             events.push(
-              `${eventQuote}\n\n${made ?? REVIEW_NOTHING_NOW} ${made === undefined ? `Write exactly ${SILENT_REPLY}.` : ""}`.trimEnd(),
+              `${eventQuote}\n\n${made === undefined ? `${REVIEW_NOTHING_NOW} Write exactly ${SILENT_REPLY}.` : made.text}`,
             );
             continue;
           }
@@ -2015,6 +2022,7 @@ export class KinLeadPrompt extends Context.Service<
                   orgId,
                   agentId,
                   chatIds: [lane, ...others.filter((chatId) => chatId !== lane)],
+                  shared: !ownerOnly,
                 });
               }).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),

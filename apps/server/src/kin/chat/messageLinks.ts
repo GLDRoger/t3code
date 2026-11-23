@@ -68,7 +68,7 @@ export const keysIn = (body: string): ReadonlyArray<string> => [
 const NUMBER = /(?<![\p{L}\p{N}/-])([\p{L}\p{N}]+(?:[/-][\p{L}\p{N}]+)+)(?![\p{L}\p{N}/-])/gu;
 
 /** What in a message could be a printed number, for looking those up and no others. */
-const numbersIn = (body: string): ReadonlyArray<string> =>
+export const numbersIn = (body: string): ReadonlyArray<string> =>
   [...linkableText(body).matchAll(NUMBER)]
     .map((match) => match[1]!)
     .filter((token) => /\d/.test(token));

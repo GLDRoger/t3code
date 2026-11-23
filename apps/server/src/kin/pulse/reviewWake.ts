@@ -13,11 +13,23 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { agentMessage, unreadByAll } from "../chat/ownMessages.ts";
-import { keysIn } from "../chat/messageLinks.ts";
+import { amendable, someoneThere } from "../chat/ownMessages.ts";
+import { keysIn, numbersIn } from "../chat/messageLinks.ts";
+import { historyFloor } from "../chat/sharing.ts";
+import { effectiveAudience, turnPeople } from "../lead/Audience.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { ownerLevelPeople } from "../people/KinAccess.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfList } from "../shell/sections.ts";
 import { personQuietUntil } from "../triggers/quietHold.ts";
 import { listDef, stateLabel } from "../work/registers.ts";
+import {
+  KIN_OWNER_LEVEL,
+  listNumberSeenBy,
+  seenBy,
+  viewerOfPeople,
+  type KinViewer,
+} from "../work/teamView.ts";
 
 /** How long a person has had an agent's messages unread before Kin may wake it to look again. */
 export const REVIEW_UNREAD_MS = 2 * 60 * 60_000;
@@ -69,36 +81,66 @@ const changedAt = (changes: ReviewChanges) => {
   return all.length === 0 ? undefined : Math.max(...all);
 };
 
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** `title` stands in `body` as words of its own, not inside a longer word. */
+const namesTitle = (body: string, title: string) =>
+  new RegExp(`(?<![\\p{L}\\p{N}])${escaped(title)}(?![\\p{L}\\p{N}])`, "iu").test(body);
+
 /**
- * What changed about an agent's unread messages in a chat since they were posted: a record one
- * names by key changed state, a card on one closed, a pulse fact one was told for cleared, or a
- * person there is about to start their working day after quiet hours. From stored rows.
+ * What changed about an agent's unread messages in a chat since they were posted: an entry one
+ * names changed state, a card on one closed, a pulse fact one was told for cleared, or a person
+ * there is about to start their working day after quiet hours. An entry counts only when named
+ * exactly (its key, its whole number, or a title no other entry has) and `viewer` may read it as
+ * the Work and Money tools would show it. From stored rows.
  */
 const reviewChanges = Effect.fn("KinReview.changes")(function* (input: {
   readonly orgId: KinOrgId;
   readonly chatId: string;
   readonly messages: ReadonlyArray<Pending>;
   readonly at: number;
+  readonly viewer: KinViewer;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const { orgId, messages } = input;
+  const { orgId, messages, viewer } = input;
   const ids = messages.map((one) => one.messageId);
   const posted = new Map(messages.map((one) => [one.messageId, one.createdAt] as const));
+  const since = new Map<string, number>();
+  const note = (key: string, at: number) => since.set(key, Math.min(since.get(key) ?? at, at));
+  for (const one of messages) for (const key of keysIn(one.body)) note(key, one.createdAt);
   const named = yield* sql<{ messageId: string; key: string }>`SELECT n.message_id AS "messageId",
       json_extract(k.value, '$.key') AS key
     FROM kin_message_names n, json_each(n.names_json) k
     WHERE n.org_id = ${orgId} AND n.message_id IN ${sql.in(ids)}
-    UNION
-    -- Agents name a record by its number ("INV/26-27/004") or its title more often than its key.
-    SELECT m.message_id AS "messageId", r.key FROM kin_messages m JOIN kin_records r
-      ON r.org_id = m.org_id AND (instr(m.body, json_extract(r.fields_json, '$.number')) > 0
-        OR (length(r.title) >= ${TITLE_MIN} AND instr(lower(m.body), lower(r.title)) > 0))
-    WHERE m.org_id = ${orgId} AND m.message_id IN ${sql.in(ids)}
     ORDER BY 1, 2`;
-  const since = new Map<string, number>();
-  const note = (key: string, at: number) => since.set(key, Math.min(since.get(key) ?? at, at));
-  for (const one of messages) for (const key of keysIn(one.body)) note(key, one.createdAt);
   for (const row of named) note(row.key, posted.get(row.messageId) ?? input.at);
+  // Agents name an entry by its number ("INV/26-27/004") or its title more often than its key.
+  const numbers = new Map<string, number>();
+  for (const one of messages)
+    for (const number of numbersIn(one.body))
+      numbers.set(number, Math.min(numbers.get(number) ?? one.createdAt, one.createdAt));
+  const byNumber =
+    numbers.size === 0
+      ? []
+      : yield* sql<{ key: string; number: string }>`SELECT r.key,
+            json_extract(r.fields_json, '$.number') AS number
+          FROM kin_records r WHERE r.org_id = ${orgId}
+            AND json_extract(r.fields_json, '$.number') IN ${sql.in([...numbers.keys()])}
+            AND ${seenBy(sql, viewer)} AND ${listNumberSeenBy(sql, viewer)}
+          ORDER BY r.key`;
+  for (const row of byNumber) note(row.key, numbers.get(row.number) ?? input.at);
+  const titled = yield* sql<{ key: string; title: string }>`SELECT r.key, r.title
+    FROM kin_records r WHERE r.org_id = ${orgId} AND length(r.title) >= ${TITLE_MIN}
+      AND ${seenBy(sql, viewer)}
+      AND EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = r.org_id
+        AND m.message_id IN ${sql.in(ids)} AND instr(lower(m.body), lower(r.title)) > 0)
+      -- A title two entries share names neither, whoever may read the other.
+      AND NOT EXISTS (SELECT 1 FROM kin_records t WHERE t.org_id = r.org_id
+        AND t.record_id <> r.record_id AND lower(t.title) = lower(r.title))
+    ORDER BY r.key`;
+  for (const row of titled)
+    for (const one of messages)
+      if (namesTitle(one.body, row.title)) note(row.key, one.createdAt);
+  const shell = yield* KinShell.get(orgId);
   const records: Array<{ key: string; title: string; state: string; at: number }> = [];
   if (since.size > 0) {
     const moved = yield* sql<{
@@ -111,11 +153,14 @@ const reviewChanges = Effect.fn("KinReview.changes")(function* (input: {
       FROM kin_records r JOIN kin_record_changes c ON c.org_id = r.org_id
         AND c.record_id = r.record_id
       WHERE r.org_id = ${orgId} AND r.key IN ${sql.in([...since.keys()])}
+        AND ${seenBy(sql, viewer)}
         AND EXISTS (SELECT 1 FROM json_each(c.fields_json) f
           WHERE json_extract(f.value, '$.field') = 'state')
       GROUP BY r.record_id ORDER BY r.key`;
     for (const row of moved) {
       if (row.at <= (since.get(row.key) ?? Infinity) || row.at > input.at) continue;
+      const section = sectionOfList(row.list);
+      if (section !== null && !KinShell.sectionOn(shell, section)) continue;
       const def = yield* listDef(orgId, row.list);
       records.push({
         key: row.key,
@@ -167,7 +212,42 @@ const reviewChanges = Effect.fn("KinReview.changes")(function* (input: {
   } satisfies ReviewChanges;
 });
 
-/** Each agent and chat with messages no person there has read, the oldest first, from stored rows. */
+/**
+ * Who a review of `chatId` is for, as its turn's audience reads it (`turnAudience`): the owner's
+ * side, or the people below it there now, whose view and history floor it keeps to.
+ */
+const chatView = Effect.fnUntraced(function* (orgId: KinOrgId, agentId: string, chatId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const level = new Set<string>(yield* ownerLevelPeople(orgId));
+  const [chat] = yield* sql<{ sharedAt: number | null; owner: string | null }>`SELECT
+      c.shared_at AS "sharedAt", (SELECT a.owner_person_id FROM kin_agents a
+        WHERE a.org_id = c.org_id AND a.agent_id = ${agentId}) AS owner
+    FROM kin_chats c WHERE c.org_id = ${orgId} AND c.chat_id = ${chatId}`;
+  if (chat?.owner != null) level.add(chat.owner);
+  const people = yield* sql<{ personId: string; here: number }>`SELECT person_id AS "personId",
+      (left_at IS NULL) AS here
+    FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chatId}
+      AND principal_kind = 'person' ORDER BY person_id`;
+  const others = people.filter((one) => !level.has(one.personId));
+  const ownerSide =
+    chat !== undefined &&
+    others.every((one) => one.here === 0) &&
+    (chat.sharedAt === null || others.length === 0);
+  return ownerSide
+    ? { shared: false, viewer: KIN_OWNER_LEVEL }
+    : {
+        shared: true,
+        viewer: viewerOfPeople(
+          others.filter((one) => one.here === 1).map((one) => KinPersonId.make(one.personId)),
+        ),
+      };
+});
+
+/**
+ * Each agent and chat with messages it may still change (`amendable`) and someone there to read,
+ * the oldest first, from stored rows; a paused or retired agent has none. In a chat others read,
+ * only what its history floor shows.
+ */
 const unreadByChat = Effect.fnUntraced(function* (
   orgId: KinOrgId,
   agentId?: string,
@@ -180,27 +260,65 @@ const unreadByChat = Effect.fnUntraced(function* (
     messageId: string;
     createdAt: string;
     body: string;
+    inView: number | null;
   }>`SELECT m.author_agent_id AS "agentId", m.chat_id AS "chatId", m.message_id AS "messageId",
-      m.created_at AS "createdAt", m.body
+      m.created_at AS "createdAt", m.body,
+      (m.seq >= ${historyFloor(sql, sql`m.org_id`, sql`m.chat_id`)}) AS "inView"
     FROM kin_messages m
     JOIN kin_chat_members a ON a.org_id = m.org_id AND a.chat_id = m.chat_id
       AND a.principal_kind = 'agent' AND a.agent_id = m.author_agent_id AND a.left_at IS NULL
-    WHERE m.org_id = ${orgId} AND ${agentMessage(sql)} AND ${unreadByAll(sql)}
+    JOIN kin_agents g ON g.org_id = m.org_id AND g.agent_id = m.author_agent_id
+      AND g.paused_at IS NULL AND g.retired_at IS NULL
+    WHERE m.org_id = ${orgId} AND ${amendable(sql)} AND ${someoneThere(sql)}
       ${agentId === undefined ? sql`` : sql`AND m.author_agent_id = ${agentId}`}
       ${chatId === undefined ? sql`` : sql`AND m.chat_id = ${chatId}`}
     ORDER BY m.author_agent_id, m.chat_id, m.seq`;
-  const groups = new Map<string, { agentId: string; chatId: string; messages: Array<Pending> }>();
+  const groups = new Map<
+    string,
+    {
+      agentId: string;
+      chatId: string;
+      viewer: KinViewer;
+      messages: Array<Pending & { inView: boolean }>;
+    }
+  >();
   for (const row of rows) {
     const key = `${row.agentId}\u0000${row.chatId}`;
-    const group = groups.get(key) ?? { agentId: row.agentId, chatId: row.chatId, messages: [] };
+    const group = groups.get(key) ?? {
+      agentId: row.agentId,
+      chatId: row.chatId,
+      viewer: KIN_OWNER_LEVEL,
+      messages: [],
+    };
     group.messages.push({
       messageId: row.messageId,
       createdAt: Date.parse(row.createdAt),
       body: row.body,
+      inView: row.inView === 1,
     });
     groups.set(key, group);
   }
-  return [...groups.values()];
+  const shown: Array<{
+    agentId: string;
+    chatId: string;
+    viewer: KinViewer;
+    messages: ReadonlyArray<Pending>;
+  }> = [];
+  for (const group of groups.values()) {
+    const view = yield* chatView(orgId, group.agentId, group.chatId);
+    const messages = view.shared ? group.messages.filter((one) => one.inView) : group.messages;
+    if (messages.length > 0) shown.push({ ...group, viewer: view.viewer, messages });
+  }
+  return shown;
+});
+
+/** A review wake still has something to look at as its turn is claimed (`goneBeforeTurn`). */
+export const reviewStillDue = Effect.fn("KinReview.stillDue")(function* (
+  orgId: KinOrgId,
+  event: Extract<KinEvent, { readonly _tag: "pulse" }>,
+) {
+  if (event.chatId === undefined) return false;
+  return (yield* unreadByChat(orgId, event.agentId, event.chatId)).length > 0;
 });
 
 const REVIEW_KEY = (agentId: string, chatId: string) => `review:${agentId}:${chatId}:`;
@@ -223,7 +341,13 @@ export const reviewWakes = Effect.fn("KinPulse.reviewWakes")(function* (ctx: {
     const oldest = group.messages[0]!.createdAt;
     if (at - oldest < REVIEW_UNREAD_MS) continue;
     const change = changedAt(
-      yield* reviewChanges({ orgId, chatId: group.chatId, messages: group.messages, at }),
+      yield* reviewChanges({
+        orgId,
+        chatId: group.chatId,
+        messages: group.messages,
+        at,
+        viewer: group.viewer,
+      }),
     );
     if (change === undefined) continue;
     const key = REVIEW_KEY(group.agentId, group.chatId);
@@ -264,41 +388,50 @@ export const reviewWakes = Effect.fn("KinPulse.reviewWakes")(function* (ctx: {
   return woken;
 });
 
-/** The review wake's own line: who hasn't read what, what changed, and what to do. */
+/**
+ * The review wake's own line: who hasn't read what, and what to do. What changed is not in it:
+ * the turn reads that as quoted data (`reviewWakeText`).
+ */
 export const REVIEW_WAKE_TEXT = (input: {
   readonly who: ReadonlyArray<string>;
   readonly count: number;
-  readonly changed: string;
 }) =>
-  `Kin woke you to look again at what you said here. ${joined(input.who) || "No one"} ${input.who.length > 1 ? "haven't" : "hasn't"} read ${input.count === 1 ? "your message" : `your ${input.count} messages`} listed under Your messages no one has read yet, and since you wrote ${input.count === 1 ? "it" : "them"}, ${input.changed}. For each one: leave it if it still stands, take it back with message_withdraw if it no longer matters, or put the current version in its place with message_replace. Post nothing new unless something new needs them. Then write exactly NO_REPLY.`;
+  `Kin woke you to look again at what you said here. ${joined(input.who) || "No one"} ${input.who.length > 1 ? "haven't" : "hasn't"} read ${input.count === 1 ? "your message" : `your ${input.count} messages`} listed under Your messages no one has read yet, and since you wrote ${input.count === 1 ? "it" : "them"}, what the event data above lists as changed has moved. For each one: leave it if it still stands, take it back with message_withdraw if it no longer matters, or put the current version in its place with message_replace. Post nothing new unless something new needs them. Then write exactly NO_REPLY.`;
 /** The review wake found, as it started, nothing of the agent's here unread any more. */
 export const REVIEW_NOTHING_NOW =
   "Kin woke you to look again at your unread messages here, but as this turn started everything you said here had been read or taken back.";
 
 /**
- * A review wake's text, worked out again as its turn starts: undefined when nothing of the
- * agent's in the chat is still unread.
+ * A review wake's words, worked out again as its turn starts, for what that turn may read:
+ * `changed` for its quoted data, `text` for its instruction. Undefined when nothing of the
+ * agent's in the chat is still there to change.
  */
 export const reviewWakeText = Effect.fn("KinReview.wakeText")(function* (
-  orgId: KinOrgId,
+  turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
   event: Extract<KinEvent, { readonly _tag: "pulse" }>,
   at: number,
 ) {
   if (event.chatId === undefined) return undefined;
+  const { orgId } = turn;
   const sql = yield* SqlClient.SqlClient;
   const [group] = yield* unreadByChat(orgId, event.agentId, event.chatId);
   if (group === undefined) return undefined;
+  const viewer =
+    (yield* effectiveAudience(turn)) === "owner_only"
+      ? KIN_OWNER_LEVEL
+      : viewerOfPeople((yield* turnPeople(turn))?.people ?? []);
   const changes = yield* reviewChanges({
     orgId,
     chatId: group.chatId,
     messages: group.messages,
     at,
+    viewer,
   });
   const people = yield* sql<{ name: string }>`SELECT p.display_name AS name
     FROM kin_chat_members c JOIN kin_people p ON p.org_id = c.org_id AND p.person_id = c.person_id
     WHERE c.org_id = ${orgId} AND c.chat_id = ${group.chatId} AND c.principal_kind = 'person'
       AND c.left_at IS NULL ORDER BY p.display_name`;
-  const said = [
+  const changed = [
     ...changes.records.map((one) => `${one.key} (${one.title}) is now ${one.state}`),
     ...(changes.cardClosedAt === undefined ? [] : ["a card on one of them closed"]),
     ...(changes.factClearedAt === undefined
@@ -306,9 +439,8 @@ export const reviewWakeText = Effect.fn("KinReview.wakeText")(function* (
       : ["something one of them told of is no longer so"]),
     ...(changes.dayStartsAt === undefined ? [] : ["their working day is about to start"]),
   ];
-  return REVIEW_WAKE_TEXT({
-    who: people.map((one) => one.name),
-    count: group.messages.length,
-    changed: said.length === 0 ? "things may have moved on" : joined(said),
-  });
+  return {
+    changed: changed.length === 0 ? ["things may have moved on"] : changed,
+    text: REVIEW_WAKE_TEXT({ who: people.map((one) => one.name), count: group.messages.length }),
+  };
 });
