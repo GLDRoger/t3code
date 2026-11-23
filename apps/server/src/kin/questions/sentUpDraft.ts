@@ -1,6 +1,8 @@
 import {
   KinAgentId,
+  KinChatError,
   KinChatId,
+  type KinDocKind,
   KinMessageId,
   type KinOrgId,
   KinPersonId,
@@ -9,9 +11,19 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { KinChatService } from "../chat/KinChatService.ts";
+import { changeStampKey, stampEvent, storedStamp } from "../lead/OutsideContent.ts";
 import * as Reach from "../lead/Reach.ts";
+import * as Docs from "../work/docs.ts";
+import type { Writer } from "../work/KinRecords.ts";
 import { personSees } from "../work/teamView.ts";
-import { approvedFor, DRAFT_WORDS } from "./approval.ts";
+import {
+  type Approval,
+  approvedFor,
+  DRAFT_WORDS,
+  type DraftKind,
+  recordMade,
+  type StoredDraft,
+} from "./approval.ts";
 import { personOfChat } from "./openQuestions.ts";
 
 type Turn = { readonly orgId: KinOrgId; readonly agentId: string; readonly wakeupId: string };
@@ -46,7 +58,11 @@ export const approvedTurnText = Effect.fn("KinSentUpDraft.turnText")(function* (
   };
 });
 
-const capital = (text: string) => `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+export const capital = (text: string) => `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+
+/** Where a doc an approval made is, in words: with its key only for someone who may open it. */
+export const inDocs = (kind: DraftKind, key: string | undefined) =>
+  `the ${DRAFT_WORDS[kind]} ${kind === "terms" ? "are" : "is"} in Docs${key === undefined ? "" : `: ${key}`}`;
 
 /**
  * At the end of the owner's turn that his Approve on a sent-up draft queued (`approveDraft`), the
@@ -58,10 +74,22 @@ export const tellDraftMade = Effect.fn("KinSentUpDraft.tellMade")(function* (
   wake: Turn & { readonly startedAt: number },
   chat: Pick<KinChatService["Service"], "notice">,
 ) {
-  const sql = yield* SqlClient.SqlClient;
   const approval = yield* approvedFor(wake);
   if (approval === undefined) return;
-  const { orgId } = wake;
+  yield* tellMade(wake.orgId, approval, chat, wake.startedAt);
+});
+
+/** What `tellDraftMade` tells, also on a doc Kin wrote in the Approve itself (no turn, no ask). */
+export const tellMade = Effect.fn("KinSentUpDraft.tell")(function* (
+  orgId: KinOrgId,
+  approval: Pick<
+    Approval,
+    "questionId" | "agentId" | "ownerId" | "askerId" | "forChatId" | "draft" | "made"
+  >,
+  chat: Pick<KinChatService["Service"], "notice">,
+  startedAt?: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
   const asker = approval.askerId;
   if (
     (yield* personOfChat(orgId, approval.forChatId)) !== asker ||
@@ -74,7 +102,6 @@ export const tellDraftMade = Effect.fn("KinSentUpDraft.tellMade")(function* (
     return;
   const { owner, agent } = approval.draft.names;
   const word = DRAFT_WORDS[approval.draft.kind];
-  const verb = approval.draft.kind === "terms" ? "are" : "is";
   const made = approval.made;
   let body: string | undefined;
   if (made?.kind === "entry" || made?.kind === "doc") {
@@ -82,16 +109,18 @@ export const tellDraftMade = Effect.fn("KinSentUpDraft.tellMade")(function* (
         r.register_id AS list, ${personSees(sql, KinPersonId.make(asker))} AS sees
       FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id = ${made.recordId}`;
     if (entry !== undefined)
-      body = `${owner} approved; the ${word} ${verb} ${entry.list === "docs" ? "in Docs" : "a draft in Money"}${
-        entry.sees === 1 ? `: ${entry.key}` : ""
+      body = `${owner} approved; ${
+        entry.list === "docs"
+          ? inDocs(approval.draft.kind, entry.sees === 1 ? entry.key : undefined)
+          : `the ${word} is a draft in Money${entry.sees === 1 ? `: ${entry.key}` : ""}`
       }.`;
   } else if (made?.kind === "mail" || made?.kind === "post")
     body = `${owner} approved; the ${made.kind} is with ${owner} to confirm.`;
-  else {
+  else if (startedAt !== undefined) {
     const [asked] = yield* sql`SELECT 1 FROM kin_questions
       WHERE org_id = ${orgId} AND agent_id = ${approval.agentId}
         AND person_id = ${approval.ownerId} AND for_chat_id IS NULL
-        AND asked_at >= ${wake.startedAt}
+        AND asked_at >= ${startedAt}
       LIMIT 1`;
     if (asked !== undefined)
       body = `${owner} approved; ${agent} asked ${owner} one thing before making it.`;
@@ -104,4 +133,74 @@ export const tellDraftMade = Effect.fn("KinSentUpDraft.tellMade")(function* (
     audience: "chat",
     body: capital(body),
   });
+});
+
+/** The kinds Kin writes itself on the owner's Approve, word for word and with no turn: a doc each. */
+const WRITTEN: Partial<Record<DraftKind, KinDocKind>> = { proposal: "proposal", terms: "other" };
+export const writtenOnApprove = (kind: DraftKind) => WRITTEN[kind] !== undefined;
+
+/**
+ * The owner's Approve on a proposal or client terms, in his tap: the doc the agent would have made,
+ * written from the stored draft word for word, for the card's client and linked to its deal,
+ * private as money terms are. What the asking turn had read from outside marks it, as a turn's
+ * write would be. Any failure fails the tap, so nothing is approved.
+ */
+export const writeApproved = Effect.fn("KinSentUpDraft.write")(function* (
+  orgId: KinOrgId,
+  approval: {
+    readonly questionId: string;
+    readonly agentId: KinAgentId;
+    readonly ownerChatId: string;
+    readonly draft: StoredDraft;
+  },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { draft } = approval;
+  const kind = WRITTEN[draft.kind] ?? "other";
+  const writer: Writer = {
+    actor: { _tag: "agent", agentId: approval.agentId },
+    via: "lead",
+    chatId: KinChatId.make(approval.ownerChatId),
+    askedBy: null,
+  };
+  const failed = new KinChatError({
+    reason: "conflict",
+    message: `Kin couldn't write the ${DRAFT_WORDS[draft.kind]}, so nothing was approved. Changes first sends it back for a new one.`,
+  });
+  return yield* Effect.gen(function* () {
+    const written = yield* Docs.create(
+      orgId,
+      writer,
+      { audience: "owner_only" },
+      {
+        // A bare "Proposal" as a private title would hold back every later mention of one.
+        title: draft.for === null ? `${draft.line} from ${draft.names.asker}` : draft.line,
+        body: draft.text,
+        owner: { _tag: "agent", agentId: approval.agentId },
+        summary: "Created",
+        ...(draft.for?.partyId == null ? {} : { partyId: draft.for.partyId }),
+        kind,
+        sensitive: true,
+        originKey: `approved-draft:${approval.questionId}`,
+      },
+    );
+    const { recordId, key } = written.row;
+    if (draft.for?.list === "deals")
+      yield* Docs.link(orgId, writer, { key }, [draft.for.key], "relates");
+    const stamp = yield* storedStamp(orgId, approval.questionId);
+    if (stamp !== undefined)
+      for (const { seq } of yield* sql<{ seq: number }>`SELECT seq FROM kin_record_changes
+        WHERE org_id = ${orgId} AND record_id = ${recordId} ORDER BY seq`)
+        yield* stampEvent(orgId, changeStampKey(recordId, seq), stamp);
+    const made = { kind: "doc", recordId, key } as const;
+    yield* recordMade(orgId, approval.questionId, made);
+    return made;
+  }).pipe(
+    Effect.catchTags({
+      KinChatError: (cause) =>
+        Effect.logWarning("Kin couldn't write an approved draft", { orgId, cause }).pipe(
+          Effect.andThen(Effect.fail(failed)),
+        ),
+    }),
+  );
 });
