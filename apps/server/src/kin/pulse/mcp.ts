@@ -9,6 +9,7 @@ import {
   KinPulseRead,
   KinPersonId,
   KinRecordKey,
+  KinWakeupId,
   OrchestratorMcpFailure,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
@@ -269,6 +270,7 @@ const runHandle = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseHa
     (action === "got_it" && until !== undefined && holding._tag === "may");
   const fact = yield* KinPulse.handle({
     orgId: lead.orgId,
+    wakeupId: KinWakeupId.make(lead.wakeupId),
     at,
     viewer,
     by,
