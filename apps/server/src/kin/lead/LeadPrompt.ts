@@ -1750,6 +1750,9 @@ export class KinLeadPrompt extends Context.Service<
                 agentId,
                 now,
                 wokeFor: pulseWoke,
+                pulseEvents: input.events.flatMap((event) =>
+                  event._tag === "pulse" ? [event.eventId] : [],
+                ),
                 checkIn,
                 checkInEvents,
               }).pipe(

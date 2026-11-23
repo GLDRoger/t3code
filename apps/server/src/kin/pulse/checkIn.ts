@@ -2,6 +2,7 @@ import {
   KinEvent,
   KinEventId,
   KinPulseOutsideLine,
+  KinWorkHours,
   type KinAgentId,
   type KinPersonId,
   type KinMemoryItemId,
@@ -27,11 +28,13 @@ import {
   timeOnDayOf,
 } from "../triggers/kinSchedules.ts";
 import { dayIn } from "../work/money.ts";
-import { ownerZone, startOfDay } from "../work/recordRows.ts";
+import { endOfDay, ownerZone, startOfDay } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
-import { matchLines, type OutsideRead } from "./outside.ts";
+import { matchLines, outsideKey, type OutsideRead } from "./outside.ts";
 import { importedSince } from "./personMorning.ts";
 import { markTold, toldBy, untold } from "./told.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfList } from "../shell/sections.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import { DAY_MS, MINUTE_MS } from "../durations.ts";
 
@@ -57,8 +60,8 @@ const OUTSIDE_CAP = 60;
 const MORNING = "checkin-morning";
 const WEEKLY = "checkin-weekly";
 const EVENING = "checkin-evening";
-/** The briefs: not skipped for a quiet pulse. The evening one has its own facts (`scheduledTasks`). */
-const BRIEFS: ReadonlySet<string> = new Set([MORNING, WEEKLY, EVENING]);
+const WEEKDAYS = [1, 2, 3, 4, 5];
+const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 
 /**
  * Whether the weekly brief is set to come on the company's day `day`, near `at`. Its days are the
@@ -129,9 +132,29 @@ export const coveredToday = Effect.fn("KinPulse.coveredToday")(function* (input:
       : ("morning" as const);
 });
 
+const hasDueToday = Effect.fn("KinPulse.checkInDueToday")(function* (
+  orgId: KinOrgId,
+  day: string,
+  zone: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const shell = yield* KinShell.getForDisplay(orgId);
+  const from = startOfDay(day, zone);
+  const through = endOfDay(day, zone);
+  const rows = yield* sql<{ listId: string }>`SELECT DISTINCT register_id AS "listId"
+    FROM kin_records WHERE org_id = ${orgId} AND state IN ('open', 'doing', 'waiting')
+      AND (due_at BETWEEN ${from} AND ${through}
+        OR (register_id = 'work' AND category = 'meeting' AND date_at BETWEEN ${from} AND ${through}))
+    ORDER BY register_id`;
+  return rows.some(({ listId }) => {
+    const section = sectionOfList(listId);
+    return section === null || KinShell.sectionOn(shell, section);
+  });
+});
+
 /**
  * One check-in at the slot's minute: what the owner hasn't been told and what is new outside.
- * With nothing untold no model runs, except for a brief; Run now tells every open fact. `slot`,
+ * With nothing untold a slot can skip; Run now tells every open fact. `slot`,
  * the host day, keys the event; `day`, the company's, is what the fold and the evening go by.
  */
 export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
@@ -150,20 +173,13 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   readonly zone: string;
   readonly at: number;
   readonly outside: OutsideRead;
+  readonly sumUp?: boolean;
 }) {
   const queue = yield* KinEventQueue.KinEventQueue;
   const { orgId, at } = input;
   // Only open facts: one in hand or set aside is not news, and comes back as news when it ends.
   const read = yield* KinPulse.read({ orgId, at, viewer: { _tag: "owner" }, limit: 200 });
   const facts = read.facts;
-  const matched = yield* matchLines(orgId, input.outside.lines);
-  const byId = new Map(matched.map(({ line }) => [`${line.source}\0${line.id}`, line]));
-  const lines = input.outside.lines
-    .map((line) => byId.get(`${line.source}\0${line.id}`) ?? line)
-    .toSorted((a, b) => Number(b.matched !== undefined) - Number(a.matched !== undefined))
-    .slice(0, OUTSIDE_CAP);
-  const brief = BRIEFS.has(input.scheduleId);
-  if (!brief && facts.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   const slot = input.manualId ?? dayIn(input.dueAt, input.zone);
   const dedupeKey = `checkin:${input.scheduleId}:${slot}`;
   const eventId = KinEventId.make(`pulse-${sha(`${orgId}\0${dedupeKey}`).slice(0, 32)}`);
@@ -199,11 +215,13 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
     return {
       _tag: "duplicate",
       facts: (yield* toldBy(orgId, [eventId])).size,
-      outside: lines.length,
+      outside: input.outside.lines.length,
       notBefore: stored.notBefore ?? stored.queuedAt,
     } as const;
-  const [agent] = yield* sql<{ owner: KinPersonId }>`SELECT owner_person_id AS owner
-    FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${input.agentId}`;
+  const [agent] = yield* sql<{ owner: KinPersonId; hours: string | null }>`
+    SELECT a.owner_person_id AS owner, p.work_hours_json AS hours
+    FROM kin_agents a LEFT JOIN kin_people p ON p.org_id = a.org_id AND p.person_id = a.owner_person_id
+    WHERE a.org_id = ${orgId} AND a.agent_id = ${input.agentId} ORDER BY a.agent_id`;
   if (agent === undefined) return { _tag: "nothing_new" } as const;
   const told = { orgId, personId: agent.owner, at, zone: company };
   // Its earlier slots that a hold kept past their own day: this one goes instead, with their news.
@@ -222,14 +240,35 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
     orgId,
     heldPast.map((row) => row.eventId),
   );
-  const sent = [
-    ...new Map(
-      [
-        ...heldPast.flatMap((row) => Option.getOrElse(decodeLines(row.outside), () => [])),
-        ...lines,
-      ].map((line) => [`${line.source}\0${line.id}`, line]),
-    ).values(),
-  ]
+  const outside = [
+    ...heldPast.flatMap((row) => Option.getOrElse(decodeLines(row.outside), () => [])),
+    ...input.outside.lines,
+  ];
+  const mailKeys = [...new Set(outside.filter((line) => line.source === "mail").map(outsideKey))];
+  const handled = new Set<string>();
+  if (mailKeys.length > 0) {
+    const [previous] = yield* sql<{ at: number | null }>`
+      SELECT MAX(received_at) AS at FROM kin_events
+      WHERE org_id = ${orgId} AND tag = 'pulse' AND received_at <= ${at}
+        AND event_id != ${eventId} AND json_extract(json, '$.checkIn') IS NOT NULL`;
+    for (let start = 0; start < mailKeys.length; start += 500) {
+      const done = yield* sql<{ key: string }>`
+        SELECT e.dedupe_key AS key FROM kin_events e JOIN kin_wakeups w
+          ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+        WHERE e.org_id = ${orgId} AND e.tag = 'pulse' AND e.state = 'done'
+          AND e.dedupe_key IN ${sql.in(mailKeys.slice(start, start + 500))}
+          AND w.ended_at >= ${previous?.at ?? 0} AND w.ended_at <= ${at}
+        ORDER BY e.dedupe_key`;
+      for (const row of done) handled.add(row.key);
+    }
+  }
+  const remaining = outside.filter(
+    (line) => line.source !== "mail" || !handled.has(outsideKey(line)),
+  );
+  const matched = yield* matchLines(orgId, remaining);
+  const byId = new Map(remaining.map((line) => [outsideKey(line), line]));
+  for (const { line } of matched) byId.set(outsideKey(line), line);
+  const sent = [...byId.values()]
     .toSorted((a, b) => Number(b.matched !== undefined) - Number(a.matched !== undefined))
     .slice(0, OUTSIDE_CAP);
   const open =
@@ -247,7 +286,23 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   const tell = fresh.filter(
     (fact) => fact.subject.recordId === undefined || !imported.has(fact.subject.recordId),
   );
-  if (!brief && tell.length === 0 && sent.length === 0) return { _tag: "nothing_new" } as const;
+  if (tell.length === 0 && sent.length === 0 && input.scheduleId !== WEEKLY) {
+    const weekDay = DateTime.toParts(
+      DateTime.makeZonedUnsafe(minute ?? at, { timeZone: company }),
+    ).weekDay;
+    const workingMorning =
+      input.scheduleId === MORNING &&
+      (Option.getOrUndefined(decodeHours(agent.hours))?.days ?? WEEKDAYS).includes(weekDay);
+    const manualBrief =
+      day === undefined && (input.scheduleId === MORNING || input.scheduleId === EVENING);
+    if (!workingMorning && !manualBrief) {
+      const due =
+        day !== undefined && (input.scheduleId === MORNING || input.scheduleId === EVENING)
+          ? yield* hasDueToday(orgId, day, company)
+          : false;
+      if (!due && input.sumUp !== true) return { _tag: "nothing_new" } as const;
+    }
+  }
   // Nobody asked for it: one that lands in the owner's quiet hours waits for them to end.
   const quietUntil =
     input.manualId === undefined

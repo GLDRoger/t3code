@@ -237,6 +237,7 @@ export const SECTIONS = {
     // A list section's own facts: each carries its `list:<id>` section, whose switch silences it.
     entry_late: null,
     entry_check: null,
+    sense_overflow: null,
     // A project's contract renewal, which needs no deal (`KIN_PROMISE_SENSES`).
     notice_due: null,
   } satisfies Record<KinPulseSense, SectionId | null>,

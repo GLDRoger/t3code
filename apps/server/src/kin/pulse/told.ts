@@ -5,6 +5,7 @@ import type {
   KinPulseFact,
   KinWakeupId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -19,6 +20,16 @@ const DUE_SENSES = new Set<KinPulseFact["sense"]>([
   "retainer_due",
   "renewal_due",
 ]);
+
+const MAX_FAILED_ATTEMPTS = 3;
+const lateBand = (fact: KinPulseFact) => {
+  if (fact.sense !== "task_late" || fact.measure?.unit !== "hours") return 0;
+  const days = Math.floor(fact.measure.value / 24);
+  return days < 3 ? 0 : days < 7 ? 3 : Math.floor(days / 7) * 7;
+};
+
+const lateReminder = (fact: KinPulseFact, zone: string) =>
+  `Still open since ${dayIn(DateTime.toEpochMillis(fact.since), zone)}.`;
 
 const unitMs = (unit: string) => (unit === "hours" ? HOUR_MS : unit === "days" ? DAY_MS : 0);
 
@@ -57,22 +68,30 @@ export const agentParty = (agentId: KinAgentId) => `agent:${agentId}`;
  */
 export const factSig = (fact: KinPulseFact, at: number, zone: string) => {
   const m = fact.measure;
+  if (fact.sense === "sense_overflow" && m !== undefined) return `count:${m.value}`;
+  const age = lateBand(fact);
   const band =
-    fact.stage !== undefined
-      ? fact.stage
-      : m === undefined || comingDue(fact) || m.threshold <= 0
-        ? ""
-        : String(Math.floor(m.value / m.threshold));
+    fact.sense === "task_late"
+      ? age > 0
+        ? `late:${age}`
+        : m !== undefined && m.threshold > 0
+          ? "1"
+          : ""
+      : fact.stage !== undefined
+        ? fact.stage
+        : // A list entry is no task: told once an episode, never again as it ages.
+          m === undefined ||
+            comingDue(fact) ||
+            fact.sense === "entry_late" ||
+            fact.sense === "entry_check" ||
+            m.threshold <= 0
+          ? ""
+          : String(Math.floor(m.value / m.threshold));
   // "open" stays so rows told before holds left the signature still match.
   return `${band}|open|${dueToday(fact, at, zone) ? `due:${dayIn(at, zone)}` : ""}`;
 };
 
-/**
- * The facts `personId` (or `agentParty`) has not been told as they stand now: never told, changed
- * since, or due today. A row counts while its event is still to run or ran, a failed one told
- * nothing; with `anyState`, any row counts, so a failing turn is not tried again every pass, and
- * a row Kin's own notice wrote (its id is the message's, with no event) counts too.
- */
+/** Pending and delivered events reserve their signature. Three terminal failures reserve it too. */
 export const untold = Effect.fn("KinPulse.untold")(function* (input: {
   readonly orgId: KinOrgId;
   readonly personId: string;
@@ -86,27 +105,79 @@ export const untold = Effect.fn("KinPulse.untold")(function* (input: {
   if (input.facts.length === 0) return [];
   const sql = yield* SqlClient.SqlClient;
   const told = new Map<string, Set<string>>();
+  const heardLate = new Set<string>();
+  const delivered = sql`(e.state = 'done' OR (e.event_id IS NULL
+    AND t.event_id NOT LIKE ${`${SHELL_QUIET_EVENT_PREFIX}%`}))`;
   const counted = input.deliveredOnly
     ? sql`(e.event_id IS NULL OR e.state = 'done')`
     : input.anyState
-      ? sql`1 = 1`
+      ? sql`(e.state IS NULL OR e.state != 'failed')`
       : sql`(t.event_id LIKE ${`${SHELL_QUIET_EVENT_PREFIX}%`}
           OR e.state IN ('queued', 'claimed', 'done'))`;
   const keys = input.facts.map((fact) => fact.key);
-  for (let start = 0; start < keys.length; start += 500)
-    for (const row of yield* sql<{ key: string; sig: string }>`SELECT t.fact_key AS key, t.sig
-      FROM kin_pulse_told t LEFT JOIN kin_events e ON e.org_id = t.org_id AND e.event_id = t.event_id
-      WHERE t.org_id = ${input.orgId} AND t.person_id = ${input.personId}
-        AND t.fact_key IN ${sql.in(keys.slice(start, start + 500))}
-        AND ${counted}
-      ORDER BY t.fact_key, t.told_at DESC, t.rowid DESC`) {
+  for (let start = 0; start < keys.length; start += 500) {
+    const rows = yield* sql<{ key: string; sig: string; delivered: number }>`
+      SELECT key, sig, delivered FROM (
+        SELECT t.fact_key AS key, t.sig, t.told_at, t.rowid AS seq,
+          ${delivered} AS delivered, ${counted} AS counted,
+          COUNT(CASE WHEN e.state = 'failed' THEN 1 END)
+            OVER (PARTITION BY t.fact_key, t.sig) AS failures
+        FROM kin_pulse_told t LEFT JOIN kin_events e ON e.org_id = t.org_id AND e.event_id = t.event_id
+        WHERE t.org_id = ${input.orgId} AND t.person_id = ${input.personId}
+          AND t.fact_key IN ${sql.in(keys.slice(start, start + 500))}
+      ) WHERE counted OR (${input.deliveredOnly !== true} AND failures >= ${MAX_FAILED_ATTEMPTS})
+      ORDER BY key, told_at DESC, seq DESC`;
+    for (const row of rows) {
+      if (row.delivered === 1 && !row.sig.startsWith("handled:")) heardLate.add(row.key);
       // The unreadable count can go down and back up while the same fact stays open.
-      if (row.key === UNREADABLE_BANK_ALERTS_KEY && told.has(row.key)) continue;
+      if (
+        (row.key === UNREADABLE_BANK_ALERTS_KEY || row.key.startsWith("sense_overflow:")) &&
+        told.has(row.key)
+      )
+        continue;
       told.set(row.key, (told.get(row.key) ?? new Set()).add(row.sig));
     }
-  return input.facts.filter(
-    (fact) => told.get(fact.key)?.has(factSig(fact, input.at, input.zone)) !== true,
-  );
+  }
+  return input.facts.flatMap((fact) => {
+    const signatures = told.get(fact.key);
+    if (fact.sense === "sense_overflow" && fact.measure !== undefined) {
+      const last = signatures?.values().next().value;
+      if (last?.startsWith("count:") && Math.abs(Number(last.slice(6)) - fact.measure.value) < 10)
+        return [];
+    } else if (signatures?.has(factSig(fact, input.at, input.zone))) return [];
+    return [
+      lateBand(fact) > 0 && heardLate.has(fact.key)
+        ? { ...fact, lateReminder: lateReminder(fact, input.zone) }
+        : fact,
+    ];
+  });
+});
+
+/** A wake's late-task facts that entered a new band after an earlier delivery. */
+export const lateReminders = Effect.fn("KinPulse.lateReminders")(function* (
+  orgId: KinOrgId,
+  events: ReadonlyArray<string>,
+  facts: ReadonlyArray<KinPulseFact>,
+  zone: string,
+) {
+  const late = new Map(facts.filter((fact) => lateBand(fact) > 0).map((fact) => [fact.key, fact]));
+  if (events.length === 0 || late.size === 0) return new Map<string, string>();
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ key: string }>`SELECT DISTINCT t.fact_key AS key
+    FROM kin_pulse_told t
+    WHERE t.org_id = ${orgId} AND t.event_id IN ${sql.in(events)} AND t.sig GLOB 'late:*'
+      AND t.fact_key IN ${sql.in([...late.keys()])}
+      AND (SELECT previous.sig
+        FROM kin_pulse_told previous
+        LEFT JOIN kin_events e ON e.org_id = previous.org_id AND e.event_id = previous.event_id
+        WHERE previous.org_id = t.org_id AND previous.person_id = t.person_id
+          AND previous.fact_key = t.fact_key AND previous.rowid < t.rowid
+          AND previous.sig NOT GLOB 'handled:*'
+          AND (e.state = 'done' OR (e.event_id IS NULL
+            AND previous.event_id NOT LIKE ${`${SHELL_QUIET_EVENT_PREFIX}%`}))
+        ORDER BY previous.told_at DESC, previous.rowid DESC LIMIT 1) != t.sig
+    ORDER BY t.fact_key`;
+  return new Map(rows.map(({ key }) => [key, lateReminder(late.get(key)!, zone)]));
 });
 
 /** Marks `facts` told to `personId` (or `agentParty`) by the event `eventId`. */
@@ -167,6 +238,7 @@ export const settleCheckInTold = Effect.fn("KinPulse.settleCheckInTold")(functio
     keys: ReadonlySet<string>,
   ) => Effect.Effect<ReadonlyArray<KinPulseFact>, E, SqlClient.SqlClient>;
 }) {
+  if (!input.completed) return;
   const { orgId, wakeupId, chatId } = input;
   const sql = yield* SqlClient.SqlClient;
   const offered = yield* sql<{ key: string; handled: number }>`SELECT DISTINCT t.fact_key AS key,
@@ -202,7 +274,6 @@ export const settleCheckInTold = Effect.fn("KinPulse.settleCheckInTold")(functio
       CROSS JOIN json_each(n.names_json) name
       ORDER BY text`;
   const said = texts.filter((post) => !post.automated);
-  if (said.length === 0 && !input.completed) return;
   const keys = new Set(offered.map((row) => row.key));
   const named = new Set<string>();
   if (texts.length > 0) {

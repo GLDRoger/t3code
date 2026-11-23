@@ -374,6 +374,7 @@ it.effect(
         dev: yield* directOf("dev"),
         zoya: yield* directOf("zoya"),
         meera: yield* directOf("meera"),
+        arjun: yield* directOf("arjun"),
       };
       const titles = github.world.items.map((item) => item.title);
       const cutNote = ` ${BUSY} has more than 100 open pull requests and Kin read only the newest 100: for another, ask by number.`;
@@ -442,7 +443,7 @@ it.effect(
           name: "a private repo GitHub says she can't read answers as one Kin doesn't watch",
           who: "meera",
           args: { repo: LEDGER },
-          refused: ASK_REFUSAL.unwatched(LEDGER),
+          refused: ASK_REFUSAL.unwatched(LEDGER, false),
         },
         {
           name: "her own PRs: the private repo she can't read isn't looked in",
@@ -520,7 +521,13 @@ it.effect(
           name: "a repo Kin doesn't watch",
           who: "dev",
           args: { repo: FORK },
-          refused: ASK_REFUSAL.unwatched(FORK),
+          refused: ASK_REFUSAL.unwatched(FORK, false),
+        },
+        {
+          name: "a repo Kin doesn't watch, asked by a co-owner, who adds it herself",
+          who: "arjun",
+          args: { repo: FORK },
+          refused: ASK_REFUSAL.unwatched(FORK, true),
         },
         {
           name: "Kin's memory repo",

@@ -14,7 +14,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { SqlError, UnknownError } from "effect/sql/SqlError";
 
-import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KinRefreshObserver, KinWorkRefresh } from "../chat/KinRefreshHub.ts";
 import { accessSql } from "../people/KinAccess.ts";
 import { listSectionRefused, type SectionId } from "./sections.ts";
 
@@ -99,6 +99,11 @@ const cacheFor = (sql: SqlClient.SqlClient) => {
   caches.set(sql, cache);
   return cache;
 };
+
+export const invalidate = Effect.fn("KinShell.invalidate")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  cacheFor(sql).delete(orgId);
+});
 
 const read = Effect.fn("KinShell.read")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
@@ -209,29 +214,33 @@ export const listSectionsRefusal = Effect.fn("KinShell.listSectionsRefusal")(fun
   return undefined;
 });
 
-/** Writes the next revision in the caller's transaction, for every reader after it commits. */
+/**
+ * Writes the next revision over `before` in the caller's transaction, for every reader after it
+ * commits. Open Work pages restart only when a built-in switch takes effect: a list section gates
+ * no Work row, so it moves the shell and pulse topics alone, as a rename does.
+ */
 const save = Effect.fn("KinShell.save")(function* (
   orgId: KinOrgId,
   personId: string,
-  rev: number,
+  before: Shell,
   sections: readonly KinShellSection[],
 ) {
   const sql = yield* SqlClient.SqlClient;
   const refresh = yield* KinRefreshObserver;
-  const next = rev + 1;
+  const refreshWork = yield* KinWorkRefresh;
+  const next = before.rev + 1;
+  const after = { rev: next, sections };
   yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
     VALUES (${orgId}, ${yield* encode(sections)}, ${next}, ${personId}, ${yield* Clock.currentTimeMillis})
     ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json, rev = excluded.rev,
       set_by = excluded.set_by, set_at = excluded.set_at`;
-  yield* sql.afterCommit(
-    Effect.sync(() => {
-      cacheFor(sql).delete(orgId);
-    }),
-  );
+  yield* sql.afterCommit(invalidate(orgId));
   yield* refresh.touch(orgId, "shell");
   // The open attention stream has its own counter, even though the sensed rows haven't moved.
   yield* refresh.touch(orgId, "pulse");
-  return { rev: next, sections };
+  if (BUILT_INS.some((id) => sectionOn(before, id) !== sectionOn(after, id)))
+    yield* refreshWork(orgId);
+  return after;
 });
 
 /**
@@ -257,7 +266,12 @@ export const showList = Effect.fn("KinShell.showList")(function* (
     : [...current, shown];
   const refusal = yield* listSectionsRefusal(orgId, sections);
   if (refusal !== undefined) return yield* invalid(refusal);
-  return yield* save(orgId, personId, stored?.rev ?? 0, sections.map(labelsOf));
+  return yield* save(
+    orgId,
+    personId,
+    { rev: stored?.rev ?? 0, sections: current },
+    sections.map(labelsOf),
+  );
 });
 
 export const set = Effect.fn("KinShell.set")(function* (
@@ -292,7 +306,7 @@ export const set = Effect.fn("KinShell.set")(function* (
         const sections = ordered(input).map(labelsOf);
         const lists = yield* listSectionsRefusal(orgId, sections);
         if (lists !== undefined) return yield* invalid(lists);
-        return yield* save(orgId, personId, rev, sections);
+        return yield* save(orgId, personId, { rev, sections: previous ?? [] }, sections);
       }),
     )
     .pipe(
@@ -330,6 +344,7 @@ export class KinShell extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const refresh = yield* KinRefreshObserver;
+  const refreshWork = yield* KinWorkRefresh;
   // These wrappers supply the database and observer; the operations own the spans.
   return KinShell.of({
     get: Effect.fnUntraced(function* (orgId) {
@@ -339,6 +354,7 @@ const make = Effect.gen(function* () {
       return yield* set(orgId, personId, rev, sections).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.provideService(KinRefreshObserver, refresh),
+        Effect.provideService(KinWorkRefresh, refreshWork),
       );
     }),
     sectionOn: Effect.fnUntraced(function* (orgId, id) {

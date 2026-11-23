@@ -3320,8 +3320,9 @@ describe("KinChatService", () => {
 
   it.effect(
     "a sections card applies once through the real tap, for the owner and for a co-owner",
-    () =>
-      Effect.gen(function* () {
+    () => {
+      let announcements = 0;
+      return Effect.gen(function* () {
         const { service, person, agent, chat } = yield* seed();
         const sql = yield* SqlClient.SqlClient;
         const gate = yield* LevelGate.KinLevelGate;
@@ -3391,13 +3392,23 @@ describe("KinChatService", () => {
         assert.strictEqual(taps.filter(Exit.isSuccess).length, 1);
         const once = yield* KinShell.get(person.orgId);
         assert.strictEqual(once.rev, 1);
+        assert.strictEqual(announcements, 1);
         assert.isFalse(once.sections.find((one) => one.id === "deals")!.on);
         // A co-owner's Confirm applies too.
         yield* tap(coOwner, yield* card("sc_probe_on", true), "tap-c");
         const back = yield* KinShell.get(person.orgId);
         assert.strictEqual(back.rev, 2);
+        assert.strictEqual(announcements, 2);
         assert.isTrue(back.sections.find((one) => one.id === "deals")!.on);
-      }).pipe(Effect.provide(Layer.provideMerge(LevelGate.layer, layer))),
+      }).pipe(
+        Effect.provide(Layer.provideMerge(LevelGate.layer, layer)),
+        Effect.provideService(RefreshHub.KinWorkRefresh, () =>
+          Effect.sync(() => {
+            announcements += 1;
+          }),
+        ),
+      );
+    },
   );
 
   it.effect(

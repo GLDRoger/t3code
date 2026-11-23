@@ -1240,6 +1240,20 @@ it.effect(
     ),
 );
 
+it.effect("suggests resuming a freshly paused routing lead without queued work", () =>
+  run(({ ctx }) =>
+    Effect.gen(function* () {
+      const { sql, orgId, owner } = ctx;
+      yield* idle(ctx);
+      yield* sql`UPDATE kin_orgs SET created_at = ${isoAt(yield* Clock.currentTimeMillis)}
+        WHERE org_id = ${orgId}`;
+      yield* LeadProvision.setPaused({ by: owner, orgId, agentId: chief, paused: true });
+      assert.strictEqual((yield* tick(ctx))._tag, "posted");
+      assert.strictEqual((yield* cards(ctx))[0]?.state.question, "Resume Chief of staff?");
+    }),
+  ),
+);
+
 it.effect(
   "the paused agent card: Do it resumes it through the agent page's method as the owner, its row follows the agent as it is, and a card whose pause moved changes nothing for either answer",
   () =>

@@ -331,7 +331,7 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
 );
 
 const filedLine = (documents: ReadonlyArray<{ readonly title: string }>) =>
-  `Filed, with its card in the chat. Call it ${documents.map((doc) => JSON.stringify(doc.title)).join(" and ")} in your reply, never by its key.`;
+  `Filed, with its card in the chat, which shows what is in it. Say in one line that ${documents.map((doc) => JSON.stringify(doc.title)).join(" and ")} ${documents.length > 1 ? "are" : "is"} ready, never its key, and nothing the card shows.`;
 
 /**
  * An invoice draft from a quote, with the quote's own inputs the invoice recipe takes: its lines and

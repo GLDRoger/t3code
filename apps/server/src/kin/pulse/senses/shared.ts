@@ -12,6 +12,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import type * as SqlClient from "effect/sql/SqlClient";
 
+import type { Overflow } from "./capped.ts";
 import type { SectionId } from "../../shell/sections.ts";
 import { dayIn } from "../../work/money.ts";
 import { issuedNumber, labelledNow } from "../../work/recordRows.ts";
@@ -41,6 +42,8 @@ export type SensedFact = Omit<KinPulseFact, "handled"> & {
   readonly quietForMs?: number;
   /** The section whose switch silences it, when its sense alone doesn't say: a list's own too. */
   readonly section?: SectionId | `list:${string}`;
+  readonly overflow?: Overflow;
+  readonly extraSection?: SectionId;
 };
 
 /** An entry with its project and client, as every record sense selects it (`r`, `p`, `c`). */
