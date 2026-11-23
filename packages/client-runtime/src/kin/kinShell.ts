@@ -298,6 +298,10 @@ export const KIN_SECTIONS_PAGE = {
   olderPhones:
     "Teammates on an older version of the phone app keep seeing a section that is off, with its client and project pickers, until they update.",
   olderHost: "This computer's Kin is older than sections. Update it to choose them.",
+  onlyOwner: {
+    title: "Sections aren't open to you",
+    detail: "The owner or a co-owner chooses the sections this company uses.",
+  },
   rename: {
     title: "Call it…",
     detail:
