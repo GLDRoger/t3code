@@ -40,6 +40,17 @@ The kind of business, size, signs they'll do well with us, signs they won't, who
 ### Proof (customers it worked for, that we may name)
 `;
 
+/**
+ * The outline with a new company's own answer to what it sells, and to whom, as its opening line;
+ * one line, so it never becomes a heading or a section of its own.
+ */
+export const offeringsWithAnswer = (sells: string) => {
+  const line = sells.replace(/\s+/g, " ").replace(/^#+\s*/, "").trim();
+  return line === ""
+    ? OFFERINGS_OUTLINE
+    : OFFERINGS_OUTLINE.replace("# What we sell\n", `# What we sell\n\n${line}\n`);
+};
+
 /** Section titles an agent's prompt lists, at most. */
 const INDEX_MAX = 30;
 

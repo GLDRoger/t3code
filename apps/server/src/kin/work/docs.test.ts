@@ -2063,8 +2063,18 @@ it.effect(
       assert.isUndefined(yield* findOfferings(orgId));
       assert.lengthOf((yield* pinned()).docs, 0);
 
-      const start = OwnerDocs.startWhatWeSell([owner], { orgId });
+      // A new company's answer to the set-up question opens it, one line, never a heading.
+      const start = OwnerDocs.startWhatWeSell([owner], {
+        orgId,
+        sells: "# A mobile puzzle game,\npaid in-app and by subscription",
+      });
       const [first, second] = yield* Effect.all([start, start], { concurrency: 2 });
+      assert.isTrue(
+        first.body.startsWith(
+          "# What we sell\n\nA mobile puzzle game, paid in-app and by subscription\n\n## Who is a good customer for us\n",
+        ),
+      );
+      assert.strictEqual(first.latest.summary, "Started from the set-up question");
       assert.strictEqual(first.key, second.key);
       const [made] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records
         WHERE org_id = ${orgId} AND origin_key = ${OFFERINGS_ORIGIN}`;
@@ -2092,8 +2102,9 @@ it.effect(
       // Archived, it is no longer pinned; started again, the same doc comes back as it was left.
       yield* Docs.move(orgId, agentWriter(other), { key: first.key }, { archived: true });
       assert.lengthOf((yield* pinned()).docs, 0);
-      const again = yield* OwnerDocs.startWhatWeSell([owner], { orgId });
+      const again = yield* OwnerDocs.startWhatWeSell([owner], { orgId, sells: "Invented candles" });
       assert.strictEqual(again.key, first.key);
+      assert.strictEqual(again.body, first.body);
       assert.isFalse(again.archived);
       assert.strictEqual(again.latest.version, 1);
     }).pipe(Effect.provide(layer)),
