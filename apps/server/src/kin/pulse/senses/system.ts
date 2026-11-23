@@ -2,11 +2,11 @@ import { KinAgentId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import { cappedRows } from "./capped.ts";
 
 import { heldWork } from "../../lead/KinBudget.ts";
 import { DAY_MS } from "../thresholds.ts";
 import { agentOrOwner, iso, type SenseContext, type SensedFact } from "./shared.ts";
-import { SENSE_CAP } from "./work.ts";
 
 export const systemSenses = Effect.fn("KinPulse.systemSenses")(function* (ctx: SenseContext) {
   const sql = yield* SqlClient.SqlClient;
@@ -14,14 +14,22 @@ export const systemSenses = Effect.fn("KinPulse.systemSenses")(function* (ctx: S
   const facts: Array<SensedFact> = [];
 
   // task_stuck: a task an agent started waits on a decision or is blocked, or failed today.
-  const tasks = yield* sql<{
+  const tasks = yield* cappedRows<{
     widgetId: string;
     agentId: string | null;
     threadId: string;
     title: string;
     status: "needs_decision" | "blocked" | "failed";
     updatedAt: string;
-  }>`SELECT w.widget_id AS "widgetId", m.author_agent_id AS "agentId",
+  }>(
+    ctx,
+    facts,
+    {
+      sense: "task_stuck",
+      plural: "tasks waiting on a decision, blocked or recently failed",
+      access: "system",
+    },
+    sql`SELECT w.widget_id AS "widgetId", m.author_agent_id AS "agentId",
       json_extract(w.state_json, '$.threadId') AS "threadId",
       json_extract(w.state_json, '$.title') AS title,
       json_extract(w.state_json, '$.status') AS status, w.updated_at AS "updatedAt"
@@ -31,7 +39,8 @@ export const systemSenses = Effect.fn("KinPulse.systemSenses")(function* (ctx: S
       AND w.updated_at <= ${DateTime.formatIso(iso(at))}
       AND (json_extract(w.state_json, '$.status') IN ('needs_decision', 'blocked')
         OR (json_extract(w.state_json, '$.status') = 'failed' AND w.updated_at > ${DateTime.formatIso(iso(at - DAY_MS))}))
-    ORDER BY w.updated_at, w.widget_id LIMIT ${SENSE_CAP}`;
+    ORDER BY w.updated_at, w.widget_id`,
+  );
   for (const row of tasks)
     facts.push({
       sense: "task_stuck",
