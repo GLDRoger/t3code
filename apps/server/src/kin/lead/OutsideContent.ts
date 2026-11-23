@@ -48,6 +48,9 @@ export const OUTSIDE_TOOLS = {
   // A question to one person of the company, checked for what they may read; no action rides on it.
   kin_ask_person: "allowed",
   kin_react: "allowed",
+  // Outside text could have it unsay what it said: it says what changed in a new message.
+  message_withdraw: "refused",
+  message_replace: "refused",
   kin_chart: "allowed",
   kin_visual: "allowed",
   kin_picture: "allowed",

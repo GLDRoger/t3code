@@ -99,6 +99,16 @@ export type KinPushNotification =
   | { readonly _tag: "tasks"; readonly orgId: KinOrgId; readonly holdIds: ReadonlyArray<string> }
   /** A teammate's messages held from one reader's quiet hours (`deliverHeld`): one banner. */
   | { readonly _tag: "dm"; readonly orgId: KinOrgId; readonly holdIds: ReadonlyArray<string> }
+  /**
+   * A message an agent took back or put right: the chat banner that shows it now shows, quietly,
+   * the newest words still unread there, or goes (`restate`).
+   */
+  | {
+      readonly _tag: "restate";
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly messageId: KinMessageId;
+    }
   /** A member's read mark moved: their other devices get the new badge, with no banner. */
   | {
       readonly _tag: "read";
@@ -1727,9 +1737,58 @@ const make = Effect.gen(function* () {
 
   const nothing: KinPushOutcome = { status, sent: 0, suppressed: 0, failed: 0 };
 
+  /**
+   * Each person's banner for the chat that shows `messageId`: replaced, never rung, by their newest
+   * message still unread among those it covers, with that message's own push; with none left, or
+   * none they would be told of, it goes in their batch.
+   */
+  const restate = Effect.fn("KinPushSender.restate")(function* (
+    orgId: KinOrgId,
+    chatId: KinChatId,
+    messageId: KinMessageId,
+  ) {
+    const topic = chatTopic(chatId);
+    const rows = (yield* topics.live(orgId, { topics: [topic] })).filter(
+      (row) => row.messageId === messageId,
+    );
+    const total = { sent: 0, suppressed: 0, failed: 0 };
+    for (const row of rows) {
+      const [newest] = yield* sql<{ message_id: KinMessageId }>`SELECT m.message_id
+        FROM kin_messages m
+        JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+        JOIN kin_chat_members p ON p.org_id = m.org_id AND p.chat_id = m.chat_id
+          AND p.principal_kind = 'person' AND p.person_id = ${row.personId} AND p.left_at IS NULL
+        WHERE m.org_id = ${orgId} AND m.chat_id = ${chatId} AND m.status = 'posted'
+          AND m.silent = 0 AND m.kind = 'text' AND m.seq > c.cleared_seq
+          AND m.seq <= ${row.seq ?? Number.MAX_SAFE_INTEGER}
+          AND m.seq > COALESCE((SELECT r.last_read_seq FROM kin_read_state r
+            WHERE r.org_id = m.org_id AND r.chat_id = m.chat_id AND r.member_id = p.member_id), 0)
+        ORDER BY m.seq DESC LIMIT 1`;
+      const push = newest === undefined ? undefined : yield* messagePush(orgId, newest.message_id);
+      const told = push?.recipients.find((one) => one.personId === row.personId);
+      if (push === undefined || push.topic !== topic || told === undefined) {
+        yield* enqueue(orgId, [row]);
+        continue;
+      }
+      const outcome = yield* deliver(orgId, {
+        ...push,
+        recipients: [{ ...told, delivery: told.delivery === "badge" ? "badge" : "quiet" }],
+      });
+      total.sent += outcome.sent;
+      total.suppressed += outcome.suppressed;
+      total.failed += outcome.failed;
+    }
+    return total;
+  });
+
   const run = Effect.fn("KinPushSender.run")(
     function* (notification: KinPushNotification) {
       if (status === "unconfigured") return nothing;
+      if (notification._tag === "restate")
+        return {
+          status,
+          ...(yield* restate(notification.orgId, notification.chatId, notification.messageId)),
+        };
       if (notification._tag === "read") {
         const outcome: KinPushOutcome = {
           status,

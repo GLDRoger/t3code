@@ -55,6 +55,7 @@ const CARD_PREVIEWS: ReadonlyArray<readonly [prefix: string, preview: string]> =
 function previewOf(chat: KinChatSummary, view: KinChatRowView): string {
   const last = chat.lastMessage;
   if (last === null) return "No messages yet";
+  if (last.withdrawn !== undefined) return "Withdrew a message";
   if (last.status === "deleted") return view.preview;
   if (last.body.trim() === "" && last.widgetId !== null) {
     const { widgetId } = last;
