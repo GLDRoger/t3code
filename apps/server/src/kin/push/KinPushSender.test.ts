@@ -2966,8 +2966,13 @@ describe("KinPushSender withdrawals", () => {
         const messageId = yield* postMessage(sql, from, "posted", { chatId: "chat_pair", body });
         yield* notify({ _tag: "message", orgId, messageId });
       }
-      const collapseId = kinTopicCollapseId(orgId, "c:chat_pair" as KinPushTopic);
+      const collapseId = kinTopicCollapseId("env_kin", orgId, "c:chat_pair" as KinPushTopic);
       assert.isAtMost(new TextEncoder().encode(collapseId).length, 64);
+      // Another host's company of the same id never shares it.
+      assert.notStrictEqual(
+        collapseId,
+        kinTopicCollapseId("env_other", orgId, "c:chat_pair" as KinPushTopic),
+      );
       const phone = apns.sent.filter((push) => push.token === ownerPhone);
       // The newer replaces the older, and says how many are unread.
       assert.deepStrictEqual(
@@ -3049,7 +3054,7 @@ describe("KinPushSender withdrawals", () => {
         const androidCard = fcm.sent.find((push) => push.token === memberAndroid);
         assert.strictEqual(
           androidCard?.data.tag,
-          kinTopicCollapseId(orgId, `w:${both}` as KinPushTopic),
+          kinTopicCollapseId("env_kin", orgId, `w:${both}` as KinPushTopic),
         );
         assert.deepStrictEqual(yield* sentRows(sql), [
           { person_id: member, topic: `w:${both}`, withdrawn: 0 },

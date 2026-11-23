@@ -40,10 +40,14 @@ export const uniqueTopic = (id: string) => `u:${id}` as KinPushTopic;
 
 /**
  * `apns-collapse-id` and Android's `tag` for a topic: a newer push with it replaces the shown one.
- * 38 bytes, within APNs' 64, and apart from the per-message ids older builds are sent.
+ * Of this host and company only: two hosts' `kin-default` never replace each other's. 38 bytes,
+ * within APNs' 64, and apart from the per-message ids older builds are sent.
  */
-export const kinTopicCollapseId = (orgId: KinOrgId, topic: KinPushTopic) =>
-  `kin:t:${NodeCrypto.createHash("sha256").update(`${orgId}\u0000${topic}`).digest("hex").slice(0, 32)}`;
+export const kinTopicCollapseId = (environmentId: string, orgId: KinOrgId, topic: KinPushTopic) =>
+  `kin:t:${NodeCrypto.createHash("sha256")
+    .update(`${environmentId}\u0000${orgId}\u0000${topic}`)
+    .digest("hex")
+    .slice(0, 32)}`;
 
 export type KinPushSentRow = {
   readonly personId: KinPersonId;

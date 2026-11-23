@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
-import { EnvironmentId, KinWidgetId } from "@t3tools/contracts";
+import { EnvironmentId, KinOrgId, KinWidgetId } from "@t3tools/contracts";
 
 import {
   KIN_DEFAULT_ACTION_IDENTIFIER,
@@ -463,11 +463,11 @@ describe("kinWithdrawnIds", () => {
     const note = (identifier: string, data: unknown) => ({
       request: { identifier, content: { data } },
     });
-    const about = (topic: string | undefined, environmentId = "env-1") => ({
+    const about = (topic: string | undefined, environmentId = "env-1", orgId = "kin-default") => ({
       kin: 1,
-      orgId: "kin-default",
+      orgId,
       chatId: "chat-1",
-      deepLink: `/kin/${environmentId}/kin-default/chats/chat-1`,
+      deepLink: `/kin/${environmentId}/${orgId}/chats/chat-1`,
       ...(topic === undefined ? {} : { topic }),
     });
     const presented = [
@@ -477,21 +477,25 @@ describe("kinWithdrawnIds", () => {
       // Sent before this build matched by topic, from another host, and upstream's own.
       note("older", about(undefined)),
       note("other-host", about("c:chat-1", "env-2")),
+      note("other-org", about("c:chat-1", "env-1", "other-org")),
       note("t3", { deepLink: "/threads/1" }),
     ];
     const env = EnvironmentId.make("env-1");
+    const here = { environmentId: env, orgId: KinOrgId.make("kin-default") };
     // What the phone asks about: only this host's topics.
     expect(kinDeliveredTopics(presented, env).map((one) => one.topic)).toEqual([
       "c:chat-1",
       "w:card-7",
       "q:q-1",
+      "c:chat-1",
     ]);
-    // The host's answer: the chat was read and the card answered; the question still waits.
-    expect(kinWithdrawnIds(presented, env, ["c:chat-1", "w:card-7", "a:never-shown"])).toEqual([
+    // The host's answer: the chat was read and the card answered; the question still waits. The
+    // same chat id in another company on this host is not touched.
+    expect(kinWithdrawnIds(presented, here, ["c:chat-1", "w:card-7", "a:never-shown"])).toEqual([
       "chat",
       "card",
     ]);
-    expect(kinWithdrawnIds(presented, env, [])).toEqual([]);
+    expect(kinWithdrawnIds(presented, here, [])).toEqual([]);
   });
 });
 

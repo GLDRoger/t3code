@@ -52,7 +52,7 @@ async function reconcileWithHost(environmentId: EnvironmentId): Promise<void> {
     );
     if (result._tag !== "Success") continue;
     await Promise.all(
-      kinWithdrawnIds(presented, environmentId, result.value.remove).map((identifier) =>
+      kinWithdrawnIds(presented, { environmentId, orgId }, result.value.remove).map((identifier) =>
         Notifications.dismissNotificationAsync(identifier),
       ),
     );

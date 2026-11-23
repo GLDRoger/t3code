@@ -263,15 +263,18 @@ export function kinDeliveredTopics(
   });
 }
 
-/** Of this host's delivered notifications, the ids of those whose topic the host settled. */
+/**
+ * Of this host's delivered notifications for `where.orgId`, the ids of those whose topic the host
+ * settled: a topic is one company's on one host, so another's is never touched.
+ */
 export function kinWithdrawnIds(
   presented: ReadonlyArray<unknown>,
-  environmentId: EnvironmentId,
+  where: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId },
   settled: ReadonlyArray<string>,
 ): ReadonlyArray<string> {
   const remove = new Set(settled);
-  return kinDeliveredTopics(presented, environmentId).flatMap((one) =>
-    remove.has(one.topic) ? [one.identifier] : [],
+  return kinDeliveredTopics(presented, where.environmentId).flatMap((one) =>
+    one.orgId === where.orgId && remove.has(one.topic) ? [one.identifier] : [],
   );
 }
 
@@ -281,13 +284,21 @@ export function kinWithdrawnIds(
  */
 export function kinWithdrawal(
   payload: unknown,
-): { readonly environmentId: EnvironmentId; readonly topics: ReadonlyArray<KinPushTopic> } | null {
+): {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly topics: ReadonlyArray<KinPushTopic>;
+} | null {
   const data = pushData(field(field(payload, "data"), "dataString"))?.data;
   if (data?.withdraw === undefined || data.withdraw.length === 0) return null;
   const target = linkTarget(data);
   return target === null
     ? null
-    : { environmentId: EnvironmentId.make(target.environmentId), topics: data.withdraw };
+    : {
+        environmentId: EnvironmentId.make(target.environmentId),
+        orgId: data.orgId,
+        topics: data.withdraw,
+      };
 }
 
 /** A Kin push with nothing to show: a withdrawal or a read's badge. It is never drawn. */

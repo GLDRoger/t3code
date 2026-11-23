@@ -1117,7 +1117,9 @@ const make = Effect.gen(function* () {
       ...(recipient.subject === undefined ? {} : { subject: recipient.subject }),
       ...(topical ? { topic: push.topic } : {}),
     };
-    const collapseId = topical ? kinTopicCollapseId(orgId, push.topic) : push.collapseId;
+    const collapseId = topical
+      ? kinTopicCollapseId(environmentId, orgId, push.topic)
+      : push.collapseId;
     const title =
       topical && push.countTitle !== undefined && recipient.unread > 1
         ? `${push.countTitle} · ${recipient.unread} new`
