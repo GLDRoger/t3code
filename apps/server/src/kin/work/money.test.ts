@@ -4084,7 +4084,10 @@ describe("the company profile", () => {
       // The agent answering the owner's own message is told he chooses it, not to ask him.
       const answered = countryFirstMessage("Owner", { answeringChooser: true });
       const answeredSaved = countryFirstMessage("Owner", { saved: true, answeringChooser: true });
-      assert.include(answered, "The person you're answering chooses it");
+      assert.include(
+        answered,
+        "The person you're answering chooses it themselves, in Settings, Company details: tell them so in your reply.",
+      );
       assert.notInclude(answered, "Ask Owner");
       // A budget's limit is a change to a setting: nothing was saved.
       const refused = [answeredSaved, answered, answeredSaved, refusal, refusal];
