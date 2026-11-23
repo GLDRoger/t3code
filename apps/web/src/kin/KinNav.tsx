@@ -5,6 +5,7 @@ import { Link, useLocation } from "@tanstack/react-router";
 import {
   BanknoteIcon,
   BriefcaseBusinessIcon,
+  ChartLineIcon,
   FileTextIcon,
   ListChecksIcon,
   type LucideIcon,
@@ -24,7 +25,10 @@ import {
   kinDestinationLink,
   kinInboxUnreadAtom,
   kinListShownAt,
+  kinNumbersLink,
 } from "./kinListSwitch";
+import { KIN_NUMBERS } from "@t3tools/client-runtime/kin/kinNumbers";
+import { useKinNumbersShown } from "./useKinNumbers";
 import { useKinTasksNeedsYou } from "./useKinAttention";
 import { kinHostKeptTarget, useKinHost } from "./useKinHost";
 import { useKinDestinations } from "./useKinPlaces";
@@ -77,17 +81,39 @@ function KinNavList(props: KinWorkTarget) {
   const pathname = useLocation({ select: (location) => location.pathname });
   const { isMobile, setOpenMobile } = useSidebar();
   const current = kinListShownAt(pathname) === "kin" ? kinDestinationAt(pathname) : null;
+
   const close = () => {
     if (isMobile) setOpenMobile(false);
   };
+  const numbersShown = useKinNumbersShown(props) === true;
+  const inNumbers = kinListShownAt(pathname) === "kin" && pathname.split("/")[4] === "numbers";
+  // Numbers sits after the company's work places, before Docs; it has no place in the dock.
+  const numbersAt = entries.some((entry) => entry.destination === "docs")
+    ? entries.length - 1
+    : entries.length;
+  const numbers = !numbersShown ? null : (
+    <SidebarMenuItem key="numbers">
+      <SidebarMenuButton
+        isActive={inNumbers}
+        aria-current={inNumbers ? "page" : undefined}
+        data-kin-numbers=""
+        onClick={close}
+        render={<Link {...kinNumbersLink(props)} />}
+      >
+        <ChartLineIcon />
+        <span className="min-w-0 flex-1 truncate">{KIN_NUMBERS.title}</span>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
   return (
     <SidebarGroup>
       <nav aria-label="Kin" className="flex flex-col gap-2">
         <SidebarMenu>
-          {entries.map(({ destination, badge }) => {
+          {entries.map(({ destination, badge }, index) => {
             const Icon = ICON[destination];
             const active = current === destination;
-            return (
+            return [
+              index === numbersAt ? numbers : null,
               <SidebarMenuItem key={destination}>
                 <SidebarMenuButton
                   isActive={active}
@@ -110,9 +136,10 @@ function KinNavList(props: KinWorkTarget) {
                     </Badge>
                   )}
                 </SidebarMenuButton>
-              </SidebarMenuItem>
-            );
+              </SidebarMenuItem>,
+            ];
           })}
+          {numbersAt === entries.length ? numbers : null}
         </SidebarMenu>
       </nav>
     </SidebarGroup>

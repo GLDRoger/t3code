@@ -3,7 +3,6 @@ import type {
   KinNumberDefinition,
   KinNumbersDefinitionsResult,
   KinNumbersListResult,
-  KinNumbersValuesResult,
   KinRecordKey,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -28,7 +27,6 @@ import type { KinHookApp } from "./kinHookApp.ts";
 
 type Read<A> = Atom.Atom<AsyncResult.AsyncResult<A, unknown>>;
 const noList: Read<KinNumbersListResult> = Atom.make(AsyncResult.initial());
-const noValues: Read<KinNumbersValuesResult> = Atom.make(AsyncResult.initial());
 const noDefinitions: Read<KinNumbersDefinitionsResult> = Atom.make(AsyncResult.initial());
 const notOwnerLevel = Atom.make(false);
 
