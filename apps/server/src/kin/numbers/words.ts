@@ -106,7 +106,7 @@ export const cardLine = (
   number: CardNumber,
   feed: CardFeed | undefined,
   existing: CardExisting | undefined,
-  extra: { readonly keptBy?: string | undefined } = {},
+  extra: { readonly keptBy?: string | undefined; readonly computed?: string | undefined } = {},
 ) => {
   const unit = number.unit ?? existing?.unit;
   const next = {
@@ -119,7 +119,7 @@ export const cardLine = (
   const before = existing === undefined ? undefined : (limitOf(existing) ?? "no limit");
   const origin =
     number.compute !== undefined
-      ? "Kin works it out from its own records"
+      ? (extra.computed ?? "Kin works it out from its own records")
       : feed !== undefined
         ? `from ${quoted(feed.source)}, fetched ${cadenceText(feed.every)} at ${feed.at}`
         : existing === undefined
@@ -135,10 +135,48 @@ export const cardLine = (
     : `Change ${quoted(existing.name)} (${existing.key}): ${parts.join("; ")}`;
 };
 
+const MEASURES = {
+  revenue_received: "money received",
+  clients_won: "clients won",
+  tasks_done: "tasks done",
+  overdue_over_30: "invoices more than 30 days overdue",
+  pipeline_open: "the value of open deals",
+  invoiced_this_month: "what was invoiced this month",
+} as const;
+
+/** What a computed number counts, in words: the list as people see it, its states, its direction. */
+export const computedText = (
+  spec:
+    | { readonly builtin: keyof typeof MEASURES }
+    | {
+        readonly count: string;
+        readonly states: ReadonlyArray<string>;
+      },
+  listName: (id: string) => string,
+  direction: "up" | "down" | undefined,
+) => {
+  const what =
+    "builtin" in spec
+      ? `Kin works out ${MEASURES[spec.builtin]} from its own records`
+      : `Kin counts ${listName(spec.count)} in ${spec.states.join(" or ")}`;
+  return direction === undefined
+    ? what
+    : `${what}, ${direction === "up" ? "higher" : "lower"} is better`;
+};
+
+/** The card's own line for how a feed is read, in the agent's words, whole. */
+export const howLine = (how: string) => `How: ${how}`;
+
 export const WATCH_NEXT =
   "Nothing is watched yet. Kin showed this on a card in this chat; it applies when they tap Confirm. Say so in one line.";
 /** The tool's answer for numbers not watched yet: each line of the owner's card, and what to say. */
-export const proposedAnswer = (numbers: ReadonlyArray<CardNumber>, feed: CardFeed | undefined) => ({
-  proposed: numbers.map((number) => cardLine(number, feed, undefined)),
+export const proposedAnswer = (
+  numbers: ReadonlyArray<CardNumber>,
+  feed: (CardFeed & { readonly how?: string | undefined }) | undefined,
+) => ({
+  proposed: [
+    ...numbers.map((number) => cardLine(number, feed, undefined)),
+    ...(feed?.how === undefined ? [] : [howLine(feed.how)]),
+  ],
   next: WATCH_NEXT,
 });

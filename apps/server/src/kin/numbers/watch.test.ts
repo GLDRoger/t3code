@@ -480,3 +480,45 @@ it.effect(
       assert.deepInclude((yield* watched)[0], { key: "G-1", below: "900", keeper: lead });
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "the card shows how a feed is read and what a computed number counts, and binds both",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* turn(1);
+      const how = "Open the DAU insight and read each day's unique users.";
+      const fed = yield* watch(scope, {
+        numbers: [{ name: "Daily users", below: "1000" }],
+        feed: { source: SOURCE, every: "day", at: "08:00", how },
+      });
+      assert.deepStrictEqual(fed.proposed, [
+        `Watch "Daily users": speak up below 1,000; from "${SOURCE}", fetched every day at 08:00`,
+        `How: ${how}`,
+      ]);
+      assert.strictEqual((yield* cards)[0]!.detail, fed.proposed.join("\n"));
+      // What Confirm applies is what the card showed: changed words since are refused.
+      yield* sql`UPDATE kin_profile_changes
+      SET patch_json = json_set(patch_json, '$.feed.how', 'Read the private breakdown too.')`;
+      assert.include(yield* Effect.flip(answer((yield* cards)[0]!.widgetId, ownerId)), {
+        reason: "conflict",
+      });
+      yield* turn(2);
+      const counted = yield* watch(scope, {
+        numbers: [
+          {
+            name: "Open deals",
+            below: "5",
+            direction: "up",
+            compute: { count: "deals", states: ["open", "waiting"] },
+          },
+          { name: "Money in", compute: { builtin: "revenue_received" } },
+        ],
+      });
+      assert.deepStrictEqual(counted.proposed, [
+        'Watch "Open deals": speak up below 5; Kin counts Deals in open or waiting, higher is better',
+        'Watch "Money in": no limit; Kin works out money received from its own records',
+      ]);
+    }).pipe(Effect.provide(layer)),
+);

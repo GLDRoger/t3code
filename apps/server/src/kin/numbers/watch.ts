@@ -36,7 +36,9 @@ import {
   NumberSpec,
   type NumbersChange,
 } from "./numberRows.ts";
-import { cardLine, WATCH_NEXT } from "./words.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { BUILT_IN_SECTIONS } from "../shell/words.ts";
+import { cardLine, computedText, howLine, WATCH_NEXT } from "./words.ts";
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const encodeChange = Schema.encodeEffect(NumbersChangeJson);
@@ -87,6 +89,17 @@ const namesOf = Effect.fn("KinNumbersWatch.names")(function* (orgId: KinOrgId) {
   return new Map(rows.map((row) => [row.id, row.name]));
 });
 
+/** Each list's name as people see it: a section by the company's word, else the list's own. */
+const listNamesOf = Effect.fn("KinNumbersWatch.lists")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const shell = yield* KinShell.get(orgId);
+  const rows = yield* sql<{ id: string; name: string }>`SELECT register_id AS id, name
+    FROM kin_registers WHERE org_id = ${orgId} ORDER BY register_id`;
+  const names = new Map(rows.map((row) => [row.id, row.name]));
+  for (const id of BUILT_IN_SECTIONS) names.set(id, KinShell.sectionName(shell, id));
+  return names;
+});
+
 /**
  * The owner's card for a proposal as things stand now: each number's line, the numbers it names,
  * and a base that binds the card to every fact it was drawn from and to its words, so a Confirm
@@ -108,6 +121,7 @@ export const drawCard = Effect.fn("KinNumbersWatch.draw")(function* (
       ? []
       : (yield* feedSchedules(orgId)).filter((one) => one.feed.source === feed.source);
   const names = yield* namesOf(orgId);
+  const lists = yield* listNamesOf(orgId);
   const nameOf = (kind: string, id: string | null) =>
     id === null ? "nobody" : (names.get(`${kind}:${id}`) ?? id);
   const asker = nameOf("agent", agentId);
@@ -117,8 +131,14 @@ export const drawCard = Effect.fn("KinNumbersWatch.draw")(function* (
       existing === undefined || existing.keeper === agentId
         ? undefined
         : `kept by ${asker} (was ${nameOf(existing.holder.kind, existing.holder.id)})`;
-    return cardLine(number, feed, existing, { keptBy });
+    const direction = number.direction ?? existing?.direction;
+    const computed =
+      number.compute === undefined
+        ? undefined
+        : computedText(number.compute, (id) => lists.get(id) ?? id, direction);
+    return cardLine(number, feed, existing, { keptBy, computed });
   });
+  if (feed?.how !== undefined) lines.push(howLine(feed.how));
   const base = retryKey(
     stableStringify({
       numbers: matched.map((number) =>
@@ -211,7 +231,7 @@ const runWatch = Effect.fnUntraced(function* (lead: Lead, asked: typeof NumbersW
       chatId,
       clientMessageId: `kin-numbers:${changeId}`,
       question:
-        lines.length === 1
+        input.numbers.length === 1
           ? "Watch this number for the company?"
           : "Watch these numbers for the company?",
       detail: lines.join("\n"),
