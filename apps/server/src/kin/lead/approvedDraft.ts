@@ -24,12 +24,13 @@ export const APPROVED_REFUSAL =
 /** Where each make carries the approved text. */
 const WORDS_IN: Record<string, string> = {
   record_create: "the entry's notes",
-  kin_connection_call: "the mail's body",
   social_draft: "the caption",
 };
 /** A make that changed the approved words: refused, so the one make stays open. */
 export const approvedWords = (tool: string) =>
-  `Nothing was made: put the approved draft's whole text in ${WORDS_IN[tool] ?? "it"} word for word, and nothing else, as the owner approved it.`;
+  tool === "kin_connection_call"
+    ? "Nothing was made: send the approved draft word for word and nothing else, its own To, Cc and Subject lines at the top, if any, as the mail's addresses and subject, and the rest as its body."
+    : `Nothing was made: put the approved draft's whole text in ${WORDS_IN[tool] ?? "it"} word for word, and nothing else, as the owner approved it.`;
 /** A proposal or client terms: Kin wrote it in the owner's Approve (`writeApproved`). */
 export const WRITTEN_ITSELF = "Kin wrote this one itself when it was approved: it is in Docs.";
 /** An approved quote or invoice is one entry. */

@@ -68,7 +68,11 @@ import { KinPictureToolkit } from "../../apps/server/src/kin/pictures/mcp.ts";
 import { GENERATE_SENTENCES } from "../../apps/server/src/kin/pictures/KinPictures.ts";
 import { pictureNote } from "../../apps/server/src/kin/work/leadDocs.ts";
 import { APPROVED_TURN_TEXT } from "../../apps/server/src/kin/questions/sentUpDraft.ts";
-import { APPROVED_REFUSAL, approvedWords } from "../../apps/server/src/kin/lead/approvedDraft.ts";
+import {
+  APPROVED_REFUSAL,
+  approvedWords,
+  ONE_ENTRY,
+} from "../../apps/server/src/kin/lead/approvedDraft.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
@@ -511,6 +515,10 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   // An approved draft's one make that changed the approved words, refused at Kin's gate.
   approvedWords: (input: { tool: string }) => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: approvedWords(input.tool) },
+  }),
+  // An approved quote or invoice made as more than one entry, refused at Kin's gate.
+  approvedOneEntry: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: ONE_ENTRY },
   }),
   // Anything but the approved make or a read, refused in an approved draft's turn.
   approvedRefusal: () => ({
