@@ -112,10 +112,28 @@ export const baseOf = Effect.fn("KinNumbersWatch.base")(function* (
   };
 });
 
-const runWatch = Effect.fnUntraced(function* (lead: Lead, input: typeof NumbersWatchInput.Type) {
-  yield* admitted(lead, "numbers_watch", input);
-  if (!(yield* outsideToolAllowed(lead, "numbers_watch", input)))
+/** A source given as one of the company's connections' ids reads as that connection's label. */
+const readableSource = Effect.fn("KinNumbersWatch.source")(function* (
+  orgId: KinOrgId,
+  source: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [connection] = yield* sql<{ label: string }>`SELECT label FROM kin_connections
+    WHERE org_id = ${orgId} AND connection_id = ${source} AND removed_at IS NULL`;
+  return connection?.label ?? source;
+});
+
+const runWatch = Effect.fnUntraced(function* (lead: Lead, asked: typeof NumbersWatchInput.Type) {
+  yield* admitted(lead, "numbers_watch", asked);
+  if (!(yield* outsideToolAllowed(lead, "numbers_watch", asked)))
     return yield* new KinChatError({ reason: "not_allowed", message: OUTSIDE_REFUSAL });
+  const input =
+    asked.feed === undefined
+      ? asked
+      : {
+          ...asked,
+          feed: { ...asked.feed, source: yield* readableSource(lead.orgId, asked.feed.source) },
+        };
   const names = input.numbers.map((number) => nameKey(number.name));
   if (new Set(names).size !== names.length) return yield* invalid("Name each number once.");
   if (input.feed !== undefined && input.numbers.every((number) => number.compute !== undefined))

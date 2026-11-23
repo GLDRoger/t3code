@@ -426,3 +426,23 @@ it.effect("a shared chat or a turn that read outside text can't propose numbers"
     assert.lengthOf(yield* sql`SELECT 1 FROM kin_widgets`, 0);
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect("a source given as a connection's id reads as that connection's name", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+        url_host, auth, reach, state, created_at, updated_at)
+      VALUES (${orgId}, 'conn-ph1', 'posthog', 'PostHog', 'remote', 'https://invented.example',
+        'invented.example', 'key', 'closed', 'active', 0, 0)`;
+    yield* turn(1);
+    const proposed = yield* watch(scope, {
+      numbers: [{ name: "Daily users", below: "1000" }],
+      feed: { source: "conn-ph1", every: "day", at: "08:00" },
+    });
+    assert.notInclude(proposed.proposed.join("\n"), "conn-ph1");
+    assert.include(proposed.proposed[0], `from "PostHog", fetched every day at 08:00`);
+    yield* answer((yield* cards)[0]!.widgetId, ownerId);
+    assert.strictEqual((yield* watched)[0]!.definedSource, "PostHog");
+  }).pipe(Effect.provide(layer)),
+);
