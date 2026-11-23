@@ -1,6 +1,7 @@
 import * as DateTime from "effect/DateTime";
 
 import type { AlertMail, AlertReading, AlertRejection, BankAlertFormat } from "./bankAlerts.ts";
+import { DAY_MS } from "../../durations.ts";
 
 /**
  * HDFC Bank's transaction alert mails, read by code alone. A mail's text is untrusted: it counts
@@ -75,8 +76,6 @@ const minorOf = (amount: string) => {
   const minor = Number(amount.replaceAll(",", "").replace(".", ""));
   return Number.isSafeInteger(minor) ? minor : null;
 };
-
-const DAY_MS = 86_400_000;
 
 /** The day an alert names, when it is a real day within a week before its mail, or the day after. */
 const dayOf = (day: string, month: string, year: string, sentAt: number) => {
