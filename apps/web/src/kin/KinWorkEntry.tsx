@@ -116,6 +116,12 @@ import {
   useKinRates,
 } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import { useKinSectionOn } from "./useKinShell";
+import {
+  KIN_BILL_TO,
+  kinBillToFieldPatch,
+  kinUseClientInstead,
+} from "@t3tools/client-runtime/kin/kinBillTo";
 
 const isImage = (file: KinFileRef) => file.mimeType.startsWith("image/");
 
@@ -544,7 +550,11 @@ export function KinListEntry(
   },
 ) {
   const { item, view, environmentId } = props;
-  const opensClients = useKinOpensClients(environmentId);
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  // Clients off: an invoice's or quote's client is its name alone, with no link or picker.
+  const billing = clientsOn || !["invoices", "quotes"].includes(item.list ?? "");
+  const opensClients = useKinOpensClients(environmentId) && billing;
+  const [naming, setNaming] = useState(false);
   const lists = useKinLists(props, { enabled: true, archived: true });
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
@@ -865,8 +875,41 @@ export function KinListEntry(
               </>
             )}
             {entry.facts.map((fact) => {
+              const { billTo } = entry;
+              if (
+                fact.id === "party" &&
+                billTo !== null &&
+                item.party === undefined &&
+                (billTo.typed || naming || !clientsOn)
+              )
+                return (
+                  <BillToRows
+                    key={fact.id}
+                    billTo={billTo}
+                    canName={canDraft && billTo.editable}
+                    canUseClient={canChange && billTo.editable && clientsOn && billTo.typed}
+                    opening={naming}
+                    busy={busy}
+                    clients={clients.map((row) => ({ value: row.key, label: row.name }))}
+                    onSave={async (key, value) => {
+                      const failed = await changes.edit(item.rev, {
+                        fields: kinBillToFieldPatch(key, value),
+                      });
+                      if (failed === null) setNaming(false);
+                      return failed;
+                    }}
+                    onCancelName={() => setNaming(false)}
+                    onUseClient={(key) => void changes.update(item.rev, kinUseClientInstead(key))}
+                  />
+                );
               const opens = open(fact);
-              const picks = canChange && fact.id !== "owner";
+              const picks = canChange && fact.id !== "owner" && (fact.id === "category" || billing);
+              const offersName =
+                fact.id === "party" &&
+                billTo !== null &&
+                item.party === undefined &&
+                canDraft &&
+                billTo.editable;
               if (!picks && fact.value === null) return null;
               return (
                 <div key={fact.id} className="contents">
@@ -905,6 +948,11 @@ export function KinListEntry(
                         {picks ? "Open" : fact.value}
                       </Button>
                     )}
+                    {offersName ? (
+                      <Button size="xs" variant="ghost" onClick={() => setNaming(true)}>
+                        {KIN_BILL_TO.byName}
+                      </Button>
+                    ) : null}
                   </dd>
                 </div>
               );
@@ -1190,6 +1238,73 @@ export function KinListEntry(
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
+    </>
+  );
+}
+
+/**
+ * Who an invoice or quote with no client bills: its typed name and the details this reader was
+ * sent, edited in place on a draft. Clearing the name clears the details, as the host does.
+ */
+function BillToRows(props: {
+  readonly billTo: NonNullable<KinListEntryView["billTo"]>;
+  readonly canName: boolean;
+  readonly canUseClient: boolean;
+  /** The person just chose to bill by name: the name opens as a box. */
+  readonly opening: boolean;
+  readonly busy: boolean;
+  readonly clients: ReadonlyArray<{ readonly value: KinRecordKey; readonly label: string }>;
+  readonly onSave: (key: string, value: string) => Promise<string | null>;
+  readonly onCancelName: () => void;
+  readonly onUseClient: (key: KinRecordKey) => void;
+}) {
+  const { name, details } = props.billTo;
+  const rows = [name, ...(props.billTo.typed ? details : [])];
+  return (
+    <>
+      {rows.map((field) => {
+        if (!props.canName && field.text === null) return null;
+        const isName = field === name;
+        return (
+          <div key={field.key} className="contents">
+            <dt className="flex items-center gap-1.5 self-start pt-0.5 text-muted-foreground">
+              {isName ? KIN_BILL_TO.label : field.label}
+              {field.private ? <KinWorkPrivateMark /> : null}
+            </dt>
+            <dd className="flex min-w-0 flex-col items-start gap-1.5 text-foreground">
+              {props.canName ? (
+                <KinEntryText
+                  label={isName ? KIN_BILL_TO.label : field.label}
+                  shown={field.text}
+                  draft={field.draft}
+                  disabled={props.busy}
+                  {...(isName && props.opening && field.text === null
+                    ? { open: true, onCancel: props.onCancelName }
+                    : {})}
+                  onSave={(text) => props.onSave(field.key, text)}
+                />
+              ) : (
+                <span className="whitespace-pre-wrap">{field.text}</span>
+              )}
+              {isName && props.canUseClient && props.clients.length > 0 ? (
+                <Menu>
+                  <MenuTrigger render={<Button size="xs" variant="ghost" disabled={props.busy} />}>
+                    {KIN_BILL_TO.useClient}
+                    <ChevronDownIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="start">
+                    {props.clients.map((client) => (
+                      <MenuItem key={client.value} onClick={() => props.onUseClient(client.value)}>
+                        {client.label}
+                      </MenuItem>
+                    ))}
+                  </MenuPopup>
+                </Menu>
+              ) : null}
+            </dd>
+          </div>
+        );
+      })}
     </>
   );
 }

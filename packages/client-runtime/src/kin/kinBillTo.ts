@@ -49,16 +49,22 @@ export const kinBilledName = (record: {
  * Whether this host takes a name to bill: its invoices or quotes list has the field. An older host
  * has neither, and before a company's first invoice or quote there is no list to tell by.
  */
-export const kinBillToOffered = (lists: ReadonlyArray<Pick<KinListDefinition, "list" | "fields">>) =>
+export const kinBillToOffered = (
+  lists: ReadonlyArray<Pick<KinListDefinition, "list" | "fields">>,
+) =>
   lists.some(
     (def) =>
       (def.list === "invoices" || def.list === "quotes") &&
       def.fields.some((field) => field.key === KIN_BILL_TO_NAME),
   );
 
-const CLEARED = Object.fromEntries(KIN_BILL_TO_KEYS.map((key) => [key, null])) as Readonly<
-  Record<(typeof KIN_BILL_TO_KEYS)[number], null>
->;
+const CLEARED = {
+  billToName: null,
+  billToAddress: null,
+  billToTaxNumber: null,
+  billToPlace: null,
+  billToEmail: null,
+} as const;
 
 /**
  * The fields an edit to one bill-to field sends. Clearing the name clears every detail with it, as
