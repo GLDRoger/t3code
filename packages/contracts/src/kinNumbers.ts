@@ -1,7 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
-import { NonNegativeInt } from "./baseSchemas.ts";
+import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId, KinPersonId, KinTrimmedText } from "./kinChat.ts";
 import { KinDay, KinMoneyTotals } from "./kinMoney.ts";
 import { KinRecordKey, KinWorkCreateInput } from "./kinWork.ts";
@@ -65,6 +65,44 @@ export const KinNumbersRecordInput = Schema.Struct({
   ...KinNumberValueInput.fields,
   clientRequestId: KinWorkCreateInput.fields.clientRequestId,
 });
+/** A watched number as the owner level sets it up, archived ones included, for its form. */
+export const KinNumberDefinition = Schema.Struct({
+  key: KinRecordKey,
+  rev: NonNegativeInt,
+  name: Schema.String,
+  unit: Schema.optional(Schema.String),
+  direction: Schema.optional(KinNumberDirection),
+  every: Schema.optional(KinNumberCadence),
+  above: Schema.optional(KinNumberDecimal),
+  below: Schema.optional(KinNumberDecimal),
+  source: Schema.optional(KinNumberSource),
+  /** Kin computes it from its records: read-only, never shared with members. */
+  computed: Schema.Boolean,
+  shared: Schema.Boolean,
+  archived: Schema.Boolean,
+});
+export type KinNumberDefinition = typeof KinNumberDefinition.Type;
+export const KinNumbersDefinitionsInput = Schema.Struct({ orgId: KinOrgId });
+export const KinNumbersDefinitionsResult = Schema.Struct({
+  numbers: Schema.Array(KinNumberDefinition),
+});
+/** Watches a number, or with `key` and `rev` changes, archives or restores one; `null` clears. */
+export const KinNumberSaveInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: Schema.optional(KinRecordKey),
+  rev: Schema.optional(NonNegativeInt),
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  unit: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(40)))),
+  direction: Schema.optional(Schema.NullOr(KinNumberDirection)),
+  every: Schema.optional(Schema.NullOr(KinNumberCadence)),
+  above: Schema.optional(Schema.NullOr(KinNumberDecimal)),
+  below: Schema.optional(Schema.NullOr(KinNumberDecimal)),
+  source: Schema.optional(Schema.NullOr(KinNumberSource)),
+  shared: Schema.optional(Schema.Boolean),
+  archived: Schema.optional(Schema.Boolean),
+  clientRequestId: KinWorkCreateInput.fields.clientRequestId,
+});
+export type KinNumberSaveInput = typeof KinNumberSaveInput.Type;
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 
 export const KinNumbersRpcs = [
@@ -83,9 +121,21 @@ export const KinNumbersRpcs = [
     success: KinNumbersRecordResult,
     error,
   }),
+  Rpc.make("kin.numbers.definitions", {
+    payload: KinNumbersDefinitionsInput,
+    success: KinNumbersDefinitionsResult,
+    error,
+  }),
+  Rpc.make("kin.numbers.save", {
+    payload: KinNumberSaveInput,
+    success: KinNumberDefinition,
+    error,
+  }),
 ] as const;
 export const KIN_NUMBERS_RPC_SCOPES = {
   "kin.numbers.list": AuthKinChatScope,
   "kin.numbers.values": AuthKinChatScope,
   "kin.numbers.record": AuthKinChatScope,
+  "kin.numbers.definitions": AuthKinChatScope,
+  "kin.numbers.save": AuthKinChatScope,
 } as const;
