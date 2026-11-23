@@ -113,6 +113,16 @@ it.effect("loads the .p8 only when fully configured, and signs a token APNs can 
       ),
       { "apns-collapse-id": "kin:abc" },
     );
+    // A withdrawal: Apple's background push, which may not alert, sound or badge by itself.
+    assert.include(
+      apnsRequestHeaders(
+        loaded.success,
+        { token, environment: "development", payload: {}, background: true },
+        jwt,
+        1_794_096_000_000,
+      ),
+      { "apns-push-type": "background", "apns-priority": "5" },
+    );
   }).pipe(Effect.scoped),
 );
 

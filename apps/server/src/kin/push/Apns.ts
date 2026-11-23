@@ -40,6 +40,11 @@ export type KinApnsPush = {
   readonly payload: unknown;
   /** `apns-collapse-id`: a newer push with the same id replaces the shown one. At most 64 bytes. */
   readonly collapseId?: string;
+  /**
+   * Apple's background push (`apns-push-type: background`, priority 5): `content-available` alone
+   * in `aps`, waking the app if iOS lets it, never alerting by itself.
+   */
+  readonly background?: true;
 };
 
 /**
@@ -84,8 +89,8 @@ export const apnsRequestHeaders = (
   ":path": `/3/device/${push.token}`,
   authorization: `bearer ${jwt}`,
   "apns-topic": credentials.topic,
-  "apns-push-type": "alert",
-  "apns-priority": "10",
+  "apns-push-type": push.background === true ? "background" : "alert",
+  "apns-priority": push.background === true ? "5" : "10",
   // Never delivered once the host has forgotten it sent it.
   "apns-expiration": String(Math.floor((nowMs + KIN_PUSH_KEPT_MS) / 1000)),
   "content-type": "application/json",

@@ -30,6 +30,8 @@ export function defineKinBackgroundClear(): void {
             Notifications.dismissNotificationAsync(identifier),
           ),
         );
+        if (Platform.OS === "ios" && withdrawal.badge !== undefined)
+          await Notifications.setBadgeCountAsync(withdrawal.badge);
         return Notifications.BackgroundNotificationTaskResult.NewData;
       }
       const cleared = kinClearedChat(data);

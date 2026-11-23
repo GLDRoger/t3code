@@ -336,16 +336,21 @@ export function kinWithdrawal(payload: unknown): {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly withdraw: ReadonlyArray<KinPushWithdrawn>;
+  /** iOS: the badge to set, which Apple's background push can't carry in `aps`. */
+  readonly badge: number | undefined;
 } | null {
   const data = pushData(field(field(payload, "data"), "dataString"))?.data;
-  if (data?.withdraw === undefined || data.withdraw.length === 0) return null;
+  if (data === undefined) return null;
+  const withdraw = data.withdraw ?? [];
+  if (withdraw.length === 0 && data.badge === undefined) return null;
   const target = linkTarget(data);
   return target === null
     ? null
     : {
         environmentId: EnvironmentId.make(target.environmentId),
         orgId: data.orgId,
-        withdraw: data.withdraw,
+        withdraw,
+        badge: data.badge,
       };
 }
 

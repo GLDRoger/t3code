@@ -152,6 +152,8 @@ export const KinPushData = Schema.Struct({
   topic: Schema.optional(KinPushTopic),
   /** With `topic`: which push about it this is, for this person (`KinPushWithdrawn`). */
   version: Schema.optional(NonNegativeInt),
+  /** On iOS's silent push: the badge the host counts for them, which the woken app sets. */
+  badge: Schema.optional(NonNegativeInt),
   /** On a silent push: these topics' notifications are settled, so the phone removes them. */
   withdraw: Schema.optional(
     Schema.Array(KinPushWithdrawn).check(Schema.isMaxLength(KIN_PUSH_TOPICS_MAX)),

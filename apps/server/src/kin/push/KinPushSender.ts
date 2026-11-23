@@ -1377,10 +1377,15 @@ const make = Effect.gen(function* () {
     }
     if (withdraw.length === 0 && shownBadge.get(device.token) === badge) return taken;
     for (const list of fitted(orgId, withdraw)) {
+      // Apple's background push carries no badge of its own: the app sets it when woken.
       const result = yield* apns.send({
         token: device.token,
         environment: device.apsEnvironment,
-        payload: { aps: { badge, "content-available": 1 }, body: withdrawalData(orgId, list) },
+        background: true,
+        payload: {
+          aps: { "content-available": 1 },
+          body: { ...withdrawalData(orgId, list), badge },
+        },
       });
       if (result.status === 200) shownBadge.set(device.token, badge);
       else if (result.status !== 410 && !DEAD_TOKEN_REASONS.has(result.reason ?? "")) taken = false;

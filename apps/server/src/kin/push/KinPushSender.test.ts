@@ -3015,19 +3015,22 @@ describe("KinPushSender withdrawals", () => {
       );
       apns.sent.length = 0;
       yield* afterBatch(sender);
+      // Apple's background push: `content-available` alone in `aps`; the app sets the badge.
       assert.deepStrictEqual(
-        apns.sent.map((push) => [push.token, push.collapseId, push.payload]),
+        apns.sent.map((push) => [push.token, push.collapseId, push.background, push.payload]),
         [
           [
             ownerPhone,
             undefined,
+            true,
             {
-              aps: { badge: 0, "content-available": 1 },
+              aps: { "content-available": 1 },
               body: {
                 kin: 1,
                 orgId,
                 deepLink: work,
                 withdraw: [{ topic: "c:chat_pair", version: 2 }],
+                badge: 0,
               },
             },
           ],

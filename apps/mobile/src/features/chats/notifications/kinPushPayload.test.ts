@@ -445,17 +445,24 @@ describe("kinWithdrawal", () => {
       { topic: "c:chat-1", version: 3 },
       { topic: "w:card-7", version: 1 },
     ],
-  };
+    badge: 4,
+  } as { [key: string]: unknown; badge?: number };
   it.each([
     ["a host's withdrawal", silent, silent.withdraw],
-    ["a read's badge, from a host before topics", { ...silent, withdraw: undefined }, null],
-    ["nothing to withdraw", { ...silent, withdraw: [] }, null],
+    [
+      "a read's badge, from a host before topics",
+      { ...silent, withdraw: undefined, badge: undefined },
+      null,
+    ],
+    ["only the badge moved", { ...silent, withdraw: undefined, badge: 2 }, []],
+    ["nothing to withdraw", { ...silent, withdraw: [], badge: undefined }, null],
     ["a topic that isn't one", { ...silent, withdraw: [{ topic: "chat 1", version: 1 }] }, null],
     ["a topic with no version", { ...silent, withdraw: ["c:chat-1"] }, null],
     ["a link that is no Kin path", { ...silent, deepLink: "/threads/1" }, null],
   ] as const)("%s", (_name, body, withdraw) => {
     const ios = kinWithdrawal({ data: { dataString: JSON.stringify(body) }, aps: {} });
     expect(ios?.withdraw ?? null).toEqual(withdraw);
+    expect(ios?.badge).toBe(withdraw === null ? undefined : body.badge);
     if (withdraw !== null) expect(ios?.environmentId).toBe("env-1");
     const android = kinWithdrawal({
       messageId: "0:1794096000%fcm",
