@@ -2134,6 +2134,41 @@ describe("watched numbers", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a queued wake says nothing once its section is off or its episode is over", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* watchedNumber("G-14", { spec: '{"count":"deals","states":["open"]}', below: "5" });
+      const queued = (yield* KinPulse.tick(orgId, noon(30))).woken.filter((key) =>
+        key.startsWith("number_off:"),
+      );
+      assert.lengthOf(queued, 1);
+      assert.lengthOf(yield* offTurnTexts(orgId, queued, noon(30)), 1);
+      // Deals switched off before the turn starts: the wake carries no instruction.
+      yield* KinShell.set(orgId, owner, 0, [{ id: "deals", on: false }]);
+      assert.deepStrictEqual(yield* offTurnTexts(orgId, queued, noon(30)), []);
+      // On again, but the episode was handled meanwhile: still nothing.
+      yield* KinShell.set(orgId, owner, 1, [{ id: "deals", on: true }]);
+      assert.lengthOf(yield* offTurnTexts(orgId, queued, noon(30)), 1);
+      yield* sql`UPDATE kin_pulse_facts SET handled_by_kind = 'person', handled_by_id = ${owner},
+          handled_at = ${noon(30)} WHERE org_id = ${orgId} AND fact_key = ${queued[0]!}`;
+      assert.deepStrictEqual(yield* offTurnTexts(orgId, queued, noon(30)), []);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a number counted from any list follows that list's section switch", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* watchedNumber("G-15", { spec: '{"count":"clients","states":["open"]}', below: "50" });
+      yield* sql`INSERT INTO kin_company_shell VALUES (${orgId}, '[{"id":"clients","on":false}]',
+          1, ${owner}, 0)`;
+      const off = yield* KinPulse.tick(orgId, noon(30));
+      assert.isFalse(off.woken.some((key) => key.startsWith("number_off:")));
+      assert.lengthOf(yield* offWakes, 0);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("a feed two periods behind tells the owner once, with its source", () =>
     Effect.gen(function* () {
       yield* seed;

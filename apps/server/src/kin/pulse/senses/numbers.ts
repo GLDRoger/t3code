@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevelNumbers } from "../../numbers/KinNumbers.ts";
+import { sectionOnFor } from "../../shell/KinShell.ts";
 import { figure, offTurnText } from "../../numbers/words.ts";
 import { agentOrOwner, dayOf, iso, type SenseContext, type SensedFact } from "./shared.ts";
 
@@ -91,16 +92,29 @@ export const numberSenses = Effect.fn("KinPulse.numberSenses")(function* (ctx: S
   return facts;
 });
 
-/** What the keeper woken by `number_off` facts is told, for each number still outside its limit. */
+/**
+ * What the keeper woken by `number_off` facts is told, checked as its turn starts: only for an
+ * episode still open, not handled, with its number still outside that limit and its section on.
+ */
 export const offTurnTexts = Effect.fn("KinPulse.numberOffTexts")(function* (
   orgId: KinOrgId,
   factKeys: ReadonlyArray<string>,
   now: number,
 ) {
-  const wanted = factKeys.filter((key) => key.startsWith("number_off:"));
+  const asked = factKeys.filter((key) => key.startsWith("number_off:"));
+  if (asked.length === 0) return [];
+  const sql = yield* SqlClient.SqlClient;
+  const open = yield* sql<{ key: string }>`SELECT fact_key AS key FROM kin_pulse_facts
+    WHERE org_id = ${orgId} AND fact_key IN ${sql.in(asked)} AND cleared_at IS NULL
+      AND (handled_at IS NULL OR (handled_until IS NOT NULL AND handled_until <= ${now}))
+    ORDER BY fact_key`;
+  const wanted = open.map((row) => row.key);
   if (wanted.length === 0) return [];
   const numbers = yield* ownerLevelNumbers(orgId, now);
-  return numbers.flatMap((number) => {
+  const shown = [];
+  for (const number of numbers)
+    if (number.section === null || (yield* sectionOnFor(orgId, number.section))) shown.push(number);
+  return shown.flatMap((number) => {
     const off = number.off;
     if (off === undefined || number.asOf === null) return [];
     const prefix = numberOffPrefix(number.key, off.side, off.limit);

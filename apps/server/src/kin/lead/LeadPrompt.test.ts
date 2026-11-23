@@ -900,6 +900,10 @@ it.effect(
       yield* sql`INSERT INTO kin_number_values (org_id, record_id, as_of, seq, value, agent_id,
           recorder_name, source, created_at)
         VALUES (${orgId}, 'G-1', '2026-11-20', 1, '940', ${agentId}, 'Lead', 'PostHog', 0)`;
+      yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense, subject_record_id,
+          scope_json, first_seen_at, last_seen_at)
+        VALUES (${orgId}, 'number_off:G-1:below=1000:since=2026-11-20#1', 'number_off', 'G-1',
+          '{}', 0, 0)`;
       const offWake = decodeEvent({
         _tag: "pulse",
         orgId,
@@ -908,7 +912,7 @@ it.effect(
         receivedAt: timestamp,
         provenance: { _tag: "system" },
         dedupeKey: null,
-        factKeys: ["number_off:G-1:below=1000:since=2026-11-20"],
+        factKeys: ["number_off:G-1:below=1000:since=2026-11-20#1"],
       });
       yield* stored("off-wake", [offWake]);
       expect(

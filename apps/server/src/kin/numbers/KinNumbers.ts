@@ -27,7 +27,7 @@ import { effectiveAudience, SHARED_REFUSAL } from "../lead/Audience.ts";
 import { outsideToolAllowed, OUTSIDE_REFUSAL } from "../lead/OutsideContent.ts";
 import { accessOf } from "../people/KinAccess.ts";
 import { sectionOnFor } from "../shell/KinShell.ts";
-import type { SectionId } from "../shell/sections.ts";
+import { sectionOfList, type SectionId } from "../shell/sections.ts";
 import { homeCurrency } from "../work/companyProfile.ts";
 import { KinRecords, requestHashOf } from "../work/KinRecords.ts";
 import { ownerLevelProgressOf, ownerLevelReceivedByCurrency } from "../work/goals.ts";
@@ -133,13 +133,10 @@ const computedSections = {
   invoiced_this_month: "invoices",
   clients_won: "clients",
   tasks_done: null,
-  count: { deals: "deals" },
 } satisfies Record<
   Extract<typeof NumberSpec.Type, { builtin: string }>["builtin"],
   SectionId | null
-> & {
-  count: { deals: SectionId };
-};
+>;
 
 /** The section a computed number reads, whose switch hides it; null for any other number. */
 const sectionOfSpec = (spec: typeof NumberSpec.Type | undefined): SectionId | null =>
@@ -147,9 +144,7 @@ const sectionOfSpec = (spec: typeof NumberSpec.Type | undefined): SectionId | nu
     ? null
     : "builtin" in spec
       ? computedSections[spec.builtin]
-      : spec.count === "deals"
-        ? computedSections.count.deals
-        : null;
+      : sectionOfList(spec.count);
 
 const shownInShell = Effect.fn("KinNumbers.shownInShell")(function* (
   orgId: KinOrgId,
