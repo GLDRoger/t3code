@@ -38,6 +38,7 @@ import { DRAFT_CALL_NOTES, DRAFT_FROM_MAILBOX, draftWakeText } from "./draftWake
 import { buildPulseSection } from "./prompt.ts";
 import { screenFacts } from "./people.ts";
 import { factSig, markTold, untold } from "./told.ts";
+import { offTurnTexts } from "./senses/numbers.ts";
 import { morningMoneyLines } from "./morningMoney.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { projectLastMoved } from "./senses/projects.ts";
@@ -2112,5 +2113,224 @@ describe("project_quiet's last change", () => {
           );
         }
       }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("watched numbers", () => {
+  const SOURCE = "Invented analytics";
+  const watchedNumber = (id: string, fields: object) =>
+    insert({
+      id,
+      list: "goals",
+      ownerId: finance,
+      title: id === "G-11" ? "Daily users" : `Invented ${id}`,
+      fields: JSON.stringify({ measure: "manual", ...fields }),
+    });
+  const recordValue = (id: string, day: string, value: string, seq = 1) =>
+    Effect.flatMap(
+      SqlClient.SqlClient,
+      (sql) => sql`INSERT INTO kin_number_values (org_id, record_id, as_of, seq, value, agent_id,
+          recorder_name, source, created_at)
+        VALUES (${orgId}, ${`r-${id}`}, ${day}, ${seq}, ${value}, ${finance}, 'Finance', ${SOURCE}, 0)`,
+    );
+  const factsOf = (sense: string) =>
+    Effect.flatMap(
+      SqlClient.SqlClient,
+      (sql) => sql<{ key: string; cleared: number; woke: number }>`SELECT fact_key AS key,
+          cleared_at IS NOT NULL AS cleared, woke_at IS NOT NULL AS woke
+        FROM kin_pulse_facts WHERE org_id = ${orgId} AND sense = ${sense} ORDER BY first_seen_at`,
+    );
+  const offWakes = Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql<{ agent: string; json: string }>`SELECT agent_id AS agent, json FROM kin_events
+      WHERE org_id = ${orgId} AND tag = 'pulse'
+        AND json LIKE '%"number_off:%'
+      ORDER BY received_at, event_id`,
+  );
+  const noon = (day: number) => Date.UTC(2026, 9, day, 12);
+
+  it.effect(
+    "a number outside its limit wakes its keeper once a time, told what to do in the owner's chat",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* watchedNumber("G-11", {
+          unit: "users",
+          below: "1000",
+          every: "day",
+          source: SOURCE,
+        });
+        // Three days under the limit: one fact, one wake.
+        for (const [day, value] of [
+          [29, "950"],
+          [30, "930"],
+          [31, "920"],
+        ] as const) {
+          yield* recordValue("G-11", `2026-10-${day}`, value);
+          yield* KinPulse.tick(orgId, noon(day + 1));
+        }
+        const first = "number_off:G-11:below=1000:since=2026-10-29#1";
+        assert.deepStrictEqual(yield* factsOf("number_off"), [{ key: first, cleared: 0, woke: 1 }]);
+        // Back inside clears it; under again is a new time, and a new wake.
+        yield* recordValue("G-11", "2026-11-01", "1100");
+        yield* KinPulse.tick(orgId, noon(33));
+        yield* recordValue("G-11", "2026-11-02", "980");
+        const again = yield* KinPulse.tick(orgId, noon(34));
+        const second = "number_off:G-11:below=1000:since=2026-11-02#1";
+        assert.includeMembers(again.woken, [second]);
+        assert.deepStrictEqual(yield* factsOf("number_off"), [
+          { key: first, cleared: 1, woke: 1 },
+          { key: second, cleared: 0, woke: 1 },
+        ]);
+        // Each wake is the keeper's, from Kin with no person's chat: its reply is in its own
+        // direct chat with the owner.
+        const wakes = yield* offWakes;
+        assert.deepStrictEqual(
+          wakes.map(({ agent, json }) => {
+            const event = JSON.parse(json) as { factKeys: Array<string>; origin?: unknown };
+            return { agent, factKeys: event.factKeys, origin: event.origin };
+          }),
+          [first, second].map((key) => ({ agent: finance, factKeys: [key], origin: undefined })),
+        );
+        assert.deepStrictEqual(yield* offTurnTexts(orgId, [second], noon(34)), [
+          '"Daily users" (G-11) is 980 "users" as of 2026-11-02, below its limit of 1,000 "users". Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a suggested task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don\'t ask a question and don\'t assign anyone.',
+        ]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a second crossing on the same day, after the first was handled, wakes again", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* watchedNumber("G-11", { below: "1000" });
+      yield* recordValue("G-11", "2026-10-30", "900", 1);
+      yield* KinPulse.tick(orgId, noon(30));
+      // The owner says it is not a problem.
+      yield* sql`UPDATE kin_pulse_facts SET handled_by_kind = 'person', handled_by_id = ${owner},
+          handled_at = ${noon(30)} WHERE org_id = ${orgId} AND sense = 'number_off'`;
+      yield* recordValue("G-11", "2026-10-30", "1100", 2);
+      yield* KinPulse.tick(orgId, noon(30) + HOUR);
+      yield* recordValue("G-11", "2026-10-30", "800", 3);
+      const again = yield* KinPulse.tick(orgId, noon(30) + 2 * HOUR);
+      assert.lengthOf(yield* factsOf("number_off"), 2);
+      assert.isTrue(again.woken.some((key) => key.startsWith("number_off:G-11:")));
+      assert.lengthOf(yield* offWakes, 2);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a queued wake says nothing once its section is off or its episode is over", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* watchedNumber("G-14", { spec: '{"count":"deals","states":["open"]}', below: "5" });
+      const queued = (yield* KinPulse.tick(orgId, noon(30))).woken.filter((key) =>
+        key.startsWith("number_off:"),
+      );
+      assert.lengthOf(queued, 1);
+      assert.lengthOf(yield* offTurnTexts(orgId, queued, noon(30)), 1);
+      // Deals switched off before the turn starts: the wake carries no instruction.
+      yield* KinShell.set(orgId, owner, 0, [{ id: "deals", on: false }]);
+      assert.deepStrictEqual(yield* offTurnTexts(orgId, queued, noon(30)), []);
+      // On again, but the episode was handled meanwhile: still nothing.
+      yield* KinShell.set(orgId, owner, 1, [{ id: "deals", on: true }]);
+      assert.lengthOf(yield* offTurnTexts(orgId, queued, noon(30)), 1);
+      yield* sql`UPDATE kin_pulse_facts SET handled_by_kind = 'person', handled_by_id = ${owner},
+          handled_at = ${noon(30)} WHERE org_id = ${orgId} AND fact_key = ${queued[0]!}`;
+      assert.deepStrictEqual(yield* offTurnTexts(orgId, queued, noon(30)), []);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a number counted from any list follows that list's section switch", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* watchedNumber("G-15", { spec: '{"count":"clients","states":["open"]}', below: "50" });
+      yield* sql`INSERT INTO kin_company_shell VALUES (${orgId}, '[{"id":"clients","on":false}]',
+          1, ${owner}, 0)`;
+      const off = yield* KinPulse.tick(orgId, noon(30));
+      assert.isFalse(off.woken.some((key) => key.startsWith("number_off:")));
+      assert.lengthOf(yield* offWakes, 0);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a feed two periods behind tells the owner once, only while it is meant to run", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* watchedNumber("G-12", { every: "day", source: SOURCE });
+      yield* watchedNumber("G-13", {});
+      yield* recordValue("G-12", "2026-10-28", "12");
+      yield* recordValue("G-13", "2026-10-01", "3");
+      yield* KinPulse.tick(orgId, noon(30));
+      assert.deepStrictEqual(yield* factsOf("number_stale"), [], "one period missed is not stale");
+      // Two periods behind with no feed running for its source: nobody is meant to fetch it.
+      yield* KinPulse.tick(orgId, noon(31));
+      assert.deepStrictEqual(yield* factsOf("number_stale"), []);
+      yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id,
+          patch_json, base_rev, widget_id, proposed_at, applied_at)
+        VALUES (${orgId}, 'nw_feed', ${finance}, 'earlier', ${JSON.stringify({
+          numbers: [],
+          feed: { source: SOURCE, every: "day", at: "08:00" },
+          base: "invented",
+        })}, 0, NULL, 0, 0)`;
+      yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+          source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+        VALUES ('task-feed', ${orgId}, 'feed-invented', ${finance}, ${`chat-${finance}`},
+          'kin-numbers:nw_feed', ${owner}, 'owner_only', 'hash', 'inbox', 0, 0)`;
+      yield* KinPulse.tick(orgId, noon(31) + HOUR);
+      yield* KinPulse.tick(orgId, noon(31) + 2 * HOUR);
+      assert.deepStrictEqual(yield* factsOf("number_stale"), [
+        { key: "number_stale:G-12:asOf=2026-10-28", cleared: 0, woke: 0 },
+      ]);
+      const [fact] = (yield* KinPulse.read({
+        orgId,
+        at: noon(31) + 2 * HOUR,
+        viewer: { _tag: "owner" },
+      })).facts.filter((one) => one.sense === "number_stale");
+      assert.deepInclude(fact, {
+        consequence: `No new value since 2026-10-28; it comes from ${SOURCE}.`,
+        actor: { _tag: "owner" },
+        wake: "sweep",
+      });
+      // A person paused the feed: no notice.
+      yield* sql`UPDATE kin_schedules SET pending_enabled = 0 WHERE task_id = 'task-feed'`;
+      yield* KinPulse.tick(orgId, noon(31) + 3 * HOUR);
+      assert.deepStrictEqual(
+        (yield* factsOf("number_stale")).map((row) => row.cleared),
+        [1],
+      );
+      // Running again, then a newer value clears it.
+      yield* sql`UPDATE kin_schedules SET pending_enabled = NULL WHERE task_id = 'task-feed'`;
+      yield* KinPulse.tick(orgId, noon(31) + 4 * HOUR);
+      assert.deepStrictEqual(
+        (yield* factsOf("number_stale")).map((row) => row.cleared),
+        [0],
+      );
+      yield* recordValue("G-12", "2026-10-30", "14");
+      yield* KinPulse.tick(orgId, noon(31) + 5 * HOUR);
+      assert.deepStrictEqual(yield* factsOf("number_stale"), [
+        { key: "number_stale:G-12:asOf=2026-10-28", cleared: 1, woke: 0 },
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a number counted from Deals says nothing while Deals is off, nor once it is on", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* watchedNumber("G-14", { spec: '{"count":"deals","states":["open"]}', below: "5" });
+      yield* sql`INSERT INTO kin_company_shell VALUES (${orgId}, '[{"id":"deals","on":false}]',
+          1, ${owner}, 0)`;
+      const off = yield* KinPulse.tick(orgId, noon(30));
+      assert.isFalse(off.woken.some((key) => key.startsWith("number_off:")));
+      yield* sql`UPDATE kin_company_shell SET shell_json = '[{"id":"deals","on":true}]', rev = 2`;
+      const on = yield* KinPulse.tick(orgId, noon(30) + HOUR);
+      assert.isFalse(on.woken.some((key) => key.startsWith("number_off:")));
+      assert.lengthOf(yield* offWakes, 0);
+      // It was sensed all along, and marked told while Deals was off.
+      assert.deepStrictEqual(yield* factsOf("number_off"), [
+        { key: "number_off:G-14:below=5:since=2026-10-30#g0", cleared: 0, woke: 1 },
+      ]);
+    }).pipe(Effect.provide(layer)),
   );
 });
