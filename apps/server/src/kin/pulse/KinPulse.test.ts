@@ -1293,6 +1293,33 @@ describe("KinPulse", () => {
     }).pipe(Effect.provide(chatLayer)),
   );
 
+  it.effect(
+    "a doc head start that makes nothing is tried three days, then waits for the task to change",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* letMate;
+        yield* matesDocs;
+        const sql = yield* SqlClient.SqlClient;
+        const at = B + 3 * DAY + 12 * HOUR;
+        const late = { personId: mate, key: `task_late:W-8:due=${B + 2 * DAY}` };
+        const day = (n: number) =>
+          Effect.gen(function* () {
+            yield* TestClock.setTime(at + n * DAY);
+            return (yield* KinPulse.tick(orgId, at + n * DAY)).drafted;
+          });
+        for (const n of [0, 1, 2]) assert.deepInclude(yield* day(n), late);
+        assert.notDeepInclude(yield* day(3), late);
+        assert.notDeepInclude(yield* day(4), late);
+        // Its notes change: it is worth trying again.
+        yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
+          via, kind, fields_json)
+        VALUES (${orgId}, 'r-W-8', 2, ${at + 4 * DAY + HOUR}, 'person', ${mate}, 'owner', 'updated',
+          '[{"field":"notes","from":"","to":"Zoya and Arjun start Monday"}]')`;
+        assert.deepInclude(yield* day(5), late);
+      }).pipe(Effect.provide(chatLayer)),
+  );
+
   it.effect("with Clients off for the company, no follow-up wakes anyone", () =>
     Effect.gen(function* () {
       yield* salesDay;
