@@ -27,7 +27,7 @@ import { memberReads } from "../chat/sharing.ts";
 import { canHearRecord } from "../work/recordComments.ts";
 
 /** How long the host remembers a push it sent. */
-export const KIN_PUSH_SENT_KEPT = Duration.days(7);
+const KIN_PUSH_SENT_KEPT = Duration.days(7);
 
 export const chatTopic = (chatId: KinChatId) => `c:${chatId}` as KinPushTopic;
 export const cardTopic = (widgetId: KinWidgetId) => `w:${widgetId}` as KinPushTopic;
