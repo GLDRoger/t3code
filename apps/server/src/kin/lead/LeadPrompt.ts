@@ -91,7 +91,8 @@ import { playbookIndex } from "../work/playbooks.ts";
 import { issuedNumber } from "../work/recordRows.ts";
 import { entriesShown, sensitiveShown, sourcesShown } from "../work/sensitiveReads.ts";
 import { KIN_OWNER_LEVEL, personSees, viewerOfPeople } from "../work/teamView.ts";
-import { promptLine as connectionsLine } from "../connections/ConnectionRows.ts";
+import { personConnections, promptLine as connectionsLine } from "../connections/ConnectionRows.ts";
+import { mailboxPerson } from "../connections/turnMailbox.ts";
 import { companyAccounts } from "../github/githubWatchStore.ts";
 import { inheritOutside, itemSource, renderSource, storedStamp } from "./OutsideContent.ts";
 import { outsideReview } from "./outsideReview.ts";
@@ -1386,11 +1387,12 @@ export class KinLeadPrompt extends Context.Service<
         const directWith =
           laneChat?.kind !== "direct"
             ? undefined
-            : yield* sql<{ access: string }>`SELECT ${sql.literal(accessSql("p"))} AS access
+            : yield* sql<{ personId: string; access: string }>`SELECT p.person_id AS "personId",
+                ${sql.literal(accessSql("p"))} AS access
                 FROM kin_chats c JOIN kin_people p ON p.org_id = c.org_id
                   AND c.direct_key = p.person_id || ':' || ${agentId}
                 WHERE c.org_id = ${orgId} AND c.chat_id = ${laneChat.chatId}`.pipe(
-                Effect.map(([row]) => row?.access),
+                Effect.map(([row]) => row),
                 Effect.orElseSucceed(() => undefined),
               );
         // Who is in the group, from stored rows: the lead knows the room it is speaking in.
@@ -1515,6 +1517,34 @@ export class KinLeadPrompt extends Context.Service<
             Effect.logWarning("Kin speaker names unavailable", cause).pipe(Effect.as(undefined)),
           ),
         );
+        const addresses =
+          ownerOnly || directWith?.access !== "member" || laneChat?.archivedAt !== null
+            ? []
+            : yield* Effect.gen(function* () {
+                const person = yield* mailboxPerson(input);
+                if (person !== directWith.personId) return [];
+                return (yield* personConnections(orgId, person))
+                  .filter((row) => row.state === "active" && row.pausedAt === null)
+                  .map((row) => encoded(row.accountLabel ?? row.label));
+              }).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.catch((cause) =>
+                  Effect.logWarning("Kin own mailboxes unavailable", cause).pipe(Effect.as([])),
+                ),
+              );
+        const mailboxLine =
+          addresses.length === 0
+            ? []
+            : [
+                sharedPart(
+                  `Their own ${
+                    addresses.length === 1
+                      ? `mailbox ${addresses[0]} is connected: a mail they ask you to write is drafted from it`
+                      : `mailboxes ${addresses.join(", ")} are connected: a mail they ask you to write is drafted from one of them`
+                  } with kin_connection_call mail_send and waits on a Confirm card for them, not for the owner. Nothing goes until they tap Confirm: never say it was sent.`,
+                ),
+              ];
+        const hasSpeaker = speaking !== undefined && speaking !== PASSED_ON_SPEAKER;
         // The domain picks the seat's static rules in every turn; the charter is the owner's.
         const [stored] = yield* sql<{ domain: string; charter: string }>`
           SELECT domain, charter FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${agentId}
@@ -1852,7 +1882,7 @@ export class KinLeadPrompt extends Context.Service<
                         laneChat === undefined
                           ? ""
                           : laneChat.kind === "direct"
-                            ? directWith === "co_owner"
+                            ? directWith?.access === "co_owner"
                               ? ", your direct chat with a co-owner"
                               : ownerOnly
                                 ? ", your direct chat with the owner"
@@ -1862,6 +1892,7 @@ export class KinLeadPrompt extends Context.Service<
                               : `, the group ${encoded(laneChat.title)}`
                       }.`,
                 ),
+                ...(hasSpeaker ? [] : mailboxLine),
                 ...(room === undefined || laneChat === undefined
                   ? []
                   : [
@@ -1874,6 +1905,7 @@ export class KinLeadPrompt extends Context.Service<
                   : [sharedPart("Nobody is waiting on this turn.")]),
               ]),
           ...(speaking === undefined || inTeamRoom ? [] : [sharedPart(speaking)]),
+          ...(hasSpeaker ? mailboxLine : []),
           sharedPart(
             `Owner time: ${ownerClock(now, timeZone)}${
               timeZone === undefined
