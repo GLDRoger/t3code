@@ -456,6 +456,7 @@ function KinLiveChat(props: {
               ? {
                   // Uncut: the phone's intro cuts a long charter itself.
                   charter: screen.lead?.charter ?? null,
+                  setsUp: screen.setsUp,
                   open: () =>
                     navigation.navigate("KinLead", {
                       environmentId,
@@ -466,6 +467,7 @@ function KinLiveChat(props: {
               : contact !== null
                 ? {
                     charter: null,
+                    setsUp: false,
                     open: () =>
                       navigation.navigate("KinLead", {
                         environmentId,
@@ -687,7 +689,12 @@ function KinChatPage(props: {
   /** The viewer owns this direct chat's lead, so a first run shows the intro. */
   readonly ownsLead?: boolean;
   /** This direct chat's lead, for its details and the owner's intro; null otherwise. */
-  readonly lead?: { readonly charter: string | null; readonly open: () => void } | null;
+  readonly lead?: {
+    readonly charter: string | null;
+    /** The viewer's own Chief of staff, whose intro may name the company's answer. */
+    readonly setsUp: boolean;
+    readonly open: () => void;
+  } | null;
   /** What the owner of someone else's lead wrote for the people let message it. */
   readonly about?: string | null;
   /** The viewer may read this chat and no longer write in it: the line saying so. */
@@ -754,6 +761,7 @@ function KinChatPage(props: {
             chatId={props.chatId}
             agentName={props.agentName}
             charter={lead?.charter ?? null}
+            setsUp={lead?.setsUp === true}
             chat={state.chat}
             connected={state.connected}
             offline={state.offline}
@@ -927,6 +935,7 @@ function KinChatFeed(props: {
   readonly agentName: string | null;
   /** What the viewer made their lead for, shown on the first-run intro. */
   readonly charter: string | null;
+  readonly setsUp: boolean;
   readonly chat: KinSynced<KinChatState>;
   readonly connected: boolean;
   /** Known unreachable, not just still on its first connection attempt. */
@@ -1609,6 +1618,7 @@ function KinChatFeed(props: {
         orgId={KinOrgId.make(props.orgId)}
         agentName={props.agentName}
         charter={props.charter}
+        setsUp={props.setsUp}
         onSend={sendSample}
         onStart={startSample}
       />

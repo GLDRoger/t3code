@@ -131,6 +131,8 @@ export function kinChatScreen(input: {
     contact,
     /** The lead's charter, which the empty chat's intro opens with. */
     charter: lead === null ? null : kinIntroCharter(lead.charter),
+    /** The viewer's own Chief of staff: its intro says what it does with What we sell's answer. */
+    setsUp: lead !== null && lead.domain === "chief-of-staff",
     /** What the owner of someone else's lead wrote for the people it talks to. */
     about: contact === null || contact.intro.trim() === "" ? null : contact.intro,
     activeAgents: leads === null ? 0 : kinAgentGroups(leads.leads).active.length,
