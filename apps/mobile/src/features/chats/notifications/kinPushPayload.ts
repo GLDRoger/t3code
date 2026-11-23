@@ -228,7 +228,11 @@ export function kinNotificationRoute(response: unknown): KinNotificationRoute | 
   };
 }
 
-/** Delivered notifications from this host's chats that `settled` says are done, by id. */
+/**
+ * Delivered notifications from this host's chats that `settled` says are done, by id: only those
+ * from a host or build before topics. One that names its topic (a question still waiting in a read
+ * chat) goes only by its own withdrawal or reconcile answer.
+ */
 export function kinSettledNotificationIds(
   presented: ReadonlyArray<unknown>,
   environmentId: EnvironmentId,
@@ -239,6 +243,7 @@ export function kinSettledNotificationIds(
     const identifier = field(request, "identifier");
     const data = pushData(field(field(request, "content"), "data"))?.data;
     if (typeof identifier !== "string" || data?.chatId === undefined) return [];
+    if (data.topic !== undefined) return [];
     const target = linkTarget(data);
     return target?.environmentId === environmentId && settled(data.chatId) ? [identifier] : [];
   });

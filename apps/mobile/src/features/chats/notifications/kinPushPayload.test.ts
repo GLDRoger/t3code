@@ -425,6 +425,9 @@ describe("kinSettledNotificationIds", () => {
       }),
       // A remote push's data arrives as a JSON string.
       note("read-json", JSON.stringify(message("chat-1"))),
+      // One that names its topic is the host's to settle: a question in a read chat still waits.
+      note("question-open", { ...message("chat-1"), topic: "q:q-7", version: 1 }),
+      note("chat-topic", { ...message("chat-1"), topic: "c:chat-1", version: 2 }),
     ];
     expect(
       kinSettledNotificationIds(presented, EnvironmentId.make("env-1"), (id) => id === "chat-1"),
