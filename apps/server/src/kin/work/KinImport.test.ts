@@ -886,6 +886,68 @@ describe("KinImport", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("reads a list's number and yes or no fields as written, new or matched", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const sql = yield* SqlClient.SqlClient;
+      const stock = {
+        list: "stock",
+        name: "Stock",
+        fields: [
+          { label: "Count", type: "text" },
+          { label: "Checked", type: "text" },
+        ],
+      };
+      yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf({ ...header, lists: [stock] }, [
+          { entry: { source: "s0", list: "stock", title: "Blue mugs" } },
+        ]),
+      );
+      // A list_define list can hold them; an import's own header can't define one yet.
+      yield* sql`UPDATE kin_registers SET definition_json = json_set(definition_json,
+          '$.fields[0].type', 'number', '$.fields[1].type', 'yesno')
+        WHERE org_id = ${orgId} AND register_id = 'stock'`;
+      const mugs = (yield* recordOf("s0"))!;
+      const report = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf({ ...header, batch: "counts", lists: [] }, [
+          {
+            entry: {
+              source: "s1",
+              list: "stock",
+              title: "Aprons",
+              fields: { count: "1,200", checked: "Yes" },
+            },
+          },
+          { entry: { source: "s2", list: "stock", title: "Jars", fields: { count: "lots" } } },
+          {
+            entry: {
+              source: "s3",
+              list: "stock",
+              match: mugs.key,
+              fields: { count: "7", checked: "FALSE" },
+            },
+          },
+        ]),
+      );
+      assert.deepStrictEqual(
+        report.problems.map((one) => [one.source, one.reason]),
+        [["s2", "Count takes a number, such as 12 or 3.5."]],
+      );
+      const fieldsOf = (title: string) =>
+        sql<{ fields: string }>`SELECT fields_json AS fields FROM kin_records
+          WHERE org_id = ${orgId} AND register_id = 'stock' AND title = ${title}`.pipe(
+          Effect.map(([row]) => parseFields(row!.fields)),
+        );
+      assert.deepStrictEqual(yield* fieldsOf("Aprons"), { count: "1200", checked: "yes" });
+      assert.deepStrictEqual(yield* fieldsOf("Blue mugs"), { count: "7", checked: "no" });
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("names every line it can't import and imports the rest", () =>
     Effect.gen(function* () {
       yield* seed;

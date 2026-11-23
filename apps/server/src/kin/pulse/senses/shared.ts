@@ -40,8 +40,8 @@ export interface SenseContext {
 export type SensedFact = Omit<KinPulseFact, "handled"> & {
   readonly yours?: (personId: string) => string | undefined;
   readonly quietForMs?: number;
-  /** The section whose switch silences it, when its sense alone doesn't say. */
-  readonly section?: SectionId;
+  /** The section whose switch silences it, when its sense alone doesn't say: a list's own too. */
+  readonly section?: SectionId | `list:${string}`;
   readonly overflow?: Overflow;
   readonly extraSection?: SectionId;
 };

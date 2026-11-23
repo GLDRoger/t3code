@@ -17,8 +17,8 @@ import { turnChat } from "../lead/Audience.ts";
 import { askOwner } from "../work/leadMoney.ts";
 import { KinToolText } from "../work/leadSchemas.ts";
 import { admitted, type Lead, leadTool, retryKey } from "../work/leadWork.ts";
-import { SHELL_CHANGE, applied, bindShellChange, shellChangeLines } from "./changes.ts";
-import { get, shellRefusal } from "./KinShell.ts";
+import { SHELL_CHANGE, applied, bindShellChange, listNames, shellChangeLines } from "./changes.ts";
+import { get, listOfSection, listSectionsRefusal, shellRefusal } from "./KinShell.ts";
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const SECTION_IDS = ["clients", "deals", "money", "invoices"] as const;
@@ -27,8 +27,14 @@ const Word = Schema.NullOr(KinToolText(40));
 export const CompanySectionsInput = Schema.Struct({
   sections: Schema.Array(
     Schema.Struct({
-      id: Schema.Literals(SECTION_IDS),
+      id: Schema.Union([
+        Schema.Literals(SECTION_IDS),
+        Schema.String.check(Schema.isPattern(/^list:[a-z][a-z0-9_]{1,39}$/)),
+      ]).annotate({ description: "A section, or list:<list id> to show a company list as one." }),
       on: Schema.optional(Schema.Boolean),
+      dock: Schema.optional(Schema.Boolean).annotate({
+        description: "A list section only: in the phone's dock.",
+      }),
       name: Schema.optional(Word).annotate({
         description: "Clients only: plural, as shown; null for Kin's.",
       }),
@@ -55,12 +61,15 @@ const runPropose = Effect.fnUntraced(function* (
     )
   )
     return yield* invalid("Only Clients can be called by the company's own word.");
+  if (input.sections.some((one) => one.dock !== undefined && listOfSection(one.id) === undefined))
+    return yield* invalid("Only a list section is put in the phone's dock here.");
   const shell = yield* get(lead.orgId);
   const next = applied(shell, input.sections);
   // The setter's own checks, in its words, before the owner sees a card it would refuse.
-  const refusal = shellRefusal(shell.sections, next);
+  const refusal =
+    shellRefusal(shell.sections, next) ?? (yield* listSectionsRefusal(lead.orgId, next));
   if (refusal !== undefined) return yield* invalid(refusal);
-  const lines = shellChangeLines(shell.sections, next);
+  const lines = shellChangeLines(shell.sections, next, yield* listNames(lead.orgId, next));
   if (lines.length === 0)
     return yield* invalid("The company is already set up that way. Nothing was asked.");
   // Asked where the turn was asked: a co-owner's turn can't post in the owner's own chat.
@@ -130,7 +139,7 @@ export const companySections = Tool.make("company_sections", {
     SqlClient.SqlClient,
   ],
   description:
-    "Proposes turning a section of Kin on or off for this company (Clients, Deals, Money, Invoices and quotes), or calling a section by the company's own word. Kin shows the owner or a co-owner one card listing each change; nothing changes until they tap Confirm, and a newer card replaces an unanswered one. When someone else asks, pass it to the owner with kin_relay.",
+    "Proposes turning a section of Kin on or off for this company (Clients, Deals, Money, Invoices and quotes, or a company list shown as a section of its own), or calling a section by the company's own word. Kin shows the owner or a co-owner one card listing each change; nothing changes until they tap Confirm, and a newer card replaces an unanswered one. When someone else asks, pass it to the owner with kin_relay.",
   parameters: CompanySectionsInput,
   success: CompanySectionsResult,
 }).annotate(McpSchema.EnabledWhen, enabled);

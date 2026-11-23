@@ -10,7 +10,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevel } from "../people/KinAccess.ts";
-import { get, set } from "./KinShell.ts";
+import { get, listOfSection, set } from "./KinShell.ts";
 import { BUILT_IN_SECTIONS, kinTitle } from "./words.ts";
 
 /**
@@ -23,6 +23,7 @@ export interface AskedSection {
   readonly on?: boolean | undefined;
   readonly name?: string | null | undefined;
   readonly noun?: string | null | undefined;
+  readonly dock?: boolean | undefined;
 }
 // The shell the card was drawn against and the one Confirm saves: the card's words come from both.
 const ChangeJson = Schema.fromJsonString(
@@ -35,33 +36,74 @@ const encodeChange = Schema.encodeEffect(ChangeJson);
 const decodeChange = Schema.decodeUnknownEffect(ChangeJson);
 const quoted = (word: string) => `"${word}"`;
 
-/** The shell with each asked change made: a null name or noun goes back to Kin's. */
-export const applied = (shell: Shell, asked: ReadonlyArray<AskedSection>) =>
-  shell.sections.map((section) => {
+/**
+ * The shell with each asked change made: a null name or noun goes back to Kin's, and a list not
+ * yet a section is added after the others, on unless asked off.
+ */
+export const applied = (shell: Shell, asked: ReadonlyArray<AskedSection>) => [
+  ...shell.sections.map((section) => {
     const change = asked.find((one) => one.id === section.id);
     if (change === undefined) return section;
-    const { name, noun, ...rest } = section;
+    const { name, noun, dock, ...rest } = section;
     const nextName = change.name === undefined ? name : (change.name ?? undefined);
     const nextNoun = change.noun === undefined ? noun : (change.noun ?? undefined);
+    const nextDock = change.dock ?? dock;
     return {
       ...rest,
       on: change.on ?? section.on,
       ...(nextName === undefined ? {} : { name: nextName }),
       ...(nextNoun === undefined ? {} : { noun: nextNoun }),
+      ...(nextDock === undefined ? {} : { dock: nextDock }),
     };
-  });
+  }),
+  ...asked
+    .filter(
+      (one) =>
+        listOfSection(one.id) !== undefined &&
+        !shell.sections.some((section) => section.id === one.id),
+    )
+    .map((one) => ({
+      id: one.id,
+      on: one.on ?? true,
+      ...(one.dock === undefined ? {} : { dock: one.dock }),
+    })),
+];
 
 type Change =
   | { readonly kind: "on" | "off"; readonly what: string }
   | { readonly kind: "name"; readonly what: string; readonly to: string; readonly from?: string }
-  | { readonly kind: "noun"; readonly to: string; readonly from?: string };
+  | { readonly kind: "noun"; readonly to: string; readonly from?: string }
+  | { readonly kind: "show"; readonly what: string; readonly dock: boolean }
+  | { readonly kind: "dock" | "undock"; readonly what: string };
+
+/** Each list section added or changed, by the list's name quoted. */
+const listChangesOf = (
+  current: ReadonlyArray<KinShellSection>,
+  next: ReadonlyArray<KinShellSection>,
+  names: ReadonlyMap<string, string>,
+): ReadonlyArray<Change> =>
+  next.flatMap((after): ReadonlyArray<Change> => {
+    const list = listOfSection(after.id);
+    if (list === undefined) return [];
+    const name = quoted(names.get(list) ?? list);
+    const before = current.find((one) => one.id === after.id);
+    if (before === undefined)
+      return after.on ? [{ kind: "show", what: name, dock: after.dock === true }] : [];
+    const changes: Array<Change> = [];
+    if (after.on !== before.on)
+      changes.push({ kind: after.on ? "on" : "off", what: `the ${name} section` });
+    if ((after.dock === true) !== (before.dock === true))
+      changes.push({ kind: after.dock === true ? "dock" : "undock", what: name });
+    return changes;
+  });
 
 /** Each change in the shell's order, by Kin's own title, the company's word quoted after it. */
 const changesOf = (
   current: ReadonlyArray<KinShellSection>,
   next: ReadonlyArray<KinShellSection>,
-): ReadonlyArray<Change> =>
-  BUILT_IN_SECTIONS.flatMap((id): ReadonlyArray<Change> => {
+  names: ReadonlyMap<string, string> = new Map(),
+): ReadonlyArray<Change> => [
+  ...BUILT_IN_SECTIONS.flatMap((id): ReadonlyArray<Change> => {
     const before = current.find((one) => one.id === id);
     const after = next.find((one) => one.id === id);
     if (before === undefined || after === undefined) return [];
@@ -84,7 +126,9 @@ const changesOf = (
         ...(before.noun === undefined ? {} : { from: before.noun }),
       });
     return changes;
-  });
+  }),
+  ...listChangesOf(current, next, names),
+];
 
 const was = (from: string | undefined) => (from === undefined ? "" : ` (now ${quoted(from)})`);
 const cardLine = (change: Change) => {
@@ -97,6 +141,12 @@ const cardLine = (change: Change) => {
       return `Call ${change.what} ${quoted(change.to)}${was(change.from)}`;
     case "noun":
       return `Call one client ${quoted(change.to)}${was(change.from)}`;
+    case "show":
+      return `Show the list ${change.what} as a section${change.dock ? ", also in the phone's dock" : ""}`;
+    case "dock":
+      return `Show ${change.what} in the phone's dock`;
+    case "undock":
+      return `Take ${change.what} out of the phone's dock`;
   }
 };
 const doneLine = (change: Change) => {
@@ -109,6 +159,12 @@ const doneLine = (change: Change) => {
       return `Called ${change.what} ${quoted(change.to)}.`;
     case "noun":
       return `Called one client ${quoted(change.to)}.`;
+    case "show":
+      return `Showed the list ${change.what} as a section.`;
+    case "dock":
+      return `Showed ${change.what} in the phone's dock.`;
+    case "undock":
+      return `Took ${change.what} out of the phone's dock.`;
   }
 };
 const declinedLine = (change: Change) => {
@@ -121,6 +177,12 @@ const declinedLine = (change: Change) => {
       return `Said no to calling ${change.what} ${quoted(change.to)}.`;
     case "noun":
       return `Said no to calling one client ${quoted(change.to)}.`;
+    case "show":
+      return `Said no to showing the list ${change.what} as a section.`;
+    case "dock":
+      return `Said no to showing ${change.what} in the phone's dock.`;
+    case "undock":
+      return `Said no to taking ${change.what} out of the phone's dock.`;
   }
 };
 
@@ -128,7 +190,22 @@ const declinedLine = (change: Change) => {
 export const shellChangeLines = (
   current: ReadonlyArray<KinShellSection>,
   next: ReadonlyArray<KinShellSection>,
-) => changesOf(current, next).map(cardLine);
+  names: ReadonlyMap<string, string> = new Map(),
+) => changesOf(current, next, names).map(cardLine);
+
+/** The names of the lists these sections show, by list id. */
+export const listNames = Effect.fn("KinShellChanges.listNames")(function* (
+  orgId: KinOrgId,
+  sections: ReadonlyArray<KinShellSection>,
+) {
+  const ids = sections.flatMap((section) => listOfSection(section.id) ?? []);
+  if (ids.length === 0) return new Map<string, string>();
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ id: string; name: string }>`SELECT register_id AS id, name
+    FROM kin_registers WHERE org_id = ${orgId} AND register_id IN ${sql.in(ids)}
+    ORDER BY register_id`;
+  return new Map(rows.map((row) => [row.id, row.name]));
+});
 
 /**
  * Stores the change as asked against the shell, bound to its card, and declines every older
@@ -191,7 +268,7 @@ export const shellDecision = Effect.fn("KinShellChanges.decision")(function* (
   const row = yield* shellRow(orgId, widgetId);
   if (row === undefined) return undefined;
   const { before, after } = yield* decodeChange(row.patch).pipe(Effect.orDie);
-  return changesOf(before, after)
+  return changesOf(before, after, yield* listNames(orgId, after))
     .map(confirmed ? doneLine : declinedLine)
     .join(" ");
 });
