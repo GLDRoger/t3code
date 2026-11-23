@@ -27,8 +27,7 @@ export const setUpAsked = Effect.fn("KinSetUp.asked")(function* (input: {
       AND message_id IN ${sql.in(input.messageIds)}
       AND author_kind = 'human' AND author_person_id = ${input.personId} AND status = 'posted'
     ORDER BY seq`;
-  if (said.some((row) => row.clientMessageId?.startsWith(PRESSED) === true))
-    return true;
+  if (said.some((row) => row.clientMessageId?.startsWith(PRESSED) === true)) return true;
   const [first] = said;
   if (!input.owner || first === undefined) return false;
   const [earliest] = yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_agents

@@ -834,7 +834,7 @@ it.effect(
       yield* sql`UPDATE kin_agents SET created_at = '2999-01-01T00:00:00.000Z'
         WHERE agent_id = 'older-lead'`;
       // Nothing after the first word does, so a company that talks to it reads what it read.
-      const later = yield* (yield* say("later", "c-2"));
+      const later = yield* yield* say("later", "c-2");
       expect(later).not.toContain(PROMPT_HEADINGS.setUp);
       expect(later).not.toContain(CHIEF_OF_STAFF_SET_UP);
       // Set up… does, whenever it is sent; another seat never reads it.

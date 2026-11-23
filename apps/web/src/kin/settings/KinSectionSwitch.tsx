@@ -19,7 +19,9 @@ import {
   type KinSectionChange,
   type KinSwitchableSection,
 } from "@t3tools/client-runtime/kin/kinShell";
+import { kinFailureText, kinRetryText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_SET_UP, kinSetUpChief } from "@t3tools/client-runtime/kin/kinSetUp";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { KIN_SET_UP_MESSAGE_PREFIX, type EnvironmentId, type KinShell } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
@@ -342,8 +344,12 @@ function KinSetUpRow(props: KinWorkTarget) {
           })
         : null;
     setBusy(false);
-    if (chat._tag !== "Success" || queued?._tag !== "queued") {
-      setProblem(KIN_SET_UP.failed);
+    if (chat._tag !== "Success") {
+      setProblem(kinFailureText(squashAtomCommandFailure(chat), KIN_SET_UP.failed));
+      return;
+    }
+    if (queued?._tag !== "queued") {
+      setProblem(kinRetryText(KIN_SET_UP.failed));
       return;
     }
     void deliverKinOutbox();

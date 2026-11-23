@@ -3,7 +3,8 @@ import { KIN_SELLS_MAX, kinCharacterSeat } from "@t3tools/contracts";
 /** Setting Kin up for the kind of company it is: the question a new company is asked, and the way back in. */
 export const KIN_SET_UP = {
   question: "What does your company sell, and to whom?",
-  example: "For example: a mobile puzzle game, paid in-app and by subscription, for casual players.",
+  example:
+    "For example: a mobile puzzle game, paid in-app and by subscription, for casual players.",
   hint: "Optional. Kin uses it to suggest a set-up that fits.",
   max: KIN_SELLS_MAX,
   /** Settings › Sections, owner level only. */
@@ -12,7 +13,7 @@ export const KIN_SET_UP = {
     "Your Chief of staff reads What we sell and suggests sections, lists and numbers that fit. Nothing changes until you confirm each one.",
   action: "Set up for my kind of company…",
   noChief: "This needs a Chief of staff. Add one under Agents.",
-  failed: "Couldn't open the chat with your Chief of staff. Try again.",
+  failed: "Couldn't open the chat with your Chief of staff.",
   /** The message the action sends as the owner's own. */
   ask: "Set Kin up for my kind of company. Go by What we sell, and ask me what we sell if it doesn't say.",
 } as const;
@@ -26,9 +27,9 @@ export const kinSetUpChief = <
 >(
   leads: ReadonlyArray<Lead>,
 ): Lead | null =>
-  leads
+  [...leads]
     .filter((lead) => kinIsChiefOfStaff(lead.domain) && lead.retired === undefined)
-    .toSorted((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0))[0] ?? null;
+    .sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0))[0] ?? null;
 
 /**
  * The answer a new company gave, as the host wrote it: the line between What we sell's title and
