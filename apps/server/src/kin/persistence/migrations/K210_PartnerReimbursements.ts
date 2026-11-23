@@ -5,10 +5,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 /**
  * Expenses gain Funded by, Reimbursement and Repaid on, all or none within 20 fields. A company's
- * own field already under one of those keys, of another kind, moves to a free key with its values
- * first, so Money never reads its text as who funded what; nothing else in an entry changes. An
- * imported one that says a partner paid stays counted as before until the owner says who it was
- * and whether it is still owed (Money, `kin.work.matchPartner`).
+ * own field under one of those keys, of another kind, first moves to a free key with its values,
+ * so Money never reads its text as who funded what. Imported partner rows wait for the owner.
  */
 
 const ADDED = [

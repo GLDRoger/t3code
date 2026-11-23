@@ -3606,7 +3606,8 @@ const make = Effect.gen(function* () {
     if (input.category !== undefined) where.push(sql`r.category IS ${input.category}`);
     // The tile's own rule (`moneyViews` spent): money that left the company's accounts.
     if (input.spent !== undefined)
-      where.push(sql`(r.state = 'done' AND r.amount_minor IS NOT NULL AND ${companyCashOut(sql)}
+      where.push(sql`(r.state = 'done' AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
+        AND ${companyCashOut(sql)}
         AND CASE WHEN ${partnerRepaidDay(sql)} IS NOT NULL
           THEN ${partnerRepaidDay(sql)} BETWEEN ${input.spent.from} AND ${input.spent.to}
           ELSE ${moneyDay(sql)} >= ${input.spent.fromAt} AND ${moneyDay(sql)} < ${input.spent.toAt}
