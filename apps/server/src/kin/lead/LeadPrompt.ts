@@ -398,6 +398,7 @@ export class KinLeadPrompt extends Context.Service<
         let fromOwner = true;
         // A reminder always gets a reply; a brief, a scheduled run and other notices may stay silent.
         let replyDue = false;
+        const prepared = new Set<string>();
         // The one gate from memory into a turn anyone else may read: an item only through
         // `reaches`, and nothing at all when the labels can't be read. Unknown audience is shared.
         const ownerOnly = input.audience === "owner_only";
@@ -914,10 +915,10 @@ export class KinLeadPrompt extends Context.Service<
             );
             continue;
           }
-          // A fact Kin woke this agent to make a head start on, checked again as it starts.
+          // Facts Kin woke this agent to make a head start on, as true now, each once and in full.
           if (ownerOnly && isPrepareWake(event)) {
             fromOwner = false;
-            const text = yield* prepareWakeText(
+            const live = yield* prepareWakeText(
               orgId,
               event.factKeys,
               yield* Clock.currentTimeMillis,
@@ -927,10 +928,22 @@ export class KinLeadPrompt extends Context.Service<
                 Effect.logWarning("Kin head start unreadable", cause).pipe(Effect.as(undefined)),
               ),
             );
-            if (text !== undefined) replyDue = true;
+            const fresh = (live?.facts ?? []).filter((fact) => !prepared.has(fact.key));
+            if (live === undefined) {
+              events.push(
+                `${quote(QUOTE_LABELS.eventData, eventFacts(event), true)}\n\n${HEAD_START_GONE}`,
+              );
+              continue;
+            }
+            if (fresh.length === 0) continue;
+            replyDue = true;
             events.push(
-              `${quote(QUOTE_LABELS.eventData, eventFacts(event), true)}\n\n${text ?? HEAD_START_GONE}`,
+              [
+                quote(QUOTE_LABELS.eventData, { ...eventFacts(event), facts: fresh }, true),
+                ...(prepared.size === 0 ? [live.text] : []),
+              ].join("\n\n"),
             );
+            for (const fact of fresh) prepared.add(fact.key);
             continue;
           }
           if (event._tag !== "chat.message" && event._tag !== "widget.action") {

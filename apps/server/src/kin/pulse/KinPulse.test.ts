@@ -46,7 +46,7 @@ import { buildPulseSection } from "./prompt.ts";
 import { screenFacts } from "./people.ts";
 import { factSig, markTold, untold } from "./told.ts";
 import { offTurnTexts } from "./senses/numbers.ts";
-import { standingFacts } from "./prepareWake.ts";
+import { wakeHeldUntil } from "./prepareWake.ts";
 import { morningMoneyLines } from "./morningMoney.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { projectLastMoved } from "./senses/projects.ts";
@@ -696,7 +696,13 @@ describe("KinPulse", () => {
           { agent: finance, key: quote, at: B + 6 * DAY + 7 * HOUR },
         ]);
         assert.match(waiting!.key, /^client_waiting_on_us:/);
-        // Once per fact: later passes add nothing.
+        // Once per fact: later passes add nothing, even when it clears and comes back while
+        // its wake still waits for the morning.
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-QT-1'`;
+        yield* KinPulse.tick(orgId, night + MINUTE);
+        yield* sql`UPDATE kin_records SET state = 'waiting' WHERE record_id = 'r-QT-1'`;
+        yield* KinPulse.tick(orgId, night + 2 * MINUTE);
+        assert.lengthOf(yield* wakes, 2);
         yield* KinPulse.tick(orgId, night + HOUR);
         yield* KinPulse.tick(orgId, B + 7 * DAY);
         assert.lengthOf(yield* wakes, 2);
@@ -710,11 +716,22 @@ describe("KinPulse", () => {
           key: `renewal_due:DT-1:due=${B + 40 * DAY}`,
           at: B + 33 * DAY + 7 * HOUR,
         });
-        // As its turn starts it checks again: answered meanwhile, the quote's wake has nothing.
-        assert.deepStrictEqual(yield* standingFacts(orgId, [quote], B + 33 * DAY), [quote]);
+        // As its turn starts it senses again: answered since the last tick, the quote has nothing.
+        const live = (at: number) =>
+          Effect.map(KinPulse.standingNow(orgId, [quote, quote], at), (facts) =>
+            facts.map((fact) => fact.key),
+          );
+        assert.deepStrictEqual(yield* live(B + 33 * DAY), [quote]);
         yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-QT-1'`;
-        yield* KinPulse.tick(orgId, B + 33 * DAY + MINUTE);
-        assert.deepStrictEqual(yield* standingFacts(orgId, [quote], B + 33 * DAY + MINUTE), []);
+        assert.deepStrictEqual(yield* live(B + 33 * DAY + MINUTE), []);
+        // A renewal before its draft day is only mentioned: no head start stands for it.
+        const renewal = `renewal_due:DT-1:due=${B + 40 * DAY}`;
+        assert.deepStrictEqual(
+          yield* Effect.map(KinPulse.standingNow(orgId, [renewal], B + 33 * DAY - MINUTE), (f) =>
+            f.map((fact) => fact.key),
+          ),
+          [],
+        );
       }).pipe(Effect.provide(layer)),
   );
 
@@ -994,10 +1011,14 @@ describe("KinPulse", () => {
       yield* TestClock.setTime(NOON_LA);
       yield* KinPulse.tick(orgId, NOON_LA);
       const [made] = yield* draftEvents;
-      // In her quiet hours now: nothing yet, and the slot it took as it queued stays its own.
+      // In her quiet hours now: back to the queue until they end, and the slot it took as it
+      // queued stays its own.
       yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"11:00","to":"13:00"}'
         WHERE person_id = ${mate}`;
-      assert.isUndefined(yield* draftWakeText(orgId, made!));
+      assert.strictEqual(
+        yield* wakeHeldUntil(orgId, made!.agentId, [made!], NOON_LA),
+        NOON_LA + HOUR,
+      );
       assert.deepStrictEqual(
         (yield* slots).map((slot) => slot.key),
         ["task:r-W-30"],

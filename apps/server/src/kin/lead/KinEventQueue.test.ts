@@ -636,6 +636,73 @@ describe("KinEventQueue", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "a head start runs alone: never beside a message or a check-in, ten facts at a time",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const ids = (events: ReadonlyArray<{ readonly eventId: string }>) =>
+          events.map((entry) => entry.eventId);
+        const pulse = (id: string, extra: Record<string, unknown>) =>
+          Effect.gen(function* () {
+            return yield* decodeEvent({
+              _tag: "pulse",
+              eventId: id,
+              orgId: "a",
+              agentId: "lead-a",
+              receivedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+              dedupeKey: id,
+              provenance: { _tag: "system" },
+              factKeys: [],
+              ...extra,
+            });
+          });
+        const quotes = Array.from({ length: 12 }, (_, n) => `quote-${String(n).padStart(2, "0")}`);
+        for (const id of quotes)
+          yield* queue.enqueue(yield* pulse(id, { factKeys: [`quote_unanswered:${id}:last=1`] }));
+        yield* queue.enqueue(
+          yield* pulse("noon", {
+            checkIn: { scheduleId: "checkin-noon", title: "Noon", what: "Look.", slot: "s" },
+          }),
+        );
+        yield* queue.enqueue(
+          yield* stored("owner-ask", "chat-lead-a").pipe(
+            Effect.andThen(event("owner-ask", "chat.message")),
+          ),
+        );
+        yield* TestClock.adjust("2 seconds");
+        // The owner's message and the check-in share his chat; no head start joins them.
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(input("ask")))), [
+          "owner-ask",
+          "noon",
+        ]);
+        yield* finish("ask");
+        yield* TestClock.adjust("20 seconds");
+        const prep = input("prep");
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(prep))), quotes.slice(0, 10));
+        // A message while it runs waits for a turn of its own.
+        yield* sql`UPDATE kin_wakeups SET run_id = 'run' WHERE wakeup_id = 'prep'`;
+        yield* queue.enqueue(
+          yield* stored("owner-again", "chat-lead-a").pipe(
+            Effect.andThen(event("owner-again", "chat.message")),
+          ),
+        );
+        assert.deepStrictEqual(yield* queue.steer(prep), []);
+        yield* finish("prep");
+        yield* TestClock.adjust("20 seconds");
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(input("again")))), [
+          "owner-again",
+        ]);
+        yield* finish("again");
+        assert.deepStrictEqual(
+          ids(yield* Effect.scoped(queue.claim(input("rest")))),
+          quotes.slice(10),
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("claims one chat per wake-up and steers only that chat's human messages into it", () =>
     Effect.gen(function* () {
       yield* seed();

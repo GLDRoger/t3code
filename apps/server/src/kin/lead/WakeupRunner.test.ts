@@ -825,6 +825,44 @@ describe("WakeupRunner", () => {
       }).pipe(Effect.provide(harness({ writer })));
     }).pipe(provideDeterministicTestRuntime),
   );
+  it.effect(
+    "a head start claimed in the owner's quiet hours waits for the morning; urgent runs",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const headStart = (id: string, key: string) =>
+          decodeEvent({
+            ...event(id),
+            receivedAt: "1970-01-01T00:00:00.000Z",
+            _tag: "pulse",
+            dedupeKey: `${key}:0`,
+            factKeys: [key],
+          });
+        // Midnight in the company's zone, inside the owner's quiet hours (22:00 to 07:00).
+        yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+          evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+          quiet_hours_json)
+        VALUES (${orgId}, 'UTC', '08:30', '18:00', '02:00', 0, 1, '09:00',
+          '{"from":"22:00","to":"07:00"}')`;
+        yield* queue.enqueue(headStart("quote", "quote_unanswered:QT-1:last=0"));
+        yield* Fiber.join(yield* run());
+        assert.deepStrictEqual(
+          yield* sql`SELECT state, attempts, not_before FROM kin_events WHERE event_id = 'quote'`,
+          [{ state: "queued", attempts: 0, not_before: 7 * 60 * 60_000 }],
+        );
+        yield* queue.enqueue(headStart("waiting", "client_waiting_on_us:CL-1:since=0"));
+        yield* Fiber.join(yield* run());
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, state = 'queued' AS queued FROM kin_events ORDER BY event_id`,
+          [
+            { event_id: "quote", queued: 1 },
+            { event_id: "waiting", queued: 0 },
+          ],
+        );
+      }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  );
   it.effect("runs every kind of turn on the agent's one model, so its thread never switches", () =>
     Effect.gen(function* () {
       yield* seed;

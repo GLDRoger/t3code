@@ -62,6 +62,7 @@ import {
 } from "./told.ts";
 import { visibleOverflow } from "./senses/capped.ts";
 import { draftWakes } from "./draftWake.ts";
+import { URGENT_SENSES } from "./prepareSenses.ts";
 import {
   asideOf,
   asideView,
@@ -260,6 +261,47 @@ const withStored = (
     ...(hold === undefined ? {} : { aside: asideView(hold, reader.viewer, reader.personId) }),
   };
 };
+
+/**
+ * Of `keys`, the facts that would wake their agent now, sensed afresh rather than read from the
+ * last tick: on, due to wake (a renewal at its draft stage), not handled and not set aside.
+ */
+export const standingNow = Effect.fn("KinPulse.standingNow")(function* (
+  orgId: KinOrgId,
+  keys: ReadonlyArray<string>,
+  at: number,
+) {
+  const wanted = new Set(keys);
+  if (wanted.size === 0) return [];
+  const sensed = (yield* sense(orgId, at)).filter(
+    (fact) => wanted.has(fact.key) && fact.wake === "now",
+  );
+  if (sensed.length === 0) return [];
+  const shell = yield* KinShell.get(orgId);
+  const onDeals = yield* promisesOnDeals(orgId, shell);
+  const stored = yield* storedRows(
+    orgId,
+    sensed.map((fact) => fact.key),
+  );
+  const holds = yield* liveHolds(orgId, at);
+  return sensed.flatMap((one): Array<KinPulseFact> => {
+    if (
+      quiet(one, shell, onDeals) ||
+      handledOf(stored.get(one.key), at, one) !== null ||
+      asideOf(one, holds, { _tag: "owner" }) !== undefined
+    )
+      return [];
+    const {
+      yours: _yours,
+      quietForMs: _quietForMs,
+      section: _section,
+      overflow: _overflow,
+      extraSection: _extraSection,
+      ...fact
+    } = one;
+    return [{ ...fact, handled: null }];
+  });
+});
 
 /** By key, or by name as typed: any case, a start of it, or a close spelling. */
 const matches = (text: string | undefined, key: string | undefined, wanted: string) =>
@@ -519,8 +561,6 @@ const lastFacts = new Map<
  * moved Needs attention since, so their next read senses afresh.
  */
 export const lastTick = (orgId: KinOrgId) => lastFacts.get(orgId);
-/** Facts that can't wait for the morning: they wake their agent whatever the hour. */
-const URGENT_SENSES = new Set<KinPulseFact["sense"]>(["client_waiting_on_us"]);
 
 /**
  * Late and due-today work reaches whoever holds it, once (`kin_pulse_told`): an agent holder is
@@ -821,6 +861,15 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           continue;
         // Set aside: it wakes no one; when the hold ends, the check-in tells it once.
         if (asideOf(fact, holds, { _tag: "owner" }) !== undefined) continue;
+        // A wake for it still queued (held for the morning, say) carries it: one turn per fact.
+        const [waiting] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'pulse' AND state = 'queued'
+            AND dedupe_key >= ${`${fact.key}:`} AND dedupe_key < ${`${fact.key};`} LIMIT 1`;
+        if (waiting !== undefined) {
+          yield* sql`UPDATE kin_pulse_facts SET woke_at = ${at}
+            WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
+          continue;
+        }
         const eventId = KinEventId.make(`pulse-${shortHash(`${orgId}\0${fact.key}\0${at}`)}`);
         const enqueued = yield* queue
           .enqueue(

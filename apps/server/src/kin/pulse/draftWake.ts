@@ -457,7 +457,7 @@ export const DRAFT_DOCUMENT = (name: string) =>
 
 /**
  * What a draft wake's turn reads, checked again as it starts: still theirs and due (`stillDue`),
- * outside their quiet hours, and the day's slot for this task taken now, at most 20 a day. Only
+ * a drafter they may message, and the day's slot for this task taken now, at most 20 a day. Only
  * what their own screens show: the task, and its client, contact and last comment where they may
  * see them. Undefined when the wake should do nothing.
  */
@@ -475,7 +475,6 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
   const still = yield* stillDue(orgId, personId, fact.recordId, at);
   if (still === undefined) return undefined;
   const { zone } = still;
-  if ((yield* personQuietUntil(orgId, personId, at)) !== undefined) return undefined;
   if (!(yield* mayDraft(orgId, personId, fact.recordId, still.path, event.agentId)))
     return undefined;
   const day = dayIn(at, zone);

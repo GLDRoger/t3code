@@ -57,7 +57,7 @@ import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { feedTurn } from "../numbers/feeds.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
-import { isPrepareWake, prepareWakeText } from "../pulse/prepareWake.ts";
+import { isPrepareWake, prepareWakeText, wakeHeldUntil } from "../pulse/prepareWake.ts";
 import { draftWakeGone, isDraftWake } from "../pulse/draftWake.ts";
 import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
@@ -1249,6 +1249,25 @@ const make = Effect.gen(function* () {
                 wakeupId,
                 level: current.level,
               });
+            }
+            // Kin's own wake claimed inside the quiet hours it waits out goes back until they end.
+            const heldUntil = yield* wakeHeldUntil(
+              orgId,
+              agentId,
+              events,
+              yield* Clock.currentTimeMillis,
+            ).pipe(
+              provideSql,
+              Effect.orElseSucceed(() => undefined),
+            );
+            if (heldUntil !== undefined) {
+              yield* queue.release({
+                orgId,
+                wakeupId,
+                countAttempt: false,
+                notBefore: heldUntil,
+              });
+              return;
             }
             const admitted = yield* admitEvents(orgId, agentId, events);
             const atLimit = admitted.atLimit;
