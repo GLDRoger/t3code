@@ -44,6 +44,7 @@ import * as Effect from "effect/Effect";
 import type * as Fiber from "effect/Fiber";
 import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
+import * as Schedule from "effect/Schedule";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -355,6 +356,9 @@ const decodeState = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unkn
 const UNPROMPTED_RING_GAP_MS = 30 * 60_000;
 /** Withdrawals for one person wait this long, so many settling at once make one silent push. */
 export const KIN_WITHDRAW_BATCH = Duration.seconds(3);
+/** The recovery pass runs at start and this often, over at most `RECOVER_ROWS` live rows. */
+const KIN_PUSH_RECOVER_EVERY = Duration.minutes(10);
+const RECOVER_ROWS = 200;
 const decodeRelay = Schema.decodeUnknownOption(Schema.fromJsonString(KinMessageRelay));
 const decodeTurnCards = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
@@ -1207,6 +1211,8 @@ const make = Effect.gen(function* () {
       // A phone whose platform has no sender gets nothing, and so spends no ring.
       (device) => device.sessionId !== push.exceptSession && statusFor(device.platform) === "ready",
     );
+    // Who a version was taken for: checked once more after the sends (`recheck`).
+    const reserved = new Set<KinPersonId>();
     const recipients = new Map<
       KinPersonId,
       {
@@ -1261,6 +1267,7 @@ const make = Effect.gen(function* () {
                   about: push.about,
                 })
                 .pipe(
+                  Effect.tap(() => Effect.sync(() => reserved.add(recipient.personId))),
                   Effect.catch((error) =>
                     Effect.logWarning("Kin couldn't note a push it sends.", {
                       error: error._tag,
@@ -1281,6 +1288,23 @@ const make = Effect.gen(function* () {
       },
       { concurrency: SEND_CONCURRENCY },
     );
+    // What settled while this was with the gateway, before its row stood to be found: withdrawn now.
+    if (reserved.size > 0)
+      yield* topics.live(orgId, { topics: [push.topic] }).pipe(
+        Effect.flatMap((rows) =>
+          Effect.forEach(
+            rows.filter((row) => reserved.has(row.personId)),
+            (row) =>
+              topics
+                .stands(orgId, row)
+                .pipe(Effect.flatMap((stands) => (stands ? Effect.void : enqueue(orgId, [row])))),
+            { discard: true },
+          ),
+        ),
+        Effect.catch((error) =>
+          Effect.logWarning("Kin couldn't recheck a push it sent.", { error: error._tag }),
+        ),
+      );
     const count = (outcome: (typeof results)[number]) =>
       results.filter((result) => result === outcome).length;
     return { sent: count("sent"), suppressed: count("suppressed"), failed: count("failed") };
@@ -1335,8 +1359,10 @@ const make = Effect.gen(function* () {
     withdraw: ReadonlyArray<KinPushWithdrawn>,
     badge: number,
   ) {
+    // Taken: the gateway accepted it, or the phone is gone and shows nothing any more.
+    let taken = true;
     if (device.platform === "android") {
-      if (withdraw.length === 0) return;
+      if (withdraw.length === 0) return taken;
       for (const list of fitted(orgId, withdraw)) {
         const encoded = yield* encodeJson(withdrawalData(orgId, list));
         const result = yield* fcm.send({
@@ -1345,10 +1371,11 @@ const make = Effect.gen(function* () {
           data: { body: encoded },
         });
         yield* fcmOutcome(orgId, device, result, badge);
+        if (result.status !== 200 && !FCM_DEAD_REASONS.has(result.reason ?? "")) taken = false;
       }
-      return;
+      return taken;
     }
-    if (withdraw.length === 0 && shownBadge.get(device.token) === badge) return;
+    if (withdraw.length === 0 && shownBadge.get(device.token) === badge) return taken;
     for (const list of fitted(orgId, withdraw)) {
       const result = yield* apns.send({
         token: device.token,
@@ -1356,7 +1383,9 @@ const make = Effect.gen(function* () {
         payload: { aps: { badge, "content-available": 1 }, body: withdrawalData(orgId, list) },
       });
       if (result.status === 200) shownBadge.set(device.token, badge);
+      else if (result.status !== 410 && !DEAD_TOKEN_REASONS.has(result.reason ?? "")) taken = false;
     }
+    return taken;
   });
 
   /** Withdraws what in one person's batch is settled now, once, and tells their phones. */
@@ -1365,27 +1394,33 @@ const make = Effect.gen(function* () {
     waiting.delete(key);
     if (batch === undefined) return;
     const { orgId, personId } = batch;
-    const withdrawn: Array<KinPushWithdrawn> = [];
-    for (const row of batch.rows.values())
-      if (!(yield* topics.stands(orgId, row)) && (yield* topics.withdraw(orgId, row)))
-        withdrawn.push({ topic: row.topic, version: row.version });
+    // As they are now: a newer version sent since is checked, and withdrawn, as itself.
+    const settled: Array<KinPushSentRow> = [];
+    if (batch.rows.size > 0)
+      for (const row of yield* topics.live(orgId, { topics: [...batch.rows.keys()], personId }))
+        if (!(yield* topics.stands(orgId, row))) settled.push(row);
+    const withdraw = settled.map((row) => ({ topic: row.topic, version: row.version }));
     // Withdrawals are silent, so quiet hours never hold one.
     const targets = (yield* devices.forPeople(orgId, [personId])).filter(
       (device) => device.withdraws && statusFor(device.platform) === "ready",
     );
-    if (withdrawn.length > 0)
+    const badge = targets.length === 0 ? 0 : yield* badgeFor(orgId, personId);
+    const taken = yield* Effect.forEach(
+      targets,
+      (device) => sendWithdrawal(orgId, device, withdraw, badge),
+      { concurrency: SEND_CONCURRENCY },
+    );
+    // Marked only once every phone's gateway took it; else the recovery pass sends it again.
+    const sent = taken.every(Boolean);
+    if (sent) for (const row of settled) yield* topics.withdraw(orgId, row);
+    if (settled.length > 0)
       yield* Effect.logInfo("Kin push withdraws settled notifications", {
         orgId,
         personId,
-        topics: withdrawn.map((one) => `${one.topic}@${one.version}`),
+        topics: withdraw.map((one) => `${one.topic}@${one.version}`),
         devices: targets.length,
+        sent,
       });
-    if (targets.length === 0) return;
-    const badge = yield* badgeFor(orgId, personId);
-    yield* Effect.forEach(targets, (device) => sendWithdrawal(orgId, device, withdrawn, badge), {
-      concurrency: SEND_CONCURRENCY,
-      discard: true,
-    });
   });
 
   /** Adds rows to their people's batches; `badgeOf` gets a batch even with none, for its badge. */
@@ -1419,6 +1454,23 @@ const make = Effect.gen(function* () {
     },
     Effect.catchCause((cause) =>
       Effect.logWarning("Kin push couldn't read what settled.", { cause }),
+    ),
+  );
+
+  let recovered: { readonly sentAt: number; readonly rowid: number } | undefined;
+  const recover = Effect.fn("KinPushSender.recover")(
+    function* () {
+      const rows = yield* topics.due(recovered, RECOVER_ROWS);
+      const last = rows.at(-1);
+      recovered =
+        rows.length < RECOVER_ROWS || last === undefined
+          ? undefined
+          : { sentAt: last.sentAt, rowid: last.rowid };
+      for (const row of rows)
+        if (!(yield* topics.stands(row.orgId, row))) yield* enqueue(row.orgId, [row]);
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin push couldn't look for settled notifications.", { cause }),
     ),
   );
 
@@ -1792,7 +1844,19 @@ const make = Effect.gen(function* () {
     settle,
     reconcile,
     drainWithdrawals: FiberSet.awaitEmpty(batches),
+    recover: recover(),
   });
 });
 
 export const layer = Layer.effect(KinPushSender, make);
+
+/** The recovery pass, at start and every `KIN_PUSH_RECOVER_EVERY`, for as long as Kin runs. */
+export const recoverLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const sender = yield* KinPushSender;
+    yield* sender.recover.pipe(
+      Effect.repeat(Schedule.spaced(KIN_PUSH_RECOVER_EVERY)),
+      Effect.forkScoped,
+    );
+  }),
+);

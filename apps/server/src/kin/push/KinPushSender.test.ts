@@ -3415,6 +3415,90 @@ describe("KinPushSender withdrawals", () => {
     }).pipe(Effect.provide(build(apns)));
   });
 
+  const readChat = (sql: SqlClient.SqlClient) =>
+    sql`INSERT OR REPLACE INTO kin_read_state (org_id, chat_id, member_id, last_read_seq,
+        updated_at)
+      SELECT 'org_01', 'chat_pair', 'm_owner_pair', MAX(seq), ${T} FROM kin_messages
+      WHERE chat_id = 'chat_pair'`;
+  const withdrawnFrom = (apns: ReturnType<typeof makeApns>) =>
+    apns.sent
+      .filter((push) => push.token === ownerPhone)
+      .flatMap((push) => (payloadOf(push).body.withdraw as Array<unknown> | undefined) ?? []);
+
+  it.effect("the recovery pass withdraws what a restart's lost batch held, then is silent", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql, sender } = yield* seedTopical;
+      yield* pairChat(sql);
+      const from = { personId: member, memberId: "m_priya_pair" };
+      const a = yield* postMessage(sql, from, "posted", { chatId: "chat_pair", body: "A" });
+      yield* notify({ _tag: "message", orgId, messageId: a });
+      // Read on the web, then the host restarts inside the batch window: no batch holds it.
+      yield* readChat(sql);
+      apns.sent.length = 0;
+      yield* sender.recover;
+      yield* afterBatch(sender);
+      assert.deepStrictEqual(withdrawnFrom(apns), [{ topic: "c:chat_pair", version: 1 }]);
+      apns.sent.length = 0;
+      yield* sender.recover;
+      yield* afterBatch(sender);
+      assert.deepStrictEqual(apns.sent, []);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
+  it.effect(
+    "a card settled while its push was with the gateway is withdrawn after the send",
+    () => {
+      let during: (push: KinApnsPush) => Effect.Effect<void> = () => Effect.void;
+      const apns = makeApns("ready", (push) => Effect.suspend(() => during(push)));
+      return Effect.gen(function* () {
+        const { notify, sql, sender } = yield* seedTopical;
+        const card = yield* postWidget(sql, "deferral", { phase: "confirmed" }, [owner]);
+        // Closed while APNs has its push; the commit's own settle ran before the row stood.
+        during = (push) =>
+          push.token === ownerPhone && payloadOf(push).body.topic === `w:${card}`
+            ? sql`UPDATE kin_widgets SET closed_at = ${T} WHERE widget_id = ${card}`.pipe(
+                Effect.asVoid,
+                Effect.orDie,
+              )
+            : Effect.void;
+        yield* notify({ _tag: "widget", orgId, widgetId: card });
+        during = () => Effect.void;
+        apns.sent.length = 0;
+        yield* afterBatch(sender);
+        assert.deepStrictEqual(withdrawnFrom(apns), [{ topic: `w:${card}`, version: 1 }]);
+      }).pipe(Effect.provide(build(apns)));
+    },
+  );
+
+  it.effect("a withdrawal the gateway refused stays owed, and goes again", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql, sender } = yield* seedTopical;
+      yield* pairChat(sql);
+      const from = { personId: member, memberId: "m_priya_pair" };
+      const a = yield* postMessage(sql, from, "posted", { chatId: "chat_pair", body: "A" });
+      yield* notify({ _tag: "message", orgId, messageId: a });
+      yield* readChat(sql);
+      apns.answers.set(ownerPhone, { status: 503, reason: "ServiceUnavailable" });
+      apns.sent.length = 0;
+      yield* sender.settle(orgId, { topics: ["c:chat_pair" as KinPushTopic] });
+      yield* afterBatch(sender);
+      assert.deepStrictEqual(withdrawnFrom(apns), [{ topic: "c:chat_pair", version: 1 }]);
+      assert.deepStrictEqual(yield* sentRows(sql), [
+        { person_id: owner, topic: "c:chat_pair", withdrawn: 0 },
+      ]);
+      apns.answers.delete(ownerPhone);
+      apns.sent.length = 0;
+      yield* sender.settle(orgId, { topics: ["c:chat_pair" as KinPushTopic] });
+      yield* afterBatch(sender);
+      assert.deepStrictEqual(withdrawnFrom(apns), [{ topic: "c:chat_pair", version: 1 }]);
+      assert.deepStrictEqual(yield* sentRows(sql), [
+        { person_id: owner, topic: "c:chat_pair", withdrawn: 1 },
+      ]);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
   it.effect("a phone's reconcile answers only its person's topics, from what stands now", () => {
     const apns = makeApns();
     return Effect.gen(function* () {

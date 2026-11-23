@@ -37,6 +37,11 @@ export class KinPushSender extends Context.Service<
     readonly settle: (orgId: KinOrgId, settled: KinPushSettled) => Effect.Effect<void>;
     /** Waits for every batch of withdrawals already started to be sent. */
     readonly drainWithdrawals: Effect.Effect<void>;
+    /**
+     * One bounded pass over what pushes told that is still live: whatever no longer stands, by the
+     * check reconcile uses, is withdrawn. Heals a batch a restart lost or a gateway refused.
+     */
+    readonly recover: Effect.Effect<void>;
     /** Of the topics a phone of `personId` still shows, the settled ones, and their badge. */
     readonly reconcile: (
       orgId: KinOrgId,

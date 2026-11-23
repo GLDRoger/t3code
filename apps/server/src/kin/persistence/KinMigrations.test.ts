@@ -622,6 +622,8 @@ describe("Kin migrations", () => {
           { name: "idx_kin_push_about_at" },
           { name: "idx_kin_push_about_key" },
           { name: "idx_kin_push_devices_person" },
+          { name: "idx_kin_push_sent_at" },
+          { name: "idx_kin_push_sent_due" },
           { name: "idx_kin_push_sent_live" },
           { name: "idx_kin_push_sent_message" },
           { name: "idx_kin_reaction_wakes_chat" },

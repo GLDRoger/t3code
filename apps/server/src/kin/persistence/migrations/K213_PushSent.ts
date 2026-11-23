@@ -37,6 +37,10 @@ export default Effect.gen(function* () {
   )`;
   yield* sql`CREATE INDEX IF NOT EXISTS idx_kin_push_about_key ON kin_push_about (org_id, key)`;
   yield* sql`CREATE INDEX IF NOT EXISTS idx_kin_push_about_at ON kin_push_about (at)`;
+  // The retention sweep by age, and the recovery pass over what is still live, oldest first.
+  yield* sql`CREATE INDEX IF NOT EXISTS idx_kin_push_sent_at ON kin_push_sent (sent_at)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS idx_kin_push_sent_due
+    ON kin_push_sent (sent_at) WHERE withdrawn_at IS NULL`;
   yield* sql`CREATE INDEX IF NOT EXISTS idx_kin_push_sent_message
     ON kin_push_sent (org_id, message_id) WHERE withdrawn_at IS NULL AND message_id IS NOT NULL`;
   const devices = yield* sql<{ name: string }>`PRAGMA table_info(kin_push_devices)`;

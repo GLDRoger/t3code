@@ -378,6 +378,22 @@ export const makeKinPushTopics = Effect.gen(function* () {
     return remove;
   });
 
+  /** Live rows after `after`, oldest first, across orgs: the recovery pass's next page. */
+  const due = Effect.fn("KinPushTopics.due")(function* (
+    after: { readonly sentAt: number; readonly rowid: number } | undefined,
+    limit: number,
+  ) {
+    // Scheduler maintenance over every org's live rows, bounded by `limit` (`recover`).
+    return yield* sql<KinPushSentRow & { readonly orgId: KinOrgId; readonly rowid: number }>`
+      SELECT org_id AS "orgId", rowid, ${sql.literal(ROW)} FROM kin_push_sent
+      WHERE withdrawn_at IS NULL ${
+        after === undefined
+          ? sql``
+          : sql`AND (sent_at > ${after.sentAt} OR (sent_at = ${after.sentAt} AND rowid > ${after.rowid}))`
+      }
+      ORDER BY sent_at, rowid LIMIT ${limit}`;
+  });
+
   /** Their unread count in `chatId`, 0 when they are not in it. */
   const unreadIn = Effect.fn("KinPushTopics.unreadIn")(function* (
     orgId: KinOrgId,
@@ -388,7 +404,7 @@ export const makeKinPushTopics = Effect.gen(function* () {
     return memberId === undefined ? 0 : yield* chats.unreadCount({ orgId, chatId, memberId });
   });
 
-  return { reserve, stands, live, withdraw, settledOf, unreadIn };
+  return { reserve, stands, live, withdraw, settledOf, unreadIn, due };
 });
 
 const decodeIds = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.String)));
