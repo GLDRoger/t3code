@@ -320,7 +320,7 @@ export function kinSectionHeldOffLine(
   id: KinSectionId,
 ): string | null {
   const by = kinSectionHeldOffBy(shell, id).map((one) => kinSectionName(shell, one));
-  if (by.length === 0) return null;
+  if (by.length === 0 || !kinSectionSwitchOn(shell, id)) return null;
   return by.length === 1
     ? `Off because ${by[0]} is off.`
     : `Off because ${by.slice(0, -1).join(", ")} and ${by.at(-1)} are off.`;
