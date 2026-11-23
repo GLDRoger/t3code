@@ -5,7 +5,7 @@ import * as Predicate from "effect/Predicate";
 import { resolveConnection } from "../connections/ConnectionRows.ts";
 import { MAIL_TOOL } from "../connections/MailProvider.ts";
 import { KIN_READ_TOOLS } from "../mcp/readTools.ts";
-import { approvalOf, DRAFT_LIST, type DraftKind } from "../questions/approval.ts";
+import { approvalOf, DRAFT_LIST, type DraftKind, keepsDraft } from "../questions/approval.ts";
 
 /**
  * The turn the owner's Approve on a sent-up draft queued (`approveDraft`) is confined, as an
@@ -14,6 +14,17 @@ import { approvalOf, DRAFT_LIST, type DraftKind } from "../questions/approval.ts
  */
 export const APPROVED_REFUSAL =
   "This turn only makes the draft the owner approved. Nothing else ran.";
+
+/** Where each make carries the approved text. */
+const WORDS_IN: Record<string, string> = {
+  doc_create: "the doc's body",
+  record_create: "each entry's notes",
+  kin_connection_call: "the mail's body",
+  social_draft: "the caption",
+};
+/** A make that changed the approved words: refused, so the one make stays open. */
+export const approvedWords = (tool: string) =>
+  `Nothing was made: put the approved draft's whole text in ${WORDS_IN[tool] ?? "it"} word for word, as the owner approved it.`;
 
 /** What it may read: the owner lane's read tools. */
 const APPROVED_READS: ReadonlySet<string> = new Set([
@@ -79,22 +90,57 @@ const makes = Effect.fn("KinApprovedDraft.makes")(function* (
   return true;
 });
 
+/** The text each make writes, by its own arguments: none for a week card of drafts already made. */
+const madeTexts = (name: string, args: unknown): ReadonlyArray<unknown> => {
+  if (name === "doc_create") return [field(args, "body")];
+  if (name === "record_create") {
+    const rows = field(args, "records");
+    return Array.isArray(rows) ? rows.map((row: unknown) => field(row, "notes")) : [undefined];
+  }
+  if (name === "kin_connection_call") return [field(field(args, "arguments"), "body")];
+  if (name === "social_draft") return [field(args, "caption")];
+  return [];
+};
+
 /**
- * Whether `name` may run in an approved draft's turn; undefined when the turn isn't one. A wake
- * that names an approval it isn't (`approvalOf` invalid) may only read.
+ * What an approved draft's turn makes of `name`: undefined when the turn isn't one; refused, or
+ * reworded when it is the one make but drops or changes the approved words. A wake that names an
+ * approval it isn't (`approvalOf` invalid) may only read.
  */
-export const approvedToolAllowed = Effect.fn("KinApprovedDraft.allowed")(
-  function* (turn: Turn, name: string, args: unknown) {
-    const of = yield* approvalOf(turn);
-    if (of._tag === "none") return undefined;
-    if (APPROVED_READS.has(name)) return true;
-    if (of._tag === "invalid") return false;
-    if (APPROVED_ASKS.has(name)) return true;
-    return yield* makes(turn, of.approval.draft.kind, name, args);
-  },
-  Effect.catchCause((cause) =>
-    Effect.logWarning("Kin approved draft check failed; refusing", { cause }).pipe(
-      Effect.as<boolean | undefined>(false),
-    ),
+const verdict = Effect.fn("KinApprovedDraft.verdict")(function* (
+  turn: Turn,
+  name: string,
+  args: unknown,
+) {
+  const of = yield* approvalOf(turn);
+  if (of._tag === "none") return undefined;
+  if (APPROVED_READS.has(name)) return "allowed" as const;
+  if (of._tag === "invalid") return "refused" as const;
+  if (APPROVED_ASKS.has(name)) return "allowed" as const;
+  if (!(yield* makes(turn, of.approval.draft.kind, name, args))) return "refused" as const;
+  const text = of.approval.draft.text;
+  return madeTexts(name, args).every((made) => keepsDraft(made, text))
+    ? ("allowed" as const)
+    : ("reworded" as const);
+});
+const refuseOnFailure = Effect.catchCause((cause) =>
+  Effect.logWarning("Kin approved draft check failed; refusing", { cause }).pipe(
+    Effect.as("refused" as const),
   ),
 );
+
+/** Whether `name` may run in an approved draft's turn; undefined when the turn isn't one. */
+export const approvedToolAllowed = (turn: Turn, name: string, args: unknown) =>
+  verdict(turn, name, args).pipe(
+    refuseOnFailure,
+    Effect.map((of) => (of === undefined ? undefined : of === "allowed")),
+  );
+
+/** What an approved draft's turn answers a call it refuses with; undefined lets it run. */
+export const approvedRefusal = (turn: Turn, name: string, args: unknown) =>
+  verdict(turn, name, args).pipe(
+    refuseOnFailure,
+    Effect.map((of) =>
+      of === "refused" ? APPROVED_REFUSAL : of === "reworded" ? approvedWords(name) : undefined,
+    ),
+  );

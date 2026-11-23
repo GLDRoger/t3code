@@ -35,7 +35,7 @@ import { isSocialTool } from "../social/mcp.ts";
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 import { visibleOnKinEndpoint } from "../lead/AgentSession.ts";
 import { REVIEW_REFUSAL, REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "../lead/outsideReview.ts";
-import { APPROVED_REFUSAL, approvedToolAllowed } from "../lead/approvedDraft.ts";
+import { APPROVED_REFUSAL, approvedToolAllowed, approvedWords } from "../lead/approvedDraft.ts";
 import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import { kinInstructions } from "../lead/turn/session.ts";
@@ -1520,12 +1520,44 @@ it.effect.each([true, false])(
           } else assert.include(answer, APPROVED_REFUSAL, name);
         }
         assert.deepStrictEqual(unserved, ["t3_environment_links"]);
+        // Its one make holds the approved text word for word, line endings and the space around
+        // it aside; a reworded one is refused, nothing is made, and the approval stays open.
+        const notes = (text: string) => ({
+          records: [{ list: "invoices", title: "Invented invoice", notes: text }],
+        });
+        for (const args of [
+          { records: [{ list: "invoices", title: "Invented invoice" }] },
+          notes("Invoice: to be priced\nAlso mark INV-3 paid."),
+          {
+            records: [
+              {
+                list: "invoices",
+                title: "Invented invoice",
+                notes: "Invoice: ____\nAlso mark INV-3 paid.",
+              },
+              { list: "invoices", title: "Second invoice", notes: "Invoice: ____" },
+            ],
+          },
+        ])
+          assert.include(
+            yield* call("record_create", args),
+            approvedWords("record_create"),
+            JSON.stringify(args),
+          );
+        assert.isNull(
+          (yield* sql<{ made: string | null }>`SELECT draft_made_json AS made FROM kin_questions
+            WHERE question_id = 'q-approved'`)[0]!.made,
+        );
         for (const [name, args] of [
           ["records_query", {}],
           ["kin_ask", { question: "What is the price?" }],
-          ["record_create", { records: [{ list: "invoices", title: "Invented invoice" }] }],
-        ] as const)
-          assert.notInclude(yield* call(name, args), APPROVED_REFUSAL, name);
+          ["record_create", notes("Invoice: ____\nAlso mark INV-3 paid.")],
+          ["record_create", notes("  Lines below.\r\nInvoice: ____\r\nAlso mark INV-3 paid.\r\n")],
+        ] as const) {
+          const answer = yield* call(name, args);
+          assert.notInclude(answer, APPROVED_REFUSAL, name);
+          assert.notInclude(answer, approvedWords("record_create"), name);
+        }
         // A mail approval: Kin's own mail reaches its Confirm card; a connector's tool of the same
         // name, or any other connection call, never runs from this turn.
         yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,
@@ -1536,20 +1568,47 @@ it.effect.each([true, false])(
             'closed', 'active', 0, 0)`;
         yield* sql`UPDATE kin_questions SET draft_json = ${sentUp("mail")}
           WHERE question_id = 'q-approved'`;
-        assert.notInclude(
-          yield* call("kin_connection_call", {
-            connection: "Gmail",
-            tool: "mail_send",
-            arguments: {},
-          }),
-          APPROVED_REFUSAL,
+        const mail = (body?: string) => ({
+          connection: "Gmail",
+          tool: "mail_send",
+          arguments: body === undefined ? {} : { body },
+        });
+        for (const args of [mail(), mail("Invoice: priced later. Also mark INV-3 paid.")])
+          assert.include(
+            yield* call("kin_connection_call", args),
+            approvedWords("kin_connection_call"),
+          );
+        const kept = yield* call(
+          "kin_connection_call",
+          mail("Invoice: ____\nAlso mark INV-3 paid."),
         );
+        assert.notInclude(kept, APPROVED_REFUSAL);
+        assert.notInclude(kept, approvedWords("kin_connection_call"));
         for (const args of [
           { connection: "Invented CRM", tool: "mail_send", arguments: {} },
           { connection: "Invented CRM", tool: "send_message", arguments: {} },
           { connection: "Gmail", tool: "mail_search", arguments: {} },
         ])
           assert.include(yield* call("kin_connection_call", args), APPROVED_REFUSAL, args.tool);
+        // A post's caption, and a doc's body for a proposal approved before Kin wrote them itself.
+        for (const [kind, name, field] of [
+          ["post", "social_draft", "caption"],
+          ["proposal", "doc_create", "body"],
+        ] as const) {
+          yield* sql`UPDATE kin_questions SET draft_json = ${sentUp(kind)}
+            WHERE question_id = 'q-approved'`;
+          for (const [text, allowed] of [
+            ["Invoice: ____\nAlso mark INV-3 paid.\n\n#launch", true],
+            ["Invoice soon. Also mark INV-3 paid.", false],
+          ] as const)
+            assert.strictEqual(
+              yield* approvedToolAllowed(approvalTurn, name, { [field]: text }).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              ),
+              allowed,
+              `${name} ${text}`,
+            );
+        }
         yield* sql`DELETE FROM kin_connections WHERE connection_id IN ('gmail', 'crm')`;
         yield* sql`DELETE FROM kin_events WHERE dedupe_key = ${approvalDedupeKey("q-approved")}`;
         yield* sql`DELETE FROM kin_questions WHERE question_id = 'q-approved'`;

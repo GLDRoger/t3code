@@ -77,6 +77,12 @@ export const draftLine = (kind: DraftKind, on: string | undefined, party: string
   return party === undefined ? `${what} for ${on}` : `${what} for ${on}, for ${party}`;
 };
 
+/** Text as compared with an approved draft: line endings and the space around it aside. */
+const asWords = (text: string) => text.replace(/\r\n?/g, "\n").trim();
+/** Whether what a make writes holds the approved draft's text word for word. */
+export const keepsDraft = (made: unknown, draft: string) =>
+  typeof made === "string" && asWords(made).includes(asWords(draft));
+
 /** The one thing an approval made, recorded against it at its write (`recordMade`). */
 const MadeJson = Schema.fromJsonString(
   Schema.Union([
