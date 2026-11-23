@@ -412,7 +412,7 @@ export type KinActionOutcome =
     };
 
 /** A refusal that means the card was settled or changed since this screen drew it. */
-export const kinCardBehindHost = (cause: unknown) =>
+const kinCardBehindHost = (cause: unknown) =>
   isKinChatError(cause) && (cause.reason === "invalid_state" || cause.reason === "widget_changed");
 
 /**
