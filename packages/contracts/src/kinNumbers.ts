@@ -33,6 +33,7 @@ export const KinNumber = Schema.Struct({
 });
 export type KinNumber = typeof KinNumber.Type;
 export const KinNumbersListResult = Schema.Struct({ numbers: Schema.Array(KinNumber) });
+export type KinNumbersListResult = typeof KinNumbersListResult.Type;
 
 export const KinNumberValueInput = Schema.Struct({
   number: KinRecordKey,
@@ -52,14 +53,17 @@ export const KinNumbersValuesResult = Schema.Struct({
   number: KinRecordKey,
   values: Schema.Array(KinNumberValue),
 });
+export type KinNumbersValuesResult = typeof KinNumbersValuesResult.Type;
 export const KinNumbersRecordResult = Schema.Struct({ recorded: NonNegativeInt });
 export const KinNumbersListInput = Schema.Struct({ orgId: KinOrgId });
+export type KinNumbersListInput = typeof KinNumbersListInput.Type;
 export const KinNumbersValuesInput = Schema.Struct({
   orgId: KinOrgId,
   number: KinRecordKey,
   from: KinDay,
   to: KinDay,
 });
+export type KinNumbersValuesInput = typeof KinNumbersValuesInput.Type;
 export const KinNumbersRecordInput = Schema.Struct({
   orgId: KinOrgId,
   ...KinNumberValueInput.fields,
@@ -83,9 +87,11 @@ export const KinNumberDefinition = Schema.Struct({
 });
 export type KinNumberDefinition = typeof KinNumberDefinition.Type;
 export const KinNumbersDefinitionsInput = Schema.Struct({ orgId: KinOrgId });
+export type KinNumbersDefinitionsInput = typeof KinNumbersDefinitionsInput.Type;
 export const KinNumbersDefinitionsResult = Schema.Struct({
   numbers: Schema.Array(KinNumberDefinition),
 });
+export type KinNumbersDefinitionsResult = typeof KinNumbersDefinitionsResult.Type;
 /** Watches a number, or with `key` and `rev` changes, archives or restores one; `null` clears. */
 export const KinNumberSaveInput = Schema.Struct({
   orgId: KinOrgId,
