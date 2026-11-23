@@ -2169,23 +2169,38 @@ describe("watched numbers", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("a feed two periods behind tells the owner once, with its source", () =>
+  it.effect("a feed two periods behind tells the owner once, only while it is meant to run", () =>
     Effect.gen(function* () {
       yield* seed;
+      const sql = yield* SqlClient.SqlClient;
       yield* watchedNumber("G-12", { every: "day", source: SOURCE });
       yield* watchedNumber("G-13", {});
       yield* recordValue("G-12", "2026-10-28", "12");
       yield* recordValue("G-13", "2026-10-01", "3");
       yield* KinPulse.tick(orgId, noon(30));
       assert.deepStrictEqual(yield* factsOf("number_stale"), [], "one period missed is not stale");
+      // Two periods behind with no feed running for its source: nobody is meant to fetch it.
       yield* KinPulse.tick(orgId, noon(31));
+      assert.deepStrictEqual(yield* factsOf("number_stale"), []);
+      yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id,
+          patch_json, base_rev, widget_id, proposed_at, applied_at)
+        VALUES (${orgId}, 'nw_feed', ${finance}, 'earlier', ${JSON.stringify({
+          numbers: [],
+          feed: { source: SOURCE, every: "day", at: "08:00" },
+          base: "invented",
+        })}, 0, NULL, 0, 0)`;
+      yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+          source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+        VALUES ('task-feed', ${orgId}, 'feed-invented', ${finance}, ${`chat-${finance}`},
+          'kin-numbers:nw_feed', ${owner}, 'owner_only', 'hash', 'inbox', 0, 0)`;
       yield* KinPulse.tick(orgId, noon(31) + HOUR);
+      yield* KinPulse.tick(orgId, noon(31) + 2 * HOUR);
       assert.deepStrictEqual(yield* factsOf("number_stale"), [
         { key: "number_stale:G-12:asOf=2026-10-28", cleared: 0, woke: 0 },
       ]);
       const [fact] = (yield* KinPulse.read({
         orgId,
-        at: noon(31) + HOUR,
+        at: noon(31) + 2 * HOUR,
         viewer: { _tag: "owner" },
       })).facts.filter((one) => one.sense === "number_stale");
       assert.deepInclude(fact, {
@@ -2193,9 +2208,22 @@ describe("watched numbers", () => {
         actor: { _tag: "owner" },
         wake: "sweep",
       });
-      // A newer value clears it.
+      // A person paused the feed: no notice.
+      yield* sql`UPDATE kin_schedules SET pending_enabled = 0 WHERE task_id = 'task-feed'`;
+      yield* KinPulse.tick(orgId, noon(31) + 3 * HOUR);
+      assert.deepStrictEqual(
+        (yield* factsOf("number_stale")).map((row) => row.cleared),
+        [1],
+      );
+      // Running again, then a newer value clears it.
+      yield* sql`UPDATE kin_schedules SET pending_enabled = NULL WHERE task_id = 'task-feed'`;
+      yield* KinPulse.tick(orgId, noon(31) + 4 * HOUR);
+      assert.deepStrictEqual(
+        (yield* factsOf("number_stale")).map((row) => row.cleared),
+        [0],
+      );
       yield* recordValue("G-12", "2026-10-30", "14");
-      yield* KinPulse.tick(orgId, noon(31) + 2 * HOUR);
+      yield* KinPulse.tick(orgId, noon(31) + 5 * HOUR);
       assert.deepStrictEqual(yield* factsOf("number_stale"), [
         { key: "number_stale:G-12:asOf=2026-10-28", cleared: 1, woke: 0 },
       ]);

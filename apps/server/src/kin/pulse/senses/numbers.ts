@@ -5,6 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevelNumbers } from "../../numbers/KinNumbers.ts";
 import { sectionOnFor } from "../../shell/KinShell.ts";
+import { liveFeeds } from "../../numbers/numberRows.ts";
 import { figure, offTurnText } from "../../numbers/words.ts";
 import { agentOrOwner, dayOf, iso, type SenseContext, type SensedFact } from "./shared.ts";
 
@@ -24,6 +25,12 @@ const numberOffPrefix = (key: string, side: "above" | "below", limit: string) =>
 export const numberSenses = Effect.fn("KinPulse.numberSenses")(function* (ctx: SenseContext) {
   const sql = yield* SqlClient.SqlClient;
   const numbers = yield* ownerLevelNumbers(ctx.orgId, ctx.at);
+  // "No new value" only while someone is meant to fetch it: its source's feed runs.
+  const fetched = new Set(
+    numbers.some((number) => number.stale)
+      ? (yield* liveFeeds(ctx.orgId)).map((one) => one.feed.source)
+      : [],
+  );
   const today = dayOf(ctx, ctx.at);
   const facts: Array<SensedFact> = [];
   for (const number of numbers) {
@@ -72,7 +79,12 @@ export const numberSenses = Effect.fn("KinPulse.numberSenses")(function* (ctx: S
         ...section,
       });
     }
-    if (number.stale && number.every !== undefined) {
+    if (
+      number.stale &&
+      number.every !== undefined &&
+      number.definedSource !== undefined &&
+      fetched.has(number.definedSource)
+    ) {
       const source = number.definedSource ?? number.source;
       facts.push({
         sense: "number_stale",
