@@ -464,7 +464,7 @@ it.effect(
         const shellBefore = yield* shellRow;
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: zoyaId });
         assert.deepStrictEqual(yield* shellRow, shellBefore);
-        assert.isFalse(Shell.onIn(yield* Shell.get(ctx.orgId), "docs"));
+        assert.isFalse(Shell.sectionOn(yield* Shell.get(ctx.orgId), "docs"));
         const [rheas, meeras] = yield* cards(ctx).pipe(
           Effect.map((all) => all.toSorted((a) => (a.chatId === ctx.ownerChat ? -1 : 1))),
         );

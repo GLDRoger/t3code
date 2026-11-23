@@ -157,6 +157,7 @@ import {
   SentMailView,
   sentToClient,
   subjectClosed,
+  subjectOff,
 } from "./Sending.ts";
 import { choiceExpired } from "../widgets/choiceCard.ts";
 import { KinRecords, layer as recordsLayer } from "../work/KinRecords.ts";
@@ -3084,6 +3085,8 @@ const make = Effect.gen(function* () {
           "unavailable",
           `${connection.accountLabel ?? connection.label} needs signing in again in Settings › Connections. Nothing was sent; send it again once it's back.`,
         );
+      const off = yield* subjectOff(input.orgId, drafted);
+      if (off !== null) return yield* fail("invalid_state", off);
       // A refused Confirm keeps the agent's draft; its card's saved words follow onto a fresh one.
       const reason = yield* askBlocked(input.orgId, row, drafted, connection);
       if (reason !== null) {
@@ -3652,6 +3655,8 @@ const make = Effect.gen(function* () {
             email,
           );
         }
+        const off = yield* subjectOff(orgId, prepared).pipe(provideSql);
+        if (off !== null) return yield* stop(off, true);
         const blocked = yield* askBlocked(orgId, row, prepared, connection).pipe(provideSql);
         if (blocked !== null) {
           const { told, owes } = yield* staleTold(orgId, askId, blocked, prepared);

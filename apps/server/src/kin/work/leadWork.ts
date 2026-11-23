@@ -462,11 +462,13 @@ export const GetResult = Schema.Struct({
       tasksTheyOwe: Schema.Number,
       tasksWeOweLate: Schema.Number,
       tasksTheyOweLate: Schema.Number,
-      money: Schema.Struct({
-        unpaid: Schema.Array(Schema.String),
-        overdue: Schema.Array(Schema.String),
-        invoices: Schema.Array(Schema.String),
-      }),
+      money: Schema.optional(
+        Schema.Struct({
+          unpaid: Schema.Array(Schema.String),
+          overdue: Schema.Array(Schema.String),
+          invoices: Schema.Array(Schema.String),
+        }),
+      ),
     }),
   ),
   contacts: Schema.optional(Schema.Array(Schema.Struct({ ...Row.fields }))),
@@ -2141,15 +2143,20 @@ const clientOwed = Effect.fnUntraced(function* (
     readonly overdue: number;
   },
   now: number,
+  invoicesOn: boolean,
 ) {
-  const invoices = yield* owedInvoices({ orgId, now, partyId });
-  const zone = yield* ownerZone(orgId);
-  const home = yield* homeCurrency(orgId);
-  return {
+  const work: NonNullable<(typeof GetResult.Type)["owed"]> = {
     tasksWeOwe: party.weOwe,
     tasksTheyOwe: party.theyOwe,
     tasksWeOweLate: party.late,
     tasksTheyOweLate: party.overdue,
+  };
+  if (!invoicesOn) return work;
+  const invoices = yield* owedInvoices({ orgId, now, partyId });
+  const zone = yield* ownerZone(orgId);
+  const home = yield* homeCurrency(orgId);
+  return {
+    ...work,
     money: {
       unpaid: addUp(
         invoices.map((one) => one.balance),
@@ -2199,6 +2206,7 @@ const MAILED_LISTS: ReadonlySet<string> = new Set(["invoices", "quotes", "receip
 const mailedFor = Effect.fnUntraced(function* (
   orgId: KinOrgId,
   row: { readonly recordId: string; readonly registerId: string },
+  omitLists: ReadonlyArray<string>,
 ) {
   if (!MAILED_LISTS.has(row.registerId)) return [];
   if (row.registerId !== "clients") return yield* sentMail({ orgId, recordIds: [row.recordId] });
@@ -2211,6 +2219,7 @@ const mailedFor = Effect.fnUntraced(function* (
   return yield* sentMail({
     orgId,
     recordIds: related.map((one) => one.recordId),
+    omitLists,
     addresses: related.flatMap((one) => contactAll(parseFields(one.fieldsJson), "email")),
   });
 });
@@ -2235,7 +2244,7 @@ const linkShown = (link: KinRecordDetail["links"][number]) =>
             : (link.label ?? link.target),
       };
 const dealsOn = Effect.fn("KinWorkTools.dealsOn")((orgId: KinOrgId) =>
-  KinShell.sectionOn(orgId, "deals").pipe(Effect.orElseSucceed(() => false)),
+  KinShell.sectionOnFor(orgId, "deals").pipe(Effect.orElseSucceed(() => false)),
 );
 
 const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.Type) {
@@ -2346,6 +2355,9 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     };
     return shown;
   }
+  const shell = yield* KinShell.get(lead.orgId);
+  const moneyOn = KinShell.sectionOn(shell, "money");
+  const invoicesOn = KinShell.sectionOn(shell, "invoices");
   const list = row.registerId;
   const sensitive = new Set(marksOf(view.lists, row).sensitiveFields ?? []);
   const hiddenLinks = yield* unseenOf(
@@ -2355,7 +2367,9 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const page = list === "clients" ? yield* partyPage(row, now, 0, viewer) : undefined;
   const project = list === "projects" ? yield* projectDetail(row, now, viewer) : undefined;
   const taxNote =
-    team === undefined && (list === "invoices" || list === "quotes" || list === "clients")
+    team === undefined &&
+    moneyOn &&
+    (list === "invoices" || list === "quotes" || list === "clients")
       ? notRegisteredFact(yield* readProfile(lead.orgId))
       : undefined;
   const specChanged = list === "work" && (yield* taskSpecChanged(row, viewer));
@@ -2363,17 +2377,20 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     list === "goals"
       ? (yield* goalsNow(lead.orgId, now, { money: true })).goals.find((one) => one.key === row.key)
       : undefined;
-  const mailed = yield* mailedFor(lead.orgId, row);
+  const mailed = yield* mailedFor(lead.orgId, row, [
+    ...(invoicesOn ? [] : ["invoices", "quotes"]),
+    ...(moneyOn ? [] : ["receipts"]),
+  ]);
   return {
     ...withDeal(deals, rowFor(view, row, now)),
     ...(mailed.length === 0 ? {} : { mailed }),
     ...(goal === undefined ? {} : { progress: goalLine(goal) }),
     ...(specChanged ? { specChanged: true as const } : {}),
-    ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name, viewer) }),
+    ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name, viewer, moneyOn) }),
     ...(page === undefined
       ? {}
       : {
-          owed: yield* clientOwed(lead.orgId, row.recordId, page.party, now),
+          owed: yield* clientOwed(lead.orgId, row.recordId, page.party, now, invoicesOn),
           contacts: (yield* records.query(lead.orgId, {
             list: "contacts",
             partyId: row.recordId,
@@ -2403,7 +2420,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             late: project.late,
             waitingOverAWeek: project.healthBecause.waitingOverAWeek,
             targetPassed: project.healthBecause.targetPassed,
-            ...(project.healthBecause.overdueInvoices
+            ...(invoicesOn && project.healthBecause.overdueInvoices
               ? { overdueInvoices: project.healthBecause.overdueInvoices }
               : {}),
             ...(project.healthBecause.noContact === undefined
@@ -2426,7 +2443,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
               : { source: paymentSourceText(payment.source, name) }),
           })),
         }),
-    ...(list === "invoices" || page !== undefined
+    ...(moneyOn && (list === "invoices" || page !== undefined)
       ? { bank: bankAnswer(yield* bankKnown(lead.orgId)) }
       : {}),
     ...(taxNote === undefined ? {} : { taxNote }),

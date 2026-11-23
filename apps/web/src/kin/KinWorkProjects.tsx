@@ -53,7 +53,7 @@ import { KinProjectPeopleSection } from "./KinProjectPeople";
 import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
 import { KinCampaignDealsDialog } from "./KinDeals";
 import { KinCampaignResultsSection, KinContactListDialog } from "./KinMarketing";
-import { useKinSectionOn } from "./useKinShell";
+import { useKinSectionOn, useKinShell } from "./useKinShell";
 import { KinWorkClientsList } from "./KinWorkClients";
 import {
   KinWorkHealthBadge,
@@ -144,7 +144,7 @@ function ProjectPage(
   const [choosingLead, setChoosingLead] = useState(false);
   const [openResult, setOpenResult] = useState<KinCampaignResultId | null>(null);
   const privateId = useId();
-  const view = kinProjectPageView(page, names, now);
+  const view = kinProjectPageView(page, names, now, useKinShell(props.environmentId));
   const { party } = view;
   const opened =
     openResult === null ? null : kinCampaignResultOpens(orgId, view.key, view.name, openResult);

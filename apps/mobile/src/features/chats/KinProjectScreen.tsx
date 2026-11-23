@@ -58,7 +58,8 @@ import { KinTasksList } from "./KinTasksList";
 import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinCampaignResultsSection } from "./KinMarketing";
-import { useKinSectionOn } from "./state/useKinShell";
+import { useKinSectionOn, useKinShell } from "./state/useKinShell";
+import { kinSectionOffLine } from "@t3tools/client-runtime/kin/kinShell";
 import { KinProjectPeopleSection } from "./KinProjectPeopleScreen";
 import { kinClient } from "./state/kinClient";
 import { useKinAskRecord } from "./state/useKinAskRecord";
@@ -73,6 +74,7 @@ import {
 import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { KinProjectNoteSection } from "./components/KinProjectNote";
 import { useKinWorkLink } from "./state/kinWorkLink";
+import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 
 export type KinProjectParams = {
   readonly environmentId: string;
@@ -189,7 +191,10 @@ function KinProjectBody(
   const now = new Date(useNowMinuteMs());
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
-  const view = kinProjectPageView(props.page, props.directory.names, now);
+  const shell = useKinShell(environmentId);
+  const view = kinProjectPageView(props.page, props.directory.names, now, shell);
+  // A project goes with Clients: opened by its link while that is off, it says so.
+  const offLine = kinSectionOffLine(shell, "clients", useKinIsOwnerLevel(environmentId));
   // A project's lead adds its milestones too; the host checks they still lead it.
   const leads =
     view.lead.personId !== null &&
@@ -284,6 +289,11 @@ function KinProjectBody(
           : asker,
         header: (
           <>
+            {offLine === null ? null : (
+              <Text textRole="footnote" className="px-2 text-foreground-muted">
+                {offLine}
+              </Text>
+            )}
             <KinProjectSummary
               view={view}
               problem={problem}

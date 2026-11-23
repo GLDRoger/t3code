@@ -916,11 +916,30 @@ features:
     note: >-
       Off hides the Deals tab, deals on client and project pages, New deal, deal search hits,
       nudges, the Monday pipeline and deal tools for everyone; nothing is deleted, and on restores
-      it. A deal still opens by its link, saying Deals is turned off.
+      it. A deal still opens by its link, saying Deals is turned off. The server also honours
+      Clients (including Projects), Money, and Invoices and quotes. Clients can have a company
+      name; Invoices and quotes requires Clients and behaves as off with Money off. Bank-alert
+      intake keeps running with Money off, without telling anyone.
     proof:
       - packages/client-runtime/src/kin/kinShell.test.ts
       - apps/web/src/kin/KinDeals.browser.test.tsx
       - apps/server/src/kin/shell/KinShell.test.ts
+
+  - id: sections-settings
+    name: Settings › Sections, switching Clients, Deals, Money, and Invoices and quotes, and renaming Clients
+    tab: settings
+    web: [settings, section:Sections]
+    phone: [SettingsKin, KinSections]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      One row per section with its switch; a section another holds off says why and cannot be
+      switched there. Clients takes the company's own name and singular, and Use Kin's name puts it
+      back. Every place, picker, fold, search box and palette row follows the same shell for
+      everyone; a record of an off section still opens, with one line.
+    proof:
+      - packages/client-runtime/src/kin/kinShell.test.ts
+      - packages/client-runtime/src/kin/kinNavigation.test.ts
+      - apps/web/src/kin/KinDeals.browser.test.tsx
 
   - id: marketing-list
     name: A campaign's results, a tag's list, and Export list
@@ -1631,6 +1650,7 @@ unlisted:
   "web:settings/check-ins": The app's old address; opens Kin's Settings → Check-ins.
   "web:settings/kin-connections": The app's old address; opens Kin's Settings → Connections.
   "web:settings/deals": The app's settings address for Deals; opens Kin's Settings → Deals.
+  "web:settings/sections": The app's settings address for Sections; opens Kin's Settings → Sections.
   "web:settings/kin-profile": Where app Settings search lands for quiet hours, working hours, away and GitHub username; opens Kin's Settings → Profile.
   "web:?v": Picks the version of the open doc; not a screen.
   "web:?tab": Switches the Clients place between its Clients, Deals and Projects lists; not a screen.

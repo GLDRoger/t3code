@@ -80,6 +80,7 @@ import {
   useKinLists,
 } from "./useKinMoney";
 import { useKinWorkChoices, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
 
 const ANY = "any";
 const NONE = "none";
@@ -179,6 +180,8 @@ function KinListEntries(
   const narrowings = kinListNarrowings(filter, def);
   const groupings = kinListGroupings(def);
   const { clients } = useKinWorkChoices(props, true);
+  const clientsOn = useKinSectionOn(props.environmentId, "clients");
+  const named = useKinSectionNamed(props.environmentId);
   const category = filter.noCategory ? NONE : (filter.category ?? ANY);
   const nothing = kinListNothing(def, filter);
   const footer = kinListFooter(rows.length, state.total, state.more);
@@ -305,25 +308,27 @@ function KinListEntries(
               </SelectPopup>
             </Select>
           )}
-          <div className="w-full min-w-0 sm:w-44">
-            <KinPlaceCombobox
-              target={props}
-              noun="client"
-              label={KIN_LISTS.clientFilter}
-              labelHidden
-              placeholder={KIN_LISTS.anyClient}
-              value={filter.noParty ? NO_CLIENT : filter.party}
-              choices={clients}
-              extra={NO_CLIENT}
-              onChange={(party) =>
-                entries.setFilter(
-                  party?.key === NO_CLIENT.key
-                    ? { ...filter, noParty: true, party: null }
-                    : { ...filter, noParty: false, party },
-                )
-              }
-            />
-          </div>
+          {!clientsOn ? null : (
+            <div className="w-full min-w-0 sm:w-44">
+              <KinPlaceCombobox
+                target={props}
+                noun="client"
+                label={named(KIN_LISTS.clientFilter)}
+                labelHidden
+                placeholder={named(KIN_LISTS.anyClient)}
+                value={filter.noParty ? NO_CLIENT : filter.party}
+                choices={clients}
+                extra={NO_CLIENT}
+                onChange={(party) =>
+                  entries.setFilter(
+                    party?.key === NO_CLIENT.key
+                      ? { ...filter, noParty: true, party: null }
+                      : { ...filter, noParty: false, party },
+                  )
+                }
+              />
+            </div>
+          )}
           <div>
             <ToggleGroup
               aria-label="Layout"

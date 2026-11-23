@@ -166,6 +166,8 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
+import { useKinShell } from "./useKinShell";
+import { kinPickerNamed, kinSectionNoun } from "@t3tools/client-runtime/kin/kinShell";
 
 const LINK_ICON: Record<KinWorkLinkView["kind"], typeof LinkIcon> = {
   pull_request: PullRequestGlyph.pullRequest,
@@ -1436,7 +1438,7 @@ const PLACE_ROW = "flex min-w-0 flex-1 truncate";
  * The client or project a task is under: pick another, found by typing as the new-task form
  * does, take it off, or open the one it has.
  */
-export function KinTaskPlaceMenu(props: {
+export function KinTaskPlaceMenu(given: {
   readonly target: KinWorkTarget;
   readonly noun: "client" | "project";
   readonly label: string;
@@ -1459,7 +1461,11 @@ export function KinTaskPlaceMenu(props: {
     readonly onPick: (side: "ours" | "theirs") => void;
   };
 }) {
+  // A client picker says the company's own word for Clients in its label and its own rows.
+  const clientShell = useKinShell(given.target.environmentId);
+  const props = kinPickerNamed(clientShell, given);
   const { value, onPick, side } = props;
+  const clientNoun = kinSectionNoun(clientShell, "clients");
   const search = useKinPickerSearch(
     props.target,
     props.noun === "client" ? "clients" : "projects",
@@ -1472,6 +1478,7 @@ export function KinTaskPlaceMenu(props: {
     loaded: { open: props.choices, done: props.done ?? [] },
     held: value,
     only: props.only ?? null,
+    called: props.noun === "client" ? clientNoun : "project",
   });
   const groups = kinTaskProjectMenu({ projects: view.open, doneProjects: view.done });
   const first = groups

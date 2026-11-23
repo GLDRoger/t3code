@@ -1129,7 +1129,37 @@ it.effect(
         assert.deepStrictEqual(after, before);
         assert.isTrue(shell?.sections.some((section) => section.id === "deals" && !section.on));
       }
-      yield* changeShell(1, true);
+      const set = (rev: number, sections: Parameters<KinShell.KinShell["Service"]["set"]>[3]) =>
+        KinShell.KinShell.use((shell) => shell.set(orgId, coOwner.personId, rev, sections)).pipe(
+          Effect.provide(KinShell.layer),
+        );
+      yield* set(1, [
+        { id: "clients", on: false, name: " Donors ", noun: " donor " },
+        { id: "money", on: false, name: "Ignored", noun: "ignored" },
+        { id: "deals", on: false },
+        { id: "invoices", on: false },
+      ]);
+      for (const [n, session] of parties.entries()) {
+        const { shell, refused } = yield* service.accessMe(session, { orgId });
+        assert.deepStrictEqual(refused, original[n]!.refused);
+        assert.deepStrictEqual(
+          shell?.sections.find(({ id }) => id === "clients"),
+          {
+            id: "clients",
+            on: false,
+            name: "Donors",
+            noun: "donor",
+          },
+        );
+        assert.deepStrictEqual(
+          shell?.sections.find(({ id }) => id === "money"),
+          {
+            id: "money",
+            on: false,
+          },
+        );
+      }
+      yield* changeShell(2, true);
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE kin_company_shell SET shell_json = 'broken' WHERE org_id = ${orgId}`;
       const { shell: fallback, ...still } = yield* service.accessMe(raviSession, { orgId });

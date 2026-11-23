@@ -2061,6 +2061,13 @@ describe("receipts", () => {
         assert.match((yield* Effect.flip(call({ proposal: more.proposal }))).message, /said no/);
         // A second card for the same money, worded differently, waits beside the first.
         const twin = yield* proposed({ ...ask, towards: "the redesign's advance" });
+        // Money off leaves the same still-unanswered card for when Money is back.
+        yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+          VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${ownerId}, 0)`;
+        const off = yield* Effect.flip(answerCard(`kin-receipt:${advance.proposal}`, "yes"));
+        assert.include(off.message, "Money is turned off for this company");
+        assert.deepStrictEqual(yield* live, []);
+        yield* sql`UPDATE kin_company_shell SET shell_json = '[]', rev = 2 WHERE org_id = ${orgId}`;
         // The owner's tap records exactly what its card showed, once; the agent reads it after.
         yield* answerCard(`kin-receipt:${advance.proposal}`, "yes");
         assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
