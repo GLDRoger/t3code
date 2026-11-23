@@ -58,6 +58,7 @@ export const agentParty = (agentId: KinAgentId) => `agent:${agentId}`;
  */
 export const factSig = (fact: KinPulseFact, at: number, zone: string) => {
   const m = fact.measure;
+  if (fact.sense === "sense_overflow" && m !== undefined) return `count:${m.value}`;
   const age = lateBand(fact);
   const band =
     fact.sense === "task_late"
@@ -114,12 +115,21 @@ export const untold = Effect.fn("KinPulse.untold")(function* (input: {
     for (const row of rows) {
       if (row.delivered === 1 && !row.sig.startsWith("handled:")) heardLate.add(row.key);
       // The unreadable count can go down and back up while the same fact stays open.
-      if (row.key === UNREADABLE_BANK_ALERTS_KEY && told.has(row.key)) continue;
+      if (
+        (row.key === UNREADABLE_BANK_ALERTS_KEY || row.key.startsWith("sense_overflow:")) &&
+        told.has(row.key)
+      )
+        continue;
       told.set(row.key, (told.get(row.key) ?? new Set()).add(row.sig));
     }
   }
   return input.facts.flatMap((fact) => {
-    if (told.get(fact.key)?.has(factSig(fact, input.at, input.zone))) return [];
+    const signatures = told.get(fact.key);
+    if (fact.sense === "sense_overflow" && fact.measure !== undefined) {
+      const last = signatures?.values().next().value;
+      if (last?.startsWith("count:") && Math.abs(Number(last.slice(6)) - fact.measure.value) < 10)
+        return [];
+    } else if (signatures?.has(factSig(fact, input.at, input.zone))) return [];
     return [
       lateBand(fact) > 0 && heardLate.has(fact.key)
         ? { ...fact, lateReminder: lateReminder(fact, input.zone) }

@@ -48,7 +48,12 @@ export const holderLine = (
   const client = fact.sense === "theirs_late" ? fact.scope.clientTitle : undefined;
   const from = client === undefined ? "" : ` from ${client}`;
   const state = fact.sense === "task_due_soon" ? "due today" : `was due${from} ${when}`;
-  return { key: fact.subject.key, title: fact.subject.title, state, reminder: fact.lateReminder };
+  return {
+    key: fact.subject.key,
+    title: fact.subject.title,
+    state,
+    ...(fact.lateReminder === undefined ? {} : { reminder: fact.lateReminder }),
+  };
 };
 
 /** What the holder's view hides, such as "Only me": counted, never named, as an agent reads it. */

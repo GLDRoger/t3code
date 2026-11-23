@@ -1,6 +1,7 @@
 import { KinAgentId, KinPersonId, type KinPulseActor } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import { cappedRows, SENSE_CAP } from "./capped.ts";
 
 import { validZone } from "../../triggers/quietHold.ts";
 import { stillAway } from "../../triggers/quietHours.ts";
@@ -25,8 +26,6 @@ import {
   type SensedFact,
 } from "./shared.ts";
 
-/** Facts per sense are bounded; past this the read says how many it found, not each one. */
-export const SENSE_CAP = 500;
 const OPEN = ["open", "doing", "waiting"];
 
 const workFact = (
@@ -62,11 +61,21 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
   const waiting = limits("waiting_too_long_days");
 
   // task_late and theirs_late: an open entry whose due date and grace have passed.
-  const late = yield* sql<EntryRow & { side: string }>`SELECT ${entryColumns(sql)}, r.side
+  const late = yield* cappedRows<EntryRow & { side: string }>(
+    ctx,
+    facts,
+    {
+      sense: "task_late",
+      plural: "late tasks and obligations",
+      access: "work",
+      cap: SENSE_CAP * 2,
+    },
+    sql`SELECT ${entryColumns(sql)}, r.side
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state IN ${sql.in(OPEN)}
       AND r.due_at IS NOT NULL AND r.due_at <= ${at - toMs(grace)}
-    ORDER BY r.due_at, r.key LIMIT ${SENSE_CAP * 2}`;
+    ORDER BY r.due_at, r.key`,
+  );
   // A holder away right now: their late task says until when, so nobody chases them meanwhile.
   const awayRows = yield* sql<{ personId: string; name: string; day: string; zone: string | null }>`
     SELECT person_id AS "personId", display_name AS name, away_until AS day, time_zone AS zone
@@ -93,10 +102,19 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
   }
 
   // task_due_soon: not started, and due within the window.
-  const due = yield* sql<EntryRow>`SELECT ${entryColumns(sql)} FROM ${entryJoins(sql)}
+  const due = yield* cappedRows<EntryRow>(
+    ctx,
+    facts,
+    {
+      sense: "task_due_soon",
+      plural: "tasks due soon",
+      access: "work",
+    },
+    sql`SELECT ${entryColumns(sql)} FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'ours' AND r.state = 'open'
       AND r.due_at IS NOT NULL AND r.due_at > ${at} AND r.due_at <= ${at + toMs(soon)}
-    ORDER BY r.due_at, r.key LIMIT ${SENSE_CAP}`;
+    ORDER BY r.due_at, r.key`,
+  );
   for (const row of due) {
     const left = elapsed(at, row.dueAt!, "hours");
     facts.push(
@@ -113,13 +131,22 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
 
   // holder_removed: an open task held by someone whose access was removed. It stays in their
   // name (`KinPeople.removeAccess`); the owner gives it to someone else or lets them back in.
-  const orphaned = yield* sql<EntryRow & { holder: string; removedAt: number }>`
+  const orphaned = yield* cappedRows<EntryRow & { holder: string; removedAt: number }>(
+    ctx,
+    facts,
+    {
+      sense: "holder_removed",
+      plural: "tasks held by people whose access was removed",
+      access: "owner",
+    },
+    sql`
     SELECT ${entryColumns(sql)}, h.display_name AS holder, h.removed_at AS "removedAt"
     FROM ${entryJoins(sql)}
     JOIN kin_people h ON h.org_id = r.org_id AND r.owner_kind = 'person'
       AND h.person_id = r.owner_id AND h.removed_at IS NOT NULL
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state IN ${sql.in(OPEN)}
-    ORDER BY h.removed_at, r.key LIMIT ${SENSE_CAP}`;
+    ORDER BY h.removed_at, r.key`,
+  );
   for (const row of orphaned)
     facts.push(
       workFact(ctx, row, {
@@ -133,15 +160,22 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
     );
 
   // task_stalled: in progress with no change logged for the threshold.
-  const doing = yield* sql<
-    EntryRow & { lastAt: number }
-  >`SELECT * FROM (SELECT ${entryColumns(sql)},
+  const doing = yield* cappedRows<EntryRow & { lastAt: number }>(
+    ctx,
+    facts,
+    {
+      sense: "task_stalled",
+      plural: "stalled tasks",
+      access: "work",
+    },
+    sql`SELECT * FROM (SELECT ${entryColumns(sql)},
       COALESCE((SELECT MAX(ch.at) FROM kin_record_changes ch
         WHERE ch.org_id = r.org_id AND ch.record_id = r.record_id), r.updated_at) AS "lastAt"
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state = 'doing')
     WHERE "lastAt" <= ${at - toMs(stalled)}
-    ORDER BY "lastAt", key LIMIT ${SENSE_CAP}`;
+    ORDER BY "lastAt", key`,
+  );
   for (const row of doing) {
     const days = elapsed(row.lastAt, at, "days");
     facts.push(
@@ -157,9 +191,17 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
   }
 
   // waiting_long: waiting on someone for longer than the threshold. Whoever it waits on acts.
-  const waits = yield* sql<
+  const waits = yield* cappedRows<
     EntryRow & { since: number; onKind: string | null; onId: string | null; onName: string | null }
-  >`SELECT * FROM (SELECT ${entryColumns(sql)}, ${waitingSince(sql, "r")} AS since,
+  >(
+    ctx,
+    facts,
+    {
+      sense: "waiting_long",
+      plural: "tasks waiting on someone",
+      access: "work",
+    },
+    sql`SELECT * FROM (SELECT ${entryColumns(sql)}, ${waitingSince(sql, "r")} AS since,
       r.waiting_on_kind AS "onKind", r.waiting_on_id AS "onId",
       COALESCE(wp.display_name, wa.display_name) AS "onName"
     FROM ${entryJoins(sql)}
@@ -169,7 +211,8 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
       AND wa.agent_id = r.waiting_on_id
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state = 'waiting')
     WHERE since <= ${at - toMs(waiting)}
-    ORDER BY since, key LIMIT ${SENSE_CAP}`;
+    ORDER BY since, key`,
+  );
   for (const row of waits) {
     const days = elapsed(row.since, at, "days");
     const on: KinPulseActor | undefined =
@@ -196,10 +239,19 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
   }
 
   // to_confirm: suggested a day ago or more, and nobody has confirmed it.
-  const suggested = yield* sql<EntryRow>`SELECT ${entryColumns(sql)} FROM ${entryJoins(sql)}
+  const suggested = yield* cappedRows<EntryRow>(
+    ctx,
+    facts,
+    {
+      sense: "to_confirm",
+      plural: "unconfirmed tasks",
+      access: "work",
+    },
+    sql`SELECT ${entryColumns(sql)} FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.confirmed = 0
       AND r.state IN ${sql.in(OPEN)} AND r.created_at <= ${at - DAY_MS}
-    ORDER BY r.created_at, r.key LIMIT ${SENSE_CAP}`;
+    ORDER BY r.created_at, r.key`,
+  );
   for (const row of suggested)
     facts.push(
       workFact(ctx, row, {
