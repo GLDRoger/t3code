@@ -33,12 +33,14 @@ const LeakAllow = Schema.Struct({
 });
 const RemoveEntry = Schema.Struct({ reason: Schema.NonEmptyString, files: Globs });
 const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+const Scope = Schema.Struct({ reason: Schema.NonEmptyString, files: Globs });
 const BrandRules = Schema.Struct({
   text: Schema.Array(TextRule),
   ignore: Schema.Array(IgnoreRule),
   leaks: Schema.Struct({ allow: Schema.Array(LeakAllow) }),
   remove: Schema.optional(Schema.Array(RemoveEntry)),
   sourceAssets: Schema.optional(Schema.Record(Schema.String, Sha256)),
+  scopes: Schema.optional(Schema.Record(Schema.String, Scope)),
 });
 export type BrandRules = typeof BrandRules.Type;
 export type TextRule = typeof TextRule.Type;

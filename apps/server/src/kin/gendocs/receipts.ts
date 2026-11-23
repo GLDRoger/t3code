@@ -18,13 +18,15 @@ import { dayIn, formatMoney } from "../work/money.ts";
 import {
   endOfDay,
   fromImport,
+  isSuggestion,
+  keptEntry,
   notedReceiptNumbers,
   ownerZone,
   type RecordRow,
+  stillSuggestion,
 } from "../work/recordRows.ts";
 import { parseFields } from "../work/lists.ts";
-import { homeCurrency } from "../work/companyProfile.ts";
-import { defineList, listDef, PRESETS } from "../work/registers.ts";
+import { defineList, listCurrency, listDef, PRESETS } from "../work/registers.ts";
 import { makeDocument, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
 
@@ -98,7 +100,7 @@ const receiptsList = Effect.fn("KinReceipts.list")(function* (orgId: KinOrgId) {
         fields: preset.fields,
         sensitive: preset.sensitive,
         amount: preset.amount,
-        currency: yield* homeCurrency(orgId),
+        ...(yield* listCurrency(orgId)),
         ...(preset.dueLabel === undefined ? {} : { dueLabel: preset.dueLabel }),
         ...(preset.dateLabel === undefined ? {} : { dateLabel: preset.dateLabel }),
         numbering,
@@ -155,6 +157,7 @@ type PaymentRow = {
   readonly invoiceKey: string;
   readonly invoiceNumber: string | null;
   readonly partyId: string | null;
+  readonly kept: number;
 };
 
 /** The receipts entry Kin already made for a payment: only Kin's own carry a `receipt:` origin. */
@@ -216,7 +219,7 @@ const forPayment = Effect.fn("KinReceipts.forPayment")(function* (
       p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.note,
       p.origin_key AS "originKey", p.voided_at AS "voidedAt", p.withheld,
       r.record_id AS "invoiceId", r.register_id AS "invoiceList", r.key AS "invoiceKey",
-      n.number AS "invoiceNumber", r.party_id AS "partyId"
+      n.number AS "invoiceNumber", r.party_id AS "partyId", r.confirmed AS kept
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
@@ -228,6 +231,7 @@ const forPayment = Effect.fn("KinReceipts.forPayment")(function* (
     });
   if (payment.voidedAt !== null)
     return yield* invalid("That payment was taken back, so it gets no receipt.");
+  if (payment.kept === 0) return yield* invalid(stillSuggestion(payment.invoiceKey));
   if (payment.invoiceList === RECEIPTS)
     return yield* invalid(
       `That is the advance ${payment.invoiceKey} received; it is its own receipt. Nothing was made.`,
@@ -459,6 +463,9 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
   const fields = parseFields(receipt.fieldsJson);
   const invoice = yield* records.get(orgId, invoiceKey);
   if (invoice === undefined) return yield* invalid(`No entry ${invoiceKey}. Nothing changed.`);
+  // Neither side counts as money yet: setting one against the other would make it count.
+  const suggested = [receipt, invoice].find(isSuggestion);
+  if (suggested !== undefined) return yield* invalid(stillSuggestion(suggested.key));
   if (receipt.partyId === null)
     return yield* invalid(
       `${receipt.key} names no client, so it can't be set against an invoice. Nothing changed.`,
@@ -669,7 +676,7 @@ export const listReceipts = Effect.fn("KinReceipts.listReceipts")(function* (
       WHERE j.org_id = r.org_id AND j.entry_record_id = r.record_id AND j.recipe = 'receipt'
       ORDER BY j.created_at DESC LIMIT 1)
     WHERE r.org_id = ${orgId} AND r.register_id = ${RECEIPTS}
-      ${options.key === undefined ? sql`` : sql`AND r.key = ${options.key}`}
+      ${options.key === undefined ? sql`AND ${keptEntry(sql)}` : sql`AND r.key = ${options.key}`}
     ORDER BY r.date_at DESC, r.key DESC LIMIT ${options.limit ?? 100}`;
   return rows.map((row): KinReceipt => {
     const fields = parseFields(row.fieldsJson);

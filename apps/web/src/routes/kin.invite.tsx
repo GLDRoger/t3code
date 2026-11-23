@@ -13,8 +13,10 @@ import { useState } from "react";
 import { Button } from "../components/ui/button";
 import { StandalonePage, StandalonePageHeader } from "../components/ui/standalone-page";
 
+type JoinOutcome = "joined" | "spent" | "limit";
+
 /** The link is single use, so a reload or a second load must not spend it again. */
-let accepting: Promise<boolean> | null = null;
+let accepting: Promise<JoinOutcome> | null = null;
 
 function acceptInvite(secret: string) {
   accepting ??= fetch(KIN_INVITE_BROWSER_ACCEPT_ROUTE, {
@@ -23,17 +25,19 @@ function acceptInvite(secret: string) {
     credentials: "same-origin",
     body: JSON.stringify({ secret, label: "Browser" }),
   }).then(
-    (response) => response.ok,
-    () => false,
+    (response): JoinOutcome =>
+      response.ok ? "joined" : response.status === 409 ? "limit" : "spent",
+    (): JoinOutcome => "spent",
   );
   return accepting;
 }
 
-async function joinHere(secret: string): Promise<boolean> {
-  if (!(await acceptInvite(secret))) return false;
+async function joinHere(secret: string): Promise<InviteStep> {
+  const outcome = await acceptInvite(secret);
+  if (outcome !== "joined") return outcome;
   // A full load, so the connection starts with the new session and the link leaves history.
   window.location.replace("/kin");
-  return true;
+  return "accepted";
 }
 
 const decodeAppResult = Schema.decodeUnknownOption(KinInviteAppResult);
@@ -49,7 +53,7 @@ async function hostAppScheme(): Promise<string | null> {
   }
 }
 
-type InviteStep = "choose" | "accepted" | "spent";
+type InviteStep = "choose" | "accepted" | "spent" | "limit";
 
 export const Route = createFileRoute("/kin/invite")({
   beforeLoad: async (): Promise<{
@@ -62,7 +66,7 @@ export const Route = createFileRoute("/kin/invite")({
     if (kinJoinOffersApp(navigator.userAgent)) {
       return { step: "choose", appScheme: await hostAppScheme() };
     }
-    return { step: (await joinHere(secret)) ? "accepted" : "spent", appScheme: null };
+    return { step: await joinHere(secret), appScheme: null };
   },
   component: KinInviteView,
 });
@@ -76,6 +80,11 @@ function KinInviteView() {
     <StandalonePage>
       {step === "accepted" ? (
         <StandalonePageHeader title="Opening your chats" description="One moment." />
+      ) : step === "limit" ? (
+        <StandalonePageHeader
+          title="You already have 10 devices signed in"
+          description="Remove one you no longer use in Your devices, then make a new link for this one."
+        />
       ) : step === "spent" ? (
         <StandalonePageHeader
           title="This invite link no longer works"
@@ -109,7 +118,7 @@ function KinInviteView() {
               disabled={joining}
               onClick={async () => {
                 setJoining(true);
-                setStep((await joinHere(window.location.hash.slice(1))) ? "accepted" : "spent");
+                setStep(await joinHere(window.location.hash.slice(1)));
               }}
             >
               Continue in the browser

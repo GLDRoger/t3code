@@ -1,5 +1,4 @@
 import {
-  KIN_ATTENTION,
   kinAttention,
   kinNeedsYouBeside,
   kinTasksAttention,
@@ -26,6 +25,7 @@ import { useState } from "react";
 import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import { KinAttentionHandled, KinAttentionItem, kinAttentionNames } from "./KinAttention";
+import { KinWaitsForFolds } from "./KinWaitsFor";
 import { KinWorkSection } from "./KinWorkParts";
 import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
@@ -52,20 +52,20 @@ export interface KinNeedsYouGo {
  * late tasks, what clients owe past due, what an agent waits on you for, and your tasks today.
  * Null while `mine` is (still loading, or not asked for: then nothing is read).
  */
-export function useKinNeedsRows(
+function useKinNeedsRows(
   props: KinWorkTarget & { readonly names: KinWorkNames },
   mine: ReadonlyArray<KinRecord> | null,
 ) {
   const { environmentId, orgId, names } = props;
-  const enabled = mine !== null;
+  const asked = mine !== null;
   const now = new Date(useNowMinuteMs());
-  const money = useKinMoneySummary(props, { enabled });
-  const lists = useKinLists(props, { enabled });
+  const money = useKinMoneySummary(props, { enabled: asked });
+  const lists = useKinLists(props, { enabled: asked });
   const inbox = useKinInbox();
   const [expanded, setExpanded] = useState(false);
   // The first page until See all; then everything, the page standing in until it arrives.
-  const pagedRead = useKinAttention(props, enabled, true);
-  const fullRead = useKinAttention(props, enabled && expanded);
+  const pagedRead = useKinAttention(props, asked, true);
+  const fullRead = useKinAttention(props, asked && expanded);
   const attentionRead = expanded && fullRead !== null ? fullRead : pagedRead;
   const handler = useKinAttentionHandle(props);
   if (mine === null) return null;
@@ -78,15 +78,13 @@ export function useKinNeedsRows(
     inbox.state._tag === "ready" && inbox.state.environmentId === environmentId
       ? inbox.state
       : null;
+  const inboxView = ready === null ? null : selectKinInboxView(ready.inbox.value);
   const before = kinNeedsYou({
     mine,
     // Where the host keeps money from this viewer, nothing owed shows here either.
     money: money.state._tag === "ready" ? money.state.value : null,
     lists: kinListsOf(lists),
-    waiting:
-      ready === null
-        ? []
-        : selectKinInboxView(ready.inbox.value).waiting.filter((item) => item.orgId === orgId),
+    waiting: inboxView === null ? [] : inboxView.waiting.filter((item) => item.orgId === orgId),
     chats: ready?.inbox.value.chats ?? [],
     agentNames: kinDirectory(inbox.host).agentNames,
     names,
@@ -101,8 +99,16 @@ export function useKinNeedsRows(
   return {
     attention: split.rows,
     needs,
+    // What waits on someone else the viewer may see, to look at only: a co-owner's view of the owner's.
+    waitsFor: (inboxView?.waitsFor ?? []).flatMap((group) => {
+      const items = group.items.filter((item) => item.orgId === orgId);
+      return items.length === 0 ? [] : [{ ...group, items }];
+    }),
+    chats: ready?.inbox.value.chats ?? [],
+    inboxDirectory: kinDirectory(inbox.host),
     hidden: split.hidden,
     handled: attention.handled,
+    asides: attention.asides,
     handler,
     expanded,
     setExpanded,
@@ -130,7 +136,7 @@ export function KinNeedsYou(
     attention: read.attention,
     needs: read.needs,
     hidden: read.hidden,
-    handled: read.handled.length,
+    handled: read.handled.length + read.asides.length,
     expanded: read.expanded,
   });
   return (
@@ -145,18 +151,6 @@ export function KinNeedsYou(
       empty={pane.empty}
     />
   );
-}
-
-/** Over Tasks, the owner's and a co-owner's: what needs attention that "On me" doesn't hold. */
-export function KinTasksAttention(
-  props: KinWorkTarget &
-    KinNeedsYouGo &
-    NonNullable<ReturnType<typeof useKinNeedsRows>> & {
-      readonly total: number;
-      readonly more: boolean;
-    },
-) {
-  return <KinNeedsBlock {...props} title={KIN_ATTENTION.title} empty={null} />;
 }
 
 function KinNeedsBlock(
@@ -186,6 +180,7 @@ function KinNeedsBlock(
       void navigate({
         to: "/kin/$environmentId/$orgId/$chatId",
         params: { environmentId, orgId, chatId: to.chatId },
+        search: to.messageId === null ? {} : { message: to.messageId },
       });
   };
   // The rows come already cut to what shows (`kinTasksBlock`); the money row leads.
@@ -223,17 +218,13 @@ function KinNeedsBlock(
       </li>
     );
   };
+  const seeAll = !props.more ? undefined : (
+    <Button size="xs" variant="ghost" onClick={() => setExpanded(!expanded)}>
+      {expanded ? KIN_WORK_HOME.seeFewer : KIN_WORK_HOME.seeAll(total)}
+    </Button>
+  );
   return (
-    <KinWorkSection
-      title={props.title}
-      action={
-        !props.more ? undefined : (
-          <Button size="xs" variant="ghost" onClick={() => setExpanded(!expanded)}>
-            {expanded ? KIN_WORK_HOME.seeFewer : KIN_WORK_HOME.seeAll(total)}
-          </Button>
-        )
-      }
-    >
+    <KinWorkSection title={props.title} action={seeAll}>
       {total === 0 ? (
         props.empty === null ? null : (
           <p className="px-2 text-sm text-muted-foreground">{props.empty}</p>
@@ -254,7 +245,12 @@ function KinNeedsBlock(
           {shown.slice(lead).map(needRow)}
         </ul>
       )}
-      <KinAttentionHandled rows={props.handled} handler={handler} />
+      <KinWaitsForFolds
+        groups={props.waitsFor}
+        chats={props.chats}
+        directory={props.inboxDirectory}
+      />
+      <KinAttentionHandled rows={props.handled} asides={props.asides} handler={handler} />
       {handler.problem === null ? null : (
         <p role="alert" className="px-2 text-xs text-destructive-foreground">
           {handler.problem}

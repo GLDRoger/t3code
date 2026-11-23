@@ -1,3 +1,5 @@
+import { scanKinDocFences } from "./kinDocFences.ts";
+
 /**
  * How an agent's message is laid out, read from its own text so web, phone, the chat list and
  * pushes agree: a short reply stays a bubble; one with headings, a table or a run of items reads
@@ -59,6 +61,7 @@ export function kinPageSections(body: string): ReadonlyArray<KinPageSection> {
  * more items in lists, or is long and in several paragraphs; anything else is a bubble.
  */
 export function kinPageShape(body: string): KinPageShape {
+  if (scanKinDocFences(body).found.length > 0) return "page";
   let fenced = false;
   let items = 0;
   let paragraphs = 0;
@@ -81,6 +84,85 @@ export function kinPageShape(body: string): KinPageShape {
   }
   if (items >= 4) return "page";
   return body.length > 600 && paragraphs >= 3 ? "page" : "bubble";
+}
+
+/**
+ * Whether the text is cut into titled sections: a written heading, or two section labels. One
+ * "Today:" line is a label, as `kinPageShape` reads it, not a section.
+ */
+function kinHasSections(body: string): boolean {
+  let fenced = false;
+  let labels = 0;
+  for (const line of body.split("\n")) {
+    if (FENCE.test(line)) fenced = !fenced;
+    if (fenced || headingOf(line) === null) continue;
+    if (!LABEL_LINE.test(line) || ATX.test(line)) return true;
+    labels += 1;
+    if (labels >= 2) return true;
+  }
+  return false;
+}
+
+/** A brief's Money section, by the names an agent may give it. */
+export const KIN_MONEY_SECTION = { title: "Money", match: /^(money|cash)$/i } as const;
+
+/**
+ * `body` with `lines` as items at the end of its section named by `section.match`, else as a new
+ * `## <title>` section after its Needs you, else before its first section: Kin's own lines in a
+ * page an agent wrote, wherever it put that section.
+ */
+export function kinPageWithLines(
+  body: string,
+  section: { readonly title: string; readonly match: RegExp },
+  lines: ReadonlyArray<string>,
+): string {
+  if (lines.length === 0) return body;
+  const items = lines.map((line) => `- ${line}`).join("\n");
+  const rows = body.split("\n");
+  const headings: Array<{ readonly index: number; readonly title: string }> = [];
+  let fenced = false;
+  for (const [index, line] of rows.entries()) {
+    if (FENCE.test(line)) fenced = !fenced;
+    const title = fenced ? null : headingOf(line);
+    if (title !== null) headings.push({ index, title });
+  }
+  const endOf = (at: number) => {
+    let end = headings[at + 1]?.index ?? rows.length;
+    while (end > headings[at]!.index + 1 && rows[end - 1]!.trim() === "") end -= 1;
+    return end;
+  };
+  const own = headings.findIndex(({ title }) => section.match.test(title.trim()));
+  if (own >= 0) {
+    const end = endOf(own);
+    return [...rows.slice(0, end), items, ...rows.slice(end)].join("\n");
+  }
+  const needs = headings.findIndex(({ title }) =>
+    /^(needs you|needs your attention|for you)$/i.test(title.trim()),
+  );
+  const added = `## ${section.title}\n\n${items}`;
+  if (needs >= 0) {
+    const end = endOf(needs);
+    return [...rows.slice(0, end), "", added, ...rows.slice(end)].join("\n");
+  }
+  const first = headings[0]?.index ?? rows.length;
+  return [...rows.slice(0, first), added, "", ...rows.slice(first)].join("\n").trim();
+}
+
+/** Text a brief's page can be as written: titled sections, not one label over a line. */
+export const kinIsPage = (body: string) =>
+  kinHasSections(body) && kinPageSections(body).some(({ title }) => title !== null);
+
+/** How a message is drawn: a person's words and anything deleted are bubbles. */
+export function kinMessageShape(message: {
+  readonly author: { readonly _tag: string };
+  readonly status: string;
+  readonly body: string;
+  readonly form?: string | null | undefined;
+  readonly embeds?: ReadonlyArray<unknown> | undefined;
+}): KinPageShape {
+  if (message.status === "deleted" || message.author._tag === "human") return "bubble";
+  if ((message.embeds?.length ?? 0) > 0 || kinIsBrief(message.body, message.form)) return "page";
+  return kinPageShape(message.body);
 }
 
 /** A brief reads under a greeting only with sections; a check-in that came back as one line doesn't. */
@@ -111,6 +193,9 @@ const firstLine = (markdown: string) =>
  * one, else the first line that says something. Still markdown; callers make it plain.
  */
 export function kinPageGist(body: string): string {
+  const plain = kinPlainBody(body);
+  if (plain.trim() === "") return scanKinDocFences(body).found[0]?.block.info ?? "";
+  body = plain;
   const sections = kinPageSections(body);
   const needs = sections.find(
     (section) =>
@@ -121,4 +206,23 @@ export function kinPageGist(body: string): string {
     if (line !== undefined) return line;
   }
   return firstLine(body) ?? "";
+}
+
+const THREAD_LINK = /(?<!!)\[([^\]]*)\]\(\s*<?t3-thread:[^)]*\)/gi;
+const BARE_THREAD_LINK = /[^\S\n]*<?t3-thread:[^\s<>()]*[^\s<>().,;:!?'"]>?/gi;
+
+/** Kin has no thread screen, so a link to a T3 thread reads as its words and a bare one goes. */
+export const kinThreadLinksAsWords = (body: string) =>
+  body.replace(THREAD_LINK, "$1").replace(BARE_THREAD_LINK, "");
+
+export function kinPlainBody(body: string): string {
+  const { lines, found } = scanKinDocFences(body);
+  if (found.length === 0) return body;
+  let at = 0;
+  const text = found.flatMap(({ from, to }) => {
+    const part = lines.slice(at, from);
+    at = to + 1;
+    return part;
+  });
+  return [...text, ...lines.slice(at)].join("\n").trim();
 }

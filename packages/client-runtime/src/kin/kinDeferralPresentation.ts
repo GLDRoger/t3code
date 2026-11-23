@@ -1,5 +1,7 @@
 import { kinFailureText } from "./kinAnswers.ts";
 import {
+  KIN_ASKER_ONLY_REFUSAL,
+  type KinCardAsker,
   KinChatError,
   KinDeferralCard,
   type KinReminderCardAction,
@@ -162,11 +164,9 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
   },
 };
 
-const DECISION_ACTIONS = [
-  KIN_DEFERRAL_ACTIONS.start_now,
-  KIN_DEFERRAL_ACTIONS.monday,
-  KIN_DEFERRAL_ACTIONS.cancel,
-];
+// The host refuses Start now, Monday and Cancel until its owner-tap dispatcher lands, and Undo
+// once the card has moved past confirm, so a decision card offers no buttons yet.
+const DECISION_ACTIONS: ReadonlyArray<KinDeferralAction> = [];
 
 // Whole formatted strings only: Hermes leaves out `hour` and `minute` from `formatToParts`.
 const formatters = new Map<string, { date: Intl.DateTimeFormat; time: Intl.DateTimeFormat }>();
@@ -234,6 +234,14 @@ const clamp = (text: string, max: number) => {
 const decodeDeferral = Schema.decodeUnknownOption(KinDeferralCard);
 const isKinChatError = Schema.is(KinChatError);
 
+/** Who asked for a shared chat's own reminder or routine, under its title; null on any other. */
+export function kinAskedByLine(askedBy: KinCardAsker | undefined): string | null {
+  if (askedBy === undefined) return null;
+  return askedBy.left === true
+    ? "Asked by someone who has left."
+    : `Asked by ${clamp(askedBy.name, 80) || "someone"}.`;
+}
+
 type CardBody = Pick<KinDeferralCardView, "phase" | "lines" | "countdown" | "actions">;
 
 function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody {
@@ -249,7 +257,13 @@ function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody
     case undefined:
       return {
         phase: "confirmed",
-        lines: withText([`Set for ${formatKinDeferralTime(dueMs, timeZone)}. ${then[card.onDue]}`]),
+        lines: withText([
+          `Set for ${formatKinDeferralTime(dueMs, timeZone)}. ${
+            card.askedBy !== undefined && card.onDue === "remind"
+              ? "I'll remind this chat then."
+              : then[card.onDue]
+          }`,
+        ]),
         countdown: { to: dueMs, kind: "due" },
         // The host takes only Undo here until its owner-tap dispatcher lands for Change and Just remind me.
         actions: [KIN_DEFERRAL_ACTIONS.undo],
@@ -296,10 +310,12 @@ export function kinDeferralCardView(
   if (Option.isNone(decoded)) return null;
   const card = decoded.value;
   const title = clamp(card.title, 200) || (card.onDue === "remind" ? "Reminder" : "Scheduled work");
-  const body: CardBody =
+  const shown: CardBody =
     widget.closedAt === null
       ? cardBody(card, timeZone)
       : { phase: "closed", lines: ["Closed."], countdown: null, actions: [] };
+  const asked = kinAskedByLine(card.askedBy);
+  const body = asked === null ? shown : { ...shown, lines: [...shown.lines, asked] };
   // "Deferral" is Kin's word, not the owner's: they asked for a reminder or for work to wait.
   const kind = card.onDue === "remind" ? "Reminder" : "Scheduled";
   const eyebrow = body.phase === "asked" ? "Needs your decision" : kind;
@@ -360,6 +376,8 @@ export function kinActionFailureNotice(
     case "widget_changed":
       return { kind: "stale", text: KIN_STALE_CARD_TEXT };
     case "not_allowed":
+      if (cause.message === KIN_ASKER_ONLY_REFUSAL)
+        return { kind: "error", text: KIN_ASKER_ONLY_REFUSAL };
       return {
         kind: "error",
         text: "Kin didn't take that answer. Tell your agent in the chat instead.",

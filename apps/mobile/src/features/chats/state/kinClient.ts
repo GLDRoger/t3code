@@ -24,7 +24,10 @@ import { Atom, AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
+import { kinOutboxIdentity } from "@t3tools/client-runtime/kin/kinOutbox";
+
 import { clearKinCache, syncKinCacheIdentity, withKinCache, withKinCacheStream } from "./kinCache";
+import { syncKinOutboxIdentity } from "./kinOutboxRemoval";
 
 export type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 
@@ -45,7 +48,7 @@ export const kinCachedOrgsAtom = Atom.family((environmentId: EnvironmentId) =>
 );
 
 const dockCache = persistQuery(
-  Schema.Array(Schema.Literals(["chats", "tasks", "canvas", "money", "clients", "docs"])),
+  Schema.Array(Schema.Literals(["chats", "tasks", "money", "clients", "docs"])),
 );
 const DOCK_CACHE_KEY = "dock";
 
@@ -96,7 +99,9 @@ const kin = makeKinClient(connectionAtomRuntime, appAtomRegistry, {
     environmentId: EnvironmentId,
     result: KinOrgsListResult,
   ) {
-    yield* syncKinCacheIdentity(environmentId, result.me[0]?.personId ?? null);
+    const identity = kinOutboxIdentity(result) ?? null;
+    const changed = yield* syncKinCacheIdentity(environmentId, identity);
+    yield* Effect.promise(() => syncKinOutboxIdentity(environmentId, identity, changed));
     yield* withKinCache(orgsCache.save(environmentId, ORGS_CACHE_KEY, result));
     appAtomRegistry.refresh(kinCachedOrgsAtom(environmentId));
   }),
@@ -106,7 +111,10 @@ const kin = makeKinClient(connectionAtomRuntime, appAtomRegistry, {
 export const markKinHostKnown = kin.markKinHostKnown;
 export const retryKinWorkLive = kin.retryKinWorkLive;
 export const retryKinAccess = kin.retryAccess;
+export const refreshKinAccessMe = kin.refreshAccessMe;
 export const refreshKinAgents = kin.refreshKinAgents;
+export const refreshKinBriefs = kin.refreshKinBriefs;
+export const refreshKinHost = kin.refreshKinHost;
 
 const approvalRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:approval:read",
@@ -157,6 +165,10 @@ export const kinClient = {
   registerPush: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:register-push",
     tag: KIN_PUSH_WS_METHODS.registerDevice,
+  }),
+  unregisterPush: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:unregister-push",
+    tag: KIN_PUSH_WS_METHODS.unregisterDevice,
   }),
   /** Mounted while a chat is on screen: the host skips this device's pushes for it. */
   pushWatch: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {

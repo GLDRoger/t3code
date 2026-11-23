@@ -36,7 +36,7 @@ export function kinLiveOrPlain(
  * `line`: a line of what is owed, which no task moves. `screen`: Money itself, whose coming-up count
  * counts tasks too. `rows`: Money for a viewer who can't open Dates, so it draws the coming-up rows.
  */
-export type KinMoneyUse = "line" | "screen" | "rows";
+export type KinMoneyUse = "line" | "screen" | "rows" | "allClients";
 
 type Part<P extends KinMoneyPart> = NonNullable<KinMoneyLive[P]>;
 
@@ -54,15 +54,29 @@ export interface KinMoneyLiveRead<P extends KinMoneyPart> {
 export function makeKinScreenReads(kinClient: KinClient, registry: AtomRegistry.AtomRegistry) {
   const lists = ({ environmentId, orgId }: KinScreenTarget, archived: boolean) =>
     kinClient.workLists({ environmentId, input: archived ? { orgId, archived: true } : { orgId } });
-  const money = ({ environmentId, orgId }: KinScreenTarget, use: KinMoneyUse) =>
+  /** With `party`, for that client's page: its line alone, as the host lets this viewer see it. */
+  const money = (
+    { environmentId, orgId }: KinScreenTarget,
+    use: KinMoneyUse,
+    party?: KinRecordKey,
+  ) =>
     use === "line"
-      ? kinClient.workOwed({ environmentId, input: { orgId, upcomingRows: false } })
+      ? kinClient.workOwed({
+          environmentId,
+          input: { orgId, upcomingRows: false, ...(party === undefined ? {} : { party }) },
+        })
       : kinClient.workMoney({
           environmentId,
-          input: use === "rows" ? { orgId } : { orgId, upcomingRows: false },
+          input:
+            use === "rows"
+              ? { orgId }
+              : use === "allClients"
+                ? { orgId, upcomingRows: false, allClients: true }
+                : { orgId, upcomingRows: false },
         });
   const refreshMoney = (target: KinScreenTarget) => {
-    for (const use of ["line", "screen", "rows"] as const) registry.refresh(money(target, use));
+    for (const use of ["line", "screen", "rows", "allClients"] as const)
+      registry.refresh(money(target, use));
   };
   const refreshLists = (target: KinScreenTarget) => {
     registry.refresh(lists(target, false));
@@ -138,10 +152,15 @@ export function makeKinScreenReads(kinClient: KinClient, registry: AtomRegistry.
     streamed: boolean,
     paged = false,
     scope?: KinAttentionScope,
-  ) =>
-    streamed
-      ? kinClient.attentionLive(attentionInput(target, paged, scope))
-      : kinClient.attention(attentionInput(target, paged, scope));
+  ) => {
+    const asked = attentionInput(target, paged, scope);
+    if (!streamed) return kinClient.attention(asked);
+    // The whole list also carries Tasks' count, for the Tasks badge (`useKinTasksNeedsYou`).
+    const whole = !paged && scope === undefined;
+    return kinClient.attentionLive(
+      whole ? { ...asked, input: { ...asked.input, tasksNeedsYou: true } } : asked,
+    );
+  };
   const attentionStreamed = ({ environmentId, orgId }: KinScreenTarget) =>
     kinClient.attentionStreamed({ environmentId, input: { orgId } });
   /** Facts answered on this device, hidden until the live read says where they stand now. */
@@ -222,3 +241,5 @@ export function kinAskAboutAgent<
     kinWorkAgent(leads, "tasks")
   );
 }
+
+export type KinScreenReads = ReturnType<typeof makeKinScreenReads>;

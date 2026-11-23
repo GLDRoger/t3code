@@ -1275,6 +1275,8 @@ describe("KinActionExecutor", () => {
     const opaqueImports = new Map([
       // Inside the speech worker's source text, which a separate Node process runs.
       ["speech/native.ts", ["import(moduleUrl)"]],
+      // Inside the hostile test page's text, which only a sealed browser page runs.
+      ["kin/visualSeal.testkit.ts", ['import("${http}/dynamic-import")']],
     ]);
     const unfollowable: Array<string> = [];
     const imports = (file: string) => {
@@ -1478,18 +1480,85 @@ describe("KinActionExecutor", () => {
     // nothing, since no shared context holds it (the production layer test checks the output).
     assert.notInclude(source("kin/KinServer.ts"), "KinActionExecutor");
 
-    // Leads are the owner's: the `kin lead` CLI, RPCs that check the caller owns the lead, and reads
-    // of only what's the caller's (`profiles`, `contacts`, also by the refresh stream). Nothing else
-    // the server runs (MCP, agent toolkits, routes, schedules) reaches this module, and no RPC
-    // reaches what the CLI does unchecked.
+    // Leads are the owner's: the `kin lead` CLI, RPCs that check the caller owns the lead, reads
+    // of only what's the caller's (`profiles`, `contacts`, also by the refresh stream), and the
+    // owner's own tap on a route card. Nothing else the server runs (MCP, agent toolkits, HTTP
+    // routes, schedules) reaches this module, and no RPC reaches what the CLI does unchecked.
     assert.deepStrictEqual(importers("kin/lead/KinLeadProvision.ts"), [
       "kin/chat/refreshes.ts",
       "kin/chat/rpcHandlers.ts",
       "kin/cli/lead.ts",
       "kin/lead/agentPage.ts",
       "kin/lead/agentUpdate.ts",
+      "kin/lead/routeCard.ts",
       "kin/people/rpcHandlers.ts",
+      "kin/recommend/card.ts",
     ]);
+    // Closing a person's chat with a lead only takes writing away. It runs inside an owner-checked
+    // revoke or team-agent switch, the owner's own co-owner-to-member change, and only the
+    // return of someone removed as a co-owner and made a member while away.
+    assert.deepStrictEqual(importers("kin/lead/directClose.ts"), [
+      "kin/lead/KinLeadProvision.ts",
+      "kin/people/KinPeople.ts",
+    ]);
+    const people = source("kin/people/KinPeople.ts");
+    assert.lengthOf(people.match(/yield\* closeUngranted\(/g) ?? [], 2);
+    assert.match(
+      people,
+      /if \(!isOwnerHimself\(identity\.owner, caller\.personId\)\) return yield\* ownerOnly;[\s\S]*if \(before === "co_owner" && input\.access === "member"\)\s*yield\* closeUngranted\(/,
+    );
+    assert.match(
+      people,
+      /const bringBack = Effect\.fn\("KinPeople\.bringBack"\)[\s\S]*KinPeople\.backChats[\s\S]*if \(gone\?\.was === "co_owner" && gone\.kept === "member"\)\s*yield\* closeUngranted\([\s\S]*const deviceLive =/,
+    );
+    // A route card grants only on a tap, as the owner-level person who tapped. `kin_hand_off`
+    // imports this file to draw the card and cannot reach the grant.
+    const routeCard = source("kin/lead/routeCard.ts");
+    assert.strictEqual(routeCard.match(/\bLeadProvision\.\w+/g)?.join(), "LeadProvision.allow");
+    assert.match(
+      routeCard,
+      /if \(!\(yield\* ownerLevel\(orgId, tap\.personId\)\)\)[\s\S]*LeadProvision\.allow\(\{\s*editor: \{ _tag: "person", personId: tap\.personId \}/,
+    );
+    assert.notMatch(source("kin/lead/Handoff.ts"), /\brunRoute\b/);
+    // A suggestion grants or resumes only on its own sealed Do it, after the exact-owner check, as
+    // the owner who tapped: `make` is the one place that changes anything, called only here, after
+    // Not now has returned. The hourly pass that draws the card reaches neither the module nor the tap.
+    const recommendCard = source("kin/recommend/card.ts");
+    assert.strictEqual(
+      recommendCard.match(/\bLeadProvision\.\w+/g)?.join(),
+      "LeadProvision.allow,LeadProvision.setPaused",
+    );
+    assert.match(
+      recommendCard,
+      /LeadProvision\.allow\(\{\s*editor: \{ _tag: "person", personId \}[\s\S]*LeadProvision\.setPaused\(\{\s*by: \{ _tag: "person", personId \}/,
+    );
+    // The daily limit and a connection's pause change the same way, in `make` as the owner who
+    // tapped: one call each, through the method their own Settings place calls.
+    assert.strictEqual(
+      recommendCard.match(/\(yield\* (?:KinBudget|KinConnections)\)\.\w+/g)?.join(),
+      "(yield* KinBudget).set,(yield* KinConnections).update",
+    );
+    assert.lengthOf(recommendCard.match(/\bKin(?:Budget|Connections)\b(?!\.ts)/g) ?? [], 4);
+    assert.match(
+      recommendCard,
+      /const make = [\s\S]*const people = \[\{ _tag: "person" as const, orgId, personId \}\];[\s\S]*\(yield\* KinBudget\)\.set\(people, \{[\s\S]*\(yield\* KinConnections\)\.update\(people, \{/,
+    );
+    // The rules only read: the budget module's one constant and the connections' row readers.
+    const recommendRules = source("kin/recommend/rules.ts");
+    assert.match(recommendRules, /import \{ USUAL_LIMITS \} from "\.\.\/lead\/KinBudget\.ts";/);
+    assert.lengthOf(recommendRules.match(/from "\.\.\/lead\/KinBudget\.ts"/g) ?? [], 1);
+    assert.notMatch(recommendRules, /yield\* KinBudget\b/);
+    assert.match(
+      recommendRules,
+      /import \{ callable, pausedRefusal, toolsOf \} from "\.\.\/connections\/ConnectionRows\.ts";/,
+    );
+    assert.notMatch(recommendRules, /ConnectionsService\.ts|yield\* KinConnections\b/);
+    assert.lengthOf(recommendCard.match(/(?<![.\w])make\(/g) ?? [], 1);
+    assert.match(
+      recommendCard,
+      /yield\* onlyOwner\(orgId, tap\.personId\);[\s\S]*if \(plan\.answer === "not_now"\) \{[\s\S]*\}\s*const text = yield\* make\(orgId, tap\.personId, plan\.change\)/,
+    );
+    assert.notMatch(source("kin/recommend/KinRecommend.ts"), /KinLeadProvision|\brunRecommend\b/);
     // An agent's page reads and retires as its checked owner; a turn's model change is the
     // owner's or a co-owner's own words, saved with them as the editor (`updateAgent`).
     assert.match(
@@ -1508,8 +1577,17 @@ describe("KinActionExecutor", () => {
     );
     assert.notMatch(
       source("kin/chat/refreshes.ts"),
-      /\bLeadProvision\.(?!profiles\b|contacts\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!profiles\b|contacts\b|messageable\b|ts\b)\w+/,
     );
+    // `messageable` only reads the caller's own list of agents they may message: one SELECT,
+    // scoped to their person row, that writes nothing and opens no chat.
+    const messageable = /export const messageable = [\s\S]*?\n\}\);/.exec(
+      source("kin/lead/KinLeadProvision.ts"),
+    )?.[0];
+    assert.isDefined(messageable);
+    assert.match(messageable!, /me\.person_id = \$\{person\.personId\}/);
+    assert.match(messageable!, /WHERE l\.org_id = \$\{person\.orgId\}/);
+    assert.notMatch(messageable!, /\b(INSERT|UPDATE|DELETE)\b|createDirect|\bchats\./);
     assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);
     assert.deepStrictEqual(importers("kin/chat/rpcHandlers.ts"), [
       "kin/people/rpcHandlers.ts",
@@ -1517,13 +1595,13 @@ describe("KinActionExecutor", () => {
     ]);
     assert.notMatch(
       source("kin/chat/rpcHandlers.ts"),
-      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|setPaused\b|agentDefaults\b|setAgentDefaults\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|teamAgent\b|KinLeadProvisionError\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|setPaused\b|agentDefaults\b|setAgentDefaults\b|profiles\b|contacts\b|messageable\b|access\b|allow\b|disallow\b|reachList\b|reachSet\b|teamAgent\b|KinLeadProvisionError\b|ts\b)\w+/,
     );
     // The refresh stream reads only the caller's own lead list to tell them it moved.
     assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);
     assert.notMatch(
       source("kin/chat/refreshes.ts"),
-      /\bLeadProvision\.(?!profiles\b|contacts\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!profiles\b|contacts\b|messageable\b|ts\b)\w+/,
     );
     assert.deepStrictEqual(importers("kin/cli/lead.ts"), ["binCli.ts"]);
     const served = new Set<string>();

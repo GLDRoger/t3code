@@ -2,9 +2,10 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_INVOICES,
-  KIN_RECEIPT_MODES,
   KIN_RECEIPTS,
   kinReceiptModeLabel,
+  kinReceiptModes,
+  kinReceiptReferencePlaceholder,
   kinAdvanceDraft,
   kinAdvanceInput,
   kinBase64Bytes,
@@ -70,8 +71,10 @@ import {
   KinWorkTextField,
 } from "./components/KinWorkPieces";
 import { KinLinesFields } from "./KinMoneyAnswers";
+import type { KinMakeStep } from "./kinMakeStep";
 import { kinClient } from "./state/kinClient";
 import {
+  useKinCompanyCountry,
   useKinHomeCurrency,
   useKinMoneyActions,
   useKinReceipts,
@@ -141,8 +144,12 @@ export function KinInvoiceActions(
     setReading(false);
     Dialog.confirm({
       title: KIN_INVOICES.issueTitle,
-      message:
+      message: [
+        invoice.issueTotal,
         next === null ? KIN_INVOICES.issueDetail(invoice.prefix) : KIN_INVOICES.issueNumber(next),
+      ]
+        .filter((line) => line !== null)
+        .join("\n"),
       confirmText: KIN_INVOICES.issue,
       onConfirm: () => void actions.issue(itemKey),
     });
@@ -260,6 +267,11 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
           </Text>
         </View>
       )}
+      {invoice.bank === null ? null : (
+        <Text textRole="footnote" className="w-full text-foreground-muted">
+          {invoice.bank}
+        </Text>
+      )}
     </View>
   );
 }
@@ -293,6 +305,7 @@ export function KinInvoicePayments(
             payment.tds ? KIN_INVOICES.tdsDeducted : null,
             payment.when,
             payment.note,
+            payment.source,
             number === null ? null : `Receipt ${number}`,
             payment.voided ? KIN_INVOICES.takenBack : null,
           ]
@@ -458,16 +471,6 @@ const targetOf = (params: { readonly environmentId: string; readonly orgId: stri
   const orgId = Option.getOrNull(decodeOrgId(params.orgId));
   return environmentId === null || orgId === null ? null : { environmentId, orgId };
 };
-
-/** What Make invoice or Make its PDF makes, and for whom: a step of the entry's sheet. */
-export interface KinMakeStep {
-  /** The list whose templates make it. */
-  readonly list: string;
-  /** The entry's currency: every line is in it. */
-  readonly currency: string;
-  /** The invoice's client, to edit when a detail of theirs is missing. */
-  readonly party: { readonly key: string; readonly title: string } | null;
-}
 
 /**
  * Pick a template, see the PDF as it would be made, then file it: the entry's sheet turns into
@@ -796,6 +799,7 @@ function ReceiptForm(props: KinWorkTarget) {
   const actions = useKinMoneyActions(props);
   // A plain number is in the home currency; a typed symbol or code still names its own.
   const home = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
+  const country = useKinCompanyCountry(props);
   const now = new Date(useNowMinuteMs());
   const today = kinWorkDayOf(now);
   const [draft, setDraft] = useState<KinAdvanceDraft>(() => kinAdvanceDraft(today));
@@ -883,7 +887,6 @@ function ReceiptForm(props: KinWorkTarget) {
         label={KIN_RECEIPTS.amount}
         value={draft.amount}
         onChangeText={(amount) => setDraft({ ...draft, amount })}
-        placeholder={KIN_RECEIPTS.amountPlaceholder}
         keyboard="numbers"
         autoFocus
       />
@@ -891,7 +894,6 @@ function ReceiptForm(props: KinWorkTarget) {
         label={KIN_RECEIPTS.towards}
         value={draft.towards}
         onChangeText={(towards) => setDraft({ ...draft, towards })}
-        placeholder={KIN_RECEIPTS.towardsPlaceholder}
         maxLength={300}
       />
       <ListSection>
@@ -901,7 +903,7 @@ function ReceiptForm(props: KinWorkTarget) {
           accessibilityLabel={`${KIN_RECEIPTS.mode}: ${kinReceiptModeLabel(draft.mode)}. Change`}
           actions={[
             { id: "", title: KIN_RECEIPTS.noMode, state: draft.mode === "" ? "on" : "off" },
-            ...KIN_RECEIPT_MODES.map((one) => ({
+            ...kinReceiptModes(country).map((one) => ({
               id: one.value,
               title: one.label,
               state: one.value === draft.mode ? ("on" as const) : ("off" as const),
@@ -918,7 +920,7 @@ function ReceiptForm(props: KinWorkTarget) {
         label={KIN_RECEIPTS.reference}
         value={draft.reference}
         onChangeText={(reference) => setDraft({ ...draft, reference })}
-        placeholder={KIN_RECEIPTS.referencePlaceholder}
+        placeholder={kinReceiptReferencePlaceholder(country)}
         maxLength={120}
       />
     </KinWorkFrame>
@@ -1003,7 +1005,7 @@ function ApplyReceipt(
         <KinWorkLoading label="Loading invoices" />
       ) : invoices === null ? (
         <KinLoadFailed
-          title="Couldn't load invoices"
+          title={KIN_INVOICES.loadFailed}
           cause={held?.cause}
           onRetry={() => setAttempt((count) => count + 1)}
         />

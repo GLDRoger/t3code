@@ -153,12 +153,18 @@ export const withoutAsked = (text: string, questions: ReadonlyArray<string>) => 
   const parts = text.split(SENTENCE_BREAK);
   const kept: Array<string> = [];
   let dropped = false;
+  // The widest break since the last kept sentence: a dropped one never joins two lines.
+  let gap = "";
   for (let index = 0; index < parts.length; index += 2) {
     const sentence = parts[index]!;
+    const before = parts[index - 1] ?? "";
+    if (before.split("\n").length >= gap.split("\n").length) gap = before;
     if (wanted.has(comparable(sentence)) || earlier.some((words) => restates(sentence, words)))
       dropped = true;
-    else if (sentence.trim() !== "")
-      kept.push(`${kept.length === 0 ? "" : (parts[index - 1] ?? "")}${sentence}`);
+    else if (sentence.trim() !== "") {
+      kept.push(`${kept.length === 0 ? "" : gap}${sentence}`);
+      gap = "";
+    }
   }
   return dropped ? kept.join("").trim() : text;
 };
@@ -222,8 +228,10 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)memory_\w+$/, "Making a note"],
   [/(?:^|__|\.)kin_defer$/, "Setting a reminder"],
   [/(?:^|__|\.)kin_leads$/, "Checking who handles this"],
+  [/(?:^|__|\.)kin_computer$/, "Checking Kin's computer"],
   [/(?:^|__|\.)people_read$/, "Checking who's on the team"],
   [/(?:^|__|\.)people_update$/, "Updating a profile"],
+  [/(?:^|__|\.)away_set$/, "Noting when you're away"],
   [/(?:^|__|\.)kin_hand_off$/, "Passing this on"],
   [/(?:^|__|\.)team_(?:open|say)$/, "Talking it over with the team"],
   [/(?:^|__|\.)kin_take_private$/, "Answering you directly"],
@@ -234,12 +242,15 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)pulse_nudge$/, "Nudging a teammate"],
   [/(?:^|__|\.)kin_ask$/, "Writing a question"],
   [/(?:^|__|\.)kin_ask_close$/, "Closing a question"],
+  [/(?:^|__|\.)kin_ask_person$/, "Asking a teammate"],
   [/(?:^|__|\.)agent_update$/, "Updating an agent"],
   [/(?:^|__|\.)kin_chart$/, "Drawing a chart"],
   [/(?:^|__|\.)kin_visual$/, "Putting a visual together"],
+  [/(?:^|__|\.)kin_picture$/, "Making a picture"],
   [/(?:^|__|\.)kin_schedule$/, "Setting up a schedule"],
   [/(?:^|__|\.)kin_cancel$/, "Cancelling it"],
   [/(?:^|__|\.)kin_github_review$/, "Reviewing a pull request"],
+  [/(?:^|__|\.)kin_github_review_ask$/, "Starting a pull request review"],
   [/(?:^|__|\.)kin_github_link$/, "Linking GitHub to Work"],
   [/(?:^|__|\.)kin_github_watch$/, "Checking which repos Kin watches"],
   [/(?:^|__|\.)kin_github_\w+$/, "Checking GitHub"],

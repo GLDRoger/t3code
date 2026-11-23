@@ -1,3 +1,4 @@
+import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import {
   KIN_AWAY,
   kinAwayDefault,
@@ -16,7 +17,7 @@ import type {
   KinWorkPrincipal,
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
-import { useId, useState } from "react";
+import { useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
@@ -41,25 +42,27 @@ import {
 import { toastManager } from "../components/ui/toast";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
+import { useKinFormOpen } from "./kinOverlayParts";
+import { KinSettingsField, KinSettingsFormDialog } from "./settings/KinSettingsControls";
+import { KinSettingsRow } from "./settings/KinSettingsLayout";
 import { useKinWorkDirectory } from "./useKinWork";
 
-/**
- * Away until a day, beside working hours: who is away reads it, whoever may edit the profile sets
- * it or says they're back.
- */
-export function KinAwayField(props: {
+/** Away as a profile row: whoever may edit the profile opens it to set a day or say they're back. */
+export function KinAwayRow(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly profile: KinPersonProfile;
   readonly mine: boolean;
   readonly mayEdit: boolean;
+  /** The settings search id that lands on this row. */
+  readonly searchId?: string;
 }) {
   const { profile } = props;
   const update = useAtomCommand(kinClient.profileUpdate, { reportFailure: false });
-  const [picking, setPicking] = useState(false);
+  const [picking, setPicking] = useKinFormOpen();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const line = kinAwayLine(profile, { mine: props.mine });
+  const line = kinAwayLine(profile, { mine: props.mine, short: true });
   if (line === null && !props.mayEdit) return null;
   const save = async (awayUntil: string | null) => {
     setBusy(true);
@@ -69,116 +72,88 @@ export function KinAwayField(props: {
       input: { orgId: props.orgId, personId: profile.personId, awayUntil },
     });
     setBusy(false);
-    if (AsyncResult.isSuccess(outcome)) return true;
+    if (AsyncResult.isSuccess(outcome)) return setPicking(false);
     setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_AWAY.failed));
-    return false;
+  };
+  const close = () => {
+    setProblem(null);
+    setPicking(false);
   };
   return (
-    <section className="flex flex-col gap-1">
-      <h3 className="text-xs font-medium text-muted-foreground">{KIN_AWAY.label}</h3>
-      {line === null ? null : <p className="text-sm text-foreground">{line}</p>}
-      {props.mayEdit ? (
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => setPicking(true)}>
-            {line === null ? KIN_AWAY.set : KIN_AWAY.change}
-          </Button>
-          {line === null ? null : (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              aria-busy={busy}
-              onClick={() => void save(null)}
-            >
-              {KIN_AWAY.back}
-            </Button>
-          )}
-        </div>
-      ) : null}
-      {problem === null || picking ? null : (
-        <p role="alert" className="text-xs text-destructive-foreground">
-          {problem}
-        </p>
-      )}
+    <>
+      <KinSettingsRow
+        {...(props.searchId === undefined ? {} : { searchId: props.searchId })}
+        title={KIN_AWAY.label}
+        detail={line ?? KIN_AWAY.notAway}
+        {...(props.mayEdit
+          ? {
+              openLabel: `${KIN_AWAY.label}: ${line ?? KIN_AWAY.notAway}`,
+              onOpen: () => setPicking(true),
+            }
+          : {})}
+      />
       {picking ? (
-        <KinAwayDialog
+        <KinAwayForm
           profile={profile}
           mine={props.mine}
           busy={busy}
           problem={problem}
-          onSave={async (day) => {
-            if (await save(day)) setPicking(false);
-          }}
-          onClose={() => {
-            setProblem(null);
-            setPicking(false);
-          }}
+          onSave={(day) => void save(day)}
+          onBack={line === null ? null : () => void save(null)}
+          onClose={close}
         />
       ) : null}
-    </section>
+    </>
   );
 }
 
-function KinAwayDialog(props: {
+function KinAwayForm(props: {
   readonly profile: KinPersonProfile;
   readonly mine: boolean;
   readonly busy: boolean;
   readonly problem: string | null;
-  readonly onSave: (day: string) => Promise<void>;
+  readonly onSave: (day: string) => void;
+  /** Null while they aren't away. */
+  readonly onBack: (() => void) | null;
   readonly onClose: () => void;
 }) {
   const { profile } = props;
   const [day, setDay] = useState(
-    () => profile.awayUntil ?? kinAwayDefault(new Date(), profile.timeZone),
+    () => profile.awayUntil ?? kinAwayDefault(kinNow(), profile.timeZone),
   );
   const [problem, setProblem] = useState<string | null>(null);
-  const dayId = useId();
-  const shown = problem ?? props.problem;
   return (
-    <Dialog open onOpenChange={(open) => !open && !props.busy && props.onClose()}>
-      <DialogPopup className="max-w-md">
-        <form
-          className="contents"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const wrong = kinAwayProblem(day, new Date(), profile.timeZone);
-            setProblem(wrong);
-            if (wrong === null) void props.onSave(day);
-          }}
-        >
-          <DialogHeader>
-            <DialogTitle>{KIN_AWAY.title}</DialogTitle>
-            <DialogDescription>
-              {props.mine ? KIN_AWAY.mineHint : KIN_AWAY.theirHint(profile.displayName)}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogPanel>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={dayId}>{KIN_AWAY.dayLabel}</Label>
-              <Input
-                id={dayId}
-                type="date"
-                value={day}
-                onChange={(event) => setDay(event.currentTarget.value)}
-              />
-              {shown === null ? null : (
-                <Alert variant="error">
-                  <AlertDescription>{shown}</AlertDescription>
-                </Alert>
-              )}
-            </div>
-          </DialogPanel>
-          <DialogFooter>
-            <Button type="button" variant="outline" disabled={props.busy} onClick={props.onClose}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={props.busy} aria-busy={props.busy}>
-              {props.busy ? KIN_AWAY.saving : KIN_AWAY.save}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogPopup>
-    </Dialog>
+    <KinSettingsFormDialog
+      title={KIN_AWAY.title}
+      description={props.mine ? KIN_AWAY.mineHint : KIN_AWAY.theirHint(profile.displayName)}
+      submitLabel={KIN_AWAY.setSubmit}
+      busy={props.busy}
+      problem={problem ?? props.problem}
+      secondary={
+        props.onBack === null ? undefined : (
+          <Button type="button" variant="outline" disabled={props.busy} onClick={props.onBack}>
+            {KIN_AWAY.back}
+          </Button>
+        )
+      }
+      onSubmit={() => {
+        const wrong = kinAwayProblem(day, kinNow(), profile.timeZone);
+        setProblem(wrong);
+        if (wrong === null) props.onSave(day);
+      }}
+      onClose={props.onClose}
+    >
+      <KinSettingsField label={KIN_AWAY.dayLabel}>
+        {(ids) => (
+          <Input
+            id={ids.control}
+            type="date"
+            value={day}
+            onChange={(event) => setDay(event.currentTarget.value)}
+          />
+        )}
+      </KinSettingsField>
+    </KinSettingsFormDialog>
   );
 }
 
@@ -213,14 +188,16 @@ export function KinHandOverButton(props: {
   /** Null for the viewer's own tasks. */
   readonly fromName: string | null;
   readonly label?: string;
+  /** `xs` on a section's title line. */
+  readonly size?: "xs" | "sm";
   readonly onDone?: (moved: number) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useKinFormOpen();
   const { counted, ask } = useKinHandOverCount(props.environmentId, props.orgId);
   return (
     <>
       <Button
-        size="sm"
+        size={props.size ?? "sm"}
         variant="outline"
         className="self-start"
         onClick={() => {

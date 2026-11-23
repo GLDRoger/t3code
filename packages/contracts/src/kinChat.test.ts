@@ -2,9 +2,11 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import * as Kin from "./kinChat.ts";
+import { KIN_FIGURE_SCHEME, KIN_MESSAGE_PAGES_MAX } from "./kinEmbed.ts";
 import { KinCheckRun } from "./kinApprovals.ts";
 import { KinListUpdateInput } from "./kinFinance.ts";
 import { KinPushRegisterDeviceInput } from "./kinPush.ts";
+import { IsoDateTime, KinText, KinTrimmedText } from "./baseSchemas.ts";
 
 const at = "2026-11-07T00:00:00.000Z";
 const person = {
@@ -77,6 +79,18 @@ const message = {
   createdAt: at,
   editedAt: null,
 };
+const decodeMessage = Schema.decodeUnknownSync(Kin.KinMessage);
+const visualEmbed = {
+  _tag: "visual",
+  title: "This week",
+  attachmentId: "figure-1",
+  height: 90,
+  heights: [
+    [390, 95],
+    [1280, 90],
+  ],
+  sensitive: true,
+};
 const task = {
   taskId: "task-1",
   environmentId: "env-1",
@@ -117,6 +131,14 @@ const waiting = {
   resolvedAt: null,
   resolution: null,
 };
+/** A row a co-owner sees read-only: it waits for the owner. */
+const waitsForRow = {
+  ...waiting,
+  widgetId: "widget-1",
+  card: "draft",
+  excerpt: "Workshop, 6 hours at the day rate",
+  waitsFor: { personId: "person-2", name: "Rhea" },
+};
 const summary = { ...chat, members: [member], lastMessage: message, unread: 1 };
 const reaction = {
   orgId: "org-1",
@@ -141,6 +163,19 @@ const choiceOptions = [
   { optionId: "no", label: "Wait", kind: "no" },
 ];
 const choice = { question: "Ship today?", detail: null, options: choiceOptions, answer: null };
+const decidedCard = {
+  ...choice,
+  replaced: true,
+  replacedBy: { widgetId: "widget-2", decided: { name: "Meera", label: "Cancel" } },
+  answer: {
+    optionId: "yes",
+    personId: "person-1",
+    via: "tap",
+    emoji: null,
+    answeredAt: "2026-11-07T00:00:00.000Z",
+  },
+  decidedBy: { personId: "person-1", name: "Rhea" },
+};
 const send = { chatId: "chat-1", clientMessageId: "client-1", body: "Hello" };
 const sendCard = {
   service: "Gmail",
@@ -158,6 +193,14 @@ type SchemaName = {
   [K in keyof typeof Kin]: (typeof Kin)[K] extends Schema.Top ? K : never;
 }[keyof typeof Kin];
 
+const turnChange = {
+  key: "W-25",
+  title: "Invented pricing page",
+  what: "given to Finance",
+  change: { agentId: "agent-1", seq: 12 },
+  undoable: true,
+  undone: false,
+};
 const samples = {
   KinText: ["", "Hello\nworld", "  Markdown  "],
   KinTrimmedText: ["Kin", "Owner name"],
@@ -173,8 +216,14 @@ const samples = {
     { kind: "sent_by", agentId: "agent-1" },
     { kind: "reply_from", agentId: "agent-1" },
   ],
+  KinMessageOrigin: [{ agentId: "agent-1", chatId: "chat-1", messageId: "message-1" }],
   KinMessageWhen: [
     { at: "2026-11-17T04:30:00.000Z", zone: "Asia/Kolkata", text: "10:00 their time" },
+  ],
+  KinTurnChange: [turnChange],
+  KinTurnChanges: [
+    { count: 0, items: [], more: 0 },
+    { count: 7, items: Array.from({ length: 5 }, () => turnChange), more: 2 },
   ],
   KinWidgetId: ["widget-1"],
   KinWaitingId: ["waiting-1"],
@@ -191,9 +240,11 @@ const samples = {
   KinReactionEmoji: Kin.KinReactionEmoji.literals,
   KinReaction: [reaction, { ...reaction, emoji: "❤️", removedAt: at }],
   KinChoiceOption: [...choiceOptions, { optionId: "later", label: "Later" }],
+  KinSendTry: [{ tryId: "ask-1", at }],
   KinSendCard: [
     sendCard,
     { ...sendCard, outcome: { state: "failed", reason: "Google refused.", at } },
+    { ...sendCard, mayHaveGone: { tryId: "ask-1", at } },
   ],
   KinChoiceCardState: [
     choice,
@@ -209,6 +260,15 @@ const samples = {
         answeredAt: at,
       },
     },
+    {
+      ...choice,
+      outcome: {
+        title: "Undone",
+        text: "Put W-3 back as it was.",
+        undone: { personId: "person-1", name: "Rhea", at },
+      },
+    },
+    decidedCard,
   ],
   KinPresenceState: Kin.KinPresenceState.literals,
   KinPresence: [presence, { ...presence, wakeupId: null, state: "seen", label: null }],
@@ -221,9 +281,17 @@ const samples = {
   KinAgent: [agent],
   KinChat: [chat],
   KinPrincipal: principals,
-  KinChatMember: [member],
+  KinChatMember: [member, { ...member, pinnedAt: at }],
   KinAuthor: authors,
   KinMessage: [
+    {
+      ...message,
+      body: `![This week](${KIN_FIGURE_SCHEME}f_test000001)`,
+      embeds: Array.from({ length: KIN_MESSAGE_PAGES_MAX }, (_, i) => ({
+        ...visualEmbed,
+        attachmentId: `figure-${i}`,
+      })),
+    },
     ...authors.map((author) => ({ ...message, author })),
     { ...message, changeSeq: 2, clientMessageId: "pending" },
   ],
@@ -232,7 +300,8 @@ const samples = {
     { ...widget, widgetClass: "generated", source: { threadId: "thread-1", itemId: "item-1" } },
     { ...widget, widgetClass: "live", feed: { kind: "build", key: "build-1" } },
   ],
-  KinTaskCardState: [task],
+  KinTaskCardState: [task, { ...task, status: "failed", failure: "model_not_offered" }],
+  KinTaskFailure: ["model_not_offered", "signed_out", "unreachable", "usage_limit"],
   KinWaitingAsk: [
     {
       agent: "Finance",
@@ -246,8 +315,14 @@ const samples = {
   KinWaitingItem: [
     waiting,
     { ...waiting, messageId: null, widgetId: "widget-1", resolvedAt: at, resolution: "superseded" },
+    waitsForRow,
   ],
-  KinChatSummary: [summary, { ...summary, lastMessage: null }],
+  KinChatPreview: [{ gist: "Approve the venue deposit", brief: true }],
+  KinChatSummary: [
+    summary,
+    { ...summary, lastMessage: null },
+    { ...summary, lastPreview: { gist: "Approve the venue deposit", brief: false } },
+  ],
   KinChatListEvent: [
     { _tag: "snapshot", chats: [summary], waiting: [waiting] },
     { _tag: "chat", chat: summary },
@@ -308,7 +383,7 @@ const samples = {
     },
     { orgs: [{ ...org, agents: [] }], me: [] },
   ],
-  KinChatsSubscribeInput: [{}, { orgId: "org-1" }],
+  KinChatsSubscribeInput: [{}, { orgId: "org-1" }, { acceptPreview: true }],
   KinChatsCreateDirectInput: [{ orgId: "org-1", agentId: "agent-1" }],
   KinChatsWithPersonInput: [{ orgId: "org-1", personId: "person-1" }],
   KinGroupTitle: ["Launch"],
@@ -368,6 +443,10 @@ const samples = {
     { chatId: "chat-1", muted: true },
     { chatId: "chat-1", muted: false },
   ],
+  KinChatsPinInput: [
+    { chatId: "chat-1", pinned: true },
+    { chatId: "chat-1", pinned: false },
+  ],
   KinChatsClearInput: [{ chatId: "chat-1" }, { chatId: "chat-1", preview: true }],
   KinChatsClearResult: [{}, { keptFiles: 2 }],
   KinAgentMessageBody: ["Hello"],
@@ -410,6 +489,29 @@ const samples = {
   ],
   KinLeadInterruptInput: [{ orgId: "org-1", wakeupId: "wakeup-1" }],
   KinLeadInterruptResult: [{ interrupted: true }, { interrupted: false }],
+  KinChatWorkingResult: [
+    { handoffs: [] },
+    {
+      handoffs: [
+        {
+          agentId: "lead-1",
+          chatId: null,
+          wakeupId: null,
+          state: "queued",
+          asked: "Chase the Ambermill invoice",
+          since: at,
+        },
+        {
+          agentId: "lead-2",
+          chatId: "chat-1",
+          wakeupId: "w-1",
+          state: "running",
+          asked: "",
+          since: at,
+        },
+      ],
+    },
+  ],
   KinChatError: [
     "not_found",
     "not_allowed",
@@ -420,10 +522,22 @@ const samples = {
     "limit",
     "floor_not_granted",
     "floor_closed",
-  ].map((reason) => ({ _tag: "KinChatError", reason, message: "Cannot do that" })),
+  ]
+    .map((reason): Record<string, unknown> => ({
+      _tag: "KinChatError",
+      reason,
+      message: "Cannot do that",
+    }))
+    .concat({
+      _tag: "KinChatError",
+      reason: "conflict",
+      message: "Tick first",
+      mayHaveGone: { tryId: "ask-1", at },
+    }),
 } satisfies Record<SchemaName, ReadonlyArray<unknown>>;
 
 const decodeSend = Schema.decodeUnknownSync(Kin.KinMessagesSendInput);
+const decodeTurnChanges = Schema.decodeSync(Kin.KinTurnChanges);
 const decodeHistory = Schema.decodeSync(Kin.KinChatHistoryInput);
 
 describe("Kin chat contracts", () => {
@@ -436,6 +550,22 @@ describe("Kin chat contracts", () => {
       expect(encode(decoded)).toEqual(wire);
       expect(decode(encode(decoded))).toEqual(decoded);
     }
+  });
+
+  it("lists at most five of a turn's changes", () => {
+    expect(() =>
+      decodeTurnChanges({
+        count: 6,
+        items: Array.from({ length: 6 }, () => turnChange),
+        more: 0,
+      }),
+    ).toThrow();
+  });
+
+  it("rejects five message figures", () => {
+    expect(() =>
+      decodeMessage({ ...message, embeds: Array.from({ length: 5 }, () => ({ ...visualEmbed })) }),
+    ).toThrow();
   });
 
   it("discards a client-supplied author", () => {
@@ -510,4 +640,69 @@ describe("Kin chat contracts", () => {
       }),
     ).toBe("kin-chat://org-1/chat-1/message-1");
   });
+
+  // A phone in the field decodes with the schemas as they were before `waitsFor` and `decidedBy`.
+  it("an older client still reads a waiting row and a card with the newer fields", () => {
+    expect(decodeWaitingBefore(waitsForRow)).toStrictEqual(
+      decodeWaitingBefore({ ...waiting, widgetId: "widget-1" }),
+    );
+    const { decidedBy: _decided, replacedBy: _replaced, ...before } = decidedCard;
+    expect(decodeCardBefore(decidedCard)).toStrictEqual(decodeCardBefore(before));
+  });
 });
+
+// The two schemas as they stood before this change, copied as they were.
+const KinWaitingItemBefore = Schema.Struct({
+  waitingId: Kin.KinWaitingId,
+  orgId: Kin.KinOrgId,
+  personId: Kin.KinPersonId,
+  chatId: Kin.KinChatId,
+  messageId: Schema.NullOr(Kin.KinMessageId),
+  widgetId: Schema.NullOr(Kin.KinWidgetId),
+  reason: Kin.KinWaitingReason,
+  createdAt: IsoDateTime,
+  resolvedAt: Schema.NullOr(IsoDateTime),
+  resolution: Schema.NullOr(KinTrimmedText),
+  question: Schema.optional(Schema.NullOr(KinTrimmedText)),
+  ask: Schema.optional(Kin.KinWaitingAsk),
+});
+const KinChoiceCardStateBefore = Schema.Struct({
+  question: KinTrimmedText.check(Schema.isMaxLength(240)),
+  detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
+  askedBy: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(500))),
+  whileOpen: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(600))),
+  options: Schema.Array(Kin.KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
+  image: Schema.optionalKey(
+    Schema.Struct({
+      attachmentId: KinTrimmedText,
+      mimeType: KinTrimmedText.check(Schema.isMaxLength(100)),
+    }),
+  ),
+  send: Schema.optionalKey(Kin.KinSendCard),
+  replaced: Schema.optionalKey(Schema.Literal(true)),
+  untilAnswered: Schema.optionalKey(Schema.Literal(true)),
+  outcome: Schema.optionalKey(
+    Schema.Struct({
+      title: KinTrimmedText.check(Schema.isMaxLength(120)),
+      text: KinText.check(Schema.isMaxLength(600)),
+      undone: Schema.optionalKey(
+        Schema.Struct({
+          personId: Kin.KinPersonId,
+          name: KinTrimmedText.check(Schema.isMaxLength(200)),
+          at: IsoDateTime,
+        }),
+      ),
+    }),
+  ),
+  answer: Schema.NullOr(
+    Schema.Struct({
+      optionId: KinTrimmedText,
+      personId: Kin.KinPersonId,
+      via: Schema.Literals(["tap", "reaction"]),
+      emoji: Schema.NullOr(Kin.KinReactionEmoji),
+      answeredAt: IsoDateTime,
+    }),
+  ),
+});
+const decodeWaitingBefore = Schema.decodeUnknownSync(KinWaitingItemBefore);
+const decodeCardBefore = Schema.decodeUnknownSync(KinChoiceCardStateBefore);

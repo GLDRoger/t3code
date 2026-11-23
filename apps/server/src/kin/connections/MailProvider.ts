@@ -58,9 +58,15 @@ export type ReplyTarget = {
 };
 
 /** What arrived and changed since a time, as metadata only. */
+/** The most one activity read takes from a mailbox; the next read goes on from where it stopped. */
+export const ACTIVITY_MAIL = 100;
+export const ACTIVITY_EVENTS = 200;
+
 export type MailActivity = {
   /** Where the vendor's change feed stopped, for the next read; null for a vendor that keeps none. */
   readonly cursor: string | null;
+  /** Set when a read stopped at its bound: what came before this time was read whole. */
+  readonly until?: number;
   readonly mail: ReadonlyArray<{
     readonly threadId: string;
     readonly receivedBy: string | null;
@@ -76,6 +82,43 @@ export type MailActivity = {
     readonly status: string | null;
     readonly updated: string | null;
   }>;
+};
+
+/** A message the vendor's own change record named in the Inbox: its ids, nothing else. */
+export type MailChange = { readonly messageId: string; readonly threadId: string | null };
+/** One page of the Inbox's change record; `expired` when the vendor no longer knows `position`. */
+export type MailChanges =
+  | { readonly _tag: "expired" }
+  | {
+      readonly _tag: "read";
+      readonly changes: ReadonlyArray<MailChange>;
+      /** Where the next read starts. */
+      readonly position: string;
+      /** More pages wait at `position`. */
+      readonly more: boolean;
+    };
+/** A new message's headers, read once by id; never its body. */
+export type MailArrival = {
+  readonly messageId: string;
+  readonly threadId: string;
+  /** When the vendor received it, its own clock. */
+  readonly receivedAt: number;
+  readonly from: string | null;
+  readonly fromAddress: string | null;
+  readonly to: ReadonlyArray<string>;
+  readonly cc: ReadonlyArray<string>;
+  readonly deliveredTo: ReadonlyArray<string>;
+  readonly subject: string;
+  readonly date: string | null;
+  /** The RFC 5322 Message-ID, the same in every mailbox that got the message. */
+  readonly internetId: string | null;
+  readonly authResults: ReadonlyArray<string>;
+  readonly listUnsubscribe: boolean;
+  readonly precedence: string | null;
+  readonly autoSubmitted: string | null;
+  /** The vendor filed it as bulk (Gmail's Promotions, Social or Forums). */
+  readonly bulk: boolean;
+  readonly hasFile: boolean;
 };
 
 export type MailEvent = {
@@ -228,19 +271,30 @@ export interface MailVendor {
     calendarId: string | undefined,
     eventId: string,
   ) => Call<MailCalendarEvent>;
+  /** A calendar's name as the account shows it, or null when it has none. */
+  readonly calendarName: (context: MailContext, calendarId: string) => Call<string | null>;
   /**
    * Inbox mail that arrived and events that changed, were cancelled or deleted since `since`,
-   * each occurrence of a series on its own. `cursor` is what the last read returned.
+   * each occurrence of a series on its own. `cursor` is what the last read returned. A read holds
+   * at most `ACTIVITY_MAIL` threads and `ACTIVITY_EVENTS` events; one that stops there sets `until`.
    */
   readonly activity: (
     context: MailContext,
     since: number,
     cursor: string | null,
+    now: number,
   ) => Call<{
     readonly threads: MailThreads;
     readonly events: ReadonlyArray<MailCalendarEvent>;
     readonly cursor: string | null;
+    readonly until?: number;
   }>;
+  /** Where the Inbox's change record stands now, so a feed starts from here. */
+  readonly mailStart: (context: MailContext, now: number) => Call<string>;
+  /** The Inbox's change record after `position`: ids only, one page. */
+  readonly changes: (context: MailContext, position: string) => Call<MailChanges>;
+  /** One message's headers; null when the account no longer has it. */
+  readonly arrival: (context: MailContext, messageId: string) => Call<MailArrival | null>;
   readonly account: MailProvider["account"];
   readonly sendAs: MailProvider["sendAs"];
   readonly sendMessage: MailProvider["sendMessage"];
@@ -296,7 +350,27 @@ export interface MailProvider {
     mailbox: Mailbox,
     since: number,
     cursor: string | null,
+    now: number,
   ) => Call<MailActivity>;
+  /** The arrival feed's reads (`arrivals/ArrivalFeed.ts`): server use only, metadata only. */
+  readonly mailStart: (http: HttpClient.HttpClient, token: string, now: number) => Call<string>;
+  readonly changes: (
+    http: HttpClient.HttpClient,
+    token: string,
+    position: string,
+  ) => Call<MailChanges>;
+  readonly arrival: (
+    http: HttpClient.HttpClient,
+    token: string,
+    messageId: string,
+  ) => Call<MailArrival | null>;
+  /** Server use only: a thread's messages with their text, as `mail_read_thread` reads them. */
+  readonly messages: (
+    http: HttpClient.HttpClient,
+    token: string,
+    mailbox: Mailbox,
+    threadId: string,
+  ) => Call<ReadonlyArray<MailMessage>>;
   /** A thread of another account is not found: a reply stays in its own account. */
   readonly replyTarget: (
     http: HttpClient.HttpClient,
@@ -312,6 +386,13 @@ export interface MailProvider {
   ) => Call<Sent>;
   /** Adds or changes an event on the account's calendar and invites its guests. */
   readonly saveEvent: (http: HttpClient.HttpClient, token: string, event: MailEvent) => Call<Sent>;
+  /** A calendar's name as the account shows it, or null when it has none. */
+  readonly calendarName: (
+    http: HttpClient.HttpClient,
+    token: string,
+    mailbox: Mailbox,
+    calendarId: string,
+  ) => Call<string | null>;
 }
 
 const PLAIN = /^[^\s<>@,;"]+@[^\s<>@,;"]+$/;

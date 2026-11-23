@@ -1,5 +1,5 @@
-import { KIN_ONLY } from "../../lib/kinOnly";
 import { StackActions, useNavigation } from "@react-navigation/native";
+import { msg, useMessages } from "gt-react-native";
 import { Platform } from "react-native";
 import { resolveThreadReferenceCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import {
@@ -16,6 +16,7 @@ import {
 } from "react";
 
 import { copyThreadReference } from "../../lib/copyThreadReference";
+import { m } from "../../i18n/messages";
 import {
   firstWorkspaceDetailOpen,
   workspaceHasColumns,
@@ -23,6 +24,7 @@ import {
 import { T3KeyboardCommands } from "../../native/T3KeyboardCommands";
 import { useThreadShell } from "../../state/entities";
 import type { GitActionProgress } from "../../state/use-vcs-action-state";
+import { useKinIsHome } from "../chats/state/kinHome";
 import { GitActionProgressOverlay } from "../threads/GitActionProgressOverlay";
 import { CommandPalette } from "./CommandPalette";
 import {
@@ -54,6 +56,7 @@ export function HardwareKeyboardCommandProvider({
   pathname,
 }: PropsWithChildren<{ readonly pathname: string }>) {
   const navigation = useNavigation();
+  const messages = useMessages();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const closePalette = useCallback(() => setPaletteOpen(false), []);
   const activeThreadRef = useMemo(() => parseActiveThreadPath(pathname), [pathname]);
@@ -62,14 +65,17 @@ export function HardwareKeyboardCommandProvider({
     () =>
       activeThreadRef === null
         ? null
-        : resolveThreadReferenceCopyTarget({
-            threadRef: activeThreadRef,
-            title: activeThread?.title ?? "",
-            pullRequests: activeThread?.pullRequests,
-            linkedPullRequestUrl:
-              (activeThread?.linkedPullRequest ?? activeThread?.branchPullRequest)?.url ?? null,
-          }),
-    [activeThread, activeThreadRef],
+        : resolveThreadReferenceCopyTarget(
+            {
+              threadRef: activeThreadRef,
+              title: activeThread?.title ?? "",
+              pullRequests: activeThread?.pullRequests,
+              linkedPullRequestUrl:
+                (activeThread?.linkedPullRequest ?? activeThread?.branchPullRequest)?.url ?? null,
+            },
+            messages,
+          ),
+    [activeThread, activeThreadRef, messages],
   );
   const [copyFeedback, setCopyFeedback] = useState<GitActionProgress>(EMPTY_COPY_FEEDBACK);
   const copyRequestIdRef = useRef(0);
@@ -105,10 +111,11 @@ export function HardwareKeyboardCommandProvider({
     getHardwareKeyboardCommandRegistrationVersion,
     getHardwareKeyboardCommandRegistrationVersion,
   );
+  const kinHome = useKinIsHome();
   const enabledCommands = useMemo(() => {
     const commands = new Set<HardwareKeyboardCommand>(getRegisteredHardwareKeyboardCommands());
     // New task and the palette's commands are all about coding threads.
-    if (!KIN_ONLY) {
+    if (!kinHome) {
       commands.add("newTask");
       commands.add("commandPalette");
     }
@@ -126,7 +133,7 @@ export function HardwareKeyboardCommandProvider({
     }
     return [...commands];
     // oxlint-disable-next-line react/memo-dependencies -- registrationVersion invalidates the snapshot of the external keyboard-command registry.
-  }, [activeThreadRef, pathname, registrationVersion, navigation]);
+  }, [activeThreadRef, pathname, registrationVersion, navigation, kinHome]);
 
   const onCommand = useCallback(
     (command: HardwareKeyboardCommand) => {
@@ -151,7 +158,7 @@ export function HardwareKeyboardCommandProvider({
               : {
                   phase: "error",
                   label: copyTarget.failureTitle,
-                  description: "Try again.",
+                  description: m(msg("Try again.")),
                 },
           );
         });

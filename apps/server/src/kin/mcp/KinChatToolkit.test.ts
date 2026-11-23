@@ -1,3 +1,4 @@
+import * as NodeURL from "node:url";
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { kinSecretsTest } from "../lead/layer.testkit.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
@@ -258,6 +259,16 @@ it.effect(
         yield* read(agent, { chatId: chat.chatId, afterSeq: rows.at(-1)?.seq ?? 0 }),
         [],
       );
+      // With no cursor a read is the latest page; beforeSeq pages back from it.
+      assert.deepStrictEqual(yield* read(agent, { chatId: chat.chatId, limit: 1 }), rows.slice(1));
+      assert.deepStrictEqual(
+        yield* read(agent, { chatId: chat.chatId, beforeSeq: rows[1]?.seq ?? 0, limit: 1 }),
+        rows.slice(0, 1),
+      );
+      assert.deepStrictEqual(
+        yield* read(agent, { chatId: chat.chatId, afterSeq: 0, limit: 1 }),
+        rows.slice(0, 1),
+      );
       assert.include(rows[1]?.author, {
         _tag: "agent",
         agentId,
@@ -283,6 +294,8 @@ it.effect(
         { afterSeq: -1 },
         { afterSeq: 0.5 },
         { afterSeq: Number.MAX_SAFE_INTEGER + 1 },
+        { beforeSeq: 0 },
+        { beforeSeq: 1.5 },
         { limit: 101 },
       ]) {
         const result = yield* call("kin_chat_read", { chatId: chat.chatId, ...changed }).pipe(
@@ -796,7 +809,9 @@ it.effect(
       // A chart goes where a message could, and nowhere a message couldn't.
       assert.deepInclude(yield* chart("group-1").pipe(Effect.flip), NOT_ALLOWED);
       assert.deepInclude(yield* chart("other-direct").pipe(Effect.flip), NOT_ALLOWED);
-      assert.include(yield* chart(chat.chatId), { type: "chart", chatId: chat.chatId });
+      const chartResult = yield* chart(chat.chatId);
+      if ("figure" in chartResult) assert.match(chartResult.figure, /kin-figure:f_/);
+      else assert.include(chartResult, { type: "chart", chatId: chat.chatId });
       const react = (chatId: string) =>
         gate.react(agent, {
           chatId: KinChatId.make(chatId),
@@ -1045,7 +1060,7 @@ it.effect("keeps trusted persistence, waiting and hub APIs outside the toolkit",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const source = yield* fs.readFileString(
-      new URL("./KinChatToolkit.ts", import.meta.url).pathname,
+      NodeURL.fileURLToPath(new URL("./KinChatToolkit.ts", import.meta.url)),
     );
     assert.notMatch(source, /import[^;]*(?:KinChatRepository|KinChatHub)/);
     assert.notMatch(source, /\.addWaiting\(|\.subscribeForViewer\(/);

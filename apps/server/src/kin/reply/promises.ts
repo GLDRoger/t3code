@@ -10,18 +10,25 @@ export const NUDGE_PREFIX = "pulse-nudge:";
 
 const PROMISE =
   /\bI(?:'ll|’ll| will|'m going to|’m going to| am going to)\s+(?:now\s+|also\s+)?(?:put|pass|tell|ask|let|check with|flag|raise|forward|relay|mention|bring|nudge|ping|message|follow up with)\b[^.!?\n]{0,80}/gi;
+/** "From now on I'll message Zoya": a standing permission or habit, not a promise for this turn. */
+const STANDING =
+  /\b(?:from now on|from here on|going forward|in (?:the )?future|whenever|any ?time|every time|each time|(?:when|as|if) (?:needed|necessary)|without (?:asking|checking with|involving) you|no need to (?:ask|check with|involve) you)\b/i;
 const PRONOUN = /\b(?:him|her|the owner)\b/i;
 /** "Finance will send the reminder": what another agent is said to do next. */
 const AGENT_ACTS =
   "\\s+(?:will|'ll|’ll|is going to|can then)\\s+(?:now\\s+|then\\s+)?(?:send|draft|chase|remind|follow up|handle|take|reply|prepare|pick up|look into|check|do|sort|deal)\\b";
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const sentenceAt = (text: string, start: number, length: number) => {
+  const from = Math.max(...[".", "!", "?", "\n"].map((end) => text.lastIndexOf(end, start - 1)));
+  const to = text.slice(start + length).search(/[.!?\n]/);
+  return text.slice(from + 1, to < 0 ? undefined : start + length + to);
+};
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 /**
- * Who a wake-up's reply said it would tell, ask or pass something to, when nothing in the turn
- * did: no relay, nudge, reminder, hand-off, assignment notice or post in another chat. Someone
- * in the chat itself is the reader, so a promise to them is no hand-over. Else another agent it
- * said would act, with no hand-off to that agent this turn.
+ * Who a reply said it would tell, ask or pass something to, when nothing in the turn did: no relay,
+ * nudge, reminder, open question to them with a safe default, hand-off, assignment notice or post
+ * elsewhere. Someone in the chat reads it already. Else an agent said to act, not handed it.
  */
 export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wake: {
   readonly orgId: KinOrgId;
@@ -38,9 +45,13 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
       AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
       AND created_at >= ${since}
     ORDER BY seq`;
-  const spans = said.flatMap((row) => [...row.body.matchAll(PROMISE)].map((hit) => hit[0]));
-  const people = yield* sql<{ name: string; here: number; owner: number }>`SELECT
-      p.display_name AS name,
+  const spans = said.flatMap((row) =>
+    [...row.body.matchAll(PROMISE)]
+      .filter((hit) => !STANDING.test(sentenceAt(row.body, hit.index, hit[0].length)))
+      .map((hit) => hit[0]),
+  );
+  const people = yield* sql<{ personId: string; name: string; here: number; owner: number }>`SELECT
+      p.person_id AS "personId", p.display_name AS name,
       EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = p.org_id
         AND m.chat_id = ${wake.chatId} AND m.person_id = p.person_id AND m.left_at IS NULL) AS here,
       EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = p.org_id AND a.agent_id = ${wake.agentId}
@@ -48,7 +59,7 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
     FROM kin_people p WHERE p.org_id = ${wake.orgId} ORDER BY p.person_id LIMIT 200`;
   const first = (name: string) => name.trim().split(/\s+/)[0] ?? name;
   const owner = people.find((person) => person.owner === 1);
-  let named: string | undefined;
+  let named: { readonly personId: string; readonly first: string } | undefined;
   for (const span of spans) {
     const person = people.find(
       (one) =>
@@ -57,11 +68,11 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
         new RegExp(`\\b${escaped(first(one.name))}\\b`, "i").test(span),
     );
     if (person !== undefined) {
-      named = first(person.name);
+      named = { personId: person.personId, first: first(person.name) };
       break;
     }
     if (PRONOUN.test(span) && owner !== undefined && owner.here === 0) {
-      named = first(owner.name);
+      named = { personId: owner.personId, first: first(owner.name) };
       break;
     }
   }
@@ -73,7 +84,8 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
         AND a.retired_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = a.org_id
           AND h.from_agent_id = ${wake.agentId} AND h.to_agent_id = a.agent_id
-          AND h.created_at >= ${wake.startedAt})
+          AND h.created_at >= ${wake.startedAt}
+          AND (h.route_state IS NULL OR h.route_state = 'passed'))
       ORDER BY a.agent_id LIMIT 50`;
     const text = said.map((row) => row.body).join("\n");
     return agents.find((agent) =>
@@ -88,14 +100,21 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
     UNION ALL SELECT 1 FROM kin_held_posts WHERE org_id = ${wake.orgId}
       AND (substr(kind, 1, ${relayPrefix(wake.wakeupId).length}) = ${relayPrefix(wake.wakeupId)}
         OR (held_at >= ${wake.startedAt} AND substr(kind, 1, 11) = 'kin-assign-'))
+    UNION ALL SELECT 1 FROM kin_questions WHERE org_id = ${wake.orgId}
+      AND agent_id = ${wake.agentId} AND for_chat_id = ${wake.chatId} AND asked_at >= ${wake.startedAt}
     UNION ALL SELECT 1 FROM kin_pulse_nudges WHERE org_id = ${wake.orgId}
       AND agent_id = ${wake.agentId} AND sent_at >= ${wake.startedAt}
     UNION ALL SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${wake.orgId}
       AND wakeup_id = ${wake.wakeupId} AND substr(call_key, 1, 9) = 'item:def-'
+    UNION ALL SELECT 1 FROM kin_questions WHERE org_id = ${wake.orgId}
+      AND agent_id = ${wake.agentId} AND person_id = ${named.personId}
+      AND asked_at >= ${wake.startedAt} AND state = 'open' AND safe = 1
+      AND default_label IS NOT NULL
     UNION ALL SELECT 1 FROM kin_handoffs WHERE org_id = ${wake.orgId}
       AND from_agent_id = ${wake.agentId} AND created_at >= ${wake.startedAt}
+      AND (route_state IS NULL OR route_state = 'passed')
     LIMIT 1`;
-  return kept.length > 0 ? undefined : named;
+  return kept.length > 0 ? undefined : named.first;
 });
 
 const CARD = /\b(?:card|tap confirm)\b/i;

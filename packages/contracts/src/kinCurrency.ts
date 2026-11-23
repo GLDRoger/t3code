@@ -58,7 +58,7 @@ const ROWS: Readonly<Record<string, Partial<Omit<KinCurrencyInfo, "code" | "deci
 const words = (list: string) => new Set(list.split(/\s+/));
 const ZERO = words(ZERO_DECIMALS);
 const THREE = words(THREE_DECIMALS);
-/** The home currency of a company that never set one. */
+/** The home currency of a profile stored before companies chose theirs, and of one never saved. */
 export const KIN_DEFAULT_HOME_CURRENCY = "INR";
 /** Every ISO 4217 code Kin accepts. */
 export const KIN_CURRENCY_CODES: ReadonlySet<string> = words(CODES);
@@ -165,17 +165,45 @@ const MULTIPLIERS: ReadonlyArray<readonly [RegExp, bigint]> = [
   [/\b(?:millions?|mn)\b/giu, 1_000_000n],
   [/\b(?:thousand|k)\b|(?<=\d)k\b/giu, 1_000n],
 ];
+// Read in an amount only, never when spotting money in a title, where "5 m" or "10L" is a size.
+const SHORT_MULTIPLIERS: ReadonlyArray<readonly [RegExp, bigint]> = [
+  [/(?<=\d\s?)m\b/giu, 1_000_000n],
+  [/(?<=\d\s?)l\b/giu, 100_000n],
+];
+// A rough figure is still the figure: "~90k", "about 9 lakh".
+const ROUGHLY = /^(?:~|≈|about|around|approx\.?|approximately|roughly|nearly|almost)\s*/iu;
+
+// Commas and dots read one way only: thousands, lakh and crore, or a decimal comma that has
+// exactly the currency's decimals after it. Our own grouped forms win where two would fit.
+const GROUPED = [
+  /^(\d{1,18})(?:\.(\d{1,18}))?$/u,
+  /^(\d{1,3}(?:,\d{3})+)(?:\.(\d{1,18}))?$/u,
+  /^(\d{1,2}(?:,\d{2})*,\d{3})(?:\.(\d{1,18}))?$/u,
+];
+const readFigure = (number: string, decimals: number) => {
+  const comma =
+    decimals === 0
+      ? undefined
+      : new RegExp(`^(\\d{1,3}(?:\\.\\d{3})+|\\d+),(\\d{${decimals}})$`, "u");
+  const found = [...GROUPED, ...(comma === undefined ? [] : [comma])]
+    .map((shape) => shape.exec(number))
+    .find((match) => match !== null);
+  return found === undefined
+    ? undefined
+    : { whole: found[1]!.replace(/[,.]/gu, ""), fraction: found[2] ?? "" };
+};
 
 /**
  * A spoken or written amount in minor units: "4.2 lakh", "₹1,23,456.78", "$12.5", "1.5 crore",
- * "12k", "JPY 1500". The currency is the one the text names, else `fallback`; naming two, more
- * decimals than the currency has, or a figure past a safe integer is refused with why.
+ * "12k", "9L", "1.2m", "~90k", "about 90k", "JPY 1500", "-20", "1.234,56 EUR". The currency is the one the text names, else
+ * `fallback`; naming two, a grouping that reads no one way, more decimals than the currency has,
+ * or a figure past a safe integer is refused with why. Below zero is the caller's to take or not.
  */
 export const parseKinMoney = (
   text: string,
   fallback: string,
 ): { readonly money: KinMoney } | { readonly error: string } => {
-  let rest = text.trim().replace(/\/-$/u, "");
+  let rest = text.trim().replace(/\/-$/u, "").replace(ROUGHLY, "");
   const named = new Set<string>();
   for (const [pattern, code] of [...NAMED, ...SPOKEN])
     rest = rest.replace(pattern, () => {
@@ -189,25 +217,35 @@ export const parseKinMoney = (
     return " ";
   });
   let multiplier = 1n;
-  for (const [pattern, factor] of MULTIPLIERS)
+  for (const [pattern, factor] of [...MULTIPLIERS, ...SHORT_MULTIPLIERS])
     rest = rest.replace(pattern, () => {
       multiplier *= factor;
       return " ";
     });
-  const number = rest.replace(/[\s,_]/gu, "");
+  const signed = rest.replace(/[\s_]/gu, "");
+  const negative = /^[-\u2212]/u.test(signed);
+  const number = negative ? signed.slice(1) : signed;
   const quoted = text.slice(0, 40);
   if (named.size > 1) return { error: `${quoted} names two currencies. Give one amount.` };
   const currency = named.values().next().value ?? fallback;
   if (!isKinCurrency(currency))
     return { error: `${currency.slice(0, 10)} is not a currency code such as USD.` };
-  const found = /^(\d{1,18})(?:\.(\d{1,18}))?$/u.exec(number);
-  if (found === null)
-    return {
-      error: `${quoted} is not an amount. Give a number such as 4200, 4.2 lakh or 1,23,456.78.`,
-    };
-  const fraction = found[2] ?? "";
-  const { decimals } = kinCurrency(currency);
-  const scaled = BigInt(found[1]! + fraction) * multiplier * 10n ** BigInt(decimals);
+  const { decimals, grouping } = kinCurrency(currency);
+  const found = readFigure(number, decimals);
+  if (found === undefined) {
+    const digits = number.replace(/[,.]/gu, "");
+    if (/^\d{1,18}$/u.test(digits) && digits !== number)
+      return {
+        error: `${quoted} is not an amount. Write it as ${digits} or ${
+          decimals > 0 && digits.length > decimals
+            ? `${digits.slice(0, -decimals)}.${digits.slice(-decimals)}`
+            : kinGroupDigits(digits, grouping)
+        }.`,
+      };
+    return { error: `${quoted} is not an amount. Give a number such as 4200, 4,200.50 or 12k.` };
+  }
+  const { fraction } = found;
+  const scaled = BigInt(found.whole + fraction) * multiplier * 10n ** BigInt(decimals);
   const divisor = 10n ** BigInt(fraction.length);
   if (scaled % divisor !== 0n)
     return {
@@ -216,5 +254,27 @@ export const parseKinMoney = (
   const minor = scaled / divisor;
   if (minor > BigInt(Number.MAX_SAFE_INTEGER))
     return { error: `${quoted} is too large an amount.` };
-  return { money: { minor: Number(minor), currency } };
+  return { money: { minor: Number(negative ? -minor : minor), currency } };
+};
+
+const EDGES = /^[("'“‘[]+|[)"'”’\]:;,!?]+$|\.$/gu;
+/**
+ * Whether free text holds a figure `parseKinMoney` reads as money by its marks alone: a symbol,
+ * a code, a currency word or a multiplier ("₹4,200", "0 INR", "45k"). A bare "4,200 owed" isn't,
+ * and a three-letter code counts only in capitals, so "try 3 options" stays words.
+ */
+export const mentionsKinMoney = (text: string) => {
+  const words = text.split(/[\s/]+/u).map((word) => word.replace(EDGES, ""));
+  const near = (word: string | undefined) =>
+    word === undefined || (/^[a-z]{3}$/iu.test(word) && word !== word.toUpperCase()) ? "" : word;
+  return words.some((word, index) => {
+    if (!/\d/u.test(word)) return false;
+    const [before, after] = [near(words[index - 1]), near(words[index + 1])];
+    return [`${before} ${word} ${after}`, `${before} ${word}`, `${word} ${after}`, word].some(
+      (said) =>
+        "money" in parseKinMoney(said, "XXX") ||
+        (MULTIPLIERS.some(([pattern]) => said.search(pattern) >= 0) &&
+          "money" in parseKinMoney(said, "USD")),
+    );
+  });
 };

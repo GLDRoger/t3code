@@ -244,7 +244,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
           "device",
         );
       } else if (action === "expired-revocation") {
-        yield* TestClock.adjust(Duration.minutes(61));
+        // A pairing link's session renews, so it lapses only once its renewal window has passed.
+        yield* TestClock.adjust(Duration.sum(Duration.days(30), Duration.minutes(1)));
         yield* sessions.revoke(original.sessionId);
         yield* exchange();
       } else if (
@@ -441,6 +442,37 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
             { type: "clientRemoved", sessionId: sibling.sessionId },
           ]),
         );
+
+        // Replacement and proof-key revoke run the plain store inside Kin's own write, so a
+        // failure later in that write must take back what the store would have announced.
+        const phone = yield* sessions.issue({ proofKeyThumbprint: "phone" });
+        const linked = yield* sessions.issue({ proofKeyThumbprint: "linked" });
+        yield* sessions.markConnected(phone.sessionId);
+        for (let i = 0; i < 3; i++)
+          expect((yield* Queue.take(changes)).type).toBe("clientUpserted");
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Org', '')`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('asha', 'org', 'asha', 'Asha', '', 'member')`;
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at, parent_session_id)
+          VALUES (${phone.sessionId}, 'org', 'asha', 0, NULL), (${linked.sessionId}, 'org', 'asha', 0, ${phone.sessionId})`;
+        yield* sql`DELETE FROM reject_revoke_ids`;
+        yield* sql`INSERT INTO reject_revoke_ids VALUES (${linked.sessionId})`;
+        yield* sql`CREATE TRIGGER reject_revoke BEFORE UPDATE ON auth_sessions WHEN NEW.session_id IN (SELECT session_id FROM reject_revoke_ids) BEGIN SELECT RAISE(ABORT, 'cannot revoke'); END`;
+        expect(
+          Exit.isFailure(
+            yield* sessions
+              .issue({ proofKeyThumbprint: "phone", replaceSessionId: phone.sessionId })
+              .pipe(Effect.exit),
+          ),
+        ).toBe(true);
+        expect(Exit.isFailure(yield* sessions.revokeByProofKey("phone").pipe(Effect.exit))).toBe(
+          true,
+        );
+        expect(yield* Queue.size(changes)).toBe(0);
+        expect(
+          (yield* sessions.listActive()).find((session) => session.sessionId === phone.sessionId)
+            ?.connected,
+        ).toBe(true);
       }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 

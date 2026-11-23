@@ -35,11 +35,17 @@ const PLAYBOOK_KEYS = {
   // Days to pay an invoice issued without a due date, when the client's terms name none.
   payment_due_days: { unit: "days", min: 1, max: 180, default: 15, client: true },
   chase_invoice_after_days: { unit: "days", min: 1, max: 120, default: 10, client: true },
+  // Days after a month ends before its missing bank statement is worth a line in the morning brief.
+  statement_due_days: { unit: "days", min: 1, max: 60, default: 5 },
   second_reminder_after_days: { unit: "days", min: 1, max: 60, default: 7, client: true },
   client_checkin_days: { unit: "days", min: 1, max: 180, default: 14, client: true },
   client_cold_after_days: { unit: "days", min: 1, max: 365, default: 30, client: true },
   reply_owed_hours: { unit: "hours", min: 1, max: 336, default: 24, client: true },
   renewal_heads_up_days: { unit: "days", min: 1, max: 120, default: 14, client: true },
+  // Inside the heads-up, a renewal is only mentioned until this many days before it: then drafted.
+  renewal_draft_days: { unit: "days", min: 1, max: 120, default: 7, client: true },
+  // How long an open deal goes with no contact, note, stage move or next-step change before it is quiet.
+  deal_quiet_days: { unit: "days", min: 1, max: 365, default: 14 },
   // How far under the straight line to its target a goal may fall before it counts as behind.
   goal_behind_percent: { unit: "percent", min: 1, max: 90, default: 20 },
 } as const satisfies Record<string, KeyDef>;
@@ -182,7 +188,29 @@ export const playbookThreshold = Effect.fn("KinPlaybooks.threshold")(function* (
  */
 export const playbookThresholds = Effect.fn("KinPlaybooks.thresholds")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = (yield* livePlaybooks(sql, orgId)).map((row) => {
+  return thresholdsOf(yield* livePlaybooks(sql, orgId));
+});
+
+/**
+ * One key's company value and each client playbook's own, from one read: for a query that
+ * compares against it in SQL rather than row by row.
+ */
+export const playbookClientValues = Effect.fn("KinPlaybooks.clientValues")(function* (
+  orgId: KinOrgId,
+  key: PlaybookKey,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* livePlaybooks(sql, orgId);
+  const lookup = thresholdsOf(rows);
+  const clients = new Set(rows.flatMap((row) => (row.partyId === null ? [] : [row.partyId])));
+  return {
+    value: lookup(key).value,
+    byClient: Object.fromEntries([...clients].map((id) => [id, lookup(key, id).value])),
+  };
+});
+
+const thresholdsOf = (playbooks: ReadonlyArray<PlaybookRow>) => {
+  const rows = playbooks.map((row) => {
     const parsed = parseKinBlocks(row.body);
     return { row, values: parsed._tag === "ok" ? parsed.values : undefined };
   });
@@ -209,7 +237,7 @@ export const playbookThresholds = Effect.fn("KinPlaybooks.thresholds")(function*
       }
     );
   };
-});
+};
 
 const INDEX_MAX = 40;
 const LINE_MAX = 160;

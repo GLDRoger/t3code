@@ -1,18 +1,29 @@
 /**
- * Kin's navigation, one model for web and phone: the destinations, and what Settings (the
+ * Kin's navigation, one model for web and phone: the five destinations, and what Settings (the
  * gear on Chats) holds for each person.
  */
 
-export type KinDestination = "chats" | "tasks" | "canvas" | "money" | "clients" | "docs";
+import type { KinShell } from "@t3tools/contracts";
 
-export const KIN_DESTINATION_NAMES: Readonly<Record<KinDestination, string>> = {
+import { kinSectionName, kinSectionOn } from "./kinShell.ts";
+import { KIN_WATCH_LOG_TITLE } from "./kinWatches.ts";
+
+export type KinDestination = "chats" | "tasks" | "money" | "clients" | "docs";
+
+const KIN_DESTINATION_NAMES: Readonly<Record<KinDestination, string>> = {
   chats: "Chats",
   tasks: "Tasks",
-  canvas: "Canvas",
   money: "Money",
   clients: "Clients",
   docs: "Docs",
 };
+
+/** A destination's name as this company says it: Clients renamed reads "Patients". */
+export const kinDestinationName = (
+  destination: KinDestination,
+  shell: KinShell | null | undefined,
+): string =>
+  destination === "clients" ? kinSectionName(shell, "clients") : KIN_DESTINATION_NAMES[destination];
 
 /** Places the host has answered it won't show this viewer, which a grant can't tell apart. */
 export interface KinPlacesRefused {
@@ -22,23 +33,26 @@ export interface KinPlacesRefused {
 }
 
 /**
- * Chats, then Tasks and the Canvas when the viewer may read Work, then each place the host hasn't refused: every
+ * Chats, then Tasks when the viewer may read Work, then each place the host hasn't refused: every
  * one for the owner or a co-owner, for anyone else the ones the host says they reach, none until
- * it has. A destination the viewer can't open is absent, never disabled.
+ * it has. A place whose section the company turned off is gone for everyone. A destination the
+ * viewer can't open is absent, never disabled.
  */
 export function kinDestinations(input: {
   readonly work: boolean;
   readonly ownerLevel: boolean;
   readonly refused: KinPlacesRefused;
   readonly reaches: KinPlacesRefused | null;
+  readonly shell?: KinShell | null | undefined;
 }): ReadonlyArray<KinDestination> {
   if (!input.work) return ["chats"];
   const shown = (place: keyof KinPlacesRefused) =>
-    !input.refused[place] && (input.ownerLevel || input.reaches?.[place] === true);
+    (place === "docs" || kinSectionOn(input.shell, place)) &&
+    !input.refused[place] &&
+    (input.ownerLevel || input.reaches?.[place] === true);
   return [
     "chats",
     "tasks",
-    "canvas",
     ...(shown("money") ? (["money"] as const) : []),
     ...(shown("clients") ? (["clients"] as const) : []),
     ...(shown("docs") ? (["docs"] as const) : []),
@@ -92,10 +106,15 @@ export type KinSettingsPage =
   | "team"
   | "agents"
   | "check-ins"
+  | "watches"
   | "connections"
+  | "sections"
+  | "deals"
   | "memory"
   | "company"
-  | "approvals";
+  | "approvals"
+  | "host"
+  | "recommendations";
 
 const KIN_SETTINGS_PAGES: ReadonlyArray<KinSettingsPage> = [
   "profile",
@@ -104,10 +123,15 @@ const KIN_SETTINGS_PAGES: ReadonlyArray<KinSettingsPage> = [
   "team",
   "agents",
   "check-ins",
+  "watches",
   "connections",
+  "sections",
+  "deals",
   "memory",
   "company",
   "approvals",
+  "host",
+  "recommendations",
 ];
 
 export const KIN_SETTINGS_PAGE_TITLES: Readonly<Record<KinSettingsPage, string>> = {
@@ -117,10 +141,15 @@ export const KIN_SETTINGS_PAGE_TITLES: Readonly<Record<KinSettingsPage, string>>
   team: "Team",
   agents: "Agents",
   "check-ins": "Check-ins",
+  watches: KIN_WATCH_LOG_TITLE,
   connections: "Connections",
+  sections: "Sections",
+  deals: "Deals",
   memory: "Memory",
   company: "Company details",
   approvals: "Approvals",
+  host: "Kin's computer",
+  recommendations: "Recommendations",
 };
 
 export type KinSettingsGroupId = "you" | "company" | "computer";
@@ -141,31 +170,111 @@ export interface KinSettingsGroup {
 /**
  * What Settings holds for this person. Everyone has You; the owner and co-owners add Company; This
  * computer (the app's own settings) shows only where the session can open them. `notifications`
- * says whether this surface has Kin notifications to set.
+ * says whether this surface has Kin notifications to set; `recommendations` whether this is the
+ * owner, who alone sees what Kin suggested.
  */
 export function kinSettingsGroups(input: {
   readonly ownerLevel: boolean;
   readonly computer: boolean;
   readonly notifications: boolean;
+  readonly recommendations: boolean;
+  /** The company's deal stages: the owner level changes them, a teammate with Clients on reads. */
+  readonly deals?: boolean;
 }): ReadonlyArray<KinSettingsGroup> {
   const you: KinSettingsGroup = {
     id: "you",
     title: KIN_SETTINGS_GROUP_TITLES.you,
     pages: ["profile", ...(input.notifications ? (["notifications"] as const) : []), "appearance"],
   };
-  if (!input.ownerLevel) return [you];
+  // A teammate's What Kin checked holds the watches on their own things, or says there are none;
+  // their Connections holds only their own mailbox.
+  if (!input.ownerLevel)
+    return [
+      you,
+      {
+        id: "company",
+        title: KIN_SETTINGS_GROUP_TITLES.company,
+        pages: [...(input.deals === true ? (["deals"] as const) : []), "watches", "connections"],
+      },
+    ];
   return [
     you,
     {
       id: "company",
       title: KIN_SETTINGS_GROUP_TITLES.company,
-      pages: ["team", "agents", "check-ins", "connections", "memory", "company", "approvals"],
+      pages: [
+        "team",
+        "agents",
+        "check-ins",
+        "watches",
+        "connections",
+        "sections",
+        "deals",
+        "memory",
+        "company",
+        "approvals",
+        "host",
+        ...(input.recommendations ? (["recommendations"] as const) : []),
+      ],
     },
     ...(input.computer
       ? [{ id: "computer" as const, title: KIN_SETTINGS_GROUP_TITLES.computer, pages: [] }]
       : []),
   ];
 }
+
+/** A row on the phone's Settings, which keeps what is used in the day; web keeps every page. */
+export type KinPhoneSettingsRow =
+  | "profile"
+  | "notifications"
+  | "appearance"
+  | "team"
+  | "agents"
+  | "company"
+  | "sections"
+  | "deals"
+  | "watches"
+  | "host"
+  | "mailbox"
+  | "stop";
+
+/**
+ * The phone's Settings rows above its briefs (You) and below them (Company): the same for an owner
+ * and a co-owner; a teammate has You and What Kin checked. Set-up pages live on the computer.
+ */
+export function kinPhoneSettingsRows(input: { readonly ownerLevel: boolean }): {
+  readonly you: ReadonlyArray<KinPhoneSettingsRow>;
+  readonly company: ReadonlyArray<KinPhoneSettingsRow>;
+} {
+  return {
+    you: ["profile", "notifications", "appearance", "mailbox"],
+    company: input.ownerLevel
+      ? ["team", "agents", "company", "sections", "deals", "watches", "host", "stop"]
+      : ["watches"],
+  };
+}
+
+/** Where the phone says what moved off it, written once so web and phone can both show it. */
+export const KIN_SET_UP_ON_COMPUTER = {
+  line: "Connections, memory, deal stages, the daily limit, brand and templates, and an agent's character and model are set up in Kin on your computer.",
+  agents:
+    "The model new agents start on, and agents on other providers, are set up in Kin on your computer.",
+  checkInAdd:
+    "New check-ins, what one is for, and removing one are set up in Kin on your computer.",
+  githubApp: "Kin's GitHub App is created in Kin on your computer.",
+} as const;
+
+/** The phone's Notifications row opens the system's page for Kin; the row says so first. */
+export const KIN_NOTIFICATIONS_OPENS = "Opens Kin's page in your phone's Settings.";
+
+/** Who is in the Team room, said plainly on its details page; the company chat holds everyone. */
+export const KIN_TEAM_ROOM_TEAMMATES = {
+  title: "Teammates",
+  notIn:
+    "Teammates aren't in the Team room. It's where you and your agents talk things over. To talk with everyone, open the company chat to teammates.",
+  companyOn: (agent: string) =>
+    `Teammates aren't in the Team room. They talk with you and your agents in the company chat, where ${agent} answers.`,
+} as const;
 
 /** A Settings address this person may open; anything else lands on their profile. */
 export function kinSettingsPageOf(
@@ -184,4 +293,6 @@ export const KIN_SETTINGS_MOVED: Readonly<Record<string, KinSettingsPage>> = {
   "check-ins": "check-ins",
   "kin-connections": "connections",
   approvals: "approvals",
+  deals: "deals",
+  sections: "sections",
 };

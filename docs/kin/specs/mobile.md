@@ -75,7 +75,7 @@ All Kin code lives in `apps/mobile/src/features/chats/`. It reaches upstream thr
 | `KinChat`     | `kin/:environmentId/:orgId/chats/:chatId`            | `pageRoute({ duoMinimize: "onScrollUp" })` | Direct chat                                       |
 | `KinApproval` | `kin/:environmentId/:orgId/actions/:pendingActionId` | `sheetRoute({ detent: 0.75 })`             | Approval detail (also opened from a notification) |
 
-2. **The brand mark is the switch.** `KinListSwitch` (`features/chats/components`) wraps the brand title in `WorkspaceRootScreen.tsx` (iOS) and `WorkspaceBrandTitle.tsx` (Android). With a Kin host, tapping the mark pushes `KinChats`, a small switch glyph follows the wordmark, and a dot shows while Kin has something unread or waiting. Without one the brand draws as upstream's. Back, or the back swipe, on `KinChats` is the switch back to coding threads. The list last open is saved (`state/kinLastList.ts`), and a launch opens to it unless a notification already opened a chat. There is no Kin row in the thread list.
+2. **Kin is Home wherever a host runs Kin.** Kin stays non-coding: coding happens in a person's own T3 Code, connected through Kin's MCP endpoint. `state/kinHome.ts` (`kinPhoneHome` in client-runtime) makes Home the Kin list and its dock in a Kin-only build, on a teammate's phone, and on any phone whose saved or found host runs Kin, so nothing in Kin leads to the thread list and a launch never reopens a coding thread. Without a Kin host Home is upstream's workspace. `KinListSwitch` on the workspace's brand title (`WorkspaceRootScreen.tsx`, `WorkspaceBrandTitle.tsx`) and the `KinChats` page are the way into Kin from there. There is no Kin row in the thread list.
 3. **App services.** `App.tsx` adds `installKin(linkToAppPath),` to `appServiceDisposers`, plus its import. It starts the outbox, the notification listener and the start-list check, and sits before upstream's notification router so Kin reads the cold-start response first.
 
 Why not a fourth workspace tab: it isn't a one-line hook. A `"kin"` tab needs edits in `navigation-tab-order.ts` (order and labels), `navigation-tabs.ts` (icon), `workspace-tabs-state.ts` (`initialWorkspaceTabsState`), `WorkspaceExtraTab.tsx` (render), `WorkspaceToolbar.ios.tsx` (`SEARCH_LABELS`), `workspace-tab-navigation.ts` (the `tab !== "usage"` column rule), and `createWorkspaceStackNavigator.ios.tsx` (its hard-coded tab list), along with their tests. Revisit in phase 3, when Kin is the main surface.
@@ -501,7 +501,7 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 
 ## Open questions
 
-- Which Apple Developer team signs the Kin build, and who creates its APNs key? Its App ID also needs the App Attest capability, or approval keys can't be activated (approvals spec, section 4). Android FCM waits until someone uses Android.
+- Which Apple Developer team signs the Kin build, and who creates its APNs key? Its App ID also needs the App Attest capability, or approval keys can't be activated (approvals spec, section 4). Android phones go through FCM (`apps/server/src/kin/push/Fcm.ts`), with `KIN_FCM_SERVICE_ACCOUNT_FILE` (ops/kin/host/README.md, Phone notifications).
 - Is "Kin" the right label for the entry row, or should it carry the lead's name?
 - Should the Waiting on you banner also show on T3's Home list when the Kin row is scrolled away (for example, as a pinned header)?
 - Does phase 1 need folded agent talk, given there is one agent in a direct chat?

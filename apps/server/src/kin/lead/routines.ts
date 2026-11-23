@@ -213,15 +213,18 @@ const NOTHING = {
   evening_summary: "Nothing done, slipped, promised or due tomorrow.",
 };
 
+/** No fact needs the owner (what GitHub couldn't be read is not one): such a routine is not sent. */
+export const routineEmpty = (facts: MorningFacts | EveningFacts) =>
+  (facts.routine === "morning_brief" ? morningLines({ ...facts, github: [] }) : eveningLines(facts))
+    .length === 0;
+
 /**
  * The routine message: at most `ROUTINE_MAX_LINES` lines of body plus one card. `empty` when no
  * fact needs the owner (what GitHub couldn't be read is not one): such a routine is not sent.
  */
 export function renderRoutine(header: RoutineHeader, facts: MorningFacts | EveningFacts) {
   const lines = facts.routine === "morning_brief" ? morningLines(facts) : eveningLines(facts);
-  const empty =
-    (facts.routine === "morning_brief" ? morningLines({ ...facts, github: [] }) : lines).length ===
-    0;
+  const empty = routineEmpty(facts);
   const body = fitLines([
     ...headerLines(facts.routine, header),
     ...(lines.length === 0 ? [NOTHING[facts.routine]] : lines),

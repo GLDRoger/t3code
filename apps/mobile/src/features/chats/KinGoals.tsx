@@ -18,10 +18,12 @@ import { RowPressable } from "../../components/ui/RowPressable";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
+import { KinCountryFirstField } from "./components/KinCountryFirst";
+import { KinDayField } from "./components/KinDayField";
 import { KinFoldSection, KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, keyParam, targetOf } from "./KinWorkFormScreens";
 import { useKinGoals } from "./state/useKinAttention";
-import type { KinWorkTarget } from "./state/useKinWork";
+import { useKinWorkZone, type KinWorkTarget } from "./state/useKinWork";
 
 /** A goal's bar: how far it has got, with a tick where its straight line stands today. */
 function GoalBar(props: {
@@ -137,7 +139,8 @@ function GoalFormRead(
   props: KinWorkTarget & { readonly goalKey: string | null; readonly title: string },
 ) {
   const goals = useKinGoals(props, { enabled: true });
-  if (goals.state._tag !== "ready")
+  const zone = useKinWorkZone(props);
+  if (goals.state._tag !== "ready" || !zone.read)
     return (
       <FormMessage title={props.title}>
         <KinWorkLoading label="Loading goals" />
@@ -149,18 +152,21 @@ function GoalFormRead(
       : (goals.state.value.goals.find((one) => one.key === props.goalKey) ?? null);
   if (props.goalKey !== null && goal === null)
     return <FormMessage title={props.title}>{NO_LINK}</FormMessage>;
-  return <GoalForm goal={goal} goals={goals} title={props.title} />;
+  return <GoalForm target={props} goal={goal} goals={goals} title={props.title} zone={zone.zone} />;
 }
 
 function GoalForm(props: {
+  readonly target: KinWorkTarget;
   readonly goal: KinGoal | null;
   readonly goals: ReturnType<typeof useKinGoals>;
   readonly title: string;
+  readonly zone: string | null;
 }) {
   const navigation = useNavigation();
-  const { goal } = props;
+  const { goal, zone } = props;
   const [requestId] = useState(uuidv4);
-  const [draft, setDraft] = useState<KinGoalDraft>(() => kinGoalDraft(goal, new Date()));
+  const [opened] = useState(() => new Date());
+  const [draft, setDraft] = useState<KinGoalDraft>(() => kinGoalDraft(goal, opened, zone));
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const edit = (patch: Partial<KinGoalDraft>) => setDraft({ ...draft, ...patch });
@@ -207,7 +213,6 @@ function GoalForm(props: {
           autoFocus={goal === null}
           disabled={saving}
           maxLength={200}
-          placeholder="Q4 money in"
           onChangeText={(title) => edit({ title })}
         />
       </ListSection>
@@ -223,15 +228,20 @@ function GoalForm(props: {
         ))}
       </ListSection>
       <ListSection>
-        <KinWorkTextField
+        <KinCountryFirstField
+          target={props.target}
           label={KIN_GOALS.target}
-          value={draft.target}
-          keyboard="numbers"
-          disabled={saving}
-          maxLength={60}
-          placeholder={KIN_GOALS.targetHint[draft.measure]}
-          onChangeText={(target) => edit({ target })}
-        />
+          money={draft.measure === "revenue_received"}
+        >
+          <KinWorkTextField
+            label={KIN_GOALS.target}
+            value={draft.target}
+            keyboard="numbers"
+            disabled={saving}
+            maxLength={60}
+            onChangeText={(target) => edit({ target })}
+          />
+        </KinCountryFirstField>
         {manual ? (
           <>
             <KinWorkTextField
@@ -240,7 +250,6 @@ function GoalForm(props: {
               keyboard="numbers"
               disabled={saving}
               maxLength={20}
-              placeholder="0"
               onChangeText={(current) => edit({ current })}
             />
             <KinWorkTextField
@@ -248,30 +257,30 @@ function GoalForm(props: {
               value={draft.unit}
               disabled={saving}
               maxLength={40}
-              placeholder="hires, releases"
+              placeholder={KIN_GOALS.unitPlaceholder}
               onChangeText={(unit) => edit({ unit })}
             />
           </>
         ) : null}
       </ListSection>
       <ListSection>
-        <KinWorkTextField
+        <KinDayField
           label={KIN_GOALS.startsOn}
-          value={draft.startsOn}
-          keyboard="numbers"
+          day={draft.startsOn}
+          zone={zone}
+          now={opened}
+          none={null}
           disabled={saving}
-          maxLength={10}
-          placeholder="2026-10-01"
-          onChangeText={(startsOn) => edit({ startsOn: startsOn.trim() })}
+          onPick={(startsOn) => edit({ startsOn: startsOn ?? draft.startsOn })}
         />
-        <KinWorkTextField
+        <KinDayField
           label={KIN_GOALS.dueOn}
-          value={draft.dueOn}
-          keyboard="numbers"
+          day={draft.dueOn}
+          zone={zone}
+          now={opened}
+          none={null}
           disabled={saving}
-          maxLength={10}
-          placeholder="2026-12-31"
-          onChangeText={(dueOn) => edit({ dueOn: dueOn.trim() })}
+          onPick={(dueOn) => edit({ dueOn: dueOn ?? draft.dueOn })}
         />
       </ListSection>
       {goal === null ? null : (

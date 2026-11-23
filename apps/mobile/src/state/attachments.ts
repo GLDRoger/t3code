@@ -1,12 +1,15 @@
+import { mayUploadAttachments } from "@t3tools/client-runtime/kin/kinAttachmentAccess";
 import { createAttachmentEnvironmentAtoms } from "@t3tools/client-runtime/state/attachments";
 import type { AtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
-  AuthKinChatScope,
   AuthOrchestrationOperateScope,
+  type AuthEnvironmentScope,
   EnvironmentAuthorizationError,
   type EnvironmentId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import { msg } from "gt-react-native";
+import { m } from "../i18n/messages";
 import { AsyncResult } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
@@ -19,14 +22,15 @@ function requireAttachmentWriteAccess<W extends { readonly environmentId: Enviro
   return {
     ...command,
     run: async (registry, input) => {
+      const hasScope = (scope: AuthEnvironmentScope) =>
+        readEnvironmentScope(input.environmentId, scope);
       if (
-        !readEnvironmentScope(input.environmentId, AuthOrchestrationOperateScope) &&
-        !(allowKinChat && readEnvironmentScope(input.environmentId, AuthKinChatScope))
+        !(allowKinChat ? mayUploadAttachments(hasScope) : hasScope(AuthOrchestrationOperateScope))
       ) {
         return AsyncResult.failure(
           Cause.fail(
             new EnvironmentAuthorizationError({
-              message: "This connection cannot change attachments.",
+              message: m(msg("This connection cannot change attachments.")),
               requiredScope: AuthOrchestrationOperateScope,
             }),
           ),

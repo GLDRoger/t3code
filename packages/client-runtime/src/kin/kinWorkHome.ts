@@ -2,6 +2,7 @@ import type {
   KinChatId,
   KinChatSummary,
   KinListDefinition,
+  KinMessageId,
   KinMoneySummary,
   KinRecord,
   KinRecordKey,
@@ -20,18 +21,24 @@ import {
   type KinWorkFilter,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinCount } from "./kinCount.ts";
 
 /** The places of Work, each a tab of the Kin home: its list first, then a record. */
 export type KinWorkPlace = "tasks" | "money" | "clients" | "docs";
 
 export const KIN_WORK_HOME = {
   seeAll: (count: number) => `See all ${count}`,
+  /** Beside the Tasks block's count, the things it counts that the list below draws instead. */
+  onMeBelow: (count: number) =>
+    count === 1 ? "1 is on your list below" : `${count} are on your list below`,
   seeFewer: "Show fewer",
   search: "Search Work",
   add: "Add",
   addReceipt: "Receipt",
   addExpense: "Expense",
   elsewhere: "Clients, projects and docs",
+  /** The same, while the company has Clients off. */
+  elsewhereDocs: "Docs",
   places: {
     tasks: "Tasks",
     money: "Money",
@@ -75,9 +82,6 @@ export function kinWorkPlaceParam(show: string | undefined): {
     : { place: "tasks", projects: false };
 }
 
-const plural = (count: number, one: string, many = `${one}s`) =>
-  `${count} ${count === 1 ? one : many}`;
-
 export function kinMoneyLine(
   money: KinMoneySummary,
   scope: KinViewerScope = KIN_SCOPE_ALL,
@@ -95,7 +99,7 @@ export function kinMoneyLine(
 export const kinClientsLine = (clients: number, projects: number): string =>
   clients === 0 && projects === 0
     ? "No clients yet"
-    : `${plural(clients, "client")}, ${plural(projects, "project")}`;
+    : `${kinCount(clients, "client")}, ${kinCount(projects, "project")}`;
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -109,8 +113,8 @@ export const kinDocsWeekStart = (nowMs: number): string =>
 export function kinDocsLine(total: number, changed: number): string {
   if (total === 0) return "No docs yet";
   return changed === 0
-    ? plural(total, "doc")
-    : `${plural(total, "doc")}, ${changed} changed this week`;
+    ? kinCount(total, "doc")
+    : `${kinCount(total, "doc")}, ${changed} changed this week`;
 }
 
 /** The lists Docs shows beside the docs: the ones people made that Money doesn't already show. */
@@ -125,7 +129,12 @@ export type KinNeedsYouOpen =
   | { readonly type: "task"; readonly key: KinRecordKey }
   | { readonly type: "list"; readonly open: KinListOpen }
   | { readonly type: "money" }
-  | { readonly type: "chat"; readonly chatId: KinChatId };
+  | {
+      readonly type: "chat";
+      readonly chatId: KinChatId;
+      /** The card's message, for the chat to open on; null for a row with none. */
+      readonly messageId: KinMessageId | null;
+    };
 
 export interface KinNeedsYouRow {
   readonly id: string;
@@ -194,7 +203,7 @@ export function kinNeedsYou(input: {
         title: `${row.label} · ${row.chatTitle}`,
         detail: row.text ?? `Open the chat with ${row.chatTitle}`,
         late: false,
-        open: { type: "chat", chatId: item.chatId },
+        open: { type: "chat", chatId: item.chatId, messageId: item.messageId },
       };
     });
   return [...late, ...owed, ...waiting, ...today];

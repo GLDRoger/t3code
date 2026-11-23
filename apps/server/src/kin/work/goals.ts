@@ -2,8 +2,11 @@ import {
   KIN_GOAL_MEASURES,
   KinChatError,
   KinGoalMeasure,
+  KinNumberCadence,
+  KinNumberDecimal,
+  KinNumberDirection,
+  KinNumberSource,
   KinRecordId,
-  TrimmedNonEmptyString,
   type KinGoal,
   type KinGoalSaveInput,
   type KinMoney,
@@ -13,12 +16,14 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { NumberSpec, NumberSpecJson } from "../numbers/numberRows.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRecords, requestHashOf } from "./KinRecords.ts";
 import { fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
-import { homeCurrency } from "./companyProfile.ts";
+import { homeCurrency, recordingCurrency } from "./companyProfile.ts";
 import { dayIn, formatMoneyPlain, parseAmount, roundToWhole } from "./money.ts";
 import { inList, ownerWriter, theOwner } from "./ownerWork.ts";
 import { playbookThreshold } from "./playbooks.ts";
@@ -35,16 +40,27 @@ export const GoalInputs = {
     description:
       "A goal's measure: revenue_received (money in, from Money), clients_won, tasks_done, or manual (a number you keep current).",
   }),
-  target: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+  target: Schema.optional(KinToolText(60)).annotate({
     description: 'A goal\'s target: money as said for revenue_received ("40 lakh"), else a number.',
   }),
   current: Schema.optional(Schema.NullOr(Schema.Finite)).annotate({
     description: "A manual goal's number now; say where it came from in notes.",
   }),
-  unit: Schema.optional(
-    Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(40))),
-  ).annotate({ description: 'What a manual goal counts, such as "hires".' }),
+  unit: Schema.optional(Schema.NullOr(KinToolText(40))).annotate({
+    description: 'What a manual goal counts, such as "hires".',
+  }),
 };
+const WatchedNumberInputs = {
+  direction: Schema.optional(Schema.NullOr(KinNumberDirection)),
+  above: Schema.optional(Schema.NullOr(KinNumberDecimal)),
+  below: Schema.optional(Schema.NullOr(KinNumberDecimal)),
+  every: Schema.optional(Schema.NullOr(KinNumberCadence)),
+  spec: Schema.optional(Schema.NullOr(NumberSpec)),
+  source: Schema.optional(Schema.NullOr(KinNumberSource)),
+};
+const WatchedNumberFields = Schema.Struct(WatchedNumberInputs);
+const encodeNumberSpec = Schema.encodeEffect(NumberSpecJson);
+
 export const GOAL_INPUTS = ["measure", "target", "current", "unit"] as const;
 
 const isMeasure = (text: string | null): text is KinGoalMeasure =>
@@ -53,17 +69,25 @@ export const isMoneyMeasure = (measure: KinGoalMeasure) => measure === "revenue_
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
-/** A target as said: money for revenue, else a whole count. */
-const goalTarget = (measure: KinGoalMeasure, text: string, home: string) => {
+/** A target as said: money for revenue, in the company's currency, else a whole count. */
+const goalTarget = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  measure: KinGoalMeasure,
+  text: string,
+) {
   if (isMoneyMeasure(measure)) {
+    const home = yield* recordingCurrency(orgId).pipe(
+      Effect.catchTags({ SqlError: unavailableOn }),
+    );
     const parsed = parseAmount(text, home);
-    return "error" in parsed ? Effect.fail(parsed.error) : Effect.succeed<FieldValue>(parsed.money);
+    if ("error" in parsed) return yield* parsed.error;
+    return parsed.money;
   }
   const count = Number(text.replace(/[\s,]/g, ""));
-  return Number.isFinite(count) && count > 0
-    ? Effect.succeed<FieldValue>(String(count))
-    : Effect.fail(invalid(`A ${measure.replaceAll("_", " ")} goal's target is a number.`));
-};
+  if (!Number.isFinite(count) || count <= 0)
+    return yield* invalid(`A ${measure.replaceAll("_", " ")} goal's target is a number.`);
+  return String(count);
+});
 
 /** The goal fields an agent row or update names, checked; `undefined` leaves one as it is. */
 export const goalFields = Effect.fn("KinGoals.fields")(function* (
@@ -73,24 +97,46 @@ export const goalFields = Effect.fn("KinGoals.fields")(function* (
     readonly target?: string | undefined;
     readonly current?: number | null | undefined;
     readonly unit?: string | null | undefined;
-  },
+  } & typeof WatchedNumberFields.Type,
   before?: Readonly<Record<string, FieldValue>>,
 ) {
-  const measure = row.measure ?? (before === undefined ? undefined : fieldText(before, "measure"));
+  const was = before === undefined ? null : fieldText(before, "measure");
+  const measure = row.measure ?? was ?? undefined;
   if (row.measure !== undefined && !isMeasure(row.measure))
     return yield* invalid(`A goal measures ${KIN_GOAL_MEASURES.join(", ")}.`);
+  // A target kept across a change of measure would be read the other way, money as a count.
+  const next = row.measure ?? null;
+  if (
+    before !== undefined &&
+    row.target === undefined &&
+    isMeasure(next) &&
+    isMoneyMeasure(next) !== (isMeasure(was) && isMoneyMeasure(was))
+  )
+    return yield* invalid(
+      isMoneyMeasure(next)
+        ? `A revenue received goal's target is an amount: send the target with the measure, such as target "50,000".`
+        : `A ${next.replaceAll("_", " ")} goal's target is a number: send the target with the measure, such as target "12".`,
+    );
   if (row.target !== undefined && (measure === undefined || measure === null))
     return yield* invalid("Say what the goal measures with its target.");
   const fields: Record<string, FieldValue | null> = {};
   if (row.measure !== undefined) fields.measure = row.measure;
   if (row.target !== undefined && isMeasure(measure ?? null))
-    fields.target = yield* goalTarget(
-      measure as KinGoalMeasure,
-      row.target,
-      yield* homeCurrency(orgId),
-    );
+    fields.target = yield* goalTarget(orgId, measure as KinGoalMeasure, row.target);
   if (row.current !== undefined) fields.current = row.current === null ? null : String(row.current);
   if (row.unit !== undefined) fields.unit = row.unit;
+  for (const key of ["direction", "above", "below", "every", "source"] as const) {
+    if (row[key] !== undefined) fields[key] = row[key];
+  }
+  if (row.spec !== undefined)
+    fields.spec =
+      row.spec === null
+        ? null
+        : yield* encodeNumberSpec(row.spec).pipe(
+            Effect.mapError(() =>
+              invalid("Use a built-in number or count a list in named states."),
+            ),
+          );
   return fields;
 });
 
@@ -148,7 +194,7 @@ export const goalsNow = Effect.fn("KinGoals.now")(function* (
           ? Number(targetField)
           : Number.NaN;
     if (!Number.isFinite(target) || target <= 0) continue;
-    const current = yield* progressOf(orgId, measure, {
+    const current = yield* ownerLevelProgressOf(orgId, measure, {
       start,
       until,
       startsOn,
@@ -183,7 +229,21 @@ export const goalsNow = Effect.fn("KinGoals.now")(function* (
   return { goals, behindPercent };
 });
 
-const progressOf = Effect.fn("KinGoals.progress")(function* (
+export const ownerLevelReceivedByCurrency = Effect.fn("KinGoals.ownerLevelReceivedByCurrency")(
+  function* (orgId: KinOrgId, startsOn: string, untilDay: string, currency?: string) {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql<KinMoney>`SELECT SUM(p.amount_minor) AS minor, p.currency
+    FROM kin_record_payments p
+    JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+    WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
+      AND r.register_id IN ('invoices', 'receipts')
+      AND p.paid_on >= ${startsOn} AND p.paid_on <= ${untilDay}
+      ${currency === undefined ? sql`` : sql`AND p.currency = ${currency}`}
+    GROUP BY p.currency ORDER BY p.currency`;
+  },
+);
+
+export const ownerLevelProgressOf = Effect.fn("KinGoals.progress")(function* (
   orgId: KinOrgId,
   measure: KinGoalMeasure,
   period: {
@@ -200,13 +260,12 @@ const progressOf = Effect.fn("KinGoals.progress")(function* (
     case "manual":
       return period.manual;
     case "revenue_received": {
-      // As Money's "received": payments on invoices and advances, TDS withheld not counted.
-      const [row] = yield* sql<{ minor: number | null }>`SELECT SUM(p.amount_minor) AS minor
-        FROM kin_record_payments p
-        JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
-        WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
-          AND r.register_id IN ('invoices', 'receipts') AND p.currency = ${period.currency}
-          AND p.paid_on >= ${period.startsOn} AND p.paid_on <= ${period.untilDay}`;
+      const [row] = yield* ownerLevelReceivedByCurrency(
+        orgId,
+        period.startsOn,
+        period.untilDay,
+        period.currency,
+      );
       return row?.minor ?? 0;
     }
     case "clients_won": {

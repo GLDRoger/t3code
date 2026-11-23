@@ -58,7 +58,7 @@ it.live(
         ),
         Effect.flip,
       );
-      assert.include(String(refused), "No T3 Code database");
+      assert.include(String(refused), "No server database");
       assert.isFalse(yield* fs.exists(bare.dbPath));
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

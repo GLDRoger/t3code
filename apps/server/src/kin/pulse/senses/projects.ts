@@ -4,7 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { fieldList, parseFields } from "../../work/lists.ts";
 import { milestoneRisk, principalOfText, specChangesOf } from "../../work/projectSpine.ts";
 import { KIN_OWNER_LEVEL } from "../../work/teamView.ts";
-import { countedEntry, type RecordRow, selectRecords } from "../../work/recordRows.ts";
+import { daysOverdue, type RecordRow, selectRecords } from "../../work/recordRows.ts";
 import { DAY_MS, HOUR_MS, thresholds, toMs } from "../thresholds.ts";
 import {
   agentOrOwner,
@@ -133,7 +133,7 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
           sense: "milestone_late",
           key: `milestone_late:${row.key}:due=${due}`,
           since: iso(due),
-          consequence: `Milestone was due ${dayOf(ctx, due)}, ${daysText(Math.max(1, elapsed(due, at, "days")))} ago; ${progress}.`,
+          consequence: `Milestone was due ${dayOf(ctx, due)}, ${daysText(Math.max(1, daysOverdue(due, at, ctx.zone)))} ago; ${progress}.`,
           wake: "sweep",
         }),
       );
@@ -184,7 +184,7 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
       ${projectLastMoved(sql)} AS "lastAt"
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'projects' AND r.state = 'open'
-      AND ${countedEntry(sql)} AND EXISTS (SELECT 1 FROM kin_records t WHERE t.org_id = r.org_id
+      AND EXISTS (SELECT 1 FROM kin_records t WHERE t.org_id = r.org_id
         AND t.project_id = r.record_id AND t.register_id IN ('milestones', 'work')
         AND t.state IN ${sql.in(OPEN)}))
     WHERE "lastAt" >= 0 AND "lastAt" <= ${at - DAY_MS}
@@ -210,7 +210,7 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
   }
 
   // spec_changed: an open task written from a doc section that reads differently now.
-  const anchored = yield* sql<RecordRow>`${selectRecords(sql)}
+  const anchored = yield* sql<RecordRow>`${selectRecords(sql, false)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state IN ${sql.in(OPEN)}
       AND json_extract(r.fields_json, '$.fromDoc') IS NOT NULL AND r.updated_at <= ${at}
     ORDER BY r.key LIMIT ${SENSE_CAP}`;

@@ -149,7 +149,7 @@ const cheque = [
       title: "Printer paper",
       state: "done",
       date: "2026-05-04",
-      amount: "840",
+      amount: "-0.05",
       fields: { vendor: "Invented Paper Co", paidWith: "cheque" },
     },
   },
@@ -199,7 +199,8 @@ const holdings = (orgId: KinOrgId) =>
       party: string | null;
       project: string | null;
       createdAt: number;
-    }>`SELECT r.register_id AS "registerId", r.title, r.state, r.category,
+      confirmed: number;
+    }>`SELECT r.register_id AS "registerId", r.title, r.state, r.category, r.confirmed,
         r.amount_minor AS "amountMinor", r.due_at AS "dueAt", r.date_at AS "dateAt",
         r.sensitive, r.notes, r.fields_json AS "fieldsJson", p.title AS party,
         j.title AS project, r.created_at AS "createdAt"
@@ -229,6 +230,14 @@ describe("Download everything", () => {
       assert.deepStrictEqual(seeded.problems, []);
       const extended = yield* imports.apply(from, owner, chequeBooks);
       assert.deepStrictEqual(extended.problems, []);
+      // A file without the suggestion field imports as it always did: kept.
+      assert.deepStrictEqual(
+        yield* sql`SELECT DISTINCT confirmed FROM kin_records WHERE org_id = ${from}`,
+        [{ confirmed: 1 }],
+      );
+      // An agent's suggestion nobody kept, with a payment recorded before: it comes back as one.
+      yield* sql`UPDATE kin_records SET confirmed = 0 WHERE org_id = ${from} AND record_id IN
+        (SELECT record_id FROM kin_record_payments WHERE org_id = ${from})`;
 
       // A doc with a picture in it, kept as the host keeps both.
       yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
@@ -256,6 +265,29 @@ describe("Download everything", () => {
           updated_by_kind, updated_by_id)
         VALUES (${from}, ${JSON.stringify({ bankAccount: CANARY })}, 1, ${NOW}, 'person', ${owner})`;
 
+      // What was said on an entry and the contact logged with a client; a removed comment stays out.
+      const [task] = yield* sql<{ id: string; key: string }>`SELECT record_id AS id, key
+        FROM kin_records WHERE org_id = ${from} AND register_id = 'work' ORDER BY key LIMIT 1`;
+      const steps = [
+        { title: "Proofread", done: true },
+        { title: "Pack", done: false },
+      ];
+      yield* sql`UPDATE kin_records SET steps_json = ${JSON.stringify(steps)}, urgent = 1
+        WHERE org_id = ${from} AND record_id = ${task!.id}`;
+      const [client] = yield* sql<{ id: string; key: string }>`SELECT record_id AS id, key
+        FROM kin_records WHERE org_id = ${from} AND register_id = 'clients' ORDER BY key LIMIT 1`;
+      yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
+          author_id, body, files_json, request_hash, created_at, removed_at)
+        VALUES (${from}, 'cm1', ${task!.id}, 1, 'person', ${owner}, 'Invented: sent it over', '[]',
+          'h1', ${NOW}, NULL), (${from}, 'cm2', ${task!.id}, 2, 'agent', 'agent-1',
+          'Invented: taken back', '[]', 'h2', ${NOW}, ${NOW})`;
+      yield* sql`INSERT INTO kin_client_touches (org_id, touch_id, party_id, at, kind, person_id,
+          note, logged_by_kind, logged_by_id, origin_key, created_at)
+        VALUES (${from}, 'tch1', ${client!.id}, ${NOW}, 'call', ${owner}, 'Invented: renewal',
+          'person', ${owner}, 'test:tch1', ${NOW})`;
+      const [ownerName] = yield* sql<{ name: string }>`SELECT display_name AS name
+        FROM kin_people WHERE org_id = ${from} AND person_id = ${owner}`;
+
       // Only the owner may take it; a co-owner is refused.
       const refused = yield* exportZip(from, coOwner).pipe(Effect.flip);
       assert.strictEqual(refused.reason, "not_allowed");
@@ -273,8 +305,29 @@ describe("Download everything", () => {
       const zip = yield* unzip(bytes);
       assert.deepStrictEqual(
         [...zip.keys()],
-        ["README.txt", "kin.jsonl", "docs/D-1 Brand guide.md", `docs/D-1/${ATTACHMENT}.png`],
+        [
+          "README.txt",
+          "kin.jsonl",
+          "comments.jsonl",
+          "contacts.jsonl",
+          "docs/D-1 Brand guide.md",
+          `docs/D-1/${ATTACHMENT}.png`,
+        ],
       );
+      const said = "2026-11-12T06:00:00.000Z";
+      assert.deepStrictEqual(JSON.parse(zip.get("comments.jsonl")!.toString()), {
+        entry: task!.key,
+        at: said,
+        by: ownerName!.name,
+        text: "Invented: sent it over",
+      });
+      assert.deepStrictEqual(JSON.parse(zip.get("contacts.jsonl")!.toString()), {
+        client: client!.key,
+        at: said,
+        kind: "call",
+        who: ownerName!.name,
+        note: "Invented: renewal",
+      });
       assert.strictEqual(
         zip.get("docs/D-1 Brand guide.md")!.toString(),
         "# Brand guide\n\nUse the blue. kin-file:x\n",
@@ -301,10 +354,18 @@ describe("Download everything", () => {
         "kin_issued_numbers",
         "kin_doc_versions",
         "kin_doc_files",
+        "kin_record_comments",
+        "kin_client_touches",
+        "kin_people",
       ]);
 
       // Restore is kin import, into a company that has nothing yet.
       const lines = zip.get("kin.jsonl")!.toString().trimEnd().split("\n");
+      assert.isTrue(lines.some((line) => line.includes('"amount":"-0.05"')));
+      assert.deepInclude(
+        JSON.parse(lines.find((line) => line.includes('"title":"Send the welcome pack"'))!).entry,
+        { steps, urgent: true },
+      );
       const restored = yield* imports.apply(into, ownerInto, Stream.fromIterable(lines));
       assert.deepStrictEqual(restored.problems, []);
       assert.deepStrictEqual(

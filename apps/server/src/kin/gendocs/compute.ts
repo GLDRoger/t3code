@@ -261,15 +261,20 @@ const gst = (args: {
   readonly clientGstin: unknown;
   readonly clientPlace: unknown;
   readonly exportUnderLut: boolean;
+  /** The line its documents print instead of tax: the company said it isn't registered for GST. */
+  readonly notRegistered: string | undefined;
 }) => {
-  const registered = typeof args.supplierGstin === "string" && args.supplierGstin.length > 0;
+  const registered =
+    args.notRegistered === undefined &&
+    typeof args.supplierGstin === "string" &&
+    args.supplierGstin.length > 0;
   const supplier = stateOf(args.supplierGstin, args.supplierPlace);
   const client = stateOf(args.clientGstin, args.clientPlace);
   const exported = client === undefined;
   if (registered && client === null)
-    fail("the client has no place of supply: give it a GSTIN or a place of supply");
+    fail("the client has no place of supply and needs a GSTIN or a place of supply");
   if (registered && (supplier === null || supplier === undefined))
-    fail("the company's state isn't known: set its GSTIN or place of supply");
+    fail("the company's state isn't known and it needs a GSTIN or place of supply");
   const rate = fraction(args.rate);
   const half = { num: rate.num, den: rate.den * 2n };
   const components: ReadonlyArray<{
@@ -294,6 +299,7 @@ const gst = (args: {
     if (one !== null && one.currency !== currency) fail(`every amount must be in ${currency}`);
   let taxable: bigint;
   let amounts: ReadonlyArray<bigint>;
+  if (args.notRegistered !== undefined) refuseRecordedTax(args.recordedTax, "GST");
   if (args.taxable !== null) {
     taxable = BigInt(args.taxable.minor);
     amounts = components.map((one) => divide(taxable * one.num, one.den * 100n));
@@ -328,7 +334,8 @@ const gst = (args: {
     exported,
     exportUnderLut: exported && args.exportUnderLut,
     supplierState: supplier === null || supplier === undefined ? null : stateName(supplier),
-    placeOfSupply: exported || client === null ? null : stateName(client),
+    placeOfSupply:
+      exported || client === null || args.notRegistered !== undefined ? null : stateName(client),
     country: exported ? args.clientPlace : null,
     taxable: money(taxable, currency),
     taxes: components.map((one, index) => ({
@@ -338,6 +345,89 @@ const gst = (args: {
     })),
     tax: money(tax, currency),
     total: money(taxable + tax, currency),
+    ...(args.notRegistered === undefined ? {} : { notCharged: args.notRegistered }),
+  };
+};
+
+/** A company not registered for its tax charges none: tax recorded on the entry can't be printed. */
+const refuseRecordedTax = (recorded: Money | null, name: string) => {
+  if (recorded !== null && recorded.minor !== 0)
+    fail(
+      `the entry records tax, but the company isn't registered for ${name}, so its invoices charge none`,
+    );
+};
+
+/**
+ * Which tax a `gst` field charges, by the company's country: India's GST from the GSTINs and
+ * states, else the company's one tax at its rate (none without one), so a recipe that names `gst`
+ * is right in any country.
+ */
+export type TaxRegime =
+  | { readonly _tag: "gst"; readonly notRegistered?: string }
+  | {
+      readonly _tag: "flat";
+      readonly name: string;
+      readonly rate: string | null;
+      readonly pricesInclude: boolean;
+      /** The line its documents print instead: the company said it isn't registered for it. */
+      readonly notRegistered?: string;
+    };
+export const GST_REGIME: TaxRegime = { _tag: "gst" };
+let regime: TaxRegime = GST_REGIME;
+
+/**
+ * One tax line at the company's rate, on the lines' value or, when their prices include it, out
+ * of them; with no lines, out of the entry's total. No rate is no line.
+ */
+const flatTax = (
+  tax: Extract<TaxRegime, { readonly _tag: "flat" }>,
+  args: {
+    readonly taxable: Money | null;
+    readonly total: Money | null;
+    readonly recordedTax: Money | null;
+  },
+) => {
+  const currency =
+    args.taxable?.currency ?? args.total?.currency ?? fail("there is no amount and no lines");
+  for (const one of [args.taxable, args.total, args.recordedTax])
+    if (one !== null && one.currency !== currency) fail(`every amount must be in ${currency}`);
+  if (tax.notRegistered !== undefined) refuseRecordedTax(args.recordedTax, tax.name);
+  const charged = tax.rate !== null && tax.notRegistered === undefined;
+  const rate = !charged || tax.rate === null ? { num: 0n, den: 1n } : fraction(tax.rate);
+  const outOf = (gross: bigint) =>
+    args.recordedTax !== null && charged
+      ? gross - BigInt(args.recordedTax.minor)
+      : divide(gross * 100n * rate.den, 100n * rate.den + rate.num);
+  let taxable: bigint;
+  let amount: bigint;
+  if (args.taxable !== null && !tax.pricesInclude) {
+    taxable = BigInt(args.taxable.minor);
+    amount = divide(taxable * rate.num, rate.den * 100n);
+  } else {
+    const gross = args.taxable ?? args.total ?? fail("there is no amount and no lines");
+    if (args.recordedTax !== null && !charged && args.recordedTax.minor !== 0)
+      fail(`the entry records tax, but the company has no ${tax.name} rate set`);
+    taxable = outOf(BigInt(gross.minor));
+    amount = BigInt(gross.minor) - taxable;
+  }
+  if (args.total !== null && args.taxable !== null && BigInt(args.total.minor) !== taxable + amount)
+    fail(
+      `the lines come to ${formatMoney(money(taxable + amount, currency))} with tax, but the entry is recorded at ${formatMoney(args.total)}: correct the lines or the entry's amount`,
+    );
+  return {
+    registered: false,
+    exported: false,
+    exportUnderLut: false,
+    supplierState: null,
+    placeOfSupply: null,
+    country: null,
+    taxable: money(taxable, currency),
+    taxes: charged
+      ? [{ name: tax.name, rate: decimalText(rate.num, rate.den), amount: money(amount, currency) }]
+      : [],
+    tax: money(amount, currency),
+    total: money(taxable + amount, currency),
+    ...(tax.notRegistered === undefined ? {} : { notCharged: tax.notRegistered }),
   };
 };
 
@@ -587,6 +677,12 @@ const evaluate = (scope: Scope, name: string, spec: Spec): unknown => {
       if (typeof arg !== "object" || arg === null || Array.isArray(arg))
         return fail(`${name}: gst takes named arguments`);
       const get = (key: string) => resolve(scope, Reflect.get(arg, key) ?? null);
+      if (regime._tag === "flat")
+        return flatTax(regime, {
+          taxable: asMoney(get("taxable"), "taxable"),
+          total: asMoney(get("total"), "total"),
+          recordedTax: asMoney(get("recordedTax"), "recordedTax"),
+        });
       const rate = get("rate");
       if (rate === null || rate === undefined) return fail(`${name}: gst needs a rate`);
       return gst({
@@ -599,6 +695,7 @@ const evaluate = (scope: Scope, name: string, spec: Spec): unknown => {
         clientGstin: get("clientGstin"),
         clientPlace: get("clientPlace"),
         exportUnderLut: get("exportUnderLut") !== false,
+        notRegistered: regime.notRegistered,
       });
     }
     case "markdown": {
@@ -710,8 +807,10 @@ const withText = (value: unknown, done: WeakMap<object, unknown>): unknown => {
 export const computeData = (
   inputs: Readonly<Record<string, Value>>,
   computed: ReadonlyArray<readonly [string, unknown]>,
+  tax: TaxRegime = GST_REGIME,
 ): { readonly data: Computed } | { readonly error: string } => {
   const scope: Record<string, unknown> = { ...inputs };
+  regime = tax;
   operations = 0;
   made = { values: 0, bytes: 0 };
   measured = new WeakMap();

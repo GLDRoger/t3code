@@ -18,6 +18,8 @@ import { authorizeAttachmentRead } from "./attachmentAccess.ts";
 import { environment } from "./TaskCard.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { CommandId } from "@t3tools/contracts";
+import { bindShellChange } from "../shell/changes.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { startWakeupRun, authorityLayer, startAgentWakeup } from "./WakeupAuthority.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -29,6 +31,7 @@ import {
   KinChatId,
   KinKeyThumbprint,
   KinMemberId,
+  type KinChatListEvent,
   KinMessageId,
   KinMessagesSendInput,
   KinOrgId,
@@ -36,24 +39,29 @@ import {
   type KinReactionEmoji,
   KinTaskCardState,
   KinWaitingId,
+  type KinWaitingItem,
   KinWakeupId,
   KinWidgetId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
 import * as Ref from "effect/Ref";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as DateTime from "effect/DateTime";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Tracer from "effect/Tracer";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { KinKeyNotices } from "../approvals/ExecutionNotices.ts";
@@ -66,6 +74,7 @@ import * as Service from "./KinChatService.ts";
 import * as VisualHosts from "./KinVisualHosts.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as LevelGate from "../lead/LevelGate.ts";
+import * as Reach from "../lead/Reach.ts";
 import {
   attachChangeCard,
   proposeChange,
@@ -85,6 +94,42 @@ const database = authorityLayer;
 const repositories = Layer.provideMerge(Repository.layer, database);
 const dependencies = Layer.provideMerge(Layer.merge(Hub.layer, RefreshHub.layer), repositories);
 const layer = Layer.provideMerge(Service.layer, dependencies).pipe(Layer.provideMerge(environment));
+/**
+ * The owner settles the first of his waiting rows a co-owner's list reads, the moment it read it:
+ * an answer committing while her list is being opened.
+ */
+const answeredAsRead = Layer.effect(
+  Repository.KinChatRepository,
+  Effect.gen(function* () {
+    const repo = yield* Repository.KinChatRepository;
+    const hub = yield* Hub.KinChatHub;
+    const sql = yield* SqlClient.SqlClient;
+    let answered = false;
+    const answer = (item: KinWaitingItem) =>
+      Effect.gen(function* () {
+        answered = true;
+        const resolved = { ...item, resolvedAt: timestamp, resolution: "answered" };
+        yield* sql`UPDATE kin_waiting SET resolved_at = ${timestamp}, resolution = 'answered'
+          WHERE org_id = ${item.orgId} AND waiting_id = ${item.waitingId}`.pipe(Effect.orDie);
+        yield* hub.publish({ type: "waiting.updated", orgId: item.orgId, item: resolved });
+      });
+    return Repository.KinChatRepository.of({
+      ...repo,
+      listOwnersOpenWaiting: (input) =>
+        repo
+          .listOwnersOpenWaiting(input)
+          .pipe(
+            Effect.tap((rows) =>
+              answered || rows[0] === undefined ? Effect.void : answer(rows[0]),
+            ),
+          ),
+    });
+  }),
+);
+const answeredAsReadLayer = Layer.provideMerge(
+  Service.layer,
+  Layer.provideMerge(answeredAsRead, dependencies),
+).pipe(Layer.provideMerge(environment));
 const attachmentLayer = Layer.provideMerge(
   Service.layer,
   Layer.provideMerge(
@@ -566,12 +611,20 @@ describe("KinChatService", () => {
       });
       const mate = { _tag: "person", orgId: person.orgId, personId: mateId } as const;
       const lead = { orgId: person.orgId, agentId };
-      // Not hers to start until the owner allows it.
+      // Hers to start with no grant, unless the pair is restricted.
+      const limit = (restricted: boolean) =>
+        Reach.setLimit({
+          orgId: person.orgId,
+          by: person.personId,
+          a: Reach.person(mateId),
+          b: Reach.agent(agentId),
+          restricted,
+        });
+      yield* limit(true);
       assert.include(yield* service.createDirect(mate, lead).pipe(Effect.flip), {
         reason: "not_allowed",
       });
-      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
-        VALUES (${person.orgId}, ${agentId}, ${mateId}, ${person.personId}, 0)`;
+      yield* limit(false);
       const theirs = yield* service.createDirect(mate, lead);
       // Someone besides the owner reads it from the start, so it is shared from its first seq.
       assert.deepStrictEqual(
@@ -652,15 +705,18 @@ describe("KinChatService", () => {
         .pipe(Stream.take(1), Stream.runDrain);
       yield* service.subscribeChats(members, {}).pipe(Stream.take(1), Stream.runDrain);
       assert.equal((yield* service.orgs(members)).me[0]!.personId, me.personId);
-      // A teammate sees only the agents they own, may message, or share a chat with.
+      // A teammate sees every agent but one restricted for them, unless they share a chat with it.
       const seen = Effect.map(service.orgs(members), (result) =>
         result.orgs[0]!.agents.map((agent) => agent.agentId),
       );
-      assert.deepStrictEqual(yield* seen, [ownAgent]);
-      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
-        VALUES (${person.orgId}, ${agentId}, ${memberId}, ${person.personId}, 0)`;
       assert.deepStrictEqual(yield* seen, [agentId, ownAgent]);
-      yield* sql`UPDATE kin_lead_access SET revoked_at = 1 WHERE person_id = ${memberId}`;
+      yield* Reach.setLimit({
+        orgId: person.orgId,
+        by: person.personId,
+        a: Reach.person(memberId),
+        b: Reach.agent(agentId),
+        restricted: true,
+      });
       assert.deepStrictEqual(yield* seen, [ownAgent]);
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
         VALUES ('shared-group', ${person.orgId}, 'team_group', 0, ${timestamp})`;
@@ -971,6 +1027,7 @@ describe("KinChatService", () => {
           comparison: { name: "Last week", values: [9, 14, -2] },
         };
         const card = yield* service.chart(agent, input);
+        if ("figure" in card) return assert.fail("Expected a standalone chart");
         assert.include(card, { type: "chart", revision: 1 });
         assert.strictEqual(String(card.widgetId), `chart:${card.messageId}`);
         assert.deepStrictEqual(card.awaiting, []);
@@ -997,6 +1054,7 @@ describe("KinChatService", () => {
             series: [{ name: "Campaigns", points: [{ x: 12, y: 40, label: " Diwali " }] }],
           },
         });
+        if ("figure" in scatter) return assert.fail("Expected a standalone scatter");
         assert.deepInclude(scatter.state, {
           labels: [],
           series: [],
@@ -1098,6 +1156,7 @@ describe("KinChatService", () => {
           html: `<h1>Funnel</h1><img src="kin-file:${photo}"><script>fetch("https://example.com")</script>`,
         };
         const card = yield* service.visual(agent, input);
+        if ("figure" in card) return assert.fail("Expected a standalone visual");
         assert.include(card, { type: "visual", revision: 1 });
         assert.strictEqual(String(card.widgetId), `visual:${card.messageId}`);
         assert.deepStrictEqual(card.awaiting, []);
@@ -1157,6 +1216,8 @@ describe("KinChatService", () => {
         for (const [change, fix] of [
           [{ title: " " }, "needs a title"],
           [{ title: "x".repeat(121) }, "120 or fewer"],
+          [{ html: "<button><strong>Confirm</strong></button>" }, "Kin shows those itself"],
+          [{ html: "<input type=submit value=Pay>" }, "Kin shows those itself"],
           [{ html: "  " }, "page is empty"],
           [{ html: "x".repeat(5 * 1024 * 1024 + 1) }, "the limit is 5 MiB"],
           [{ html: '<img src="kin-file:kin-chat-not-here">' }, "is not a file in this chat"],
@@ -1199,7 +1260,8 @@ describe("KinChatService", () => {
           FROM kin_wakeups WHERE org_id = ${person.orgId} AND status = 'running'`;
         const inTurn = { ...agent, wakeupId: KinWakeupId.make(turn!.wakeupId) };
         const plain = yield* service.visual(inTurn, { ...input, clientMessageId: "visual-plain" });
-        assert.notProperty(plain.state, "sensitive");
+        if (!("figure" in plain)) return assert.fail("Expected a staged visual");
+        assert.match(plain.figure, /kin-figure:f_[A-Za-z0-9_-]{10}/);
         assert.notProperty(card.state, "sensitive");
         yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
           VALUES (${person.orgId}, ${turn!.wakeupId}, 0)`;
@@ -1207,7 +1269,128 @@ describe("KinChatService", () => {
           ...input,
           clientMessageId: "visual-sensitive",
         });
-        assert.deepInclude(labelled.state, { sensitive: true });
+        if (!("figure" in labelled)) return assert.fail("Expected a staged visual");
+        const reply = yield* service.send(inTurn, {
+          chatId: chat.chatId,
+          body: `Signups picked up.\n\n${labelled.figure}`,
+          clientMessageId: "visual-reply",
+          placeReplyFigures: true,
+          intent: "answer",
+        });
+        assert.lengthOf(reply.embeds ?? [], 2);
+        assert.deepInclude(reply.embeds?.[0], { _tag: "visual", sensitive: true });
+        assert.notProperty(reply.embeds?.[1], "sensitive");
+        assert.deepStrictEqual(
+          yield* service.visual(inTurn, { ...input, clientMessageId: "visual-plain" }),
+          plain,
+        );
+      }).pipe(Effect.provide(attachmentLayer)),
+  );
+
+  it.effect(
+    "puts a picture on the turn's reply as an image with its doc's chip, once per retry, and posts one with no reply alone",
+    () =>
+      Effect.gen(function* () {
+        const { service, agent, chat, person } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const [turn] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+          FROM kin_wakeups WHERE org_id = ${person.orgId} AND status = 'running'`;
+        const inTurn = { ...agent, wakeupId: KinWakeupId.make(turn!.wakeupId) };
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+          VALUES (${person.orgId}, 'docs', 'Docs', 'D', 1, 0)`;
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+          VALUES (${person.orgId}, 'pic-doc', 'docs', 'D-1', 'Ambermill launch', 'agent', ${agentId},
+            0, 'agent', 'picture:lead:1', 0, 0)`;
+        for (const version of [1, 2])
+          yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind,
+              summary, operations_json, actor_kind, via, origin_key, created_at)
+            VALUES (${person.orgId}, 'pic-doc', ${version}, '', 'Ambermill launch', 'created',
+              'Picture', '[]', 'agent', 'lead', ${`kin-picture:${version}`}, 0)`;
+        const image = (id: string) => ({
+          type: "image" as const,
+          id,
+          name: "ambermill-launch.png",
+          mimeType: "image/png",
+          sizeBytes: 68,
+        });
+        const input = {
+          chatId: chat.chatId,
+          clientMessageId: "kin-picture:one",
+          intent: "answer" as const,
+          attachment: image("kin-chat-picture-1"),
+          doc: { key: "D-1", version: 1 },
+        };
+        const first = { placed: "reply", attachmentId: "kin-chat-picture-1" };
+        assert.deepStrictEqual(yield* service.picture(inTurn, input), first);
+        // Before a batch is made: how many fit, the one on the reply already included.
+        const batch = (count: number) => [
+          "kin-picture:one",
+          ...Array.from({ length: count }, (_, index) => `kin-picture:batch-${index}`),
+        ];
+        const room = (count: number) =>
+          service.pictureRoom(inTurn, { chatId: chat.chatId, clientMessageIds: batch(count) });
+        assert.deepStrictEqual([yield* room(3), yield* room(4)], [4, 4]);
+        // A retry drew its image again; the first one is what the reply carries.
+        assert.deepStrictEqual(
+          yield* service.picture(inTurn, { ...input, attachment: image("kin-chat-picture-2") }),
+          first,
+        );
+        const said = {
+          chatId: chat.chatId,
+          body: "Here is the launch post.",
+          clientMessageId: "picture-reply",
+          placeReplyFigures: true as const,
+          intent: "answer" as const,
+        };
+        const reply = yield* service.send(inTurn, said);
+        assert.deepStrictEqual(
+          reply.attachments?.map((one) => one.id),
+          ["kin-chat-picture-1"],
+        );
+        assert.deepStrictEqual(reply.refs, [
+          {
+            _tag: "doc",
+            key: "D-1",
+            version: 1,
+            section: null,
+            title: "Ambermill launch",
+            sectionTitle: null,
+          },
+        ]);
+        // The reply sent again is the same reply, the picture on it Kin's and not the retry's.
+        assert.strictEqual((yield* service.send(inTurn, said)).messageId, reply.messageId);
+        // Drawn after the turn's last word, it goes out on a message of its own at the turn's end.
+        yield* service.picture(inTurn, {
+          ...input,
+          clientMessageId: "kin-picture:two",
+          attachment: image("kin-chat-picture-3"),
+          doc: { key: "D-1", version: 2 },
+        });
+        yield* service.settleFigures(inTurn, chat.chatId, "answer");
+        // Outside a turn's reply there is no reply to wait for.
+        assert.deepStrictEqual(
+          yield* service.picture(agent, {
+            ...input,
+            clientMessageId: "kin-picture:three",
+            attachment: image("kin-chat-picture-4"),
+          }),
+          { placed: "message", attachmentId: "kin-chat-picture-4" },
+        );
+        const posted = yield* sql<{ attachments: string; refs: string }>`SELECT
+            attachments_json AS attachments, refs_json AS refs FROM kin_messages
+          WHERE org_id = ${person.orgId} AND chat_id = ${chat.chatId} AND body = ''
+            AND attachments_json IS NOT NULL ORDER BY seq`;
+        assert.deepStrictEqual(
+          posted.map((row) => [
+            JSON.parse(row.attachments).map((one: { id: string }) => one.id),
+            JSON.parse(row.refs).map((one: { version: number }) => one.version),
+          ]),
+          [
+            [["kin-chat-picture-3"], [2]],
+            [["kin-chat-picture-4"], [1]],
+          ],
+        );
       }).pipe(Effect.provide(attachmentLayer)),
   );
 
@@ -1563,6 +1746,7 @@ describe("KinChatService", () => {
         service.history(foreign, { chatId: chat.chatId, beforeSeq: 99, limit: 100 }),
         service.markRead(foreign, { chatId: chat.chatId, seq: 1 }),
         service.mute(foreign, { chatId: chat.chatId, muted: true }),
+        service.pin(foreign, { chatId: chat.chatId, pinned: true }),
         service.upsertWidget(foreign, {
           chatId: chat.chatId,
           widgetId: widget.widgetId,
@@ -1792,7 +1976,7 @@ describe("KinChatService", () => {
         widgetId: widget.widgetId,
         revision: 1,
         type: "task",
-        state: { ...state, status: "done", lastError: "invented" },
+        state: { ...state, status: "done", lastError: "invented", failure: "signed_out" },
         awaiting: [person.personId],
       });
       assert.strictEqual(
@@ -1800,6 +1984,7 @@ describe("KinChatService", () => {
         (yield* decodeTask(widget.state)).status,
       );
       assert.isNull((yield* decodeTask(updated.state)).lastError);
+      assert.notStrictEqual((yield* decodeTask(updated.state)).failure, "signed_out");
       const actionInput = {
         widgetId: widget.widgetId,
         revision: updated.revision,
@@ -1811,7 +1996,25 @@ describe("KinChatService", () => {
         yield* service.act(person, { ...actionInput, revision: 99 }).pipe(Effect.flip),
         { reason: "widget_changed" },
       );
+      const baseClock = yield* Clock.Clock;
+      const host = { ...baseClock, currentTimeMillis: Effect.succeed(0) };
+      yield* TestClock.adjust("3 days");
       const action = yield* service.act(person, actionInput);
+      const followup = yield* service
+        .send(person, {
+          chatId: chat.chatId,
+          body: "Is this done?",
+          clientMessageId: "after-tap",
+        })
+        .pipe(Effect.provideService(Clock.Clock, host));
+      assert.strictEqual(followup.createdAt, action.createdAt);
+      const reply = yield* service.send(agent, {
+        chatId: chat.chatId,
+        body: "Yes, it is done.",
+        clientMessageId: "after-tap-reply",
+        intent: "answer",
+      });
+      assert.strictEqual(reply.createdAt, followup.createdAt);
       assert.strictEqual(action.kind, "widget_action");
       assert.deepStrictEqual(yield* service.act(person, actionInput), action);
       assert.include(
@@ -2341,6 +2544,158 @@ describe("KinChatService", () => {
         assert.strictEqual(row?.lastMessage?.messageId, hello.messageId);
       }).pipe(Effect.provide(layer)),
   );
+
+  it.effect("an owner's answer landing as a co-owner's list reads it still leaves her list", () =>
+    Effect.gen(function* () {
+      const { service, person, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('meera', ${person.orgId}, 'meera', 'Meera Shah', ${timestamp}, 'co_owner')`;
+      yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, message_id,
+          widget_id, reason, created_at)
+        VALUES ('owner-ask', ${person.orgId}, ${person.personId}, ${chat.chatId}, NULL, NULL,
+          'question', ${timestamp})`;
+      const meera = { ...person, personId: decodeKinPersonId("meera") };
+      const list = yield* Stream.toQueue(
+        service.subscribeChats([meera], { orgId: person.orgId, acceptWaitsFor: true }),
+        { capacity: "unbounded" },
+      );
+      // Her snapshot read it open; the owner settled it before the list was handed out.
+      const first = yield* Queue.take(list);
+      assert.deepStrictEqual(
+        first._tag === "snapshot" && first.waiting.map((item) => item.waitingId),
+        [decodeKinWaitingId("owner-ask")],
+      );
+      const [row] = yield* sql<{ resolvedAt: string | null }>`SELECT resolved_at AS "resolvedAt"
+        FROM kin_waiting WHERE waiting_id = 'owner-ask'`;
+      assert.isNotNull(row?.resolvedAt);
+      const left = yield* Queue.take(list);
+      assert.isTrue(
+        left._tag === "waiting" &&
+          left.item.waitingId === "owner-ask" &&
+          left.item.resolvedAt !== null,
+      );
+    }).pipe(Effect.scoped, Effect.provide(answeredAsReadLayer)),
+  );
+  it.effect(
+    "sends a page's line for its body to a list that reads previews, whole while an item waits on it",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, agent, chat } = yield* seed();
+        const body = `## Needs you\n- Approve the venue deposit\n\n## Money\n${"- An invented invoice, paid in full.\n".repeat(20)}`;
+        const page = yield* service.notice({
+          audience: "chat",
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("page"),
+          body,
+        });
+        const rowOf = (event: KinChatListEvent) =>
+          event._tag === "snapshot"
+            ? event.chats.find((row) => row.chatId === chat.chatId)
+            : event._tag === "chat"
+              ? event.chat
+              : undefined;
+        const whole = rowOf(
+          Option.getOrThrow(yield* Stream.runHead(service.subscribeChats([person], {}))),
+        );
+        assert.strictEqual(whole?.lastMessage?.body, body);
+        assert.isUndefined(whole?.lastPreview);
+        const updates = yield* Stream.toQueue(
+          service.subscribeChats([person], { acceptPreview: true }),
+          { capacity: "unbounded" },
+        );
+        const short = rowOf(yield* Queue.take(updates));
+        assert.deepStrictEqual(short?.lastPreview, {
+          gist: "Approve the venue deposit",
+          brief: false,
+        });
+        assert.strictEqual(short?.lastMessage?.body, body.slice(0, 280));
+        // The waiting row shows the message's own words, so it comes whole again.
+        yield* service.addWaiting(agent, {
+          chatId: chat.chatId,
+          personId: person.personId,
+          messageId: page.message.messageId,
+          widgetId: null,
+          reason: "question",
+        });
+        assert.strictEqual((yield* Queue.take(updates))._tag, "waiting");
+        assert.deepStrictEqual(rowOf(yield* Queue.take(updates)), whole);
+      }).pipe(Effect.provide(layer)),
+  );
+  it.effect("builds the chat list in a fixed number of statements, not a few per chat", () =>
+    Effect.gen(function* () {
+      const { repo, service, person } = yield* seed();
+      const statements: Array<string> = [];
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          const end = span.end.bind(span);
+          span.end = (endTime, exit) => {
+            end(endTime, exit);
+            const query = span.attributes.get("db.query.text");
+            if (typeof query === "string") statements.push(query);
+          };
+          return span;
+        },
+      });
+      const listed = Effect.fn("test.listed")(function* () {
+        statements.length = 0;
+        const list = Option.getOrThrow(
+          yield* Stream.runHead(service.subscribeChats([person], {})).pipe(
+            Effect.withTracer(tracer),
+          ),
+        );
+        if (list._tag !== "snapshot") return assert.fail("Expected snapshot");
+        return { list, count: statements.length };
+      });
+      const addGroups = Effect.fn("test.addGroups")(function* (from: number, to: number) {
+        for (let index = from; index < to; index += 1) {
+          const chatId = KinChatId.make(`group-${index}`);
+          yield* repo.createChat({
+            orgId: person.orgId,
+            chatId,
+            kind: "project_group",
+            title: `Invented group ${index}`,
+            teamId: null,
+            directKey: null,
+            createdAt: timestamp,
+            lastMessageAt: null,
+            archivedAt: null,
+          });
+          yield* repo.addMember({
+            orgId: person.orgId,
+            chatId,
+            memberId: KinMemberId.make(`group-${index}-rhea`),
+            principal: { _tag: "person", personId: person.personId },
+            role: "owner",
+            joinedAt: timestamp,
+            leftAt: null,
+            mutedUntil: null,
+          });
+          yield* service.send(person, {
+            chatId,
+            body: `Invented note ${index} about the venue`,
+            clientMessageId: `group-${index}`,
+          });
+        }
+      });
+      yield* addGroups(0, 2);
+      const few = yield* listed();
+      yield* addGroups(2, 8);
+      const many = yield* listed();
+      assert.strictEqual(many.list.chats.length, few.list.chats.length + 6);
+      // Per chat: the chat, the viewer's member row, the last messages and their cards.
+      assert.isAtMost(many.count - few.count, 6 * 4);
+      // What a row may link to (every client, project and deal the viewer sees) is read once a list.
+      assert.strictEqual(
+        statements.filter((query) =>
+          query.includes("register_id IN ('clients', 'projects', 'deals')"),
+        ).length,
+        1,
+      );
+    }).pipe(Effect.provide(layer)),
+  );
   it.effect("mutes and unmutes a chat for the caller only, live in their list", () =>
     Effect.gen(function* () {
       const { service, person, chat } = yield* seed();
@@ -2365,6 +2720,37 @@ describe("KinChatService", () => {
         (yield* service.mute(person, { chatId: chat.chatId, muted: false })).mutedUntil,
       );
       assert.deepStrictEqual(yield* mine, { person: null, agent: null });
+    }).pipe(Effect.provide(presenceLayer)),
+  );
+  it.effect("pins and unpins a chat for the caller only, live in their list", () =>
+    Effect.gen(function* () {
+      const { service, person, chat } = yield* seed();
+      const updates = yield* Stream.toQueue(service.subscribeChats([person], {}), {
+        capacity: "unbounded",
+      });
+      assert.strictEqual((yield* Queue.take(updates))._tag, "snapshot");
+      const mine = Effect.map(Queue.take(updates), (event) =>
+        event._tag === "chat"
+          ? Object.fromEntries(
+              event.chat.members.map((member) => [member.principal._tag, member.pinnedAt]),
+            )
+          : event._tag,
+      );
+      const at = DateTime.formatIso(yield* DateTime.now);
+      const pinned = yield* service.pin(person, { chatId: chat.chatId, pinned: true });
+      assert.strictEqual(pinned.pinnedAt, at);
+      assert.deepStrictEqual(yield* mine, { person: pinned.pinnedAt, agent: undefined });
+      // Pinning again keeps the first pin's time, so the order pinned holds.
+      yield* TestClock.adjust("5 seconds");
+      assert.strictEqual(
+        (yield* service.pin(person, { chatId: chat.chatId, pinned: true })).pinnedAt,
+        pinned.pinnedAt,
+      );
+      assert.notProperty(
+        yield* service.pin(person, { chatId: chat.chatId, pinned: false }),
+        "pinnedAt",
+      );
+      assert.deepStrictEqual(yield* mine, { person: undefined, agent: undefined });
     }).pipe(Effect.provide(presenceLayer)),
   );
   it.effect("marks a chat working in the list while its agent's run is live", () =>
@@ -2903,5 +3289,134 @@ describe("KinChatService", () => {
         assert.strictEqual(yield* profile(), "9999999999");
         assert.strictEqual(yield* company, 1);
       }).pipe(Effect.provide(Layer.provideMerge(LevelGate.layer, layer))),
+  );
+
+  it.effect(
+    "a sections card applies once through the real tap, for the owner and for a co-owner",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const gate = yield* LevelGate.KinLevelGate;
+        const coOwner = { ...person, personId: KinPersonId.make("probe-co-owner") };
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES (${coOwner.personId}, ${person.orgId}, 'zoya', 'Zoya', ${timestamp}, 'co_owner')`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at)
+          VALUES ('probe-co-owner-member', ${person.orgId}, ${chat.chatId}, 'person',
+            ${coOwner.personId}, 'member', ${timestamp})`;
+        const card = (changeId: string, on: boolean) =>
+          Effect.gen(function* () {
+            const shell = yield* KinShell.get(person.orgId);
+            const after = shell.sections.map((one) => (one.id === "deals" ? { ...one, on } : one));
+            return yield* gate.ask(
+              agent,
+              {
+                chatId: chat.chatId,
+                clientMessageId: `kin-shell:${changeId}`,
+                question: "Change how Kin is set up for this company?",
+                detail: on ? "Turn on Deals" : "Turn off Deals",
+                options: [
+                  { label: "Confirm", kind: "yes" as const },
+                  { label: "Cancel", kind: "no" as const },
+                ],
+              },
+              (widget) =>
+                bindShellChange({
+                  orgId: person.orgId,
+                  changeId,
+                  agentId,
+                  wakeupId: "probe",
+                  before: shell.sections,
+                  after,
+                  baseRev: shell.rev,
+                  widgetId: widget.widgetId,
+                  now: 0,
+                }).pipe(Effect.asVoid, Effect.provideService(SqlClient.SqlClient, sql)),
+            );
+          });
+        const tap = (
+          who: typeof person,
+          widget: { widgetId: KinWidgetId; revision: number },
+          id: string,
+        ) =>
+          service
+            .act(who, {
+              widgetId: widget.widgetId,
+              revision: widget.revision,
+              actionId: "choose",
+              value: "option-1",
+              clientActionId: id,
+            })
+            .pipe(
+              Effect.provideService(RefreshHub.KinRefreshObserver, { touch: () => Effect.void }),
+            );
+        // Two Confirms at once: one applies, the other finds the card answered.
+        const off = yield* card("sc_probe_off", false);
+        const taps = yield* Effect.forEach(
+          [
+            [person, "tap-a"],
+            [coOwner, "tap-b"],
+          ] as const,
+          ([who, id]) => Effect.exit(tap(who, off, id)),
+          { concurrency: "unbounded" },
+        );
+        assert.strictEqual(taps.filter(Exit.isSuccess).length, 1);
+        const once = yield* KinShell.get(person.orgId);
+        assert.strictEqual(once.rev, 1);
+        assert.isFalse(once.sections.find((one) => one.id === "deals")!.on);
+        // A co-owner's Confirm applies too.
+        yield* tap(coOwner, yield* card("sc_probe_on", true), "tap-c");
+        const back = yield* KinShell.get(person.orgId);
+        assert.strictEqual(back.rev, 2);
+        assert.isTrue(back.sections.find((one) => one.id === "deals")!.on);
+      }).pipe(Effect.provide(Layer.provideMerge(LevelGate.layer, layer))),
+  );
+
+  it.effect(
+    "a screen too far behind ends, and resuming from its cursor brings what it missed",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, chat } = yield* seed();
+        const hub = yield* Hub.KinChatHub;
+        const pull = yield* Stream.toPull(service.subscribe(person, { chatId: chat.chatId }));
+        const [opened] = yield* pull;
+        assert.strictEqual(opened?._tag, "backlog");
+        if (opened?._tag !== "backlog") return;
+        const sent = [];
+        for (const n of [1, 2, 3])
+          sent.push(
+            yield* service.send(person, {
+              chatId: chat.chatId,
+              body: `Owner note ${n}`,
+              clientMessageId: `behind-${n}`,
+            }),
+          );
+        // Ten thousand more wait on a screen that reads none of them.
+        for (let seq = 0; seq < 10_000; seq += 1)
+          yield* hub.publish({
+            type: "read.updated",
+            orgId: person.orgId,
+            chatId: chat.chatId,
+            memberId: decodeKinMemberId("behind-reader"),
+            seq,
+          });
+        const ended = yield* Effect.exit(pull);
+        assert.isTrue(Exit.isFailure(ended), "the screen ends");
+        assert.include(JSON.stringify(ended), "unavailable");
+        const resumed = yield* Stream.runHead(
+          service.subscribe(person, {
+            chatId: chat.chatId,
+            afterSeq: opened.lastSeq,
+            afterChangeSeq: opened.lastChangeSeq,
+          }),
+        ).pipe(Effect.map(Option.getOrThrow));
+        assert.strictEqual(resumed._tag, "backlog");
+        if (resumed._tag !== "backlog") return;
+        assert.deepStrictEqual(
+          resumed.messages.map((message) => message.messageId),
+          sent.map((message) => message.messageId),
+        );
+      }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 });

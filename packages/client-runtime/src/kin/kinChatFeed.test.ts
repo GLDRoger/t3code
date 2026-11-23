@@ -46,6 +46,7 @@ import {
 } from "./kinChatFeed.ts";
 import type { KinHost } from "./kinHost.ts";
 import { KIN_SLOW_START_AFTER_MS, kinPresenceLine, kinPresenceNeedsClock } from "./kinLive.ts";
+import { kinMessageLayout, kinPageHead, kinPageView } from "./kinMessagePage.ts";
 import { kinSentences } from "./kinScreenState.ts";
 import {
   applyKinChatEvent,
@@ -193,11 +194,34 @@ describe("rows", () => {
       count: 3,
       decision: "Settled on a fixed timeout.",
       expanded: false,
+      discussionId: null,
+      open: false,
     });
     expect(fold.type === "fold" && fold.authors).toEqual(["Tech lead", "Agent"]);
     expect(fold.key).toBe("fold:run-0");
     // On screen, a folded run counts as seen through its last message.
     expect(kinRowSeq(fold)).toBe(24);
+  });
+
+  it.each([
+    [true, true],
+    [false, false],
+    [undefined, false],
+  ])("a Team-room discussion's fold is still going while its host says so (%s)", (said, open) => {
+    const messages = all.slice(19, 26).map((m) =>
+      m.floorRunId === "run-0"
+        ? {
+            ...m,
+            discussionId: "TD-1" as KinMessage["discussionId"],
+            ...(said === undefined ? {} : { discussionOpen: m.seq === 24 ? said : true }),
+          }
+        : m,
+    );
+    expect(messageRows(messages, viewer, new Set())[2]).toMatchObject({
+      type: "fold",
+      discussionId: "TD-1",
+      open,
+    });
   });
 
   it("keeps a deleted agent message inside its run's fold", () => {
@@ -368,24 +392,83 @@ describe("rows", () => {
     });
   });
 
+  it("draws Kin's morning page as a page under the greeting, never as a notice line", () => {
+    const page = agentMessage(3, {
+      kind: "system",
+      author: { _tag: "system" },
+      form: "brief",
+      createdAt: localIso(2, 8),
+      body: "Clients:\n- Follow-ups today: 1.\n- Corran rollout for Corran Tiles has no next step.",
+    });
+    const rows = messageRows([agentMessage(1), page], viewer, new Set());
+    const row = rows.find((one) => "message" in one && one.message.seq === 3);
+    expect(row).toMatchObject({ type: "message", authorLabel: "Kin" });
+    expect(kinMessageLayout(page)).toBe("page");
+    expect(kinPageHead(page, "Zoya")?.greeting).toBe("Good morning, Zoya");
+    expect(kinPageView(page.body, true).sections.map((section) => section.title)).toEqual([
+      "Clients",
+    ]);
+  });
+
   it("draws one agent's words in another's chat by who sent or answered them, and opens Team-room runs", () => {
     const system = { kind: "system" as const, author: { _tag: "system" as const } };
     const rows = messageRows(
       [
-        agentMessage(1, { ...system, relay: { kind: "sent_by", agentId: KIN_FIXTURE_AGENT } }),
+        agentMessage(1, {
+          ...system,
+          body: "Keep both **Pristine** runs?\nMeera wants the March one.",
+          relay: {
+            kind: "sent_by",
+            agentId: KIN_FIXTURE_AGENT,
+            afterReading: "mail from lena@brightwell.example: New bank details",
+          },
+        }),
         agentMessage(2, {
           ...system,
+          body: "Kept the March run\nDone: Pristine runs (changed)",
           relay: { kind: "reply_from", agentId: KIN_FIXTURE_AGENT },
           discussionId: "TD-1" as KinMessage["discussionId"],
+        }),
+        agentMessage(3, {
+          ...system,
+          body: "## Cash\n\n- Runway is 14 months.\n- Dev's hire fits.\n\nNothing else moves.",
+          relay: { kind: "reply_from", agentId: KIN_FIXTURE_AGENT },
+        }),
+        agentMessage(4, {
+          ...system,
+          body: "Runway is 14 months.\n\nShould I hold Dev's hire?",
+          relay: { kind: "reply_from", agentId: KIN_FIXTURE_AGENT },
+        }),
+        agentMessage(5, {
+          ...system,
+          body: 'Spend by month.\n```kin_chart\n{"type":"bar"}\n```',
+          relay: { kind: "reply_from", agentId: KIN_FIXTURE_AGENT },
         }),
       ],
       viewer,
       new Set(),
-    );
+    ).filter((row) => row.type === "relay");
+    // Both directions fold to their first line; a reply ending on a question or holding a figure
+    // stays open, so nothing to answer or look at hides behind the fold.
     expect(rows).toMatchObject([
-      { type: "relay", relay: "sent_by", agentLabel: "Tech lead", discussionId: null },
-      { type: "relay", relay: "reply_from", agentLabel: "Tech lead", discussionId: "TD-1" },
+      {
+        relay: "sent_by",
+        agentLabel: "Tech lead",
+        discussionId: null,
+        summary: "Keep both Pristine runs?",
+        afterReading: "Sent after reading: mail from lena@brightwell.example: New bank details",
+      },
+      {
+        relay: "reply_from",
+        agentLabel: "Tech lead",
+        discussionId: "TD-1",
+        summary: "Kept the March run.",
+      },
+      { relay: "reply_from", summary: "Cash." },
+      { relay: "reply_from", summary: null },
+      { relay: "reply_from", summary: null },
     ]);
+    expect(rows.filter((row) => "afterReading" in row)).toHaveLength(1);
     // A person's words the agent passed on read as theirs, carried by the agent.
     const passed = messageRows(
       [
@@ -400,7 +483,12 @@ describe("rows", () => {
         }),
         agentMessage(4, {
           body: "Rhea says yes.",
-          relay: { kind: "sent_by", agentId: KIN_FIXTURE_AGENT, personId: "rhea" as KinPersonId },
+          relay: {
+            kind: "sent_by",
+            agentId: KIN_FIXTURE_AGENT,
+            personId: "rhea" as KinPersonId,
+            afterReading: "the web page brightwell.example",
+          },
         }),
       ],
       viewer,
@@ -414,8 +502,14 @@ describe("rows", () => {
         personLabel: "Zoya Sheikh",
         text: "Can the copy move a week?",
       },
-      { type: "relay", personLabel: "A teammate", text: "Rhea says yes." },
+      {
+        type: "relay",
+        personLabel: "A teammate",
+        text: "Rhea says yes.",
+        afterReading: "Sent after reading: the web page brightwell.example",
+      },
     ]);
+    expect("afterReading" in passed[0]!).toBe(false);
     // In the Team room a discussion is open under its line until the viewer closes it.
     const room = all.slice(19, 26);
     const open = (closed: ReadonlySet<string>) =>
@@ -559,12 +653,14 @@ describe("rows", () => {
 describe("streaming replies", () => {
   const reply = (seq: number, draftId: string, body: string) =>
     agentMessage(seq, { floorRunId: "r", clientMessageId: `reply:${draftId}`, body });
-  const draft = (draftId: string, text: string) => ({
+  // The fixture's clock, not a local one, so no time zone puts a gap before the message.
+  const draft = (seq: number, draftId: string, text: string) => ({
     draftId,
     agentId: KIN_FIXTURE_AGENT,
     text,
-    startedAt: localIso(8, 9),
+    startedAt: agentMessage(seq).createdAt,
   });
+  const streamingAt = new Date(Date.parse(agentMessage(3).createdAt) + 60_000);
   const shape = (rows: ReadonlyArray<KinFeedRow>) =>
     rows.map((row) =>
       row.type === "message" || row.type === "draft" ? [row.key, row.showAuthor] : row.type,
@@ -585,20 +681,14 @@ describe("streaming replies", () => {
 
   it("keeps a draft's key and author line when its message lands, so the bubble stays put", () => {
     const before = [ownMessage(1), reply(2, "a", "First.")];
-    const streaming = messageRows(before, viewer, new Set(), new Date(2026, 10, 8, 12), [
-      draft("b", "Sec"),
-    ]);
+    const streaming = messageRows(before, viewer, new Set(), streamingAt, [draft(3, "b", "Sec")]);
     const landed = messageRows([...before, reply(3, "b", "Second.")], viewer, new Set());
     expect(shape(streaming)).toEqual(shape(landed));
     expect(streaming[2]).toMatchObject({ type: "draft", authorLabel: "Tech lead" });
     expect(kinRowSeq(streaming[2]!)).toBe(0);
     // The first reply of a turn carries the author line while streaming and after.
     expect(
-      shape(
-        messageRows([ownMessage(1)], viewer, new Set(), new Date(2026, 10, 8, 12), [
-          draft("a", "Fi"),
-        ]),
-      ),
+      shape(messageRows([ownMessage(1)], viewer, new Set(), streamingAt, [draft(2, "a", "Fi")])),
     ).toEqual([
       ["fixture-1", false],
       ["reply:a", true],
@@ -731,6 +821,11 @@ describe("message labels", () => {
       "Tech lead, agent. See PR 212 and payments.test.ts. 9:30.",
     ],
     [
+      "no thread address",
+      row({ body: "Reviewed in t3-thread://v2/ab12." }),
+      "Tech lead, agent. Reviewed in. 9:30.",
+    ],
+    [
       "a suggestion says it isn't sent",
       row({ body: "Merge it?", status: "suggested" }),
       "Tech lead, agent. Merge it? 9:30. Suggestion, not sent yet.",
@@ -749,6 +844,14 @@ describe("message labels", () => {
       "a card with a caption, which the card itself labels",
       row({ body: "Started", widgetId: "w1" as KinMessage["widgetId"] }),
       "Tech lead, agent. Started. 9:30.",
+    ],
+    [
+      "a page's figure by its title, not its id",
+      row({
+        body: "Two are late.\n\n```kin_visual This week\nf_aaaaaaaaaa\n```",
+        embeds: [{ _tag: "visual", title: "This week", attachmentId: "a1", height: 90 }],
+      }),
+      "Tech lead, agent. Two are late. This week. 9:30.",
     ],
     [
       "a body ending in an ellipsis",
@@ -860,6 +963,19 @@ describe("message images", () => {
     ],
     ["an HTML image", 'a <IMG src="https://attacker.example/p.png"> b', "a Image b"],
     ["a plain link", "[docs](https://example.com)", "[docs](https://example.com)"],
+    [
+      "a thread link",
+      "Read [Dev's review](t3-thread://v2/ab12) first.",
+      "Read Dev's review first.",
+    ],
+    ["a bare thread address", "Notes: see t3-thread://v2/ab12.", "Notes: see."],
+    ["an autolinked thread address", "Done <t3-thread://v2/ab12> today", "Done today"],
+    [
+      "a thread link beside a web link",
+      "[Review](t3-thread://v2/ab12) on [#212](https://example.com/pull/212)",
+      "Review on [#212](https://example.com/pull/212)",
+    ],
+    ["a thread link in code", "`[Review](t3-thread://v2/ab12)`", "`Review`"],
   ])("renders %s as text before parsing", (_name, body, rendered) => {
     expect(kinBodyMarkdown(body)).toBe(rendered);
   });
@@ -870,6 +986,7 @@ describe("message images", () => {
     ["drops any other image", "![x](https://attacker.example/kin-file:ab)", "Image: x"],
     ["drops a reference image", "![x][1]\n\n[1]: kin-file:ab", "Image: x\n\n[1]: kin-file:ab"],
     ["drops an HTML image", '<img src="kin-file:ab">', "Image"],
+    ["reads a thread link as its words", "[Review](t3-thread://v2/ab12)", "Review"],
   ])("a doc's body %s", (_name, body, rendered) => {
     expect(kinDocMarkdown(body)).toBe(rendered);
   });

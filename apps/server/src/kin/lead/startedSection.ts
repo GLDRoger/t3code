@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { heldWork } from "./KinBudget.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * What a lead started and where it stands now, read from Kin's own rows at turn time, so the
@@ -12,7 +13,6 @@ import { heldWork } from "./KinBudget.ts";
 
 export const STARTED_RULE =
   "Where the tasks you started (task is the id task_cancel takes), the requests you passed on, the entries you gave others and anything waiting on the daily limit stand now, as Kin's records have them. Say only what this shows; when something you mention isn't here, check before you say where it stands.";
-const DAY_MS = 24 * 60 * 60 * 1000;
 const TASKS_CAP = 8;
 const HANDOFFS_CAP = 5;
 const ASSIGNED_CAP = 8;
@@ -66,6 +66,8 @@ export const buildStartedSection = Effect.fn("KinLeadPrompt.started")(function* 
     LEFT JOIN kin_agents a ON a.org_id = h.org_id AND a.agent_id = h.to_agent_id
     LEFT JOIN kin_events e ON e.org_id = h.org_id AND e.event_id = h.event_id
     WHERE h.org_id = ${orgId} AND h.from_agent_id = ${agentId} AND h.created_at >= ${since}
+      -- A teammate's request still on the owner's card, or not passed on, went nowhere.
+      AND (h.route_state IS NULL OR h.route_state = 'passed')
     ORDER BY h.created_at DESC, h.message_id LIMIT ${HANDOFFS_CAP}`;
   // Entries this lead made for someone else to do; its own are in the Work section.
   const assigned = yield* sql<{ key: string; title: string; state: string; to: string }>`

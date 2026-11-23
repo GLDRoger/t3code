@@ -1,7 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   KinAgentId,
+  KinConnectionId,
   KinEvent,
+  KinEventId,
   KinOrgId,
   KinPersonId,
   KinWakeupId,
@@ -12,18 +14,31 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import * as Chat from "../chat/layer.ts";
+import { deliverHeld } from "../triggers/heldDelivery.ts";
+import { reholdAfter } from "../triggers/quietHold.ts";
+import { holderBody } from "./holderNotice.ts";
 import { goalsNow } from "../work/goals.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { wordOf } from "./holds.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import * as KinPulse from "./KinPulse.ts";
+import { headStarts } from "./headStart.ts";
+import { DRAFT_CALL_NOTES, DRAFT_FROM_MAILBOX, draftWakeText } from "./draftWake.ts";
 import { buildPulseSection } from "./prompt.ts";
+import { screenFacts } from "./people.ts";
+import { factSig } from "./told.ts";
 import { projectLastMoved } from "./senses/projects.ts";
-import { buildWeeklySection, wantsWeekly } from "./weekly.ts";
+import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
 
 // Invented org, people, entries and money only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -37,7 +52,8 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const stamp = "2026-10-01T00:00:00.000Z";
 
-const layer = KinEventQueue.layer.pipe(
+const layer = KinShell.layer.pipe(
+  Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
 );
@@ -175,7 +191,28 @@ const seed = Effect.gen(function* () {
     dueAt: B + 2 * DAY,
     partyId: "r-C-1",
   });
-  yield* insert({ id: "W-10", dueAt: B + 5 * DAY, partyId: "r-C-1" });
+  yield* insert({ id: "W-10", dueAt: B + 5 * DAY, partyId: "r-C-1", category: "obligation" });
+  // An agent's suggestions nobody confirmed: no chase, no contact, no goal, no brief figure,
+  // even with a payment an older build let it take.
+  yield* insert({
+    id: "INV-7",
+    list: "invoices",
+    state: "waiting",
+    amount: 177_000_00,
+    dueAt: B + 2 * DAY,
+    dateAt: B - 5 * DAY,
+    partyId: "r-C-1",
+    confirmed: 0,
+    createdAt: B - 5 * DAY,
+  });
+  yield* insert({
+    id: "QT-2",
+    list: "quotes",
+    state: "waiting",
+    amount: 300_000_00,
+    confirmed: 0,
+    createdAt: B,
+  });
   yield* insert({ id: "DT-1", list: "dates", category: "renewal", dueAt: B + 40 * DAY });
   yield* insert({
     id: "EXP-1",
@@ -203,7 +240,8 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor, currency,
       paid_on, origin_key, created_at, created_by_kind, voided_at)
     VALUES (${orgId}, 'pay-1', 'r-INV-6', 1_00_000_00, 'INR', '2026-11-02', 'pay-1', 0, 'person', NULL),
-      (${orgId}, 'pay-2', 'r-INV-6', 50_000_00, 'INR', '2026-11-02', 'pay-2', 0, 'person', 1)`;
+      (${orgId}, 'pay-2', 'r-INV-6', 50_000_00, 'INR', '2026-11-02', 'pay-2', 0, 'person', 1),
+      (${orgId}, 'pay-3', 'r-INV-7', 10_000_00, 'INR', '2026-11-02', 'pay-3', 0, 'person', NULL)`;
   const goal = (id: string, fields: object) =>
     insert({
       id,
@@ -341,6 +379,40 @@ const SENSES: ReadonlyArray<readonly [string, string, number]> = [
 
 const decodeEvent = Schema.decodeUnknownSync(KinEvent);
 
+/** Chat services too, for the notices Kin posts itself. */
+const chatLayer = Chat.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
+
+/** Meera may message the Chief of staff. */
+const letMate = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+    VALUES (${orgId}, ${chief}, ${mate}, ${owner}, 0)`;
+});
+
+/** What Kin posted in someone's direct chat with the Chief of staff, oldest first. */
+const noticesTo = Effect.fn("test.noticesTo")(function* (personId: KinPersonId) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ body: string }>`SELECT m.body FROM kin_messages m
+    JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+    WHERE m.org_id = ${orgId} AND c.direct_key = ${`${personId}:${chief}`}
+      AND m.author_kind = 'system' AND m.status = 'posted'
+    ORDER BY m.seq`;
+  return rows.map((row) => row.body);
+});
+const mateNotices = noticesTo(mate);
+
+/** The wakes holders got, in order, with the facts each carried. */
+const holderWakes = Effect.fn("test.holderWakes")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ agent: string; json: string }>`SELECT agent_id AS agent, json
+    FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'holders:%'
+    ORDER BY received_at, event_id`;
+  return rows.map((row) => {
+    const event = decodeEvent(JSON.parse(row.json));
+    return { agent: row.agent, keys: event._tag === "pulse" ? event.factKeys : [] };
+  });
+});
+
 describe("KinPulse", () => {
   it.effect("each sense is absent a minute before its line and present at it", () =>
     Effect.gen(function* () {
@@ -359,6 +431,22 @@ describe("KinPulse", () => {
         VALUES ('held', ${orgId}, ${chief}, 'github', 'P2', '{}', 0, 0, 1)`;
       assert.lengthOf(keyed((yield* read(B)).facts, "work_held", chief), 1);
 
+      // A suggested one on the same day is still a day to know, with no fee of its own, and
+      // stands for no renewal that was kept.
+      yield* insert({
+        id: "DT-3",
+        list: "dates",
+        category: "renewal",
+        projectId: "P-1",
+        amount: 9_999_00,
+        confirmed: 0,
+        dueAt: Date.UTC(2026, 11, 20, 23, 59, 59, 999),
+      });
+      const guessed = (yield* read(B + 40 * DAY)).facts.filter(
+        (fact) => fact.sense === "renewal_due" && fact.scope.projectKey === "P-1",
+      );
+      assert.deepStrictEqual(guessed.map((fact) => fact.subject.key).toSorted(), ["DT-3", "P-1"]);
+      assert.notInclude(guessed.find((fact) => fact.subject.key === "DT-3")!.consequence, "9,999");
       // The same renewal kept in Dates for the project too is one fact, not two.
       yield* insert({
         id: "DT-2",
@@ -370,13 +458,38 @@ describe("KinPulse", () => {
       const renewals = (yield* read(B + 40 * DAY)).facts.filter(
         (fact) => fact.sense === "renewal_due" && fact.scope.projectKey === "P-1",
       );
-      assert.deepStrictEqual(
-        renewals.map((fact) => fact.subject.key),
-        ["DT-2"],
+      assert.deepStrictEqual(renewals.map((fact) => fact.subject.key).toSorted(), ["DT-2", "DT-3"]);
+      // A suggested repeating invoice's next draft names no amount and waits on Keep.
+      yield* insert({
+        id: "INV-17",
+        list: "invoices",
+        amount: 12_345_00,
+        confirmed: 0,
+        repeat: '{"every":"month"}',
+        dateAt: B + 15 * DAY,
+      });
+      const [retainer] = keyed((yield* read(B + 10 * DAY)).facts, "retainer_due", "INV-17");
+      assert.match(retainer!.consequence, /; it is still a draft that waits on Keep\.$/);
+      assert.notInclude(retainer!.consequence, "12,345");
+
+      // V27: our own task under a client is a late task, not something we owe the client.
+      yield* insert({ id: "W-15", dueAt: B, partyId: "r-C-2", category: "task" });
+      assert.lengthOf(keyed((yield* read(B + 60 * DAY)).facts, "client_waiting_on_us", "C-2"), 0);
+      assert.lengthOf(keyed((yield* read(B + 60 * DAY)).facts, "task_late", "W-15"), 1);
+      // A late obligation is, in days rather than hours; contact names what it counts.
+      const [owed] = keyed((yield* read(B + 12 * DAY)).facts, "client_waiting_on_us", "C-1");
+      assert.strictEqual(owed!.consequence, "Something we owe them has been past due for 7 days.");
+      const [cold] = keyed((yield* read(B)).facts, "client_cold", "C-1");
+      assert.strictEqual(
+        cold!.consequence,
+        "No contact for 30 days (calls, meetings, mail, invoices and payments count; the last was an invoice), and nothing open with them.",
       );
 
-      // A void invoice never counts; a moved due date is a new episode, so a new key.
-      assert.lengthOf(keyed((yield* read(B + 60 * DAY)).facts, "invoice_overdue", "INV-2"), 0);
+      // A void invoice never counts, nor a suggestion; a moved due date is a new episode, so a new key.
+      const later = (yield* read(B + 60 * DAY)).facts;
+      assert.lengthOf(keyed(later, "invoice_overdue", "INV-2"), 0);
+      assert.lengthOf(keyed(later, "invoice_overdue", "INV-7"), 0);
+      assert.lengthOf(keyed(later, "quote_unanswered", "QT-2"), 0);
       const [before] = keyed((yield* read(B + 11 * DAY)).facts, "task_late", "W-1");
       yield* sql`UPDATE kin_records SET due_at = ${B + 10 * DAY + HOUR} WHERE record_id = 'r-W-1'`;
       const [after] = keyed((yield* read(B + 11 * DAY)).facts, "task_late", "W-1");
@@ -385,17 +498,97 @@ describe("KinPulse", () => {
       assert.strictEqual(before!.consequence, "Was due 2026-11-11, yesterday.");
       assert.strictEqual(after!.consequence, "Was due 2026-11-11, yesterday.");
 
+      yield* sql`UPDATE kin_records SET fields_json = '{"number":"AM/26-27/001"}'
+        WHERE record_id = 'r-INV-1'`;
       const overdue = keyed((yield* read(B + 12 * DAY)).facts, "invoice_overdue", "INV-1")[0]!;
       assert.strictEqual(overdue.consequence, "₹1,77,000 owed, 10 days past due (2026-11-03).");
+      assert.strictEqual(overdue.subject.number, "AM/26-27/001");
       assert.deepStrictEqual(overdue.actor, { _tag: "agent", agentId: finance });
       assert.deepStrictEqual(overdue.measure?.from, { _tag: "default" });
       const lumen = keyed((yield* read(B + 9 * DAY)).facts, "invoice_overdue", "INV-5")[0]!;
+      assert.notProperty(lumen.subject, "number");
       assert.deepStrictEqual(lumen.measure?.from, {
         _tag: "playbook",
         key: "D-1",
         title: "Invented D-1",
       });
+      yield* insert({
+        id: "W-16",
+        category: "meeting",
+        partyId: "r-C-1",
+        dateAt: B - 31 * DAY,
+      });
+      yield* sql`UPDATE kin_records SET party_id = 'r-C-1'
+        WHERE org_id = ${orgId} AND record_id IN ('r-QT-1', 'r-INV-6')`;
+      yield* sql`UPDATE kin_records SET date_at = ${B + 2 * DAY}
+        WHERE org_id = ${orgId} AND record_id = 'r-QT-1'`;
+      const shell = yield* KinShell.KinShell;
+      let rev = (yield* shell.get(orgId)).rev;
+      for (const [sections, words] of [
+        [[], "calls, meetings, mail, invoices and payments count; the last was a quote"],
+        [
+          [{ id: "invoices", on: false }],
+          "calls, meetings, mail and payments count; the last was a payment",
+        ],
+        [[{ id: "money", on: false }], "calls, meetings and mail count; the last was a meeting"],
+      ] as const) {
+        rev = (yield* shell.set(orgId, owner, rev, sections)).rev;
+        const [fact] = keyed((yield* read(B + 60 * DAY)).facts, "client_cold", "C-1");
+        assert.include(fact?.consequence, words);
+      }
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a renewal is mentioned from its heads-up and handed over to draft from its draft day",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const stageOf = (subject: string, at: number) =>
+          read(at).pipe(Effect.map((result) => keyed(result.facts, "renewal_due", subject)[0]));
+        // DT-1 is due on the 41st day: mentioned from 14 days before, drafted from 7.
+        assert.isUndefined(yield* stageOf("DT-1", B + 26 * DAY - MINUTE));
+        const ahead = (yield* stageOf("DT-1", B + 33 * DAY - MINUTE))!;
+        assert.strictEqual(ahead.stage, "heads_up");
+        assert.include(ahead.consequence, "drafting starts 2026-12-04, not before");
+        assert.isFalse((yield* headStarts(orgId, [ahead])).byFact.has(ahead.key));
+        const drafting = (yield* stageOf("DT-1", B + 33 * DAY))!;
+        assert.strictEqual(drafting.stage, "draft");
+        assert.notInclude(drafting.consequence, "drafting starts");
+        assert.isTrue((yield* headStarts(orgId, [drafting])).byFact.has(drafting.key));
+        // Nobody is told to act on a heads-up; from the draft day, Finance acts.
+        const told = (fact: KinPulseFact, now: number) =>
+          buildPulseSection({
+            orgId,
+            agentId: chief,
+            now,
+            wokeFor: [],
+            checkIn: new Set([fact.key]),
+          }).pipe(Effect.map((section) => section?.byProject.flatMap((group) => group.facts)[0]));
+        assert.notProperty(yield* told(ahead, B + 33 * DAY - MINUTE), "acts");
+        assert.include(yield* told(drafting, B + 33 * DAY), { acts: "fin (fin)" });
+        // Lumen's own playbook drafts 3 days ahead; the company's, 10.
+        yield* insert({
+          id: "DT-3",
+          list: "dates",
+          category: "renewal",
+          dueAt: B + 40 * DAY,
+          partyId: "r-C-1",
+        });
+        yield* sql`UPDATE kin_doc_versions SET body = ${"# Chasing Lumen\n\n```kin\nchase_invoice_after_days: 7\nrenewal_draft_days: 3\n```\n"}
+        WHERE record_id = 'r-D-1'`;
+        assert.strictEqual((yield* stageOf("DT-3", B + 37 * DAY - MINUTE))?.stage, "heads_up");
+        assert.strictEqual((yield* stageOf("DT-3", B + 37 * DAY))?.stage, "draft");
+        yield* insert({ id: "D-4", list: "docs", category: "playbook" });
+        yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
+          operations_json, actor_kind, actor_id, via, origin_key, created_at)
+        VALUES (${orgId}, 'r-D-4', 1, ${"# Renewals\n\n```kin\nrenewal_draft_days: 10\n```\n"},
+          'Renewals', 'created', 'Seeded', '[]', 'person', ${owner}, 'owner', 'seed-D-4', 0)`;
+        assert.strictEqual((yield* stageOf("DT-1", B + 30 * DAY - MINUTE))?.stage, "heads_up");
+        assert.strictEqual((yield* stageOf("DT-1", B + 30 * DAY))?.stage, "draft");
+        assert.strictEqual((yield* stageOf("DT-3", B + 37 * DAY - MINUTE))?.stage, "heads_up");
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("ticking twice wakes each agent once, and one agent's facts claim as one batch", () =>
@@ -414,7 +607,8 @@ describe("KinPulse", () => {
         ["invoice_overdue", "task_stuck", "budget_over"],
       );
       const events = yield* sql<{ agent: string; tag: string }>`SELECT agent_id AS agent, tag
-        FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY event_id`;
+        FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+          AND dedupe_key NOT LIKE 'holders:%' ORDER BY event_id`;
       assert.lengthOf(events, first.woken.length);
       assert.isTrue(events.every((event) => event.agent === finance));
       const claim = yield* Effect.scoped(
@@ -432,7 +626,487 @@ describe("KinPulse", () => {
       yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-INV-1'`;
       const later = yield* KinPulse.tick(orgId, at + 2 * MINUTE);
       assert.isAtLeast(later.cleared, 1);
+      // Back under the same key: a new wake, once.
+      yield* sql`UPDATE kin_records SET state = 'waiting' WHERE record_id = 'r-INV-1'`;
+      const back = yield* KinPulse.tick(orgId, at + 3 * MINUTE);
+      const overdue = first.woken.filter((key) => key.startsWith("invoice_overdue:"));
+      assert.deepStrictEqual(back.woken, overdue);
+      assert.lengthOf((yield* KinPulse.tick(orgId, at + 4 * MINUTE)).woken, 0);
+      const wakes = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+          AND dedupe_key NOT LIKE 'holders:%'`;
+      assert.lengthOf(wakes, first.woken.length + overdue.length);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a record past due wakes its agent holder once, and again only when the due day changes",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const at = B + 11 * DAY;
+        const lateW1 = (keys: ReadonlyArray<string>) =>
+          keys.filter((key) => key.startsWith("task_late:W-1:"));
+        const first = yield* KinPulse.tick(orgId, at);
+        assert.deepStrictEqual(lateW1((yield* holderWakes()).flatMap((wake) => wake.keys)), [
+          `task_late:W-1:due=${B + 10 * DAY}`,
+        ]);
+        assert.isTrue(first.told.some((one) => one.to === `agent:${chief}`));
+        // Late all week: not again.
+        for (const later of [at + HOUR, at + DAY, at + 6 * DAY])
+          assert.lengthOf(
+            lateW1((yield* KinPulse.tick(orgId, later)).told.map((one) => one.key)),
+            0,
+          );
+        // Its due day moves: told again, once.
+        yield* sql`UPDATE kin_records SET due_at = ${B + 11 * DAY} WHERE record_id = 'r-W-1'`;
+        const moved = yield* KinPulse.tick(orgId, at + 7 * DAY);
+        assert.deepStrictEqual(lateW1(moved.told.map((one) => one.key)), [
+          `task_late:W-1:due=${B + 11 * DAY}`,
+        ]);
+        assert.lengthOf(
+          lateW1((yield* KinPulse.tick(orgId, at + 8 * DAY)).told.map((one) => one.key)),
+          0,
+        );
+        // Closed, then open again: told again.
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-1'`;
+        yield* KinPulse.tick(orgId, at + 8 * DAY + HOUR);
+        yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id = 'r-W-1'`;
+        const reopened = yield* KinPulse.tick(orgId, at + 8 * DAY + 2 * HOUR);
+        assert.lengthOf(lateW1(reopened.told.map((one) => one.key)), 1);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("two late tasks for one agent make one wake", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const at = B + 11 * DAY;
+      yield* KinPulse.tick(orgId, at);
+      const wakes = yield* holderWakes();
+      assert.deepStrictEqual(
+        wakes.map((wake) => wake.agent),
+        [chief],
+      );
+      assert.includeMembers(
+        [...wakes[0]!.keys],
+        [
+          `task_late:W-1:due=${B + 10 * DAY}`,
+          `task_late:W-9:due=${B + 2 * DAY}`,
+          `theirs_late:W-5:due=${B + 3 * DAY}`,
+        ],
+      );
+      // The next pass tells only what became due since (W-12, due today now), never those again.
+      const next = yield* KinPulse.tick(orgId, at + 15 * MINUTE);
+      assert.deepStrictEqual(
+        next.told.map((one) => one.key),
+        [`task_due_soon:W-12:due=${B + 12 * DAY}`],
+      );
+      assert.lengthOf(yield* holderWakes(), 2);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a late task held by a teammate is Kin's one notice in their chat, and no wake", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* letMate;
+      const sql = yield* SqlClient.SqlClient;
+      const hub = yield* KinChatHub;
+      const posted = yield* hub.subscribeAll;
+      const at = B + 3 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(at);
+      const key = `task_late:W-8:due=${B + 2 * DAY}`;
+      // The owner's own late task still goes to the Chief of staff, not to a notice.
+      yield* insert({ id: "W-20", dueAt: B + 2 * DAY, ownerKind: "person", ownerId: owner });
+      const first = yield* KinPulse.tick(orgId, at);
+      assert.deepStrictEqual(
+        first.told.filter((one) => one.key === key),
+        [{ agentId: chief, to: mate, key }],
+      );
+      const wakes = (yield* holderWakes()).flatMap((wake) => wake.keys);
+      assert.notInclude(wakes, key);
+      assert.include(wakes, `task_late:W-20:due=${B + 2 * DAY}`);
+      assert.deepStrictEqual(yield* mateNotices, ["W-8 Invented W-8 was due yesterday."]);
+      // Posted to the hub, which is what pushes it.
+      const [event] = yield* Stream.runCollect(
+        posted.pipe(
+          Stream.filter((one) => one.type === "message.posted"),
+          Stream.take(1),
+        ),
+      );
+      assert.strictEqual(
+        event?.type === "message.posted" ? event.message.body : "",
+        "W-8 Invented W-8 was due yesterday.",
+      );
+      const ownerChats = yield* sql`SELECT 1 FROM kin_chats
+        WHERE org_id = ${orgId} AND direct_key LIKE ${`${owner}:%`}`;
+      assert.lengthOf(ownerChats, 0);
+      // Later passes, in the same minute or the next day, add nothing.
+      for (const later of [at + 1, at + MINUTE, at + DAY]) {
+        yield* TestClock.setTime(later);
+        const again = yield* KinPulse.tick(orgId, later);
+        assert.lengthOf(
+          again.told.filter((one) => one.key === key),
+          0,
+        );
+      }
+      assert.lengthOf(yield* mateNotices, 1);
+      const told = yield* sql<{ person: string }>`SELECT person_id AS person FROM kin_pulse_told
+        WHERE org_id = ${orgId} AND fact_key = ${key} ORDER BY told_at`;
+      assert.deepStrictEqual(
+        told.map((row) => row.person),
+        [mate],
+      );
+      // Done, cleared, then reopened with the same due date: still late, so told again, once.
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-8'`;
+      yield* KinPulse.tick(orgId, at + 2 * DAY);
+      yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id = 'r-W-8'`;
+      for (const later of [at + 2 * DAY + HOUR, at + 2 * DAY + HOUR, at + 2 * DAY + 2 * HOUR]) {
+        yield* TestClock.setTime(later);
+        yield* KinPulse.tick(orgId, later);
+      }
+      assert.deepStrictEqual(yield* mateNotices, [
+        "W-8 Invented W-8 was due yesterday.",
+        "W-8 Invented W-8 was due 3 days ago.",
+      ]);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  // The sales seat, Meera with Clients on in Los Angeles and allowed to message it, and her
+  // late follow-up W-30 to Lumen: 4 Nov 20:00 UTC is noon on 4 Nov in Los Angeles.
+  const salesDay = Effect.gen(function* () {
+    yield* seed;
+    yield* letMate;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id,
+        created_at)
+      VALUES (${growth}, ${orgId}, 'Growth', 'lead', ${owner}, ${stamp})`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+      VALUES ('chat-growth', ${orgId}, 'team_group', 0, ${stamp})`;
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+        worker_projects_json, owner_chat_id, domain)
+      VALUES (${growth}, ${orgId}, 'Growth', 0, '{}', '[]', 'chat-growth', 'growth')`;
+    yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+      VALUES (${orgId}, ${growth}, ${mate}, ${owner}, 0)`;
+    yield* sql`UPDATE kin_people SET sees_clients = 1, time_zone = 'America/Los_Angeles'
+      WHERE person_id = ${mate}`;
+    yield* insert({
+      id: "W-30",
+      dueAt: B + 2 * DAY,
+      ownerKind: "person",
+      ownerId: mate,
+      partyId: "r-C-1",
+    });
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+      VALUES (${orgId}, 'contacts', 'contacts', 'CT', 1, 0)`;
+    yield* insert({
+      id: "CT-1",
+      list: "contacts",
+      title: "Ravi Menon",
+      partyId: "r-C-1",
+      fields: '{"email":"ravi@lumen.example"}',
+    });
+  });
+  const growth = KinAgentId.make("growth");
+  const NOON_LA = B + 3 * DAY + 20 * HOUR;
+  const draftEvents = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ json: string }>`SELECT json FROM kin_events
+      WHERE org_id = ${orgId} AND dedupe_key LIKE 'draft:%' ORDER BY received_at, event_id`;
+    return rows.flatMap((row) => {
+      const event = decodeEvent(JSON.parse(row.json));
+      return event._tag === "pulse" ? [event] : [];
+    });
+  });
+  const slots = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql<{ person: string; key: string; day: string }>`SELECT person_id AS person,
+        fact_key AS key, sig AS day FROM kin_pulse_told
+      WHERE person_id LIKE 'draft:%' ORDER BY told_at, fact_key`;
+  });
+
+  it.effect(
+    "a teammate's follow-up wakes the sales agent in her chat, once per task and day in her zone",
+    () =>
+      Effect.gen(function* () {
+        yield* salesDay;
+        const sql = yield* SqlClient.SqlClient;
+        // No chat with the sales agent yet: the usual path opens one.
+        yield* TestClock.setTime(NOON_LA);
+        const first = yield* KinPulse.tick(orgId, NOON_LA);
+        assert.deepStrictEqual(first.drafted, [
+          { personId: mate, key: `task_late:W-30:due=${B + 2 * DAY}` },
+        ]);
+        const [chat] = yield* sql<{ chatId: string }>`SELECT chat_id AS "chatId" FROM kin_chats
+          WHERE direct_key = ${`${mate}:${growth}`}`;
+        const [made] = yield* draftEvents;
+        assert.deepStrictEqual(
+          [made?.chatId, made?.origin],
+          [chat?.chatId, { agentId: growth, chatId: chat?.chatId, personId: mate }],
+        );
+        // Later passes that day wake nothing more.
+        yield* TestClock.setTime(NOON_LA + HOUR);
+        assert.lengthOf((yield* KinPulse.tick(orgId, NOON_LA + HOUR)).drafted, 0);
+        // The wake's turn takes the task's slot for her day; another wake that day does nothing.
+        const read = yield* draftWakeText(orgId, made!);
+        assert.strictEqual(read?.text, DRAFT_CALL_NOTES("Meera", false));
+        assert.deepStrictEqual(read?.data, {
+          task: "W-30",
+          title: "Invented W-30",
+          late: true,
+          client: "Lumen",
+          writeTo: { name: "Ravi Menon", email: "ravi@lumen.example" },
+          mailbox: "none connected",
+        });
+        assert.deepStrictEqual(yield* slots, [
+          { person: `draft:${mate}`, key: "task:r-W-30", day: "2026-11-04" },
+        ]);
+        const again = { ...made!, eventId: KinEventId.make("pulse-again") };
+        assert.isUndefined(yield* draftWakeText(orgId, again));
+        // With her own mailbox and a contact she may see: a draft from it.
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+            url_host, auth, reach, state, account_label, created_at, updated_at, person_id)
+          VALUES (${orgId}, 'conn-mate', 'google', 'meera@invented.example', 'builtin',
+            'gmail.googleapis.com', 'oauth', 'closed', 'active', 'meera@invented.example', 0, 0,
+            ${mate})`;
+        assert.strictEqual(
+          (yield* draftWakeText(orgId, made!))?.text,
+          DRAFT_FROM_MAILBOX("Meera", "meera@invented.example"),
+        );
+        // Her next day in Los Angeles: one more.
+        yield* TestClock.setTime(NOON_LA + DAY);
+        assert.lengthOf((yield* KinPulse.tick(orgId, NOON_LA + DAY)).drafted, 1);
+      }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a wake checks again as it starts: holder, quiet hours, cards, a private client", () =>
+    Effect.gen(function* () {
+      yield* salesDay;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(NOON_LA);
+      yield* KinPulse.tick(orgId, NOON_LA);
+      const [made] = yield* draftEvents;
+      // In her quiet hours now: nothing, and no slot taken.
+      yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"11:00","to":"13:00"}'
+        WHERE person_id = ${mate}`;
+      assert.isUndefined(yield* draftWakeText(orgId, made!));
+      assert.lengthOf(yield* slots, 0);
+      yield* sql`UPDATE kin_people SET quiet_hours_json = NULL WHERE person_id = ${mate}`;
+      // Given to someone else meanwhile: nothing for her.
+      // Given to someone else meanwhile, though the team still sees it: nothing for her.
+      yield* sql`UPDATE kin_records SET owner_id = ${owner}, team_shared = 1
+        WHERE record_id = 'r-W-30'`;
+      assert.isUndefined(yield* draftWakeText(orgId, made!));
+      yield* sql`UPDATE kin_records SET owner_id = ${mate} WHERE record_id = 'r-W-30'`;
+      // A card from her own mailbox stands; a former holder's doesn't.
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+          url_host, auth, reach, state, created_at, updated_at, person_id)
+        VALUES (${orgId}, 'conn-mate', 'google', 'm', 'builtin', 'g', 'oauth', 'closed', 'active',
+            0, 0, ${mate}),
+          (${orgId}, 'conn-before', 'google', 'b', 'builtin', 'g', 'oauth', 'closed', 'active',
+            0, 0, ${owner})`;
+      const card = (connection: string) =>
+        sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+            pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at)
+          VALUES (${orgId}, ${`ask-${connection}`}, ${connection}, 'mail_send', 'p', '{}',
+            ${growth}, 'w', 'c', 'r-W-30', 0)`;
+      yield* card("conn-before");
+      assert.isDefined(yield* draftWakeText(orgId, made!));
+      yield* sql`DELETE FROM kin_pulse_told`;
+      yield* card("conn-mate");
+      assert.isUndefined(yield* draftWakeText(orgId, made!));
+      yield* sql`DELETE FROM kin_connection_asks`;
+      // Lumen marked private: her wake names neither the client nor its contact: call notes.
+      yield* sql`UPDATE kin_records SET sensitive = 1 WHERE record_id IN ('r-C-1', 'r-CT-1')`;
+      const read = yield* draftWakeText(orgId, made!);
+      assert.strictEqual(read?.text, DRAFT_CALL_NOTES("Meera", true));
+      assert.notProperty(read?.data ?? {}, "client");
+      assert.notProperty(read?.data ?? {}, "writeTo");
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("the company's switches and the sales agent's owner: who a follow-up wakes for", () =>
+    Effect.gen(function* () {
+      yield* salesDay;
+      const sql = yield* SqlClient.SqlClient;
+      // A step of a deal while Deals is off: no wake.
+      yield* sql`INSERT INTO kin_company_shell VALUES (${orgId}, '[{"id":"deals","on":false}]', 1,
+          ${owner}, 0)`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'deals', 'deals', 'DL', 1, 0)`;
+      yield* insert({ id: "DL-1", list: "deals", partyId: "r-C-1" });
+      yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation,
+          created_at)
+        VALUES (${orgId}, 'r-W-30', 'record', 'r-DL-1', 'relates', 0)`;
+      // The owner's own follow-up wakes it too, in his chat with it.
+      yield* sql`UPDATE kin_people SET access = 'owner' WHERE person_id = ${owner}`;
+      yield* insert({
+        id: "W-31",
+        dueAt: B + 2 * DAY,
+        ownerKind: "person",
+        ownerId: owner,
+        partyId: "r-C-1",
+      });
+      yield* TestClock.setTime(NOON_LA);
+      const ticked = yield* KinPulse.tick(orgId, NOON_LA);
+      assert.deepStrictEqual(
+        ticked.drafted.map((one) => one.personId),
+        [owner],
+      );
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("with Clients off for the company, no follow-up wakes anyone", () =>
+    Effect.gen(function* () {
+      yield* salesDay;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_company_shell VALUES (${orgId}, '[{"id":"clients","on":false}]',
+          1, ${owner}, 0)`;
+      yield* TestClock.setTime(NOON_LA);
+      assert.lengthOf((yield* KinPulse.tick(orgId, NOON_LA)).drafted, 0);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a teammate's facts are one notice of at most five lines", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* letMate;
+      const at = B + 3 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(at);
+      yield* insert({ id: "W-21", dueAt: B, ownerKind: "person", ownerId: mate });
+      yield* insert({ id: "W-22", dueAt: at + 6 * HOUR, ownerKind: "person", ownerId: mate });
+      yield* KinPulse.tick(orgId, at);
+      assert.deepStrictEqual(yield* mateNotices, [
+        [
+          "3 of your tasks need you:",
+          "• W-21 Invented W-21, was due 3 days ago",
+          "• W-8 Invented W-8, was due yesterday",
+          "• W-22 Invented W-22, due today",
+        ].join("\n"),
+      ]);
+      const line = (n: number) => ({ key: `W-${n}`, title: "Invented", state: "due today" });
+      assert.strictEqual(
+        holderBody([1, 2, 3, 4, 5, 6, 7].map(line)),
+        [
+          "7 of your tasks need you:",
+          ...[1, 2, 3, 4, 5].map((n) => `• W-${n} Invented, due today`),
+          "and 2 more",
+        ].join("\n"),
+      );
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a private task is counted in its holder's notice, never named", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* letMate;
+      const sql = yield* SqlClient.SqlClient;
+      const at = B + 3 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(at);
+      const zoya = KinPersonId.make("zoya");
+      const dev = KinPersonId.make("dev");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES (${zoya}, ${orgId}, 'zoya', 'Zoya', 'co_owner', ${stamp}),
+          (${dev}, ${orgId}, 'dev', 'Dev', 'member', ${stamp})`;
+      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+        VALUES (${orgId}, ${chief}, ${dev}, ${owner}, 0)`;
+      // "Only me": each marked their own due-today task private. Meera's late one is W-8.
+      const onlyMe = (id: string, holder: KinPersonId) =>
+        insert({ id, dueAt: at + 6 * HOUR, ownerKind: "person", ownerId: holder }).pipe(
+          Effect.andThen(
+            sql`UPDATE kin_records SET sensitive = 1, marked_by_person_id = ${holder}
+              WHERE record_id = ${`r-${id}`}`,
+          ),
+        );
+      yield* onlyMe("W-40", mate);
+      yield* onlyMe("W-41", zoya);
+      yield* onlyMe("W-42", dev);
+      yield* insert({ id: "W-43", dueAt: B + 2 * DAY, ownerKind: "person", ownerId: zoya });
+      yield* KinPulse.tick(orgId, at);
+      const count = "1 private task of yours is due today. Open Tasks to see it.";
+      assert.deepStrictEqual(yield* mateNotices, [`W-8 Invented W-8 was due yesterday.\n${count}`]);
+      assert.deepStrictEqual(yield* noticesTo(zoya), [
+        `W-43 Invented W-43 was due yesterday.\n${count}`,
+      ]);
+      assert.deepStrictEqual(yield* noticesTo(dev), [count]);
+      // Counted is told: the next pass says nothing more.
+      yield* KinPulse.tick(orgId, at + HOUR);
+      for (const person of [mate, zoya, dev]) assert.lengthOf(yield* noticesTo(person), 1);
+      assert.strictEqual(
+        holderBody(
+          [],
+          [{ sense: "task_late" }, { sense: "task_late" }, { sense: "task_due_soon" }],
+        ),
+        "2 private tasks of yours are late and 1 is due today. Open Tasks to see them.",
+      );
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("an away teammate is told once they are back; a removed one never", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* letMate;
+      const sql = yield* SqlClient.SqlClient;
+      const chats = yield* KinChatService;
+      const at = B + 3 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(at);
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-06' WHERE person_id = ${mate}`;
+      yield* KinPulse.tick(orgId, at);
+      yield* deliverHeld(orgId, chats);
+      assert.lengthOf(yield* mateNotices, 0);
+      const back = B + 5 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(back);
+      yield* deliverHeld(orgId, chats);
+      yield* KinPulse.tick(orgId, back);
+      yield* deliverHeld(orgId, chats);
+      assert.deepStrictEqual(yield* mateNotices, ["W-8 Invented W-8 was due yesterday."]);
+
+      // Removed: a new late task of theirs reaches no one, by notice or by wake.
+      yield* sql`UPDATE kin_people SET removed_at = ${back} WHERE person_id = ${mate}`;
+      yield* insert({ id: "W-23", dueAt: B + 4 * DAY, ownerKind: "person", ownerId: mate });
+      const removed = yield* KinPulse.tick(orgId, back + HOUR);
+      assert.isFalse(removed.told.some((one) => one.key.startsWith("task_late:W-23:")));
+      assert.lengthOf(yield* mateNotices, 1);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("the owner's away holds only his own wake, and his coming back lets it go", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const at = B + 3 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(at);
+      const zoya = KinPersonId.make("zoya");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES (${zoya}, ${orgId}, 'zoya', 'Zoya', 'co_owner', ${stamp})`;
+      // Away through the 5th: back on the 6th, after his quiet hours.
+      const ownerAway = (day: string | null) =>
+        reholdAfter(
+          orgId,
+          owner,
+          sql`UPDATE kin_people SET away_until = ${day} WHERE person_id = ${owner}`,
+        );
+      yield* ownerAway("2026-11-06");
+      yield* insert({ id: "W-20", dueAt: B + 2 * DAY, ownerKind: "person", ownerId: owner });
+      yield* insert({ id: "W-30", dueAt: at + 6 * HOUR, ownerKind: "person", ownerId: zoya });
+      yield* KinPulse.tick(orgId, at);
+      // The co-owner's work due today reaches her now, in her own chat, and wakes no one.
+      assert.deepStrictEqual(yield* noticesTo(zoya), ["W-30 Invented W-30 due today."]);
+      const wakes = sql<{ keys: string; at: number | null }>`SELECT
+          json_extract(json, '$.factKeys') AS keys, not_before AS at
+        FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'holders:%'
+        ORDER BY event_id`;
+      const [held] = yield* wakes;
+      assert.include(held!.keys, "task_late:W-20:");
+      assert.notInclude(held!.keys, "W-30");
+      assert.strictEqual(held!.at, B + 5 * DAY + 7 * HOUR);
+      // "I'm back": the wake for his own late work goes now, not at the old cutoff.
+      yield* TestClock.setTime(at + HOUR);
+      yield* ownerAway(null);
+      assert.deepStrictEqual(
+        (yield* wakes).map((wake) => wake.at),
+        [at + HOUR],
+      );
+    }).pipe(Effect.provide(chatLayer)),
   );
 
   it.effect("a tick moves screens' pulse for a fact whose words changed, and not for nothing", () =>
@@ -455,6 +1129,24 @@ describe("KinPulse", () => {
       yield* sql`UPDATE kin_records SET title = 'Invented renamed invoice' WHERE record_id = 'r-INV-1'`;
       const renamed = yield* observed(KinPulse.tick(orgId, at));
       assert.strictEqual(renamed.cleared, 0);
+      assert.deepStrictEqual(touched, ["pulse"]);
+      // A handling running out moves it too: the invoice counts again on screens. Budgets and a
+      // goals' pace are sensed as of now, so they would move every tick.
+      yield* sql`DELETE FROM kin_money_budgets WHERE org_id = ${orgId}`;
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE org_id = ${orgId} AND key LIKE 'G-%'`;
+      const fact = keyed((yield* read(at)).facts, "invoice_overdue", "INV-1")[0]!;
+      yield* KinPulse.handle({
+        orgId,
+        at,
+        viewer: { _tag: "owner" },
+        by: { _tag: "agent", agentId: finance },
+        factKey: fact.key,
+        action: "got_it",
+        until: at + 2 * MINUTE,
+      });
+      yield* observed(KinPulse.tick(orgId, at + MINUTE));
+      touched.length = 0;
+      yield* observed(KinPulse.tick(orgId, at + 2 * MINUTE));
       assert.deepStrictEqual(touched, ["pulse"]);
     }).pipe(Effect.provide(layer)),
   );
@@ -481,7 +1173,7 @@ describe("KinPulse", () => {
         });
       const handled = yield* handle("got_it", at + DAY);
       assert.strictEqual(DateTime.toEpochMillis(handled.handled!.until!), at + DAY);
-      // A check-in given it to tell names who has it; other turns leave it out.
+      // No turn is given a fact in hand, a check-in's included.
       const shown = (when: number, checkIn: ReadonlySet<string> | undefined) =>
         buildPulseSection({ orgId, agentId: chief, now: when, wokeFor: [], checkIn }).pipe(
           Effect.map((section) =>
@@ -489,20 +1181,430 @@ describe("KinPulse", () => {
           ),
         );
       assert.isUndefined(yield* shown(at, undefined));
-      const held = yield* shown(at, new Set([fact.key]));
-      assert.include(held, { sentIn: "no mail with it on record", rule: "10 days (now 10)" });
-      assert.match(String(held?.inHand), /^fin until /);
-      // A check-in not given it to tell (told before, unchanged) never sees it.
-      assert.isUndefined(yield* shown(at, new Set()));
+      assert.isUndefined(yield* shown(at, new Set([fact.key])));
+      assert.include(yield* shown(at + DAY, new Set([fact.key])), {
+        sentIn: "no mail with it on record",
+      });
       assert.strictEqual(yield* open(at + DAY - MINUTE), 0);
       assert.strictEqual(yield* open(at + DAY), 1);
       yield* handle("got_it");
       assert.strictEqual(yield* open(at + KinPulse.GOT_IT_MS - MINUTE), 0);
       assert.strictEqual(yield* open(at + KinPulse.GOT_IT_MS), 1);
+      // Still owed, it is not a problem only until the next chase is due, then counts again.
+      const chase = fact.measure!.threshold * DAY;
       yield* handle("not_a_problem");
-      assert.strictEqual(yield* open(at + 30 * DAY), 0);
+      assert.strictEqual(yield* open(at + chase - MINUTE), 0);
+      assert.strictEqual(yield* open(at + chase), 1);
       yield* handle("undo");
       assert.strictEqual(yield* open(at), 1);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  // Run of two weeks: 8 of 9 unprompted messages only reminded, as the turn didn't say who to
+  // write to, from which account, or which file to attach.
+  it.effect(
+    "a client set aside holds its invoice across a new key and its tasks; an invoice, only itself",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const at = B + 12 * DAY;
+        const open = (when = at) =>
+          KinPulse.read({ orgId, at: when, viewer: { _tag: "owner" } }).pipe(
+            Effect.map((result) => result.facts.map((fact) => fact.subject.key)),
+          );
+        assert.includeMembers(yield* open(), ["INV-5", "W-10", "INV-1"]);
+        const company = { _tag: "may" as const, forPersonId: null, onWordOf: owner };
+        const aside = (recordKey: string, action: "set" | "lift", until: number | null = null) =>
+          KinPulse.aside({
+            orgId,
+            at,
+            viewer: { _tag: "owner" },
+            by: { _tag: "agent", agentId: finance },
+            recordKey,
+            action,
+            until,
+            note: action === "set" ? "Invented: paying in two weeks" : null,
+            holding: company,
+          });
+        const held = yield* aside("C-1", "set", B + 40 * DAY);
+        assert.include(held, { covers: "all", mine: false, liftable: true, onWordOf: owner });
+        const shown = yield* open();
+        assert.notIncludeMembers(shown, ["INV-5", "W-10", "C-1"]);
+        assert.include(shown, "INV-1");
+        // Asked about, the held fact says so, and the read lists the hold once.
+        const all = yield* read(at);
+        assert.strictEqual(
+          keyed(all.facts, "invoice_overdue", "INV-5")[0]?.aside?.record.key,
+          "C-1",
+        );
+        assert.deepStrictEqual(
+          all.setAside?.map((one) => one.record.key),
+          ["C-1"],
+        );
+        // A new due date is a new fact key, and still held.
+        yield* sql`UPDATE kin_records SET due_at = ${B + 3 * DAY} WHERE record_id = 'r-INV-5'`;
+        assert.notInclude(yield* open(), "INV-5");
+        // Nothing held wakes anyone.
+        yield* KinPulse.tick(orgId, at);
+        const woke = yield* sql<{ json: string }>`SELECT json FROM kin_events WHERE tag = 'pulse'
+          ORDER BY event_id`;
+        assert.isFalse(woke.some((event) => event.json.includes("INV-5")));
+        assert.isTrue(woke.some((event) => event.json.includes("INV-1")));
+        // Lifted, and only the invoice set aside: its client's task is back, the invoice not.
+        assert.isNull(yield* aside("C-1", "lift"));
+        // Told first since the hold ended: the reading agent's own owner is "the owner".
+        const task = (yield* read(at)).facts.find((fact) => fact.subject.key === "W-10")!;
+        const ended = () =>
+          buildPulseSection({
+            orgId,
+            agentId: chief,
+            now: at,
+            wokeFor: [],
+            checkIn: new Set([task.key]),
+            checkInEvents: [],
+          }).pipe(
+            Effect.map(
+              (section) => section?.byProject.flatMap((group) => group.facts)[0]?.setAsideEnded,
+            ),
+          );
+        assert.match(
+          (yield* ended()) ?? "",
+          /^set aside by fin \(fin\) on the owner's word on \S+ until \S+; lifted by fin \(fin\) on \S+$/,
+        );
+        yield* sql`UPDATE kin_holds SET on_word_of = ${mate}, lifted_by_kind = 'person',
+          lifted_by_id = ${owner} WHERE org_id = ${orgId}`;
+        assert.match(
+          (yield* ended()) ?? "",
+          /^set aside by fin \(fin\) on Meera's word on \S+ until \S+; lifted by the owner on \S+$/,
+        );
+        yield* aside("INV-5", "set");
+        const after = yield* open();
+        assert.include(after, "W-10");
+        assert.notInclude(after, "INV-5");
+        assert.include(keyed((yield* read(at)).facts, "invoice_overdue", "INV-5")[0]?.aside ?? {}, {
+          covers: "only",
+          until: null,
+        });
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a record with no fact yet can be set aside; a teammate's hold is theirs alone", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const at = B + 12 * DAY;
+      // INV-1 is not overdue yet on the 1st: set aside then, its fact is born held.
+      yield* KinPulse.aside({
+        orgId,
+        at: B,
+        viewer: { _tag: "owner" },
+        by: { _tag: "person", personId: owner },
+        recordKey: "INV-1",
+        action: "set",
+        until: B + 20 * DAY,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: null },
+      });
+      const keys = (when: number, viewer: KinPulse.Viewer = { _tag: "owner" }) =>
+        KinPulse.read({ orgId, at: when, viewer }).pipe(
+          Effect.map((result) => result.facts.map((fact) => fact.subject.key)),
+        );
+      assert.notInclude(yield* keys(at), "INV-1");
+      assert.include(yield* keys(B + 20 * DAY), "INV-1");
+      // Meera sets her own late task aside: hidden for her, not for the owner.
+      const meera = { _tag: "people" as const, people: [mate] };
+      const hers = yield* KinPulse.aside({
+        orgId,
+        at,
+        viewer: meera,
+        by: { _tag: "person", personId: mate },
+        recordKey: "W-8",
+        action: "set",
+        until: null,
+        note: null,
+        holding: { _tag: "may", forPersonId: mate, onWordOf: null },
+      });
+      assert.include(hers, { mine: true, liftable: true });
+      assert.notInclude(yield* keys(at, meera), "W-8");
+      assert.include(yield* keys(at), "W-8");
+      assert.deepStrictEqual(
+        (yield* read(at)).setAside?.map((one) => one.record.key),
+        ["INV-1"],
+      );
+      // The company's hold on W-9 hides it from her too, and she can't lift it.
+      yield* KinPulse.aside({
+        orgId,
+        at,
+        viewer: { _tag: "owner" },
+        by: { _tag: "person", personId: owner },
+        recordKey: "W-9",
+        action: "set",
+        until: null,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: null },
+      });
+      assert.notInclude(yield* keys(at, meera), "W-9");
+      const w9 = keyed((yield* read(at, meera)).facts, "task_late", "W-9")[0]!;
+      assert.include(w9.aside ?? {}, { mine: false, liftable: false });
+      const undone = yield* Effect.flip(
+        KinPulse.handle({
+          orgId,
+          at,
+          viewer: meera,
+          by: { _tag: "person", personId: mate },
+          factKey: w9.key,
+          action: "undo",
+          holding: { _tag: "may", forPersonId: mate, onWordOf: null },
+        }),
+      );
+      assert.include(undone, { reason: "not_allowed" });
+      // An agent with no person's word in its turn changes nothing.
+      const refused = yield* Effect.flip(
+        KinPulse.aside({
+          orgId,
+          at,
+          viewer: { _tag: "owner" },
+          by: { _tag: "agent", agentId: chief },
+          recordKey: "W-9",
+          action: "lift",
+          until: null,
+          note: null,
+          holding: { _tag: "refused", message: "Only a person can." },
+        }),
+      );
+      assert.strictEqual(refused.message, "Only a person can.");
+      assert.notInclude(yield* keys(at), "W-9");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("an agent holds on a person's own word in its turn, beside Kin's own events only", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const event = (id: string, wakeupId: string, tag: string, json: Record<string, unknown>) =>
+        sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+            queued_at, state, wakeup_id)
+          VALUES (${id}, ${orgId}, ${chief}, ${tag}, 'P0', ${JSON.stringify(json)}, 0, 0,
+            'claimed', ${wakeupId})`;
+      const message = (id: string, person: KinPersonId, seq: number, kind = "text") =>
+        sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+            created_at)
+          VALUES (${id}, ${orgId}, ${`chat-${chief}`}, ${seq}, 'human', ${person}, ${`m-${person}`},
+            'member', ${kind}, 'Invented: leave it for a month', '[]', 'posted', 0)`;
+      const said = (id: string, wakeupId: string, extra: Record<string, unknown> = {}) =>
+        event(id, wakeupId, "chat.message", {
+          _tag: "chat.message",
+          chatId: `chat-${chief}`,
+          messageId: id,
+          ...extra,
+        });
+      for (const person of [owner, mate])
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at)
+          VALUES (${`m-${person}`}, ${orgId}, ${`chat-${chief}`}, 'person', ${person}, 'member', 0)`;
+      for (const wakeupId of [
+        "w-owner",
+        "w-mate",
+        "w-check",
+        "w-passed",
+        "w-mixed",
+        "w-handoff",
+        "w-two",
+        "w-outside",
+        "w-tap",
+        "w-mate-check",
+        "w-mate-assigned",
+      ])
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+            started_at, status, event_ids, audience)
+          VALUES (${wakeupId}, ${orgId}, ${chief}, 'thread', 'test', 0, 'completed', '[]',
+            'owner_only')`;
+      yield* message("own", owner, 1);
+      yield* said("own", "w-owner");
+      yield* message("hers", mate, 2);
+      yield* said("hers", "w-mate");
+      yield* event("check", "w-check", "pulse", { _tag: "pulse", checkIn: {} });
+      yield* message("passed", owner, 3);
+      yield* said("passed", "w-passed", { origin: { personId: owner } });
+      yield* message("mixed", owner, 4);
+      yield* said("mixed", "w-mixed");
+      yield* event("mixed-check", "w-mixed", "pulse", { _tag: "pulse", checkIn: {} });
+      const human = (person: KinPersonId) => ({
+        provenance: { _tag: "human", personId: person, memberId: `m-${person}` },
+      });
+      yield* message("handoff-own", owner, 5);
+      yield* said("handoff-own", "w-handoff");
+      yield* message("handoff", owner, 6);
+      yield* said("handoff", "w-handoff", {
+        origin: { agentId: finance, chatId: `chat-${finance}` },
+      });
+      yield* message("two-own", owner, 7);
+      yield* said("two-own", "w-two");
+      yield* message("two-hers", mate, 8);
+      yield* said("two-hers", "w-two");
+      yield* message("outside", owner, 9);
+      yield* said("outside", "w-outside");
+      yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+        VALUES (${orgId}, 'w-outside', 0, 'mail')`;
+      yield* message("tap", owner, 10, "widget_action");
+      yield* event("tap", "w-tap", "widget.action", {
+        _tag: "widget.action",
+        chatId: `chat-${chief}`,
+        messageId: "tap",
+        actionId: "hold",
+      });
+      yield* event("tap-record", "w-tap", "record.changed", {
+        _tag: "record.changed",
+        reason: "handed_back",
+        provenance: { _tag: "system" },
+      });
+      yield* message("mate-check", mate, 11);
+      yield* said("mate-check", "w-mate-check");
+      yield* event("mate-check-pulse", "w-mate-check", "pulse", { _tag: "pulse", checkIn: {} });
+      yield* message("mate-assigned", mate, 12);
+      yield* said("mate-assigned", "w-mate-assigned");
+      yield* event("mate-assigned-by-owner", "w-mate-assigned", "record.changed", {
+        _tag: "record.changed",
+        reason: "assigned",
+        ...human(owner),
+      });
+      const word = (wakeupId: string) => wordOf({ orgId, agentId: chief, wakeupId });
+      const ownersWord = { personId: owner, ownerLevel: true };
+      assert.deepStrictEqual(yield* word("w-owner"), ownersWord);
+      assert.deepStrictEqual(yield* word("w-mate"), { personId: mate, ownerLevel: false });
+      assert.isNull(yield* word("w-check"));
+      assert.isNull(yield* word("w-passed"));
+      // Kin's own check-in or record change beside the person's word leaves it theirs.
+      assert.deepStrictEqual(yield* word("w-mixed"), ownersWord);
+      assert.deepStrictEqual(yield* word("w-tap"), ownersWord);
+      assert.isNull(yield* word("w-handoff"));
+      assert.isNull(yield* word("w-two"));
+      assert.isNull(yield* word("w-outside"));
+      // A teammate's word stays theirs: a hold on it is their own, never the company's.
+      assert.deepStrictEqual(yield* word("w-mate-check"), { personId: mate, ownerLevel: false });
+      assert.isNull(yield* word("w-mate-assigned"));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a fact carries its head start: the contact, the mail account and the made file", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const at = B + 12 * DAY;
+      const other = KinOrgId.make("other-org");
+      yield* sql`INSERT INTO kin_orgs VALUES (${other}, 'Invented Other', ${stamp})`;
+      for (const [org, list, prefix] of [
+        [orgId, "contacts", "K"],
+        [other, "contacts", "K"],
+        [other, "docs", "D"],
+      ] as const)
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+          VALUES (${org}, ${list}, ${list}, ${prefix}, 1, 0)`;
+      const contact = (org: KinOrgId, id: string, title: string, email: string | null) =>
+        sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+            owner_id, party_id, created_by_kind, created_by_id, origin_key, created_at, updated_at,
+            fields_json)
+          VALUES (${org}, ${`r-${id}`}, 'contacts', ${id}, ${title}, 'open', 'person', ${owner},
+            'r-C-1', 'person', ${owner}, ${`origin-${id}`}, 0, 0,
+            ${JSON.stringify(email === null ? {} : { email })})`;
+      // Aaron sorts first but has no address; another org's contact on the same ids never shows.
+      yield* contact(orgId, "K-1", "Aaron", null);
+      yield* contact(orgId, "K-2", "Anita", "anita@lumen.example");
+      yield* contact(other, "K-9", "Abel", "leak@other.example");
+      const made = (
+        org: KinOrgId,
+        worker: string,
+        file: string,
+        draft: boolean,
+        createdAt: number,
+      ) =>
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+              owner_kind, owner_id, created_by_kind, created_by_id, origin_key, created_at,
+              updated_at)
+            VALUES (${org}, ${`r-${worker}`}, 'docs', ${`D-${worker}`}, ${file}, 'open', 'agent',
+              ${finance}, 'agent', ${finance}, ${`origin-${worker}`}, 0, 0)`;
+          yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode,
+              recipe_commit, entry_record_id, inputs_sha256, sensitive, doc_origin, worktree_path,
+              branch, audience, created_at)
+            VALUES (${org}, ${worker}, ${finance}, 'w', 'recipe', 'c', 'r-INV-5', 'h', 1, 'o', '/w',
+              'b', 'owner_only', ${createdAt})`;
+          yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind,
+              summary, operations_json, actor_kind, actor_id, via, origin_key, created_at,
+              worker_id, file_json)
+            VALUES (${org}, ${`r-${worker}`}, 1, '', ${file}, 'created', 'Made', '[]', 'agent',
+              ${finance}, 'lead', ${`v-${worker}`}, ${createdAt}, ${worker},
+              ${JSON.stringify({ name: file, draft })})`;
+        });
+      yield* made(orgId, "wk-5", "INV-5.pdf", true, B);
+      yield* made(other, "wk-9", "LEAK.pdf", false, B + DAY);
+      yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
+          author_id, body, request_hash, created_at)
+        VALUES (${orgId}, 'cm-1', 'r-W-1', 1, 'person', ${mate}, 'Half done; waiting on copy.',
+          'h1', ${B + 9 * DAY}),
+          (${other}, 'cm-9', 'r-W-1', 1, 'person', ${mate}, 'leak comment', 'h9', ${B + 11 * DAY})`;
+      const connection = (org: KinOrgId, id: string, account: string, paused: number | null) =>
+        sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host, auth,
+            reach, state, account_label, created_at, updated_at, paused_at)
+          VALUES (${org}, ${id}, 'google', 'Google', 'builtin', 'google.example', 'oauth', 'closed',
+            'active', ${account}, 1, 1, ${paused})`;
+      yield* connection(orgId, "g-1", "accounts@studio.example", null);
+      yield* connection(orgId, "g-2", "paused@studio.example", 1);
+      yield* connection(other, "g-9", "leak@other.example", null);
+
+      const facts = (yield* read(at)).facts;
+      const pick = (sense: string, subject: string) => keyed(facts, sense, subject)[0]!.key;
+      const keys = [
+        pick("invoice_overdue", "INV-5"),
+        pick("invoice_overdue", "INV-1"),
+        pick("task_late", "W-1"),
+      ];
+      const section = () =>
+        buildPulseSection({
+          orgId,
+          agentId: finance,
+          now: at,
+          wokeFor: [],
+          checkIn: new Set(keys),
+        });
+      const rows = (shown: Effect.Success<ReturnType<typeof section>>) =>
+        new Map(
+          (shown?.byProject ?? []).flatMap((group) => group.facts).map((one) => [one.key, one]),
+        );
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/001')
+        WHERE org_id = ${orgId} AND record_id = 'r-INV-1'`;
+      const first = yield* section();
+      const byKey = rows(first);
+      // Named as the owner's screen names it, with the key its tools take; a draft by its key.
+      assert.match(byKey.get(keys[1]!)!.about, /^AM\/26-27\/001 \(INV-1\) /);
+      assert.match(byKey.get(keys[0]!)!.about, /^INV-5 /);
+      assert.deepInclude(byKey.get(keys[0]!), {
+        writeTo: { name: "Anita", email: "anita@lumen.example" },
+        document: { key: "D-wk-5", file: "INV-5.pdf", draft: true },
+      });
+      assert.deepInclude(byKey.get(keys[1]!), {
+        writeTo: "no client on it, so nobody to write to",
+        document: "no document made for it yet",
+      });
+      assert.deepInclude(byKey.get(keys[2]!), {
+        lastSaid: { on: "2026-11-10", by: "Meera", text: "Half done; waiting on copy." },
+      });
+      assert.notProperty(byKey.get(keys[2]!), "writeTo");
+      assert.deepStrictEqual(first?.mailFrom, [
+        { connection: KinConnectionId.make("g-1"), account: "accounts@studio.example" },
+      ]);
+      assert.notInclude(JSON.stringify(first), "leak");
+
+      // No address on file and no mail connected: each fact says so, once, in plain words.
+      yield* sql`UPDATE kin_records SET fields_json = '{}' WHERE org_id = ${orgId} AND record_id = 'r-K-2'`;
+      yield* sql`UPDATE kin_connections SET removed_at = 1 WHERE org_id = ${orgId}`;
+      const bare = yield* section();
+      assert.strictEqual(rows(bare).get(keys[0]!)?.writeTo, "Lumen has no contact with an email");
+      assert.notProperty(bare, "mailFrom");
+      yield* sql`UPDATE kin_records SET fields_json = '{"email":"anita@lumen.example"}'
+        WHERE org_id = ${orgId} AND record_id = 'r-K-2'`;
+      assert.strictEqual((yield* section())?.mailFrom, "no mail account is connected");
     }).pipe(Effect.provide(layer)),
   );
 
@@ -579,6 +1681,112 @@ describe("KinPulse", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a missing month's statement is one line for the owner, its count Kin's own", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const statement = (id: string, from: string, to: string, applied: boolean) =>
+        sql`INSERT INTO kin_bank_statements (org_id, statement_id, attachment_id, file_name,
+            chat_id, agent_id, wakeup_id, status, review_json, created_at, read_at, applied_at)
+          VALUES (${orgId}, ${id}, ${`att-${id}`}, 'invented.csv', ${`chat-${finance}`},
+            ${finance}, 'w-old', 'read', ${JSON.stringify({
+              statement: {
+                kind: "account",
+                bank: "Invented Bank",
+                account: "1234",
+                currency: "INR",
+                from,
+                to,
+                rows: [],
+              },
+            })}, 0, 0, ${applied ? 1 : null})`;
+      const missing = (at: number, viewer?: KinPulse.Viewer) =>
+        read(at, viewer).pipe(
+          Effect.map((pulse) => pulse.facts.filter((fact) => fact.sense === "statement_missing")),
+        );
+      // A company that never confirmed a statement has no month to wait on.
+      assert.lengthOf(yield* missing(B + 20 * DAY), 0);
+      yield* statement("st-sep", "2026-09-01", "2026-09-30", true);
+      yield* insert({
+        id: "INV-71",
+        list: "invoices",
+        state: "waiting",
+        amount: 9_000_00,
+        dueAt: B - 5 * DAY,
+      });
+      // October ended on the 31st; five days on by default, it is a line on the 6th.
+      assert.lengthOf(yield* missing(B + 5 * DAY - MINUTE), 0);
+      const [october] = yield* missing(B + 5 * DAY);
+      assert.deepInclude(october!, {
+        key: "statement_missing:2026-10",
+        consequence: "October's statement isn't in yet: 1 invoice can't be confirmed until it is.",
+        family: "money",
+        sensitive: true,
+        wake: "brief",
+        actor: { _tag: "agent", agentId: finance },
+      });
+      // Another unpaid invoice changes its words, never its key or what it is told on: once.
+      yield* insert({
+        id: "INV-72",
+        list: "invoices",
+        state: "waiting",
+        amount: 1_000_00,
+        dueAt: B - 2 * DAY,
+      });
+      const [later] = yield* missing(B + 9 * DAY);
+      assert.strictEqual(
+        later!.consequence,
+        "October's statement isn't in yet: 2 invoices can't be confirmed until it is.",
+      );
+      assert.strictEqual(later!.key, october!.key);
+      assert.strictEqual(
+        factSig(later!, B + 9 * DAY, "UTC"),
+        factSig(october!, B + 5 * DAY, "UTC"),
+      );
+      // A screen of a build that can't read the sense never gets it.
+      assert.lengthOf(screenFacts([october!], undefined), 0);
+      assert.lengthOf(screenFacts([october!], ["statement_missing"]), 1);
+      // A teammate never reads it.
+      assert.lengthOf(yield* missing(B + 9 * DAY, { _tag: "people", people: [mate] }), 0);
+      // Read but not confirmed, October is still missing; confirmed, the line is gone.
+      yield* statement("st-oct", "2026-10-01", "2026-10-31", false);
+      assert.lengthOf(yield* missing(B + 9 * DAY), 1);
+      yield* sql`UPDATE kin_bank_statements SET applied_at = 1 WHERE statement_id = 'st-oct'`;
+      assert.lengthOf(yield* missing(B + 9 * DAY), 0);
+      // The company's playbook sets the days: November's line waits ten after the 30th.
+      yield* insert({ id: "D-3", list: "docs", category: "playbook" });
+      yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
+          operations_json, actor_kind, actor_id, via, origin_key, created_at)
+        VALUES (${orgId}, 'r-D-3', 1, ${"# Money\n\n```kin\nstatement_due_days: 10\n```\n"},
+          'Money', 'created', 'Seeded', '[]', 'person', ${owner}, 'owner', 'seed-D-3', 0)`;
+      assert.lengthOf(yield* missing(B + 40 * DAY - MINUTE), 0);
+      const [november] = yield* missing(B + 40 * DAY);
+      assert.strictEqual(november!.key, "statement_missing:2026-11");
+      assert.match(november!.consequence, /^November's statement isn't in yet/);
+      // A second account that is further on: the line names the account still waited on.
+      yield* sql`INSERT INTO kin_bank_statements (org_id, statement_id, attachment_id, file_name,
+          chat_id, agent_id, wakeup_id, status, review_json, created_at, read_at, applied_at)
+        VALUES (${orgId}, 'st-other', 'att-st-other', 'invented.csv', ${`chat-${finance}`},
+          ${finance}, 'w-old', 'read', ${JSON.stringify({
+            statement: {
+              kind: "account",
+              bank: "Invented Bank",
+              account: "5678",
+              currency: "INR",
+              from: "2026-10-01",
+              to: "2026-11-30",
+              rows: [],
+            },
+          })}, 0, 0, 1)`;
+      const [named] = yield* missing(B + 40 * DAY);
+      assert.strictEqual(named!.key, "statement_missing:2026-11");
+      assert.match(
+        named!.consequence,
+        /^November's statement for Invented Bank Account ••1234 isn't in yet/,
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("goals count their progress from Kin's rows, and money goals only for money", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -598,14 +1806,24 @@ describe("KinPulse", () => {
       const people = (yield* read(at, { _tag: "people", people: [mate] })).facts;
       assert.isFalse(people.some((fact) => fact.sense === "goal_behind"));
 
-      // The weekly brief leads with goals, then overdue money from the same rows.
-      const week = yield* buildWeeklySection({ orgId, now: at });
-      assert.match(week.goals[0]!, /^G-1 .*₹1,00,000 of ₹10,00,000.*behind$/);
-      assert.isTrue(
-        week.money.unpaid.some((line) =>
-          /^INV-1:.*days past due; no mail with it on record$/.test(line),
-        ),
-      );
+      // Next week's dues: a suggested task is still due, a suggested invoice is owed nowhere.
+      yield* insert({ id: "W-20", dueAt: at + 3 * DAY, confirmed: 0 });
+      yield* insert({
+        id: "INV-8",
+        list: "invoices",
+        state: "waiting",
+        amount: 5_000_00,
+        dueAt: at + 3 * DAY,
+        confirmed: 0,
+      });
+      const nextWeek = (yield* buildWeeklySection({ orgId, now: at })).nextWeek;
+      assert.isTrue(nextWeek.some((line) => line.includes("W-20")));
+      // The weekly brief's figures lead with goals, then overdue money from the same rows.
+      const week = yield* weeklyFigures({ orgId, now: at });
+      assert.match(week, /^Goals:\n- G-1 .*₹1,00,000 of ₹10,00,000.*behind$/m);
+      assert.match(week, /^- INV-1:.*unpaid, overdue for \d+ days; no mail with it on record$/m);
+      assert.notMatch(week, /INV-7|INV-8/);
+      assert.match(week, /^- Still to come in: ₹1,97,000\.00$/m);
       // Run 4: the brief called a reminder sent 45 s earlier a draft. Its lines read the record.
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,
@@ -642,12 +1860,12 @@ describe("KinPulse", () => {
           entryRecordId: "r-INV-1",
         },
       ]);
-      const overdueLine = Effect.map(buildWeeklySection({ orgId, now: at }), (now) =>
-        now.money.unpaid.find((line) => line.startsWith("INV-1:")),
+      const overdueLine = Effect.map(weeklyFigures({ orgId, now: at }), (now) =>
+        now.split("\n").find((line) => line.startsWith("- INV-1:")),
       );
       assert.match(
         String(yield* overdueLine),
-        /past due; sent \S+ from hello@studio.example, no reminder since$/,
+        /overdue for \d+ days; sent \S+ from hello@studio.example, no reminder since$/,
       );
       yield* ask("draft", "open", null, []);
       assert.match(
@@ -658,8 +1876,8 @@ describe("KinPulse", () => {
           result_json = '{"threadId":"t-1"}' WHERE ask_id = 'draft'`;
       assert.match(String(yield* overdueLine), /, reminder sent \S+$/);
       // The weekly brief carries the renewal and the open quote it was missing.
-      assert.include(week.money.renewalsThisMonth.join("\n"), "DT-1");
-      assert.deepStrictEqual(week.money.openQuotes, ["QT-1: ₹6,00,000.00, sent, no answer yet"]);
+      assert.match(week, /^Renewals this month:\n- .*DT-1/m);
+      assert.include(week, "Open quotes:\n- QT-1: ₹6,00,000.00, sent, no answer yet");
       // The seeded weekly check-in arrives as a pulse and gets the same section.
       const checkIn = (scheduleId: string) =>
         decodeEvent({
@@ -676,11 +1894,89 @@ describe("KinPulse", () => {
             title: "Check-in",
             what: "Look over the week.",
             slot: "2026-11-16",
+            ...(scheduleId === "checkin-morning-figures" ? { figures: true } : {}),
           },
         });
       assert.isTrue(wantsWeekly([checkIn("checkin-weekly")]));
+      assert.isTrue(wantsWeekly([checkIn("checkin-morning-figures")]));
       assert.isFalse(wantsWeekly([checkIn("checkin-morning")]));
+
+      // Kin's own figures for the Monday page: one titled section, each line from these rows. The
+      // agent's prompt has the rest of the week, never a row the figures show.
+      const now = yield* buildWeeklySection({ orgId, now: at });
+      const figures = yield* weeklyFigures({ orgId, now: at });
+      assert.lengthOf(figures.split(`## ${WEEK_FIGURES_TITLE}`), 2);
+      assert.isTrue(figures.startsWith(`## ${WEEK_FIGURES_TITLE}\n\n${now.week}\n\n`));
+      assert.include(figures, `Overdue:\n${String(yield* overdueLine)}`);
+      assert.deepStrictEqual(Object.keys(now), [
+        "week",
+        "projects",
+        "meetingsLastWeek",
+        "people",
+        "nextWeek",
+      ]);
+      assert.notProperty(now.projects, "behind");
+      for (const line of [...now.meetingsLastWeek, ...now.nextWeek])
+        assert.notInclude(figures, line);
+      // Any currency: the same rows kept in euros read in euros, and no rupee is left.
+      yield* sql`UPDATE kin_records SET currency = 'EUR',
+          fields_json = REPLACE(fields_json, '"INR"', '"EUR"')
+        WHERE org_id = ${orgId}`;
+      yield* sql`UPDATE kin_record_payments SET currency = 'EUR' WHERE org_id = ${orgId}`;
+      const euros = yield* weeklyFigures({ orgId, now: at });
+      assert.include(euros, "Open quotes:\n- QT-1: €600,000.00, sent, no answer yet");
+      assert.notInclude(euros, "₹");
+      // Once issued, an invoice or quote is named by its number, then the key its tools take.
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/001')
+        WHERE org_id = ${orgId} AND record_id = 'r-INV-1'`;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'Q 2026 7')
+        WHERE org_id = ${orgId} AND record_id = 'r-QT-1'`;
+      yield* insert({
+        id: "INV-9",
+        list: "invoices",
+        state: "waiting",
+        amount: 2_000_00,
+        dueAt: at + 2 * DAY,
+        fields: '{"number":"AM/26-27/002"}',
+      });
+      const named = yield* weeklyFigures({ orgId, now: at });
+      assert.match(named, /^- AM\/26-27\/001 \(INV-1\):.*unpaid, overdue for \d+ days/m);
+      assert.include(named, "Open quotes:\n- Q 2026 7 (QT-1): €600,000.00, sent, no answer yet");
+      assert.include(named, "Invoices not yet due:\n- AM/26-27/002 (INV-9): ₹2,000.00 due");
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "the week's Behind is a project off track, less what Overdue and Quiet clients say",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        // P-5's task has waited since it was added; P-6's invoice is overdue; P-7's client has had
+        // no contact since they were added a month and a half ago.
+        yield* insert({ id: "P-5", list: "projects", title: "Invented waiting build" });
+        yield* insert({ id: "W-30", state: "waiting", projectId: "P-5" });
+        yield* insert({ id: "P-6", list: "projects", title: "Invented billed build" });
+        yield* insert({
+          id: "INV-9",
+          list: "invoices",
+          state: "waiting",
+          amount: 1_000_00,
+          dueAt: B,
+          projectId: "P-6",
+        });
+        yield* insert({ id: "C-5", list: "clients", title: "Invented Quiet Co" });
+        yield* insert({
+          id: "P-7",
+          list: "projects",
+          title: "Invented quiet build",
+          partyId: "r-C-5",
+        });
+        const figures = yield* weeklyFigures({ orgId, now: B + 15 * DAY });
+        const behind = figures.split("\n\n").find((block) => block.startsWith("Behind:")) ?? "";
+        assert.match(behind, /^- P-5 Invented waiting build, 1 open, 1 waiting over a week$/m);
+        assert.notMatch(behind, /P-6|P-7|overdue|contact/);
+        assert.match(figures, /^Overdue:\n(- .*\n)*- INV-9/m);
+      }).pipe(Effect.provide(layer)),
   );
 });
 

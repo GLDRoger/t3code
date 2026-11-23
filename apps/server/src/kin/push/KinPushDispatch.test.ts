@@ -6,6 +6,7 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinWakeupId,
   KinWidgetId,
   ThreadId,
   type KinMessage,
@@ -71,41 +72,86 @@ const card = (messageId: string): KinWidget => ({
   updatedAt: T,
 });
 
-const presence = (on: boolean): KinChatHubEvent => ({
+const presence = (on: boolean, wakeupId: string | null = null): KinChatHubEvent => ({
   type: "presence.updated",
   orgId,
   chatId,
   agentId,
   presence: on
-    ? { agentId, wakeupId: null, state: "working", label: null, startedAt: T, since: T }
+    ? {
+        agentId,
+        wakeupId: wakeupId === null ? null : KinWakeupId.make(wakeupId),
+        state: "working",
+        label: null,
+        startedAt: T,
+        since: T,
+      }
     : null,
 });
 
-it.effect("a card a turn posts is announced after the turn, with the turn's words", () =>
-  Effect.gen(function* () {
-    const events = yield* Queue.unbounded<KinChatHubEvent>();
-    const asked = yield* Queue.unbounded<KinPushNotification>();
-    const keyChanges = yield* PubSub.unbounded<void>();
-    const layer = Dispatch.layer.pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(KinChatHub)({ subscribeAll: Effect.succeed(Stream.fromQueue(events)) }),
-          Layer.mock(ApproverKeys)({ changes: PubSub.subscribe(keyChanges) }),
-          Layer.mock(KinPushSender)({
-            status: "ready",
-            flushKeyPushes: Effect.succeed(0),
-            notify: (notification) =>
-              Queue.offer(asked, notification).pipe(
-                Effect.andThen(
-                  Effect.forkChild(
-                    Effect.succeed({ status: "ready", sent: 0, suppressed: 0, failed: 0 } as const),
-                  ),
+/** The dispatcher on a hub fed from `events`, asking a sender that records into `asked`. */
+const dispatching = Effect.gen(function* () {
+  const events = yield* Queue.unbounded<KinChatHubEvent>();
+  const asked = yield* Queue.unbounded<KinPushNotification>();
+  const keyChanges = yield* PubSub.unbounded<void>();
+  const layer = Dispatch.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(KinChatHub)({ subscribeAll: Effect.succeed(Stream.fromQueue(events)) }),
+        Layer.mock(ApproverKeys)({ changes: PubSub.subscribe(keyChanges) }),
+        Layer.mock(KinPushSender)({
+          status: "ready",
+          statusFor: () => "ready",
+          flushKeyPushes: Effect.succeed(0),
+          notify: (notification) =>
+            Queue.offer(asked, notification).pipe(
+              Effect.andThen(
+                Effect.forkChild(
+                  Effect.succeed({ status: "ready", sent: 0, suppressed: 0, failed: 0 } as const),
                 ),
               ),
-          }),
-        ),
+            ),
+        }),
       ),
-    );
+    ),
+  );
+  return { events, asked, layer };
+});
+
+it.effect("a turn's card is sent when its turn ends, though its line went on to the next", () =>
+  Effect.gen(function* () {
+    const { events, asked, layer } = yield* dispatching;
+    yield* Effect.gen(function* () {
+      // The late task's turn asks, and its line passes straight to the next wake-up's.
+      for (const event of [
+        presence(true, "wk_late"),
+        { type: "message.posted", orgId, message: said("msg_card") },
+        { type: "widget.updated", orgId, widget: card("msg_card") },
+        presence(true, "wk_plan"),
+        { type: "message.posted", orgId, message: said("msg_plan") },
+        presence(false),
+      ] satisfies ReadonlyArray<KinChatHubEvent>)
+        yield* Queue.offer(events, event);
+      const got = [];
+      for (let index = 0; index < 3; index++) got.push(yield* Queue.take(asked));
+      assert.deepStrictEqual(got, [
+        { _tag: "message", orgId, messageId: KinMessageId.make("msg_card") },
+        // Covered by its own turn's words only: the plan's reply says nothing of it.
+        {
+          _tag: "widget",
+          orgId,
+          widgetId: KinWidgetId.make("choice:msg_card"),
+          covered: [KinMessageId.make("msg_card")],
+        },
+        { _tag: "message", orgId, messageId: KinMessageId.make("msg_plan") },
+      ]);
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
+it.effect("a card a turn posts is announced after the turn, with the turn's words", () =>
+  Effect.gen(function* () {
+    const { events, asked, layer } = yield* dispatching;
     yield* Effect.gen(function* () {
       // The lead's turn posts a question card, then its reply; the card waits for the reply.
       for (const event of [
@@ -132,6 +178,35 @@ it.effect("a card a turn posts is announced after the turn, with the turn's word
         },
         { _tag: "message", orgId, messageId: KinMessageId.make("msg_later") },
         { _tag: "widget", orgId, widgetId: KinWidgetId.make("choice:msg_later") },
+      ]);
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
+it.effect("a trouble card rings once, by its message: its count going up rings no one", () =>
+  Effect.gen(function* () {
+    const { events, asked, layer } = yield* dispatching;
+    const trouble = (revision: number, count: number): KinWidget => ({
+      ...card("msg_trouble"),
+      widgetId: KinWidgetId.make("kin-trouble:org_01:space:1"),
+      type: "host_trouble",
+      revision,
+      state: { cause: "space", count },
+      awaiting: [],
+    });
+    yield* Effect.gen(function* () {
+      for (const event of [
+        { type: "message.posted", orgId, message: said("msg_trouble") },
+        { type: "widget.updated", orgId, widget: trouble(1, 1) },
+        { type: "widget.updated", orgId, widget: trouble(2, 5) },
+        { type: "widget.updated", orgId, widget: trouble(3, 10) },
+        { type: "message.posted", orgId, message: said("msg_after") },
+      ] satisfies ReadonlyArray<KinChatHubEvent>)
+        yield* Queue.offer(events, event);
+      const got = [yield* Queue.take(asked), yield* Queue.take(asked)];
+      assert.deepStrictEqual(got, [
+        { _tag: "message", orgId, messageId: KinMessageId.make("msg_trouble") },
+        { _tag: "message", orgId, messageId: KinMessageId.make("msg_after") },
       ]);
     }).pipe(Effect.provide(layer));
   }),

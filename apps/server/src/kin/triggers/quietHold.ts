@@ -5,7 +5,6 @@ import {
   type KinOrgId,
   type KinPersonId,
   KinPersonQuietHours,
-  KinWorkHours,
   formatKinWhen,
   KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
@@ -18,6 +17,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { WriteAudience } from "../chat/KinChatRepository.ts";
+import { turnChat } from "../lead/Audience.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import {
   freeAt,
@@ -25,13 +25,13 @@ import {
   holdRule,
   KIN_DEFAULT_QUIET_HOURS,
   type KinHoldRule,
+  storedWorkHours,
 } from "./quietHours.ts";
+import { MINUTE_MS } from "../durations.ts";
 
-const MINUTE = 60_000;
 /** A message they sent this recently is one a line to them answers, whatever the hour. */
-const ANSWERS_WITHIN_MS = 10 * MINUTE;
+export const ANSWERS_WITHIN_MS = 10 * MINUTE_MS;
 const decodeJsonQuiet = Schema.decodeUnknownOption(Schema.fromJsonString(KinPersonQuietHours));
-const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
 
 export const validZone = (zone: string | null | undefined) => {
@@ -66,10 +66,10 @@ const personRule = Effect.fn("KinQuiet.rule")(function* (orgId: KinOrgId, person
   const [settings] = yield* sql<{ hours: string }>`SELECT quiet_hours_json AS hours
     FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`;
   const owner = person?.owner === 1;
-  // The owner's clock is the company's (`ownerZone`); anyone else's is their own.
-  const zone = owner
-    ? yield* ownerZone(orgId)
-    : (validZone(person?.zone) ?? (yield* ownerZone(orgId)));
+  const company = yield* ownerZone(orgId);
+  const own = validZone(person?.zone) ?? company;
+  // The owner's hours keep the company's clock (`ownerZone`); anyone else's are on their own.
+  const zone = owner ? company : own;
   const quiet = Option.getOrElse(
     Option.orElse(decodeJsonQuiet(person?.quiet ?? undefined), () =>
       decodeJsonQuiet(settings?.hours),
@@ -77,15 +77,16 @@ const personRule = Effect.fn("KinQuiet.rule")(function* (orgId: KinOrgId, person
     () => KIN_DEFAULT_QUIET_HOURS,
   );
   const holds = person?.hold === null || person?.hold === undefined ? !owner : person.hold === 1;
-  const hours = holds && person?.hours != null ? decodeHours(person.hours) : Option.none();
-  const rule = holdRule(zone, quiet, Option.getOrUndefined(hours));
-  return person?.away == null ? rule : { ...rule, awayUntil: startOfDay(person.away, zone) };
+  const rule = holdRule(zone, quiet, holds ? storedWorkHours(person?.hours) : undefined);
+  // Away ends when their profile stops showing it: on their own clock, the owner's too.
+  return person?.away == null ? rule : { ...rule, awayUntil: startOfDay(person.away, own) };
 });
 
 /**
  * Runs `change` to someone's clock (zone, quiet hours, working hours, the hold switch, away), then
- * moves each line held for them to the first minute their new rule lets it go. A line held past
- * the old rule's free minute waited for a time of its own, which it keeps when that is later.
+ * moves each line held for them to the first minute their new rule lets it go, and each unasked
+ * wake of their own agents held by that rule. A line held past the old rule's free minute waited
+ * for a time of its own, which it keeps when that is later.
  */
 export const reholdAfter = <A, E, R>(
   orgId: KinOrgId,
@@ -133,6 +134,14 @@ const reholdFor = Effect.fn("KinQuiet.rehold")(function* <A, E, R>(
         yield* sql`UPDATE kin_held_posts SET deliver_at = ${at}
           WHERE org_id = ${orgId} AND hold_id = ${row.holdId}`;
     }
+    // A wake of their own agent nobody asked for waited to the old rule's free minute exactly
+    // (`agentQuietUntil`); a retry, a budget wait or a check-in's own minute is held otherwise.
+    if (was > now && free !== was)
+      yield* sql`UPDATE kin_events SET not_before = ${free}
+        WHERE org_id = ${orgId} AND state = 'queued' AND tag = 'pulse' AND attempts = 0
+          AND budget_deferred = 0 AND not_before = ${was}
+          AND agent_id IN (SELECT agent_id FROM kin_agents
+            WHERE org_id = ${orgId} AND owner_person_id = ${personId})`;
   }
   return result;
 });
@@ -148,12 +157,52 @@ const personQuiet = Effect.fn("KinQuiet.person")(function* (
   return { quiet: why !== undefined, why, endsAt: freeAt(rule, now), zone: rule.zone };
 });
 
+/** The day `personId` is back on, on their calendar, while they are away now; else undefined. */
+export const awayBackOn = Effect.fn("KinQuiet.awayBackOn")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [person] = yield* sql<{ away: string | null }>`SELECT away_until AS away FROM kin_people
+    WHERE org_id = ${orgId} AND person_id = ${personId}`;
+  if (person?.away == null) return undefined;
+  const away = heldAt(yield* personRule(orgId, personId), yield* Clock.currentTimeMillis);
+  return away === "away" ? person.away : undefined;
+});
+
 /** For a push: whether they are in their quiet hours, or outside the hours they hold to. */
 export const personHoldNow = Effect.fn("KinQuiet.holdNow")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
 ) {
   return heldAt(yield* personRule(orgId, personId), yield* Clock.currentTimeMillis);
+});
+
+/**
+ * How long after someone asks the answer still rings in their quiet hours. Long work they started
+ * before bed is often what they stay up for; past this, it waits in their notifications.
+ */
+const ANSWER_RINGS_WITHIN_MS = 3 * 60 * MINUTE_MS;
+
+/**
+ * Whether an answer to what `personId` asked at `askedAt` rings in their quiet hours now: their
+ * switch is on (`answers_ring`, on unless set off), and they asked within these same quiet hours
+ * or less than `ANSWER_RINGS_WITHIN_MS` ago.
+ */
+export const answerRings = Effect.fn("KinQuiet.answerRings")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  askedAt: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [person] = yield* sql<{ ring: number | null }>`SELECT answers_ring AS ring FROM kin_people
+    WHERE org_id = ${orgId} AND person_id = ${personId}`;
+  if (person === undefined || person.ring === 0) return false;
+  const now = yield* Clock.currentTimeMillis;
+  if (now - askedAt < ANSWER_RINGS_WITHIN_MS) return true;
+  const { zone, quiet } = yield* personRule(orgId, personId);
+  const night = { zone, quiet };
+  return heldAt(night, askedAt) === "quiet" && freeAt(night, askedAt) === freeAt(night, now);
 });
 
 /**
@@ -207,17 +256,22 @@ export const heldUntil = (
 export const holdFor = Effect.fn("KinQuiet.holdFor")(function* (input: {
   readonly orgId: KinOrgId;
   readonly personId: KinPersonId;
-  readonly chatId: KinChatId;
+  /** None for a banner told outside any chat: nothing they wrote answers it. */
+  readonly chatId: KinChatId | undefined;
   readonly notBefore?: number | undefined;
+  /** Nothing they said asks for it (a task handed to them): while they are away it waits anyway. */
+  readonly unasked?: boolean;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
   const quiet = yield* personQuiet(input.orgId, input.personId, now);
   const at = Math.max(quiet.endsAt, input.notBefore ?? now);
   if (at <= now) return undefined;
+  if ((input.unasked === true && quiet.why === "away") || input.chatId === undefined)
+    return { at, zone: quiet.zone, why: quiet.why ?? ("off" as const) };
   const [answers] = yield* sql`SELECT 1 FROM kin_messages
     WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
-      AND author_person_id = ${input.personId}
+      AND author_person_id = ${input.personId} AND origin_json IS NULL
       AND created_at > ${DateTime.formatIso(DateTime.makeUnsafe(now - ANSWERS_WITHIN_MS))}
     LIMIT 1`;
   return answers === undefined
@@ -257,16 +311,59 @@ export const holdLine = Effect.fn("KinQuiet.holdLine")(function* (input: {
   return input.at;
 });
 
-/** The escape from someone's quiet hours: the agent's stated reason, logged, and it rings them. */
+/** The turn a relay's key names (`relayPrefix`), or undefined for any other key. */
+export const relayWakeup = (key: string) => /^kin-relay:([^:]+):/.exec(key)?.[1];
+
+/** Whether the relays of turns `a` and `b` were raised from the same chat (`turnChat`). */
+export const sameAsk = Effect.fn("KinQuiet.sameAsk")(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  a: string,
+  b: string,
+) {
+  if (a === b) return true;
+  const [one, two] = [
+    yield* turnChat({ orgId, agentId, wakeupId: a }),
+    yield* turnChat({ orgId, agentId, wakeupId: b }),
+  ];
+  return one !== undefined && one.chatId === two?.chatId;
+});
+
+/**
+ * The escape from someone's quiet hours: the agent's stated reason, logged, and it rings them.
+ * It replaces the relays `agentId` holds for them in `chatId` raised from the chat this turn
+ * answers: those are withdrawn, and their count returned.
+ */
 export const urgentNow = Effect.fn("KinQuiet.urgent")(function* (input: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly personId: KinPersonId;
+  readonly chatId: KinChatId;
+  readonly wakeupId: string | undefined;
   readonly reason: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   yield* Effect.logInfo("Kin urgent message", input);
   yield* sql`DELETE FROM kin_push_rings WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`;
+  if (input.wakeupId === undefined) return 0;
+  const held = yield* sql<{ holdId: string; kind: string }>`SELECT hold_id AS "holdId", kind
+    FROM kin_held_posts WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
+      AND person_id = ${input.personId} AND agent_id = ${input.agentId}
+      AND delivered_at IS NULL AND substr(kind, 1, 10) = 'kin-relay:'
+    ORDER BY held_at, rowid`;
+  const replaced: Array<string> = [];
+  for (const row of held) {
+    const wakeupId = relayWakeup(row.kind);
+    if (
+      wakeupId !== undefined &&
+      (yield* sameAsk(input.orgId, input.agentId, wakeupId, input.wakeupId))
+    )
+      replaced.push(row.holdId);
+  }
+  if (replaced.length > 0)
+    yield* sql`DELETE FROM kin_held_posts
+      WHERE org_id = ${input.orgId} AND hold_id IN ${sql.in(replaced)}`;
+  return replaced.length;
 });
 
 /**

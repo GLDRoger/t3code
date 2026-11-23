@@ -2,12 +2,16 @@ import {
   AuthKinChatScope,
   EnvironmentId,
   KIN_APPROVAL_WS_METHODS,
+  KinChatError,
   KinOrgId,
+  KinRecordKey,
   type AuthSessionState,
+  type KinWorkEvent,
   type KinOrgsListResult,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -31,6 +35,7 @@ import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type * as RpcSession from "../rpc/session.ts";
 import { environmentSessionGenerationAtom } from "../state/runtime.ts";
 import { makeKinClient, type KinClientPlatform } from "./kinClient.ts";
+import { createKinOwnerTimeZoneSync } from "./kinTimeZone.ts";
 
 vi.mock("../state/session.ts", () => ({
   createEnvironmentSessionAtoms: () => ({ sessionStateAtom: () => grantedSession }),
@@ -205,6 +210,63 @@ describe("makeKinClient", () => {
     ),
   );
 
+  it.effect("reads the agents' In hand lines again when a task in Work changes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const asked = yield* Queue.unbounded<void>();
+        const work = yield* Queue.unbounded<KinWorkEvent>();
+        const { kinClient, registry } = yield* setup({
+          "kin.leads.list": () => Queue.offer(asked, undefined).pipe(Effect.as({ leads: [] })),
+          "kin.work.subscribe": () => Stream.fromQueue(work),
+        } as unknown as Answers);
+        yield* settled(registry, kinClient.leads({ environmentId: env, input: { orgId: org } }));
+        yield* Queue.take(asked);
+        yield* Queue.offer(work, {
+          _tag: "counts",
+          seq: 1,
+          asOf: "2026-11-19T05:00:00.000Z",
+          open: 1,
+          doing: 0,
+          waiting: 1,
+          late: 0,
+          dueThisWeek: 0,
+          whole: true,
+          owners: [],
+        });
+        // W-2 moves from waiting on Rhea to doing on another screen: no `leads` move is sent.
+        yield* Queue.offer(work, { _tag: "changed", seq: 2, key: KinRecordKey.make("W-2") });
+        yield* Queue.take(asked);
+      }),
+    ),
+  );
+
+  it.effect("reads Check-ins and Profile's Briefs again after either one saves", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let at = "10:30";
+        const { kinClient, registry, count, refreshKinBriefs } = yield* setup({
+          "kin.checkIns.list": () => Effect.sync(() => ({ checkIns: [{ at }] })),
+          "kin.briefs.list": () => Effect.sync(() => ({ briefs: [{ at }] })),
+        } as unknown as Answers);
+        const input = { environmentId: env, input: { orgId: org } };
+        const both = Effect.all([
+          settled(registry, kinClient.checkIns(input)),
+          settled(registry, kinClient.briefs(input)),
+        ]);
+        yield* both;
+        // Rhea saves 09:30 in Profile → Briefs, then opens Check-ins within the read's 30 seconds.
+        at = "09:30";
+        refreshKinBriefs(env, org);
+        const [checkIns, briefs] = yield* both;
+        expect([checkIns, briefs]).toEqual([
+          Exit.succeed({ checkIns: [{ at: "09:30" }] }),
+          Exit.succeed({ briefs: [{ at: "09:30" }] }),
+        ]);
+        expect([count("kin.checkIns.list"), count("kin.briefs.list")]).toEqual([2, 2]);
+      }),
+    ),
+  );
+
   it.effect("hands each directory answer to the app's device cache", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -236,6 +298,102 @@ describe("makeKinClient", () => {
         );
         expect(count("kin.agents.defaults.set")).toBe(1);
         expect(AsyncResult.isFailure(outcome)).toBe(true);
+      }),
+    ),
+  );
+});
+
+describe("createKinOwnerTimeZoneSync", () => {
+  const device = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const zoneHost = (access: () => Effect.Effect<unknown, HostRefused>) =>
+    Effect.gen(function* () {
+      const host = yield* fakeHost({
+        "kin.access.me": access,
+        "kin.triggers.getTimeZone": () => Effect.succeed({ orgId: org, timeZone: "Etc/GMT+13" }),
+        "kin.triggers.setTimeZone": (input: { readonly timeZone: string }) =>
+          Effect.succeed({ orgId: org, timeZone: input.timeZone }),
+      });
+      const registry = AtomRegistry.make();
+      yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+      const sync = createKinOwnerTimeZoneSync(host.runtime);
+      const run = Effect.promise(async () => {
+        await sync(registry, env, [org]);
+      });
+      const setTo = () =>
+        host.calls.flatMap((call) =>
+          call.tag === "kin.triggers.setTimeZone"
+            ? [(call.input as { readonly timeZone: string }).timeZone]
+            : [],
+        );
+      return { ...host, registry, sync, run, setTo };
+    });
+
+  it.effect("sets the owner's zone after a first read that failed, then stops asking", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let reads = 0;
+        const { run, count, setTo } = yield* zoneHost(() =>
+          reads++ === 0
+            ? Effect.fail(new HostRefused({ message: "not connected yet" }))
+            : Effect.succeed({ access: "owner" }),
+        );
+        yield* run;
+        expect(setTo()).toEqual([]);
+        yield* run;
+        expect(setTo()).toEqual([device]);
+        yield* run;
+        expect([count("kin.access.me"), setTo()]).toEqual([2, [device]]);
+      }),
+    ),
+  );
+
+  it.effect("sets the owner's zone when the session's grants arrive after the directory", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { registry, sync, setTo } = yield* zoneHost(() =>
+          Effect.succeed({ access: "owner" }),
+        );
+        const granted = registry.get(grantedSession);
+        registry.set(grantedSession, AsyncResult.initial());
+        const synced = sync(registry, env, [org]);
+        registry.set(grantedSession, granted);
+        yield* Effect.promise(async () => {
+          await synced;
+        });
+        expect(setTo()).toEqual([device]);
+      }),
+    ),
+  );
+
+  it.effect.each(["co_owner", "member"])("never sets it for a %s, and asks once", (access) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { run, count, setTo } = yield* zoneHost(() => Effect.succeed({ access }));
+        yield* run;
+        yield* run;
+        expect([count("kin.access.me"), setTo()]).toEqual([1, []]);
+      }),
+    ),
+  );
+
+  it.effect("stops asking once the host refuses the zone", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const host = yield* fakeHost({
+          "kin.access.me": () => Effect.succeed({ access: "owner" }),
+          "kin.triggers.getTimeZone": () => Effect.succeed({ orgId: org, timeZone: "Etc/GMT+13" }),
+          "kin.triggers.setTimeZone": () =>
+            Effect.fail(new KinChatError({ reason: "invalid_state", message: "Invalid zone." })),
+        } as unknown as Answers);
+        const registry = AtomRegistry.make();
+        yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+        const sync = createKinOwnerTimeZoneSync(host.runtime);
+        const run = Effect.promise(async () => {
+          await sync(registry, env, [org]);
+        });
+        yield* run;
+        yield* run;
+        expect(host.count("kin.triggers.setTimeZone")).toBe(1);
       }),
     ),
   );

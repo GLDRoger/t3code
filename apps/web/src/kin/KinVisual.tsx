@@ -1,3 +1,4 @@
+import { KIN_VISUAL_HOSTS } from "@t3tools/client-runtime/kin/kinConnections";
 import { KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -146,7 +147,7 @@ function KinVisualFrame(props: {
       <AlertDialog open={link !== null} onOpenChange={(open) => !open && setLink(null)}>
         <AlertDialogPopup>
           <AlertDialogHeader>
-            <AlertDialogTitle>Open this link?</AlertDialogTitle>
+            <AlertDialogTitle>{KIN_VISUAL_HOSTS.openLink}</AlertDialogTitle>
             <AlertDialogDescription>
               A link in “{props.title}” goes to this address. It opens in your browser.
             </AlertDialogDescription>
@@ -247,7 +248,7 @@ function KinVisualBlockedHost(props: {
     });
     setState("idle");
     if (AsyncResult.isSuccess(result)) props.onAllowed();
-    else setProblem(kinFailureText(squashAtomCommandFailure(result), "Couldn't allow it."));
+    else setProblem(kinFailureText(squashAtomCommandFailure(result), KIN_VISUAL_HOSTS.allowFailed));
   };
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
@@ -301,7 +302,9 @@ function KinVisualBlockedHost(props: {
 export function KinVisual(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
-  readonly visual: KinVisualCardState;
+  readonly visual: KinVisualCardState & {
+    readonly heights?: ReadonlyArray<readonly [number, number]> | undefined;
+  };
 }) {
   const { attachmentId, title } = props.visual;
   const resource = {
@@ -327,7 +330,12 @@ export function KinVisual(props: {
   const [declined, setDeclined] = useState(false);
   const canAllow = useAtomValue(kinClient.visualHostAllow.permissionAtom(props.environmentId));
   const height = htmlRenderFrameHeight(
-    { attachmentId, title, height: props.visual.height },
+    {
+      attachmentId,
+      title,
+      height: props.visual.height,
+      ...(props.visual.heights === undefined ? {} : { heights: props.visual.heights }),
+    },
     width,
     contentHeight,
   );

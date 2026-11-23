@@ -3,6 +3,7 @@ import {
   KinEvent,
   KinMessageId,
   KinOrgId,
+  KinPersonId,
   KinRoutineCard,
   KinWidgetId,
   type KinAgentId,
@@ -26,18 +27,23 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Chat from "../chat/KinChatService.ts";
-import { memoryDateMillis } from "../memory/frontMatter.ts";
+import { memoryDateMillis, openBy, reviewOverdueBy } from "../memory/frontMatter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
+import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
+import { dayRecord, dayRecordEmpty, shownDay } from "./dayRecord.ts";
 import {
   renderRoutine,
+  routineEmpty,
   type EveningFacts,
   type MorningFacts,
   type RoutineGithubGap,
   type RoutineHeader,
   type RoutineRow,
 } from "./routines.ts";
+import { DAY_MS } from "../durations.ts";
 
 type RoutineEvent = Extract<KinEvent, { readonly _tag: "routine" }>;
 
@@ -47,6 +53,7 @@ export interface KinRoutineGithubState {
     readonly number: number;
     readonly title: string;
     readonly url: string;
+    readonly teams?: ReadonlyArray<string>;
   }>;
   readonly ciRed: ReadonlyArray<{ readonly repo: string; readonly branch: string }>;
   readonly failedRepos: number;
@@ -104,10 +111,17 @@ export class KinRoutineContent extends Context.Service<
       orgId: KinOrgId,
       agentId: KinAgentId,
     ) => Effect.Effect<string | null, KinRoutineContentError>;
+    /**
+     * The evening summary's sections as JSON, for the evening check-in; null with no live lead or
+     * nothing to sum up today.
+     */
+    readonly eveningFacts: (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+    ) => Effect.Effect<string | null, KinRoutineContentError>;
   }
 >()("t3/kin/lead/RoutineContent/KinRoutineContent") {}
 
-const DAY_MS = 86_400_000;
 const GITHUB_BUDGET = "10 seconds";
 const STUCK: ReadonlySet<string> = new Set(["needs_decision", "blocked", "failed"]);
 /** Tasks agents delegated, by their cards updated since `since`: Kin's own copy of T3's state. */
@@ -188,9 +202,7 @@ const make = Effect.gen(function* () {
     const all = (yield* memory.query(orgId, {}, { lead: event.agentId })).filter(
       (item) => item.orgId === orgId && !item.duplicate,
     );
-    const live = all.filter(
-      (item) => item.invalid_at === null && item.superseded_by === null && item.status === "open",
-    );
+    const live = all.filter((item) => openBy(item, now));
     const due = (item: MemoryItemHead) => memoryDateMillis(item.due);
     const byDue = (a: MemoryItemHead, b: MemoryItemHead) =>
       due(a) - due(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -276,7 +288,7 @@ const make = Effect.gen(function* () {
           ? Option.none()
           : yield* reader.read(orgId, owner.login).pipe(Effect.timeoutOption(GITHUB_BUDGET));
       const pastReview = live
-        .filter((item) => memoryDateMillis(item.review_by) < now)
+        .filter((item) => reviewOverdueBy(item, now))
         .toSorted(
           (a, b) =>
             memoryDateMillis(a.review_by) - memoryDateMillis(b.review_by) ||
@@ -315,6 +327,9 @@ const make = Effect.gen(function* () {
             state.reviews.map((pull) => ({
               title: `${pull.repo}#${pull.number} ${pull.title}`,
               link: pull.url,
+              ...(pull.teams === undefined
+                ? {}
+                : { note: `Review requested from the team: ${pull.teams.join(", ")}` }),
             })),
         }),
         ciRed: Option.match(github, {
@@ -332,7 +347,7 @@ const make = Effect.gen(function* () {
         yesterdayUnits: yield* budgetUnits(dayOf(dayStart - 1)),
         pastReview,
       };
-      return { day, dayLabel, timeLabel, facts };
+      return { day, dayLabel, timeLabel, facts, dayStart, dayEnd };
     }
 
     const done = (yield* taskCards(sql, orgId, dayStart)).flatMap(
@@ -390,7 +405,7 @@ const make = Effect.gen(function* () {
       failedWakeups: failed?.n ?? 0,
       failedDreams: dreams?.n ?? 0,
     };
-    return { day, dayLabel, timeLabel, facts };
+    return { day, dayLabel, timeLabel, facts, dayStart, dayEnd };
   });
 
   const prepare = Effect.fn("KinRoutineContent.prepare")(
@@ -535,7 +550,42 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  return KinRoutineContent.of({ prepare, post, morningFacts });
+  const eveningFacts = Effect.fn("KinRoutineContent.eveningFacts")(
+    function* (orgId: KinOrgId, agentId: KinAgentId) {
+      const owner = yield* lead(orgId, agentId);
+      if (owner === undefined) return null;
+      const gathered = yield* gather(orgId, { routine: "evening_summary", agentId }, owner);
+      if (gathered.facts.routine !== "evening_summary") return null;
+      const viewer = (yield* ownerLevelPeople(orgId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      )).has(owner.personId)
+        ? KIN_OWNER_LEVEL
+        : viewerOfPeople([KinPersonId.make(owner.personId)]);
+      const today = yield* dayRecord({
+        orgId,
+        from: gathered.dayStart,
+        until: gathered.dayEnd,
+        viewer,
+        agentId,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      if (routineEmpty(gathered.facts) && dayRecordEmpty(today)) return null;
+      return yield* encodeFacts({ ...gathered.facts, today: shownDay(today) });
+    },
+    (effect, orgId) =>
+      effect.pipe(
+        Effect.mapError(
+          (cause) =>
+            new KinRoutineContentError({
+              orgId,
+              cause: isSqlError(cause)
+                ? toPersistenceSqlError("KinRoutineContent.eveningFacts")(cause)
+                : cause,
+            }),
+        ),
+      ),
+  );
+
+  return KinRoutineContent.of({ prepare, post, morningFacts, eveningFacts });
 });
 
 export const layer = Layer.effect(KinRoutineContent, make).pipe(Layer.provide(MemoryCache.layer));

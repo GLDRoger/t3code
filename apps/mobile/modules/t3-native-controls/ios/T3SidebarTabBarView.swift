@@ -42,8 +42,8 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   private var itemsByTab: [String: UITabBarItem] = [:]
   private let labels = [
     "threads": "Chats", "pullRequests": "PRs", "issues": "Issues", "usage": "Usage",
-    "settings": "Settings", "tasks": "Tasks", "canvas": "Canvas", "money": "Money",
-    "clients": "Clients", "docs": "Docs",
+    "settings": "Settings", "tasks": "Tasks", "money": "Money", "clients": "Clients",
+    "docs": "Docs",
   ]
   var tabs = ["threads", "pullRequests", "issues", "usage", "settings"] {
     didSet { if tabs != oldValue { updateItems() } }
@@ -121,7 +121,7 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
     let issueIcon = UIImage(named: "issue", in: iconBundle, compatibleWith: nil)?.withRenderingMode(.alwaysTemplate)
     let symbols = [
       "threads": "text.bubble", "usage": "chart.bar.xaxis", "settings": "gearshape",
-      "tasks": "checkmark.circle", "canvas": "rectangle.3.group", "money": "banknote", "clients": "person.2", "docs": "doc.text",
+      "tasks": "checkmark.circle", "money": "banknote", "clients": "person.2", "docs": "doc.text",
     ]
     for (tab, label) in labels {
       let icon = tab == "pullRequests" ? pullRequestIcon : tab == "issues" ? issueIcon : UIImage(systemName: symbols[tab] ?? "circle")

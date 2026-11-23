@@ -138,8 +138,42 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("SessionStore.lay
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
   );
 
+  it.effect("closes a socket within a minute of a revocation written by another process", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const sql = yield* SqlClient.SqlClient;
+      const client = yield* sessions.issue({ ...relaySessionInput, ttl: Duration.days(30) });
+      yield* sessions.markConnected(client.sessionId);
+      const invalidated = yield* Deferred.make<void>();
+      yield* sessions
+        .awaitInvalidation(client.sessionId, relaySessionInput.proofKeyThumbprint)
+        .pipe(
+          Effect.andThen(Deferred.succeed(invalidated, undefined)),
+          Effect.forkScoped({ startImmediately: true }),
+        );
+      // What `t3 auth session revoke` does from its own process: the row, and no event here.
+      yield* sql`UPDATE auth_sessions SET revoked_at = '2026-01-01T00:00:00.000Z'
+        WHERE session_id = ${client.sessionId}`;
+      yield* TestClock.adjust(Duration.seconds(59));
+      expect(yield* Deferred.isDone(invalidated)).toBe(false);
+      yield* TestClock.adjust(Duration.seconds(1));
+      yield* Deferred.await(invalidated);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(layerSessionStore(), SqlitePersistence.layerMemory, TestClock.layer()),
+      ),
+    ),
+  );
+
   it.effect.each([
     { name: "a renewal for the same key", renewal: {}, closesAtMinute: 119 },
+    {
+      name: "a renewal for the same key, on a media ticket",
+      renewal: {},
+      closesAtMinute: 119,
+      ticket: "media",
+    },
     {
       name: "a renewal for another key",
       renewal: { proofKeyThumbprint: "other-proof-key" },
@@ -167,8 +201,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("SessionStore.lay
       const sessions = yield* SessionStore.SessionStore;
       const client = yield* sessions.issue(relaySessionInput);
       const invalidated = yield* Deferred.make<void>();
+      // Media tickets carry no proof key, so their routes wait without one.
+      const watched =
+        "ticket" in testCase
+          ? yield* sessions.verifyWebSocketToken(
+              (yield* sessions.issueWebSocketToken(client.sessionId, { audience: "media" })).token,
+            )
+          : {
+              sessionId: client.sessionId,
+              proofKeyThumbprint: relaySessionInput.proofKeyThumbprint,
+            };
       const watcher = yield* sessions
-        .awaitInvalidation(client.sessionId, relaySessionInput.proofKeyThumbprint)
+        .awaitInvalidation(watched.sessionId, watched.proofKeyThumbprint)
         .pipe(
           Effect.andThen(Deferred.succeed(invalidated, undefined)),
           Effect.forkScoped({ startImmediately: true }),
@@ -183,6 +227,31 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("SessionStore.lay
           testCase.revoke === "original" ? client.sessionId : renewal.sessionId,
         );
       }
+      yield* Fiber.join(watcher);
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+  );
+
+  it.effect("keeps a socket on a session renewed in place until its moved deadline", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const renewable = { ttl: Duration.hours(1), renewalWindow: Duration.hours(2) };
+      const client = yield* sessions.issue({ ...relaySessionInput, ...renewable });
+      const invalidated = yield* Deferred.make<void>();
+      const watcher = yield* sessions
+        .awaitInvalidation(client.sessionId, relaySessionInput.proofKeyThumbprint)
+        .pipe(
+          Effect.andThen(Deferred.succeed(invalidated, undefined)),
+          Effect.forkScoped({ startImmediately: true }),
+        );
+      yield* TestClock.adjust(Duration.minutes(90));
+      yield* sessions.renew(client.token, {
+        proofKeyThumbprint: relaySessionInput.proofKeyThumbprint,
+        consumeProof: Effect.void,
+        ...renewable,
+      });
+      yield* TestClock.adjust(Duration.millis(120 * 60_000 - 1));
+      expect(yield* Deferred.isDone(invalidated)).toBe(false);
+      yield* TestClock.adjust(Duration.millis(1));
       yield* Fiber.join(watcher);
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
   );

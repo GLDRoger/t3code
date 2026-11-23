@@ -1,5 +1,7 @@
 import {
   KinChatError,
+  formatKinMoney,
+  type KinChartUnit,
   type KinAgentIntent,
   KinChatId,
   type KinMessage,
@@ -44,7 +46,10 @@ import { directKey } from "./LeadAccess.ts";
 import { holdFor, holdLine, urgentNow } from "../triggers/quietHold.ts";
 import { unreadableBy } from "../work/teamView.ts";
 
-type PostInput = KinMessagesSendInput & { readonly intent: KinAgentIntent };
+type PostInput = KinMessagesSendInput & {
+  readonly intent: KinAgentIntent;
+  readonly placeReplyFigures?: true;
+};
 type PostToInput = PostInput & {
   /** Why it can't wait for their quiet hours: logged, and it posts now. */
   readonly urgent?: string | undefined;
@@ -94,7 +99,7 @@ export class KinLevelGate extends Context.Service<
       agent: AgentIdentity,
       personId: KinPersonId,
       input: PostToInput,
-    ) => Effect.Effect<KinMessage | HeldPost, KinChatError>;
+    ) => Effect.Effect<(KinMessage & { readonly replaced?: number }) | HeldPost, KinChatError>;
     /** The turn's one reply grows by its next segment, gated like the post that began it. */
     readonly extend: (
       agent: AgentIdentity,
@@ -114,11 +119,37 @@ export class KinLevelGate extends Context.Service<
       input: AskInput,
       bind?: (widget: KinWidget) => Effect.Effect<void, SqlError.SqlError>,
     ) => Effect.Effect<KinWidget, KinChatError>;
+    /**
+     * A question card for one person in their own direct chat with the lead (`askPerson.ts`),
+     * under every check `ask` makes; a shared turn may post there too, its route checked by the
+     * caller. Kin posts it, spending no floor grant. Held for their quiet hours or away days,
+     * nothing is posted and `bind` gets null.
+     */
+    readonly askTo: (
+      agent: AgentIdentity,
+      personId: KinPersonId,
+      input: AskInput,
+      bind: (widget: KinWidget | null) => Effect.Effect<void, SqlError.SqlError>,
+    ) => Effect.Effect<KinWidget | HeldPost, KinChatError>;
+    /**
+     * `askTo` for a person's own press on a card in their chat with the lead (`draftCards`): no
+     * turn of the lead's is running or borrowed, so the caller has checked the press itself.
+     * The destination's level, their own direct chat and their quiet hours are checked as for
+     * `askTo`.
+     */
+    readonly askToOnPress: (
+      agent: AgentIdentity,
+      personId: KinPersonId,
+      input: AskInput,
+      bind: (widget: KinWidget | null) => Effect.Effect<void, SqlError.SqlError>,
+    ) => Effect.Effect<KinWidget | HeldPost, KinChatError>;
     /** A doc card, gated like a post. */
     /** Closes the agent's own unanswered choice cards that a newer card replaced. */
     readonly closeReplaced: (
       agent: Turn,
       widgetIds: ReadonlyArray<string>,
+      /** The newer card that replaces them. */
+      by?: KinWidgetId,
     ) => Effect.Effect<void, KinChatError>;
     readonly showCard: (
       agent: AgentIdentity,
@@ -128,12 +159,33 @@ export class KinLevelGate extends Context.Service<
     readonly chart: (
       agent: AgentIdentity,
       input: ChartInput,
-    ) => Effect.Effect<KinWidget, KinChatError>;
+    ) => Effect.Effect<KinWidget | { readonly figure: string }, KinChatError>;
     /** `kin_visual`'s card, gated like a post. */
     readonly visual: (
       agent: AgentIdentity,
       input: VisualInput,
-    ) => Effect.Effect<KinWidget, KinChatError>;
+    ) => Effect.Effect<KinWidget | { readonly figure: string }, KinChatError>;
+    /** `kin_picture`'s image, gated like a post; `seen` is what it shows, checked like a visual's. */
+    readonly picture: (
+      agent: AgentIdentity,
+      input: Parameters<KinChatService["Service"]["picture"]>[1] & { readonly seen: string },
+    ) => Effect.Effect<
+      Effect.Success<ReturnType<KinChatService["Service"]["picture"]>>,
+      KinChatError
+    >;
+    /** Before `kin_picture` makes anything: where it goes takes it, gated like a post. */
+    readonly pictureRoom: (
+      agent: AgentIdentity,
+      input: Parameters<KinChatService["Service"]["pictureRoom"]>[1] & { readonly seen: string },
+    ) => Effect.Effect<number, KinChatError>;
+    readonly settleFigures: (
+      ...args: Parameters<KinChatService["Service"]["settleFigures"]>
+    ) => Effect.Effect<void, KinChatError>;
+    readonly setChoiceOutcome: (
+      agent: AgentIdentity,
+      input: Parameters<KinChatService["Service"]["setChoiceOutcome"]>[1],
+      bind: () => Effect.Effect<void, SqlError.SqlError>,
+    ) => Effect.Effect<boolean, KinChatError>;
     /** `kin_react`: the lead's reaction, gated like a post since it can stand for its reply. */
     readonly react: (
       agent: AgentIdentity,
@@ -273,7 +325,12 @@ const make = Effect.gen(function* () {
     agent: AgentIdentity,
     chatId: KinChatId,
     allowed: Effect.Effect<A, E>,
-    to?: { readonly personId: KinPersonId; readonly text: string },
+    to?: {
+      readonly personId: KinPersonId;
+      readonly text: string;
+      /** A shared turn may write there too: the person's own chat, its route checked already. */
+      readonly outside?: true;
+    },
   ): Effect.Effect<A, KinChatError> =>
     // A turn found shared stays shared: settled before the write's transaction, which a
     // refusal rolls back. The destination is checked again inside it.
@@ -318,7 +375,7 @@ const make = Effect.gen(function* () {
                   reason: "not_allowed",
                   message: AUDIENCE_MOVED,
                 });
-              if (where === "elsewhere")
+              if (where === "elsewhere" && to?.outside !== true)
                 return yield* new KinChatError({
                   reason: "not_allowed",
                   message: SHARED_ELSEWHERE,
@@ -370,6 +427,26 @@ const make = Effect.gen(function* () {
           ),
       ),
     );
+
+  /** Kin's question card for one person, or held for their quiet hours: `bind` gets null. */
+  const askHeld = Effect.fn("KinLevelGate.askHeld")(
+    function* (
+      agent: AgentIdentity,
+      personId: KinPersonId,
+      input: AskInput,
+      bind: (widget: KinWidget | null) => Effect.Effect<void, SqlError.SqlError>,
+    ) {
+      const where = { orgId: agent.orgId, personId, chatId: input.chatId, unasked: true };
+      const held = yield* holdFor(where);
+      if (held === undefined)
+        return yield* chat
+          .ask({ ...agent, hostPosted: true }, { ...input, forChat: true })
+          .pipe(Effect.tap(bind));
+      yield* bind(null);
+      return { _tag: "held" as const, at: held.at, zone: held.zone, why: held.why };
+    },
+    Effect.provideService(SqlClient.SqlClient, sql),
+  );
 
   const read = Effect.fn("KinLevelGate.read")(
     function* (agent: AgentIdentity, input: ReadInput) {
@@ -432,12 +509,19 @@ const make = Effect.gen(function* () {
         input.chatId,
         Effect.gen(function* () {
           const where = { orgId: agent.orgId, personId, chatId: input.chatId };
+          const replaced =
+            input.urgent === undefined
+              ? 0
+              : yield* urgentNow({
+                  ...where,
+                  agentId: agent.agentId,
+                  wakeupId: agent.wakeupId,
+                  reason: input.urgent,
+                });
           const held =
             input.urgent === undefined
               ? yield* holdFor({ ...where, notBefore: input.notBefore })
-              : yield* urgentNow({ ...where, agentId: agent.agentId, reason: input.urgent }).pipe(
-                  Effect.as(undefined),
-                );
+              : undefined;
           if (held !== undefined)
             return {
               _tag: "held" as const,
@@ -453,7 +537,7 @@ const make = Effect.gen(function* () {
                 relay: input.relay,
               }),
             };
-          return yield* chat.send(agent, {
+          const sent = yield* chat.send(agent, {
             chatId: input.chatId,
             clientMessageId: input.clientMessageId,
             body: input.body,
@@ -461,6 +545,7 @@ const make = Effect.gen(function* () {
             forChat: true,
             ...(input.relay === undefined ? {} : { relay: input.relay }),
           });
+          return replaced === 0 ? sent : { ...sent, replaced };
         }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
         { personId, text: input.body },
       ),
@@ -487,9 +572,13 @@ const make = Effect.gen(function* () {
       ),
     ),
     closeReplaced: Effect.fn("KinLevelGate.closeReplaced")(
-      function* (agent, widgetIds) {
+      function* (agent, widgetIds, by) {
         for (const widgetId of widgetIds)
-          yield* chat.closeReplaced({ orgId: agent.orgId, widgetId: KinWidgetId.make(widgetId) });
+          yield* chat.closeReplaced({
+            orgId: agent.orgId,
+            widgetId: KinWidgetId.make(widgetId),
+            ...(by === undefined ? {} : { by }),
+          });
       },
       Effect.catchIf(
         (error) => !isChatError(error),
@@ -503,15 +592,116 @@ const make = Effect.gen(function* () {
           ),
       ),
     ),
+    askTo: Effect.fn("KinLevelGate.askTo")((agent, personId, input, bind) =>
+      gated("gated ask to", agent, input.chatId, askHeld(agent, personId, input, bind), {
+        personId,
+        text: [input.question, input.detail ?? "", ...input.options.map((one) => one.label)].join(
+          "\n",
+        ),
+        outside: true,
+      }),
+    ),
+    askToOnPress: Effect.fn("KinLevelGate.askToOnPress")((agent, personId, input, bind) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const level = yield* KinLevels.effectiveLevel({
+              orgId: agent.orgId,
+              agentId: agent.agentId,
+              chatId: input.chatId,
+            }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+            if (!KinLevels.atLeast(level, "L1") && !(yield* isOwnerChat(agent, input.chatId)))
+              return yield* notAllowed;
+            if (!(yield* theirDirect(agent, personId, input.chatId))) return yield* notAllowed;
+            return yield* askHeld(agent, personId, input, bind);
+          }),
+        )
+        .pipe(
+          Effect.catch((error) =>
+            isChatError(error)
+              ? Effect.fail(error)
+              : isLevelRefused(error)
+                ? Effect.fail(notAllowed)
+                : Effect.logError("Kin ask on a press failed", error).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+                      ),
+                    ),
+                  ),
+          ),
+        ),
+    ),
     showCard: Effect.fn("KinLevelGate.showCard")((agent, input) =>
       gated("gated card", agent, input.chatId, chat.showCard(agent, input)),
     ),
-    chart: Effect.fn("KinLevelGate.chart")((agent, input) =>
-      gated("gated chart", agent, input.chatId, chat.chart(agent, input)),
+    settleFigures: Effect.fn("KinLevelGate.settleFigures")((agent, chatId, intent) =>
+      gated("gated figures", agent, chatId, chat.settleFigures(agent, chatId, intent)),
     ),
+    setChoiceOutcome: Effect.fn("KinLevelGate.setChoiceOutcome")((agent, input, bind) =>
+      gated(
+        "gated choice outcome",
+        agent,
+        input.chatId,
+        chat
+          .setChoiceOutcome(agent, input)
+          .pipe(Effect.tap((saved) => (saved ? bind() : Effect.void))),
+      ),
+    ),
+    chart: Effect.fn("KinLevelGate.chart")(function* (agent, input) {
+      const label = (unit: KinChartUnit, value: number | null) =>
+        value === null
+          ? ""
+          : unit.kind === "money"
+            ? formatKinMoney(Math.round(value), unit.currency)
+            : String(value);
+      const words = [
+        input.title,
+        input.caption,
+        ...(input.labels ?? []),
+        ...(input.series ?? []).flatMap((series) => [
+          series.name,
+          ...series.values.map((value) => label(input.unit, value)),
+        ]),
+        ...(input.comparison === undefined
+          ? []
+          : [
+              input.comparison.name,
+              ...input.comparison.values.map((value) => label(input.unit, value)),
+            ]),
+        ...(input.target === undefined
+          ? []
+          : [input.target.name, label(input.unit, input.target.value)]),
+        input.scatter?.xName,
+        input.scatter?.yName,
+        ...(input.scatter?.series ?? []).flatMap((series) => [
+          series.name,
+          ...series.points.flatMap((point) => [
+            point.label,
+            label(input.scatter?.xUnit ?? { kind: "count" }, point.x),
+            label(input.unit, point.y),
+          ]),
+        ]),
+      ];
+      yield* everyoneSees(agent, words.join("\n"));
+      return yield* gated("gated chart", agent, input.chatId, chat.chart(agent, input));
+    }),
     visual: Effect.fn("KinLevelGate.visual")(function* (agent, input) {
       yield* everyoneSees(agent, `${input.title}\n${input.html.replace(/<[^>]*>/g, " ")}`);
       return yield* gated("gated visual", agent, input.chatId, chat.visual(agent, input));
+    }),
+    picture: Effect.fn("KinLevelGate.picture")(function* (agent, { seen, ...input }) {
+      yield* everyoneSees(agent, seen);
+      return yield* gated("gated picture", agent, input.chatId, chat.picture(agent, input));
+    }),
+    pictureRoom: Effect.fn("KinLevelGate.pictureRoom")(function* (agent, { seen, ...input }) {
+      yield* everyoneSees(agent, seen);
+      return yield* gated(
+        "gated picture room",
+        agent,
+        input.chatId,
+        chat.pictureRoom(agent, input),
+      );
     }),
     react: Effect.fn("KinLevelGate.react")((agent, input) =>
       gated("gated reaction", agent, input.chatId, chat.react(agent, { ...input, on: true })),

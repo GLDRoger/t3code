@@ -1,4 +1,6 @@
 import {
+  KinCardAsker,
+  KinChatId,
   KinMessageId,
   KinWidgetId,
   ThreadId,
@@ -9,6 +11,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
@@ -16,6 +19,7 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { historyFloor } from "../chat/sharing.ts";
 import { abortChatTurns } from "./Audience.ts";
+import { cardAudience } from "./LeadDelivery.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 
 /** Chat events that answer a person's message, tap or reaction in its chat. */
@@ -93,6 +97,7 @@ export const onPersonRemoved = Effect.fn("KinChatSharing.onPersonRemoved")(funct
     (json_extract(e.json, '$.provenance._tag') = 'human'
       AND json_extract(e.json, '$.provenance.personId') = ${input.personId})
     OR json_extract(e.json, '$.origin.personId') = ${input.personId}
+    OR (e.tag = 'github' AND json_extract(e.json, '$.askedBy') = ${input.personId})
     OR EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = e.org_id
       AND e.tag IN ('chat.message', 'widget.action')
       AND m.message_id = json_extract(e.json, '$.messageId') AND m.author_kind = 'human'
@@ -109,11 +114,12 @@ export const onPersonRemoved = Effect.fn("KinChatSharing.onPersonRemoved")(funct
         AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id AND ${theirs})
     RETURNING agent_id AS "agentId", wakeup_id AS "wakeupId"`;
   // Claimed by a turn just aborted, too: its finish requeues what it held, and these never run.
-  const expired = yield* sql<{ agentId: KinAgentId }>`UPDATE kin_events AS e SET state = 'expired'
-    WHERE e.org_id = ${input.orgId} AND ${theirs} AND (e.state = 'queued'
+  const expired = yield* sql<{ agentId: KinAgentId; heldBy: string | null }>`
+    UPDATE kin_events AS e SET state = 'expired'
+    WHERE e.org_id = ${input.orgId} AND ${theirs} AND (e.state IN ('queued', 'failed')
       OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w
         WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
-    RETURNING agent_id AS "agentId"`;
+    RETURNING agent_id AS "agentId", held_by AS "heldBy"`;
   const threads = yield* endChatThreads(
     sql,
     input.orgId,
@@ -167,7 +173,30 @@ export const freezeMovedCard = Effect.fn("KinChatSharing.freezeMovedCard")(funct
   }
 });
 
-/** Cards of reminders, deferrals and scheduled tasks: only owner-only turns set those up. */
+const decodeAsked = Schema.decodeUnknownOption(Schema.Struct({ askedBy: KinCardAsker }));
+
+/**
+ * What of a room's own standing card a join may show: that it exists, who asked, and when it
+ * next fires; no title, words or earlier run. Undefined for a reminder already fired.
+ */
+const standingCard = (type: string, state: unknown) => {
+  const asked = Option.getOrUndefined(decodeAsked(state))?.askedBy;
+  if (asked === undefined || typeof state !== "object" || state === null) return undefined;
+  const who = asked.left === true ? "someone who has left" : asked.name;
+  if (type === "deferral")
+    return {
+      state: { ...state, title: "", text: "" },
+      body: `A reminder ${who} asked for is set.`,
+    };
+  if (type === "scheduled_task")
+    return {
+      state: { ...state, title: "", lastRun: null },
+      body: `A routine ${who} set runs here.`,
+    };
+  return undefined;
+};
+
+/** Cards of reminders, deferrals and scheduled tasks: the owner's, or a shared chat's own. */
 const OWNER_CARDS = ["deferral", "reminder", "scheduled_task"];
 
 /**
@@ -203,15 +232,24 @@ export const settleCards = Effect.fn("KinChatSharing.settleCards")(function* (in
     const found = yield* repo.getWidget({ orgId: input.orgId, widgetId });
     if (Option.isNone(found)) continue;
     const widget = found.value;
-    if (lead !== undefined && OWNER_CARDS.includes(row.type)) {
+    const audience = cardAudience(widget.state);
+    // A room's own standing reminder or routine is everyone's there; one already fired is past.
+    const standing = audience === "chat" ? standingCard(row.type, widget.state) : undefined;
+    if (
+      lead !== undefined &&
+      OWNER_CARDS.includes(row.type) &&
+      (audience === "owner" || standing !== undefined)
+    ) {
+      const to = standing === undefined ? lead.ownerChatId : KinChatId.make(input.chatId);
+      // A fresh line per floor: a later join re-anchors it again.
       const line = yield* repo.insertMessage({
         orgId: input.orgId,
-        chatId: lead.ownerChatId,
-        audience: "owner",
-        messageId: KinMessageId.make(`${row.widgetId}:moved`),
+        chatId: to,
+        audience,
+        messageId: KinMessageId.make(`${row.widgetId}:moved:${chat.from}`),
         author: { _tag: "system" },
         kind: "system",
-        body: row.body,
+        body: standing?.body ?? row.body,
         intent: null,
         mentions: [],
         replyTo: null,
@@ -223,11 +261,24 @@ export const settleCards = Effect.fn("KinChatSharing.settleCards")(function* (in
         createdAt: at,
         editedAt: null,
       });
-      yield* sql`UPDATE kin_widgets SET chat_id = ${lead.ownerChatId}, message_id = ${line.messageId}
+      yield* sql`UPDATE kin_widgets SET chat_id = ${to}, message_id = ${line.messageId}
         WHERE org_id = ${input.orgId} AND widget_id = ${widgetId}`;
-      yield* sql`UPDATE kin_waiting SET chat_id = ${lead.ownerChatId}
+      yield* sql`UPDATE kin_waiting SET chat_id = ${to}
         WHERE org_id = ${input.orgId} AND widget_id = ${widgetId} AND resolved_at IS NULL`;
-      const moved = yield* repo.getWidget({ orgId: input.orgId, widgetId });
+      const found = yield* repo.getWidget({ orgId: input.orgId, widgetId });
+      // Its words and earlier results stay behind the floor they were written under.
+      const moved =
+        standing === undefined || Option.isNone(found)
+          ? found
+          : Option.some(
+              yield* repo.updateWidget({
+                ...found.value,
+                audience: "chat",
+                state: standing.state,
+                expectedRevision: found.value.revision,
+                updatedAt: at,
+              }),
+            );
       yield* hub.publish({ type: "message.posted", orgId: input.orgId, message: line });
       if (Option.isSome(moved))
         yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget: moved.value });

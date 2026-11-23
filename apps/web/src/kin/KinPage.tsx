@@ -4,7 +4,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/
 import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
-import { isElectron } from "../env";
+import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { KinAgentPageHost } from "./KinAgentPage";
 import { KinChatList } from "./KinChatList";
 import { KinGroupDialogHost } from "./KinGroupDialog";
@@ -18,7 +18,6 @@ import { KinMessageAlerts } from "./KinNotifications";
 import { KinToday } from "./KinToday";
 import { KinUpdatedLine } from "./KinUpdatedLine";
 import { KinSettingsButton, KinSettingsModalHost } from "./KinSettingsView";
-import { KinDock } from "./KinNav";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useKinHost } from "./useKinHost";
 
@@ -29,7 +28,6 @@ export function KinPage() {
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
       <KinUpdatedLine />
       <Outlet />
-      <KinDockHost />
       <KinLeadDialogHost />
       <KinAgentPageHost />
       <KinGroupDialogHost />
@@ -39,14 +37,6 @@ export function KinPage() {
       <KinMessageAlerts />
       <KinSettingsModalHost />
     </SidebarInset>
-  );
-}
-
-/** The phone's dock under the page on a narrow window. */
-function KinDockHost() {
-  const target = kinNewLeadTarget(useKinHost());
-  return target === null ? null : (
-    <KinDock environmentId={target.environmentId} orgId={target.orgId} />
   );
 }
 
@@ -67,7 +57,7 @@ export function KinNoChat() {
   const target = kinNewLeadTarget(useKinHost());
   return (
     <>
-      <WorkspacePageHeader electron={isElectron}>
+      <WorkspacePageHeader electron={hasDesktopWindowChrome}>
         <WorkspaceBreadcrumb ariaLabel="Kin" className="md:hidden">
           <WorkspaceBreadcrumbItem current>
             <h1 className="truncate">Chats</h1>

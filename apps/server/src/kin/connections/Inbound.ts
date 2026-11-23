@@ -119,6 +119,8 @@ const tooLarge = (request: HttpClientRequest.HttpClientRequest) =>
     }),
   });
 
+const BODILESS = new Set([204, 205, 304]);
+
 /**
  * Every reply from a connection passes here before the MCP client reads it: the connection's
  * credential is replaced in it, so no echo reaches a span, a log, a row or a model. `pages`
@@ -142,7 +144,11 @@ export const inbound = (
           return Effect.succeed(
             HttpClientResponse.fromWeb(
               request,
-              new Response(Stream.toReadableStream(clean), { status: response.status, headers }),
+              // `Response` throws when given a body for a status that has none.
+              new Response(BODILESS.has(response.status) ? null : Stream.toReadableStream(clean), {
+                status: response.status,
+                headers,
+              }),
             ),
           );
         return clean.pipe(

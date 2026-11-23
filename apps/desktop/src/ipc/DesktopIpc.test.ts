@@ -6,12 +6,13 @@ import { vi } from "vite-plus/test";
 
 vi.mock("electron", () => ({}));
 
+import { getDesktopUrl } from "../electron/ElectronProtocol.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopIpc from "./DesktopIpc.ts";
 
 it.effect("answers only the main window's top frame", () =>
   Effect.gen(function* () {
-    const mainFrame = {};
+    const mainFrame = { url: getDesktopUrl(false), origin: getDesktopUrl(false).slice(0, -1) };
     const invoke = new Map<string, DesktopIpc.DesktopIpcHandleListener>();
     const sync = new Map<string, DesktopIpc.DesktopIpcSyncListener>();
     const ipc = yield* DesktopIpc.DesktopIpc.pipe(

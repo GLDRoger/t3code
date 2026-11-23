@@ -33,6 +33,7 @@ import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Clock from "effect/Clock";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
@@ -65,7 +66,7 @@ import { type RowRead, threePageStatement } from "./statementPdf.testkit.ts";
 import { gatherFacts } from "../../gendocs/facts.ts";
 import { parseRecipe, sourceOf } from "../../gendocs/recipe.ts";
 import { STARTER_FILES } from "../../gendocs/starter.ts";
-import { dayIn } from "../money.ts";
+import { dayIn, formatMoney } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { KIN_OWNER_LEVEL } from "../teamView.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
@@ -181,7 +182,7 @@ const turn = (
         'owner', 'text', ${body}, '[]', 'posted', ${at}, ${JSON.stringify(attachments)})`;
     yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
         status, event_ids, audience)
-      VALUES (${`wake-${n}`}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
+      VALUES (${`wake-${n}`}, ${orgId}, ${lead}, 'lead-thread', 'test', ${yield* Clock.currentTimeMillis}, 'running',
         ${JSON.stringify([`event-${n}`])}, ${audience})`;
     const event = {
       _tag: "chat.message",
@@ -259,13 +260,13 @@ const seed = Effect.gen(function* () {
   const aws = yield* records.create(orgId, owner, {
     list: "expenses",
     originKey: "expense:aws",
-    title: "AWS hosting",
+    title: "Amber Cloud Hosting",
     owner: { _tag: "person", personId: ownerId },
     state: "open",
     amount: { minor: 413_000, currency: "INR" },
     dateAt: day("2026-10-03"),
     dateAllDay: true,
-    fields: { vendor: "Amazon Web Services" },
+    fields: { vendor: "Amber Cloud Hosting" },
   });
   return { exact: exact.row.key, tds: tds.row.key, aws: aws.row.key };
 });
@@ -361,12 +362,12 @@ describe("bank statements", () => {
       Effect.gen(function* () {
         const keys = yield* seed;
         const sql = yield* SqlClient.SqlClient;
-        const result = opened(yield* read(1, "hdfc-account.pdf"));
+        const result = opened(yield* read(1, "statement-layout-a.pdf"));
         assert.strictEqual(result.status, "read");
         assert.strictEqual(result.account, "HDFC Bank ••4821");
         assert.strictEqual(
           result.file,
-          '> BEGIN QUOTE: statement file name (untrusted)\n> "hdfc-account.pdf"\n> END QUOTE',
+          '> BEGIN QUOTE: statement file name (untrusted)\n> "statement-layout-a.pdf"\n> END QUOTE',
         );
         assert.strictEqual(result.rows, 20);
         assert.include(result.balance, "It adds up");
@@ -388,7 +389,7 @@ describe("bank statements", () => {
         // Sonnet 5.5 named it without its extension, as other file inputs taught them.
         const again = yield* LeadStatements.read(scope, {
           sourceEventId: "event-1",
-          attachment: "hdfc-account",
+          attachment: "statement-layout-a",
         });
         assert.strictEqual(again.statement, result.statement);
         assert.lengthOf(yield* sql`SELECT 1 FROM kin_widgets WHERE type = 'statement_review'`, 1);
@@ -396,7 +397,7 @@ describe("bank statements", () => {
         const changed = yield* choose(card, [{ _tag: "tickAll", ticked: false }]);
         yield* LeadStatements.read(scope, {
           sourceEventId: "event-1",
-          attachment: "hdfc-account.pdf",
+          attachment: "statement-layout-a.pdf",
           refresh: true,
         });
         const fresh = (yield* reviewCardOf(result.statement)).card;
@@ -427,8 +428,8 @@ describe("bank statements", () => {
   it.effect("is refused in a turn others read", () =>
     Effect.gen(function* () {
       yield* seed;
-      const id = yield* keep(fixture("hdfc-account.pdf"), "pdf");
-      const event = yield* turn(1, { id, name: "hdfc-account.pdf" }, "shared");
+      const id = yield* keep(fixture("statement-layout-a.pdf"), "pdf");
+      const event = yield* turn(1, { id, name: "statement-layout-a.pdf" }, "shared");
       const refused = yield* LeadStatements.read(scope, {
         sourceEventId: event,
         attachment: id,
@@ -447,7 +448,7 @@ describe("bank statements", () => {
       const keys = yield* seed;
       const sql = yield* SqlClient.SqlClient;
       const records = yield* KinRecords.KinRecords;
-      const result = yield* read(1, "hdfc-account.pdf");
+      const result = yield* read(1, "statement-layout-a.pdf");
       const { card } = yield* reviewCardOf(result.statement);
       const all = yield* confirmAll(card);
       // A card made before something changed, or a selection the owner hasn't seen, applies nothing.
@@ -471,12 +472,18 @@ describe("bank statements", () => {
 
       // The owner unticks nothing but leaves the tea for later.
       const tea = card.unmatched
-        .filter((one) => one.text.startsWith("UPI-CHAI POINT"))
+        .filter((one) => one.text.startsWith("UPI-MOSS TEA BAR"))
         .map((one) => one.row);
       const later = yield* choose(
         (yield* reviewCardOf(result.statement)).card,
         tea.map((row) => ({ _tag: "action" as const, row, action: "later" as const })),
       );
+      yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+        VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${people[0]!.personId}, 0)`;
+      const moneyOff = yield* Effect.flip(OwnerStatements.apply(people, confirmOf(later)));
+      assert.include(moneyOff.message, "Money is turned off for this company");
+      assert.lengthOf(yield* bankRows, 0);
+      yield* sql`UPDATE kin_company_shell SET shell_json = '[]', rev = 2 WHERE org_id = ${orgId}`;
       const applied = yield* OwnerStatements.apply(people, confirmOf(later));
       assert.strictEqual(applied.card.status, "applied");
       assert.include(
@@ -508,6 +515,11 @@ describe("bank statements", () => {
       const detail = yield* records.detail(exact);
       assert.isTrue(
         detail.links.some((link) => link.kind === "record" && link.relation === "evidence"),
+      );
+      // Recorded from the statement's line, which reads as where it came from.
+      assert.deepStrictEqual(
+        detail.payments?.map((one) => one.source),
+        [{ _tag: "statement" }],
       );
       assert.isTrue(
         detail.changes.some((change) => change.fields.some((field) => field.field === "payment")),
@@ -557,7 +569,7 @@ describe("bank statements", () => {
       const keys = yield* seed;
       const sql = yield* SqlClient.SqlClient;
       const records = yield* KinRecords.KinRecords;
-      const result = yield* read(1, "hdfc-account.pdf");
+      const result = yield* read(1, "statement-layout-a.pdf");
       const { card } = yield* reviewCardOf(result.statement);
       yield* OwnerStatements.apply(people, yield* confirmAll(card));
       const created = yield* sql<{ key: string }>`SELECT key FROM kin_records
@@ -595,17 +607,54 @@ describe("bank statements", () => {
         note: "UTR N275260001234567",
         originKey: "by-hand",
       });
-      const result = yield* read(1, "hdfc-account.pdf");
+      const result = yield* read(1, "statement-layout-a.pdf");
       const { card } = yield* reviewCardOf(result.statement);
       const row = card.matched.find((one) => one.target.key === keys.exact);
       assert.include(row?.target.note, "already recorded");
+      const seen = () =>
+        Effect.gen(function* () {
+          const detail = yield* records.detail((yield* records.get(orgId, keys.exact))!);
+          return [detail.payments?.map((one) => one.source?._tag), detail.bankKnown?.through];
+        });
+      // Before the statement it is the owner's word, and Kin can't see the bank.
+      assert.deepStrictEqual(yield* seen(), [["person"], null]);
       yield* OwnerStatements.apply(people, yield* confirmAll(card));
       const payments = () =>
         sql<{ voided: number | null }>`SELECT voided_at AS voided FROM kin_record_payments p
           JOIN kin_records r ON r.record_id = p.record_id WHERE r.key = ${keys.exact}`;
       assert.deepStrictEqual(yield* payments(), [{ voided: null }]);
+      const through = (yield* seen())[1];
+      assert.isString(through);
+      assert.deepStrictEqual(yield* seen(), [["statement"], through]);
       yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
       assert.deepStrictEqual(yield* payments(), [{ voided: null }]);
+      // Undone, the line no longer backs it: it is the owner's word again.
+      assert.deepStrictEqual(yield* seen(), [["person"], null]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("pays no invoice an agent only suggested, and says to confirm it first", () =>
+    Effect.gen(function* () {
+      const keys = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const suggested = (on: number) =>
+        sql`UPDATE kin_records SET confirmed = ${on} WHERE key = ${keys.exact}`;
+      // A card read once it was a suggestion offers it for no row.
+      yield* suggested(0);
+      const first = yield* read(1, "statement-layout-a.pdf");
+      const { card } = yield* reviewCardOf(first.statement);
+      assert.isFalse(card.matched.some((one) => one.target.key === keys.exact));
+      // A card read before applies nothing on it, and says who can confirm it.
+      yield* suggested(1);
+      const again = yield* read(2, "statement-layout-a.pdf");
+      const confirm = yield* confirmAll((yield* reviewCardOf(again.statement)).card);
+      yield* suggested(0);
+      const refused = yield* OwnerStatements.apply(people, confirm).pipe(Effect.flip);
+      assert.include(
+        String(isChatError(refused) ? refused.message : refused),
+        `${keys.exact} is still a suggestion: the owner or a co-owner hasn't kept it. They keep it with Keep on its page, or by asking you to keep it themselves. Nothing changed.`,
+      );
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_record_payments`, 0);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -615,7 +664,7 @@ describe("bank statements", () => {
       const keys = yield* seed;
       const sql = yield* SqlClient.SqlClient;
       const records = yield* KinRecords.KinRecords;
-      const result = yield* read(1, "hdfc-account.pdf");
+      const result = yield* read(1, "statement-layout-a.pdf");
       const confirm = yield* confirmAll((yield* reviewCardOf(result.statement)).card);
       yield* records.update(orgId, owner, keys.exact, {
         amount: { minor: 23_600_000, currency: "INR" },
@@ -644,7 +693,7 @@ describe("bank statements", () => {
       Effect.gen(function* () {
         yield* seed;
         const sql = yield* SqlClient.SqlClient;
-        const result = yield* read(1, "hdfc-account.pdf");
+        const result = yield* read(1, "statement-layout-a.pdf");
         const { card } = yield* reviewCardOf(result.statement);
         const later = yield* choose(
           card,
@@ -677,13 +726,13 @@ describe("bank statements", () => {
   it.effect("adds nothing twice: the same statement sent again, then an overlapping one", () =>
     Effect.gen(function* () {
       yield* seed;
-      const first = yield* read(1, "hdfc-account.pdf");
+      const first = yield* read(1, "statement-layout-a.pdf");
       yield* OwnerStatements.apply(
         people,
         yield* confirmAll((yield* reviewCardOf(first.statement)).card),
       );
       const explained = (yield* bankRows).filter((row) => row.state !== "open").length;
-      const second = opened(yield* read(2, "hdfc-account.pdf"));
+      const second = opened(yield* read(2, "statement-layout-a.pdf"));
       assert.notStrictEqual(second.statement, first.statement);
       assert.strictEqual(second.counts.recorded, explained);
       yield* OwnerStatements.apply(
@@ -692,7 +741,9 @@ describe("bank statements", () => {
       );
       assert.lengthOf(yield* bankRows, 20);
       // November's export repeats October's last four rows and adds two of its own.
-      const october = yield* Effect.promise(() => readStatementFile(fixture("hdfc-account.pdf")));
+      const october = yield* Effect.promise(() =>
+        readStatementFile(fixture("statement-layout-a.pdf")),
+      );
       assert.strictEqual(october._tag, "read");
       const tail = october._tag === "read" ? october.statement.rows.slice(-4) : [];
       const money = (minor: number) => (minor / 100).toFixed(2);
@@ -746,8 +797,8 @@ describe("bank statements", () => {
     Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
-      const first = yield* read(1, "hdfc-account.pdf");
-      const second = yield* read(2, "hdfc-account.pdf");
+      const first = yield* read(1, "statement-layout-a.pdf");
+      const second = yield* read(2, "statement-layout-a.pdf");
       // On both cards, before either is confirmed, the owner makes the same debit an expense.
       const asExpense = (card: KinStatementReviewCard) => {
         const debit = card.unmatched.find((one) => one.direction === "debit")!;
@@ -779,9 +830,9 @@ describe("bank statements", () => {
       yield* OwnerStatements.undo(people, { orgId, statementId: second.statement });
       assert.strictEqual((yield* expenses)[0]!.n, 1);
       // And the same overlap with everything the cards propose still confirms, once.
-      const third = yield* read(3, "hdfc-account.pdf");
+      const third = yield* read(3, "statement-layout-a.pdf");
       const all = yield* confirmAll((yield* reviewCardOf(third.statement)).card);
-      const fourth = yield* read(4, "hdfc-account.pdf");
+      const fourth = yield* read(4, "statement-layout-a.pdf");
       yield* OwnerStatements.apply(people, all);
       const [paid] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_record_payments
         WHERE voided_at IS NULL`;
@@ -828,7 +879,7 @@ describe("bank statements", () => {
     Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
-      const first = yield* read(1, "hdfc-account.pdf");
+      const first = yield* read(1, "statement-layout-a.pdf");
       // As a statement read and confirmed before Kin kept account identities left it.
       const [kept] = yield* sql<{ id: string | null }>`SELECT
           json_extract(review_json, '$.statement.accountId') AS id
@@ -898,7 +949,9 @@ describe("bank statements", () => {
         },
         NOW,
       );
-      const october = yield* Effect.promise(() => readStatementFile(fixture("hdfc-account.pdf")));
+      const october = yield* Effect.promise(() =>
+        readStatementFile(fixture("statement-layout-a.pdf")),
+      );
       const rows = october._tag === "read" ? october.statement.rows.slice(0, 3) : [];
       for (const [index, row] of rows.entries())
         yield* records.create(
@@ -920,7 +973,7 @@ describe("bank statements", () => {
             },
           },
         );
-      const result = opened(yield* read(1, "hdfc-account.pdf"));
+      const result = opened(yield* read(1, "statement-layout-a.pdf"));
       assert.strictEqual(result.counts.recorded, 3);
       yield* OwnerStatements.apply(
         people,
@@ -937,6 +990,95 @@ describe("bank statements", () => {
       );
       assert.include(lists[0]!.json, '"balance"');
       assert.lengthOf(yield* bankRows, 20);
+      // Money in and out add up apart, in the list's own words for them, then their net; the
+      // total stays the plain sum older phone builds show.
+      const kept = yield* sql<{ minor: number; fields: string }>`SELECT amount_minor AS minor,
+          fields_json AS fields FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'bank_txns' AND state != 'dropped'`;
+      const sum = (direction: string) =>
+        kept.reduce(
+          (total, row) =>
+            total + (JSON.parse(row.fields).direction.toLowerCase() === direction ? row.minor : 0),
+          0,
+        );
+      assert.isAbove(sum("credit") * sum("debit"), 0);
+      const totals = yield* records.totals(orgId, { list: "bank_txns" });
+      assert.deepStrictEqual(
+        [totals.moneyIn, totals.moneyOut, totals.net, totals.total],
+        [
+          [{ minor: sum("credit"), currency: "INR" }],
+          [{ minor: sum("debit"), currency: "INR" }],
+          [{ minor: sum("credit") - sum("debit"), currency: "INR" }],
+          [{ minor: sum("credit") + sum("debit"), currency: "INR" }],
+        ],
+      );
+      // Agents get in, out and net for the bank list, and never the plain sum to quote.
+      const asked = yield* LeadWork.query(scope, { list: "bank_txns", groupBy: "state" });
+      const flows = (one: { moneyIn?: unknown; moneyOut?: unknown; net?: unknown }) => [
+        one.moneyIn,
+        one.moneyOut,
+        one.net,
+      ];
+      assert.notProperty(asked, "totals");
+      assert.deepStrictEqual(flows(asked), [
+        [formatMoney({ minor: sum("credit"), currency: "INR" })],
+        [formatMoney({ minor: sum("debit"), currency: "INR" })],
+        [formatMoney({ minor: sum("credit") - sum("debit"), currency: "INR" })],
+      ]);
+      assert.isNotEmpty(asked.groups);
+      for (const group of asked.groups ?? []) {
+        assert.notProperty(group, "totals");
+        assert.isTrue(flows(group).every(Array.isArray));
+      }
+      // An owner's own list with a Direction field is no bank list: its total is the plain sum.
+      yield* defineList(
+        orgId,
+        {
+          _tag: "new",
+          id: "calls",
+          name: "Calls",
+          prefix: "CL",
+          definition: {
+            noun: "call",
+            states: ["open", "done"],
+            stateLabels: {},
+            defaultState: "done",
+            categories: [],
+            fields: [
+              {
+                key: "direction",
+                label: "Direction",
+                type: "choice",
+                choices: ["Inbound", "Outbound", "Internal"],
+                sensitive: false,
+              },
+            ],
+            sensitive: false,
+            amount: true,
+            currency: "INR",
+          },
+        },
+        NOW,
+      );
+      for (const [index, direction] of ["Inbound", "Outbound", "Internal"].entries())
+        yield* records.create(
+          orgId,
+          { actor: { _tag: "system" }, via: "import" },
+          {
+            list: "calls",
+            originKey: `import:calls:${index}`,
+            title: `${direction} call`,
+            owner: { _tag: "person", personId: ownerId },
+            state: "done",
+            amount: { minor: 100 * (index + 1), currency: "INR" },
+            fields: { direction },
+          },
+        );
+      const calls = yield* records.totals(orgId, { list: "calls" });
+      assert.deepStrictEqual(
+        [calls.total, calls.moneyIn, calls.moneyOut, calls.net],
+        [[{ minor: 600, currency: "INR" }], undefined, undefined, undefined],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -947,7 +1089,7 @@ describe("bank statements", () => {
         yield* seed;
         const sql = yield* SqlClient.SqlClient;
         logged.length = 0;
-        const locked = yield* read(1, "hdfc-account-locked.pdf");
+        const locked = yield* read(1, "statement-layout-a-locked.pdf");
         assert.strictEqual(locked.status, "needs_password");
         const [card] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
         WHERE type = 'statement_password'`;
@@ -975,7 +1117,7 @@ describe("bank statements", () => {
         const { card: review } = yield* reviewCardOf(locked.statement);
         assert.strictEqual(review.matched.length, 3);
         // The next locked statement of the account opens with the kept password, untyped.
-        const next = yield* read(2, "hdfc-account-locked.pdf");
+        const next = yield* read(2, "statement-layout-a-locked.pdf");
         assert.strictEqual(next.status, "read");
         const secrets = yield* ServerSecretStore.ServerSecretStore;
         const { secretsDir } = yield* ServerConfig.ServerConfig;
@@ -1024,7 +1166,7 @@ describe("bank statements", () => {
           NodeFS.readdirSync(secretsDir).filter((name) => name.startsWith("kin-statement-")),
           0,
         );
-        const third = yield* read(3, "hdfc-account-locked.pdf");
+        const third = yield* read(3, "statement-layout-a-locked.pdf");
         assert.strictEqual(third.status, "needs_password");
         // Five wrong passwords and the card stops trying, the right one included.
         const tries = [];
@@ -1054,7 +1196,7 @@ describe("bank statements", () => {
             password: Redacted.make(password),
             remember: false,
           }).pipe(Effect.map((one) => one.status));
-        const first = yield* read(1, "hdfc-account-locked.pdf");
+        const first = yield* read(1, "statement-layout-a-locked.pdf");
         // Seven wrong passwords at once: no more than the five tries reach the file.
         const statuses = yield* Effect.all(
           Array.from({ length: 7 }, (_, n) => unlock(first.statement, `lake100${n}`)),
@@ -1065,7 +1207,7 @@ describe("bank statements", () => {
         // Read again, or the same file sent again in the chat, starts nothing over.
         yield* OwnerStatements.reread(people, { orgId, statementId: first.statement });
         assert.deepStrictEqual(yield* unlock(first.statement, PASSWORD), "limit");
-        const second = yield* read(2, "hdfc-account-locked.pdf");
+        const second = yield* read(2, "statement-layout-a-locked.pdf");
         assert.notStrictEqual(second.statement, first.statement);
         assert.deepStrictEqual(yield* unlock(second.statement, PASSWORD), "limit");
         // Its card stays open and says when Kin takes another.
@@ -1406,7 +1548,7 @@ describe("bank statements", () => {
           yield* seed;
           const sql = yield* SqlClient.SqlClient;
           logged.length = 0;
-          const name = "hdfc-account-locked.pdf";
+          const name = "statement-layout-a-locked.pdf";
           const id = yield* keep(fixture(name), "pdf");
           const event = yield* turn(
             1,
@@ -1466,7 +1608,7 @@ describe("bank statements", () => {
       () =>
         Effect.gen(function* () {
           yield* seed;
-          const name = "hdfc-account-locked.pdf";
+          const name = "statement-layout-a-locked.pdf";
           const id = yield* keep(fixture(name), "pdf");
           const guesses = Array.from({ length: 7 }, (_, at) => `lake000${at + 1}`);
           const event = yield* turn(1, { id, name }, "owner_only", `Try ${guesses.join(" or ")}`);
@@ -1956,7 +2098,7 @@ describe("bank statement safety", () => {
     Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
-      const result = yield* read(1, "hdfc-account.pdf");
+      const result = yield* read(1, "statement-layout-a.pdf");
       const { card } = yield* reviewCardOf(result.statement);
       yield* OwnerStatements.apply(people, yield* confirmAll(card));
       // The lead's own chat with the owner, and the statement's chat shared with a teammate
@@ -2004,7 +2146,7 @@ describe("bank statement safety", () => {
   it.effect("tells a build that sends no revision to update, and applies nothing", () =>
     Effect.gen(function* () {
       yield* seed;
-      const result = yield* read(1, "hdfc-account.pdf");
+      const result = yield* read(1, "statement-layout-a.pdf");
       const { revision: _revision, ...old } = yield* confirmAll(
         (yield* reviewCardOf(result.statement)).card,
       );
@@ -2024,7 +2166,7 @@ describe("bank statement safety", () => {
         const keys = yield* seed;
         const records = yield* KinRecords.KinRecords;
         const sql = yield* SqlClient.SqlClient;
-        const result = yield* read(1, "hdfc-account.pdf");
+        const result = yield* read(1, "statement-layout-a.pdf");
         yield* OwnerStatements.apply(
           people,
           yield* confirmAll((yield* reviewCardOf(result.statement)).card),
@@ -2034,7 +2176,7 @@ describe("bank statement safety", () => {
         // Kin matches it again: undo cleared nothing that a refresh can reset.
         yield* LeadStatements.read(scope, {
           sourceEventId: "event-1",
-          attachment: "hdfc-account.pdf",
+          attachment: "statement-layout-a.pdf",
           refresh: true,
         });
         const fresh = (yield* reviewCardOf(result.statement)).card;
@@ -2272,6 +2414,266 @@ describe("bank statement safety", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "repays a partner's oldest owed expenses from one debit, links it, and undo makes them owed",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera Rao', ${at})`;
+        const paidBy = (title: string, minor: number, day: string) =>
+          expense(title, minor, day, "Lakeview Cowork").pipe(
+            Effect.flatMap((row) =>
+              records.update(orgId, owner, row.key, {
+                state: "done",
+                fields: { fundedBy: "person:meera" },
+              }),
+            ),
+          );
+        const first = yield* paidBy("Desk deposit", 300_000, "2026-09-05");
+        const second = yield* paidBy("Monitor arm", 200_000, "2026-09-20");
+        const later = yield* paidBy("Cables", 100_000, "2026-10-01");
+        const result = opened(
+          yield* read(
+            1,
+            "repay.csv",
+            csvOf([
+              // The same amount as one of her expenses, from the company's account to the vendor.
+              ["2026-10-02", "UPI-LAKEVIEW COWORK-desk@invbank", 300_000, null],
+              ["2026-10-15", "NEFT DR-UTIB0000001-MEERA RAO-REIMB", 500_000, null],
+            ]),
+          ),
+        );
+        // The agent reads which expenses the line repays, and that Confirm marks them.
+        assert.deepStrictEqual(
+          result.matched.map((one) => one.to),
+          [`${first.key}, ${second.key} (Repays Meera Rao: 2 expenses, marked repaid on Confirm)`],
+        );
+        const card = (yield* reviewCardOf(result.statement)).card;
+        // Her expenses left her account, so the vendor line is no match for them.
+        assert.deepStrictEqual(
+          card.matched.map((one) => [one.text.slice(0, 13), one.target.key, one.target.note]),
+          [["NEFT DR-UTIB0", first.key, `Marks ${first.key}, ${second.key} repaid`]],
+        );
+        assert.notInclude(
+          JSON.stringify(card.choose.filter((one) => one.text.startsWith("UPI"))),
+          first.key,
+        );
+        const bankRows = sql<{ key: string; state: string; category: string | null }>`SELECT key,
+            state, category FROM kin_records WHERE org_id = ${orgId}
+            AND register_id = 'bank_transactions' ORDER BY key`;
+        const fieldsOf = (key: string) =>
+          records.get(orgId, key).pipe(Effect.map((row) => JSON.parse(row!.fieldsJson)));
+        const before = [yield* fieldsOf(first.key), yield* fieldsOf(second.key)];
+        const confirm = yield* confirmAll(card);
+        const refusal = (made: typeof confirm) =>
+          Effect.flip(OwnerStatements.apply(people, made)).pipe(
+            Effect.map((error) => [error.reason, error.message]),
+          );
+        // Edited since the read, the run no longer adds up to the line: Confirm applies nothing.
+        yield* records.update(orgId, owner, second.key, {
+          amount: { minor: 200_100, currency: "INR" },
+        });
+        assert.deepStrictEqual(yield* refusal(confirm), [
+          "conflict",
+          `Nothing was applied: the amount of ${second.key} changed since this card was made. Ask Kin to read the statement again.`,
+        ]);
+        // Paid by someone else now, or put back as it was: the card still showed another entry.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('dev', ${orgId}, 'dev', 'Dev Malhotra', ${at})`;
+        yield* records.update(orgId, owner, second.key, {
+          amount: { minor: 200_000, currency: "INR" },
+          fields: { fundedBy: "person:dev" },
+        });
+        assert.include((yield* refusal(confirm))[1], `someone else paid ${second.key}`);
+        yield* records.update(orgId, owner, second.key, { fields: { fundedBy: "person:meera" } });
+        assert.include((yield* refusal(confirm))[1], `${second.key} was edited`);
+        yield* OwnerStatements.reread(people, { orgId, statementId: result.statement });
+        const applied = yield* OwnerStatements.apply(
+          people,
+          yield* confirmAll((yield* reviewCardOf(result.statement)).card),
+        );
+        assert.include(applied.card.result!.join(" "), "Marked 2 partner-paid expenses repaid.");
+        // Bound to the bank line: what it cost, who is paid back and when, and whether it stands.
+        const paidBack = "This was paid back on 2026-10-15. Undo that repayment first.";
+        for (const patch of [
+          { amount: { minor: 300_100, currency: "INR" } },
+          { amount: { minor: 300_000, currency: "USD" } },
+          { fields: { fundedBy: "person:dev" } },
+          { fields: { repaidOn: "2026-10-16" } },
+          { fields: { reimbursement: "owed" } },
+          { state: "dropped" as const },
+        ])
+          assert.strictEqual(
+            (yield* Effect.flip(records.update(orgId, owner, first.key, patch))).message,
+            paidBack,
+          );
+        assert.isTrue((yield* bankRows).every((one) => one.state === "done"));
+        for (const key of [first.key, second.key])
+          assert.include(yield* fieldsOf(key), { reimbursement: "repaid", repaidOn: "2026-10-15" });
+        assert.include(yield* fieldsOf(later.key), { reimbursement: "owed" });
+        const [link] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_links
+          WHERE record_id IN (${first.recordId}, ${second.recordId}) AND kind = 'record'
+            AND relation = 'evidence'`;
+        assert.strictEqual(link!.n, 2);
+
+        yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
+        // Undo puts back every field Confirm changed, the repaid day included.
+        assert.deepStrictEqual([yield* fieldsOf(first.key), yield* fieldsOf(second.key)], before);
+        // Each bank row back as Confirm found it.
+        assert.isTrue(
+          (yield* bankRows).every((one) => one.state === "open" && one.category === null),
+        );
+        const [left] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_links
+          WHERE record_id IN (${first.recordId}, ${second.recordId}) AND kind = 'record'`;
+        assert.strictEqual(left!.n, 0);
+
+        // An entry changed by hand after Confirm is the owner's: Undo keeps that row whole.
+        const again = (yield* reviewCardOf(result.statement)).card;
+        yield* OwnerStatements.apply(people, yield* confirmAll(again));
+        yield* records.update(orgId, owner, first.key, { notes: "Deposit back in March" });
+        yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
+        assert.include(yield* fieldsOf(first.key), {
+          reimbursement: "repaid",
+          repaidOn: "2026-10-15",
+        });
+        assert.include(yield* fieldsOf(second.key), {
+          reimbursement: "repaid",
+          repaidOn: "2026-10-15",
+        });
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "settles a partner's refund-netted run, and refuses a repayment whose expenses changed since the card",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera Rao', ${at})`;
+        const paidBy = (title: string, minor: number, day: string) =>
+          expense(title, minor, day, "Invented Domains").pipe(
+            Effect.flatMap((row) =>
+              records.update(orgId, owner, row.key, {
+                state: "done",
+                fields: { fundedBy: "person:meera" },
+              }),
+            ),
+          );
+        const domain = yield* paidBy("Domain", 420_000, "2026-09-05");
+        // The registrar refunded part of it to her own card: she is owed the net.
+        const refund = yield* paidBy("Domain refund", -100_000, "2026-09-08");
+        const fieldsOf = (key: string) =>
+          records.get(orgId, key).pipe(Effect.map((row) => JSON.parse(row!.fieldsJson)));
+        const statementOf = (n: number, name: string, minor: number) =>
+          Effect.gen(function* () {
+            const result = opened(
+              yield* read(
+                n,
+                name,
+                csvOf([["2026-10-15", "NEFT DR-UTIB0000001-MEERA RAO-REIMB", minor, null]]),
+              ),
+            );
+            return { result, card: (yield* reviewCardOf(result.statement)).card };
+          });
+
+        // More than she is owed: no match, the line stays to be explained, and she stays owed.
+        const over = yield* statementOf(1, "over.csv", 400_000);
+        assert.deepStrictEqual(over.card.matched, []);
+        assert.notInclude(JSON.stringify(over.card.choose), domain.key);
+
+        const net = yield* statementOf(3, "net.csv", 320_000);
+        assert.deepStrictEqual(
+          net.card.matched.map((one) => [one.target.key, one.target.note]),
+          [[domain.key, `Marks ${domain.key}, ${refund.key} repaid`]],
+        );
+        // The refund's amount is corrected before Confirm: the run no longer adds up to the line.
+        yield* records.update(orgId, owner, refund.key, {
+          amount: { minor: -50_000, currency: "INR" },
+        });
+        const refused = yield* Effect.flip(
+          OwnerStatements.apply(people, yield* confirmAll(net.card)),
+        );
+        assert.strictEqual(refused.reason, "conflict");
+        assert.include(yield* fieldsOf(domain.key), { reimbursement: "owed" });
+        assert.include(yield* fieldsOf(refund.key), { reimbursement: "owed" });
+
+        // Repaid by hand the day before: the line is that repayment, not a new expense.
+        for (const key of [domain.key, refund.key])
+          yield* records.update(orgId, owner, key, {
+            fields: { reimbursement: "repaid", repaidOn: "2026-10-14" },
+          });
+        const marked = yield* statementOf(4, "marked.csv", 370_000);
+        assert.deepStrictEqual(
+          [marked.card.matched, marked.card.unmatched.map((one) => [one.suggestion, one.why])],
+          [
+            [],
+            [
+              [
+                "later",
+                "Looks like Meera Rao's repayment already marked on 2026-10-14, so it isn't recorded again",
+              ],
+            ],
+          ],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "settles no expense dated after its line, and Confirm refuses an ordinary match edited since",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera Rao', ${at})`;
+        // Dated two days after the line that would repay it.
+        const after = yield* expense("Courier", 45_000, "2026-10-17", "Invented Couriers").pipe(
+          Effect.flatMap((row) =>
+            records.update(orgId, owner, row.key, {
+              state: "done",
+              fields: { fundedBy: "person:meera" },
+            }),
+          ),
+        );
+        const lamp = yield* expense("Desk lamp", 52_000, "2026-10-14", "Invented Lamps");
+        const result = opened(
+          yield* read(
+            1,
+            "dated.csv",
+            csvOf([
+              ["2026-10-15", "NEFT DR-UTIB0000001-MEERA RAO-REIMB", 45_000, null],
+              ["2026-10-15", "UPI-INVENTED LAMPS-lamps@invbank", 52_000, null],
+            ]),
+          ),
+        );
+        const card = (yield* reviewCardOf(result.statement)).card;
+        assert.deepStrictEqual(
+          card.matched.map((one) => one.target.key),
+          [lamp.key],
+        );
+        assert.notInclude(JSON.stringify(card), `Marks ${after.key}`);
+        // The lamp became a partner's own spend after the card was made: it never left this account.
+        yield* records.update(orgId, owner, lamp.key, { fields: { fundedBy: "person:meera" } });
+        const refused = yield* Effect.flip(OwnerStatements.apply(people, yield* confirmAll(card)));
+        assert.deepStrictEqual(
+          [refused.reason, refused.message],
+          [
+            "conflict",
+            `Nothing was applied: ${lamp.key} is now a partner's to be paid back since this card was made. Ask Kin to read the statement again.`,
+          ],
+        );
+        yield* records.update(orgId, owner, lamp.key, { fields: { fundedBy: null } });
+        const edited = yield* Effect.flip(OwnerStatements.apply(people, yield* confirmAll(card)));
+        assert.include(edited.message, `${lamp.key} was edited`);
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("starts with nothing ticked when the rows can't be trusted, and says why", () =>
     Effect.gen(function* () {
       const keys = yield* seed;
@@ -2356,12 +2758,12 @@ describe("bank statement safety", () => {
       const keys = yield* seed;
       const sql = yield* SqlClient.SqlClient;
       const records = yield* KinRecords.KinRecords;
-      const result = yield* read(1, "hdfc-account.pdf");
+      const result = yield* read(1, "statement-layout-a.pdf");
       // The invoice voided, a row fits differently, so the fresh read is a new card.
       yield* records.update(orgId, owner, keys.exact, { state: "dropped" });
       yield* LeadStatements.read(scope, {
         sourceEventId: "event-1",
-        attachment: "hdfc-account.pdf",
+        attachment: "statement-layout-a.pdf",
         refresh: true,
       });
       const widgets = yield* sql<{
@@ -2385,7 +2787,7 @@ describe("bank statement safety", () => {
       const keys = yield* seed;
       const sql = yield* SqlClient.SqlClient;
       const records = yield* KinRecords.KinRecords;
-      const result = yield* read(1, "hdfc-account.pdf");
+      const result = yield* read(1, "statement-layout-a.pdf");
       yield* OwnerStatements.apply(
         people,
         yield* confirmAll((yield* reviewCardOf(result.statement)).card),
@@ -2462,7 +2864,7 @@ describe("statement card taps over the server's RPCs", () => {
       const services = Option.getOrThrow((yield* Kin.KinServer).services);
       const queue = Context.get(services, KinEventQueue.KinEventQueue);
       const woken = yield* Queue.unbounded<KinEvent>();
-      // The lead's wake-ups, on the server's own hub and queue, as `KinLead.layerMcp` runs them.
+      // The lead's wake-ups, on the server's own hub and queue, as `KinLead.layerRuntime` runs them.
       yield* Layer.build(
         ChatWake.layer.pipe(
           Layer.provide(
@@ -2491,7 +2893,7 @@ describe("statement card taps over the server's RPCs", () => {
         assert.include(JSON.parse(tap!.body).text, `on statement ${statementId}`);
       });
 
-      const locked = yield* asLead(read(1, "hdfc-account-locked.pdf"));
+      const locked = yield* asLead(read(1, "statement-layout-a-locked.pdf"));
       assert.strictEqual(locked.status, "needs_password");
       assert.deepStrictEqual(
         yield* rpc["kin.work.statementUnlock"]({
@@ -2522,7 +2924,7 @@ describe("statement card taps over the server's RPCs", () => {
           }),
         ),
       );
-      const waiting = "Waiting on its lead to read 3 pages (0 given so far).";
+      const waiting = "Waiting on its agent to read 3 pages (0 given so far).";
       for (const _ of [1, 2]) {
         yield* TestClock.adjust("1 second");
         assert.deepStrictEqual(

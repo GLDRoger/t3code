@@ -74,7 +74,7 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
-import { toWslDrivePath } from "../workspace/wslDrivePath.ts";
+import { toHostDrivePath } from "../workspace/hostDrivePath.ts";
 import * as NativeAppIconResolver from "./NativeAppIconResolver.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import { extractIcnsPng } from "./icns.ts";
@@ -316,7 +316,9 @@ export const readKinVisualPage = Effect.fn("AssetAccess.readKinVisualPage")(func
     if (Option.isSome(signature))
       urls[id] = `${ASSET_ROUTE_PREFIX}/${encodedPayload}.${signature.value}/file`;
   }
-  return kinVisualPageDocument(resolveKinVisualFileReferences(html, urls), visual.hosts);
+  return kinVisualPageDocument(resolveKinVisualFileReferences(html, urls), visual.hosts, {
+    brand: visual.brand,
+  });
 });
 
 const readToolOutputImage = Effect.fn("AssetAccess.readToolOutputImage")(function* (input: {
@@ -643,7 +645,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   switch (input.resource._tag) {
     case "media-file": {
       let requestedPath = expandHomePath(
-        yield* toWslDrivePath(input.resource.path),
+        yield* toHostDrivePath(input.resource.path),
         yield* HostProcess.HomeDirectory,
       );
       if (!path.isAbsolute(requestedPath)) {
@@ -703,7 +705,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       const hostPath =
         input.resource.path.startsWith("~/") || input.resource.path.startsWith("~\\")
           ? expandHomePath(input.resource.path, yield* HostProcess.HomeDirectory)
-          : yield* toWslDrivePath(input.resource.path);
+          : yield* toHostDrivePath(input.resource.path);
       if (path.isAbsolute(hostPath)) {
         const finalized = yield* finalizeAbsoluteMediaFileAsset({
           requestedPath: hostPath,

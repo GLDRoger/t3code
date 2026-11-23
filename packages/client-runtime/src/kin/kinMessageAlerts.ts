@@ -6,9 +6,16 @@ import type { KinChatListRow } from "./kinChatListRows.ts";
  */
 export const KIN_MESSAGE_ALERTS = {
   title: "Notifications",
-  detail:
-    "Alerts on this computer when someone writes to you while Kin is open but you're in another window. Your phone's notifications are set on the phone.",
+  purpose: "Your phone's notifications are set on the phone.",
   label: "Message alerts",
+  detail: "On this computer, while Kin is open in another window",
+  needsSecure:
+    "Alerts need the desktop app, or Kin open at a secure (https) address. Sound only still works.",
+  unavailable: "This browser can't show alerts. Sound only still works.",
+  blocked:
+    "Your browser is blocking alerts from Kin. Allow them in its settings, then pick this again. Sound only still works.",
+  /** The in-app notice's button, which opens what the message is about. */
+  open: "Open",
 };
 
 export type KinUnreadSeen = ReadonlyMap<string, number>;
@@ -32,3 +39,21 @@ export const kinArrivalText = (row: KinChatListRow) => ({
   title: row.view.title ?? "Kin",
   body: row.author === null ? row.preview : `${row.author}: ${row.preview}`,
 });
+
+/**
+ * How each arrival is told on this device: by the system while you are in another window, else
+ * in the app, unless it is the chat already on screen.
+ */
+export function kinArrivalNotices(
+  arrivals: ReadonlyArray<KinChatListRow>,
+  where: { readonly looking: boolean; readonly onScreenChatId: string | null },
+): {
+  readonly system: ReadonlyArray<KinChatListRow>;
+  readonly inApp: ReadonlyArray<KinChatListRow>;
+} {
+  if (!where.looking) return { system: arrivals, inApp: [] };
+  return {
+    system: [],
+    inApp: arrivals.filter((row) => row.chat.chatId !== where.onScreenChatId),
+  };
+}

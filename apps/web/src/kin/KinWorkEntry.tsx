@@ -1,7 +1,11 @@
+import { KinAsideNote } from "./KinAttention";
+import { KinWatchLine } from "./KinWatchLine";
+import { kinPersonChoices } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { useKinOpensClients } from "./useKinOwnerLevel";
 import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
+import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
 import {
   KIN_FIELD_FILES_MAX,
   KIN_LISTS,
@@ -9,6 +13,7 @@ import {
   kinFieldCheck,
   kinListEntryView,
   kinPaymentCheck,
+  kinSuggestion,
   type KinListEntryView,
   type KinListFieldView,
   type KinPaymentDraft,
@@ -28,6 +33,7 @@ import {
   kinIsInvoice,
   kinInvoiceFileDoc,
   kinInvoiceDraftNote,
+  kinIssuedAmountQuestion,
 } from "@t3tools/client-runtime/kin/kinInvoices";
 import type { KinFieldValue, KinFileRef, KinRecordDetail, KinRecordKey } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -87,9 +93,11 @@ import {
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import { KinSuggestionKeep } from "./KinMoneySuggested";
 import { KinInvoiceCurrency } from "./KinMoneyEstimate";
 import { KinNotesVersions } from "./KinConfirm";
 import { KinEntryFilePicker, KinEntryPick, KinEntryText } from "./KinWorkEntryEdit";
+import { KinCountryFirstField } from "./KinCountryFirst";
 import { KinWorkPrivateMark, KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
@@ -196,6 +204,7 @@ function DayMenu(props: {
   readonly text: string | null;
   readonly day: string | null;
   readonly now: Date;
+  readonly zone: string | null;
   readonly disabled: boolean;
   readonly onPick: (day: string | null) => void;
 }) {
@@ -217,7 +226,7 @@ function DayMenu(props: {
         <ChevronDownIcon />
       </MenuTrigger>
       <MenuPopup align="start">
-        {kinWorkDueChoices(props.now).map((choice) => (
+        {kinWorkDueChoices(props.now, props.zone).map((choice) => (
           <MenuItem
             key={choice.day}
             disabled={choice.day === props.day}
@@ -289,7 +298,6 @@ function PaymentForm(props: {
             inputMode="decimal"
             autoComplete="off"
             autoFocus
-            placeholder={props.entry.balance?.leftText}
             value={draft.amount}
             onChange={(event) => setDraft({ ...draft, amount: event.target.value })}
           />
@@ -312,7 +320,6 @@ function PaymentForm(props: {
             id={ids.tds}
             inputMode="decimal"
             autoComplete="off"
-            placeholder={KIN_LISTS.entry.payTdsPlaceholder}
             value={draft.tds}
             onChange={(event) => setDraft({ ...draft, tds: event.target.value })}
           />
@@ -362,6 +369,7 @@ function FieldEdit(
     readonly currency: string;
     readonly busy: boolean;
     readonly now: Date;
+    readonly zone: string | null;
     readonly previewKey: string;
     readonly people: ReadonlyArray<Choice>;
     readonly clients: ReadonlyArray<Ref>;
@@ -377,8 +385,8 @@ function FieldEdit(
   const current = typeof field.value === "string" ? field.value : null;
   switch (field.type) {
     case "text":
-    case "money":
-      return (
+    case "money": {
+      const edit = (
         <KinEntryText
           label={field.label}
           shown={field.text}
@@ -392,6 +400,14 @@ function FieldEdit(
           }}
         />
       );
+      return field.type === "money" ? (
+        <KinCountryFirstField environmentId={props.environmentId} label={field.label}>
+          {edit}
+        </KinCountryFirstField>
+      ) : (
+        edit
+      );
+    }
     case "date":
       return (
         <DayMenu
@@ -399,6 +415,7 @@ function FieldEdit(
           text={field.text}
           day={current}
           now={props.now}
+          zone={props.zone}
           disabled={busy}
           onPick={(day) => void props.onSet(day)}
         />
@@ -413,7 +430,7 @@ function FieldEdit(
           disabled={busy}
           choices={
             field.type === "person"
-              ? props.people
+              ? kinPersonChoices(field.key, props.people)
               : field.choices.map((choice) => ({ value: choice, label: choice }))
           }
           onPick={(value) => void props.onSet(value)}
@@ -515,7 +532,9 @@ export function KinListEntry(
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
-  const invoice = kinIsInvoice(item) ? kinInvoiceView(item, def, props.now) : null;
+  const invoice = kinIsInvoice(item)
+    ? kinInvoiceView(item, def, props.now, props.directory.names)
+    : null;
   const quote = item.list === KIN_QUOTES_LIST ? kinQuoteRow(item, null, props.now) : null;
   const money = useKinMoneyActions(props);
   const rates = useKinRates(props, invoice !== null || quote !== null);
@@ -530,6 +549,12 @@ export function KinListEntry(
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
   const [paying, setPaying] = useState(false);
   const [takingBack, setTakingBack] = useState<string | null>(null);
+  // The amount box waits on this question's answer: the reason it wasn't saved, or null.
+  const [askingAmount, setAskingAmount] = useState<{
+    readonly question: NonNullable<ReturnType<typeof kinIssuedAmountQuestion>>;
+    readonly save: () => Promise<string | null>;
+    readonly done: (failed: string | null) => void;
+  } | null>(null);
   // Make invoice and Make its PDF are a step of this sheet, never a dialog over it.
   const [making, setMaking] = useState<"invoice" | "pdf" | null>(null);
   const today = kinWorkDayOf(props.now);
@@ -590,28 +615,43 @@ export function KinListEntry(
           {invoice?.description == null ? null : (
             <p className="text-sm text-muted-foreground">{invoice.description}</p>
           )}
+          <KinAsideNote {...props} record={item.key} names={props.directory.names} />
+          <KinWatchLine environmentId={environmentId} orgId={props.orgId} recordKey={item.key} />
         </div>
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
         <div className="flex flex-col gap-3">
           {amountEdit !== null && canDraft ? (
-            <div>
-              <KinEntryText
-                headline
-                numeric
-                label={KIN_LISTS.entry.amount}
-                shown={entry.amount}
-                draft={amountEdit.draft}
-                placeholder={KIN_LISTS.entry.amountPlaceholder}
-                disabled={busy}
-                onSave={async (text) => {
-                  const checked = kinAmountCheck(text, amountEdit.currency, amountEdit.received);
-                  return checked.ok
-                    ? changes.edit(item.rev, { amount: checked.value })
-                    : checked.problem;
-                }}
-              />
-            </div>
+            <KinCountryFirstField environmentId={environmentId} label={KIN_LISTS.entry.amount}>
+              <div>
+                <KinEntryText
+                  headline
+                  numeric
+                  label={KIN_LISTS.entry.amount}
+                  shown={entry.amount}
+                  draft={amountEdit.draft}
+                  placeholder={KIN_LISTS.entry.amountPlaceholder}
+                  disabled={busy}
+                  ask={changes.ask}
+                  onSave={async (text) => {
+                    const checked = kinAmountCheck(
+                      text,
+                      amountEdit.currency,
+                      amountEdit.received,
+                      amountEdit.belowZero,
+                    );
+                    if (!checked.ok) return checked.problem;
+                    const save = () =>
+                      changes.edit(item.rev, { amount: checked.value }, text.trim());
+                    const question = kinIssuedAmountQuestion(item, checked.value);
+                    if (question === null) return save();
+                    return new Promise<string | null>((done) =>
+                      setAskingAmount({ question, save, done }),
+                    );
+                  }}
+                />
+              </div>
+            </KinCountryFirstField>
           ) : entry.amount === null ? null : (
             <p className="text-2xl font-semibold tracking-tight text-foreground tabular-nums">
               {entry.amount}
@@ -717,6 +757,9 @@ export function KinListEntry(
               </Menu>
             </div>
           )}
+          {canChange && kinSuggestion(item) ? (
+            <KinSuggestionKeep {...props} item={item} def={def} />
+          ) : null}
           {invoice === null ? null : (
             <KinInvoiceActions
               {...props}
@@ -755,6 +798,7 @@ export function KinListEntry(
                       text={entry.date}
                       day={entry.dateDay}
                       now={props.now}
+                      zone={names.zone}
                       disabled={busy}
                       onPick={(day) =>
                         void changes.update(
@@ -779,6 +823,7 @@ export function KinListEntry(
                       text={entry.due}
                       day={entry.dueDay}
                       now={props.now}
+                      zone={names.zone}
                       disabled={busy}
                       onPick={(day) =>
                         void changes.update(
@@ -880,6 +925,7 @@ export function KinListEntry(
                           amountEdit?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY
                         }
                         busy={busy}
+                        zone={names.zone}
                         previewKey={previewKey}
                         people={people}
                         clients={clients}
@@ -981,10 +1027,11 @@ export function KinListEntry(
                       >
                         {payment.amount}
                       </span>
-                      <span className="truncate text-xs text-muted-foreground">
+                      <span className="text-xs break-words text-muted-foreground">
                         {[
                           payment.when,
                           payment.note,
+                          payment.source,
                           payment.voided ? KIN_LISTS.entry.takenBack : null,
                         ]
                           .filter((part) => part !== null)
@@ -1043,7 +1090,15 @@ export function KinListEntry(
             <Button
               size="sm"
               variant="outline"
-              onClick={() => agent.ask(`About ${item.key} (${item.title}): `)}
+              onClick={() =>
+                agent.ask(
+                  kinAskRecordDraft({
+                    key: item.key,
+                    title: item.title,
+                    number: item.fields?.number,
+                  }),
+                )
+              }
             >
               <MessageSquareIcon />
               {KIN_LISTS.entry.askChange}
@@ -1052,6 +1107,35 @@ export function KinListEntry(
         )}
       </div>
       <ExpandedImageDialogHost threadKey={previewKey} />
+      <AlertDialog
+        open={askingAmount !== null}
+        onOpenChange={(next) => {
+          if (next || askingAmount === null) return;
+          setAskingAmount(null);
+          askingAmount.done(null);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{askingAmount?.question.title}</AlertDialogTitle>
+            <AlertDialogDescription>{askingAmount?.question.message}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>
+              {KIN_WORK_COPY.cancel}
+            </AlertDialogClose>
+            <Button
+              onClick={() => {
+                const asked = askingAmount;
+                setAskingAmount(null);
+                if (asked !== null) void asked.save().then(asked.done);
+              }}
+            >
+              {askingAmount?.question.confirm}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       <AlertDialog
         open={takingBack !== null}
         onOpenChange={(next) => {
@@ -1092,9 +1176,17 @@ function InvoiceFileDoc(props: {
   const { doc } = props;
   if (doc === null) return null;
   return (
-    <Button size="xs" variant="ghost" onClick={() => props.onOpenDoc(doc.key)}>
+    <Button
+      size="xs"
+      variant="ghost"
+      className="max-w-full"
+      title={`${doc.title} · ${doc.key}`}
+      onClick={() => props.onOpenDoc(doc.key)}
+    >
       <FileTextIcon />
-      {doc.title} · {doc.key}
+      <span className="truncate">
+        {doc.title} · {doc.key}
+      </span>
     </Button>
   );
 }

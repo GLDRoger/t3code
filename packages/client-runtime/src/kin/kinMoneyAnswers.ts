@@ -8,6 +8,7 @@ import {
   type KinMoneyBudgetSetInput,
   type KinMoneyBudgets,
   type KinOrgId,
+  type KinMatchPartnerInput,
   type KinOutlook,
   type KinOutlookItem,
   type KinRecord,
@@ -15,12 +16,24 @@ import {
   type KinRecordLink,
   type KinRunway,
   type KinSignedMoney,
+  type KinShell,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import { kinEstimate, type KinRates } from "./kinCurrency.ts";
-import { kinCategoryLabel, kinMoneyText, kinParseMoney, kinTotalsLines } from "./kinLists.ts";
-import { kinWorkDueLabel } from "./kinWork.ts";
+import {
+  afterLabel,
+  kinBankKnownText,
+  kinCategoryLabel,
+  kinMoneyText,
+  kinParseMoney,
+  kinRecordName,
+  kinSuggestionText,
+  kinTotalsLines,
+} from "./kinLists.ts";
+import { kinSectionOn } from "./kinShell.ts";
+import { formatKinTime } from "./kinScreenState.ts";
+import { kinWorkDueLabel, type KinWorkRef } from "./kinWork.ts";
 
 /**
  * Money's cash, next 30 days, budgets and quotes as the owner reads them. Every figure is the
@@ -38,6 +51,10 @@ export const KIN_CASH = {
   newerOff: (on: string) =>
     `A newer statement (${on}) doesn't add up, so it isn't counted. Ask an agent to read it again.`,
   newerUndone: (on: string) => `A newer statement (${on}) was confirmed, then undone.`,
+  alertNote: (on: string, amount: string) =>
+    `This is the available balance in the newest bank alert mail, not a confirmed statement. The last confirmed statement closed at ${amount} (${on}).`,
+  alertOnly:
+    "This is the available balance in the newest bank alert mail. No confirmed statement covers this account yet.",
   apart: (label: string) =>
     `Kin can't tell this apart from another ${label}. Upload the missing month's statement so the two link up.`,
   withheld: "No total: two accounts look the same.",
@@ -54,6 +71,7 @@ export const KIN_CASH = {
   details: "Details",
   /** One short line beside the account; the whole sentence sits behind Why. */
   flag: {
+    alert: "From a bank alert",
     apart: "Looks like another account",
     newer: "Newer statement to confirm",
     newerOff: "Newer statement doesn't add up",
@@ -90,6 +108,33 @@ export const KIN_OUTLOOK = {
   apart: (currency: string) => `No ${currency} runway: two accounts look the same.`,
   notRunningDown: (currency: string) =>
     `${currency} cash isn't running down: the last three months brought in at least what went out.`,
+  partners: "Partners to name",
+  partnerNote: (count: number, oldest: string) =>
+    `${count} expense${count === 1 ? "" : "s"} they paid, since ${oldest}`,
+  partnerOwed: (name: string) => `Owed back to ${name}`,
+  partnerReturns: (name: string) => `Refunds ${name} holds, coming back`,
+  unmatched: "An imported address no teammate is matched to yet",
+  nameless: "Marked owed with no partner named",
+  whoIsThis: "Who is this?",
+  nothingMatched: "Nothing was left to match: Money is up to date.",
+  matchMoved: "New expenses arrived since you opened this. Nothing was changed; look again.",
+  unsaid: "Paid personally, not counted as owed yet",
+  unsaidNote: (count: number, since: string) =>
+    `${count} imported expense${count === 1 ? "" : "s"} since ${since}, counted as the company's own until you say`,
+  sayWho: "Say who paid",
+  sayTitle: (address: string) => `Who is ${address}?`,
+  sayDetail: (count: number, amount: string) =>
+    `An import says this address paid ${amount} across ${count} expense${count === 1 ? "" : "s"} from their own money. Until you say, Money counts them as the company's own spending.`,
+  paidBy: "Teammate",
+  pickPerson: "Pick a teammate",
+  settledQuestion: "Has the company paid them back?",
+  stillOwed: "Still owed",
+  stillOwedHint: "Counted as going out now, and as spending on the day you pay them back.",
+  paidBack: "Already paid back",
+  paidBackHint: "Nothing in Money changes; each expense says who paid it.",
+  confirm: "Confirm",
+  cancel: "Cancel",
+  saving: "Saving…",
 };
 
 export const KIN_BUDGETS = {
@@ -107,7 +152,6 @@ export const KIN_BUDGETS = {
   project: "Project",
   anyProject: "Every project",
   limit: "Monthly limit",
-  limitPlaceholder: "50,000",
   needsTarget: "Pick a category, a project, or both.",
   needsLimit: "Enter the monthly limit, like 50,000 or $200.",
   detail: "A monthly limit on paid expenses, in the currency you type.",
@@ -116,6 +160,9 @@ export const KIN_BUDGETS = {
   over: (amount: string) => `${amount} over`,
   left: (amount: string) => `${amount} left`,
   of: (spent: string, limit: string) => `${spent} of ${limit}`,
+  /** "+ €768 not counted in this USD budget". */
+  notCounted: (amounts: ReadonlyArray<string>, currency: string) =>
+    `+ ${amounts.join(" and ")} not counted in this ${currency} budget`,
   removedProject: "a removed project",
 };
 
@@ -156,7 +203,6 @@ export const KIN_LINES = {
   detail: "What is billed, one row each. Leave empty to bill the amount as one line.",
   description: "What",
   sac: "SAC/HSN",
-  sacPlaceholder: "998314",
   quantity: "Qty",
   unit: "Unit",
   rate: "Rate",
@@ -217,6 +263,8 @@ export interface KinCashCurrencyView {
 
 export interface KinCashView {
   readonly known: boolean;
+  /** "Bank known to 31 Oct"; null from an older host, or where Money already says none is in. */
+  readonly bank: string | null;
   readonly accounts: ReadonlyArray<KinCashAccountView>;
   readonly currencies: ReadonlyArray<KinCashCurrencyView>;
   /** Reads that aren't balances of record, apart from any account. */
@@ -224,6 +272,9 @@ export interface KinCashView {
 }
 
 const onLabel = (day: string, now: Date) => kinWorkDueLabel(day, now);
+// The flag already says "From a bank alert"; the line beside it says only when it was sent.
+// @effect-diagnostics-next-line globalDate:off - the shared clock-and-day label takes a Date.
+const alertAt = (at: string, now: Date) => formatKinTime(new Date(at), now);
 
 export function kinCashView(cash: KinCash, rates: KinRates | null, now: Date): KinCashView {
   const accounts = cash.accounts.map((one, index): KinCashAccountView => {
@@ -240,10 +291,15 @@ export function kinCashView(cash: KinCash, rates: KinRates | null, now: Date): K
                 : KIN_CASH.newerUndone(onLabel(newer.on, now)),
           ]),
     ];
+    const alert = one.alert;
+    if (alert !== undefined)
+      notes.push(KIN_CASH.alertNote(onLabel(one.on, now), kinSignedText(one.balance)));
     const flag = one.cannotTellApart
       ? KIN_CASH.flag.apart
       : newer === null
-        ? null
+        ? alert === undefined
+          ? null
+          : KIN_CASH.flag.alert
         : newer.standing === "not yet confirmed"
           ? KIN_CASH.flag.newer
           : newer.standing === "its totals don't check out"
@@ -255,18 +311,37 @@ export function kinCashView(cash: KinCash, rates: KinRates | null, now: Date): K
       label:
         one.kind === "card" ? `${one.label} · ${KIN_CASH.owedOnCard.toLowerCase()}` : one.label,
       card: one.kind === "card",
-      amount: kinSignedText(one.balance),
-      estimate: estimateOf(one.balance, rates),
-      when: [onLabel(one.on, now), one.stale ? KIN_CASH.stale(one.ageDays) : null]
-        .filter((part) => part !== null)
-        .join(" · "),
-      stale: one.stale,
+      amount: kinSignedText(alert?.balance ?? one.balance),
+      estimate: estimateOf(alert?.balance ?? one.balance, rates),
+      when:
+        alert !== undefined
+          ? alertAt(alert.at, now)
+          : [onLabel(one.on, now), one.stale ? KIN_CASH.stale(one.ageDays) : null]
+              .filter((part) => part !== null)
+              .join(" · "),
+      stale: alert === undefined && one.stale,
       notes,
     };
   });
+  const alertOnly = (cash.alertAccounts ?? []).map((one, index): KinCashAccountView => ({
+    id: `alert:${one.label}:${index}`,
+    flag: KIN_CASH.flag.alert,
+    label: one.label,
+    card: false,
+    amount: kinSignedText(one.alert.balance),
+    estimate: estimateOf(one.alert.balance, rates),
+    when: alertAt(one.alert.at, now),
+    stale: false,
+    notes: [KIN_CASH.alertOnly],
+  }));
   return {
-    known: cash.known,
-    accounts,
+    known: cash.known || alertOnly.length > 0,
+    // With no balance at all, Money's own line already says no statement is confirmed.
+    bank:
+      !cash.known && cash.bankKnown?.through === null
+        ? null
+        : kinBankKnownText(cash.bankKnown, now),
+    accounts: [...accounts, ...alertOnly],
     currencies: cash.byCurrency.map((one) => ({
       currency: one.currency,
       totalLabel: KIN_CASH.total(one.accounts),
@@ -289,7 +364,8 @@ export function kinCashView(cash: KinCash, rates: KinRates | null, now: Date): K
 
 export interface KinOutlookRowView {
   readonly id: string;
-  readonly key: KinRecordKey;
+  /** Null for a partner's balance: it sums their expenses and opens none. */
+  readonly key: KinRecordKey | null;
   readonly title: string;
   /** "Invoices · 20 Nov · repeats". */
   readonly note: string;
@@ -308,7 +384,29 @@ export interface KinOutlookView {
   readonly more: { readonly incoming: number; readonly outgoing: number };
   readonly notes: ReadonlyArray<string>;
   readonly runway: ReadonlyArray<{ readonly currency: string; readonly text: string }>;
+  /**
+   * Who the company owes back. One no teammate is matched to yet has `match`: the import's address
+   * to name a person for, or null for expenses marked owed with no partner at all.
+   */
+  readonly partners: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly amount: string;
+    readonly note: string;
+    readonly match: { readonly address: string | null; readonly seen: KinPartnerSeen } | null;
+  }>;
+  /** Imported addresses that paid personally, waiting for an owner to say who and whether owed. */
+  readonly unsaid: ReadonlyArray<{
+    readonly address: string;
+    readonly amount: string;
+    readonly expenses: number;
+    readonly note: string;
+    readonly seen: KinPartnerSeen;
+  }>;
 }
+
+/** The expenses and totals a partner row showed; the host changes exactly those or nothing. */
+export type KinPartnerSeen = NonNullable<KinMatchPartnerInput["seen"]>;
 
 /** Runway in a line: the host's months when it has them, else plainly why not. */
 export function kinRunwayText(one: KinRunway): string {
@@ -347,7 +445,32 @@ export function kinOutlookView(
     const about = estimateOf(money, rates);
     if (about !== null) estimates.set(kinSignedText(money, false), about);
   }
-  const outgoing = [...outlook.pastDueOut, ...outlook.goingOut];
+  // A partner's balance in each currency is its own row, under the figure it counts in.
+  const balances = (outlook.owedToPartners ?? []).flatMap((one) =>
+    one.owed.map((money) => ({ one, money })),
+  );
+  const partnerRow = ({ one, money }: (typeof balances)[number]): KinOutlookRowView => {
+    const shownMoney = money.minor < 0 ? { ...money, minor: -money.minor } : money;
+    return {
+      id: `partner:${one.personId ?? one.address ?? one.name}:${money.currency}`,
+      key: null,
+      title:
+        money.minor < 0 ? KIN_OUTLOOK.partnerReturns(one.name) : KIN_OUTLOOK.partnerOwed(one.name),
+      note:
+        one.personId !== null
+          ? KIN_OUTLOOK.partnerNote(one.expenses, afterLabel(onLabel(one.oldest, now)))
+          : one.address === null
+            ? KIN_OUTLOOK.nameless
+            : KIN_OUTLOOK.unmatched,
+      amount: kinMoneyText(shownMoney),
+      estimate: kinEstimate(shownMoney, rates)?.text ?? null,
+    };
+  };
+  const outgoing = [
+    ...outlook.pastDueOut.map(row("out")),
+    ...outlook.goingOut.map((one, index) => row("out")(one, outlook.pastDueOut.length + index)),
+    ...balances.filter(({ money }) => money.minor > 0).map(partnerRow),
+  ];
   return {
     empty:
       outlook.expectedIn.length === 0 &&
@@ -357,14 +480,42 @@ export function kinOutlookView(
     goingOut: kinTotalsLines(outlook.expectedOut),
     net: outlook.net.map((one) => kinSignedText(one, false)),
     estimates,
-    incoming: outlook.comingIn.map(row("in")),
-    outgoing: outgoing.map(row("out")),
+    incoming: [
+      ...outlook.comingIn.map(row("in")),
+      ...balances.filter(({ money }) => money.minor < 0).map(partnerRow),
+    ],
+    outgoing,
     more: { incoming: outlook.moreComingIn, outgoing: outlook.moreGoingOut },
     notes: [
       ...(outlook.overdueIn.length === 0 ? [] : [KIN_OUTLOOK.overdueIn(outlook.overdueIn.length)]),
       ...(outlook.incomplete.length === 0 ? [] : [KIN_OUTLOOK.short]),
     ],
     runway: outlook.runway.map((one) => ({ currency: one.currency, text: kinRunwayText(one) })),
+    // Only who still needs a person named: every balance is already a row above.
+    partners: (outlook.owedToPartners ?? [])
+      .filter((one) => one.personId === null)
+      .map((one) => ({
+        id: one.personId ?? `address:${one.address ?? one.name}`,
+        name: one.name,
+        amount: kinTotalsLines(one.owed).join(" + "),
+        note:
+          one.personId !== null
+            ? KIN_OUTLOOK.partnerNote(one.expenses, afterLabel(onLabel(one.oldest, now)))
+            : one.address === null
+              ? KIN_OUTLOOK.nameless
+              : KIN_OUTLOOK.unmatched,
+        match:
+          one.personId === null
+            ? { address: one.address, seen: { entries: one.entries ?? [], totals: one.owed } }
+            : null,
+      })),
+    unsaid: (outlook.partnersUnsaid ?? []).map((one) => ({
+      address: one.address,
+      amount: kinTotalsLines(one.total).join(" + "),
+      expenses: one.expenses,
+      note: KIN_OUTLOOK.unsaidNote(one.expenses, afterLabel(onLabel(one.oldest, now))),
+      seen: { entries: one.entries ?? [], totals: one.total },
+    })),
   };
 }
 
@@ -381,6 +532,8 @@ export interface KinBudgetView {
   /** Spent as a share of the limit, 0 to 1, for a bar. */
   readonly share: number;
   readonly estimate: string | null;
+  /** Spending on it in other currencies, which `spent` leaves out. */
+  readonly notCounted: string | null;
   readonly budget: KinMoneyBudget;
 }
 
@@ -391,9 +544,8 @@ function kinBudgetLabel(
   const project =
     budget.project === null
       ? null
-      : budget.project.key === null
-        ? KIN_BUDGETS.removedProject
-        : (budget.project.title ?? budget.project.key);
+      : // The host names a project only while it is there, as the Projects list does.
+        ((budget.project.key === null ? null : budget.project.title) ?? KIN_BUDGETS.removedProject);
   const category = budget.category === null ? null : kinCategoryLabel(budget.category, expenses);
   return [category, project].filter((part) => part !== null).join(" in ");
 }
@@ -414,8 +566,18 @@ export function kinBudgetsView(
         spent: KIN_BUDGETS.of(kinMoneyText(budget.spent), kinMoneyText(budget.limit)),
         standing: left < 0 ? KIN_BUDGETS.over(text(-left)) : KIN_BUDGETS.left(text(left)),
         status: budget.status,
-        share: budget.limit.minor <= 0 ? 1 : Math.min(budget.spent.minor / budget.limit.minor, 1),
+        share:
+          budget.limit.minor <= 0
+            ? 1
+            : Math.max(0, Math.min(budget.spent.minor / budget.limit.minor, 1)),
         estimate: kinEstimate(budget.limit, rates)?.text ?? null,
+        notCounted:
+          budget.notCounted === undefined || budget.notCounted.length === 0
+            ? null
+            : KIN_BUDGETS.notCounted(
+                budget.notCounted.map((one) => kinMoneyText(one.spent)),
+                budget.limit.currency,
+              ),
         budget,
       };
     })
@@ -435,13 +597,17 @@ export function kinBudgetsSummary(views: ReadonlyArray<Pick<KinBudgetView, "stat
 
 export interface KinBudgetDraft {
   readonly category: string | null;
-  readonly project: KinRecordKey | null;
+  /** The project with its name, which a project past the first page can only bring itself. */
+  readonly project: KinWorkRef | null;
   readonly limit: string;
 }
 
 export const kinBudgetDraftOf = (budget: KinMoneyBudget | null): KinBudgetDraft => ({
   category: budget?.category ?? null,
-  project: budget?.project?.key ?? null,
+  project:
+    !budget?.project?.key || budget.project.title === null
+      ? null
+      : { key: budget.project.key, title: budget.project.title },
   limit: budget === null ? "" : kinMoneyText(budget.limit),
 });
 
@@ -463,7 +629,7 @@ export function kinBudgetInput(
     input: {
       orgId,
       category: draft.category,
-      project: draft.project,
+      project: draft.project?.key ?? null,
       currency: limit.currency,
       limitMinor: limit.minor,
       clientRequestId,
@@ -524,18 +690,17 @@ export interface KinQuoteRowView {
 
 export function kinQuoteRow(record: KinRecord, rates: KinRates | null, now: Date): KinQuoteRowView {
   const state = kinQuoteState(record, now);
-  const number = record.fields?.number;
   const until = record.dueAt === null ? null : kinWorkDueLabel(record.dueAt.slice(0, 10), now);
   return {
     key: record.key,
-    number: typeof number === "string" && number.trim() !== "" ? number : record.key,
+    number: kinRecordName(record.key, record.fields?.number),
     party: record.party?.title ?? KIN_QUOTES.noClient,
     title: record.title,
     amount: record.amount === undefined ? null : kinMoneyText(record.amount),
     estimate:
       record.amount === undefined ? null : (kinEstimate(record.amount, rates)?.text ?? null),
     state,
-    stateLabel: KIN_QUOTES.states[state],
+    stateLabel: kinSuggestionText(record, KIN_QUOTES.states[state]),
     when:
       until === null
         ? null
@@ -570,10 +735,16 @@ export function kinQuoteInvoice(links: ReadonlyArray<KinRecordLink>): KinRecordK
 }
 
 /** A quote invoiced once offers its invoice, not another one. */
-export function kinQuoteActions(state: KinQuoteState, numbered: boolean, invoiced = false) {
+export function kinQuoteActions(
+  state: KinQuoteState,
+  numbered: boolean,
+  invoiced = false,
+  /** The company's sections: a quote opened by its link while they're off makes no invoice. */
+  shell?: KinShell | null,
+) {
   return {
     send: state === "draft" && numbered,
-    makeInvoice: state !== "declined" && !invoiced,
+    makeInvoice: state !== "declined" && !invoiced && kinSectionOn(shell, "invoices"),
     accept: state === "draft" || state === "sent" || state === "expired",
     decline: state !== "declined" && state !== "accepted",
     unaccept: state === "accepted",

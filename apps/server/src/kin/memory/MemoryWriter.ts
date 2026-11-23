@@ -115,6 +115,8 @@ export class MemoryWriteRejected extends Schema.TaggedError<MemoryWriteRejected>
 ) {}
 export class MemoryConflict extends Schema.TaggedError<MemoryConflict>()("MemoryConflict", {
   existingId: Schema.String,
+  /** Set when open items of the same kind share a link and say something else: every one of them. */
+  shared: Schema.optional(Schema.Array(Schema.Struct({ id: Schema.String, title: Schema.String }))),
 }) {}
 export class MemorySecretBlocked extends Schema.TaggedError<MemorySecretBlocked>()(
   "MemorySecretBlocked",
@@ -176,6 +178,8 @@ export interface MemoryChange {
   readonly content: string;
   readonly sourceEventId?: string;
   readonly supersedes?: string;
+  /** Open items of the same kind sharing a link that the caller read and says are another matter. */
+  readonly besides?: ReadonlyArray<string>;
   /**
    * Only who may know the item changes (`LeadMemory.label`), so who asked doesn't have to outrank
    * who first said it. `share` is the owner letting the team know it; nothing else unmarks one.
@@ -232,6 +236,19 @@ export class MemoryWriter extends Context.Service<
       },
     ) => Effect.Effect<{ commit: string }, Failure>;
     readonly deleteDreamBranch: (orgId: KinOrgId, branch: string) => Effect.Effect<void, Failure>;
+    /**
+     * Lands a dream's files on the default branch as an owner change lands, when none of them
+     * changed there since `base`. `landed` runs in the transaction that records the new head.
+     */
+    readonly landDream: (
+      orgId: KinOrgId,
+      input: {
+        readonly base: string;
+        readonly files: ReadonlyMap<string, string>;
+        readonly message: string;
+        readonly landed: (commit: string) => Effect.Effect<void, Failure>;
+      },
+    ) => Effect.Effect<{ commit: string }, Failure>;
     /**
      * The owner's Undo of one item a wake-up changed: a new commit on the same branch that
      * restores the item from `base`, or invalidates it if the wake-up created it. Compare-and-set:
@@ -302,6 +319,7 @@ const folders = [
   "claims",
   "relationships",
 ];
+const BESIDES_REFUSAL = "besides names only open items of the same kind that share a link with it";
 const render = (fields: object, body: string) => `---\n${stringify(fields)}---\n${body}`;
 const retired = (head: {
   readonly invalid_at: string | null;
@@ -346,11 +364,37 @@ const make = Effect.gen(function* () {
     : config.directMainPush === true
       ? "direct"
       : "refused";
-  const filesAt = (orgId: KinOrgId, writer: string, commit: string) =>
-    readFiles(orgId, writer, commit).pipe(
+  // A commit's tree and files never change, so the last read per org is kept: a wake-up's
+  // stages and its commit's replay of them all read the same head.
+  const lastFiles = new Map<KinOrgId, { commit: string; files: ReadonlyMap<string, Buffer> }>();
+  const lastTree = new Map<
+    KinOrgId,
+    { commit: string; entries: ReadonlyArray<{ sha: string; relative: string; mode: string }> }
+  >();
+  const filesAt = (orgId: KinOrgId, writer: string, commit: string) => {
+    const kept = lastFiles.get(orgId);
+    if (kept?.commit === commit) return Effect.succeed(kept.files);
+    return readFiles(orgId, writer, commit).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(VcsProcess, vcs),
+      Effect.map((files): ReadonlyMap<string, Buffer> => {
+        lastFiles.set(orgId, { commit, files });
+        return files;
+      }),
     );
+  };
+  const treeAt = (orgId: KinOrgId, writer: string, commit: string) => {
+    const kept = lastTree.get(orgId);
+    if (kept?.commit === commit) return Effect.succeed(kept.entries);
+    return readTree(orgId, writer, commit).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(VcsProcess, vcs),
+      Effect.map((entries) => {
+        lastTree.set(orgId, { commit, entries });
+        return entries;
+      }),
+    );
+  };
   const commitAt = (orgId: KinOrgId, writer: string, commit: string) =>
     readCommit(orgId, writer, commit).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -546,6 +590,7 @@ const make = Effect.gen(function* () {
           reason:
             "Staged changes were lost on restart; tool receipts do not prove those changes were committed.",
           owner: RESTART_OWNER_NOTICE,
+          restartOf: ctx.agentId,
         });
       }
     }
@@ -652,10 +697,7 @@ const make = Effect.gen(function* () {
     writer: string,
     commit: string,
   ) {
-    const entries = yield* readTree(orgId, writer, commit).pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(VcsProcess, vcs),
-    );
+    const entries = yield* treeAt(orgId, writer, commit);
     return new Set(
       entries
         .filter((entry) => ["100644", "100755"].includes(entry.mode))
@@ -696,10 +738,7 @@ const make = Effect.gen(function* () {
           ...(yield* memoryIdentity(config, app)),
         };
         yield* git(orgId, writer, ["read-tree", "--empty"], env);
-        const entries = yield* readTree(orgId, writer, parent).pipe(
-          Effect.provideService(FileSystem.FileSystem, fs),
-          Effect.provideService(VcsProcess, vcs),
-        );
+        const entries = yield* treeAt(orgId, writer, parent);
         const metadata = new Map(entries.map((entry) => [entry.relative, entry]));
         const finalFiles = new Map(parentFiles);
         for (const [file, bytes] of changes) finalFiles.set(file, bytes);
@@ -766,9 +805,24 @@ const make = Effect.gen(function* () {
       readonly headFiles: ReadonlyMap<string, Buffer>;
       readonly files: ReadonlyMap<string, string>;
       readonly message: string;
+      /** Runs in the transaction that records the new head. */
+      readonly landed?: (commit: string) => Effect.Effect<void, Failure>;
     },
   ) {
     const { writer, branch, head, headFiles } = input;
+    const record = (commit: string) =>
+      input.landed === undefined
+        ? memory.record(orgId, branch, head, commit)
+        : sql
+            .withTransaction(
+              memory.record(orgId, branch, head, commit).pipe(Effect.andThen(input.landed(commit))),
+            )
+            .pipe(
+              Effect.catchTags({
+                SqlError: (cause) =>
+                  Effect.fail(toPersistenceSqlError("MemoryWriter.landed")(cause)),
+              }),
+            );
     const onMain = branch === (config.defaultBranch ?? "main");
     const changes = new Map(
       [...input.files].map(([path, content]) => [path, Buffer.from(content)] as const),
@@ -788,7 +842,7 @@ const make = Effect.gen(function* () {
     const commit = yield* writeCommit(orgId, writer, head, headFiles, changes, input.message);
     if (onMain && mainWrites === "pull_request") {
       yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, head]);
-      yield* memory.record(orgId, branch, head, commit);
+      yield* record(commit);
       yield* lander.signal(orgId);
     } else {
       // Push first, so a rejected push leaves the local branch where it was.
@@ -808,7 +862,7 @@ const make = Effect.gen(function* () {
         ),
       );
       yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, head]);
-      yield* memory.record(orgId, branch, head, commit);
+      yield* record(commit);
     }
     yield* memory.rebuildCache(orgId).pipe(
       Effect.catch((error) =>
@@ -858,10 +912,7 @@ const make = Effect.gen(function* () {
     const items = [];
     const bodies = new Map<string, string>();
     const regular = new Set(
-      (yield* readTree(orgId, writer, recorded).pipe(
-        Effect.provideService(FileSystem.FileSystem, fs),
-        Effect.provideService(VcsProcess, vcs),
-      ))
+      (yield* treeAt(orgId, writer, recorded))
         .filter((entry) => ["100644", "100755"].includes(entry.mode))
         .map((entry) => entry.relative),
     );
@@ -934,6 +985,22 @@ const make = Effect.gen(function* () {
       return yield* new MemoryWriteRejected({
         reason: "Supersession requires the same source and kind",
       });
+    const sharesLink = (item: MemoryItemFrontMatter) =>
+      item.id !== fm.id &&
+      item.status === "open" &&
+      item.kind === fm.kind &&
+      item.links.some((link) => fm.links.includes(link));
+    const besides = new Set(change.besides ?? []);
+    for (const id of besides)
+      if (!items.some((item) => item.id === id && sharesLink(item)))
+        return yield* new MemoryWriteRejected({ reason: BESIDES_REFUSAL });
+    // Once per stored item, inside stageChange's span.
+    const differs = Effect.fnUntraced(function* (
+      item: MemoryItemFrontMatter & { readonly path: string },
+    ) {
+      const body = bodies.get(item.path) ?? (yield* memory.readItemQuietly(orgId, item.id)).body;
+      return body !== parsed.body || item.title !== fm.title;
+    });
     for (const item of items) {
       if (
         (item.id === fm.id || item.status === "open") &&
@@ -941,7 +1008,7 @@ const make = Effect.gen(function* () {
         (item.id === fm.id || item.links.some((link) => fm.links.includes(link))) &&
         item.id !== change.supersedes
       ) {
-        const body = bodies.get(item.path) ?? (yield* memory.readItemQuietly(orgId, item.id)).body;
+        const different = yield* differs(item);
         const rank = (trust: string) => ["external", "agent", "member", "owner"].indexOf(trust);
         if (
           item.id === fm.id &&
@@ -950,8 +1017,20 @@ const make = Effect.gen(function* () {
               !(item.status === "open" && ["done", "cancelled"].includes(fm.status))))
         )
           return yield* new MemoryConflict({ existingId: item.id });
-        if (body !== parsed.body || item.title !== fm.title)
+        if (different && item.id === fm.id)
           return yield* new MemoryConflict({ existingId: item.id });
+        if (different && !besides.has(item.id)) {
+          const shared = [];
+          for (const other of items)
+            if (
+              sharesLink(other) &&
+              other.id !== change.supersedes &&
+              !besides.has(other.id) &&
+              (yield* differs(other))
+            )
+              shared.push({ id: other.id, title: other.title });
+          return yield* new MemoryConflict({ existingId: item.id, shared });
+        }
         if (item.id === fm.id) {
           const mutable = new Set([
             "orgId",
@@ -1394,6 +1473,63 @@ const make = Effect.gen(function* () {
           ]);
           if (advertised)
             yield* git(orgId, writer, ["push", "--", repo.repoUrl, `:refs/heads/${branch}`]);
+        }),
+      ),
+    ),
+    landDream: Effect.fn("MemoryWriter.landDream")((orgId, input) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          // As the nightly retire: the owner is not told; the material waits for a later night.
+          if (mainWrites === "refused")
+            return yield* new MemorySyncConflict({
+              orgId,
+              operation: "push",
+              reason: "Memory writes to the default branch are refused",
+            });
+          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
+          const head = yield* branchHead(orgId, writer, main);
+          const headFiles = yield* filesAt(orgId, writer, head);
+          if (head !== input.base) {
+            const baseFiles = yield* filesAt(orgId, writer, input.base).pipe(
+              Effect.orElseSucceed((): ReadonlyMap<string, Buffer> => new Map()),
+            );
+            const moved = [...input.files.keys()].filter((path) => {
+              const before = baseFiles.get(path);
+              const now = headFiles.get(path);
+              return before === undefined || now === undefined
+                ? before !== now
+                : !before.equals(now);
+            });
+            if (baseFiles.size === 0 || moved.length > 0)
+              return yield* new MemorySyncConflict({
+                orgId,
+                operation: "push",
+                reason: "Memory changed since the dream read it, so it did not land",
+              });
+          }
+          const ending = [];
+          for (const [path, text] of input.files) {
+            if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
+            const { frontMatter } = yield* parseFrontMatter(orgId, path, text);
+            if (retired(frontMatter)) ending.push(frontMatter.id);
+          }
+          yield* endSharing(orgId, ending);
+          const commit = yield* ownerCommit(orgId, {
+            writer,
+            repoUrl: repo.repoUrl,
+            branch: main,
+            head,
+            headFiles,
+            files: input.files,
+            message: input.message,
+            landed: input.landed,
+          });
+          return { commit };
         }),
       ),
     ),

@@ -1,19 +1,22 @@
 import {
   KinChatError,
   KinPersonId,
-  KinWorkHours,
   type KinAgentId,
   type KinChatId,
   type KinOrgId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { NUDGE_PREFIX } from "../reply/promises.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
-import { isQuiet, KIN_DEFAULT_QUIET_HOURS, workingAt } from "../triggers/quietHours.ts";
+import {
+  isQuiet,
+  KIN_DEFAULT_QUIET_HOURS,
+  storedWorkHours,
+  workingAt,
+} from "../triggers/quietHours.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
@@ -21,7 +24,6 @@ import { DAY_MS } from "./thresholds.ts";
 
 /** An unanswered nudge holds off the next for this long; after it, Kin may try once more. */
 const NUDGE_BACK_OFF_MS = 7 * DAY_MS;
-const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 const refuse = (message: string) => new KinChatError({ reason: "not_allowed", message });
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
@@ -36,9 +38,9 @@ export const inHoursAt = (
   at: number,
 ) => {
   const zone = person.timeZone ?? ownerZoneId;
-  const hours = person.workHours === null ? undefined : decodeHours(person.workHours);
-  return hours !== undefined && hours._tag === "Some"
-    ? workingAt(hours.value, zone, at)
+  const hours = storedWorkHours(person.workHours);
+  return hours !== undefined
+    ? workingAt(hours, zone, at)
     : !isQuiet(at, zone, KIN_DEFAULT_QUIET_HOURS);
 };
 
@@ -151,7 +153,7 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
   if (last !== undefined && at - last.sentAt < NUDGE_BACK_OFF_MS) {
     const [answered] = yield* sql`SELECT 1 FROM kin_messages
       WHERE org_id = ${orgId} AND chat_id = ${last.chatId} AND author_person_id = ${personId}
-        AND created_at > ${iso(last.sentAt)} LIMIT 1`;
+        AND origin_json IS NULL AND created_at > ${iso(last.sentAt)} LIMIT 1`;
     if (answered === undefined)
       return yield* refuse(
         `${person.name} hasn't answered your last nudge (${last.factKey}, ${last.day}). Don't nag: replan, take it over, or tell the owner.`,

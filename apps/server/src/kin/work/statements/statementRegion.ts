@@ -1,18 +1,13 @@
-import { KIN_TEXT_LOCALE } from "@t3tools/contracts";
-
 /**
- * What a country decides for a company in it and for a statement from it: the locale Kin's text is
- * written in, the ways an expense is paid, how a numeric date is ordered, which currency an
- * unlabelled statement is in, the banks it may name and the payment rails its narrations start
- * with. One row per region; adding a country is one row here.
+ * What a country decides for a statement from it: the ways an expense is paid, how a numeric date
+ * is ordered, which currency an unlabelled statement is in, the banks it may name and the payment
+ * rails its narrations start with. What it decides for a company in it is `work/region.ts`.
  */
 
 export type DateOrder = "dmy" | "mdy";
 
 export interface StatementRegion {
   readonly currency: string;
-  /** The locale server text for a company here is written in; it picks the clock. */
-  readonly locale: string;
   /** How an expense here is paid, as the expenses template offers it. */
   readonly paidWith: ReadonlyArray<string>;
   readonly dateOrder: DateOrder;
@@ -27,8 +22,6 @@ export interface StatementRegion {
 const INDIA: StatementRegion = {
   // oxlint-disable-next-line t3code/kin-one-format -- the region descriptor is where India's currency lives.
   currency: "INR",
-  // oxlint-disable-next-line t3code/kin-one-format -- the region descriptor is where India's locale lives.
-  locale: "en-IN",
   paidWith: ["card", "upi", "bank", "cash"],
   dateOrder: "dmy",
   banks: [
@@ -53,8 +46,6 @@ const INDIA: StatementRegion = {
 };
 const US: StatementRegion = {
   currency: "USD",
-  // oxlint-disable-next-line t3code/kin-one-format -- the region descriptor is where the US locale lives.
-  locale: "en-US",
   paidWith: ["card", "ach", "wire", "check", "cash"],
   dateOrder: "mdy",
   banks: [
@@ -68,8 +59,6 @@ const US: StatementRegion = {
 };
 const UK: StatementRegion = {
   currency: "GBP",
-  // oxlint-disable-next-line t3code/kin-one-format -- the region descriptor is where the UK's locale lives.
-  locale: "en-GB",
   paidWith: ["card", "bank", "direct debit", "cash"],
   dateOrder: "dmy",
   banks: [
@@ -120,7 +109,6 @@ export const statementRegion = (text: string, home: string): StatementRegion =>
   regionNamedIn(text) ??
   companyRegion(home) ?? {
     currency: home,
-    locale: KIN_TEXT_LOCALE,
     paidWith: NEUTRAL_PAID_WITH,
     dateOrder: "dmy",
     banks: [],

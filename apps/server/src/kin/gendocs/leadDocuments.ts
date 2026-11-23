@@ -1,6 +1,7 @@
 import {
   KinChatError,
   KinDay,
+  type KinOrgId,
   KinPersonId,
   KinRecordKey,
   KinTrimmedText,
@@ -15,8 +16,13 @@ import { isOrgPaused } from "../lead/orgState.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { shown } from "../work/leadDocs.ts";
 import { askOwner } from "../work/leadMoney.ts";
-import { homeCurrency } from "../work/companyProfile.ts";
-import { parseAmount } from "../work/money.ts";
+import { notRegisteredFact, readProfile, recordingCurrency } from "../work/companyProfile.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import { isMoney, parseFields } from "../work/lists.ts";
+import { formatMoney, parseAmount } from "../work/money.ts";
+import { isSuggestion, suggestedStateLabel, UNISSUED_INVOICE } from "../work/recordRows.ts";
+import { regionOf } from "../work/region.ts";
+import { isInvoiceDraft, listDef, stateLabel } from "../work/registers.ts";
 import { admitted, askedBy, type Lead, leadTool, sourceOf, writerFor } from "../work/leadWork.ts";
 import { issueEntry } from "./amounts.ts";
 import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.ts";
@@ -85,6 +91,17 @@ export const DocumentInput = Schema.Struct({
   sourceEventId: TurnEvent,
 });
 export type DocumentInput = typeof DocumentInput.Type;
+/** An invoice or quote as its record stands after the call. */
+const OnRecord = Schema.Struct({
+  key: Schema.String,
+  state: Schema.String,
+  total: Schema.optional(Schema.String),
+  tax: Schema.optional(Schema.String),
+  /** What the company details lack that its document needs. */
+  missing: Schema.optional(Schema.Array(Schema.String)),
+  /** The company said it is not registered for its tax. */
+  taxNote: Schema.optional(Schema.String),
+});
 export const DocumentResult = Schema.Struct({
   recipe: Schema.NullOr(Schema.String),
   /** The number the file carries; `null` for a draft or an unnumbered recipe. */
@@ -99,18 +116,72 @@ export const DocumentResult = Schema.Struct({
   entry: Schema.optional(Schema.String),
   /** writeRecipe: the folder holding the recipe to edit, until Kin keeps it. */
   folder: Schema.optional(Schema.String),
-  /** writeRecipe: what to do next. */
+  /** writeRecipe: what to do next; a made file: what to call it. */
   next: Schema.optional(Schema.String),
+  record: Schema.optional(OnRecord),
+});
+
+/**
+ * An invoice or quote as stored: its state, total and tax, and the company details its document
+ * needs and lacks, so what is said of it is what the books say.
+ */
+export const onRecord = Effect.fn("KinDocuments.onRecord")(function* (
+  orgId: KinOrgId,
+  key: string | undefined,
+) {
+  if (key === undefined) return undefined;
+  const row = yield* (yield* KinRecords).get(orgId, key);
+  if (row === undefined || (row.registerId !== "invoices" && row.registerId !== "quotes"))
+    return undefined;
+  const def = yield* listDef(orgId, row.registerId);
+  const label = def === undefined ? row.state : stateLabel(def, row.state);
+  const tax = parseFields(row.fieldsJson).tax;
+  const profile = yield* readProfile(orgId);
+  // The profile keeps a tax number only where its Company details offer one (`gstin`, India's).
+  const region = regionOf(profile.country);
+  const taxNumber = region?.keepsTaxNumber === true ? region.taxIdLabel : undefined;
+  const taxNote = notRegisteredFact(profile);
+  const missing = [
+    ...(taxNumber !== undefined && profile.gstin === null && taxNote === undefined
+      ? [`tax number (${taxNumber})`]
+      : []),
+    ...(row.registerId === "invoices" &&
+    profile.bank.accountNumber === null &&
+    profile.bank.upi === null
+      ? ["bank details"]
+      : []),
+  ];
+  return {
+    key: row.key,
+    state: isSuggestion(row)
+      ? suggestedStateLabel(row.registerId, row.state, label)
+      : isInvoiceDraft(row.registerId, row.state)
+        ? UNISSUED_INVOICE
+        : label,
+    ...(row.amountMinor === null || row.currency === null
+      ? {}
+      : { total: formatMoney({ minor: row.amountMinor, currency: row.currency }) }),
+    ...(tax !== undefined && tax !== null && isMoney(tax) ? { tax: formatMoney(tax) } : {}),
+    ...(missing.length === 0 ? {} : { missing }),
+    ...(taxNote === undefined ? {} : { taxNote }),
+  } satisfies typeof OnRecord.Type;
 });
 
 const RecipeInputRow = Schema.Struct({
   name: Schema.String,
   type: Schema.String,
-  /** `agent` when the agent gives it; otherwise where Kin reads it. */
+  /** Where Kin reads it. */
   from: Schema.String,
   required: Schema.Boolean,
   description: Schema.optional(Schema.String),
   columns: Schema.optional(Schema.Array(Schema.String)),
+});
+const AgentInputRow = RecipeInputRow.mapFields(({ from: _from, ...fields }) => fields);
+export const RecipesInput = Schema.Struct({
+  recipe: Schema.optional(recipeName).annotate({
+    description:
+      "One recipe to read in full: adds the inputs Kin reads itself (from is where), the fields Kin computes and its output files.",
+  }),
 });
 export const RecipesResult = Schema.Struct({
   recipes: Schema.Array(
@@ -118,47 +189,66 @@ export const RecipesResult = Schema.Struct({
       name: Schema.String,
       title: Schema.String,
       description: Schema.String,
-      kind: Schema.String,
       list: Schema.NullOr(Schema.String),
       numbered: Schema.Boolean,
       /** Starts only from an owner-only turn, and makes a sensitive doc. */
       confidential: Schema.Boolean,
-      inputs: Schema.Array(RecipeInputRow),
-      computed: Schema.Array(Schema.String),
-      outputs: Schema.Array(Schema.String),
+      /** The inputs the agent gives, with their rules and table columns. */
+      agentInputs: Schema.Array(AgentInputRow),
       /** The one to use for its list unless the owner asks for another. */
       default: Schema.optional(Schema.Literal(true)),
+      /** Only when one recipe is read. */
+      kind: Schema.optional(Schema.String),
+      storedInputs: Schema.optional(Schema.Array(RecipeInputRow)),
+      computed: Schema.optional(Schema.Array(Schema.String)),
+      outputs: Schema.optional(Schema.Array(Schema.String)),
     }),
   ),
 });
 
-export const recipes = leadTool("KinDocuments.recipes", (lead, _input: Record<string, never>) =>
+export const recipes = leadTool("KinDocuments.recipes", (lead, input: typeof RecipesInput.Type) =>
   Effect.gen(function* () {
-    yield* admitted(lead, "kin_recipes", {});
-    const stored = yield* (yield* KinWorkspace).recipes(lead.orgId);
+    yield* admitted(lead, "kin_recipes", input);
+    const all = yield* (yield* KinWorkspace).recipes(lead.orgId);
+    const stored =
+      input.recipe === undefined ? all : all.filter((recipe) => recipe.name === input.recipe);
+    if (input.recipe !== undefined && stored.length === 0)
+      return yield* invalid(
+        `No recipe is called ${input.recipe}. kin_recipes with no recipe lists them.`,
+      );
     const labelled = yield* Effect.forEach(stored, (recipe) => recipeLabelled(lead.orgId, recipe));
-    const defaults = yield* defaultRecipes(lead.orgId, stored);
+    const defaults = yield* defaultRecipes(lead.orgId, all);
     return {
-      recipes: stored.map((recipe, index) => ({
-        name: recipe.name,
-        title: recipe.title,
-        description: recipe.description,
-        kind: recipe.kind,
-        list: recipe.list,
-        numbered: recipe.numbered,
-        confidential: recipe.sensitive || labelled[index] === true,
-        inputs: recipe.inputs.map((input) => ({
-          name: input.name,
-          type: input.type,
-          from: input.from,
-          required: input.required,
-          ...(input.description === undefined ? {} : { description: input.description }),
-          ...(input.type === "table" ? { columns: Object.keys(input.columns) } : {}),
-        })),
-        computed: recipe.computed.map(([name]) => name),
-        outputs: [...recipe.outputs],
-        ...(defaults.has(recipe.name) ? { default: true as const } : {}),
-      })),
+      recipes: stored.map((recipe, index) => {
+        const inputs = recipe.inputs.map((one) => ({
+          name: one.name,
+          type: one.type,
+          from: one.from,
+          required: one.required,
+          ...(one.description === undefined ? {} : { description: one.description }),
+          ...(one.type === "table" ? { columns: Object.keys(one.columns) } : {}),
+        }));
+        return {
+          name: recipe.name,
+          title: recipe.title,
+          description: recipe.description,
+          list: recipe.list,
+          numbered: recipe.numbered,
+          confidential: recipe.sensitive || labelled[index] === true,
+          agentInputs: inputs
+            .filter((one) => one.from === "agent")
+            .map(({ from: _from, ...row }) => row),
+          ...(defaults.has(recipe.name) ? { default: true as const } : {}),
+          ...(input.recipe === undefined
+            ? {}
+            : {
+                kind: recipe.kind,
+                storedInputs: inputs.filter((one) => one.from !== "agent"),
+                computed: recipe.computed.map(([name]) => name),
+                outputs: [...recipe.outputs],
+              }),
+        };
+      }),
     };
   }),
 );
@@ -222,6 +312,7 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
       admit: stillAdmitted(lead, "kin_document", input),
     });
     for (const written of made.written) yield* shown(lead, written, true);
+    const record = yield* onRecord(lead.orgId, entry);
     return {
       recipe: made.recipe,
       number: made.number,
@@ -233,9 +324,14 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
       })),
       ...(made.sensitive ? { sensitive: true as const } : {}),
       ...(quoted === undefined ? {} : { entry: quoted.entry }),
+      ...(made.documents.length === 0 ? {} : { next: filedLine(made.documents) }),
+      ...(record === undefined ? {} : { record }),
     };
   }),
 );
+
+const filedLine = (documents: ReadonlyArray<{ readonly title: string }>) =>
+  `Filed, with its card in the chat. Call it ${documents.map((doc) => JSON.stringify(doc.title)).join(" and ")} in your reply, never by its key.`;
 
 /**
  * An invoice draft from a quote, with the quote's own inputs the invoice recipe takes: its lines and
@@ -300,6 +396,7 @@ export const IssueResult = Schema.Struct({
   notice: Schema.optional(Schema.String),
   /** What happened, in a line: the agent has nothing to check. */
   next: Schema.optional(Schema.String),
+  record: Schema.optional(OnRecord),
 });
 
 /** What issuing did, so an agent asking again trusts it instead of re-checking. */
@@ -347,6 +444,7 @@ export const issue = leadTool("KinDocuments.issue", (lead, input: typeof IssueIn
           })
         : { documents: [], written: [], problems: [] };
     for (const written of remade.written) yield* shown(lead, written, true);
+    const record = yield* onRecord(lead.orgId, result.key);
     return {
       entry: result.key,
       number: result.number,
@@ -362,6 +460,7 @@ export const issue = leadTool("KinDocuments.issue", (lead, input: typeof IssueIn
       ...(input.void === true || input.unvoid === true || result.number === null
         ? {}
         : { next: issuedLine(result.number, result.issued, remade) }),
+      ...(record === undefined ? {} : { record }),
     };
   }),
 );
@@ -377,7 +476,13 @@ export const UndoResult = Schema.Struct({
   commit: Schema.String,
   /** True when the change undone made the recipe: it is gone until undone again. */
   removed: Schema.Boolean,
+  next: Schema.String,
 });
+
+const undoneLine = (recipe: string, removed: boolean) =>
+  removed
+    ? `Undone: the ${recipe} recipe's last change was making it, so the recipe is gone now. Undo again to bring it back.`
+    : `Undone: the ${recipe} recipe is back as it was before its last change, and files made from now on use it. Undo again to redo the change.`;
 
 export const undoRecipe = leadTool(
   "KinDocuments.undoRecipe",
@@ -394,7 +499,12 @@ export const undoRecipe = leadTool(
           reason: "invalid_state",
           message: `Nothing changed: ${undone.reason}.`,
         });
-      return { recipe: input.recipe, commit: undone.commit, removed: undone.removed };
+      return {
+        recipe: input.recipe,
+        commit: undone.commit,
+        removed: undone.removed,
+        next: undoneLine(input.recipe, undone.removed),
+      };
     }),
 );
 
@@ -471,7 +581,10 @@ export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof Rec
       const amount =
         input.advance === undefined
           ? undefined
-          : parseAmount(input.advance.amount, yield* homeCurrency(lead.orgId));
+          : parseAmount(
+              input.advance.amount,
+              yield* recordingCurrency(lead.orgId, { saved: true }),
+            );
       if (amount !== undefined && "error" in amount) return yield* amount.error;
       request = {
         ...(input.payment === undefined ? {} : { paymentId: input.payment }),

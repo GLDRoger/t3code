@@ -1,8 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
-  KIN_RECEIPT_MODES,
+  KIN_INVOICES,
   KIN_RECEIPTS,
   kinReceiptModeLabel,
+  kinReceiptModes,
+  kinReceiptReferencePlaceholder,
   kinAdvanceDraft,
   kinAdvanceInput,
   kinReceiptView,
@@ -51,7 +53,12 @@ import { KinMoneyActionNotice } from "./KinInvoice";
 import { KinWorkSection, KinLoadFailed } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
-import { useKinHomeCurrency, useKinMoneyActions, useKinReceipts } from "./useKinMoney";
+import {
+  useKinCompanyCountry,
+  useKinHomeCurrency,
+  useKinMoneyActions,
+  useKinReceipts,
+} from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./useKinWork";
 
 const SHOWN = 8;
@@ -238,6 +245,7 @@ function KinAdvanceDialog(
   const [requestId] = useState(randomUUID);
   // A plain number is in the home currency; a typed symbol or code still names its own.
   const home = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
+  const country = useKinCompanyCountry(props);
   const clients =
     Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))))?.clients ?? [];
   const ids = {
@@ -257,7 +265,12 @@ function KinAdvanceDialog(
     const made = await actions.makeReceipt(undefined, input, clientRequestId);
     if (made !== null) props.onClose();
   };
-  const text = (key: "towards" | "reference", label: string, placeholder: string, max: number) => (
+  const text = (
+    key: "towards" | "reference",
+    label: string,
+    placeholder: string | undefined,
+    max: number,
+  ) => (
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={ids[key]}>{label}</Label>
       <Input
@@ -323,7 +336,6 @@ function KinAdvanceDialog(
                     inputMode="decimal"
                     autoComplete="off"
                     autoFocus
-                    placeholder={KIN_RECEIPTS.amountPlaceholder}
                     value={draft.amount}
                     onChange={(event) => setDraft({ ...draft, amount: event.target.value })}
                   />
@@ -339,7 +351,7 @@ function KinAdvanceDialog(
                   />
                 </div>
               </div>
-              {text("towards", KIN_RECEIPTS.towards, KIN_RECEIPTS.towardsPlaceholder, 300)}
+              {text("towards", KIN_RECEIPTS.towards, undefined, 300)}
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor={ids.mode}>{KIN_RECEIPTS.mode}</Label>
@@ -354,7 +366,7 @@ function KinAdvanceDialog(
                     </SelectTrigger>
                     <SelectPopup>
                       <SelectItem value={NO_CLIENT}>{KIN_RECEIPTS.noMode}</SelectItem>
-                      {KIN_RECEIPT_MODES.map((one) => (
+                      {kinReceiptModes(country).map((one) => (
                         <SelectItem key={one.value} value={one.value}>
                           {one.label}
                         </SelectItem>
@@ -362,7 +374,12 @@ function KinAdvanceDialog(
                     </SelectPopup>
                   </Select>
                 </div>
-                {text("reference", KIN_RECEIPTS.reference, KIN_RECEIPTS.referencePlaceholder, 120)}
+                {text(
+                  "reference",
+                  KIN_RECEIPTS.reference,
+                  kinReceiptReferencePlaceholder(country),
+                  120,
+                )}
               </div>
               {problem === null ? null : (
                 <Alert variant="error">
@@ -456,7 +473,7 @@ function KinSetAgainstDialog(
           ) : invoices === null ? (
             <div className="flex flex-col items-start gap-2">
               <Alert variant="error">
-                <AlertDescription>Couldn't load invoices.</AlertDescription>
+                <AlertDescription>{KIN_INVOICES.loadFailed}</AlertDescription>
               </Alert>
               <Button size="sm" variant="outline" onClick={() => setAttempt((n) => n + 1)}>
                 Retry

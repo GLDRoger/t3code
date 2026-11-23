@@ -5,6 +5,9 @@ import type { AppBarSearch } from "../../../components/ui/AppBar.types";
 /** Set around a page drawn as a tab of the Kin home: it has no Back, and a dock floats over its foot. */
 export const KinTabContext = createContext<{ readonly bottomClearance: number } | null>(null);
 
+/** The room under a page's last row: past the floating dock, the same on every tab. */
+export const kinTabFoot = (bottomClearance: number) => 32 + bottomClearance;
+
 export function useKinTab() {
   return use(KinTabContext);
 }

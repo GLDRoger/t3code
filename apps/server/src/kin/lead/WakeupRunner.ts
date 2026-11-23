@@ -1,16 +1,25 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous diagnostic hash; Digest would add a service.
+import * as NodeCrypto from "node:crypto";
+
 import {
   CommandId,
   KinAgentId,
+  KinEventId,
   type KinEvent,
   KinLead,
   KinMessageId,
   KinOrgId,
+  type KinPersonId,
   KinWakeupId,
   MessageId,
   ModelSelection,
+  NodeId,
   ProjectId,
+  RunAttemptId,
   RunId,
   ThreadId,
+  type TurnTokenUsage,
+  kinCharacterSeat,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -20,6 +29,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Random from "effect/Random";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
@@ -36,11 +46,17 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { noticeState } from "./TaskWake.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import * as HostBackup from "../hostBackup.ts";
+import { ServerConfig } from "../../config.ts";
 import * as Floor from "../floor/KinFloor.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
+import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { dueTurnText } from "../questions/openQuestions.ts";
+import { dismissalGone } from "../questions/dismissed.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
@@ -53,40 +69,50 @@ import {
   recordedAudience,
   turnChat,
 } from "./Audience.ts";
-import { KinLeadPrompt } from "./LeadPrompt.ts";
+import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
+import { KinLeadPrompt, STEER_CLOSING, stillJoined } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
   chooseLeadModel,
   companyDefaultModel,
   isDevServer,
   leadModelProblem,
+  driverOf,
   leadProviderProblem,
+  modelNotOffered,
 } from "./leadModels.ts";
+import { KinRefusedModels } from "./refusedModels.ts";
+import { leadThreadInstructions } from "./turn/session.ts";
+import { isEngineeringDomain } from "./t3Tools.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { bootstrapLeadProject } from "./leadProject.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
-import { isMorningCheckIn } from "../pulse/weekly.ts";
+import { isEveningCheckIn, isMorningCheckIn } from "../pulse/weekly.ts";
+import { dayIn } from "../work/money.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
+import { HOLD_MS, KinHostCare } from "../host/KinHostCare.ts";
+import {
+  HELD_CAUSES,
+  providerFailureIn,
+  providerResetAt,
+  troubleCause,
+  troubleDetail,
+} from "../host/troubleCauses.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { KinHandoff } from "./Handoff.ts";
+import * as WorkFor from "./workFor.ts";
+import { noticeRecords, runsFrom, turnRecords } from "./wakeupRuns.ts";
+import { RUN_SILENCE_MS, activityAt, waitWhileActive } from "./runSilence.ts";
 
-/** How long one wake-up may run before it is interrupted. */
-const WAKEUP_DEADLINE_MS = 900_000;
-/** Each message steered into a running wake-up buys it this long, up to the cap; then they queue. */
-const MAX_STEERS = 5;
-const STEER_EXTENSION_MS = 300_000;
-const WAKEUP_HARD_CAP_MS = 1_800_000;
-const deadlineAt = (startedAt: number, steers: number) =>
-  startedAt + Math.min(WAKEUP_HARD_CAP_MS, WAKEUP_DEADLINE_MS + steers * STEER_EXTENSION_MS);
 const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string }) =>
   KinIdentity.isAdoptedRunMessage(wakeupId, run.userMessageId) &&
   run.userMessageId !== KinIdentity.rescueMessageId(wakeupId);
-const ownerCheckDispatcherReady = false;
 /** A running lead never shortens the org loop's wait; its finish wakes the loop instead. */
 const orgLoopWaitMs = (
   ready: ReadonlyArray<{ readonly agentId: KinAgentId; readonly readyAt: number }>,
@@ -144,6 +170,9 @@ const RunningRow = Schema.Struct({
 });
 const decodeLead = Schema.decodeUnknownEffect(LeadRow);
 const decodeRunning = Schema.decodeUnknownEffect(RunningRow);
+const decodeTaskIds = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
 const ulid = Effect.gen(function* () {
   const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
   let timestamp = yield* Clock.currentTimeMillis;
@@ -158,6 +187,18 @@ const ulid = Effect.gen(function* () {
 
 const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
+  const care = yield* Effect.serviceOption(KinHostCare);
+  const refusals = yield* Effect.serviceOption(KinRefusedModels);
+  const claimedEvents = Effect.fn("WakeupRunner.claimedEvents")(function* (
+    row: typeof RunningRow.Type,
+  ) {
+    const [wakeup] = yield* sql<{ eventIds: string }>`SELECT event_ids AS "eventIds"
+      FROM kin_wakeups WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
+    return Option.getOrElse(
+      Option.flatMap(Option.fromNullishOr(wakeup?.eventIds), decodeTaskIds),
+      () => [],
+    ).map((id) => KinEventId.make(id));
+  });
   const bridge = yield* Effect.serviceOption(KinReplyBridge);
   const team = yield* Effect.serviceOption(KinTeam);
   const handoff = yield* Effect.serviceOption(KinHandoff);
@@ -168,41 +209,108 @@ const make = Effect.gen(function* () {
   }) => (Option.isSome(bridge) ? bridge.value.end(row) : Effect.void);
   const finishWakeup = Effect.fn("WakeupRunner.finishWakeup")(function* (
     row: typeof RunningRow.Type,
-    status: "completed" | "failed" | "timed_out",
+    status: "completed" | "failed" | "interrupted" | "timed_out",
     setup: SetupFailure | null = null,
+    failure: unknown = null,
   ) {
     // Read first: finishing returns retried events to the queue, which drops their lane.
     const lane =
       status === "completed" || Option.isNone(bridge)
         ? Option.none()
         : yield* bridge.value.lane(row);
-    const finished = yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
+    const owed = status !== "completed" || Option.isNone(handoff) ? [] : yield* workOwed(row);
+    // Why it failed, from the error itself; a time-out has none and keeps the plain retries.
+    const cause =
+      status !== "failed" || Option.isNone(care) ? undefined : (setup ?? troubleCause(failure));
+    const claimed = cause === undefined ? [] : yield* claimedEvents(row);
+    const now = yield* Clock.currentTimeMillis;
+    let holdUntil: number | undefined;
+    // A full disk: the trouble's one automatic clean, then one more try at once, telling nobody.
+    let quiet = false;
+    if (
+      cause === "space" &&
+      Option.isSome(care) &&
+      (yield* care.value.spaceFailed(row.orgId, row.agentId))
+    ) {
+      holdUntil = yield* Clock.currentTimeMillis;
+      quiet = true;
+    }
+    const resetAt = providerResetAt(failure);
+    if (holdUntil === undefined && cause !== undefined && HELD_CAUSES.has(cause))
+      holdUntil =
+        cause === "usage_limit" && resetAt !== undefined
+          ? Math.max(now + 60_000, Date.parse(resetAt) + 60_000)
+          : now + (HOLD_MS[cause] ?? KinEventQueue.LAST_RETRY_MS);
+    const finished = yield* queue.finish({
+      orgId: row.orgId,
+      wakeupId: row.wakeupId,
+      status,
+      ...(holdUntil === undefined ? {} : { holdUntil }),
+    });
+    // Quiet only when the turn really went back to wait, untouched: after something visible,
+    // its unanswered events stopped instead, and that is said.
+    if (quiet && (finished.stranded > 0 || finished.replied > 0)) quiet = false;
+    let told = false;
+    if (Option.isSome(care)) {
+      if (status === "completed") yield* care.value.succeeded(row.orgId, row.agentId);
+      const held = finished.heldEventIds ?? [];
+      // Kin holds the turns of a cause it waits out; others tell once their first retry failed too.
+      const tell =
+        cause !== undefined &&
+        !quiet &&
+        (finished.stranded > 0 ||
+          (HELD_CAUSES.has(cause)
+            ? held.length > 0
+            : finished.failedEventIds.length > 0 ||
+              finished.retryInMs > KinEventQueue.FIRST_RETRY_MS));
+      if (tell)
+        told = yield* care.value.failed({
+          orgId: row.orgId,
+          agentId: row.agentId,
+          cause,
+          eventIds: held.length > 0 ? held : claimed,
+          detail: troubleDetail(failure),
+          resetAt,
+        });
+    }
     // A Team-room turn that said nothing passed; a hand-off's answer goes back to who asked.
     if (Option.isSome(team)) yield* team.value.wakeupEnded(row);
-    if (Option.isSome(handoff)) yield* handoff.value.reportBack(row);
+    if (Option.isSome(handoff)) {
+      yield* handoff.value.reportBack(row);
+      if (owed.length > 0) yield* handoff.value.workDone({ ...row, owed });
+    }
     if (Option.isNone(bridge) || Option.isNone(lane)) return;
     // Something visible already happened, so a silent retry could repeat it; say so instead.
     // Otherwise the person waiting hears at once that it is retrying, or has stopped. A run
     // nobody waits on (a check-in, a reminder) retries quietly, but never fails silently.
     // Every message already replied to: one message, one answer, unless the reply's promise broke.
-    const outcome =
-      finished.stranded > 0
+    const outcome = quiet
+      ? undefined
+      : finished.stranded > 0
         ? "partway"
         : finished.replied > 0
           ? "replied"
-          : setup !== null
-            ? setup
-            : finished.failedEventIds.length > 0
-              ? "gave_up"
-              : finished.retried > 0 && lane.value.owed
-                ? "retrying"
-                : undefined;
+          : (finished.heldEventIds?.length ?? 0) > 0
+            ? lane.value.owed
+              ? "held"
+              : undefined
+            : setup !== null
+              ? setup
+              : finished.failedEventIds.length > 0
+                ? "gave_up"
+                : finished.retried > 0 && lane.value.owed
+                  ? finished.retryInMs >= KinEventQueue.LAST_RETRY_MS
+                    ? "retrying_later"
+                    : "retrying"
+                  : undefined;
     if (outcome !== undefined)
       yield* bridge.value.failed({
         orgId: row.orgId,
         wakeupId: row.wakeupId,
         lane: lane.value,
         outcome,
+        told,
+        ...(cause === undefined ? {} : { cause }),
       });
   });
   const routineContent = yield* Effect.serviceOption(RoutineContent.KinRoutineContent);
@@ -251,6 +359,38 @@ const make = Effect.gen(function* () {
   const memory = yield* Memory.Memory;
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
+  const chat = yield* Effect.serviceOption(KinChatService);
+  const scope = yield* Effect.scope;
+  const spaceChecks = new Set<KinOrgId>();
+  const spaceFolders = Option.map(yield* Effect.serviceOption(ServerConfig), (config) =>
+    HostBackup.spaceFolders(config.baseDir),
+  );
+  // Before it is full: agents' commands fail one by one for a while before a wake-up does, so a
+  // low disk is cleared at once and the owner hears only when that was not enough.
+  const lowOnSpace = (orgId: KinOrgId) =>
+    Option.isNone(spaceFolders) || Option.isNone(chat)
+      ? Effect.void
+      : HostBackup.warnIfLowOnSpace(
+          orgId,
+          spaceFolders.value,
+          HostBackup.readSpace,
+          Option.isSome(care) ? care.value.clean("low_on_space") : undefined,
+        ).pipe(
+          Effect.provideService(KinChatService, chat.value),
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin host space notice failed", { orgId, cause }),
+          ),
+        );
+  // While the out-of-space notice stands, it is the one word on space.
+  const warnIfLowOnSpace = Effect.fn("WakeupRunner.warnIfLowOnSpace")(function* (orgId: KinOrgId) {
+    if (spaceChecks.has(orgId)) return;
+    spaceChecks.add(orgId);
+    yield* Effect.gen(function* () {
+      if (Option.isSome(care) && (yield* care.value.troubleOpen(orgId, "space"))) return;
+      yield* lowOnSpace(orgId);
+    }).pipe(Effect.ensuring(Effect.sync(() => spaceChecks.delete(orgId))), Effect.forkIn(scope));
+  }, Effect.uninterruptible);
   const prompt = yield* KinLeadPrompt;
   const turnContent = yield* KinTurnContent;
   const identity = yield* KinIdentity.KinIdentity;
@@ -259,6 +399,116 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  /** What on a lead's thread can free it or change what it is owed: a run update, a turn's end. */
+  const isLeadActivity = (event: Stream.Success<typeof threads.streamDomainEvents>) =>
+    event.type === "run.updated" ||
+    (event.type === "provider-turn.updated" && event.payload.completedAt !== null);
+  // One subscription to T3's events serves every wait below; each would otherwise open its own.
+  const runActivity = yield* PubSub.unbounded<string>();
+  /** When the provider last worked on each waited-on wake-up's thread, by the event's own time. */
+  const lastWork = new Map<string, number>();
+  yield* threads.streamDomainEvents.pipe(
+    Stream.runForEach((event) => {
+      const at = lastWork.has(event.threadId) ? activityAt(event) : undefined;
+      if (at !== undefined)
+        lastWork.set(event.threadId, Math.max(at, lastWork.get(event.threadId) ?? at));
+      return isLeadActivity(event) ? PubSub.publish(runActivity, event.threadId) : Effect.void;
+    }),
+    Effect.catchCause((cause) =>
+      Effect.logError("Kin run activity watch failed", { cause }).pipe(
+        Effect.andThen(Effect.sleep("1 second")),
+      ),
+    ),
+    Effect.forever,
+    Effect.forkScoped,
+  );
+  /** Who each finished-task event's work was for (`WorkFor.workFor`), by event id. */
+  const finishedFor = Effect.fn("WakeupRunner.finishedFor")(function* (
+    orgId: KinOrgId,
+    agentId: KinAgentId,
+    events: ReadonlyArray<{
+      readonly eventId: string;
+      readonly threadId: ThreadId;
+      readonly taskIds: ReadonlyArray<string>;
+    }>,
+  ) {
+    const found = new Map<string, ReadonlyArray<{ personId: KinPersonId; name: string }>>();
+    for (const event of events) {
+      const { subagents } = yield* threads.getThreadRecords(event.threadId, ["subagents"], {
+        subagentIds: event.taskIds.map((taskId) => NodeId.make(taskId)),
+      });
+      const runIds = subagents.flatMap((task) =>
+        event.taskIds.includes(task.id) && task.runId !== null ? [task.runId] : [],
+      );
+      const people = yield* WorkFor.workFor({ orgId, agentId, runIds }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      if (people.length > 0) found.set(event.eventId, people);
+    }
+    return found;
+  });
+  /** The people a completed wake-up's finished work was for, each by the event that brought it. */
+  const workOwed = Effect.fn("WakeupRunner.workOwed")(
+    function* (row: typeof RunningRow.Type) {
+      const rows = yield* sql<{ eventId: string; threadId: string; taskIds: string }>`SELECT
+          event_id AS "eventId", json_extract(json, '$.threadId') AS "threadId",
+          json_extract(json, '$.taskIds') AS "taskIds"
+        FROM kin_events WHERE org_id = ${row.orgId} AND agent_id = ${row.agentId}
+          AND wakeup_id = ${row.wakeupId} AND tag = 'task.finished'
+        ORDER BY event_id`;
+      const found = yield* finishedFor(
+        row.orgId,
+        row.agentId,
+        rows.map((one) => ({
+          eventId: one.eventId,
+          threadId: ThreadId.make(one.threadId),
+          taskIds: Option.getOrElse(decodeTaskIds(one.taskIds), () => []),
+        })),
+      );
+      return [...found].flatMap(([eventId, people]) =>
+        people.map((one) => ({ eventId, personId: one.personId })),
+      );
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin finished-work owners unavailable", { cause }).pipe(
+        Effect.as<ReadonlyArray<{ eventId: string; personId: KinPersonId }>>([]),
+      ),
+    ),
+  );
+  /**
+   * A due run of a scheduled task that no longer exists, a question with nothing left to take, or
+   * a task an agent was put on and is off now or closed: no prompt shows it (`KinLeadPrompt`), so
+   * it starts no turn. A failed read keeps the event for the turn.
+   */
+  const goneBeforeTurn = Effect.fn("WakeupRunner.goneBeforeTurn")(
+    function* (orgId: KinOrgId, event: KinEvent) {
+      if (event._tag === "record.changed" && event.reason === "joined")
+        return !(yield* stillJoined(orgId, event.agentId, event.recordId));
+      if (event._tag !== "deferral.due") return false;
+      const subject = event.subject;
+      if (subject.type === "scheduled_task") {
+        const schedule = yield* KinSchedules.readSchedule(sql, orgId, subject.itemId);
+        if (schedule !== undefined) {
+          // Paused, or its setter gone, since it was queued: the run is dropped.
+          const task = yield* KinSchedules.readNativeTask(sql, schedule.taskId);
+          return task === undefined || !(yield* KinSchedules.runnable(sql, schedule, task));
+        }
+        return yield* memory
+          .readItemQuietly(orgId, subject.itemId, "triggers")
+          .pipe(Effect.as(false), Effect.catchTags({ MemoryNotFound: () => Effect.succeed(true) }));
+      }
+      if (subject.type !== "question" || subject.undone === true || subject.answered === true)
+        return false;
+      if (subject.dismissed === true) return yield* dismissalGone(orgId, subject);
+      const due = yield* dueTurnText(orgId, subject.questionId, yield* Clock.currentTimeMillis);
+      return due === undefined;
+    },
+    (effect) =>
+      effect.pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.orElseSucceed(() => false),
+      ),
+  );
   const settings = yield* ServerSettingsService;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const paused = (orgId: KinOrgId) =>
@@ -274,18 +524,16 @@ const make = Effect.gen(function* () {
     readonly agentId: KinAgentId;
     readonly wakeupId: KinWakeupId;
   }) => aborted(row).pipe(provideSql);
-  const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
+  const leadThreadIds = Effect.fn("WakeupRunner.leadThreadIds")(function* (orgId: KinOrgId) {
     const rows = yield* sql<{
       threadId: string;
     }>`SELECT thread_id AS "threadId" FROM kin_leads WHERE org_id = ${orgId} AND thread_id IS NOT NULL ORDER BY thread_id`;
-    const leadThreads = new Set(rows.map((row) => row.threadId));
-    return yield* threads.streamDomainEvents.pipe(
-      Stream.filter(
-        (event) =>
-          leadThreads.has(event.threadId) &&
-          (event.type === "run.updated" ||
-            (event.type === "provider-turn.updated" && event.payload.completedAt !== null)),
-      ),
+    return new Set(rows.map((row) => row.threadId));
+  });
+  const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
+    const leadThreads = yield* leadThreadIds(orgId);
+    return yield* Stream.fromPubSub(runActivity).pipe(
+      Stream.filter((threadId) => leadThreads.has(threadId)),
       Stream.runHead,
     );
   });
@@ -333,9 +581,8 @@ const make = Effect.gen(function* () {
   });
   const capture = Effect.fn("WakeupRunner.capture")(function* (row: typeof RunningRow.Type) {
     if (row.threadId === null || row.runId === null) return;
-    const projection = yield* threads.getThreadProjection(row.threadId);
     const runIds = new Set([row.runId]);
-    for (const run of projection.runs.toSorted((a, b) => a.ordinal - b.ordinal)) {
+    for (const run of yield* runsFrom(threads, row.threadId, row.runId)) {
       if (
         KinIdentity.isAdoptedRunMessage(row.wakeupId, run.userMessageId) ||
         (run.restartContinuationOfRunId !== undefined &&
@@ -345,21 +592,68 @@ const make = Effect.gen(function* () {
       )
         runIds.add(run.id);
     }
-    const attempts = new Set(
-      projection.attempts
-        .filter((attempt) => runIds.has(attempt.runId))
-        .map((attempt) => attempt.id),
+    // Every attempt of those runs, retries and steering restarts included, by T3's run index.
+    const attempts = yield* sql<{ attemptId: string }>`SELECT attempt_id AS "attemptId"
+      FROM orchestration_v2_projection_run_attempts
+      WHERE thread_id = ${row.threadId} AND run_id IN ${sql.in([...runIds])} ORDER BY attempt_id`;
+    const { thread, providerTurns } = yield* threads.getThreadRecords(
+      row.threadId,
+      ["providerTurns"],
+      {
+        providerTurnAttemptIds: attempts.map((attempt) => RunAttemptId.make(attempt.attemptId)),
+      },
     );
-    const turns = projection.providerTurns.filter(
-      (turn) => turn.runAttemptId !== null && attempts.has(turn.runAttemptId),
-    );
-    const usage = turns.map((turn) => ({
+    const usage = providerTurns.map((turn) => ({
       providerTurnId: turn.id,
       ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
       ...(turn.tokenUsage === undefined ? {} : { tokenUsage: turn.tokenUsage }),
       usedTokens: turn.tokenUsage?.usedTokens,
     }));
     yield* budget.charge({ orgId: row.orgId, wakeupId: row.wakeupId, usage });
+    // What the session carried and what the provider read from or wrote to its prompt cache; the
+    // endpoint's "Kin endpoint tool list." line has the tool list's hash for the same thread.
+    const threadId = row.threadId;
+    yield* Effect.gen(function* () {
+      const driver = driverOf(yield* settings.getSettings, thread.modelSelection);
+      const [lead] = yield* sql<{ domain: string }>`SELECT domain FROM kin_leads
+        WHERE org_id = ${row.orgId} AND agent_id = ${row.agentId} ORDER BY agent_id`;
+      const tokens = (pick: (usage: TurnTokenUsage) => number | undefined) =>
+        providerTurns.reduce(
+          (total, turn) =>
+            total + (turn.turnTokenUsage === undefined ? 0 : (pick(turn.turnTokenUsage) ?? 0)),
+          0,
+        );
+      yield* Effect.logInfo("Kin wake-up context.", {
+        agentId: row.agentId,
+        wakeupId: row.wakeupId,
+        threadId,
+        threadKind: threadId.startsWith(REVIEW_THREAD_PREFIX)
+          ? "review"
+          : threadId.startsWith(SHARED_THREAD_PREFIX)
+            ? "shared"
+            : "owner",
+        seat:
+          lead === undefined
+            ? null
+            : isEngineeringDomain(lead.domain)
+              ? "engineering"
+              : (kinCharacterSeat(lead.domain) ?? "custom"),
+        driver: driver ?? null,
+        model: thread.modelSelection.model,
+        instructionsSha256:
+          driver === undefined
+            ? null
+            : NodeCrypto.createHash("sha256")
+                .update(leadThreadInstructions(threadId, driver))
+                .digest("hex"),
+        providerTurns: providerTurns.length,
+        inputTokens: tokens((usage) => usage.inputTokens),
+        cacheReadTokens: tokens((usage) => usage.cachedInputTokens),
+        cacheWriteTokens: tokens((usage) => usage.cacheCreationTokens),
+      });
+    }).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("Kin wake-up context log failed", { cause })),
+    );
   });
   const wait = Effect.fn("WakeupRunner.wait")(
     function* (row: typeof RunningRow.Type, projectId: ProjectId) {
@@ -367,17 +661,57 @@ const make = Effect.gen(function* () {
       const threadId = row.threadId;
       const runId = row.runId;
       const { orgId, agentId, wakeupId } = row;
-      // Recovery resumes the count from the thread, so steer ids and the deadline stay stable.
+      // Recovery resumes the count from the thread, so steer ids stay stable. T3's table has no
+      // org; the thread is this wake-up's own.
+      const steerPrefix = KinIdentity.steerMessagePrefix(wakeupId);
+      const [landedSteers] = yield* sql<{ steers: number }>`SELECT COUNT(*) AS steers
+        FROM orchestration_v2_projection_messages WHERE thread_id = ${threadId}
+          AND substr(message_id, 1, ${steerPrefix.length}) = ${steerPrefix}`;
+      const landed = landedSteers?.steers ?? 0;
+      const steered =
+        landed === 0
+          ? []
+          : (yield* threads.getThreadRecords(threadId, ["messages"], {
+              messageIds: Array.from({ length: landed }, (_, index) =>
+                MessageId.make(KinIdentity.steerMessageId(wakeupId, index + 1)),
+              ),
+            })).messages;
       const steering = {
         open: true,
-        steers: (yield* threads.getThreadProjection(threadId)).messages.filter((message) =>
-          isSteerRun(wakeupId, { userMessageId: message.id }),
-        ).length,
+        steers: landed,
+        // The session holds a steer's framing once it read one; a taken run's first steer is the
+        // whole prompt, which has none.
+        framed: steered.some((message) => message.text.includes(STEER_CLOSING)),
         lock: yield* Semaphore.make(1),
       };
-      const deadline = () => deadlineAt(row.startedAt, steering.steers);
+      const waitingSince = yield* Clock.currentTimeMillis;
+      lastWork.set(threadId, waitingSince);
+      /** When the wake-up is ended if its run shows nothing more. */
+      const quietUntil = () => (lastWork.get(threadId) ?? waitingSince) + RUN_SILENCE_MS;
+      // The grant lasts as long as the wake-up may run, so a slow first reply still lands.
+      const holdFloor = Effect.gen(function* () {
+        const claimed = yield* sql<{ messageId: string }>`
+          SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events
+          WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
+            AND tag IN ('chat.message', 'widget.action', 'chat.reaction') ORDER BY event_id`;
+        yield* floor.renew({
+          orgId,
+          agentId,
+          until: quietUntil(),
+          messageIds: claimed.map((event) => KinMessageId.make(event.messageId)),
+        });
+      });
+      const keepFloor = holdFloor.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin could not hold a working wake-up's floor", {
+            orgId,
+            wakeupId,
+            cause,
+          }),
+        ),
+      );
       const steer = Effect.fn("WakeupRunner.steer")(function* () {
-        if (!steering.open || steering.steers >= MAX_STEERS) return;
+        if (!steering.open) return;
         let events = yield* queue.steer({ orgId, agentId, wakeupId });
         for (const group of (yield* admitEvents(orgId, agentId, events)).held) {
           const ids = new Set(group.events.map((event) => event.eventId));
@@ -405,21 +739,20 @@ const make = Effect.gen(function* () {
         steering.steers++;
         const n = steering.steers;
         const messageId = MessageId.make(KinIdentity.steerMessageId(wakeupId, n));
+        const first = !steering.framed;
+        steering.framed = true;
         const deliver = Effect.gen(function* () {
           const { text, attachments } = yield* turnContent.prepare({
-            text: yield* prompt.steer({ orgId, agentId, wakeupId, events }),
+            text: yield* prompt.steer({
+              orgId,
+              agentId,
+              wakeupId,
+              events,
+              first,
+            }),
             attachments: yield* prompt.attachments({ orgId, events }),
           });
-          const claimed = yield* sql<{ messageId: string }>`
-            SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events
-            WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
-              AND tag IN ('chat.message', 'widget.action', 'chat.reaction') ORDER BY event_id`;
-          yield* floor.renew({
-            orgId,
-            agentId,
-            until: deadline(),
-            messageIds: claimed.map((event) => KinMessageId.make(event.messageId)),
-          });
+          yield* holdFloor;
           if (Option.isSome(bridge))
             yield* bridge.value.steered(orgId, wakeupId, {
               n,
@@ -446,11 +779,13 @@ const make = Effect.gen(function* () {
         yield* deliver.pipe(
           Effect.catch((error) =>
             Effect.gen(function* () {
-              const landed = (yield* threads.getThreadProjection(threadId)).messages.some(
-                (message) => message.id === messageId,
-              );
+              const landed =
+                (yield* threads.getThreadRecords(threadId, ["messages"], {
+                  messageIds: [messageId],
+                })).messages.length > 0;
               if (landed) return;
               steering.steers--;
+              steering.framed = !first;
               yield* Effect.logWarning("Kin steer failed; its messages wait", {
                 orgId,
                 wakeupId,
@@ -483,22 +818,24 @@ const make = Effect.gen(function* () {
       let current = runId;
       let result: Effect.Success<ReturnType<typeof threads.waitForThread>>;
       while (true) {
-        result = yield* threads.waitForThread({
-          projectId,
-          threadId,
-          runId: current,
-          timeoutMs: Math.max(0, deadline() - (yield* Clock.currentTimeMillis)),
-        });
-        if (result.timedOut && (yield* Clock.currentTimeMillis) < deadline()) continue;
+        result = yield* waitWhileActive(
+          threads,
+          { projectId, threadId, runId: current },
+          () => lastWork.get(threadId) ?? waitingSince,
+          keepFloor,
+        );
         // Under the steer lock, so no steer lands once the wake-up stops waiting.
         const next = yield* steering.lock.withPermits(1)(
           Effect.gen(function* () {
-            const projection = yield* threads.getThreadProjection(threadId);
-            const after = projection.runs.find((run) => run.id === current)?.ordinal ?? 0;
+            const after =
+              (yield* threads.getThreadRecords(threadId, ["runs"], { runIds: [current] })).runs[0]
+                ?.ordinal ?? 0;
             const adopted =
               result.timedOut || (yield* isAborted(row))
                 ? undefined
-                : projection.runs
+                : (yield* threads.getThreadRecords(threadId, ["runs"], {
+                    runStatuses: ["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES],
+                  })).runs
                     .filter(
                       (run) =>
                         run.ordinal > after &&
@@ -518,7 +855,10 @@ const make = Effect.gen(function* () {
       yield* Fiber.interrupt(steerer);
       // Its steers still queued would start with no wake-up to own them, or hold the lead's
       // queue for good; they go, and their messages return with the rest of its events.
-      const final = yield* threads.getThreadProjection(threadId);
+      const final = yield* turnRecords(threads, threadId, runId, {
+        turnItemTypes: ["error"],
+        turnItemStatuses: ["failed"],
+      });
       for (const leftover of final.runs) {
         if (leftover.status !== "queued" || !isSteerRun(wakeupId, leftover)) continue;
         yield* threads
@@ -534,14 +874,29 @@ const make = Effect.gen(function* () {
             ),
           );
       }
-      const status = result.timedOut
+      const ended = result.timedOut
         ? "timed_out"
         : result.run?.status === "completed"
           ? "completed"
           : "failed";
-      const setup = status === "failed" ? setupFailureIn(final, runId) : null;
       // The stop switch interrupted this run: hand its events back without spending an attempt.
-      const stopped = status === "failed" && (yield* paused(row.orgId));
+      const stopped = ended === "failed" && (yield* paused(row.orgId));
+      // Otherwise an interrupted run was a person's Stop (`KinStop.interrupt`), not a failure.
+      const status =
+        ended === "failed" && !stopped && result.run?.status === "interrupted"
+          ? "interrupted"
+          : ended;
+      const setup = status === "failed" ? setupFailureIn(final, runId) : null;
+      const failure = status === "failed" ? providerFailureIn(final, runId) : null;
+      const ranOn = final.runs.find((run) => run.id === runId)?.modelSelection;
+      if (
+        setup === "model" &&
+        failure !== null &&
+        ranOn !== undefined &&
+        Option.isSome(refusals) &&
+        modelNotOffered(failure, ranOn.model)
+      )
+        yield* refusals.value.refused({ orgId: row.orgId, selection: ranOn });
       // Someone besides the owner joined while it worked: it says nothing more, and a fresh
       // wake-up answers its events (`KinEventQueue.finish`).
       let abandoned = yield* isAborted(row);
@@ -566,15 +921,31 @@ const make = Effect.gen(function* () {
               runId: current,
             });
         }
-        // The reply lands before memory commits, while the wake-up still owns its lane.
-        if (Option.isSome(bridge) && !stopped && !abandoned)
-          yield* bridge.value.complete({
+        // The reply lands before memory commits, while the wake-up still owns its lane. Its run
+        // just ended, so the floor's grant counts from now; a rescue turn that keeps working
+        // keeps it a window at a time, as the run did, and one gone silent lets it lapse.
+        if (Option.isSome(bridge) && !stopped && !abandoned) {
+          const completing = bridge.value.complete({
             orgId: row.orgId,
             wakeupId: row.wakeupId,
             projectId,
             rootRunId: runId,
-            rescueUntil: status === "completed" ? deadline() : null,
+            rescue: status === "completed",
           });
+          if (status === "completed") {
+            lastWork.set(threadId, yield* Clock.currentTimeMillis);
+            yield* keepFloor;
+            const holdingFloor = Effect.gen(function* () {
+              while (true) {
+                const left = quietUntil() - (yield* Clock.currentTimeMillis);
+                if (left <= 0) return yield* Effect.never;
+                yield* Effect.sleep(left);
+                yield* keepFloor;
+              }
+            });
+            yield* Effect.raceFirst(completing, holdingFloor);
+          } else yield* completing;
+        }
         // Settled unless a join aborted it first; a join after this has nothing to abort.
         if (!abandoned)
           abandoned =
@@ -611,7 +982,7 @@ const make = Effect.gen(function* () {
             countAttempt: false,
             notBefore: (yield* Clock.currentTimeMillis) + PAUSE_POLL_INTERVAL_MS,
           });
-        else yield* finishWakeup(row, status, setup);
+        else yield* finishWakeup(row, status, setup, failure);
       }).pipe(
         Effect.onExit((exit) =>
           result.timedOut && Exit.isFailure(exit)
@@ -637,6 +1008,11 @@ const make = Effect.gen(function* () {
             : Effect.void,
         ),
         Effect.ensuring(endReply(row)),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (row.threadId !== null) lastWork.delete(row.threadId);
+          }),
+        ),
       ),
   );
   const clearMissingThread = Effect.fn("WakeupRunner.clearMissingThread")(function* (
@@ -659,20 +1035,43 @@ const make = Effect.gen(function* () {
   const cleanup = Effect.fn("WakeupRunner.cleanup")(function* (
     row: typeof RunningRow.Type,
     interrupted = false,
+    failure: unknown = null,
   ) {
-    if (Option.isSome(writer))
-      yield* writer.value.discard(row.orgId, row.wakeupId).pipe(Effect.ignore);
+    // Only a stopping server interrupts a wake-up: what it staged lands then, as the agent may
+    // already have said it saved it, and its events may be done. Otherwise it is dropped.
+    if (Option.isSome(writer)) {
+      const memory = writer.value;
+      const landed =
+        interrupted &&
+        (yield* memory.staged(row.orgId, row.wakeupId).pipe(Effect.orElseSucceed(() => false)))
+          ? yield* memory.commitWakeup(row.orgId, row.wakeupId, "completed").pipe(
+              Effect.tap(
+                ({ commit }) =>
+                  sql`UPDATE kin_wakeups SET memory_commit = ${commit} WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`,
+              ),
+              Effect.as(true),
+              Effect.catchCause((cause) =>
+                Effect.logError("Kin couldn't land a stopped wake-up's memory", {
+                  wakeupId: row.wakeupId,
+                  cause,
+                }).pipe(Effect.as(false)),
+              ),
+            )
+          : false;
+      if (!landed) yield* memory.discard(row.orgId, row.wakeupId).pipe(Effect.ignore);
+    }
     yield* endReply(row);
     const [running] =
       yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND status = 'running'`;
     if (running === undefined) return;
     if (row.threadId !== null) {
-      const projection = yield* threads.getThreadProjection(row.threadId).pipe(Effect.option);
+      const projection = yield* threads.getThreadRecords(row.threadId, []).pipe(Effect.option);
       if (Option.isSome(projection))
         yield* threads
           .interruptThread({
             projectId: projection.value.thread.projectId,
             threadId: row.threadId,
+            ...(row.runId === null ? {} : { runId: row.runId }),
             commandId: CommandId.make(`kin-exit:${row.wakeupId}`),
           })
           .pipe(Effect.ignore);
@@ -680,7 +1079,7 @@ const make = Effect.gen(function* () {
     yield* clearMissingThread(row).pipe(Effect.ignore);
     yield* capture(row).pipe(Effect.ignore);
     if (interrupted) yield* queue.requeueUnfinished(row.orgId, row.wakeupId);
-    else yield* finishWakeup(row, "failed");
+    else yield* finishWakeup(row, "failed", null, failure);
   });
 
   /** One line per wake-up: each stage's ms since the first claimed event was queued. */
@@ -718,20 +1117,15 @@ const make = Effect.gen(function* () {
 
   const runOnce = Effect.fn("WakeupRunner.runOnce")(
     function* (orgId: KinOrgId, agentId: KinAgentId) {
+      if (Option.isSome(care)) yield* care.value.storageRecovered(orgId);
       const record = yield* lead(orgId, agentId);
       if (record.retiredAt !== null) return yield* retire(record);
       if (yield* paused(orgId)) return;
       if (record.threadId !== null) {
-        const unfinished = yield* sql`SELECT 1 FROM orchestration_v2_projection_provider_turns
-          WHERE thread_id = ${record.threadId} AND completed_at IS NULL LIMIT 1`;
-        const busy = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
-          WHERE thread_id = ${record.threadId}
-            AND status IN ${sql.in(["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES])} LIMIT 1`;
-        // A run T3 started for a finished task is the one thing a wake-up claims into: it takes it.
-        const notice = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
-          AND agent_id = ${agentId} AND tag = 'task.finished' AND state = 'queued'
-          AND json_extract(json, '$.threadId') = ${record.threadId} LIMIT 1`;
-        if ((unfinished.length > 0 || busy.length > 0) && notice.length === 0) {
+        const busy = yield* sql`SELECT 1 FROM kin_leads l
+          WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}
+            AND ${KinEventQueue.leadThreadBusy(sql, "l")}`;
+        if (busy.length > 0) {
           yield* Effect.raceFirst(yield* queue.changes(orgId), threadActivity(orgId)).pipe(
             Effect.timeoutOrElse({ duration: 60_000, orElse: () => Effect.void }),
           );
@@ -740,6 +1134,7 @@ const make = Effect.gen(function* () {
       }
       const wakeupId = KinWakeupId.make(yield* ulid);
       const startedAt = yield* Clock.currentTimeMillis;
+      yield* warnIfLowOnSpace(orgId);
       let row: typeof RunningRow.Type = {
         orgId,
         agentId,
@@ -751,9 +1146,16 @@ const make = Effect.gen(function* () {
       yield* Effect.scoped(
         Effect.gen(function* () {
           let events = yield* Effect.acquireRelease(
-            queue.claim({ orgId, agentId, wakeupId, model: record.model.model }),
+            queue.claim({ orgId, agentId, wakeupId, model: record.model.model }).pipe(
+              // Storage full before a turn could start: nothing was claimed; clean, once.
+              Effect.tapCause((cause) =>
+                Option.isSome(care) && troubleCause(cause) === "space"
+                  ? care.value.storageFailed(orgId)
+                  : Effect.void,
+              ),
+            ),
             (_, exit) =>
-              cleanup(row, Exit.hasInterrupts(exit)).pipe(
+              cleanup(row, Exit.hasInterrupts(exit), Exit.isFailure(exit) ? exit.cause : null).pipe(
                 Effect.catch((error) =>
                   Effect.logError("Kin wake-up finalizer failed", {
                     orgId,
@@ -764,6 +1166,7 @@ const make = Effect.gen(function* () {
               ),
           );
           row = { ...row, startedAt: yield* Clock.currentTimeMillis };
+          if (Option.isSome(care)) yield* care.value.devFullDisk;
           yield* Effect.gen(function* () {
             if (yield* paused(orgId)) {
               yield* queue.release({
@@ -803,7 +1206,7 @@ const make = Effect.gen(function* () {
             for (const event of events) {
               if (event._tag !== "task.finished" || row.runId !== null) continue;
               const state = noticeState(
-                yield* threads.getThreadRecords(event.threadId, ["messages", "runs"]),
+                yield* noticeRecords(threads, event.threadId, event.messageId),
                 event.messageId,
               );
               if (state._tag !== "live") continue;
@@ -873,14 +1276,13 @@ const make = Effect.gen(function* () {
             // A finished-task notice T3 steered into a turn already going was answered there.
             events = yield* Effect.filter(events, (event) =>
               event._tag === "task.finished"
-                ? threads
-                    .getThreadRecords(event.threadId, ["messages", "runs"])
-                    .pipe(
-                      Effect.map(
-                        (records) => noticeState(records, event.messageId)._tag !== "seen",
-                      ),
-                    )
+                ? noticeRecords(threads, event.threadId, event.messageId).pipe(
+                    Effect.map((records) => noticeState(records, event.messageId)._tag !== "seen"),
+                  )
                 : Effect.succeed(true),
+            );
+            events = yield* Effect.filter(events, (event) =>
+              goneBeforeTurn(orgId, event).pipe(Effect.map((gone) => !gone)),
             );
             if (events.length === 0) {
               yield* queue.finish({ orgId, wakeupId, status: "completed" });
@@ -904,6 +1306,8 @@ const make = Effect.gen(function* () {
                   orgId,
                   wakeupId,
                   errorTag: error._tag,
+                  operation: error.operation,
+                  ...(error._tag === "MemoryCheckoutInvalid" ? { reason: error.reason } : {}),
                 }),
               ),
               Effect.tapError((error) =>
@@ -913,13 +1317,8 @@ const make = Effect.gen(function* () {
               ),
             );
             const preparedAt = yield* Clock.currentTimeMillis;
+            // The owner check is retired (K145) and posts no card: a fire that lands is dropped.
             if (Option.isSome(ownerCheck)) {
-              for (const event of events) {
-                if (event._tag === "routine" && event.routine === "owner_check")
-                  // Keep cards dark until the verified action dispatcher and clients land.
-                  if (ownerCheckDispatcherReady)
-                    yield* ownerCheck.value.post(orgId, event.eventId, event.ownerCheckItems ?? []);
-              }
               events = events.filter(
                 (event) => event._tag !== "routine" || event.routine !== "owner_check",
               );
@@ -988,16 +1387,58 @@ const make = Effect.gen(function* () {
                 );
                 if (facts !== null) routineFacts.set(event.eventId, facts);
               }
+            // The evening check-in carries the retired evening summary's sections as facts. One
+            // past its own day in the company's zone, or with nothing to sum up, is not sent, and
+            // what it marked told is untold again.
+            const dropped = new Set<string>();
+            if (Option.isSome(routineContent))
+              for (const event of events.filter(isEveningCheckIn)) {
+                const day = event._tag === "pulse" ? event.checkIn?.day : undefined;
+                const today =
+                  day === undefined
+                    ? undefined
+                    : dayIn(
+                        yield* Clock.currentTimeMillis,
+                        yield* ownerZone(orgId).pipe(provideSql),
+                      );
+                const facts =
+                  day !== today
+                    ? null
+                    : yield* routineContent.value.eveningFacts(orgId, agentId).pipe(
+                        Effect.catch((error) =>
+                          Effect.logWarning("Kin evening facts unavailable", {
+                            cause: error.cause,
+                          }).pipe(Effect.as("")),
+                        ),
+                      );
+                if (facts === null) {
+                  dropped.add(event.eventId);
+                  yield* sql`DELETE FROM kin_pulse_told
+                    WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
+                } else if (facts !== "") routineFacts.set(event.eventId, facts);
+              }
             if (Option.isSome(routineContent)) {
               events = events.filter(
                 (event) =>
-                  !RoutineContent.isRoutineContent(event) || routineFacts.has(event.eventId),
+                  !dropped.has(event.eventId) &&
+                  (!RoutineContent.isRoutineContent(event) || routineFacts.has(event.eventId)),
               );
               if (events.length === 0) {
                 yield* queue.finish({ orgId, wakeupId, status: "completed" });
                 return;
               }
             }
+            // Work the owner side started for a teammate's relayed request goes back to them.
+            const workFor = new Map<string, ReadonlyArray<string>>();
+            for (const [eventId, people] of yield* finishedFor(
+              orgId,
+              agentId,
+              events.flatMap((event) => (event._tag === "task.finished" ? [event] : [])),
+            ))
+              workFor.set(
+                eventId,
+                people.map((one) => one.name),
+              );
             const built = yield* prompt.build({
               orgId,
               agentId,
@@ -1006,6 +1447,7 @@ const make = Effect.gen(function* () {
               memoryHead: pinned.head,
               budgetContext,
               routineFacts,
+              workFor,
               ...(lane === undefined ? {} : { lane }),
             });
             // What the people in the chat attached to the messages this turn answers, as text and
@@ -1030,16 +1472,20 @@ const make = Effect.gen(function* () {
             // registered again.
             const alone = !shared && (yield* ownerAlone(row).pipe(provideSql));
             const chatId = alone ? null : ((yield* turnChat(row).pipe(provideSql))?.chatId ?? null);
-            const prefix = shared ? SHARED_THREAD_PREFIX : "kin:";
+            // A stranger's pull request is reviewed on a thread that lists only its review tools.
+            const review = shared && (yield* outsideReview(row).pipe(provideSql)) !== undefined;
+            const prefix = review ? REVIEW_THREAD_PREFIX : shared ? SHARED_THREAD_PREFIX : "kin:";
             const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
               FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
                 AND ended_at IS NULL AND chat_id IS ${chatId}
                 AND substr(thread_id, 1, ${prefix.length}) = ${prefix}
+                AND (${review ? 1 : 0} = 1
+                  OR substr(thread_id, 1, ${REVIEW_THREAD_PREFIX.length}) <> ${REVIEW_THREAD_PREFIX})
               ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
             let existingThreadId = !alone && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {
               const existing = yield* threads
-                .getThreadProjection(existingThreadId)
+                .getThreadRecords(existingThreadId, [])
                 .pipe(Effect.option);
               // A thread keeps its cwd: one from another project ends so this launches its own.
               if (Option.isSome(existing) && existing.value.thread.projectId !== project.id) {
@@ -1052,9 +1498,7 @@ const make = Effect.gen(function* () {
               yield* queue.finish({ orgId, wakeupId, status: "failed" });
               return;
             }
-            const threadId =
-              existingThreadId ??
-              ThreadId.make(`${shared ? SHARED_THREAD_PREFIX : "kin:"}${yield* ulid}`);
+            const threadId = existingThreadId ?? ThreadId.make(`${prefix}${yield* ulid}`);
             row = { ...row, threadId };
             yield* sql.withTransaction(
               Effect.gen(function* () {
@@ -1067,7 +1511,7 @@ const make = Effect.gen(function* () {
                 yield* floor.renew({
                   orgId,
                   agentId,
-                  until: row.startedAt + WAKEUP_DEADLINE_MS,
+                  until: (yield* Clock.currentTimeMillis) + RUN_SILENCE_MS,
                   messageIds: events.flatMap((event) =>
                     event._tag === "chat.message" ||
                     event._tag === "widget.action" ||
@@ -1113,14 +1557,13 @@ const make = Effect.gen(function* () {
             const taken =
               existingThreadId === null || finished.length === 0
                 ? undefined
-                : yield* threads.getThreadRecords(threadId, ["messages", "runs"]).pipe(
-                    Effect.map((records) =>
-                      finished
-                        .map((event) => noticeState(records, event.messageId))
-                        .flatMap((state) => (state._tag === "live" ? [state.run] : []))
-                        .at(0),
+                : (yield* Effect.forEach(finished, (event) =>
+                    noticeRecords(threads, threadId, event.messageId).pipe(
+                      Effect.map((records) => noticeState(records, event.messageId)),
                     ),
-                  );
+                  ))
+                    .flatMap((state) => (state._tag === "live" ? [state.run] : []))
+                    .at(0);
             const commandId = CommandId.make(`kin-wakeup:${wakeupId}`);
             const messageId = MessageId.make(KinIdentity.wakeupMessageId(wakeupId));
             const sent =
@@ -1156,8 +1599,12 @@ const make = Effect.gen(function* () {
             const run = taken ?? sent?.runs.findLast((run) => run.userMessageId === messageId);
             if (run === undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: "missing_run" });
-            // Anything else this wake-up answers goes into that run as its first steer.
-            if (taken !== undefined && events.some((event) => event._tag !== "task.finished")) {
+            // Anything else this wake-up answers goes into that run as its first steer, and so
+            // does who the finished work was for.
+            if (
+              taken !== undefined &&
+              (workFor.size > 0 || events.some((event) => event._tag !== "task.finished"))
+            ) {
               if (Option.isSome(bridge))
                 yield* bridge.value.steered(orgId, wakeupId, {
                   n: 1,
@@ -1194,7 +1641,7 @@ const make = Effect.gen(function* () {
           }).pipe(
             Effect.onExit((exit) =>
               Exit.isFailure(exit)
-                ? cleanup(row, Exit.hasInterrupts(exit)).pipe(
+                ? cleanup(row, Exit.hasInterrupts(exit), exit.cause).pipe(
                     Effect.catch((error) =>
                       Effect.logError("Kin wake-up cleanup failed", {
                         orgId,
@@ -1232,7 +1679,7 @@ const make = Effect.gen(function* () {
       if (Option.isSome(bridge)) yield* bridge.value.abort(orgId, wakeupId);
       // Not launched yet: the runner finds the mark before or right after its launch.
       if (row.threadId === null) return;
-      const projection = yield* threads.getThreadProjection(row.threadId);
+      const projection = yield* threads.getThreadRecords(row.threadId, []);
       // The stop switch's interrupt, without settling its events: `wait` sees the mark.
       yield* threads.interruptThread({
         projectId: projection.thread.projectId,
@@ -1270,20 +1717,29 @@ const make = Effect.gen(function* () {
             );
             let row = yield* decodeRunning(raw);
             yield* Effect.acquireRelease(Effect.void, (_, exit) =>
-              cleanup(row, Exit.hasInterrupts(exit)).pipe(Effect.ignore),
+              cleanup(row, Exit.hasInterrupts(exit), Exit.isFailure(exit) ? exit.cause : null).pipe(
+                Effect.ignore,
+              ),
             );
             const existing =
               row.threadId === null
                 ? []
                 : yield* sql`SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id = ${row.threadId}`;
+            const wakeMessageId = MessageId.make(KinIdentity.wakeupMessageId(row.wakeupId));
+            const runId =
+              row.threadId === null || existing.length === 0 || row.runId !== null
+                ? row.runId
+                : ((yield* threads.getThreadRecords(row.threadId, ["messages"], {
+                    messageIds: [wakeMessageId],
+                  })).messages[0]?.runId ?? null);
             const projection =
               row.threadId === null || existing.length === 0
                 ? undefined
-                : yield* threads.getThreadProjection(row.threadId);
+                : yield* threads.getThreadRecords(row.threadId, ["runs"], {
+                    runIds: runId === null ? [] : [runId],
+                  });
             const run = projection?.runs.find((run) =>
-              row.runId === null
-                ? run.userMessageId === KinIdentity.wakeupMessageId(row.wakeupId)
-                : run.id === row.runId,
+              row.runId === null ? run.userMessageId === wakeMessageId : run.id === row.runId,
             );
             if (projection === undefined || run === undefined) {
               const receipts =
@@ -1326,7 +1782,7 @@ const make = Effect.gen(function* () {
             yield* wait(row, projection.thread.projectId).pipe(
               Effect.onExit((exit) =>
                 Exit.isFailure(exit)
-                  ? cleanup(row, Exit.hasInterrupts(exit)).pipe(Effect.ignore)
+                  ? cleanup(row, Exit.hasInterrupts(exit), exit.cause).pipe(Effect.ignore)
                   : Effect.void,
               ),
             );
@@ -1423,12 +1879,22 @@ const make = Effect.gen(function* () {
           freed = Deferred.makeUnsafe<void>();
           return Deferred.succeed(signal, undefined);
         }).pipe(Effect.asVoid);
-        yield* Effect.gen(function* () {
+        // One reader of the runner's run activity per company, for its loop's life: activity on a
+        // lead's thread ends a pass's wait, as `freed` does.
+        let stirred = Deferred.makeUnsafe<void>();
+        let leadThreads = new Set<string>();
+        // A pass after a run ended, or after a quiet wait, recovers wake-ups left running.
+        let recoverNext = true;
+        const pass = Effect.gen(function* () {
           const changed = yield* queue.changes(orgId);
           // Taken before any read, so a run that finishes mid-pass still ends this pass's wait.
           const finished = Deferred.await(freed);
+          stirred = Deferred.makeUnsafe<void>();
+          const stir = Deferred.await(stirred);
+          leadThreads = yield* leadThreadIds(orgId);
           const active = activeOf(orgId);
-          yield* recoverOrg(orgId, active, wake, true);
+          if (recoverNext) yield* recoverOrg(orgId, active, wake, true);
+          recoverNext = false;
           const rows = yield* sql<{
             agentId: string;
           }>`SELECT l.agent_id AS "agentId" FROM kin_leads l
@@ -1456,19 +1922,33 @@ const make = Effect.gen(function* () {
               Effect.forkScoped,
             );
           }
-          yield* Effect.raceAllFirst([changed, finished, threadActivity(orgId)]).pipe(
+          recoverNext = yield* Effect.raceAllFirst([
+            changed.pipe(Effect.as(false)),
+            finished.pipe(Effect.as(true)),
+            stir.pipe(Effect.as(false)),
+          ]).pipe(
             Effect.timeoutOrElse({
               duration: orgLoopWaitMs(ready, active, now),
-              orElse: () => Effect.void,
+              orElse: () => Effect.succeed(true),
             }),
           );
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logError("Kin runner iteration failed", { orgId, cause }).pipe(
-              Effect.andThen(Effect.sleep("1 second")),
+        });
+        yield* Effect.gen(function* () {
+          yield* Stream.fromPubSub(runActivity).pipe(
+            Stream.runForEach((threadId) =>
+              leadThreads.has(threadId) ? Deferred.succeed(stirred, undefined) : Effect.void,
             ),
-          ),
-          Effect.forever,
+            Effect.forkChild,
+          );
+          return yield* pass.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError("Kin runner iteration failed", { orgId, cause }).pipe(
+                Effect.andThen(Effect.sleep("1 second")),
+              ),
+            ),
+            Effect.forever,
+          );
+        }).pipe(
           Effect.catchCause((cause) => Effect.logError("Kin org loop failed", { orgId, cause })),
           Effect.ensuring(Effect.sync(() => organizations.delete(orgId))),
           Effect.forkScoped,

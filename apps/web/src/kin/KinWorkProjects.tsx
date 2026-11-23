@@ -12,10 +12,12 @@ import {
   KIN_PROJECT_REFUSED,
   KIN_PROJECT_GONE,
   KIN_PROJECT_LEAD,
+  kinCampaignResultOpens,
   kinProjectLeadChoices,
   kinProjectPageView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinWorkSend, type KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
+import type { KinCampaignResultId } from "@t3tools/client-runtime/kin/kinMarketing";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
@@ -30,6 +32,7 @@ import { useId, useState } from "react";
 
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Button } from "../components/ui/button";
+import { Dialog, DialogHeader, DialogPopup, DialogTitle } from "../components/ui/dialog";
 import { Label } from "../components/ui/label";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Radio, RadioGroup } from "../components/ui/radio-group";
@@ -42,10 +45,16 @@ import {
 } from "../components/ui/sheet";
 import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
-import { KinAttentionSection } from "./KinAttention";
+import { KinAskRecord } from "./KinAskRecord";
+import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
+import { KinProjectNoteSection } from "./KinProjectNote";
 import { KinProjectPeopleSection } from "./KinProjectPeople";
 import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
+import { KinCampaignDealsDialog } from "./KinDeals";
+import { KinCampaignResultsSection, KinContactListDialog } from "./KinMarketing";
+import { useKinSectionOn, useKinShell } from "./useKinShell";
+import { KinWorkClientsList } from "./KinWorkClients";
 import {
   KinWorkHealthBadge,
   KinWorkNotice,
@@ -124,6 +133,8 @@ function ProjectPage(
   const { environmentId, orgId, page } = props;
   const { names } = props.directory;
   const canChange = useAtomValue(kinClient.workProjectUpdate.permissionAtom(environmentId));
+  const canNote = useAtomValue(kinClient.workProjectNote.permissionAtom(environmentId));
+  const dealsOn = useKinSectionOn(environmentId, "deals");
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const now = new Date(useNowMinuteMs());
   const [editing, setEditing] = useState(false);
@@ -131,9 +142,12 @@ function ProjectPage(
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
   const [choosingLead, setChoosingLead] = useState(false);
+  const [openResult, setOpenResult] = useState<KinCampaignResultId | null>(null);
   const privateId = useId();
-  const view = kinProjectPageView(page, names, now);
+  const view = kinProjectPageView(page, names, now, useKinShell(props.environmentId));
   const { party } = view;
+  const opened =
+    openResult === null ? null : kinCampaignResultOpens(orgId, view.key, view.name, openResult);
   const change = async (input: {
     readonly state?: KinProjectState;
     readonly sensitive?: boolean;
@@ -162,16 +176,16 @@ function ProjectPage(
   const leads =
     view.lead.personId !== null &&
     view.lead.personId === kinFeedViewer(props.directory.orgs, orgId).personId;
-  const addsMilestone = (canChange || leads) && view.closed === null;
+  const addsMilestone = (canChange || leads) && view.adds && view.closed === null;
   const addTask =
-    props.onAddTask === null || view.closed !== null
+    props.onAddTask === null || view.closed !== null || !view.adds
       ? null
       : () => props.onAddTask?.(kinWorkDraftFor({ party, project: view.ref }));
   const summary = (
     <div className="flex flex-col gap-6 pb-3">
       <div className="flex flex-col gap-2">
-        <div className="flex items-start gap-2">
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex flex-wrap items-start gap-2">
+          <div className="flex min-w-56 flex-1 flex-col gap-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h2 className="truncate text-lg font-medium text-foreground">{view.name}</h2>
               {view.health === null ? null : <KinWorkHealthBadge health={view.health} />}
@@ -196,6 +210,7 @@ function ProjectPage(
                   {" · "}
                 </>
               )}
+              {view.kind === null ? null : `${view.kind} · `}
               {view.target}
               {view.ledBy === null ? null : ` · ${view.ledBy}`}
             </p>
@@ -203,42 +218,55 @@ function ProjectPage(
               <p className="text-sm text-muted-foreground">{view.terms}</p>
             )}
           </div>
-          {canChange ? (
-            <div className="flex shrink-0 items-center gap-1">
-              <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing(true)}>
-                <PencilIcon />
-                {KIN_PROJECTS.edit}
-              </Button>
-              <Menu>
-                <MenuTrigger
-                  render={
-                    <Button size="icon-sm" variant="ghost" aria-label="More" disabled={busy} />
-                  }
+          <div className="flex shrink-0 items-center gap-1">
+            <KinAskRecord
+              environmentId={environmentId}
+              orgId={orgId}
+              record={{ key: view.key, title: view.name }}
+              disabled={busy}
+            />
+            {canChange ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => setEditing(true)}
                 >
-                  <EllipsisIcon />
-                </MenuTrigger>
-                <MenuPopup align="end">
-                  {view.closed === null ? (
-                    <>
-                      <MenuItem onClick={() => void change({ state: "done" })}>
-                        {KIN_PROJECTS.done}
+                  <PencilIcon />
+                  {KIN_PROJECTS.edit}
+                </Button>
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <Button size="icon-sm" variant="ghost" aria-label="More" disabled={busy} />
+                    }
+                  >
+                    <EllipsisIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="end">
+                    {view.closed === null ? (
+                      <>
+                        <MenuItem onClick={() => void change({ state: "done" })}>
+                          {KIN_PROJECTS.done}
+                        </MenuItem>
+                        <MenuItem
+                          variant="destructive"
+                          onClick={() => void change({ state: "dropped" })}
+                        >
+                          {KIN_PROJECTS.drop}
+                        </MenuItem>
+                      </>
+                    ) : (
+                      <MenuItem onClick={() => void change({ state: "open" })}>
+                        {KIN_PROJECTS.reopen}
                       </MenuItem>
-                      <MenuItem
-                        variant="destructive"
-                        onClick={() => void change({ state: "dropped" })}
-                      >
-                        {KIN_PROJECTS.drop}
-                      </MenuItem>
-                    </>
-                  ) : (
-                    <MenuItem onClick={() => void change({ state: "open" })}>
-                      {KIN_PROJECTS.reopen}
-                    </MenuItem>
-                  )}
-                </MenuPopup>
-              </Menu>
-            </div>
-          ) : null}
+                    )}
+                  </MenuPopup>
+                </Menu>
+              </>
+            ) : null}
+          </div>
         </div>
         {view.why.length === 0 ? null : (
           <p className="text-sm text-foreground">{view.why.join(" ")}</p>
@@ -262,6 +290,25 @@ function ProjectPage(
           </Button>
         ) : null}
       </div>
+      {page.results === undefined ? null : (
+        <KinCampaignResultsSection
+          results={page.results}
+          audience={view.audience}
+          deals={dealsOn}
+          onOpen={setOpenResult}
+        />
+      )}
+      {page.can?.note === undefined ? null : (
+        <KinProjectNoteSection
+          environmentId={environmentId}
+          orgId={orgId}
+          projectKey={view.key}
+          note={page.note ?? null}
+          canEdit={page.can.note && canNote}
+          onChanged={props.onRefresh}
+        />
+      )}
+      <KinAsideNote environmentId={environmentId} orgId={orgId} record={view.key} names={names} />
       <KinAttentionSection
         environmentId={environmentId}
         orgId={orgId}
@@ -570,6 +617,55 @@ function ProjectPage(
           onClose={() => setChoosingLead(false)}
         />
       ) : null}
+      {opened === null ? null : opened.to === "contacts" ? (
+        <KinContactListDialog
+          environmentId={environmentId}
+          orgId={orgId}
+          input={opened.input}
+          title={opened.title}
+          onOpenClient={(key) => {
+            setOpenResult(null);
+            props.onOpenClient(key);
+          }}
+          onClose={() => setOpenResult(null)}
+        />
+      ) : opened.to === "deals" ? (
+        <KinCampaignDealsDialog
+          environmentId={environmentId}
+          orgId={orgId}
+          input={opened.input}
+          title={opened.title}
+          directory={props.directory}
+          onOpen={(key) => {
+            setOpenResult(null);
+            props.onOpenTask(key);
+          }}
+          onClose={() => setOpenResult(null)}
+        />
+      ) : (
+        <Dialog open onOpenChange={(open) => (open ? undefined : setOpenResult(null))}>
+          <DialogPopup className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>{opened.title}</DialogTitle>
+            </DialogHeader>
+            <div className="flex h-[60vh] min-h-0 flex-col">
+              <KinWorkClientsList
+                environmentId={environmentId}
+                orgId={orgId}
+                live={props.live}
+                stale={props.stale}
+                directory={props.directory}
+                start={opened.filter}
+                onOpen={(key) => {
+                  setOpenResult(null);
+                  props.onOpenClient(key);
+                }}
+                onAdd={null}
+              />
+            </div>
+          </DialogPopup>
+        </Dialog>
+      )}
       {editing ? (
         <KinProjectDialog
           environmentId={environmentId}

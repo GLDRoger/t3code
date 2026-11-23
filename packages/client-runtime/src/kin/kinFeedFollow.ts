@@ -25,7 +25,9 @@ export type KinFeedFollowEvent =
   | { readonly type: "page-settled"; readonly added: boolean }
   /** A touch began; it ends a page's hold without letting go of the end. */
   | { readonly type: "drag-begin" }
-  | { readonly type: "jump-to-end" };
+  | { readonly type: "jump-to-end" }
+  /** The chat brings a message it was opened on into view; like a scroll, it lets go of the end. */
+  | { readonly type: "land" };
 
 /** What the chat held when it opened counts as seen. */
 export const initialKinFeedFollow = (latestSeq: number): KinFeedFollow => ({
@@ -71,6 +73,10 @@ export function resolveKinFeedFollow(
         : { ...state, holding: false };
     case "drag-begin":
       return state.holding ? { ...state, holding: false } : state;
+    case "land":
+      return state.following || state.holding
+        ? { ...state, following: false, away: false, holding: false }
+        : state;
     case "jump-to-end":
       return kinFollowsEnd(state) && !state.away
         ? state

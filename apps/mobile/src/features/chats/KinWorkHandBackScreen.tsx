@@ -4,7 +4,7 @@ import { EnvironmentId, KinOrgId, KinRecordKey } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
-import { useState } from "react";
+import { useState, useRef, type ComponentRef } from "react";
 import { TextInput, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -18,6 +18,7 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient } from "./state/kinClient";
+import { KinWorkFieldBox } from "./components/KinWorkPieces";
 
 export type KinWorkHandBackParams = {
   readonly environmentId: string;
@@ -33,6 +34,7 @@ const decodeKey = Schema.decodeUnknownOption(KinRecordKey);
 
 /** The holder gives a task back to whoever gave it, saying why if they like. */
 export function KinWorkHandBackScreen({ route }: StaticScreenProps<KinWorkHandBackParams>) {
+  const reasonField = useRef<ComponentRef<typeof TextInput>>(null);
   const navigation = useNavigation();
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
   const orgId = Option.getOrNull(decodeOrgId(route.params.orgId));
@@ -83,11 +85,9 @@ export function KinWorkHandBackScreen({ route }: StaticScreenProps<KinWorkHandBa
                 {KIN_WORK_HAND_BACK.detail(route.params.to)}
               </Text>
               <ListSection>
-                <View className="gap-2 px-4 py-3">
-                  <Text className="text-sm text-foreground-muted">
-                    {KIN_WORK_HAND_BACK.reasonLabel}
-                  </Text>
+                <KinWorkFieldBox label={KIN_WORK_HAND_BACK.reasonLabel} input={reasonField}>
                   <TextInput
+                    ref={reasonField}
                     accessibilityLabel={KIN_WORK_HAND_BACK.reasonLabel}
                     value={note}
                     editable={!pending}
@@ -96,11 +96,10 @@ export function KinWorkHandBackScreen({ route }: StaticScreenProps<KinWorkHandBa
                     maxLength={280}
                     onChangeText={setNote}
                     textAlignVertical="top"
-                    placeholder={KIN_WORK_HAND_BACK.reasonPlaceholder}
                     placeholderTextColorClassName="accent-placeholder"
                     className="min-h-20 font-sans text-base text-foreground"
                   />
-                </View>
+                </KinWorkFieldBox>
               </ListSection>
               <Button
                 tone="primary"

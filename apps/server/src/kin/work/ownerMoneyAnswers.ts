@@ -5,27 +5,35 @@ import {
   type KinEntryLinesInput,
   type KinInvoiceFromQuoteInput,
   type KinMoneyBudgetSetInput,
+  type KinNewExpenseInput,
+  type KinNewInvoiceInput,
   type KinMoneyBudgetsInput,
   type KinOrgId,
   type KinOutlookInput,
+  type KinMatchPartnerInput,
+  KinPersonId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { makeDocument } from "../gendocs/make.ts";
 import { invoiceFromQuote as draftFromQuote, quotedInputs } from "../gendocs/quotes.ts";
 import { defaultRecipes } from "../gendocs/recipeDefaults.ts";
-import { KinWorkspace } from "../gendocs/workspace.ts";
+import { KinWorkspace, type StoredRecipe } from "../gendocs/workspace.ts";
 import { budgetsView, setBudget as setBudgetFor } from "./budgets.ts";
-import { dayIn } from "./money.ts";
+import { countryFirst, homeCurrency } from "./companyProfile.ts";
+import { askSlip, dayIn, linesBeforeTax } from "./money.ts";
 import { cashEstimate, cashPosition, outlook as outlookOf } from "./moneyAnswers.ts";
-import { KinRecords } from "./KinRecords.ts";
-import { ownerWriter, theOwner } from "./ownerWork.ts";
-import { iso, notFound, workFailure } from "./recordRows.ts";
-import { listDef } from "./registers.ts";
+import type { AlertBalance } from "./statements/bankAlerts.ts";
+import { KinRecords, requestHashOf } from "./KinRecords.ts";
+import { dueMillis, ownFiles, ownerWriter, theOwner } from "./ownerWork.ts";
+import { iso, notFound, type RecordRow, workFailure } from "./recordRows.ts";
+import { matchPartner as matchPartnerOf } from "./partnersOwed.ts";
+import { listDef, listOrPreset, presetList } from "./registers.ts";
 
 /** Money's answers as the owner's apps read them: the agent's own figures, never re-added here. */
 
@@ -63,6 +71,7 @@ export const cash = Effect.fn("KinMoneyAnswers.rpc.cash")(function* (
               on: one.newerRead.on,
               standing: one.newerRead.standing,
             },
+      ...(one.alert === undefined ? {} : { alert: alertOf(one.alert) }),
     })),
     notOfRecord: view.notOfRecord.flatMap((one) =>
       one.standing === undefined
@@ -91,8 +100,22 @@ export const cash = Effect.fn("KinMoneyAnswers.rpc.cash")(function* (
         estimate: estimate === null ? null : signed(estimate, one.currency),
       };
     }),
+    bankKnown: { through: view.bank.through },
+    // Only when there are any: Money is read on every change.
+    ...(view.alertAccounts.length === 0
+      ? {}
+      : {
+          alertAccounts: view.alertAccounts.map((one) => ({
+            label: `${one.bank} ••${one.account}`,
+            alert: alertOf(one),
+          })),
+        }),
   };
 }, workFailure);
+const alertOf = (one: AlertBalance) => ({
+  balance: { minor: one.balanceMinor, currency: one.currency },
+  at: iso(one.sentAt),
+});
 
 export const outlook = Effect.fn("KinMoneyAnswers.rpc.outlook")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -129,6 +152,32 @@ export const outlook = Effect.fn("KinMoneyAnswers.rpc.outlook")(function* (
       money: one.money,
       repeats: false,
     })),
+    ...(view.partners.length === 0
+      ? {}
+      : {
+          owedToPartners: view.partners.map((one) => ({
+            personId: one.personId === null ? null : KinPersonId.make(one.personId),
+            name: one.name,
+            address: one.address,
+            owed: one.owed,
+            expenses: one.entries.length,
+            oldest: dayIn(one.entries[0]!.at, view.timeZone),
+            ...(one.personId === null
+              ? { entries: one.entries.map((entry) => ({ key: entry.key, rev: entry.rev })) }
+              : {}),
+          })),
+        }),
+    ...(view.unsaid.length === 0
+      ? {}
+      : {
+          partnersUnsaid: view.unsaid.map((one) => ({
+            address: one.address,
+            expenses: one.expenses,
+            total: one.total,
+            oldest: dayIn(one.at, view.timeZone),
+            entries: one.seen,
+          })),
+        }),
     incomplete: view.incomplete,
     runway: view.runway.map((one) => ({
       currency: one.currency,
@@ -167,6 +216,11 @@ const budgetsOf = Effect.fn("KinMoneyAnswers.budgetsOf")(function* (orgId: KinOr
       spent: signed(one.spent, one.currency),
       expenses: one.expenses,
       status: one.status,
+      ...(one.notCounted.length === 0
+        ? {}
+        : {
+            notCounted: one.notCounted.map((money) => ({ currency: money.currency, spent: money })),
+          }),
     })),
   };
 });
@@ -187,6 +241,7 @@ export const setBudget = Effect.fn("KinMoneyAnswers.rpc.setBudget")(function* (
   const person = yield* theOwner(people, input.orgId);
   if (input.category === null && input.project === null)
     return yield* invalid("A budget is for a category, a project, or a category in a project.");
+  if (input.limitMinor !== null) yield* countryFirst(input.orgId);
   const expenses = yield* listDef(input.orgId, "expenses");
   if (expenses === undefined)
     return yield* invalid("There is no expenses list yet, so nothing to budget.");
@@ -242,6 +297,46 @@ export const entryLines = Effect.fn("KinMoneyAnswers.rpc.entryLines")(function* 
   return { lines: Option.getOrNull(decodeLines(said)) };
 }, workFailure);
 
+/** The template invoices are made with: the list's default, else the first there is. */
+const invoiceTemplate = Effect.fn("KinMoneyAnswers.invoiceTemplate")(function* (orgId: KinOrgId) {
+  const recipes = (yield* (yield* KinWorkspace).recipes(orgId)).filter(
+    (one) => one.list === "invoices",
+  );
+  const defaults = yield* defaultRecipes(orgId, recipes);
+  return recipes.find((one) => defaults.has(one.name)) ?? recipes[0];
+});
+
+/** A draft invoice's document made for the owner level with `given`; why not, the draft standing. */
+const draftDocument = Effect.fn("KinMoneyAnswers.draftDocument")(function* (
+  person: PersonIdentity,
+  invoice: RecordRow,
+  recipe: StoredRecipe,
+  given: Readonly<Record<string, unknown>>,
+  jobKey: string,
+) {
+  const own = new Set(recipe.inputs.filter((one) => one.from === "agent").map((one) => one.name));
+  return yield* makeDocument({
+    orgId: person.orgId,
+    recipe: recipe.name,
+    entry: invoice.key,
+    given: Object.fromEntries(Object.entries(given).filter(([name]) => own.has(name))),
+    doc: undefined,
+    title: recipe.title,
+    requester: { _tag: "owner", personId: person.personId, writer: ownerWriter(person) },
+    jobKey,
+    admit: Effect.void,
+  }).pipe(
+    Effect.map((document) => ({
+      invoice: invoice.key,
+      documents: document.documents.map((doc) => ({ key: doc.key, title: doc.title })),
+      problems: [] as ReadonlyArray<string>,
+    })),
+    Effect.catchIf(Schema.is(KinChatError), (error) =>
+      Effect.succeed({ invoice: invoice.key, documents: [], problems: [error.message] }),
+    ),
+  );
+});
+
 /**
  * "Make invoice" on a quote: its draft invoice, once per quote, and that invoice's document made
  * with the quote's own lines and client, as `kin_document` with `from` makes it for an agent.
@@ -251,39 +346,156 @@ export const invoiceFromQuote = Effect.fn("KinMoneyAnswers.rpc.invoiceFromQuote"
   input: KinInvoiceFromQuoteInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  const writer = ownerWriter(person);
-  const made = yield* draftFromQuote(input.orgId, writer, input.key);
-  const recipes = (yield* (yield* KinWorkspace).recipes(input.orgId)).filter(
-    (one) => one.list === "invoices",
-  );
-  const defaults = yield* defaultRecipes(input.orgId, recipes);
-  const recipe = recipes.find((one) => defaults.has(one.name)) ?? recipes[0];
+  const made = yield* draftFromQuote(input.orgId, ownerWriter(person), input.key);
+  const recipe = yield* invoiceTemplate(input.orgId);
   if (recipe === undefined)
     return {
       invoice: made.entry.key,
       documents: [],
       problems: ["There is no invoice template yet, so the draft has no PDF."],
     };
-  const own = new Set(recipe.inputs.filter((one) => one.from === "agent").map((one) => one.name));
-  const given = Object.fromEntries(Object.entries(made.given).filter(([name]) => own.has(name)));
-  return yield* makeDocument({
-    orgId: input.orgId,
-    recipe: recipe.name,
-    entry: made.entry.key,
-    given,
-    doc: undefined,
-    title: recipe.title,
-    requester: { _tag: "owner", personId: person.personId, writer },
-    jobKey: `owner:${person.personId}:${input.clientRequestId}`,
-    admit: Effect.void,
-  }).pipe(
-    Effect.map((document) => ({
-      invoice: made.entry.key,
-      documents: document.documents.map((doc) => ({ key: doc.key, title: doc.title })),
-      problems: [] as ReadonlyArray<string>,
-    })),
-    Effect.catchIf(Schema.is(KinChatError), (error) =>
-      Effect.succeed({ invoice: made.entry.key, documents: [], problems: [error.message] }),
+  return yield* draftDocument(
+    person,
+    made.entry,
+    recipe,
+    made.given,
+    `owner:${person.personId}:${input.clientRequestId}`,
+  );
+}, workFailure);
+
+const recordOf = Effect.fn("KinMoneyAnswers.recordOf")(function* (
+  orgId: KinOrgId,
+  key: string,
+  list: "clients" | "projects",
+) {
+  const row = yield* (yield* KinRecords).get(orgId, key);
+  if (row === undefined || row.registerId !== list) return yield* notFound(key);
+  return row.recordId;
+});
+
+/**
+ * An invoice typed by hand: a Draft for the client, owed by nobody until it is issued, and its
+ * document made with the lines typed, which set its amount and tax as Make its PDF does. With no
+ * invoice template nothing is saved, since only a document keeps an invoice's lines.
+ */
+export const newInvoice = Effect.fn("KinMoneyAnswers.rpc.newInvoice")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinNewInvoiceInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  yield* countryFirst(input.orgId);
+  const recipe = yield* invoiceTemplate(input.orgId);
+  if (recipe === undefined)
+    return yield* invalid(
+      "There is no invoice template yet, so Kin can't keep the lines. Nothing was saved. Ask an agent to set one up.",
+    );
+  const partyId = yield* recordOf(input.orgId, input.client, "clients");
+  const projectId =
+    input.project === undefined
+      ? undefined
+      : yield* recordOf(input.orgId, input.project, "projects");
+  const def = yield* listOrPreset(input.orgId, "invoices", yield* Clock.currentTimeMillis);
+  const { amountConfirmed, ...request } = input;
+  const total = linesBeforeTax(input.lines, yield* homeCurrency(input.orgId));
+  if (amountConfirmed === false && def !== undefined && total !== undefined)
+    yield* askSlip(input.orgId, def, total);
+  const dueAt = input.dueOn === undefined ? null : yield* dueMillis(input.orgId, input.dueOn, true);
+  const notes = input.notes?.trim() ?? "";
+  const { row } = yield* (yield* KinRecords).create(input.orgId, ownerWriter(person), {
+    list: "invoices",
+    originKey: `owner:${input.clientRequestId}`,
+    requestHash: requestHashOf(request),
+    title: input.title,
+    owner: { _tag: "person", personId: person.personId },
+    state: "open",
+    partyId,
+    ...(projectId === undefined ? {} : { projectId }),
+    dueAt,
+    dueAllDay: dueAt !== null,
+    ...(notes === "" ? {} : { notes }),
+  });
+  return yield* draftDocument(
+    person,
+    row,
+    recipe,
+    { lines: input.lines, ...(input.gstRate === undefined ? {} : { gstRate: input.gstRate }) },
+    `owner:${person.personId}:${input.clientRequestId}`,
+  );
+}, workFailure);
+
+const sameWord = (choices: ReadonlyArray<string>, given: string | undefined) =>
+  given === undefined
+    ? undefined
+    : (choices.find((one) => one.toLowerCase() === given.toLowerCase()) ?? given);
+
+/**
+ * An expense typed by hand, Paid on its day or To pay when that is still ahead. The company's
+ * Expenses list is made from its preset the first time, as a statement's expense makes it.
+ */
+export const newExpense = Effect.fn("KinMoneyAnswers.rpc.newExpense")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinNewExpenseInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const { amountConfirmed, ...request } = input;
+  yield* countryFirst(input.orgId);
+  const sql = yield* SqlClient.SqlClient;
+  const def = yield* presetList(input.orgId, "expenses", yield* Clock.currentTimeMillis);
+  if (def === undefined) return yield* invalid("Kin couldn't make the Expenses list.");
+  const paidWith = def.fields.find((field) => field.key === "paidWith")?.choices ?? [];
+  const fields = {
+    ...(input.vendor === undefined ? {} : { vendor: input.vendor }),
+    ...(input.paidWith === undefined ? {} : { paidWith: sameWord(paidWith, input.paidWith)! }),
+    ...(input.fundedBy === undefined
+      ? {}
+      : { fundedBy: `person:${input.fundedBy}`, reimbursement: "owed" }),
+    ...(input.receipt === undefined || input.receipt.length === 0
+      ? {}
+      : { receipt: [...input.receipt] }),
+  };
+  const category = sameWord(def.categories, input.category);
+  const dateAt = yield* dueMillis(input.orgId, input.paidOn, true);
+  const create = (yield* KinRecords).create(input.orgId, ownerWriter(person), {
+    list: "expenses",
+    originKey: `owner:${input.clientRequestId}`,
+    requestHash: requestHashOf(request),
+    title: input.title,
+    owner: { _tag: "person", personId: person.personId },
+    amount: input.amount,
+    ...(amountConfirmed === false ? { askSlip: true } : {}),
+    dateAt,
+    dateAllDay: true,
+    ...(category === undefined ? {} : { category }),
+    ...(Object.keys(fields).length === 0 ? {} : { fields }),
+  });
+  // The files are checked and kept in one transaction, so none slips in between the two.
+  const { row } = yield* sql.withTransaction(
+    ownFiles(person, "{}", fields).pipe(Effect.andThen(create)),
+  );
+  return { expense: row.key };
+}, workFailure);
+
+/**
+ * The owner or a co-owner (owner level, as for `newExpense`) names the Kin person an import's
+ * partner address is. Only a current member can fund an expense; the unmatched expenses with that
+ * address take them as funder.
+ */
+export const matchPartner = Effect.fn("KinMoneyAnswers.rpc.matchPartner")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinMatchPartnerInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const sql = yield* SqlClient.SqlClient;
+  // The teammate, the rows and their totals are read and written in one transaction.
+  const matched = yield* sql.withTransaction(
+    matchPartnerOf(
+      input.orgId,
+      ownerWriter(person),
+      input.address ?? null,
+      input.personId,
+      input.settled,
+      input.seen,
     ),
   );
+  return { matched };
 }, workFailure);

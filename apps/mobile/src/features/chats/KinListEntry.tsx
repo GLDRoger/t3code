@@ -1,7 +1,9 @@
 import { KIN_QUOTES_LIST, kinQuoteRow } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { useAtomValue } from "@effect/atom-react";
+import { kinPersonChoices } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
+import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
 import {
@@ -15,6 +17,7 @@ import {
   kinListEntryView,
   kinListStateLabel,
   kinPaymentCheck,
+  kinSuggestion,
   type KinListEntryView,
   type KinPaymentDraft,
 } from "@t3tools/client-runtime/kin/kinLists";
@@ -63,7 +66,6 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -71,13 +73,15 @@ import { uuidv4 } from "../../lib/uuid";
 import { MessageAttachmentList } from "../threads/ThreadFeed";
 import {
   KinInvoiceActions,
-  type KinMakeStep,
   KinInvoiceDocuments,
   KinInvoiceFigures,
   KinInvoiceSent,
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import type { KinMakeStep } from "./kinMakeStep";
+import { KinAsideNote } from "./KinAttention";
+import { KinSuggestionKeep } from "./KinMoneySuggested";
 import { KinQuoteActions } from "./KinMoneyAnswers";
 import { KinNotesVersions } from "./KinNotesVersions";
 import { KinMonthGrid } from "./components/KinMonthGrid";
@@ -86,6 +90,8 @@ import {
   KinWorkLoading,
   KinWorkPrivateMark,
   KinWorkTextField,
+  KinWorkToggleRow,
+  useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { kinClient } from "./state/kinClient";
@@ -111,6 +117,7 @@ import {
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
+import { KinWatchLine } from "./KinWatchLine";
 
 const NO_PLAYBACK = () => {};
 const DAY = "day:";
@@ -194,6 +201,7 @@ function DayRow(props: {
   readonly text: string | null;
   readonly day: string | null;
   readonly now: Date;
+  readonly zone: string | null;
   readonly disabled: boolean;
   readonly onPick: (day: string | null) => void;
   /** Opens the calendar, for a day the menu doesn't offer. */
@@ -206,8 +214,8 @@ function DayRow(props: {
       accessibilityRole="button"
       accessibilityLabel={`${props.label}: ${shown}. Change`}
       actions={[
-        ...kinWorkDueChoices(props.now).map((choice) => {
-          const date = kinWorkDueLabel(choice.day, props.now);
+        ...kinWorkDueChoices(props.now, props.zone).map((choice) => {
+          const date = kinWorkDueLabel(choice.day, props.now, props.zone);
           return {
             id: `${DAY}${choice.day}`,
             title: choice.label,
@@ -257,7 +265,9 @@ export function KinListEntryBody(
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
-  const invoice = kinIsInvoice(item) ? kinInvoiceView(item, def, props.now) : null;
+  const invoice = kinIsInvoice(item)
+    ? kinInvoiceView(item, def, props.now, props.directory.names)
+    : null;
   const quote = item.list === KIN_QUOTES_LIST ? kinQuoteRow(item, null, props.now) : null;
   const money = useKinMoneyActions(props);
   const rates = useKinRates(props, invoice !== null || quote !== null);
@@ -311,6 +321,9 @@ export function KinListEntryBody(
   return (
     <>
       <View className="gap-3 px-2">
+        <Text textRole="footnote" selectable className="text-foreground-muted">
+          {entry.heading}
+        </Text>
         <Text
           textRole="headline"
           accessibilityRole="header"
@@ -444,6 +457,9 @@ export function KinListEntryBody(
           )}
         </View>
       )}
+      {canChange && kinSuggestion(item) ? (
+        <KinSuggestionKeep {...props} item={item} def={def} />
+      ) : null}
       {invoice === null ? null : (
         <KinInvoiceActions
           {...props}
@@ -465,6 +481,8 @@ export function KinListEntryBody(
       {changes.problem === null ? null : (
         <Notice message={changes.problem} tone="danger" onDismiss={changes.dismiss} />
       )}
+      <KinAsideNote environmentId={environmentId} orgId={orgId} record={item.key} names={names} />
+      <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={item.key} />
       <ListSection>
         {!canChange || quote !== null ? null : (
           <Menu
@@ -497,6 +515,7 @@ export function KinListEntryBody(
             text={entry.date}
             day={entry.dateDay}
             now={props.now}
+            zone={names.zone}
             disabled={busy}
             onOther={() => edit("date")}
             onPick={(day) =>
@@ -519,6 +538,7 @@ export function KinListEntryBody(
             text={entry.due}
             day={entry.dueDay}
             now={props.now}
+            zone={names.zone}
             disabled={busy}
             onOther={() => edit("due")}
             onPick={(day) =>
@@ -702,6 +722,7 @@ export function KinListEntryBody(
                     text={field.text}
                     day={current}
                     now={props.now}
+                    zone={names.zone}
                     disabled={busy}
                     onOther={() => edit(`field:${field.key}`)}
                     onPick={(day) => setField(field.key, day)}
@@ -720,7 +741,7 @@ export function KinListEntryBody(
                     disabled={busy}
                     choices={
                       field.type === "person"
-                        ? people
+                        ? kinPersonChoices(field.key, people)
                         : field.type === "choice"
                           ? field.choices.map((choice) => ({ value: choice, label: choice }))
                           : (field.link === "projects" ? projects : clients).map((row) => ({
@@ -800,6 +821,7 @@ export function KinListEntryBody(
               const detail = [
                 payment.when,
                 payment.note,
+                payment.source,
                 payment.voided ? KIN_LISTS.entry.takenBack : null,
               ]
                 .filter((part) => part !== null)
@@ -853,7 +875,13 @@ export function KinListEntryBody(
           label={KIN_LISTS.entry.askChange}
           onPress={() => {
             navigation.goBack();
-            agent.ask(`About ${item.key} (${item.title}): `);
+            agent.ask(
+              kinAskRecordDraft({
+                key: item.key,
+                title: item.title,
+                number: item.fields?.number,
+              }),
+            );
           }}
         />
       )}
@@ -919,6 +947,9 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
   const [problem, setProblem] = useState<string | null>(null);
   const [requestId] = useState(uuidv4);
   const [month, setMonth] = useState<string | null>(null);
+  const leave = useKinAskBeforeDiscard(
+    [draft.amount, draft.note, draft.tds ?? ""].some((typed) => typed.trim() !== ""),
+  );
   const close = () => navigation.goBack();
   const title = KIN_LISTS.entry.recordPayment;
   if (!allowed) {
@@ -967,7 +998,9 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
       ...(draft.note.trim() === "" ? {} : { note: draft.note.trim() }),
       clientRequestId: requestId,
     });
-    if (saved) close();
+    if (!saved) return;
+    leave();
+    close();
   };
   const shown = problem ?? changes.problem;
   return (
@@ -998,7 +1031,6 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
           autoFocus
           keyboard="numbers"
           disabled={changes.busy}
-          placeholder={entry.balance.leftText}
           onChangeText={(amount) => setDraft({ ...draft, amount })}
         />
         {entry.takesTds ? (
@@ -1007,7 +1039,6 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
             value={draft.tds ?? ""}
             keyboard="numbers"
             disabled={changes.busy}
-            placeholder={KIN_LISTS.entry.payTdsPlaceholder}
             onChangeText={(tds) => setDraft({ ...draft, tds })}
           />
         ) : null}
@@ -1208,7 +1239,7 @@ function KinListSettingsForm(props: KinWorkTarget & { readonly def: KinListDefin
       )}
       {!kinListCanTogglePayments(def) ? null : (
         <ListSection footer={KIN_LISTS.edit.paymentsDetail}>
-          <ListToggleRow
+          <KinWorkToggleRow
             label={KIN_LISTS.edit.payments}
             value={draft.payments}
             disabled={changes.busy}

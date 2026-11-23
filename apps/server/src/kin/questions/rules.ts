@@ -1,12 +1,28 @@
-import { formatKinWhen, KIN_TEXT_LOCALE } from "@t3tools/contracts";
+import { formatKinWhen, isKinCurrency, KIN_TEXT_LOCALE } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { DAY_MS, HOUR_MS } from "../durations.ts";
 
-/** The company sits together 10:30 to 19:30: a question's day ends at 19:30, a raise comes at 10:30. */
+/**
+ * A person's working day, as their profile's hours give it. Without hours a question's day ends at
+ * 19:30 and a raise comes at 10:30, on their clock.
+ */
+export type Workday = {
+  readonly days: ReadonlyArray<number>;
+  readonly start: string;
+  readonly end: string;
+};
 const DAY_ENDS = { hour: 19, minute: 30 } as const;
 const MORNING = { hour: 10, minute: 30 } as const;
+const timeOf = (text: string) => {
+  const [hour, minute] = text.split(":").map(Number);
+  return { hour: hour ?? 0, minute: minute ?? 0 };
+};
+/** Their own start and end when the day has both in order; an overnight shift keeps the defaults. */
+const bounds = (work: Workday | undefined) =>
+  work !== undefined && work.start < work.end
+    ? { morning: timeOf(work.start), ends: timeOf(work.end) }
+    : { morning: MORNING, ends: DAY_ENDS };
 const WEEKDAYS: ReadonlyArray<number> = [1, 2, 3, 4, 5];
-const HOUR_MS = 60 * 60_000;
-const DAY_MS = 24 * HOUR_MS;
 /** A day the asker names is at least this far off, and at most a month. */
 const SOONEST_MS = HOUR_MS;
 const LATEST_MS = 31 * DAY_MS;
@@ -47,18 +63,19 @@ const nextWorkingAt = (
   return after + DAY_MS;
 };
 
-const endOfToday = (now: number, zone: string) =>
-  Math.max(now, wallTime(partsIn(now, zone), DAY_ENDS, zone));
-
 /** The day a question is answered by when the asker names none: the end of the next working day. */
-export const defaultDue = (now: number, zone: string, days?: ReadonlyArray<number>) =>
-  nextWorkingAt(endOfToday(now, zone), zone, DAY_ENDS, days);
+export const defaultDue = (now: number, zone: string, work?: Workday) => {
+  const { ends } = bounds(work);
+  const endOfToday = Math.max(now, wallTime(partsIn(now, zone), ends, zone));
+  return nextWorkingAt(endOfToday, zone, ends, work?.days);
+};
 
-/** A `YYYY-MM-DD` the asker named, as 19:30 that day on the person's clock; why not, when it can't be. */
+/** A `YYYY-MM-DD` the asker named, as the end of that day on the person's clock; why not, when it can't be. */
 export const namedDue = (
   by: string,
   now: number,
   zone: string,
+  work?: Workday,
 ): { readonly at: number } | { readonly refused: string } => {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(by.trim());
   const at =
@@ -66,7 +83,7 @@ export const namedDue = (
       ? Number.NaN
       : wallTime(
           { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) },
-          DAY_ENDS,
+          bounds(work).ends,
           zone,
         );
   if (!Number.isFinite(at) || at < now + SOONEST_MS || at > now + LATEST_MS)
@@ -78,8 +95,8 @@ export const namedDue = (
 };
 
 /** When a question with no safe default is raised once more: the next working morning after its day. */
-export const raiseAt = (due: number, zone: string, days?: ReadonlyArray<number>) =>
-  nextWorkingAt(due, zone, MORNING, days);
+export const raiseAt = (due: number, zone: string, work?: Workday) =>
+  nextWorkingAt(due, zone, bounds(work).morning, work?.days);
 
 const STOP = new Set(
   "a an the to for of on in at by with and or should shall i we you me my our us it its them they this that these those please can could will would do does did be is are was were if about any some let".split(
@@ -136,19 +153,40 @@ export const repeats = (
   asked.about.length > 0 &&
   asked.about.some((key) => open.about.includes(key));
 
-/** Words for doing something that leaves the company or moves money: such a default is never taken. */
+/**
+ * Words for doing something that leaves the company or moves money: such a default is never taken.
+ * A word joined to another by a hyphen names a field or a thing ("Paid-by", "send-later"), not an act.
+ */
 const LEAVES =
-  /\b(send|sends|sending|sent|post|posts|posting|publish|publishing|tweet|pay|pays|paying|paid|transfer|refund|wire|charge|submit|reply to (the )?client)\b/i;
+  /(?<![\w-])(send|sends|sending|sent|post|posts|posting|publish|publishing|tweet|pay|pays|paying|paid|transfer|refund|wire|charge|submit|reply to (the )?client)(?![\w-])/i;
+
+/** A number with a percent sign or a currency symbol beside it, in any script. */
+const RATE_OR_SYMBOL = /\p{Nd}\s*[%\u066a\uff05\p{Sc}]|[%\u066a\uff05\p{Sc}]\s*\p{Nd}/u;
+const CODE_BESIDE_NUMBER = /\b([A-Z]{3})\s*\p{Nd}|\p{Nd}\s*([A-Z]{3})\b/gu;
+/** Whether `text` names an amount or a rate: "40% advance", "₹40,000", "USD 1,200", "1.500 €". */
+const moneyTerm = (text: string) =>
+  RATE_OR_SYMBOL.test(text) ||
+  [...text.matchAll(CODE_BESIDE_NUMBER)].some((found) => isKinCurrency(found[1] ?? found[2] ?? ""));
 
 /**
- * Whether Kin may take `label` on its own at the day: never when the asker said "none", and never
- * when the default, or a bare yes's question, reads as sending something out or moving money.
+ * Why Kin may not take `label` on its own at the day, or undefined when it may: never when the
+ * asker said "none", when the question is about a money record, when any option names an amount
+ * or a rate, or when the default, or a bare yes's question, reads as sending something out or
+ * moving money.
  */
-export const safeDefault = (label: string | null, question: string) => {
-  if (label === null) return false;
+export const unsafeDefault = (
+  label: string | null,
+  question: string,
+  terms: { readonly labels?: ReadonlyArray<string>; readonly aboutMoney?: boolean } = {},
+): "none" | "money" | "leaves" | undefined => {
+  if (label === null) return "none";
+  if (terms.aboutMoney === true) return "money";
   const bare = label.trim().split(/\s+/).length <= 3;
-  return !LEAVES.test(label) && !(bare && LEAVES.test(question));
+  if ([label, ...(terms.labels ?? []), ...(bare ? [question] : [])].some(moneyTerm)) return "money";
+  return LEAVES.test(label) || (bare && LEAVES.test(question)) ? "leaves" : undefined;
 };
+export const safeDefault = (...args: Parameters<typeof unsafeDefault>) =>
+  unsafeDefault(...args) === undefined;
 
 /** "today", "tomorrow", "on Wednesday", "on Wed 3 Dec", "yesterday", "on Monday" (past), on `zone`'s clock. */
 export const dayWord = (at: number, now: number, zone: string) => {

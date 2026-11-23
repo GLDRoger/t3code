@@ -19,7 +19,7 @@ const HOME =
 const WHEN =
   "Write a day or a time through `formatKinWhen` or `kinWhenFormat` (contracts kinWhen.ts), with the reader's zone and, on the server, the company's `textLocale` (work/companyProfile.ts).";
 const LOCALE =
-  "A locale comes from one place: the company's `textLocale` (work/companyProfile.ts) on the server, the device's on a client. A country's locale is a row of its region (statementRegion.ts).";
+  "A locale comes from one place: the company's `textLocale` (work/companyProfile.ts) on the server, the device's on a client. A country's locale is a row of its region (work/region.ts).";
 const HOST =
   "Ask `kinIsLocalOnlyHost` (contracts kinPeople.ts) whether a host is reachable only from this machine.";
 

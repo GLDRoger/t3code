@@ -5,8 +5,11 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
 import {
+  ACTIVITY_EVENTS,
+  ACTIVITY_MAIL,
   addressesIn,
   isPlainAddress,
+  type MailArrival,
   type MailCalendarEvent,
   type MailContext,
   type MailEvent,
@@ -14,7 +17,7 @@ import {
   type MailVendor,
 } from "./MailProvider.ts";
 import { htmlToText, messageBody } from "./MailText.ts";
-import { mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
+import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
 
 /** Google's sign-in, fixed: Kin uses the owner's own Web client, never discovery. */
@@ -26,19 +29,26 @@ const GOOGLE_SERVER: AuthServer = {
   issParameter: false,
   basicOnly: false,
 };
-/** What sending needs; a sign-in from before Kin sent anything lacks these. */
-const GOOGLE_SEND_SCOPES = [
-  "https://www.googleapis.com/auth/gmail.send",
-  "https://www.googleapis.com/auth/calendar.events",
-];
-export const GOOGLE_SCOPES = [
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/calendar.events.readonly",
-  ...GOOGLE_SEND_SCOPES,
-].join(" ");
-const canSend = (granted: string | undefined) => {
+const AUTH = "https://www.googleapis.com/auth/";
+/** The set Google verifies for a mail app. gmail.modify could label or trash; Kin does neither. */
+export const GOOGLE_SCOPES = ["gmail.modify", "calendar.events", "calendar.readonly"]
+  .map((scope) => AUTH + scope)
+  .join(" ");
+/** What a grant allows, in either family: this set, or the four Kin asked for before it. */
+export const googleGrant = (granted: string | undefined) => {
   const scopes = new Set((granted ?? "").split(/\s+/));
-  return GOOGLE_SEND_SCOPES.every((scope) => scopes.has(scope));
+  const any = (...names: ReadonlyArray<string>) => names.some((name) => scopes.has(AUTH + name));
+  return {
+    readsMail: any("gmail.modify", "gmail.readonly"),
+    sendsMail: any("gmail.modify", "gmail.send"),
+    readsCalendar: any("calendar.events", "calendar.readonly", "calendar.events.readonly"),
+    writesCalendar: any("calendar.events"),
+  };
+};
+/** A sign-in from before Kin sent anything, or one that left a box unticked, lacks these. */
+const canSend = (granted: string | undefined) => {
+  const grant = googleGrant(granted);
+  return grant.sendsMail && grant.writesCalendar;
 };
 /**
  * Ask for a refresh token every time: Google gives one only with consent shown. The account
@@ -137,8 +147,15 @@ const threadsOf = Effect.fn("KinGoogle.threads")(function* (
     maxResults: String(params.max),
     pageToken: params.pageToken,
   });
-  const ids = list(field(page, "threads")).flatMap((thread) => text(field(thread, "id")) ?? []);
-  const threads = yield* Effect.forEach(
+  const threads = yield* threadsById(
+    context,
+    list(field(page, "threads")).flatMap((thread) => text(field(thread, "id")) ?? []),
+  );
+  return { threads, nextPage: text(field(page, "nextPageToken")) ?? null };
+});
+
+const threadsById = (context: MailContext, ids: ReadonlyArray<string>) =>
+  Effect.forEach(
     ids,
     (id) =>
       api(context, `${GMAIL}/threads/${encodeURIComponent(id)}`, {
@@ -147,8 +164,6 @@ const threadsOf = Effect.fn("KinGoogle.threads")(function* (
       }).pipe(Effect.map((thread) => list(field(thread, "messages")).map(messageOf(false)))),
     { concurrency: 5 },
   );
-  return { threads, nextPage: text(field(page, "nextPageToken")) ?? null };
-});
 
 const eventOf = (event: unknown): MailCalendarEvent => ({
   eventId: text(field(event, "id")) ?? "",
@@ -171,6 +186,170 @@ const eventOf = (event: unknown): MailCalendarEvent => ({
 const calendarOf = (calendarId: string | undefined) =>
   `${CALENDAR}/${encodeURIComponent(calendarId ?? "primary")}/events`;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+
+/**
+ * Inbox threads since `since`, at most `ACTIVITY_MAIL`. Gmail doesn't say which end of a long
+ * list it cuts, so a window holding more is halved until it fits; `until` is where it ended.
+ */
+const inboxSince = Effect.fn("KinGoogle.inboxSince")(function* (
+  context: MailContext,
+  since: number,
+  now: number,
+) {
+  const after = Math.floor(since / 1000);
+  let before = Math.ceil(now / 1000);
+  while (true) {
+    const page = yield* api(context, `${GMAIL}/threads`, {
+      q: `in:inbox after:${after}${before * 1000 < now ? ` before:${before}` : ""}`,
+      maxResults: String(ACTIVITY_MAIL),
+    });
+    const ids = list(field(page, "threads")).flatMap((thread) => text(field(thread, "id")) ?? []);
+    const full = text(field(page, "nextPageToken")) !== undefined;
+    if (full && before - after > 1) {
+      before = after + Math.ceil((before - after) / 2);
+      continue;
+    }
+    if (full) yield* Effect.logInfo("Kin read a full second of Gmail; the rest comes next read");
+    return {
+      threads: yield* threadsById(context, ids),
+      until: before * 1000 < now ? before * 1000 : undefined,
+    };
+  }
+});
+
+/** Events changed since `since`, oldest change first, at most `ACTIVITY_EVENTS`. */
+const eventsSince = Effect.fn("KinGoogle.eventsSince")(function* (
+  context: MailContext,
+  since: number,
+) {
+  const events: Array<MailCalendarEvent> = [];
+  let pageToken: string | undefined;
+  do {
+    const page = yield* api(context, calendarOf(undefined), {
+      updatedMin: iso(since),
+      showDeleted: "true",
+      singleEvents: "true",
+      orderBy: "updated",
+      maxResults: "50",
+      pageToken,
+    });
+    events.push(...list(field(page, "items")).map(eventOf));
+    pageToken = text(field(page, "nextPageToken"));
+  } while (pageToken !== undefined && events.length < ACTIVITY_EVENTS);
+  const last = Date.parse(events.at(-1)?.updated ?? "");
+  return { events, until: pageToken === undefined || Number.isNaN(last) ? undefined : last };
+});
+
+const FEED_HEADERS = [
+  "From",
+  "Subject",
+  "Date",
+  ...RECIPIENT_HEADERS,
+  "Message-ID",
+  "Authentication-Results",
+  "List-Unsubscribe",
+  "Precedence",
+  "Auto-Submitted",
+  "Content-Type",
+];
+const BULK_LABELS = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"];
+const HISTORY_PAGE = 100;
+
+/**
+ * The Inbox's history after `position`: a message added to it, or the Inbox label added to one.
+ * The record decides, never the labels now. Gmail answers an id it forgot with 404.
+ */
+const inboxChanges = Effect.fn("KinGoogle.inboxChanges")(function* (
+  context: MailContext,
+  position: string,
+) {
+  const page = yield* api(context, `${GMAIL}/history`, {
+    startHistoryId: position,
+    labelId: "INBOX",
+    historyTypes: ["messageAdded", "labelAdded"],
+    maxResults: String(HISTORY_PAGE),
+  }).pipe(
+    Effect.map((answer) => ({ answer, expired: false })),
+    Effect.catchIf(
+      (error) => answeredWith(error, 404),
+      () => Effect.succeed({ answer: undefined, expired: true }),
+    ),
+  );
+  if (page.expired) return { _tag: "expired" } as const;
+  const records = list(field(page.answer, "history"));
+  const changes = records.flatMap((record) => [
+    ...list(field(record, "messagesAdded")).flatMap((added) => {
+      const labels = field(added, "message", "labelIds");
+      return Array.isArray(labels) && !labels.includes("INBOX") ? [] : [field(added, "message")];
+    }),
+    ...list(field(record, "labelsAdded")).flatMap((added) =>
+      list(field(added, "labelIds")).includes("INBOX") ? [field(added, "message")] : [],
+    ),
+  ]);
+  const more = text(field(page.answer, "nextPageToken")) !== undefined;
+  // History ids rise, so a cut page goes on after its last record.
+  const last = text(field(records.at(-1), "id"));
+  const end = text(field(page.answer, "historyId"));
+  return {
+    _tag: "read",
+    changes: changes.flatMap((message) => {
+      const messageId = text(field(message, "id"));
+      return messageId === undefined
+        ? []
+        : [{ messageId, threadId: text(field(message, "threadId")) ?? null }];
+    }),
+    position: (more ? last : end) ?? end ?? position,
+    more: more && last !== undefined,
+  } as const;
+});
+
+const arrivalOf = Effect.fn("KinGoogle.arrival")(function* (
+  context: MailContext,
+  messageId: string,
+) {
+  const found = yield* api(context, `${GMAIL}/messages/${encodeURIComponent(messageId)}`, {
+    format: "metadata",
+    metadataHeaders: FEED_HEADERS,
+  }).pipe(
+    Effect.map((message) => ({ message, gone: false })),
+    Effect.catchIf(
+      (error) => answeredWith(error, 404),
+      () => Effect.succeed({ message: null, gone: true }),
+    ),
+  );
+  if (found.gone) return null;
+  const { message } = found;
+  const receivedAt = Number(text(field(message, "internalDate")) ?? Number.NaN);
+  const threadId = text(field(message, "threadId"));
+  if (
+    text(field(message, "id")) !== messageId ||
+    threadId === undefined ||
+    !Number.isSafeInteger(receivedAt)
+  )
+    return yield* failure("protocol", `${GOOGLE.name} sent an answer Kin couldn't read.`);
+  const labels = list(field(message, "labelIds"));
+  return {
+    messageId,
+    threadId,
+    receivedAt,
+    from: header(message, "From"),
+    fromAddress: addressesIn(header(message, "From"))[0] ?? null,
+    to: addressesIn(header(message, "To")),
+    cc: addressesIn(header(message, "Cc")),
+    deliveredTo: RECIPIENT_HEADERS.flatMap((name) =>
+      headerValues(message, name).flatMap(addressesIn),
+    ),
+    subject: header(message, "Subject") ?? "",
+    date: header(message, "Date"),
+    internetId: header(message, "Message-ID"),
+    authResults: headerValues(message, "Authentication-Results"),
+    listUnsubscribe: header(message, "List-Unsubscribe") !== null,
+    precedence: header(message, "Precedence"),
+    autoSubmitted: header(message, "Auto-Submitted"),
+    bulk: BULK_LABELS.some((label) => labels.includes(label)),
+    hasFile: /^\s*multipart\/mixed\b/i.test(header(message, "Content-Type") ?? ""),
+  } satisfies MailArrival;
+});
 
 /**
  * The account's From addresses: its own and each "Send mail as" alias Gmail accepted, the
@@ -293,24 +472,37 @@ const google: MailVendor = {
     api(context, `${calendarOf(calendarId)}/${encodeURIComponent(eventId)}`).pipe(
       Effect.map(eventOf),
     ),
-  // Deleted and cancelled events come back as `cancelled`; a series, one occurrence at a time.
-  activity: (context, since) =>
-    Effect.all({
-      mail: threadsOf(context, { q: `in:inbox after:${Math.floor(since / 1000)}`, max: 25 }),
-      events: api(context, calendarOf(undefined), {
-        updatedMin: iso(since),
-        showDeleted: "true",
-        singleEvents: "true",
-        orderBy: "updated",
-        maxResults: "50",
-      }),
-    }).pipe(
-      Effect.map(({ mail, events }) => ({
-        threads: mail.threads,
-        events: list(field(events, "items")).map(eventOf),
-        cursor: null,
-      })),
+  calendarName: (context, calendarId) =>
+    api(context, `${CALENDAR}/${encodeURIComponent(calendarId)}`).pipe(
+      Effect.map((calendar) => text(field(calendar, "summary")) ?? null),
     ),
+  // Deleted and cancelled events come back as `cancelled`; a series, one occurrence at a time.
+  activity: (context, since, _cursor, now) =>
+    Effect.all({
+      mail: inboxSince(context, since, now),
+      events: eventsSince(context, since),
+    }).pipe(
+      Effect.map(({ mail, events }) => {
+        const until = Math.min(mail.until ?? Infinity, events.until ?? Infinity);
+        return {
+          threads: mail.threads,
+          events: events.events,
+          cursor: null,
+          ...(until === Infinity ? {} : { until }),
+        };
+      }),
+    ),
+  mailStart: (context) =>
+    api(context, `${GMAIL}/profile`).pipe(
+      Effect.flatMap((profile) => {
+        const position = text(field(profile, "historyId"));
+        return position === undefined
+          ? Effect.fail(failure("protocol", `${GOOGLE.name} sent an answer Kin couldn't read.`))
+          : Effect.succeed(position);
+      }),
+    ),
+  changes: inboxChanges,
+  arrival: arrivalOf,
   account: (http, token) =>
     api({ http, token }, `${GMAIL}/profile`).pipe(
       Effect.map((profile) => text(field(profile, "emailAddress")) ?? null),

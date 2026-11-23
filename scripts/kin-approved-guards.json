@@ -1,0 +1,33 @@
+[
+  {
+    "name": "pictures",
+    "approved": "Every agent and every person is drawn as their Blobatar pebble, the same on web, desktop and phone; a picture they chose replaces it, never a robot tile, an icon or initials.",
+    "files": [
+      "apps/web/src/kin/KinAvatar.tsx",
+      "apps/mobile/src/features/chats/components/KinAvatar.tsx"
+    ],
+    "added": "@blobatar/",
+    "under": ["apps/web/", "apps/mobile/"]
+  },
+  {
+    "name": "name",
+    "approved": "The product is called Kin, not T3 Kin, in the sidebar, the browser tab, the window and the app icon.",
+    "added": "T3 Kin",
+    "under": [
+      "apps/web/src/kin/",
+      "apps/web/src/components/sidebar/",
+      "apps/mobile/src/",
+      "packages/client-runtime/src/kin/",
+      "apps/server/src/kin/",
+      "branding/"
+    ]
+  },
+  {
+    "name": "brief-form",
+    "approved": "The morning brief is the \"Good morning, <first name>\" page with titled sections (Needs you, Money, Clients, Work, Coming up, only those with something in them), never a chat bubble.",
+    "declarations": {
+      "packages/contracts/src/kinPage.ts": ["kinIsBrief", "kinPageSections"],
+      "apps/server/src/kin/pulse/prompt.ts": ["MORNING_RULE"]
+    }
+  }
+]

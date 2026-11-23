@@ -2,30 +2,46 @@
 import "../chat/KinChatService.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { KinChatError, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { KinAttachment, KinChatError, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Numbers from "../gendocs/numbering.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { removeChunk } from "./importUndo.ts";
+import { newCompanyProfileJson, readProfile } from "./companyProfile.ts";
+import { insertComment } from "./recordComments.ts";
+import { IMPORT_BUSY } from "./importUndo.ts";
+import type { ImportEntry } from "./importFormat.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
-import { searchIndexed } from "./searchIndex.ts";
+import { matchPartner, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
 
 // Invented org, people and amounts only.
 const orgId = KinOrgId.make("org");
 const ownerId = KinPersonId.make("owner");
 const at = "2026-11-11T00:00:00.000Z";
 const NOW = Date.parse("2026-11-12T06:00:00.000Z");
+const noteFile = Schema.decodeSync(KinAttachment)({
+  type: "file",
+  id: "kin-file-note",
+  name: "note.pdf",
+  mimeType: "application/pdf",
+  sizeBytes: 1,
+});
 const owner = { actor: { _tag: "person" as const, personId: ownerId }, via: "owner" as const };
 const me = { _tag: "person" as const, personId: ownerId };
 
@@ -39,6 +55,22 @@ const layer = KinImport.layer.pipe(
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
 );
 
+const countStatements = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  observe?: (statement: Statement.Statement<unknown>) => void,
+) =>
+  Effect.suspend(() => {
+    let statements = 0;
+    return effect.pipe(
+      Effect.provideService(Statement.CurrentTransformer, (statement) => {
+        statements++;
+        observe?.(statement);
+        return Effect.succeed(statement);
+      }),
+      Effect.map((result) => ({ result, statements })),
+    );
+  });
+
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* TestClock.setTime(NOW);
@@ -46,8 +78,9 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
       dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
     VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')`;
-  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-    VALUES (${ownerId}, ${orgId}, 'owner', 'Owner', ${at})`;
+  // The import CLI runs only as the org's owner, whose word makes what it writes kept.
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+    VALUES (${ownerId}, ${orgId}, 'owner', 'Owner', ${at}, 'owner')`;
 });
 
 const header = {
@@ -134,9 +167,54 @@ const rows = [
     },
   },
 ];
+/** The company's profile as it would be saved in `country`, keeping `currency` and its year. */
+const companyIn = (country: string, homeCurrency: string, financialYearStartMonth: number) =>
+  Effect.gen(function* () {
+    const { rev: _rev, updatedAt: _at, ...profile } = yield* readProfile(orgId);
+    const json = JSON.stringify({ ...profile, country, homeCurrency, financialYearStartMonth });
+    yield* (yield* SqlClient.SqlClient)`INSERT INTO kin_company_profile (org_id, profile_json,
+        rev, updated_at, updated_by_kind, updated_by_id)
+      VALUES (${orgId}, ${json}, 1, ${NOW}, 'person', ${ownerId})`;
+  });
 const linesOf = (first: unknown, rest: ReadonlyArray<unknown>, extra: ReadonlyArray<string> = []) =>
   Stream.fromIterable([JSON.stringify(first), ...rest.map((one) => JSON.stringify(one)), ...extra]);
 const books = () => linesOf(header, rows);
+
+/** Each run's action, end, and how far it said it got. */
+const runRows = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ action: string; finished: number | null; summary: string | null }>`
+    SELECT action, finished_at AS finished, summary_json AS summary FROM kin_import_runs
+    ORDER BY seq`;
+  return rows.map((one) => {
+    const summary = JSON.parse(one.summary ?? "{}") as { done?: number; rows?: number };
+    return [one.action, one.finished, summary.done, summary.rows] as const;
+  });
+});
+/** The engine again, telling each move of the imports topic into a queue with its runs' rows. */
+const watched = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const told = yield* Queue.unbounded<ReadonlyArray<readonly [string, number | undefined]>>();
+  const observer = Layer.succeed(KinRefreshObserver, {
+    touch: (_orgId, topic) =>
+      topic !== "imports"
+        ? Effect.void
+        : sql<{ action: string; summary: string | null }>`SELECT action, summary_json AS summary
+            FROM kin_import_runs WHERE finished_at IS NULL ORDER BY seq`.pipe(
+            Effect.flatMap((rows) =>
+              Queue.offer(
+                told,
+                rows.map((one) => [one.action, JSON.parse(one.summary ?? "{}").done] as const),
+              ),
+            ),
+            Effect.orDie,
+            Effect.asVoid,
+          ),
+  });
+  // Built in the test's scope: the engine's runs live in its layer's scope.
+  const built = yield* Layer.build(Layer.fresh(KinImport.layer).pipe(Layer.provide(observer)));
+  return { imports: Context.get(built, KinImport.KinImport), told };
+});
 
 const countOf = (table: string) =>
   Effect.gen(function* () {
@@ -153,9 +231,10 @@ const recordOf = (source: string) =>
       state: string;
       createdAt: number;
       closedAt: number | null;
+      amountMinor: number | null;
       notes: string;
     }>`SELECT record_id AS "recordId", key, state, created_at AS "createdAt",
-        closed_at AS "closedAt", notes
+        closed_at AS "closedAt", amount_minor AS "amountMinor", notes
       FROM kin_records WHERE org_id = ${orgId} AND origin_key LIKE ${`import:oldbooks:%:${source}`}`;
     return row;
   });
@@ -175,6 +254,8 @@ const holdings = Effect.gen(function* () {
     changes: yield* countOf("kin_record_changes"),
     numbers: yield* countOf("kin_issued_numbers"),
     search: yield* countOf("kin_search_rows"),
+    comments: yield* countOf("kin_record_comments"),
+    commentFiles: yield* countOf("kin_record_comment_files"),
     money,
   };
 });
@@ -185,6 +266,48 @@ const quiet = Effect.gen(function* () {
     yield* countOf("kin_messages"),
     yield* countOf("kin_widgets"),
   ];
+});
+
+const importState = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const tables = yield* sql<{ name: string }>`SELECT name FROM pragma_table_list
+    WHERE schema = 'main' AND (name GLOB 'kin_*' OR name = 'sqlite_sequence')
+      AND type IN ('table', 'virtual') ORDER BY name`;
+  const searchRows = yield* sql<{
+    id: number;
+    org_id: string;
+    record_id: string;
+    part: string;
+  }>`SELECT * FROM kin_search_rows ORDER BY id`;
+  // The test clock and record origins fix timestamps and domain IDs. FTS rowids are slot IDs.
+  const searchIds = new Map(
+    searchRows.map((row) => [row.id, JSON.stringify([row.org_id, row.record_id, row.part])]),
+  );
+  const entries = yield* Effect.forEach(tables, ({ name }) =>
+    Effect.gen(function* () {
+      if (name === "kin_search_rows")
+        return [
+          name,
+          searchRows.map((row) => JSON.stringify({ ...row, id: searchIds.get(row.id) })).toSorted(),
+        ] as const;
+      if (name === "kin_search") {
+        const rows = yield* sql<{ rowid: number }>`SELECT rowid, * FROM kin_search ORDER BY rowid`;
+        return [
+          name,
+          rows
+            .map((row) => {
+              const rowid = searchIds.get(row.rowid);
+              assert.isDefined(rowid);
+              return JSON.stringify({ ...row, rowid });
+            })
+            .toSorted(),
+        ] as const;
+      }
+      const rows = yield* sql`SELECT * FROM ${sql(name)}`;
+      return [name, rows.map((row) => JSON.stringify(row)).toSorted()] as const;
+    }),
+  );
+  return Object.fromEntries(entries);
 });
 
 describe("KinImport", () => {
@@ -290,6 +413,40 @@ describe("KinImport", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("starts an invoice the file gives no state as a new one would", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const invoice = (source: string, date: string, extra: object = {}) => ({
+        entry: {
+          source,
+          list: "invoices",
+          title: `Invoice ${source}`,
+          amount: "100",
+          date,
+          ...extra,
+        },
+      });
+      const report = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf(header, [
+          invoice("ahead", "2026-12-01"),
+          invoice("past", "2026-11-01"),
+          invoice("numbered", "2026-12-01", { number: "OBK/26-27/009" }),
+          invoice("paid", "2026-12-01", {
+            payments: [{ source: "pay1", amount: "100", paidOn: "2026-11-10" }],
+          }),
+        ]),
+      );
+      assert.deepStrictEqual(report.problems, []);
+      const states = [];
+      for (const source of ["ahead", "past", "numbered", "paid"])
+        states.push((yield* recordOf(source))!.state);
+      assert.deepStrictEqual(states, ["open", "waiting", "waiting", "done"]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("leaves an entry the owner changed after import alone, with its payments", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -319,6 +476,58 @@ describe("KinImport", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("keeps who funded an expense and whether it is owed when the file comes again", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const imports = yield* KinImport.KinImport;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('meera', ${orgId}, 'meera', 'Meera', 0)`;
+      const lists = header.lists.map((one) =>
+        one.list === "expenses"
+          ? {
+              ...one,
+              fields: [...(one.fields ?? []), { label: "Paid personally by", type: "text" }],
+            }
+          : one,
+      );
+      const paidByMeera = {
+        entry: {
+          source: "e9",
+          list: "expenses",
+          title: "Invented domain renewal",
+          state: "done",
+          date: "2026-05-20",
+          amount: "4200",
+          fields: { paidPersonallyBy: "meera@invented.example" },
+        },
+      };
+      const file = () => linesOf({ ...header, lists }, [...rows, paidByMeera]);
+      yield* imports.apply(orgId, ownerId, file());
+      // Not yet said: no one is owed until the owner says who it was and whether it is owed.
+      assert.deepStrictEqual(yield* partnersOwed(orgId, "INR"), []);
+      const [unsaid] = yield* partnersUnsaid(orgId, "INR");
+      assert.strictEqual(unsaid?.address, "meera@invented.example");
+      yield* sql.withTransaction(
+        matchPartner(orgId, owner, "meera@invented.example", "meera", "owed", {
+          entries: unsaid!.seen,
+          totals: unsaid!.total,
+        }),
+      );
+      const owed = yield* partnersOwed(orgId, "INR");
+      const again = yield* imports.apply(orgId, ownerId, file());
+      assert.deepStrictEqual(
+        again.changed.map((one) => one.source),
+        ["e9"],
+      );
+      assert.deepStrictEqual(yield* partnersOwed(orgId, "INR"), owed);
+      assert.deepStrictEqual(
+        owed.map((one) => [one.personId, one.owed]),
+        [["meera", [{ minor: 420_000, currency: "INR" }]]],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("names every line it can't import and imports the rest", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -338,6 +547,14 @@ describe("KinImport", () => {
             payments: [{ source: "pay1", amount: "1", paidOn: "2026-05-01" }],
           },
         },
+        // A slip: a thousand times the largest invoice, or issued after its own due day.
+        ...[
+          { source: "x6", amount: "99999999999" },
+          { source: "x7", amount: "100", date: "2026-06-02", due: "2026-06-01" },
+          { source: "x8", amount: "100", date: "2026-06-02", due: "2026-06-01", confirmed: true },
+        ].map((one) => ({ entry: { list: "invoices", title: `Slip ${one.source}`, ...one } })),
+        { entry: { source: "x9", list: "expenses", title: "A refund", amount: "-1500" } },
+        { entry: { source: "x10", list: "invoices", title: "An invoice", amount: "-1500" } },
       ];
       const report = yield* imports.apply(
         orgId,
@@ -353,10 +570,94 @@ describe("KinImport", () => {
           [12, "entry", "x3"],
           [13, "entry", "x4"],
           [14, "payment", "pay1"],
-          [15, "file", null],
+          [15, "entry", "x6"],
+          [16, "entry", "x7"],
+          [19, "entry", "x10"],
+          [20, "file", null],
         ],
       );
-      assert.deepStrictEqual([report.entries.create, report.entries.problems], [6, 5]);
+      assert.include(report.problems[8]!.reason, "only an expense can be, as a refund");
+      assert.strictEqual((yield* recordOf("x9"))?.amountMinor, -150_000);
+      assert.include(report.problems[6]!.reason, "is far above anything in Invoices");
+      assert.include(report.problems[7]!.reason, "can't fall due 2026-06-01, before it");
+      assert.deepStrictEqual([report.entries.create, report.entries.problems], [8, 8]);
+      assert.strictEqual(report.fileProblems, 1);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each(["expense", "payment"] as const)(
+    "imports grouped %s amounts and counts each unreadable row",
+    (kind) =>
+      Effect.gen(function* () {
+        yield* seed;
+        const imports = yield* KinImport.KinImport;
+        const amounts = ["1450", "1,450", "1,450.50", "12,34,567", "1,45", "1.450,50"];
+        const inputs = amounts.map((amount, index) => ({
+          entry: {
+            source: `grouped-${index}`,
+            title: `Imported ${kind} ${index + 1}`,
+            confirmed: true,
+            ...(kind === "expense"
+              ? { list: "expenses", amount }
+              : {
+                  list: "invoices",
+                  amount: "2000000",
+                  payments: [{ source: `pay-${index}`, amount, paidOn: "2026-06-01" }],
+                }),
+          },
+        }));
+        const report = yield* imports.apply(orgId, ownerId, linesOf(header, inputs));
+        assert.strictEqual(report.rows, 6);
+        assert.deepStrictEqual([report.entries.create, report.fileProblems], [4, 2]);
+        assert.strictEqual(report.entries.create + report.fileProblems, report.rows);
+        assert.deepStrictEqual(
+          report.problems.map((one) => one.line),
+          [6, 7],
+        );
+        for (const [index, problem] of report.problems.entries()) {
+          assert.include(problem.reason, "amount");
+          assert.include(problem.reason, amounts[index + 4]!);
+        }
+        const sql = yield* SqlClient.SqlClient;
+        const added =
+          kind === "expense"
+            ? yield* sql<{ minor: number }>`SELECT amount_minor AS minor FROM kin_records
+                WHERE org_id = ${orgId} AND origin_key LIKE 'import:oldbooks:entry:grouped-%'
+                ORDER BY origin_key`
+            : yield* sql<{ minor: number }>`SELECT amount_minor AS minor FROM kin_record_payments
+                WHERE org_id = ${orgId} AND origin_key LIKE 'import:oldbooks:payment:pay-%'
+                ORDER BY origin_key`;
+        assert.deepStrictEqual(
+          added.map((one) => one.minor),
+          [145_000, 145_000, 145_050, 123_456_700],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("refuses impossible entry days like malformed dates", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const dates = ["2026-02-31", "2026-02-31T12:00Z", "not a date", "2028-02-29"];
+      const report = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf(
+          header,
+          dates.map((due, i) => ({
+            entry: { source: `date-${i}`, list: "work", title: `Invented date ${i}`, due },
+          })),
+        ),
+      );
+      assert.deepStrictEqual(
+        report.problems.map(({ line, kind }) => [line, kind]),
+        [
+          [2, "file"],
+          [3, "file"],
+          [4, "file"],
+        ],
+      );
+      assert.strictEqual(report.entries.create, 1);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -393,11 +694,30 @@ describe("KinImport", () => {
         recordOf(one).pipe(Effect.map((row) => row?.key)),
       );
       const keys = yield* keysOf;
+      // A comment is not a change: the commented entry goes, and its comment and file with it.
+      yield* insertComment({
+        orgId,
+        key: keys[2]!,
+        author: { _tag: "person", personId: ownerId },
+        requestId: "note",
+        requestHash: "note",
+        body: "Invented: the vendor called",
+        files: [noteFile],
+        now: 0,
+        sees: () => Effect.succeed(true),
+      });
       const plan = yield* imports.undo(orgId, ownerId, "oldbooks", {
         apply: false,
         includeChanged: false,
       });
-      assert.deepStrictEqual(plan.removes, { clients: 1, projects: 1, entries: 5, payments: 1 });
+      assert.deepStrictEqual(plan.removes, {
+        clients: 1,
+        projects: 1,
+        entries: 5,
+        payments: 1,
+        contacts: 0,
+        deals: 0,
+      });
       assert.notDeepEqual(yield* holdings, before);
       const work = yield* Stream.toQueue(records.changes(orgId), { capacity: "unbounded" });
       const heard = yield* Queue.take(work);
@@ -421,8 +741,13 @@ describe("KinImport", () => {
 
       const again = yield* imports.apply(orgId, ownerId, books());
       assert.deepStrictEqual([again.entries.create, again.payments.create], [5, 1]);
-      // Nothing else took a key after the batch's, so the same rows get the same keys again.
-      assert.deepStrictEqual(yield* keysOf, keys);
+      // A removed entry's key may still be named in memory or a chat, so a list that stays never
+      // gives it again. The invoices list (the last key) went with the undo and is made anew.
+      const fresh = (yield* keysOf).slice(0, 4);
+      assert.deepStrictEqual(
+        fresh.filter((key) => keys.includes(key)),
+        [],
+      );
       const sql = yield* SqlClient.SqlClient;
       assert.deepStrictEqual(
         yield* sql`SELECT action FROM kin_import_runs WHERE batch = 'oldbooks' ORDER BY seq`,
@@ -471,7 +796,14 @@ describe("KinImport", () => {
       assert.deepStrictEqual(undone.kept, [
         { key: acme.key, reason: `${[may.key, mine.key].toSorted().join(", ")} use it` },
       ]);
-      assert.deepStrictEqual(undone.removes, { clients: 0, projects: 1, entries: 4, payments: 1 });
+      assert.deepStrictEqual(undone.removes, {
+        clients: 0,
+        projects: 1,
+        entries: 4,
+        payments: 1,
+        contacts: 0,
+        deals: 0,
+      });
       assert.deepStrictEqual(
         undone.lists.map((one) => [one.list, one.action, one.entries]),
         [
@@ -573,7 +905,14 @@ describe("KinImport", () => {
           { key: may.key, reason: "a payment recorded in Kin is on it" },
         ].toSorted((a, b) => (a.key < b.key ? -1 : 1)),
       );
-      assert.deepStrictEqual(undone.removes, { clients: 0, projects: 0, entries: 0, payments: 0 });
+      assert.deepStrictEqual(undone.removes, {
+        clients: 0,
+        projects: 0,
+        entries: 0,
+        payments: 0,
+        contacts: 0,
+        deals: 0,
+      });
       assert.deepStrictEqual(
         yield* sql`SELECT origin_key AS "originKey" FROM kin_record_payments ORDER BY origin_key`,
         [{ originKey: "owner:may-part" }],
@@ -581,41 +920,41 @@ describe("KinImport", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("an undo keeps a row paid while it runs, deciding inside each chunk", () =>
+  it.effect("an undo that is refused part way takes nothing away, and runs again whole", () =>
     Effect.gen(function* () {
       yield* seed;
       const imports = yield* KinImport.KinImport;
-      const records = yield* KinRecords.KinRecords;
-      yield* imports.apply(orgId, ownerId, books());
-      const may = (yield* recordOf("i2"))!;
-      const welcome = (yield* recordOf("t1"))!;
-      // Planned for removal, then paid in Kin before its chunk is deleted.
-      const removing = new Set([may.recordId, welcome.recordId]);
-      yield* records.pay(orgId, owner, may.key, {
-        amount: { minor: 100, currency: "INR" },
-        paidOn: "2026-11-01",
-        originKey: "owner:during-undo",
-      });
-      const kept = yield* removeChunk(
-        orgId,
-        "oldbooks",
-        [may.recordId, welcome.recordId],
-        removing,
-        {
-          includeChanged: true,
-          indexed: yield* searchIndexed(),
-        },
-      );
-      assert.deepStrictEqual(kept, [may.recordId]);
-      assert.deepStrictEqual([...removing], [welcome.recordId]);
+      const sql = yield* SqlClient.SqlClient;
+      const before = yield* holdings;
+      const tasks = Array.from({ length: 250 }, (_, index) => ({
+        entry: { source: `w${index}`, list: "work", title: `Task ${index}`, client: "c1" },
+      }));
+      yield* imports.apply(orgId, ownerId, linesOf(header, [...rows, ...tasks]));
+      const imported = yield* holdings;
+      const counters = sql`SELECT register_id AS id, next_number AS next FROM kin_registers
+        ORDER BY register_id`;
+      const numbered = yield* counters;
+      // Its client refuses to go, as a busy or full database refuses whatever comes last.
+      yield* sql`CREATE TEMP TRIGGER refuse_c1 BEFORE DELETE ON kin_records
+        WHEN old.origin_key = 'import:oldbooks:client:c1'
+        BEGIN SELECT RAISE(ABORT, 'refused'); END`;
+      const refused = yield* imports
+        .undo(orgId, ownerId, "oldbooks", { apply: true, includeChanged: false })
+        .pipe(Effect.flip);
+      assert.strictEqual(refused.reason, "unavailable");
+      assert.deepStrictEqual(yield* holdings, imported);
+      assert.deepStrictEqual(yield* counters, numbered);
       assert.deepStrictEqual(
-        [
-          (yield* recordOf("i2"))?.key,
-          yield* recordOf("t1"),
-          yield* countOf("kin_record_payments"),
-        ],
-        [may.key, undefined, 2],
+        (yield* runRows).map(([action, finished]) => [action, finished !== null]),
+        [["apply", true]],
       );
+      yield* sql`DROP TRIGGER refuse_c1`;
+      const undone = yield* imports.undo(orgId, ownerId, "oldbooks", {
+        apply: true,
+        includeChanged: false,
+      });
+      assert.strictEqual(undone.removes.entries, 255);
+      assert.deepStrictEqual(yield* holdings, before);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -655,7 +994,239 @@ describe("KinImport", () => {
           ],
         ],
       );
+      assert.strictEqual(plan.taxIdLabel, "GSTIN");
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("imports for a UK company with no GSTIN, naming its tax id as the UK does", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* companyIn("GB", "GBP", 4);
+      const imports = yield* KinImport.KinImport;
+      const records = yield* KinRecords.KinRecords;
+      const { row: acme } = yield* records.create(orgId, owner, {
+        list: "clients",
+        originKey: "owner:acme",
+        title: "Invented Acme",
+        owner: me,
+        fields: { gstin: "GB123456789" },
+      });
+      const applied = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf({ ...header, lists: [header.lists[0]] }, [
+          { client: { source: "c1", name: "Invented Acme", gstin: "GB987654321" } },
+          { client: { source: "c2", name: "Invented Beta", terms: "30 days" } },
+          {
+            entry: {
+              source: "i1",
+              list: "invoices",
+              title: "May retainer",
+              state: "waiting",
+              client: "c2",
+              date: "2026-05-31",
+              amount: "1200",
+              number: "OBK/26-27/002",
+            },
+          },
+        ]),
+      );
+      assert.deepStrictEqual(
+        [applied.problems, applied.clients.create, applied.entries.create, applied.taxIdLabel],
+        [[], 2, 1, "VAT number"],
+      );
+      assert.deepStrictEqual(applied.clientMatches, [
+        { source: "c1", name: "Invented Acme", key: acme.key, made: "C-2" },
+      ]);
+      assert.deepStrictEqual(applied.money[0]?.total, { minor: 120000, currency: "GBP" });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("continues a calendar-year company's imported numbers in their year's series", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* companyIn("US", "USD", 1);
+      const imports = yield* KinImport.KinImport;
+      const applied = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf(
+          {
+            ...header,
+            lists: [
+              {
+                list: "invoices",
+                template: "invoices",
+                numbering: { prefix: "INV", series: "financial_year", width: 3 },
+              },
+            ],
+          },
+          [
+            {
+              entry: {
+                source: "i1",
+                list: "invoices",
+                title: "October retainer",
+                state: "waiting",
+                date: "2026-10-31",
+                amount: "900",
+                number: "INV/2026/004",
+              },
+            },
+          ],
+        ),
+      );
+      assert.deepStrictEqual(applied.problems, []);
+      const { row: draft } = yield* (yield* KinRecords.KinRecords).create(orgId, owner, {
+        list: "invoices",
+        originKey: "owner:draft",
+        title: "November retainer",
+        owner: me,
+        state: "open",
+        amount: { minor: 100, currency: "USD" },
+      });
+      assert.strictEqual((yield* Numbers.issue(orgId, owner, draft.key)).number, "INV/2026/005");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps the same import reports and database state through chunk and row writes", () =>
+    Effect.gen(function* () {
+      const task = (source: string, extra?: Partial<ImportEntry>) => ({
+        entry: { source, list: "work", title: `Invented task ${source}`, state: "done", ...extra },
+      });
+      const expense = (source: string, amount: string, extra?: Partial<ImportEntry>) => ({
+        entry: {
+          source,
+          list: "expenses",
+          title: `Invented expense ${source}`,
+          state: "done",
+          date: "2026-05-14",
+          category: "software",
+          amount,
+          ...extra,
+        },
+      });
+      const chunks = [
+        [
+          task("plain"),
+          task("private", { sensitive: true, createdAt: "2026-04-05", closedAt: "2026-04-09" }),
+          task("public", { sensitive: false }),
+        ],
+        [
+          expense("fee", "12.50"),
+          expense("refund", "-7.50", { sensitive: false }),
+          expense("private-fee", "35.00", { sensitive: true }),
+        ],
+        [task("before-error"), task("invalid", { category: "not-a-kind" }), task("after-error")],
+        [task("repeated"), task("repeated"), rows[0]],
+        [task("unlinked"), task("linked", { client: "c1" }), rows[5]],
+        [task("visible-a"), task("visible-b")],
+        [
+          expense("confirmed", "200.00", { confirmed: true, currency: "EUR" }),
+          expense("after-confirmed", "4.00", { currency: "EUR" }),
+        ],
+      ];
+      const bindAfter = chunks.slice(0, 3).reduce((n, chunk) => n + chunk.length, 0);
+      const file = [
+        JSON.stringify(header),
+        ...chunks.flatMap((chunk, index) => {
+          const lines = chunk.map((row) => JSON.stringify(row));
+          // Blank lines preserve real chunk boundaries without writing filler records.
+          return index === chunks.length - 1
+            ? lines
+            : [
+                ...lines,
+                ...Array.from({ length: 100 - lines.length - (index === 0 ? 1 : 0) }, () => ""),
+              ];
+        }),
+      ];
+
+      const exercise = (forceRows: boolean) =>
+        Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          // SQLite stamps bootstrap migrations before the fixture's TestClock can act.
+          yield* sql`UPDATE kin_sql_migrations SET created_at = ${at}`;
+          const records = yield* KinRecords.KinRecords;
+          const attempts: Array<readonly [string, boolean]> = [];
+          const imports = Context.get(
+            yield* Layer.build(
+              KinImport.layer.pipe(
+                Layer.provide(
+                  Layer.succeed(KinRecords.KinRecords, {
+                    ...records,
+                    createImportChunk: (...args) =>
+                      (forceRows ? Effect.succeed(false) : records.createImportChunk(...args)).pipe(
+                        Effect.tap((made) =>
+                          Effect.sync(() => {
+                            attempts.push([args[2], made]);
+                          }),
+                        ),
+                      ),
+                  }),
+                ),
+              ),
+            ),
+            KinImport.KinImport,
+          );
+
+          const planned = yield* imports.plan(orgId, ownerId, Stream.fromIterable(file));
+          const afterPlan = yield* importState;
+          assert.deepStrictEqual(afterPlan.kin_records, []);
+          const applied = yield* imports.apply(orgId, ownerId, Stream.fromIterable(file), {
+            progress: (done) =>
+              done !== bindAfter
+                ? Effect.void
+                : sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+                VALUES ('invented-session', ${orgId}, ${ownerId}, ${NOW})`.pipe(
+                    Effect.orDie,
+                    Effect.asVoid,
+                  ),
+          });
+          const afterApply = yield* importState;
+          assert.isNotEmpty(afterApply.kin_team_seqs ?? []);
+          const again = yield* imports.apply(orgId, ownerId, Stream.fromIterable(file));
+          const afterRetry = yield* importState;
+          const undo = yield* imports.undo(orgId, ownerId, header.batch, {
+            apply: true,
+            includeChanged: false,
+          });
+          const afterUndo = yield* importState;
+          return {
+            reports: { planned, applied, again, undo },
+            states: [afterPlan, afterApply, afterRetry, afterUndo],
+            attempts,
+          };
+        }).pipe(Effect.provide(Layer.fresh(layer)), Effect.scoped);
+
+      const { attempts, ...chunk } = yield* exercise(false);
+      const { attempts: forced, ...row } = yield* exercise(true);
+      assert.deepStrictEqual(attempts, [
+        ["work", true],
+        ["expenses", true],
+        ["work", false],
+        ["work", true],
+        ["work", true],
+        ["expenses", true],
+        ["work", false],
+        ["work", false],
+      ]);
+      assert.deepStrictEqual(
+        forced,
+        attempts.map(([list]) => [list, false]),
+      );
+      assert.deepStrictEqual(chunk.reports, row.reports);
+      assert.deepStrictEqual(
+        chunk.reports.applied.problems.map((problem) => problem.source),
+        ["invalid", "repeated"],
+      );
+      for (const [phase, state] of chunk.states.entries()) {
+        const expected = row.states[phase] ?? {};
+        assert.deepStrictEqual(Object.keys(state), Object.keys(expected));
+        for (const [table, rows] of Object.entries(state))
+          assert.deepStrictEqual(rows, expected[table], `snapshot ${phase}: ${table}`);
+      }
+    }),
   );
 
   it.effect("plans and applies fifty thousand entries in chunks; a second apply makes none", () =>
@@ -680,9 +1251,12 @@ describe("KinImport", () => {
           ),
         );
       const seen: Array<number> = [];
-      const plan = yield* imports.plan(orgId, ownerId, many(), (done) =>
-        Effect.sync(() => {
-          seen.push(done);
+      const { result: plan, statements: planning } = yield* countStatements(
+        imports.plan(orgId, ownerId, many(), {
+          progress: (done) =>
+            Effect.sync(() => {
+              seen.push(done);
+            }),
         }),
       );
       assert.deepStrictEqual(
@@ -691,12 +1265,104 @@ describe("KinImport", () => {
       );
       assert.deepStrictEqual([seen.length, seen.at(-1)], [Math.ceil((count + 1) / 100), count]);
       assert.strictEqual(yield* countOf("kin_records"), 0);
-      const applied = yield* imports.apply(orgId, ownerId, many());
+      const chunks = Math.ceil((count + 1) / 100);
+      assert.isAtMost(planning, 15 * chunks + 8);
+      const { result: applied, statements: applying } = yield* countStatements(
+        imports.apply(orgId, ownerId, many()),
+      );
       assert.strictEqual(applied.entries.create, count);
       assert.strictEqual(yield* countOf("kin_records"), count);
-      const again = yield* imports.apply(orgId, ownerId, many());
+      assert.isAtMost(applying, 13 * chunks + 10);
+      const { result: again, statements: retrying } = yield* countStatements(
+        imports.apply(orgId, ownerId, many()),
+      );
       assert.deepStrictEqual([again.entries.create, again.entries.unchanged], [0, count]);
+      assert.isAtMost(retrying, 3 * chunks + 8);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reads the company's country once for a file of money, not once a row", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const count = 1_000;
+      const money = Stream.concat(
+        Stream.make(JSON.stringify({ ...header, lists: [header.lists[1]] })),
+        Stream.range(1, count).pipe(
+          Stream.map((index) =>
+            JSON.stringify({
+              entry: {
+                source: `m${index}`,
+                list: "expenses",
+                title: `Generated expense ${index}`,
+                state: "done",
+                date: "2026-05-14",
+                amount: "12.50",
+                category: "software",
+              },
+            }),
+          ),
+        ),
+      );
+      let reads = 0;
+      const { result: applied, statements } = yield* countStatements(
+        imports.apply(orgId, ownerId, money),
+        (statement) => {
+          if (statement.compile()[0].includes("kin_company_profile")) reads += 1;
+        },
+      );
+      assert.deepStrictEqual([applied.entries.create, applied.problems.length], [count, 0]);
+      assert.isAtMost(reads, 2);
+      assert.isAtMost(statements, 13 * Math.ceil((count + 1) / 100) + 15);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "imports a new company's rows without money while its country waits, and no other",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+          updated_by_kind, updated_by_id)
+        VALUES (${orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${ownerId})`;
+        const imports = yield* KinImport.KinImport;
+        const fonts = { source: "f1", list: "expenses", title: "Invented fonts", state: "open" };
+        const first = yield* imports.apply(
+          orgId,
+          ownerId,
+          linesOf({ ...header, lists: [header.lists[1]] }, [
+            rows[0],
+            rows[2],
+            { entry: fonts },
+            rows[4],
+            {
+              entry: { ...fonts, source: "f2", fields: { tax: { amount: "5", currency: "GBP" } } },
+            },
+          ]),
+        );
+        const waits =
+          "This row has money, and Kin records none until the company's country is chosen in Settings, Company details. Import the file again once it is.";
+        assert.deepStrictEqual(
+          first.problems.map((one) => [one.source, one.reason]),
+          [
+            ["e1", waits],
+            ["f2", waits],
+          ],
+        );
+        assert.deepStrictEqual([first.entries.create, first.money], [2, []]);
+        // The fee-free row again, now with an amount, waits the same way.
+        const again = yield* imports.apply(
+          orgId,
+          ownerId,
+          linesOf({ ...header, lists: [header.lists[1]] }, [{ entry: { ...fonts, amount: "40" } }]),
+        );
+        assert.deepStrictEqual(
+          again.problems.map((one) => [one.source, one.reason]),
+          [["f1", waits]],
+        );
+        assert.deepStrictEqual(again.money, []);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("an apply cut off part way leaves whole chunks, and a rerun completes it", () =>
@@ -723,20 +1389,149 @@ describe("KinImport", () => {
       const cut = yield* imports.apply(orgId, ownerId, breaking).pipe(Effect.flip);
       assert.strictEqual(cut.message, "cut off");
       assert.strictEqual(yield* countOf("kin_records"), 219);
+      // Its row never finished, as after a restart: it says how far it got, and nothing runs.
+      assert.deepStrictEqual(yield* runRows, [["apply", null, 219, 250]]);
+      assert.deepStrictEqual(yield* imports.running(orgId), []);
       const rerun = yield* imports.apply(orgId, ownerId, whole);
       assert.deepStrictEqual([rerun.entries.unchanged, rerun.entries.create], [219, 31]);
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "says how far it is at each chunk; a second import waits, and one whose caller left finishes",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const { imports, told } = yield* watched;
+        const tasks = Array.from({ length: 250 }, (_, index) => ({
+          entry: { source: `w${index}`, list: "work", title: `Task ${index}`, state: "done" },
+        }));
+        const whole = linesOf({ ...header, lists: [] }, tasks);
+        const paused = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        const seen: Array<readonly [number, number]> = [];
+        const progress = (done: number, of: number) =>
+          Effect.gen(function* () {
+            seen.push([done, of]);
+            if (done !== 199) return;
+            yield* Deferred.succeed(paused, undefined);
+            yield* Deferred.await(resume);
+          });
+        const caller = yield* imports
+          .apply(orgId, ownerId, whole, { progress, file: "tasks.jsonl" })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(paused);
+        // Mid-run, the run's own row and the host say the same, and who runs it.
+        assert.deepStrictEqual(yield* runRows, [["apply", null, 199, 250]]);
+        assert.deepStrictEqual(
+          (yield* imports.running(orgId)).map((one) => [
+            one.action,
+            one.personId,
+            one.file,
+            one.done,
+            one.of,
+          ]),
+          [["apply", ownerId, "tasks.jsonl", 199, 250]],
+        );
+        // Refused by this host, and by another on the same database, as the command line is.
+        const elsewhere = Context.get(
+          yield* Layer.build(Layer.fresh(KinImport.layer)),
+          KinImport.KinImport,
+        );
+        for (const engine of [imports, elsewhere]) {
+          assert.strictEqual(
+            (yield* engine.apply(orgId, ownerId, whole).pipe(Effect.flip)).message,
+            IMPORT_BUSY,
+          );
+          assert.strictEqual(
+            (yield* engine
+              .undo(orgId, ownerId, "oldbooks", { apply: true, includeChanged: false })
+              .pipe(Effect.flip)).message,
+            IMPORT_BUSY,
+          );
+        }
+        // The caller goes, as a dropped connection does; the run goes on to its end.
+        yield* Fiber.interrupt(caller);
+        yield* Deferred.succeed(resume, undefined);
+        const moves = yield* Effect.forEach(Array.from({ length: 5 }), () => Queue.take(told));
+        assert.deepStrictEqual(moves, [
+          [["apply", 0]],
+          [["apply", 99]],
+          [["apply", 199]],
+          [["apply", 250]],
+          [],
+        ]);
+        assert.deepStrictEqual(seen, [
+          [99, 250],
+          [199, 250],
+          [250, 250],
+        ]);
+        assert.strictEqual(yield* countOf("kin_records"), 250);
+        assert.deepStrictEqual(yield* imports.running(orgId), []);
+
+        // Its undo is one step, so the host tells only its end.
+        const undone = yield* imports.undo(orgId, ownerId, "oldbooks", {
+          apply: true,
+          includeChanged: false,
+        });
+        assert.strictEqual(undone.removes.entries, 250);
+        assert.deepStrictEqual(yield* Queue.take(told), []);
+        assert.deepStrictEqual(
+          (yield* runRows).map(([action, finished]) => [action, finished !== null]),
+          [
+            ["apply", true],
+            ["undo", true],
+          ],
+        );
+        assert.strictEqual(yield* countOf("kin_records"), 0);
+
+        // A check says how far it is on its own row too, and leaves no row when it ends.
+        const checking = yield* Deferred.make<void>();
+        const checked = yield* Deferred.make<void>();
+        const check = yield* imports
+          .plan(orgId, ownerId, whole, {
+            progress: (done) =>
+              done !== 199
+                ? Effect.void
+                : Deferred.succeed(checking, undefined).pipe(
+                    Effect.andThen(Deferred.await(checked)),
+                  ),
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(checking);
+        assert.deepStrictEqual((yield* runRows).slice(2), [["check", null, 199, 250]]);
+        yield* Deferred.succeed(checked, undefined);
+        yield* Fiber.join(check);
+        assert.deepStrictEqual(
+          (yield* runRows).map(([action]) => action),
+          ["apply", "undo"],
+        );
+        const checkMoves = yield* Effect.forEach(Array.from({ length: 5 }), () => Queue.take(told));
+        assert.deepStrictEqual(checkMoves, [
+          [["check", 0]],
+          [["check", 99]],
+          [["check", 199]],
+          [["check", 250]],
+          [],
+        ]);
+        assert.strictEqual(yield* countOf("kin_records"), 0);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
   it.each([
-    ["OBK/2026-27/013", { series: "OBK|26-27", seq: 13 }],
-    ["OBK/26-27/013", { series: "OBK|26-27", seq: 13 }],
-    ["OBK-2026-27-007", { series: "OBK|26-27", seq: 7 }],
-    ["OBK/2026-28/001", { series: "imported|OBK/2026-28/001", seq: 1 }],
-    ["OBK-RN/2026-27/001", { series: "imported|OBK-RN/2026-27/001", seq: 1 }],
-  ] as const)("places %s in its series", (number, expected) => {
+    ["OBK/2026-27/013", 4, { series: "OBK|26-27", seq: 13 }],
+    ["OBK/26-27/013", 4, { series: "OBK|26-27", seq: 13 }],
+    ["OBK-2026-27-007", 4, { series: "OBK|26-27", seq: 7 }],
+    ["OBK/2026-28/001", 4, { series: "imported|OBK/2026-28/001", seq: 1 }],
+    ["OBK-RN/2026-27/001", 4, { series: "imported|OBK-RN/2026-27/001", seq: 1 }],
+    // A calendar year's number is in its year's series only for a company whose year is one.
+    ["OBK/2026/004", 1, { series: "OBK|2026", seq: 4 }],
+    ["OBK-2026-004", 1, { series: "OBK|2026", seq: 4 }],
+    ["OBK/2026/004", 4, { series: "imported|OBK/2026/004", seq: 1 }],
+    ["OBK/26-27/013", 1, { series: "OBK|26-27", seq: 13 }],
+  ] as const)("places %s in its series for a year from month %i", (number, month, expected) => {
     assert.deepStrictEqual(
-      Numbers.seriesOf({ prefix: "OBK", series: "financial_year", width: 3 }, number),
+      Numbers.seriesOf({ prefix: "OBK", series: "financial_year", width: 3 }, number, month),
       expected,
     );
   });

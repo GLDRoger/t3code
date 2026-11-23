@@ -1,4 +1,5 @@
 import { GlassView } from "expo-glass-effect";
+import type { ReactNode } from "react";
 import { Pressable, View } from "react-native";
 import { withUniwind } from "uniwind";
 
@@ -16,6 +17,8 @@ export function Chip(props: {
   readonly label: string;
   readonly selected?: boolean;
   readonly icon?: AppSymbolName;
+  /** Drawn before the label in place of an icon, such as a person's picture. */
+  readonly leading?: ReactNode;
   readonly trailingIcon?: AppSymbolName;
   readonly size?: "small" | "default";
   readonly glass?: boolean;
@@ -23,6 +26,8 @@ export function Chip(props: {
   readonly onPress?: () => void;
   readonly accessibilityLabel?: string;
   readonly disabled?: boolean;
+  /** Lets a long label wrap instead of cutting at the chip's width, as at large text. */
+  readonly wrap?: boolean;
 }) {
   const small = props.size === "small";
   const layout = cn(
@@ -32,15 +37,16 @@ export function Chip(props: {
   const iconColor = props.selected ? "accent-primary-foreground" : "accent-icon-muted";
   const content = (
     <>
+      {props.leading}
       {props.icon ? (
         <SymbolView name={props.icon} size={15} tintColorClassName={iconColor} />
       ) : null}
       <AppText
         textRole={small ? "caption" : "footnote"}
-        numberOfLines={small ? undefined : 1}
+        numberOfLines={small || props.wrap ? undefined : 1}
         className={cn(
           "shrink",
-          !small && "max-w-[180px]",
+          !small && !props.wrap && "max-w-[180px]",
           !small && "font-t3-medium",
           props.selected ? "text-primary-foreground" : "text-foreground-muted",
         )}

@@ -79,6 +79,7 @@ export interface SelectableMarkdownTextProps {
   /** Defaults to true. Off where a long press opens the surrounding view's own actions. */
   readonly selectable?: boolean;
   readonly onLinkPress?: (href: string) => void;
+  readonly onCiteText?: (text: string) => void;
   readonly fileContextMenu?: (href: string) => MarkdownFileContextMenu | undefined;
   readonly onFileContextMenuAction?: (href: string, actionId: string) => void;
   readonly linkCustomization?: (href: string) => MarkdownLinkCustomization | undefined;

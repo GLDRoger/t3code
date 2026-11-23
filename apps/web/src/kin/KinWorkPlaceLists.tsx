@@ -1,3 +1,4 @@
+import { kinSectionListed, kinSectionOn } from "@t3tools/client-runtime/kin/kinShell";
 import {
   KIN_LIST_DEFAULT_FILTER,
   kinListHeader,
@@ -19,6 +20,7 @@ import {
   useKinMoneySummary,
 } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
+import { useKinShell } from "./useKinShell";
 
 const SHOWN = 5;
 
@@ -39,10 +41,15 @@ type Shared = KinWorkTarget & {
  */
 export function KinWorkPlaceLists(props: Shared) {
   const lists = useKinLists(props, { enabled: true });
-  const defs = kinListsOf(lists).filter((def) => !def.builtIn);
+  const shell = useKinShell(props.environmentId);
+  const defs = kinListsOf(lists).filter((def) => !def.builtIn && kinSectionListed(shell, def.list));
+  // What a client owes is invoices: it goes with Invoices and quotes.
+  const invoicesOn = kinSectionOn(shell, "invoices");
   return (
     <>
-      {"party" in props.place ? <PlaceOwed {...props} party={props.place.party} /> : null}
+      {"party" in props.place && invoicesOn ? (
+        <PlaceOwed {...props} party={props.place.party} />
+      ) : null}
       {defs.map((def) => (
         <PlaceList key={def.list} {...props} def={def} />
       ))}
@@ -53,7 +60,7 @@ export function KinWorkPlaceLists(props: Shared) {
 /** What this client owes us and how late, from the same figures as Money. */
 function PlaceOwed(props: Shared & { readonly party: KinWorkRef }) {
   const lists = useKinLists(props, { enabled: true });
-  const { state } = useKinMoneySummary(props, { enabled: true });
+  const { state } = useKinMoneySummary(props, { enabled: true, party: props.party.key });
   if (state._tag !== "ready") return null;
   const client = kinMoneyView(state.value, kinListsOf(lists)).clients.find(
     (held) => held.key === props.party.key,
@@ -97,7 +104,7 @@ function PlaceList(props: Shared & { readonly def: KinListDefinition }) {
   const context = useKinListContext(props, props.directory);
   const { state, totals } = useKinListEntries(props, def.list, filter, props.seq);
   if (state.total === null || state.total === 0) return null;
-  const header = kinListHeader(def, filter, totals, state.total);
+  const header = kinListHeader(def, filter, totals, state.total, context.yearStartMonth);
   return (
     <KinWorkSection
       title={def.name}

@@ -1,5 +1,6 @@
 import { ArrowLeftIcon, ArrowRightIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { T, useGT } from "gt-react";
 import { memo } from "react";
 import { Link, useLocation, useNavigate, useRouter } from "@tanstack/react-router";
 
@@ -36,7 +37,7 @@ import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPr
 import { kinListAt, kinListShownAt } from "../../kin/kinListSwitch";
 import { openKinSettings } from "../../kin/kinSettingsAddress";
 import { isChatOnlySession } from "../../environments/primary";
-import { useKinListSwitch } from "../../kin/useKinListSwitch";
+import { useKinBrandProduct } from "../../kin/useKinListSwitch";
 import { readIssueListPreferences } from "../issue/issueListPreferences";
 import { IssueGlyph } from "../issue/issuePresentation";
 import { isSidebarUtilityPage, useNavigateToMainApp } from "./mainAppLocation";
@@ -53,6 +54,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
 }) {
   const stageLabel = useEnvironmentStageLabel();
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
+  const gt = useGT();
   const backdropVariant = resolveSidebarStageBackdropVariant(
     stageLabel,
     environmentIdentificationMode,
@@ -74,7 +76,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
         <SidebarTrigger
           variant={backdropVariant ? "media-navigation" : "ghost"}
           className="relative top-auto translate-y-0"
-          aria-label="Toggle main sidebar"
+          aria-label={gt("Toggle main sidebar")}
         />
       </div>
       <div className="relative z-10 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-2 overflow-hidden py-0.5">
@@ -135,7 +137,8 @@ function HistoryNavigationButton({
 }) {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const enabled = useCanNavigateHistory(direction);
-  const label = direction === "back" ? "Go back" : "Go forward";
+  const gt = useGT();
+  const label = direction === "back" ? gt("Go back") : gt("Go forward");
   const shortcutLabel = shortcutLabelForCommand(
     keybindings,
     direction === "back" ? "navigation.back" : "navigation.forward",
@@ -169,32 +172,21 @@ function HistoryNavigationButton({
 }
 
 function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
-  const kinSwitch = useKinListSwitch();
+  const gt = useGT();
+  const kinProduct = useKinBrandProduct();
   const className = cn(
     "relative z-10 ml-[var(--workspace-titlebar-content-left)] h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset",
     onBackdrop ? "text-white" : "text-foreground",
   );
-  // A teammate's session has no coding threads to switch to or go home to.
-  if (isChatOnlySession()) {
+  if (kinProduct !== null) {
     return (
       <span className={cn(className, "flex")}>
-        <SidebarBrandMark onBackdrop={onBackdrop} product="Kin" />
-      </span>
-    );
-  }
-  // With Kin on, the mark names the area you're in; the destinations above the list move between them.
-  if (kinSwitch !== null) {
-    return (
-      <span className={cn(className, "flex")}>
-        <SidebarBrandMark
-          onBackdrop={onBackdrop}
-          product={kinSwitch.current === "kin" ? "Kin" : "Code"}
-        />
+        <SidebarBrandMark onBackdrop={onBackdrop} product={kinProduct} />
       </span>
     );
   }
   return (
-    <Link aria-label="T3 Code home" className={cn(className, "hidden md:flex")} to="/">
+    <Link aria-label={gt("T3 Code home")} className={cn(className, "hidden md:flex")} to="/">
       <SidebarBrandMark onBackdrop={onBackdrop} />
     </Link>
   );
@@ -207,13 +199,15 @@ function SidebarBrandMark({
   onBackdrop: boolean;
   product?: string;
 }) {
+  // Kin is its own name: no T3 mark before it, and it takes the brand's own colour.
+  const ownName = product === "Kin";
   return (
     <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
-      <T3Wordmark aria-label="T3" className="h-[1cap] w-auto shrink-0" />
+      {ownName ? null : <T3Wordmark aria-label="T3" className="h-[1cap] w-auto shrink-0" />}
       <span
         className={cn(
           "truncate [text-box:trim-both_cap_alphabetic] supports-[text-box:trim-both_cap_alphabetic]:py-1",
-          onBackdrop ? "text-white/70" : "text-muted-foreground",
+          ownName ? undefined : onBackdrop ? "text-white/70" : "text-muted-foreground",
         )}
       >
         {product}
@@ -250,6 +244,7 @@ function SidebarUtilityItem({
 const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const navigate = useNavigate();
   const navigateToMainApp = useNavigateToMainApp();
+  const gt = useGT();
   const { isMobile, setOpenMobile } = useSidebar();
   const router = useRouter();
   // Kin is a list of its own, not a utility page, so it keeps the everyday footer.
@@ -303,35 +298,37 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
         <SidebarMenuItem className="min-w-0 flex-1">
           <SidebarMenuButton onClick={handleBackClick}>
             <ArrowLeftIcon />
-            <span>Back</span>
+            <span>
+              <T>Back</T>
+            </span>
           </SidebarMenuButton>
         </SidebarMenuItem>
       ) : (
         <>
           <SidebarUtilityItem
             icon={<SettingsIcon />}
-            label="Settings"
+            label={gt("Settings")}
             onClick={handleSettingsClick}
           />
           {/* Pull requests, issues and usage are about coding threads, which Kin doesn't offer. */}
           {pullRequestsSupported && !overKin ? (
             <SidebarUtilityItem
               icon={<PullRequestGlyph.pullRequest />}
-              label="Pull requests"
+              label={gt("Pull requests")}
               onClick={handlePullRequestsClick}
             />
           ) : null}
           {issuesSupported && !overKin ? (
             <SidebarUtilityItem
               icon={<IssueGlyph.issue />}
-              label="Issues"
+              label={gt("Issues", { $context: "sidebar link to the list of issues" })}
               onClick={handleIssuesClick}
             />
           ) : null}
           {overKin ? null : (
             <SidebarUtilityItem
               icon={<ChartNoAxesColumnIcon />}
-              label="Usage"
+              label={gt("Usage")}
               onClick={handleUsageClick}
             />
           )}

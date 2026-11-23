@@ -784,6 +784,10 @@ const handleStaticAndDevRequest = Effect.fn("handleStaticAndDevRequest")(
 
     let opened = yield* openStaticFile(filePath);
     if (!opened) {
+      // A chunk a previous build named is gone after a deploy; the page in its place fails silently.
+      if (/^assets[/\\]/.test(staticRelativePath)) {
+        return HttpServerResponse.text("Not Found", { status: 404 });
+      }
       filePath = path.resolve(staticRoot, "index.html");
       opened = yield* openStaticFile(filePath);
       if (!opened) {

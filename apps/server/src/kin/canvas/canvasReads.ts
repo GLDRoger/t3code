@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { workFailure } from "../work/recordRows.ts";
-import { type KinViewer, seenBy, teamChangeShown } from "../work/teamView.ts";
+import { type KinViewer, seenBy, teamSeesField } from "../work/teamView.ts";
 
 /**
  * What the canvas reads of Work, each through the viewer's own `seenBy`: an entry they can't read
@@ -123,7 +123,7 @@ const SINCE_SCAN = 2000;
 /**
  * Changes to the canvas's entries this viewer may read, made after `after` by anyone but `me`,
  * newest first. A teammate's tasks outside the projects they lead keep only the changes their
- * history shows (`teamChangeShown`); `led` holds those projects' record ids.
+ * history shows (`teamChanges`); `led` holds those projects' record ids.
  */
 export const changesSince = Effect.fn("KinCanvas.changesSince")(function* (
   viewer: KinViewer,
@@ -148,7 +148,9 @@ export const changesSince = Effect.fn("KinCanvas.changesSince")(function* (
     (row) =>
       row.registerId !== "work" ||
       (row.projectId !== null && led.has(row.projectId)) ||
-      teamChangeShown(row.kind, fieldNames(row.fieldsJson)),
+      (row.kind !== "linked" &&
+        (row.kind !== "updated" ||
+          fieldNames(row.fieldsJson).some((one) => teamSeesField(one.field)))),
   );
 }, workFailure);
 

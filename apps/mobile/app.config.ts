@@ -2,6 +2,7 @@ import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { KIN_ONLY_BUILT } from "./src/lib/kinOnly.ts";
 
 type AppVariant = "development" | "preview" | "production";
 
@@ -12,10 +13,8 @@ process.env.EXPO_NO_TYPESCRIPT_SETUP = "1";
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
-// Kin and nothing else: no coding threads, tabs or settings. The Kin build's branding step
-// rewrites this literal, here and in src/lib/kinOnly.ts (branding/rules.yaml).
-const KIN_ONLY_BUILD: string = "kin-only:off";
-const isKinOnly = KIN_ONLY_BUILD === "kin-only:on" || repoEnv.EXPO_PUBLIC_KIN_ONLY === "1";
+// Kin and nothing else: no coding threads, tabs or settings.
+const isKinOnly = KIN_ONLY_BUILT || repoEnv.EXPO_PUBLIC_KIN_ONLY === "1";
 // The share extension and the widgets feed coding threads, so a Kin-only app ships neither.
 const shipsCodingExtensions = !isIosPersonalTeamBuild && !isKinOnly;
 const kinApprovalKeyOptions = {
@@ -290,6 +289,8 @@ const config: ExpoConfig = {
       },
       NSLocalNetworkUsageDescription:
         "Allow T3 Code to connect to T3 Code servers on your local network or tailnet.",
+      // Built with the iOS 27 SDK, only view controllers can hide or style the status bar.
+      UIViewControllerBasedStatusBarAppearance: true,
       NSPhotoLibraryAddUsageDescription: "Allow T3 Code to save images to your photo library.",
       // System picture in picture needs background audio to start and survive outside the app.
       UIBackgroundModes: ["audio"],

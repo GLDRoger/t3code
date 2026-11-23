@@ -209,7 +209,10 @@ export const EnvironmentIdentificationMode = Schema.Literals([
 export type EnvironmentIdentificationMode = typeof EnvironmentIdentificationMode.Type;
 export const DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE: EnvironmentIdentificationMode = "artwork";
 
-/** The list a fresh launch opens to while a host runs Kin. */
+/**
+ * @deprecated Read by nothing since Kin lost its code mode: a session with Kin always opens to Kin.
+ * Kept so saved settings and older builds decode; it goes once no supported build predates that.
+ */
 export const KinStartList = Schema.Literals(["lastUsed", "threads", "kin"]);
 export type KinStartList = typeof KinStartList.Type;
 const DEFAULT_KIN_START_LIST: KinStartList = "lastUsed";
@@ -371,6 +374,8 @@ export const ProviderModelPreferences = Schema.Record(
   Schema.Struct({
     hiddenModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     modelOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+    /** Hidden models the provider refused here, with when (epoch ms); un-hiding one clears it. */
+    refusedAt: Schema.optionalKey(Schema.Record(Schema.String, Schema.Number)),
   }),
 );
 export type ModelPreferences = {
@@ -1816,7 +1821,13 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),
   setModelsHidden: Schema.optionalKey(
-    Schema.Array(Schema.Struct({ ...ModelFavorite.fields, hidden: Schema.Boolean })),
+    Schema.Array(
+      Schema.Struct({
+        ...ModelFavorite.fields,
+        hidden: Schema.Boolean,
+        refusedAt: Schema.optionalKey(Schema.Number),
+      }),
+    ),
   ),
   setProviderModelOrder: Schema.optionalKey(
     Schema.Struct({ provider: ProviderInstanceId, modelOrder: Schema.Array(TrimmedString) }),

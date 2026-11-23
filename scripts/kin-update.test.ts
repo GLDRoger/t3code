@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { describe, expect, it } from "vite-plus/test";
 
 const SCRIPT = NodePath.resolve(import.meta.dirname, "../ops/kin/host/update.sh");
@@ -12,20 +13,23 @@ const SCRIPT = NodePath.resolve(import.meta.dirname, "../ops/kin/host/update.sh"
 const HARNESS = String.raw`
 set -u
 mkdir -p "$HOME/.t3/userdata" "$HOME/kin-builds"
-build() { # build <name> <kin migration head>
-  local dir="$HOME/kin-builds/$1"
+build() { # build <name> <kin migration head> [its units, else all of them]
+  local dir="$HOME/kin-builds/$1" head="$2" unit
+  shift 2
+  [ $# -gt 0 ] || set -- kin-server.service kin-backup.service kin-backup.timer kin-temp-clean.service kin-temp-clean.timer
   mkdir -p "$dir/apps/server/dist" "$dir/apps/server/src/persistence/Migrations" \
     "$dir/apps/server/src/kin/persistence/migrations" "$dir/ops/kin/host"
   touch "$dir/apps/server/dist/bin.mjs" "$dir/apps/server/src/persistence/Migrations/080_Last.ts" \
-    "$dir/apps/server/src/kin/persistence/migrations/K$2_Last.ts"
-  for unit in kin-server.service kin-backup.service kin-backup.timer; do echo "$unit" >"$dir/ops/kin/host/$unit"; done
+    "$dir/apps/server/src/kin/persistence/migrations/K$head"_Last.ts
+  for unit in "$@"; do echo "$unit" >"$dir/ops/kin/host/$unit"; done
   echo "$dir"
 }
 sqlite3 "$HOME/.t3/userdata/statev2.sqlite" "CREATE TABLE effect_sql_migrations (migration_id INTEGER, name TEXT);
   CREATE TABLE kin_sql_migrations (migration_id INTEGER, name TEXT);
   INSERT INTO effect_sql_migrations VALUES (80, 'Last'); INSERT INTO kin_sql_migrations VALUES (148, 'Last');
   CREATE TABLE notes (body TEXT); INSERT INTO notes VALUES ('before the update');"
-OLD="$(build old 148)"
+# Built before the hourly temp clean existed: a rollback to it must still install its units.
+OLD="$(build old 148 kin-server.service kin-backup.service kin-backup.timer)"
 ln -s "$OLD" "$HOME/kin-current"
 source "$SCRIPT"
 REPO="$HOME/t3code"
@@ -52,6 +56,8 @@ git() { case "$*" in *"worktree remove"*) return 1 ;; esac; }
 # GNU mv -T on the host; macOS mv has no -T.
 mv() { if [ "$1" = -T ]; then python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$2" "$3"; else command mv "$@"; fi; }
 heads() { sqlite3 "$DB" "SELECT max(migration_id) FROM kin_sql_migrations;"; }
+# The temporary disk's real free space decides nothing here; the space test sets its own.
+SPACE_HEADROOM=0
 `;
 
 function onFakeHost(program: string) {
@@ -82,6 +88,11 @@ PUBLISHED="$(printf 'b%.0s' {1..40})"
 ${deploy}
 echo "current $(basename "$(readlink "$CURRENT")")"
 echo "env $(grep '^KIN_BUILD_COMMIT=' "$ENV_FILE")"
+echo "env $(grep '^TMPDIR=' "$ENV_FILE" | sed "s|$HOME|~|")"
+echo "units $(ls "$UNIT_DIR" | tr '\\n' ' ')"
+echo "temp clean on $(grep -c 'enable --now kin-temp-clean.timer' "$HOME/calls")"
+printf 'T3CODE_PORT=3999\\nexport TMPDIR="/srv/kin tmp"\\n' >"$SERVICE_ENV"
+echo "host's own temp folder $(kin_tmpdir)"
 echo "builds $(ls "$HOME/kin-builds" | sort | tr '\\n' ' ')"
 echo "backups $(ls "$BACKUP_DIR" | grep -c '^statev2-')"
 ls "$BACKUP_DIR" | grep -q hand-made && echo "hand-made kept"
@@ -93,6 +104,10 @@ echo "database at $(heads)"`);
       "current new",
       // memory-check in the memory repo is pinned to this commit when Kin updates it.
       `env KIN_BUILD_COMMIT=${"b".repeat(40)}`,
+      "env TMPDIR=~/.cache/kin-tmp",
+      "units kin-backup.service kin-backup.timer kin-server.service kin-temp-clean.service kin-temp-clean.timer ",
+      "temp clean on 1",
+      "host's own temp folder /srv/kin tmp",
       "builds new old older3 ",
       "backups 10",
       "hand-made kept",
@@ -101,6 +116,32 @@ echo "database at $(heads)"`);
     ]);
     expect(said).toContain("healthy: up, answering, migrations at 80/K149");
   });
+
+  it.each([
+    { ends: 2, said: "no agent turn or dream is running now (waited 10s)" },
+    { ends: 99, said: "1 still running after 20s; stopping the server anyway" },
+  ])(
+    "waits for a running agent turn before it stops the server ($said)",
+    ({ ends, said: words }) => {
+      const { out, said } = onFakeHost(`
+NEW="$(build new 149)"
+TURN_WAIT=20
+sqlite3 "$DB" "CREATE TABLE kin_wakeups (status TEXT); INSERT INTO kin_wakeups VALUES ('running');
+  CREATE TABLE kin_dream_runs (status TEXT);"
+waits=0
+sleep() { waits=$((waits + 1)); [ "$waits" -lt ${ends} ] || sqlite3 "$DB" "UPDATE kin_wakeups SET status = 'completed'"; echo "sleep $waits" >>"$HOME/calls"; }
+${deploy}
+grep -m1 -E "^(sleep|systemctl --user stop)" "$HOME/calls"
+grep -E "^sleep|^systemctl --user stop" "$HOME/calls" | grep -n "systemctl --user stop" | head -n1 | cut -d: -f1`);
+      expect(out[0], said).toBe("status 0");
+      expect(out[1]).toBe("sleep 1");
+      expect(Number(out[2])).toBe(Math.min(ends, 4) + 1);
+      expect(said).toContain(
+        "waiting for 1 running agent turn(s) or dream to finish before stopping the server (up to 20s)",
+      );
+      expect(said).toContain(words);
+    },
+  );
 
   it("goes back to the previous build when the new one's migrations don't run", () => {
     const { out, said } = onFakeHost(`
@@ -196,6 +237,52 @@ echo "last call $(tail -n1 "$HOME/calls")"`);
     );
   });
 
+  // The host is Linux: this path uses bash 4 and GNU df and date, which macOS lacks.
+  it.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
+    "refuses before stopping anything when a disk it writes to lacks room",
+    () => {
+      const { out, said } = onFakeHost(`
+NEW="$(build new 149)"
+KIN_DATA_FREE=$((5 * 1024 * 1024 * 1024))
+df() { echo "Filesystem 1-blocks Used Available Capacity Mounted"; echo "/dev/data 0 0 $KIN_DATA_FREE 0% /home"; }
+SPACE_HEADROOM=$((5 * 1024 * 1024 * 1024))
+${deploy}
+echo "current $(basename "$(readlink "$CURRENT")")"
+echo "stops $(cat "$HOME/calls" 2>/dev/null | grep -c 'stop kin-server')"
+SPACE_HEADROOM=0
+space_short && echo "room once the headroom fits"
+KIN_DATA_FREE=100
+space_short $((1024 * 1024))`);
+      expect(out, said).toEqual([
+        "status 1",
+        "current old",
+        "stops 0",
+        "room once the headroom fits",
+        "/home has 100 free, and the update needs 1.1M there (the database backup, room to migrate and roll back the database, the new build, and 0 to spare)",
+      ]);
+      expect(said).toMatch(
+        /^update\.sh: not enough disk space: \/home has 5\.0G free, and the update needs 5\.1G there \(the database backup, room to migrate and roll back the database, and 5\.0G to spare\)\. Nothing changed; the server still runs \S+\/old\.$/m,
+      );
+    },
+  );
+
+  // The host is Linux: this path uses bash 4 and GNU df and date, which macOS lacks.
+  it.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
+    "keeps 3 update backups while the nightly backup is good and recent, else 10",
+    () => {
+      const { out } = onFakeHost(`
+now=$(date +%s%3N)
+for status in "" '"ok":true,"lastGoodAt":'$((now - 3600000)) '"ok":true,"lastGoodAt":'$((now - 37 * 3600000)) '"ok":false,"lastGoodAt":'$((now - 3600000)); do
+  mkdir -p "$BACKUP_DIR" && rm -f "$BACKUP_DIR"/* "$BACKUP_STATUS"
+  [ -z "$status" ] || echo "{\"ranAt\":$now,$status,\"bytes\":1,\"error\":\"\"}" >"$BACKUP_STATUS"
+  for n in $(seq -w 1 12); do touch "$BACKUP_DIR/statev2-202601\${n}T000000Z-aaaaaaaaaaaa.sqlite"; done
+  prune_backups
+  echo "kept $(ls "$BACKUP_DIR" | wc -l | tr -d ' ')"
+done`);
+      expect(out).toEqual(["kept 10", "kept 3", "kept 10", "kept 10"]);
+    },
+  );
+
   it("rolls back when the server never answers", () => {
     const { out, said } = onFakeHost(`
 NEW="$(build new 149)"
@@ -204,6 +291,101 @@ ${deploy}
 echo "current $(basename "$(readlink "$CURRENT")")"`);
     expect(out, said).toEqual(["status 1", "current old"]);
     expect(said).toContain("didn't answer on http://127.0.0.1:3773 within 90s");
+  });
+
+  it("keeps the previous build running when the web app the build packaged isn't Kin's", () => {
+    const repoRoot = NodePath.resolve(import.meta.dirname, "..");
+    // A whole update from main: the repo, mise and the build are stubs; the brand check is real.
+    const update = (packaged: string) =>
+      onFakeHost(`
+SHA="$(printf 'c%.0s' {1..40})"
+# origin/kin moved on after the release check passed $SHA.
+TIP="$(printf 'd%.0s' {1..40})"
+NEW="$BUILDS/$SHA"
+export KIN_UPDATE_HANDED_OVER=1
+mkdir -p "$REPO" && touch "$REPO/.env" "$HOME/calls"
+id() { if [ "$1" = -un ]; then echo kin; else command id "$@"; fi; }
+git() {
+  case "$*" in
+    *"branch --show-current"*) echo kin ;;
+    *"rev-parse --verify --quiet $SHA^{commit}"*) echo "$SHA" ;;
+    *rev-parse*) echo "$TIP" ;;
+    *"worktree add"*)
+      build "$SHA" 149 >/dev/null && rm "$NEW/apps/server/dist/bin.mjs" && touch "$NEW/.env.example"
+      echo '{ "engines": { "node": "24.13.1" } }' >"$NEW/package.json"
+      ln -s "${repoRoot}/scripts" "$NEW/scripts" ;;
+    *"worktree remove"*) return 1 ;;
+  esac
+}
+mise() {
+  [ "$1" = exec ] || return 0
+  shift 3
+  case "$*" in
+    "vp run build:desktop") package ;;
+    "node scripts/kin-served-brand.ts"*) shift && "${process.execPath}" "$@" || return ;;
+  esac
+}
+TITLE=Kin SHORT_NAME=Kin FAVICON="${repoRoot}/branding/assets/apps/web/public/favicon.ico"
+package() {
+  local client=apps/server/dist/client
+  mkdir -p "$client" apps/server/dist/visual-lib
+  touch apps/server/dist/bin.mjs apps/server/dist/visual-lib/{echarts,mermaid,d3}.js
+  cp "${repoRoot}"/branding/assets/apps/web/public/* "$client"
+  cp "$FAVICON" "$client/favicon.ico"
+  printf '<!doctype html><html><head><title>%s</title><link rel="icon" href="/favicon.ico"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="manifest" href="/manifest.webmanifest"></head></html>' "$TITLE" >"$client/index.html"
+  printf '{ "name": "Kin", "short_name": "%s", "icons": [{ "src": "/icon-192x192.png" }] }' "$SHORT_NAME" >"$client/manifest.webmanifest"
+}
+${packaged}
+(main "$SHA"); echo "status $?"
+echo "current $(basename "$(readlink "$CURRENT")")"
+echo "stops $(grep -c 'stop kin-server' "$HOME/calls")"`);
+
+    const good = update("");
+    expect(good.out, good.said).toEqual([
+      expect.stringMatching(/apps\/server\/dist\/client is named Kin and has Kin's icons$/),
+      "status 0",
+      `current ${"c".repeat(40)}`,
+      "stops 1",
+    ]);
+    expect(good.said).toContain("origin/kin has moved on to dddddddddddd; deploying cccccccccccc");
+    for (const [packaged, problem] of [
+      ['TITLE="T3 Code (Beta)"', 'index.html: <title> is "T3 Code (Beta)", not "Kin"'],
+      ["SHORT_NAME=T3", 'manifest.webmanifest: short_name is "T3", not "Kin"'],
+      // What the server build's development icon override copies over the client.
+      [
+        `FAVICON="${repoRoot}/assets/dev/blueprint-web-favicon.ico"`,
+        "favicon.ico is not Kin's icon",
+      ],
+    ] as const) {
+      const { out, said } = update(packaged);
+      expect(out, said).toEqual(["status 1", "current old", "stops 0"]);
+      expect(said).toContain(problem);
+      expect(said).toContain("failed; the server still runs");
+    }
+  });
+
+  it("deploys the commit it is given, and the tip only when told to", () => {
+    const { out, said } = onFakeHost(`
+unset -f git
+git init -q -b kin "$HOME/origin" && cd "$HOME/origin"
+git -c user.name=Rhea -c user.email=rhea@ambermill.test commit -q --allow-empty -m checked
+CHECKED="$(git rev-parse HEAD)"
+git -c user.name=Rhea -c user.email=rhea@ambermill.test commit -q --allow-empty -m "merged after the check"
+TIP="$(git rev-parse HEAD)"
+git clone -q -b kin "$HOME/origin" "$REPO" && cd "$HOME"
+(deploy_target) || echo "no commit: refused"
+[ "$(deploy_target --tip)" = "$TIP" ] && echo "--tip: the tip"
+[ "$(deploy_target "\${CHECKED:0:12}")" = "$CHECKED" ] && echo "named: the checked commit"
+(deploy_target 0123456789ab) || echo "unknown: refused"`);
+    expect(out, said).toEqual([
+      "no commit: refused",
+      "--tip: the tip",
+      "named: the checked commit",
+      "unknown: refused",
+    ]);
+    expect(said).toContain("name the commit the release check passed: update.sh <commit>.");
+    expect(said).toContain("origin/kin has moved on to");
+    expect(said).toContain("0123456789ab is not a commit in");
   });
 
   it("hands over to the merged script once, when the merge changed it", () => {

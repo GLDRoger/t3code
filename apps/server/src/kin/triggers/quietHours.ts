@@ -1,6 +1,8 @@
-import { kinWhenParts } from "@t3tools/contracts";
-import type { KinWorkHours } from "@t3tools/contracts";
+import { kinWhenParts, KinWorkHours } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { MINUTE_MS } from "../durations.ts";
 
 export type KinQuietHours = { readonly from: string; readonly to: string };
 
@@ -21,6 +23,20 @@ export const stillAway = (day: string | null | undefined, zone: string, now: num
   day != null && day > DateTime.formatIsoDate(DateTime.makeZonedUnsafe(now, { timeZone: zone }));
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
+/** Hours covering every minute of every day say nothing about when someone works: no hours. */
+export const wholeDay = (hours: KinWorkHours) =>
+  DAYS.every((_, day) => hours.days.includes(day)) &&
+  hours.start === "00:00" &&
+  hours.end >= "23:59";
+
+const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
+
+/** A person's `work_hours_json` as hours, or undefined when unset, unreadable or whole-day. */
+export const storedWorkHours = (json: string | null | undefined) =>
+  json == null
+    ? undefined
+    : Option.getOrUndefined(Option.filter(decodeHours(json), (hours) => !wholeDay(hours)));
 
 /** Whether `now` falls inside the hours, in their time zone. */
 export const workingAt = (hours: KinWorkHours, timeZone: string, now: number) => {
@@ -75,9 +91,8 @@ export const heldAt = (rule: KinHoldRule, at: number): "quiet" | "off" | "away" 
         ? "off"
         : undefined;
 
-const MINUTE = 60_000;
-const STEP = 5 * MINUTE;
-const SCAN = 8 * 24 * 60 * MINUTE;
+const STEP = 5 * MINUTE_MS;
+const SCAN = 8 * 24 * 60 * MINUTE_MS;
 
 /**
  * The first whole minute at or after `now` when a line to them goes; `now` itself when it goes
@@ -87,12 +102,16 @@ export const freeAt = (rule: KinHoldRule, now: number): number => {
   if (rule.awayUntil !== undefined && now < rule.awayUntil)
     return freeAt({ ...rule, awayUntil: undefined }, rule.awayUntil);
   if (heldAt(rule, now) === undefined) return now;
-  const start = Math.ceil(now / MINUTE) * MINUTE;
+  const start = Math.ceil(now / MINUTE_MS) * MINUTE_MS;
   for (let at = start; at < start + SCAN; at += STEP) {
     if (heldAt(rule, at) !== undefined) continue;
     let first = at;
-    while (first - MINUTE >= start && first - MINUTE > at - STEP && !heldAt(rule, first - MINUTE))
-      first -= MINUTE;
+    while (
+      first - MINUTE_MS >= start &&
+      first - MINUTE_MS > at - STEP &&
+      !heldAt(rule, first - MINUTE_MS)
+    )
+      first -= MINUTE_MS;
     return first;
   }
   return rule.hours === undefined ? start : freeAt({ zone: rule.zone, quiet: rule.quiet }, now);

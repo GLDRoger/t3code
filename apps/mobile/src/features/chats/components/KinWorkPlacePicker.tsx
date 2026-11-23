@@ -1,0 +1,217 @@
+import { LegendList } from "@legendapp/list/react-native";
+import { KIN_WORK_NEW_COPY, type KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
+import { kinTaskProjectMenu } from "@t3tools/client-runtime/kin/kinWorkForms";
+import { KIN_PICKER_COPY, kinPickerSearchView } from "@t3tools/client-runtime/kin/kinWorkList";
+import { type ComponentRef, use, useEffect, useRef, useState } from "react";
+import { View, type TextInputInstance } from "react-native";
+import { useKeyboardState } from "react-native-keyboard-controller";
+
+import type { AppSymbolName } from "../../../components/ui/AppSymbol";
+import { AppText as Text } from "../../../components/ui/AppText";
+import { ListChoiceRow } from "../../../components/ui/ListChoiceRow";
+import { ListRow } from "../../../components/ui/ListRow";
+import { SearchField } from "../../../components/ui/SearchField";
+import { useKinPickerSearch, type KinWorkTarget } from "../state/useKinWork";
+import { KinWorkAboveKeyboard } from "./KinWorkPieces";
+import { useKinShell } from "../state/useKinShell";
+import { kinPickerNamed, kinSectionNoun } from "@t3tools/client-runtime/kin/kinShell";
+
+type PickerRow =
+  | { readonly type: "label"; readonly id: string; readonly label: string }
+  | { readonly type: "choice"; readonly id: string; readonly ref: KinWorkRef | null };
+
+// About seven rows: the picker scrolls within the form rather than lengthening it.
+const LIST_MAX_HEIGHT = 340;
+// Four rows: with the search field, they fit above the keyboard on the smallest iPhone.
+const KEYBOARD_LIST_MAX_HEIGHT = 192;
+
+/**
+ * A client or project, found by typing part of its name: the row opens a search field over the
+ * choices, as the time zone picker does, typing asks the host about every one the person may see,
+ * and a pick closes it.
+ */
+export function KinWorkPlacePicker(given: {
+  readonly target: KinWorkTarget;
+  readonly noun: "client" | "project";
+  readonly icon: AppSymbolName;
+  readonly label: string;
+  readonly held: KinWorkRef | null;
+  /** What picking nothing means here; "None" unless the screen says otherwise. */
+  readonly none?: string;
+  /** One more choice that is not a client or project, such as "No client", offered untyped. */
+  readonly extra?: KinWorkRef;
+  readonly choices: ReadonlyArray<KinWorkRef>;
+  /** A task's done projects, offered after the open ones so a late task can still be filed there. */
+  readonly done?: ReadonlyArray<KinWorkRef>;
+  /** The only keys this viewer may pick (`kinTaskProjectsAllowed`); null or absent for any. */
+  readonly only?: ReadonlySet<string> | null;
+  readonly disabled: boolean;
+  readonly onPick: (ref: KinWorkRef | null) => void;
+  /** Whether "None" is offered: the host may let a value change but not be cleared. */
+  readonly clearable?: boolean;
+  readonly onOpen?: () => void;
+  /** A client's: who owes the task, us or them. */
+  readonly side?: {
+    readonly value: "ours" | "theirs";
+    readonly onPick: (side: "ours" | "theirs") => void;
+  };
+}) {
+  // A client picker says the company's own word for Clients in its label and its own rows.
+  const clientShell = useKinShell(given.target.environmentId);
+  const props = kinPickerNamed(clientShell, given);
+  const { held, side, extra } = props;
+  const none = props.none ?? KIN_WORK_NEW_COPY.none;
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<TextInputInstance>(null);
+  const found = useRef<ComponentRef<typeof View>>(null);
+  const aboveKeyboard = use(KinWorkAboveKeyboard);
+  const keyboardUp = useKeyboardState((keyboard) => keyboard.isVisible);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the native scroll view so the search and its rows clear the keyboard once it is up
+  useEffect(() => {
+    if (open && keyboardUp && found.current !== null) aboveKeyboard?.(found.current);
+  }, [open, keyboardUp, aboveKeyboard]);
+  const clientNoun = kinSectionNoun(clientShell, "clients");
+  const search = useKinPickerSearch(
+    props.target,
+    props.noun === "client" ? "clients" : "projects",
+    props.done !== undefined,
+  );
+  const query = search.state.text;
+  const view = kinPickerSearchView({
+    noun: props.noun,
+    search: search.state,
+    loaded: { open: props.choices, done: props.done ?? [] },
+    held: extra !== undefined && held?.key === extra.key ? null : held,
+    only: props.only ?? null,
+    called: props.noun === "client" ? clientNoun : "project",
+  });
+  const groups = kinTaskProjectMenu({ projects: view.open, doneProjects: view.done });
+  const typed = query.trim() !== "";
+  const rows: ReadonlyArray<PickerRow> = [
+    ...(typed || (props.clearable === false && held !== null)
+      ? []
+      : [{ type: "choice" as const, id: "none", ref: null }]),
+    ...(extra === undefined || typed
+      ? []
+      : [{ type: "choice" as const, id: `extra:${extra.key}`, ref: extra }]),
+    ...groups.flatMap((group) => [
+      ...(group.label === null
+        ? []
+        : [{ type: "label" as const, id: `label:${group.label}`, label: group.label }]),
+      ...group.choices.map((choice) => ({
+        type: "choice" as const,
+        id: `${group.label ?? ""}:${choice.key}`,
+        ref: choice,
+      })),
+    ]),
+  ];
+  const close = () => {
+    setOpen(false);
+    search.type("");
+  };
+  const pick = (ref: KinWorkRef | null) => {
+    props.onPick(ref);
+    close();
+  };
+  // Beside who owes it (a client on a task) it follows the choices, so a tap under the row lands in the search.
+  const openHeld =
+    held === null || props.onOpen === undefined ? null : (
+      <ListChoiceRow
+        label={`Open ${held.title}`}
+        selected={false}
+        separated
+        onPress={() => {
+          close();
+          props.onOpen?.();
+        }}
+      />
+    );
+  return (
+    <>
+      <ListRow
+        icon={props.icon}
+        label={props.label}
+        detail={held?.title ?? none}
+        detailEllipsizeMode="tail"
+        {...(held !== null && side?.value === "theirs"
+          ? { description: KIN_WORK_NEW_COPY.sideTheirs }
+          : {})}
+        disabled={props.disabled}
+        onPress={() => (open ? close() : setOpen(true))}
+      />
+      {!open ? null : (
+        <>
+          {side === undefined ? openHeld : null}
+          <View ref={found} collapsable={false}>
+            <View className="flex-row px-4 py-2">
+              <SearchField
+                autoFocus
+                inputRef={inputRef}
+                accessibilityLabel={`Find a ${props.noun}`}
+                clearAccessibilityLabel="Clear search"
+                placeholder={`Find a ${props.noun}`}
+                value={query}
+                onChangeText={search.type}
+              />
+            </View>
+            {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- nested in the form's own registered scroll view */}
+            <LegendList<PickerRow>
+              style={{ maxHeight: keyboardUp ? KEYBOARD_LIST_MAX_HEIGHT : LIST_MAX_HEIGHT }}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              data={rows}
+              keyExtractor={(row) => row.id}
+              getItemType={(row) => row.type}
+              extraData={held?.key ?? null}
+              estimatedItemSize={48}
+              recycleItems
+              renderItem={({ item: row }) =>
+                row.type === "label" ? (
+                  <Text textRole="footnote" className="px-4 pt-3 pb-1 text-foreground-muted">
+                    {row.label}
+                  </Text>
+                ) : (
+                  <ListChoiceRow
+                    label={row.ref?.title ?? none}
+                    selected={row.ref === null ? held === null : row.ref.key === held?.key}
+                    separated
+                    onPress={() => pick(row.ref)}
+                  />
+                )
+              }
+            />
+          </View>
+          {view.failure !== null ? (
+            <ListChoiceRow
+              label={view.failure.text}
+              selected={false}
+              disabled={!view.failure.retry}
+              onPress={() => void search.retry()}
+            />
+          ) : view.loading || view.note !== null || groups.length === 0 ? (
+            <Text textRole="footnote" className="px-4 py-3 text-foreground-muted">
+              {view.loading ? KIN_PICKER_COPY.searching : (view.note ?? KIN_WORK_NEW_COPY.noMatch)}
+            </Text>
+          ) : null}
+          {side === undefined ? null : openHeld}
+          {held === null || side === undefined ? null : (
+            <ListChoiceRow
+              label={
+                side.value === "theirs"
+                  ? KIN_WORK_NEW_COPY.sideOurs
+                  : `${KIN_WORK_NEW_COPY.sideTheirs}, not us`
+              }
+              selected={false}
+              separated
+              disabled={props.disabled}
+              onPress={() => {
+                side.onPick(side.value === "theirs" ? "ours" : "theirs");
+                close();
+              }}
+            />
+          )}
+        </>
+      )}
+    </>
+  );
+}

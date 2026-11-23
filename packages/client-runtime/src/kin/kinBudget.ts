@@ -1,22 +1,24 @@
-import type { KinBudget, KinBudgetLimits } from "@t3tools/contracts";
+import { KIN_DAILY_LIMIT_STEPS, type KinBudget, type KinBudgetLimits } from "@t3tools/contracts";
+import { kinCount } from "./kinCount.ts";
 
 // What a host that doesn't send its own usual limit means by it; choices scale both.
 const FALLBACK_USUAL = { leadUnits: 2_000_000, workerUnits: 6_000_000 };
-const CHOICES = [
-  { times: 0.5, label: "Half the usual" },
-  { times: 1, label: "The usual" },
-  { times: 2, label: "Twice the usual" },
-  { times: 5, label: "Five times the usual" },
-] as const;
 
 export const KIN_DAILY_LIMIT = {
   title: "Daily limit",
   detail:
     "How much work your agents do each day. Once they reach it, only your urgent messages run until midnight.",
   none: "No limit",
+  noneAsk: {
+    title: "Set no daily limit?",
+    detail:
+      "With no limit, Kin never pauses agents for cost. You can see today's use here and set a limit again any time.",
+    confirm: "Set no limit",
+  },
   custom: "Set elsewhere",
   failed: "Couldn't change the daily limit.",
   waiting: "Waiting until tomorrow",
+  reached: "Reached",
   used: "Used today",
 };
 
@@ -28,12 +30,22 @@ export interface KinDailyLimitChoice {
 
 const NO_LIMIT = "none";
 
+const units = (n: number) =>
+  n >= 1_000_000
+    ? `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
+    : n >= 1_000
+      ? `${Math.round(n / 1_000)}k`
+      : `${Math.round(n)}`;
+
+/** Choosing no limit is asked once first; any other choice is made at once. */
+export const kinDailyLimitAsks = (choice: KinDailyLimitChoice) => choice.value === NO_LIMIT;
+
 /** The limits on offer, with the host's current one first named if it is none of them. */
 export function kinDailyLimitChoices(budget: KinBudget | null): {
   readonly choices: ReadonlyArray<KinDailyLimitChoice>;
   readonly current: string | null;
 } {
-  // A teammate's own share is set apart from these choices, so picking one keeps it.
+  // A teammate's own share is set apart from the steps, so picking one keeps it; No limit is none.
   const teammateUnits = budget?.limits.teammateUnits;
   const usual = budget?.usual ?? FALLBACK_USUAL;
   const kept = teammateUnits === undefined ? {} : { teammateUnits };
@@ -41,31 +53,29 @@ export function kinDailyLimitChoices(budget: KinBudget | null): {
     {
       value: NO_LIMIT,
       label: KIN_DAILY_LIMIT.none,
-      limits: { leadUnits: null, workerUnits: null, ...kept },
+      limits: { leadUnits: null, workerUnits: null, teammateUnits: null },
     },
-    ...CHOICES.map(({ times, label }) => ({
-      value: String(times),
-      label,
-      limits: {
-        leadUnits: Math.round(usual.leadUnits * times),
-        workerUnits: Math.round(usual.workerUnits * times),
-        ...kept,
-      },
-    })),
+    ...KIN_DAILY_LIMIT_STEPS.map(({ times, label }) => {
+      const leadUnits = Math.round(usual.leadUnits * times);
+      return {
+        value: String(times),
+        label: `${label} (${units(leadUnits)} units a day)`,
+        limits: { leadUnits, workerUnits: Math.round(usual.workerUnits * times), ...kept },
+      };
+    }),
   ];
   if (budget === null) return { choices, current: null };
   const { leadUnits, workerUnits } = budget.limits;
   const match = choices.find(
     (choice) =>
       choice.limits.leadUnits === leadUnits &&
-      (leadUnits !== null || choice.limits.workerUnits === workerUnits),
+      (leadUnits !== null || choice.limits.workerUnits === workerUnits) &&
+      (choice.value !== NO_LIMIT || (teammateUnits ?? null) === null),
   );
   if (match !== undefined) return { choices, current: match.value };
   const custom = { value: "custom", label: KIN_DAILY_LIMIT.custom, limits: budget.limits };
   return { choices: [custom, ...choices], current: custom.value };
 }
-
-const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** Work held for the limit, one line per agent: "Finance: 2 messages, 1 task". */
 export function kinDailyLimitWaiting(budget: KinBudget | null): ReadonlyArray<{
@@ -75,9 +85,9 @@ export function kinDailyLimitWaiting(budget: KinBudget | null): ReadonlyArray<{
 }> {
   return (budget?.waiting?.agents ?? []).flatMap((agent) => {
     const parts = [
-      agent.requests === 0 ? null : count(agent.requests, "message", "messages"),
-      agent.tasks === 0 ? null : count(agent.tasks, "task", "tasks"),
-      agent.other === 0 ? null : count(agent.other, "other job", "other jobs"),
+      agent.requests === 0 ? null : kinCount(agent.requests, "message", "messages"),
+      agent.tasks === 0 ? null : kinCount(agent.tasks, "task", "tasks"),
+      agent.other === 0 ? null : kinCount(agent.other, "other job", "other jobs"),
     ].filter((part) => part !== null);
     return parts.length === 0
       ? []
@@ -85,12 +95,6 @@ export function kinDailyLimitWaiting(budget: KinBudget | null): ReadonlyArray<{
   });
 }
 
-const units = (n: number) =>
-  n >= 1_000_000
-    ? `${(n / 1_000_000).toFixed(1)}M`
-    : n >= 1_000
-      ? `${Math.round(n / 1_000)}k`
-      : `${Math.round(n)}`;
 const share = (used: number, limit: number | null) =>
   limit === null
     ? `${units(used)} units`

@@ -116,9 +116,8 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
-import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
-import { ServerConfig } from "../config.ts";
-import { isKinWorkspace } from "../kin/lead/kinWorkspace.ts";
+import { makeDelegationScratch } from "../kin/lead/delegationScratch.ts";
+import { McpProvidersOffered } from "../kin/mcp/toolPolicy.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -937,6 +936,14 @@ function threadStatus(
   return backgroundWorkHoldsCompletion(pendingBackgroundTasks ?? []) ? "waiting" : settledStatus;
 }
 
+const LIVE_LISTED_THREAD_STATUSES: ReadonlySet<OrchestratorMcpThreadListItem["status"]> = new Set([
+  "queued",
+  "preparing",
+  "starting",
+  "running",
+  "waiting",
+]);
+
 function listedThreadStatus(shell: OrchestrationV2ThreadShell) {
   return threadStatus(shell.activityRunStatus, shell.status, shell.pendingBackgroundTasks);
 }
@@ -1272,30 +1279,7 @@ const make = Effect.gen(function* () {
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
-  // Optional so test runtimes without them still build; the server provides both.
-  const managedFolders = yield* Effect.serviceOption(ManagedProjectFolders.ManagedProjectFolders);
-  const serverConfig = yield* Effect.serviceOption(ServerConfig);
-  /**
-   * A Kin agent's checkout is its memory, never a task's workspace: a task it delegates without a
-   * project works in Scratch. `undefined` for any other parent checkout.
-   */
-  const kinScratchProject = Effect.fn("OrchestratorMcpService.kinScratchProject")(function* (
-    parent: OrchestrationV2ThreadProjection["thread"],
-  ) {
-    if (Option.isNone(serverConfig)) return undefined;
-    const parentRoot =
-      parent.worktreePath ?? (yield* requireProject(parent.projectId)).workspaceRoot;
-    if (!isKinWorkspace(serverConfig.value.stateDir, parentRoot)) return undefined;
-    const scratch = Option.isNone(managedFolders)
-      ? Option.none()
-      : yield* managedFolders.value.ensureScratchProject.pipe(Effect.option);
-    if (Option.isNone(scratch))
-      return yield* failure(
-        "invalid_request",
-        "This agent's workspace holds its memory, and Scratch is unavailable here. Clone the repository with t3_project_clone, then pass its project as target.projectId.",
-      );
-    return scratch.value.projectId;
-  });
+  const kinScratch = yield* makeDelegationScratch;
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -2634,7 +2618,7 @@ const make = Effect.gen(function* () {
           ) ?? [],
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
-        providers: providers.map((provider) => {
+        providers: (yield* (yield* McpProvidersOffered)(settings, providers)).map((provider) => {
           // Snapshots list instances any project enables; delegate_task checks the caller's project.
           const enabledForCaller =
             parent === undefined ||
@@ -2717,9 +2701,11 @@ const make = Effect.gen(function* () {
         input.target?.projectId !== undefined && input.target.projectId !== parent.thread.projectId
           ? input.target.projectId
           : undefined;
-      const kinScratch =
-        namedProjectId === undefined ? yield* kinScratchProject(parent.thread) : undefined;
-      const otherProjectId = namedProjectId ?? kinScratch;
+      const scratchProjectId =
+        namedProjectId === undefined
+          ? yield* kinScratch.project(parent.thread, requireProject(parent.thread.projectId))
+          : undefined;
+      const otherProjectId = namedProjectId ?? scratchProjectId;
       if (namedProjectId !== undefined && input.isolation !== "worktree") {
         return yield* failure(
           "invalid_request",
@@ -2767,24 +2753,12 @@ const make = Effect.gen(function* () {
         input.interactionMode,
       );
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
-      if (
-        kinScratch !== undefined &&
-        !isRetryOfAcceptedDelegation &&
-        Option.isSome(managedFolders)
-      ) {
-        const folder = yield* managedFolders.value
-          .folderForThread({
-            projectId: kinScratch,
-            threadId: ThreadId.make(commandId),
-            text: input.title ?? input.task,
-          })
-          .pipe(
-            Effect.mapError((error) =>
-              failure("orchestration_error", `Unable to make a Scratch folder: ${error.message}`),
-            ),
-          );
-        if (Option.isSome(folder))
-          workspaceStrategy = { type: "existing_worktree", worktreePath: folder.value };
+      if (scratchProjectId !== undefined && !isRetryOfAcceptedDelegation) {
+        workspaceStrategy = yield* kinScratch.workspace({
+          projectId: scratchProjectId,
+          commandId,
+          text: input.title ?? input.task,
+        });
       } else if (
         input.isolation === "worktree" &&
         !isRetryOfAcceptedDelegation &&
@@ -3346,7 +3320,21 @@ const make = Effect.gen(function* () {
           ? null
           : new Set(input.statuses);
       const titleContains = input.titleContains?.toLocaleLowerCase();
+      // A live status needs a source the index's mayBeLive covers, so a live-only filter
+      // skips building shells for every thread that cannot match.
+      const mayBeLiveIds =
+        statuses !== null &&
+        [...statuses].every((status) => LIVE_LISTED_THREAD_STATUSES.has(status))
+          ? new Set(
+              (yield* threadManagement
+                .listActiveShellIndex()
+                .pipe(Effect.mapError(listFailure))).flatMap((entry) =>
+                entry.mayBeLive ? [entry.id] : [],
+              ),
+            )
+          : null;
       const candidates = projectThreads
+        .filter((thread) => mayBeLiveIds === null || mayBeLiveIds.has(thread.id))
         .filter(
           (thread) =>
             input.settled === undefined || threadSettlement(thread).settled === input.settled,

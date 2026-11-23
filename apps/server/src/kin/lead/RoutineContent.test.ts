@@ -463,6 +463,39 @@ it.effect(
     ),
 );
 
+it.effect("an evening whose only news is in Kin's records is summed up, by the company's day", () =>
+  withFixture(
+    [],
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      // 18:00 on Mon 9 Nov at UTC+9; 23:59 on Sun 8 Nov there is the same UTC day.
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+          dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+        VALUES (${orgId}, 'Etc/GMT-9', '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'work', 'work', 'W', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+        VALUES (${orgId}, 'r-W-6', 'work', 'W-6', 'Beta release to two pilot clinics', 'done',
+          'person', 'owner', 'person', 'owner', 'o-W-6', 0, 0)`;
+      const done = (at: number) =>
+        sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id, via,
+            kind, fields_json)
+          VALUES (${orgId}, 'r-W-6', 2, ${at}, 'person', 'owner', 'owner', 'updated',
+            '[{"field":"state","from":"open","to":"done"}]')`;
+      const content = yield* RoutineContent.KinRoutineContent;
+      yield* done(Date.parse("2026-11-08T14:59:00.000Z"));
+      assert.isNull(yield* content.eveningFacts(orgId, agentId));
+      yield* done(Date.parse("2026-11-09T00:32:54.000Z"));
+      const facts = yield* content.eveningFacts(orgId, agentId);
+      assert.deepStrictEqual(JSON.parse(facts ?? "{}").today, {
+        finished: ["W-6 Beta release to two pilot clinics, done by Owner (owner)"],
+      });
+    }).pipe(Effect.orDie),
+  ),
+);
+
 it.effect("a brief on a weekday other than Monday skips the week ahead and names GitHub gaps", () =>
   withFixture(
     [
@@ -596,6 +629,71 @@ it.effect("a failed brief retries on its own with a counted attempt", () =>
                   }),
                 ),
               morningFacts: () => Effect.succeed(null),
+              eveningFacts: () => Effect.succeed(null),
+            }),
+          ),
+          Layer.provideMerge(orchestrationHarness()),
+        ),
+      ),
+    );
+  }),
+);
+
+it.effect("an evening summary that runs past its own day is not sent; its facts are untold", () =>
+  Effect.gen(function* () {
+    // Monday 22:30 in Tokyo, held by quiet hours to 08:00 there: still Monday on a UTC host.
+    yield* TestClock.setTime(now + 14 * 60 * 60_000);
+    yield* Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+          dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+        VALUES (${orgId}, 'Asia/Tokyo', '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
+      const monday = "2026-11-09";
+      yield* (yield* Queue.KinEventQueue).enqueue(
+        decodeEvent({
+          _tag: "pulse",
+          orgId,
+          agentId,
+          eventId: "pulse-evening",
+          receivedAt: timestamp,
+          dedupeKey: `checkin:checkin-evening:${monday}`,
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId: "checkin-evening",
+            title: "Evening summary",
+            what: "Evening summary.",
+            slot: monday,
+            day: monday,
+          },
+        }),
+      );
+      yield* sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id, sig, told_at)
+        VALUES (${orgId}, 'owner', 'task_late:r-W-1', 'pulse-evening', 'sig', ${now})`;
+      const fiber = yield* (yield* WakeupRunner.WakeupRunner)
+        .runOnce(orgId, agentId)
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("20 seconds");
+      yield* Fiber.join(fiber);
+      assert.deepStrictEqual(
+        yield* sql`SELECT state FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
+        [{ state: "done" }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT status, thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId}`,
+        [{ status: "completed", threadId: null }],
+      );
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_pulse_told WHERE org_id = ${orgId}`, 0);
+    }).pipe(
+      Effect.provide(
+        WakeupRunner.layer.pipe(
+          Layer.provide(
+            Layer.succeed(RoutineContent.KinRoutineContent, {
+              prepare: () => Effect.succeed(null),
+              post: () => Effect.succeed(null),
+              morningFacts: () => Effect.succeed(null),
+              eveningFacts: () => Effect.succeed('{"routine":"evening_summary"}'),
             }),
           ),
           Layer.provideMerge(orchestrationHarness()),

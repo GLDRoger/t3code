@@ -3,6 +3,8 @@
  * dry run builds. Neither calls a model.
  */
 
+import { casePattern } from "./pattern.ts";
+
 export type Prices = {
   readonly input: number;
   readonly output: number;
@@ -42,7 +44,7 @@ export const caseProblems = (
   ];
   const badPatterns = patterns.flatMap((pattern) => {
     try {
-      RegExp(pattern);
+      casePattern(pattern);
       return [];
     } catch {
       return [`regex does not compile: ${pattern}`];

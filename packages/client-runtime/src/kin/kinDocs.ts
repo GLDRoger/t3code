@@ -1,14 +1,18 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import { KIN_SCOPE_ALL, type KinViewerScope } from "./kinViewerScope.ts";
 import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
+import { kinIsDealKey } from "./kinDeals.ts";
 import {
   KinDocCardState,
+  type KinDocCardDraft,
   type KinChatId,
   type KinChatSummary,
   type KinDocDetail,
   type KinDocDiff,
+  type KinDocEditSectionInput,
   type KinDocEmbed,
   type KinDocRenderInput,
+  type KinDocFile,
   type KinDocFileInput,
   KIN_DOC_KINDS,
   type KinDocKind,
@@ -26,9 +30,16 @@ import {
   type KinWidget,
   type KinWorkActor,
   type KinWorkPrincipal,
+  kinPlainBody,
+  kinSalesLead,
+  kinThreadLinksAsWords,
   kinWhenFormat,
 } from "@t3tools/contracts";
 import { kinDocBlockIndex, kinDocBlocks, kinDocParts } from "@t3tools/shared/kinDocBlocks";
+import type { PhrasingContent, RootContent } from "mdast";
+import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -41,8 +52,16 @@ import {
   kinWorkRefused,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinCount } from "./kinCount.ts";
+import { kinIsMine, type KinMineCount, type KinMineHeld } from "./kinWorkClients.ts";
+import { kinSectionNamed, kinSectionOn } from "./kinShell.ts";
+import type { KinShell } from "@t3tools/contracts";
 
 export const KIN_DOCS = {
+  earlierVersions: "Show earlier versions",
+  oldVersion: (version: number, latest: number) =>
+    `You're reading version ${version}. The latest is version ${latest}.`,
+  openLatest: "Open the latest",
   changesFailed: "Couldn't load the changes",
   historyFailed: "Couldn't load the history",
   restoreOffline: "You're offline. Restore it when the connection is back.",
@@ -57,8 +76,19 @@ export const KIN_DOCS = {
   searchWithLists: "Search docs and lists",
   loading: "Loading docs",
   loadFailed: "Couldn't load docs",
-  archived: "Archived",
+  archived: "Deleted",
   current: "Current",
+  delete: "Delete",
+  deleting: "Deleting…",
+  deletedNotice: (title: string) => `Deleted ${title}`,
+  undo: "Undo",
+  restoreDoc: "Restore",
+  restoringDoc: "Restoring…",
+  restoredDoc: (title: string) => `Restored ${title}`,
+  deleteFailed: "Couldn't delete it. The doc is still in Docs.",
+  restoreDocFailed: "Couldn't restore it. It's still in Deleted.",
+  deleteOffline: "You're offline. The doc stays until the connection is back.",
+  deletedBanner: "This doc is deleted. Restore brings it back as it was.",
   contents: "Contents",
   history: "History",
   changes: "See changes",
@@ -67,6 +97,21 @@ export const KIN_DOCS = {
   suggest: "Suggest a change",
   copyLink: "Copy link",
   copied: "Link copied",
+  copyText: "Copy text",
+  textCopied: "Text copied",
+  more: "More",
+  sharePdf: "Share as PDF",
+  save: "Save",
+  saving: "Saving…",
+  cancel: "Cancel",
+  editing: (section: string) => `Changing ${section}`,
+  saved: (version: number) =>
+    `Saved as version ${version}. The one before is in History, and can be restored.`,
+  editMoved:
+    "This section changed since you opened it, so your change wasn't saved. Copy what you wrote, then open the doc again.",
+  editFailed: "Couldn't save your change.",
+  editOffline: "You're offline. Save it when the connection is back; your text stays here.",
+  discard: { title: "Discard your change?", keep: "Keep changing", confirm: "Discard" },
   export: "Export as Markdown",
   exportPdf: "Export PDF",
   exportingPdf: "Making the PDF…",
@@ -82,14 +127,19 @@ export const KIN_DOCS = {
     detail:
       "Ask an agent for a plan, a brief, a runbook or meeting notes. It lands here, and the agent keeps it current.",
   },
+  noneMine: {
+    title: "Nothing of yours yet",
+    detail:
+      "Docs you keep, and docs on the clients and projects you look after or are on, show here. Everyone has the rest.",
+  },
   noMatch: {
     title: "No doc says that",
-    detail: "Try other words, or look in the archived ones.",
+    detail: "Try other words, or look in the deleted ones.",
   },
   passages: "Where it says so",
   emptyArchived: {
-    title: "Nothing archived",
-    detail: "A doc an agent archives is kept here, with its whole history.",
+    title: "Nothing deleted",
+    detail: "A deleted doc is kept here with its whole history, and Restore brings it back.",
   },
   // A teammate, until docs are shared with the team.
   unavailable: {
@@ -108,6 +158,14 @@ export const KIN_DOCS = {
     title: "Nothing changed",
     detail: "These two versions read the same.",
   },
+  pictureChanged: {
+    title: "The picture changed",
+    detail: "Its words read the same.",
+  },
+  fileChanged: {
+    title: "The file changed",
+    detail: "Its words read the same.",
+  },
   firstVersion: {
     title: "This is the first version",
     detail: "There is nothing earlier to compare it with.",
@@ -115,6 +173,16 @@ export const KIN_DOCS = {
   noAgent: "No agent keeps this doc, so there is nobody to ask yet.",
   // The host drew nothing for the block: it predates them, or the block is new since it drew.
   undrawn: { chart: "This chart can't be shown.", visual: "This visual can't be shown." },
+  draft: "Draft",
+  sendTo: (name: string) => `Send to ${name}`,
+  sending: "Sending…",
+  sentTo: (name: string) => `Sent to ${name} to approve.`,
+  sentHeld: (name: string) => `Sent. ${name} gets it to approve when they're back.`,
+  changesFirst: (name: string) => `${name} asked for changes first.`,
+  sendFailed: "Couldn't send it.",
+  sendOffline: "You're offline. Send it when the connection is back.",
+  noAccount: (service: string, by: string | null) =>
+    `No ${service} account is connected. ${by === null ? "You can connect one in Settings on your computer." : `${by} can connect one on their computer.`}`,
 } as const;
 
 /** A stretch of a doc's markdown, or what the host drew for one of its blocks. */
@@ -159,22 +227,44 @@ export const KIN_SEARCH = {
   includeClosed: "Include closed and archived",
 } as const;
 
+/** What search looks through, as the company's sections have it: "tasks, patients, docs". */
+function searchKinds(shell: KinShell | null | undefined, detailed: boolean): ReadonlyArray<string> {
+  const clients = kinSectionOn(shell, "clients");
+  return [
+    "tasks",
+    ...(!clients
+      ? []
+      : detailed
+        ? [kinSectionNamed(shell, "clients"), "contacts", "projects"]
+        : [kinSectionNamed(shell, "clients")]),
+    "docs",
+    ...(kinSectionOn(shell, "money") ? ["money"] : []),
+  ];
+}
+
+const andList = (parts: ReadonlyArray<string>) =>
+  parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+
+/** The search box's placeholder, naming only the sections the company has on. */
+export const kinSearchPlaceholder = (shell?: KinShell | null) =>
+  `Search ${andList(searchKinds(shell, false))}`;
+
 /** What the empty search box says it looks through: the owner level finds what memory keeps too. */
-export const kinSearchHint = (scope: KinViewerScope) =>
-  scope.all
+export const kinSearchHint = (scope: KinViewerScope, shell?: KinShell | null) => {
+  const kinds = searchKinds(shell, true);
+  const listed = kinds.map((kind, index) => (index === 0 ? upperFirst(kind) : kind));
+  return scope.all
     ? {
         title: KIN_SEARCH.hint.title,
-        detail:
-          "Tasks, clients, contacts, projects, docs, money, and the decisions your agents remember, by any words in them.",
+        detail: `${listed.join(", ")}, and the decisions your agents remember, by any words in them.`,
       }
     : {
         title: KIN_SEARCH.hint.title,
-        detail:
-          "Tasks, clients, contacts, projects, docs and money you can see, by any words in them.",
+        detail: `${andList(listed)} you can see, by any words in them.`,
       };
+};
 
-const plural = (count: number, one: string, many = `${one}s`) =>
-  `${count} ${count === 1 ? one : many}`;
+const upperFirst = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
 
 // When and who
 
@@ -293,6 +383,8 @@ export interface KinDocRowView {
   readonly key: string;
   readonly title: string;
   readonly line: string;
+  /** What we sell, pinned first in Docs. */
+  readonly pinned: boolean;
   /** "Proposal", or null for one nobody gave a kind. */
   readonly kind: string | null;
   /** "Acme · Website relaunch", "Company", or null when it has no home. */
@@ -300,8 +392,20 @@ export interface KinDocRowView {
   readonly unfiled: boolean;
   readonly private: boolean;
   readonly archived: boolean;
+  /** "Deleted 2 hours ago by Rhea", for a deleted doc whose host says so. */
+  readonly deletedLine: string | null;
+  /** This viewer may bring it back (or delete it); the host decides again. */
+  readonly deletable: boolean;
   readonly accessibilityLabel: string;
 }
+
+/** Who deleted a doc and when, as its row in Deleted says it. */
+export const kinDocDeletedLine = (
+  deleted: NonNullable<KinDocListRow["deleted"]>,
+  names: KinWorkNames,
+  now: Date,
+) =>
+  `Deleted ${kinDocWhen(deleted.at, now)} by ${kinMidSentence(actorName(deleted.by, names, "you"))}`;
 
 export const kinDocKindOf = (row: Pick<KinDocListRow, "kind">): KinDocKind => row.kind ?? "other";
 export const kinDocUnfiled = (row: Pick<KinDocListRow, "party" | "project" | "company">) =>
@@ -309,6 +413,7 @@ export const kinDocUnfiled = (row: Pick<KinDocListRow, "party" | "project" | "co
 
 export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): KinDocRowView {
   const { text } = kinDocChangeLine(changeOf(row.latest), names, now);
+  const pinned = row.whatWeSell === true;
   const under =
     row.company === true
       ? KIN_DOC_HOMES.company
@@ -320,18 +425,22 @@ export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): K
     key: row.key,
     title: row.title,
     line: kindLabel === null ? text : `${kindLabel} · ${text}`,
+    pinned,
     kind: kindLabel,
     under: under === "" ? null : under,
     unfiled: kinDocUnfiled(row),
     private: isPrivate,
     archived: row.archived,
+    deletedLine: row.deleted === undefined ? null : kinDocDeletedLine(row.deleted, names, now),
+    deletable: row.deletable === true,
     accessibilityLabel: [
       row.title,
+      pinned ? KIN_WHAT_WE_SELL.pinned : null,
       kindLabel,
       under === "" ? KIN_DOC_HOMES.unfiled : under,
       text,
       isPrivate ? "Private" : null,
-      row.archived ? "Archived" : null,
+      row.archived ? KIN_DOCS.archived : null,
     ]
       .filter(Boolean)
       .join(". "),
@@ -350,16 +459,23 @@ const RECENT_MAX = 4;
 
 /**
  * Docs by home: each client with its projects' docs, most recently changed client first, then
- * the company's own, then the unfiled. Inside each, latest change first. `recent` is the last
- * few changed, shown above them once there are enough docs for them to be worth a strip.
+ * the company's own, then the unfiled. Inside each, latest change first, What we sell before the
+ * rest (`pinned`, read on its own, as a page may not hold it). `recent` is the last few changed,
+ * shown above them once there are enough docs for them to be worth a strip.
  */
-export function kinDocLibrary(rows: ReadonlyArray<KinDocListRow>): {
+export function kinDocLibrary(
+  rows: ReadonlyArray<KinDocListRow>,
+  pinned: KinDocListRow | null = null,
+): {
   readonly recent: ReadonlyArray<KinDocListRow>;
   readonly homes: ReadonlyArray<KinDocHome>;
   /** The company's playbooks, folded into one row until opened; by title. */
   readonly playbooks: ReadonlyArray<KinDocListRow>;
 } {
-  const latestFirst = [...rows].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const latestFirst = kinDocsPinned(
+    [...rows].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    pinned,
+  );
   const clients = new Map<string, { title: string; rows: Array<KinDocListRow> }>();
   const company: Array<KinDocListRow> = [];
   const unfiled: Array<KinDocListRow> = [];
@@ -377,7 +493,10 @@ export function kinDocLibrary(rows: ReadonlyArray<KinDocListRow>): {
     } else unfiled.push(row);
   }
   return {
-    recent: rows.length > RECENT_MAX * 3 ? latestFirst.slice(0, RECENT_MAX) : [],
+    recent:
+      rows.length > RECENT_MAX * 3
+        ? [...rows].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, RECENT_MAX)
+        : [],
     homes: [
       ...[...clients.entries()].map(([id, held]) => ({
         id: `client:${id}`,
@@ -408,6 +527,60 @@ export function kinDocLibrary(rows: ReadonlyArray<KinDocListRow>): {
     ],
     playbooks: [...playbooks].sort((a, b) => a.title.localeCompare(b.title)),
   };
+}
+
+/** The phone's Docs: an agent's character is changed on its page, so the list leaves it out. */
+export const kinDocsOnPhone = <Row extends Pick<KinDocListRow, "character">>(
+  rows: ReadonlyArray<Row>,
+): ReadonlyArray<Row> => rows.filter((row) => row.character !== true);
+
+/**
+ * The viewer's clients and projects for `kinIsMine`: the clients they look after among those read,
+ * and the projects they lead or are on.
+ */
+export function kinDocsMineHeld(
+  me: KinPersonId | null,
+  clients: ReadonlyArray<{ readonly key: string; readonly owner: KinWorkPrincipal }>,
+  projects: ReadonlyArray<{ readonly key: string }>,
+): KinMineHeld {
+  return {
+    me,
+    clients: new Set(
+      clients
+        .filter((one) => one.owner._tag === "person" && one.owner.personId === me)
+        .map((one) => one.key),
+    ),
+    projects: new Set(projects.map((one) => one.key)),
+  };
+}
+
+/**
+ * Docs' Mine among the rows the list holds, and both sides' counts: exact once it holds every doc
+ * the host has, "at least" before. Everyone is the same rows, so Mine never shows more.
+ */
+export function kinDocsMine<Row extends Parameters<typeof kinIsMine>[0]>(
+  rows: ReadonlyArray<Row>,
+  held: KinMineHeld,
+  complete: boolean,
+): {
+  readonly mine: ReadonlyArray<Row>;
+  readonly counts: { readonly mine: KinMineCount; readonly everyone: KinMineCount };
+} {
+  const mine = rows.filter((row) => kinIsMine(row, held));
+  const atLeast = complete ? {} : { atLeast: true };
+  return {
+    mine,
+    counts: { mine: { n: mine.length, ...atLeast }, everyone: { n: rows.length, ...atLeast } },
+  };
+}
+
+/** The rows with What we sell first, once: `pinned` as read on its own, else the page's copy. */
+export function kinDocsPinned(
+  rows: ReadonlyArray<KinDocListRow>,
+  pinned: KinDocListRow | null,
+): Array<KinDocListRow> {
+  const pin = pinned ?? rows.find((row) => row.whatWeSell === true) ?? null;
+  return pin === null ? [...rows] : [pin, ...rows.filter((row) => row.recordId !== pin.recordId)];
 }
 
 /** What Docs shows: everything, one kind, a shelf, the unfiled, or the files made from recipes. */
@@ -477,9 +650,70 @@ export const kinDocsQuery = (orgId: KinOrgId, filter: KinDocsFilter) => ({
     : {}),
 });
 
+// What we sell
+
+export const KIN_WHAT_WE_SELL = {
+  title: "What we sell",
+  pinned: "Pinned",
+  empty: {
+    title: "Tell Kin what you sell",
+    detail:
+      "Your agents read this before they answer a customer, judge a prospect or plan a deal. Start from what you already have.",
+  },
+  startFailed: "Couldn't start What we sell.",
+} as const;
+
+export type KinWhatWeSellWay = "website" | "brochure" | "talk";
+
+/** The empty state's three ways in, each opening the sales agent's chat with its first words. */
+export const kinWhatWeSellWays = (
+  agent: string,
+): ReadonlyArray<{
+  readonly way: KinWhatWeSellWay;
+  readonly label: string;
+  readonly draft: string;
+}> => [
+  {
+    way: "website",
+    label: "Send your website",
+    draft: "Here's our website. Read what it says we sell and draft What we sell from it: ",
+  },
+  {
+    way: "brochure",
+    label: "Send a brochure or price list",
+    draft: "Here's our brochure and price list. Draft What we sell from them.",
+  },
+  {
+    way: "talk",
+    label: `Tell ${agent} about it`,
+    draft: "Let's write What we sell together. Ask me what you need, one question at a time.",
+  },
+];
+
+/** The one read that finds What we sell for this viewer, whichever page of Docs holds it. */
+export const kinWhatWeSellQuery = (orgId: KinOrgId) => ({
+  orgId,
+  whatWeSell: true,
+  limit: 1,
+  acceptSlimLatest: true,
+});
+
+/** Docs pins What we sell, or offers to start it, on the current docs, everything or the company's. */
+export const kinWhatWeSellShown = (filter: KinDocsFilter) =>
+  !filter.archived &&
+  filter.text.trim() === "" &&
+  (filter.show._tag === "all" || filter.show._tag === "company");
+
+/** The agent whose chat the ways in open: the one the host makes keeper (`kinSalesLead`). */
+export const kinWhatWeSellAgent = <
+  Lead extends { readonly agentId: string; readonly domain: string; readonly retired?: unknown },
+>(
+  leads: ReadonlyArray<Lead>,
+): Lead | null => kinSalesLead(leads.filter((lead) => lead.retired === undefined)) ?? null;
+
 export function kinDocsFooter(shown: number, total: number | null, more: boolean): string | null {
   if (!more || total === null) return null;
-  return `Showing ${shown} of ${plural(total, "doc")}`;
+  return `Showing ${shown} of ${kinCount(total, "doc")}`;
 }
 
 /** What the File sheet starts from, and what it sends. */
@@ -515,6 +749,87 @@ export function kinDocFileInput(
           project: draft.project as KinDocFileInput["key"] | null,
         }),
   };
+}
+
+// Copy text
+
+const copyParser = unified().use(remarkParse).use(remarkGfm);
+
+const inlineText = (nodes: ReadonlyArray<PhrasingContent>): string =>
+  nodes
+    .map((node): string => {
+      switch (node.type) {
+        case "text":
+        case "inlineCode":
+          return node.value;
+        case "break":
+          return "\n";
+        case "image":
+          return node.alt ?? "";
+        case "html":
+          return node.value.replace(/<[^>]*>/g, "");
+        case "link": {
+          const words = inlineText(node.children);
+          return /^https?:/i.test(node.url) && words !== node.url && words !== ""
+            ? `${words} (${node.url})`
+            : words === ""
+              ? node.url
+              : words;
+        }
+        case "emphasis":
+        case "strong":
+        case "delete":
+          return inlineText(node.children);
+        default:
+          return "";
+      }
+    })
+    .join("");
+
+const blockText = (node: RootContent): ReadonlyArray<string> => {
+  switch (node.type) {
+    case "paragraph":
+    case "heading":
+      return [inlineText(node.children)];
+    case "code":
+      return [node.value];
+    case "html":
+      return [node.value.replace(/<[^>]*>/g, "")];
+    case "blockquote":
+      return node.children.flatMap(blockText);
+    case "list":
+      return [
+        node.children
+          .map((item, index) => {
+            const lines = item.children.flatMap(blockText).filter((line) => line !== "");
+            const number = node.ordered === true ? `${(node.start ?? 1) + index}. ` : "";
+            return `${number}${lines.join("\n")}`;
+          })
+          .join("\n"),
+      ];
+    case "table":
+      return [
+        node.children
+          .map((row) =>
+            row.children.map((cell) => inlineText(cell.children).replace(/\s+/g, " ")).join("\t"),
+          )
+          .join("\n"),
+      ];
+    default:
+      return [];
+  }
+};
+
+/**
+ * A doc's markdown as text to paste anywhere: no marks, a list's items one per line, a table's
+ * rows as tab-separated cells, and its charts and visuals left out.
+ */
+export function kinDocCopyText(markdown: string): string {
+  const tree = copyParser.parse(kinThreadLinksAsWords(kinPlainBody(markdown)));
+  return tree.children
+    .flatMap(blockText)
+    .filter((block) => block.trim() !== "")
+    .join("\n\n");
 }
 
 // The reader
@@ -677,15 +992,25 @@ export function kinDocVersionView(
 }
 
 /** "1 section changed · 4 unchanged", from what the host says differs. */
+/** What to say when two versions' words read the same: a new picture or file is still a change. */
+export function kinDocSameWords(diff: {
+  readonly from: { readonly file?: Pick<KinDocFile, "sha256"> | undefined };
+  readonly to: { readonly file?: Pick<KinDocFile, "sha256" | "mimeType"> | undefined };
+}) {
+  const file = diff.to.file;
+  if (file === undefined || file.sha256 === diff.from.file?.sha256) return KIN_DOCS.noChanges;
+  return file.mimeType.startsWith("image/") ? KIN_DOCS.pictureChanged : KIN_DOCS.fileChanged;
+}
+
 export function kinDocDiffSummary(diff: KinDocDiff, sections: number): string {
   const changed = diff.changedSections.length;
   const removed = diff.removedSections.length;
   const unchanged = Math.max(sections - changed, 0);
   return [
-    changed > 0 ? `${plural(changed, "section")} changed` : null,
+    changed > 0 ? `${kinCount(changed, "section")} changed` : null,
     removed > 0 ? `${removed} removed` : null,
     `${unchanged} unchanged`,
-    `${plural(diff.additions, "line")} added, ${diff.deletions} removed`,
+    `${kinCount(diff.additions, "line")} added, ${diff.deletions} removed`,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -723,6 +1048,88 @@ export function kinDocRestoreOutcome(
   )
     return { _tag: "refused", moved: false, text: error.message };
   return { _tag: "refused", moved: false, text: kinFailureText(error, "Couldn't restore it.") };
+}
+
+// Changing a section by hand
+
+/** Whether this reader changes the shown version's sections by hand: the host said so, on the latest. */
+export const kinDocCanEdit = (
+  doc: Pick<KinDocDetail, "editable" | "version" | "latest">,
+): boolean =>
+  doc.editable === true &&
+  doc.version.version === doc.latest.version &&
+  doc.version.file === undefined;
+
+/**
+ * A doc's one Change item, the same on web and phone: by hand, on its sections, where the host lets
+ * this reader; else through the doc's agent, a suggestion below the owner level.
+ */
+export const kinDocChangeItem = (input: {
+  readonly byHand: boolean;
+  readonly ownerLevel: boolean;
+}) =>
+  input.byHand
+    ? { by: "hand" as const, label: KIN_DOCS.change }
+    : { by: "agent" as const, label: input.ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest };
+
+/**
+ * What a hand edit is opened on, taken all at once: the doc, the section, its hash and its text as
+ * read then. The doc may refresh while the editor is open; the save still names what was opened,
+ * so a newer change to that section is refused, and one to another section is not.
+ */
+export interface KinDocEditOpened {
+  readonly key: KinDocDetail["key"];
+  readonly section: string;
+  readonly title: string;
+  readonly hash: string;
+  /** The section's markdown as opened, heading included: the editor's starting text. */
+  readonly was: string;
+}
+
+/** The section to open for a hand edit, or null when the body and the outline disagree. */
+export function kinDocEditOpen(
+  doc: Pick<KinDocDetail, "key" | "body" | "outline">,
+  section: string,
+): KinDocEditOpened | null {
+  const read = doc.outline.find((one) => one.id === section);
+  const text = kinDocSections(doc.body, doc.outline)?.find((one) => one.id === section);
+  return read === undefined || text === undefined
+    ? null
+    : { key: doc.key, section: read.id, title: text.title, hash: read.hash, was: text.text };
+}
+
+/** What the save sends: what was opened, never the doc as it reads now. */
+export const kinDocEditInput = (
+  orgId: KinOrgId,
+  opened: KinDocEditOpened,
+  text: string,
+  clientRequestId: string,
+): KinDocEditSectionInput => ({
+  orgId,
+  key: opened.key,
+  section: opened.section,
+  hash: opened.hash,
+  text,
+  clientRequestId,
+});
+
+export type KinDocEditOutcome =
+  | { readonly _tag: "saved"; readonly doc: KinDocDetail }
+  | { readonly _tag: "refused"; readonly text: string; readonly moved: boolean };
+
+/** The host's answer to a hand edit: the new version, or why not in words, the typed text kept. */
+export function kinDocEditOutcome(
+  result: AtomCommandResult<KinDocDetail, unknown>,
+): KinDocEditOutcome {
+  if (AsyncResult.isSuccess(result)) return { _tag: "saved", doc: result.value };
+  const error = squashAtomCommandFailure(result);
+  if (isKinChatError(error) && error.reason === "conflict")
+    return { _tag: "refused", moved: true, text: KIN_DOCS.editMoved };
+  return {
+    _tag: "refused",
+    moved: false,
+    text: kinFailureText(error, KIN_DOCS.editFailed, { gone: KIN_DOCS.gone.title }),
+  };
 }
 
 // Pointing at a part
@@ -823,24 +1230,86 @@ export function kinDocChat(
 const decodeDocCard = Schema.decodeUnknownOption(KinDocCardState);
 
 export interface KinDocCardView {
+  readonly orgId: KinOrgId;
+  readonly widgetId: KinWidget["widgetId"];
+  readonly chatId: KinChatId;
   readonly key: string;
   readonly title: string;
   readonly version: number;
   readonly change: Change;
   /** The version before, for "See changes"; null for a new doc. */
   readonly previousVersion: number | null;
+  /** One draft an agent wrote, with its text and where it goes up; null for any other doc. */
+  readonly draft: KinDocCardDraft | null;
 }
 
 export function kinDocCardView(widget: KinWidget): KinDocCardView | null {
   const state = Option.getOrNull(decodeDocCard(widget.state));
   if (state === null) return null;
   return {
+    orgId: widget.orgId,
+    widgetId: widget.widgetId,
+    chatId: widget.chatId,
+    draft: state.draft ?? null,
     key: state.key,
     title: state.title,
     version: state.version,
     change: state.change,
     previousVersion: state.previousVersion,
   };
+}
+
+/** What a draft's card offers its reader: the text to copy, Send to, and what Kin can't do. */
+export interface KinDocCardDraftView {
+  /** The draft as clean text, without the markdown marks (Copy text). */
+  readonly copyText: string;
+  /** The "Send to" button's label, or null when this reader has nothing to send up. */
+  readonly sendTo: string | null;
+  /** That it went up, and to whom, once sent; or that its owner asked for changes first. */
+  readonly sent: string | null;
+  /** Why Kin can't post it, and who can fix that. */
+  readonly noAccount: string | null;
+}
+
+/**
+ * A draft card for its reader: Copy text for everyone; Send to only for the teammate whose own
+ * draft it is, until sent, while they may still write in that chat. The owner and a co-owner
+ * have nothing to send up, so Copy text only.
+ */
+export function kinDocCardDraft(
+  card: Pick<KinDocCardView, "draft">,
+  ownerLevel: boolean,
+  readOnly: boolean,
+): KinDocCardDraftView | null {
+  const { draft } = card;
+  if (draft === null) return null;
+  return {
+    copyText: kinDocCopyText(draft.text),
+    sendTo:
+      draft.sendTo === undefined || draft.sent !== undefined || ownerLevel || readOnly
+        ? null
+        : KIN_DOCS.sendTo(draft.sendTo.name),
+    sent:
+      draft.sent === undefined
+        ? draft.changesFirst === undefined
+          ? null
+          : KIN_DOCS.changesFirst(draft.changesFirst.name)
+        : draft.sent.held === true
+          ? KIN_DOCS.sentHeld(draft.sent.name)
+          : KIN_DOCS.sentTo(draft.sent.name),
+    noAccount:
+      draft.noAccount === undefined
+        ? null
+        : KIN_DOCS.noAccount(draft.noAccount.service, ownerLevel ? null : draft.noAccount.by.name),
+  };
+}
+
+/** What a "Send to" tap came to: nothing to say once sent (the card says it), else why not. */
+export function kinDocSendUpProblem(result: AtomCommandResult<unknown, unknown>): string | null {
+  if (AsyncResult.isSuccess(result)) return null;
+  return kinFailureText(squashAtomCommandFailure(result), KIN_DOCS.sendFailed, {
+    gone: KIN_DOCS.gone.title,
+  });
 }
 
 /** A card names agents only, and the chat knows those by id. */
@@ -880,8 +1349,10 @@ export interface KinSearchHitView {
   readonly snippet: string | null;
   /** The doc section the words are in, to open it there. */
   readonly section: { readonly id: string; readonly title: string } | null;
+  /** A contact's client, whose page opens for it; null for anything else or from an older host. */
+  readonly clientKey: string | null;
   readonly private: boolean;
-  /** "Closed" for an entry, "Archived" for a doc; null while it is live. */
+  /** "Closed" for an entry, "Deleted" for a doc; null while it is live. */
   readonly closed: string | null;
   readonly accessibilityLabel: string;
 }
@@ -907,20 +1378,22 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
     hit.section === undefined || hit.section.id === "top"
       ? null
       : { id: hit.section.id, title: hit.section.title };
-  const closed = !hit.closed ? null : hit.kind === "docs" ? "Archived" : "Closed";
+  const closed = !hit.closed ? null : hit.kind === "docs" ? KIN_DOCS.archived : "Closed";
+  const kindLabel = hit.kind === "work" && kinIsDealKey(hit.key) ? "Deal" : KIND_LABEL[hit.kind];
   return {
     id: `${hit.recordId}:${hit.section?.id ?? ""}`,
     key: hit.key,
     kind: hit.kind,
-    kindLabel: KIND_LABEL[hit.kind],
+    kindLabel,
     title: hit.title,
     snippet: snippet === "" ? null : snippet,
     section,
+    clientKey: hit.client ?? null,
     // Everything memory keeps is the owner level's; only an entry's own label reads as private.
     private: hit.sensitive && hit.kind !== "memory",
     closed,
     accessibilityLabel: [
-      `${KIND_LABEL[hit.kind]}: ${hit.title}`,
+      `${kindLabel}: ${hit.title}`,
       section?.title ?? null,
       snippet === "" ? null : snippet,
       hit.sensitive && hit.kind !== "memory" ? "Private" : null,

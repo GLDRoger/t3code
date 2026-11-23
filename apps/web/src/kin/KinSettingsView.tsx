@@ -1,7 +1,4 @@
-import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { useAtomValue } from "@effect/atom-react";
-import { kinAgentGroups } from "@t3tools/client-runtime/kin/kinAgentRetire";
-import { kinDomainLabel, KIN_AGENTS_COPY } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import {
   KIN_SETTINGS_MOVED,
   KIN_SETTINGS_PAGE_TITLES,
@@ -10,21 +7,24 @@ import {
   type KinSettingsGroup,
   type KinSettingsPage,
 } from "@t3tools/client-runtime/kin/kinNavigation";
-import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { Link, Navigate, useLocation, useRouter } from "@tanstack/react-router";
-import * as Option from "effect/Option";
-import { AsyncResult } from "effect/reactivity";
 import {
   ArrowLeftIcon,
   BellIcon,
   Building2Icon,
   CalendarCheckIcon,
+  EyeIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleUserIcon,
   FingerprintIcon,
+  HardDriveIcon,
+  LayoutListIcon,
+  SlidersHorizontalIcon,
   PaletteIcon,
   PlugIcon,
+  TrendingUpIcon,
   BrainIcon,
   SettingsIcon,
   BotIcon,
@@ -35,24 +35,12 @@ import { useState } from "react";
 
 import { AppRouteModal, AppRouteModalClose } from "../components/AppRouteModal";
 import { ApprovalsSettings } from "../components/settings/ApprovalsSettings";
-import { SettingsPageContainer, SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
 } from "../components/WorkspaceBreadcrumb";
-import {
-  AlertDialog,
-  AlertDialogClose,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPopup,
-  AlertDialogTitle,
-} from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import {
   SidebarContent,
   SidebarGroup,
@@ -60,39 +48,37 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "../components/ui/sidebar";
-import {
-  Select,
-  SelectItem,
-  SelectPopup,
-  SelectTrigger,
-  SelectValue,
-} from "../components/ui/select";
-import { isChatOnlySession, signOutThisBrowser } from "../environments/primary";
-import { useTheme } from "../hooks/useTheme";
+import { isChatOnlySession } from "../environments/primary";
 import { cn } from "../lib/utils";
-import type { ThemePreferenceMode } from "../themePalette";
-import { KinAgentDefaultsSetting } from "./KinAgentsSetting";
-import { withKinAgentPage } from "./kinPlaces";
-import { KinCheckInsSetting } from "./KinCheckIns";
+import { KinCheckInsPage } from "./KinCheckIns";
 import { kinClient } from "./kinClient";
-import { KinCompanyProfileSettings } from "./KinCompanyProfile";
-import { KinCompanyTimeZoneSetting } from "./KinCompanyTimeZone";
-import { KinConnectionsSettings } from "./KinConnections";
-import { KinDailyLimitSetting } from "./KinDailyLimit";
-import { KinMemoryView } from "./KinMemoryView";
 import { KinSettingsNotifications } from "./KinNotifications";
-import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
-import { KinProfileBody, useKinMe } from "./KinProfileSheet";
+import { kinNewLeadTarget } from "./KinNewLeadButton";
+import { kinSettingsShown } from "./kinNoCode";
+import { KinRecommendationsSettings } from "./KinRecommendations";
 import {
   closeKinSettings,
-  kinSettingsFindIn,
   kinSettingsSectionIn,
   openKinSettings,
+  useKinSettingLanding,
 } from "./kinSettingsAddress";
-import { rememberKinTeammate } from "./kinTeammateMark";
+import { kinSettingsPageHolding } from "./kinSettingsSearch";
 import { KinTeamView } from "./KinTeamView";
-import { useKinHost, useKinWorkingAgents } from "./useKinHost";
-import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
+import { useKinHost } from "./useKinHost";
+import { useKinSectionOn } from "./useKinShell";
+import { useKinOwnerLevel, useKinPlaceReach, useKinSeesClients } from "./useKinOwnerLevel";
+import { KinAgentsPage } from "./settings/KinAgentsPage";
+import { KinAppearancePage } from "./settings/KinAppearancePage";
+import { KinCompanyPage } from "./settings/KinCompanyPage";
+import { KinConnectionsPage } from "./settings/KinConnectionsPage";
+import { KinDealsPage } from "./settings/KinDealsPage";
+import { KinSectionsPage } from "./settings/KinSectionsPage";
+import { KinHostPage } from "./settings/KinHostPage";
+import { KinMemoryPage } from "./settings/KinMemoryPage";
+import { KinProfilePage } from "./settings/KinProfilePage";
+import { KinWatchLogPage } from "./settings/KinWatchLogPage";
+import { KinSettingsTrail } from "./settings/KinSettingsSubpage";
+import type { KinSettingsTarget } from "./settings/kinSettingsTarget";
 
 const KIN_SETTINGS_TITLE = "Settings";
 
@@ -103,10 +89,15 @@ const PAGE_ICON: Record<KinSettingsPage, LucideIcon> = {
   team: UsersIcon,
   agents: BotIcon,
   "check-ins": CalendarCheckIcon,
+  watches: EyeIcon,
   connections: PlugIcon,
+  sections: LayoutListIcon,
+  deals: TrendingUpIcon,
   memory: BrainIcon,
   company: Building2Icon,
   approvals: FingerprintIcon,
+  host: HardDriveIcon,
+  recommendations: SlidersHorizontalIcon,
 };
 
 /**
@@ -125,14 +116,23 @@ const THIS_COMPUTER = [
   { to: "/settings/general", label: "All app settings" },
 ] as const;
 
-interface KinSettingsTarget {
-  readonly environmentId: EnvironmentId;
-  readonly orgId: KinOrgId;
-}
-
 function useKinSettingsGroups(environmentId: EnvironmentId): ReadonlyArray<KinSettingsGroup> {
   const ownerLevel = useKinOwnerLevel(environmentId);
-  return kinSettingsGroups({ ownerLevel, computer: !isChatOnlySession(), notifications: true });
+  // A teammate's Deals page goes with Deals; the owner level keeps it, for its switch.
+  const seesClients = useKinSeesClients(environmentId);
+  const dealsOn = useKinSectionOn(environmentId, "deals");
+  const deals = seesClients && dealsOn;
+  // The owner alone, as the host gates `kin.recommendations.*`: a co-owner sees none of it.
+  const recommendations = useAtomValue(
+    kinClient.recommendationAskAgain.permissionAtom(environmentId),
+  );
+  return kinSettingsGroups({
+    ownerLevel,
+    computer: !isChatOnlySession(),
+    notifications: true,
+    recommendations,
+    deals,
+  });
 }
 
 /** The gear on Chats on a narrow window, where there is no sidebar corner for it. */
@@ -161,9 +161,20 @@ export function KinSettingsMoved(props: {
   readonly fallback: React.ReactNode;
 }) {
   const target = kinNewLeadTarget(useKinHost());
+  const hash = useLocation({ select: (location) => location.hash.replace(/^#/, "") });
+  // As the address named it on arrival; the redirect itself takes the hash away.
+  const [found] = useState(hash);
   if (target === null) return props.fallback;
-  return <Navigate to="/kin" search={{ settings: props.page }} replace />;
+  // The hash is the setting a settings search found, so Settings opens at it.
+  const settings = kinSettingsPageHolding(props.page, found);
+  return (
+    <Navigate to="/kin" search={found === "" ? { settings } : { settings, at: found }} replace />
+  );
 }
+
+// A still ring, not the focus outline, so a click marks the row as Enter does; no motion.
+const KIN_FOUND_MARK =
+  "[&_[data-kin-setting-found]]:rounded-xl [&_[data-kin-setting-found]]:outline-none [&_[data-kin-setting-found]]:ring-2 [&_[data-kin-setting-found]]:ring-primary/60 [&_[data-kin-setting-found]]:ring-offset-4 [&_[data-kin-setting-found]]:ring-offset-background";
 
 /** Settings, open over the Kin page on screen while the address names a section. */
 export function KinSettingsModalHost() {
@@ -192,6 +203,10 @@ function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly 
   const page = kinSettingsPageOf(wanted, groups);
   const waiting = !atIndex && page !== wanted && !known;
   const show = (section: KinSettingsPage | "") => openKinSettings(router.history, section);
+  const landing = useKinSettingLanding();
+  const [backSlot, setBackSlot] = useState<HTMLElement | null>(null);
+  const [trailSlot, setTrailSlot] = useState<HTMLElement | null>(null);
+  const [scroller, setScroller] = useState<HTMLElement | null>(null);
   return (
     <AppRouteModal label={KIN_SETTINGS_TITLE} onClose={() => closeKinSettings(router.history)}>
       <div className="relative flex min-h-0 flex-1">
@@ -215,16 +230,17 @@ function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly 
         <div
           className={cn("flex min-h-0 min-w-0 flex-1 flex-col", atIndex ? "max-md:hidden" : null)}
         >
-          <header className="flex h-12 shrink-0 items-center gap-2 border-b ps-2 pe-2 md:ps-5">
+          <header className="group/kin-settings-header flex h-12 shrink-0 items-center gap-2 border-b ps-2 pe-2 md:has-[[data-kin-settings-back]]:ps-2 md:ps-5">
             <Button
               size="icon-sm"
               variant="ghost"
               aria-label="Back to Settings"
-              className="md:hidden"
+              className="md:hidden group-has-[[data-kin-settings-back]]/kin-settings-header:hidden"
               onClick={() => show("")}
             >
               <ArrowLeftIcon />
             </Button>
+            <span ref={setBackSlot} className="contents" />
             <WorkspaceBreadcrumb ariaLabel={KIN_SETTINGS_TITLE}>
               <WorkspaceBreadcrumbItem>
                 <span className="truncate">{KIN_SETTINGS_TITLE}</span>
@@ -233,13 +249,27 @@ function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly 
               <WorkspaceBreadcrumbItem current>
                 <h2 className="truncate">{KIN_SETTINGS_PAGE_TITLES[page]}</h2>
               </WorkspaceBreadcrumbItem>
+              <span ref={setTrailSlot} className="contents" />
             </WorkspaceBreadcrumb>
             <div className="ms-auto flex shrink-0 items-center">
               <AppRouteModalClose />
             </div>
           </header>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-            {waiting ? null : <KinSettingsPageBody page={page} target={target} />}
+          <div
+            ref={(node) => {
+              landing(node);
+              setScroller(node);
+            }}
+            className={cn(
+              // A stable gutter, so a page tall enough to scroll keeps its column where the rest have it.
+              "flex min-h-0 flex-1 flex-col overflow-y-auto [scrollbar-gutter:stable]",
+              KIN_FOUND_MARK,
+            )}
+          >
+            <KinSettingsTrail value={{ back: backSlot, trail: trailSlot, scroller }}>
+              {/* Keyed by page, so a drill-in left open on one page never shows on the next. */}
+              {waiting ? null : <KinSettingsPageBody key={page} page={page} target={target} />}
+            </KinSettingsTrail>
           </div>
         </div>
       </div>
@@ -270,7 +300,7 @@ function KinSettingsMenu(props: {
                 </SidebarMenuButton>
               </SidebarMenuItem>
               {computerOpen
-                ? THIS_COMPUTER.map((item) => (
+                ? kinSettingsShown(THIS_COMPUTER).map((item) => (
                     <SidebarMenuItem key={item.to}>
                       <SidebarMenuButton render={<Link to={item.to} />}>
                         <span className="truncate">{item.label}</span>
@@ -316,230 +346,37 @@ function KinSettingsPageBody(props: {
   readonly target: KinSettingsTarget;
 }) {
   const { target } = props;
+  // Each page is one component in its own file, so pages change without touching this one.
   switch (props.page) {
     case "profile":
-      return <KinSettingsProfile {...target} />;
+      return <KinProfilePage {...target} />;
     case "notifications":
-      return <KinSettingsNotifications />;
+      return <KinSettingsNotifications {...target} />;
     case "appearance":
-      return <KinSettingsAppearance />;
+      return <KinAppearancePage />;
     case "team":
       return <KinTeamView key={target.orgId} {...target} />;
     case "agents":
-      return <KinSettingsAgents {...target} />;
+      return <KinAgentsPage {...target} />;
     case "check-ins":
-      return (
-        <SettingsPageContainer>
-          <KinCheckInsSetting inDialog />
-        </SettingsPageContainer>
-      );
+      return <KinCheckInsPage />;
+    case "watches":
+      return <KinWatchLogPage key={target.orgId} {...target} />;
     case "connections":
-      return (
-        <SettingsPageContainer>
-          <KinConnectionsSettings />
-        </SettingsPageContainer>
-      );
+      return <KinConnectionsPage />;
+    case "sections":
+      return <KinSectionsPage />;
+    case "deals":
+      return <KinDealsPage />;
     case "memory":
-      return <KinSettingsMemory {...target} />;
+      return <KinMemoryPage {...target} />;
     case "company":
-      return (
-        <SettingsPageContainer>
-          <SettingsSection {...searchableSetting("company-details")} variant="plain">
-            <KinCompanyProfileSettings />
-          </SettingsSection>
-          <KinCompanyTimeZoneSetting />
-          <KinDailyLimitSetting />
-        </SettingsPageContainer>
-      );
+      return <KinCompanyPage />;
     case "approvals":
       return <ApprovalsSettings />;
+    case "host":
+      return <KinHostPage {...target} />;
+    case "recommendations":
+      return <KinRecommendationsSettings key={target.orgId} {...target} />;
   }
-}
-
-function KinSettingsProfile(props: KinSettingsTarget) {
-  const me = useKinMe(props.environmentId, props.orgId);
-  return (
-    <div className="mx-auto flex w-full max-w-xl flex-col gap-6 p-4 sm:p-6">
-      {me === null ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      ) : (
-        <KinProfileBody {...props} personId={me} />
-      )}
-      {/* A teammate's browser is a chat-only session; the owner's never is. */}
-      {isChatOnlySession() ? <KinLeaveTeam /> : null}
-    </div>
-  );
-}
-
-/**
- * The phone's Leave this team: this browser forgets the team. On the web that ends its own
- * session on the host, so a shared computer is left signed out, and shows the access-ended page.
- */
-function KinLeaveTeam() {
-  const [asking, setAsking] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const leave = async () => {
-    setBusy(true);
-    setFailed(false);
-    try {
-      await signOutThisBrowser();
-    } catch {
-      setBusy(false);
-      setFailed(true);
-      return;
-    }
-    rememberKinTeammate("left");
-    window.location.assign("/pair");
-  };
-  return (
-    <section className="flex flex-col items-start gap-2 border-t pt-6">
-      <Button size="sm" variant="destructive-outline" onClick={() => setAsking(true)}>
-        {KIN_LEAVE_TEAM.button}
-      </Button>
-      {failed ? (
-        <p role="alert" className="text-xs text-destructive-foreground">
-          {KIN_LEAVE_TEAM.failed}
-        </p>
-      ) : null}
-      <AlertDialog open={asking} onOpenChange={(open) => !busy && setAsking(open)}>
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{KIN_LEAVE_TEAM.title}</AlertDialogTitle>
-            <AlertDialogDescription>{KIN_LEAVE_TEAM.detail}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" />} disabled={busy}>
-              Cancel
-            </AlertDialogClose>
-            <Button
-              variant="destructive"
-              disabled={busy}
-              aria-busy={busy}
-              onClick={() => {
-                setAsking(false);
-                void leave();
-              }}
-            >
-              {KIN_LEAVE_TEAM.confirm}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
-    </section>
-  );
-}
-
-const KIN_LEAVE_TEAM = {
-  button: "Leave this team",
-  title: "Leave this team?",
-  detail: KIN_DEVICE_COPY.leave("browser"),
-  confirm: "Leave",
-  failed: "Couldn't sign this browser out. Nothing changed.",
-} as const;
-
-const APPEARANCE_LABELS: Record<ThemePreferenceMode, string> = {
-  system: "Match this device",
-  light: "Light",
-  dark: "Dark",
-};
-
-/** Light, dark or the device's own, for this browser; the app's theme library is under This computer. */
-function KinSettingsAppearance() {
-  const { appearanceMode, setAppearanceMode } = useTheme();
-  return (
-    <div className="mx-auto flex w-full max-w-xl flex-col gap-2 p-4 sm:p-6">
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex flex-col gap-0.5">
-          <h2 className="text-sm font-medium text-foreground">Theme</h2>
-          <p className="text-xs text-muted-foreground">On this browser.</p>
-        </div>
-        <Select
-          value={appearanceMode}
-          onValueChange={(value) => {
-            if (value === "system" || value === "light" || value === "dark")
-              setAppearanceMode(value);
-          }}
-        >
-          <SelectTrigger size="sm" className="w-48" aria-label="Theme">
-            <SelectValue>{APPEARANCE_LABELS[appearanceMode]}</SelectValue>
-          </SelectTrigger>
-          <SelectPopup align="end" alignItemWithTrigger={false}>
-            {(["system", "light", "dark"] as const).map((mode) => (
-              <SelectItem key={mode} hideIndicator value={mode}>
-                {APPEARANCE_LABELS[mode]}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
-      </div>
-    </div>
-  );
-}
-
-/** The agents, each opening its chat (where its sheet is), and a way to add another. */
-function KinSettingsAgents(props: KinSettingsTarget) {
-  const { environmentId, orgId } = props;
-  const result = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
-  const working = useKinWorkingAgents(environmentId);
-  const canAdd = useAtomValue(kinClient.leadCreate.permissionAtom(environmentId));
-  const all = Option.getOrNull(AsyncResult.value(result))?.leads ?? null;
-  const agents = all === null ? null : kinAgentGroups(all).active;
-  return (
-    <div className="mx-auto flex w-full max-w-xl flex-col gap-4 p-4 sm:p-6">
-      {canAdd ? (
-        <Button
-          size="sm"
-          className="self-end"
-          onClick={() => openKinLeadForm({ ...props, lead: null })}
-        >
-          New agent
-        </Button>
-      ) : null}
-      {agents === null ? (
-        <p className="text-sm text-muted-foreground">
-          {AsyncResult.isFailure(result) ? KIN_AGENTS_COPY.loadFailed : "Loading…"}
-        </p>
-      ) : agents.length === 0 ? (
-        <Empty size="compact">
-          <EmptyHeader>
-            <EmptyTitle>No agents yet</EmptyTitle>
-            <EmptyDescription>{KIN_AGENTS_COPY.explain}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      ) : (
-        <ul className="flex flex-col divide-y rounded-lg border">
-          {agents.map((agent) => (
-            <li key={agent.agentId}>
-              <Link
-                // Over the Kin page under Settings, which closes as the agent's page opens.
-                to="."
-                search={(prev) => withKinAgentPage(prev, agent.agentId)}
-                className="flex items-center gap-3 px-3 py-2.5 outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
-              >
-                <BotIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-sm font-medium text-foreground">{agent.name}</span>
-                  <span className="truncate text-xs text-muted-foreground">
-                    {kinDomainLabel(agent.domain)}
-                  </span>
-                </span>
-                {working.has(agent.agentId) ? (
-                  <span className="text-xs text-muted-foreground">Working</span>
-                ) : null}
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="text-xs text-muted-foreground">Open an agent to see its page.</p>
-      <KinAgentDefaultsSetting {...props} />
-    </div>
-  );
-}
-
-/** Memory, filtered to what a search result named. */
-function KinSettingsMemory(props: KinSettingsTarget) {
-  const find = useLocation({ select: (location) => kinSettingsFindIn(location.searchStr) });
-  return <KinMemoryView key={`${props.orgId}\u0000${find}`} {...props} find={find} />;
 }

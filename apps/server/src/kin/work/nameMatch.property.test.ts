@@ -57,18 +57,39 @@ const distance = (a: string, b: string): number => {
 };
 
 it.prop(
-  "a name typed exactly, in any case or spacing, finds that one",
-  [candidates, int(0, 7), pick(["upper", "lower", "spaced"])],
+  "a name typed as stored finds that one, and in any case or spacing when no other answers to it",
+  [candidates, int(0, 7), pick(["stored", "upper", "lower", "spaced"])],
   ([all, index, style]) => {
     const one = all[index % all.length]!;
     const text =
-      style === "upper"
-        ? one.name.toUpperCase()
-        : style === "lower"
-          ? one.name.toLowerCase()
-          : `  ${one.name.replace(" ", " - ")} `;
+      style === "stored"
+        ? one.name
+        : style === "upper"
+          ? one.name.toUpperCase()
+          : style === "lower"
+            ? one.name.toLowerCase()
+            : `  ${one.name.replace(" ", " - ")} `;
+    const wanted = fold(one.name);
+    const others = all.some(
+      (other) =>
+        other !== one &&
+        (fold(other.name).startsWith(wanted) || ` ${fold(other.name)} `.includes(` ${wanted} `)),
+    );
     const match = matchName(text, all);
+    if (style !== "stored" && text.trim() !== one.name && others)
+      return match._tag === "ambiguous" && match.items[0] === one;
     return match._tag === "found" && match.item === one;
+  },
+);
+
+it.prop(
+  "a name in another case than stored never picks it over a longer name that starts with it",
+  [pick(WORDS), pick(["rao", "iyer"]), pick(["upper", "lower"])],
+  ([first, last, style]) => {
+    const short = { key: "C-1", name: titled(first) };
+    const long = { key: "C-2", name: titled(`${first} ${last}`) };
+    const match = matchName(style === "upper" ? first.toUpperCase() : first, [long, short]);
+    return match._tag === "ambiguous" && match.items.length === 2 && match.items[0] === short;
   },
 );
 

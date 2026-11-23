@@ -4,14 +4,20 @@ import {
   type AssetResource,
   type AuthSessionId,
 } from "@t3tools/contracts";
+import type { KinOrgId } from "@t3tools/contracts";
+import type { KinVisualBrand } from "@t3tools/shared/kinVisual";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { normalizeAttachmentRelativePath } from "../../attachmentPaths.ts";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import * as SessionStore from "../../auth/SessionStore.ts";
+import { logoFile } from "../gendocs/brand.ts";
 import { KinServer } from "../KinServer.ts";
+import { readProfile } from "../work/companyProfile.ts";
+import { commentFileReadable } from "../work/recordComments.ts";
 import { KIN_ATTACHMENT_ID_PREFIX } from "./KinAttachmentStore.ts";
 import { KinChatService } from "./KinChatService.ts";
 import { KinIdentity } from "./KinIdentity.ts";
@@ -38,11 +44,25 @@ export const authorizeAttachmentRead = Effect.fn("Kin.authorizeAttachmentRead")(
     return session.scopes.every((scope) => scope === AuthKinChatScope) ? yield* refused : undefined;
   }
   if (Option.isNone(kin)) return yield* refused;
+  const sql = Context.getOption(kin.value, SqlClient.SqlClient);
   const readable = yield* Context.get(kin.value, KinIdentity)
     .resolve(session)
     .pipe(
       Effect.flatMap((people) =>
-        Context.get(kin.value, KinChatService).attachmentReadable(people, attachmentId),
+        Context.get(kin.value, KinChatService)
+          .attachmentReadable(people, attachmentId)
+          .pipe(
+            // A file on a task's comment is read by whoever sees the task.
+            Effect.filterOrElse(
+              (onMessage) => onMessage || Option.isNone(sql),
+              () =>
+                Option.isNone(sql)
+                  ? Effect.succeed(false)
+                  : commentFileReadable(people, attachmentId).pipe(
+                      Effect.provideService(SqlClient.SqlClient, sql.value),
+                    ),
+            ),
+          ),
       ),
       // A failed lookup is refused like a stranger: reading is denied by default.
       Effect.orElseSucceed(() => false),
@@ -97,9 +117,33 @@ export interface KinVisualSources {
     readonly attachmentId: string;
     readonly mimeType: string | null;
   }>;
+  /** The company's colours, font and logo, as its pictures have them. */
+  readonly brand?: KinVisualBrand | undefined;
 }
 
 const NO_SOURCES: KinVisualSources = { hosts: [], files: [] };
+/** A logo bigger than this is left out of a chat's page rather than inlined into every load. */
+const INLINE_LOGO_BYTES = 512 * 1024;
+
+/** The company's brand as a chat's page shows it, the logo inlined; none when it can't be read. */
+const visualBrand = Effect.fn("Kin.visualBrand")(function* (orgId: KinOrgId) {
+  const profile = yield* readProfile(orgId).pipe(Effect.option);
+  if (Option.isNone(profile)) return undefined;
+  const { brand, logo } = profile.value;
+  const file =
+    logo === null || logo.bytes > INLINE_LOGO_BYTES
+      ? null
+      : yield* logoFile(logo).pipe(Effect.orElseSucceed(() => null));
+  return {
+    primary: brand.primaryColor,
+    secondary: brand.secondaryColor,
+    font: brand.font,
+    logo:
+      logo === null || file === null
+        ? null
+        : `data:${logo.mimeType};base64,${Buffer.from(file.bytes).toString("base64")}`,
+  } satisfies KinVisualBrand;
+});
 
 /**
  * What a chat's page may load besides itself. A failed lookup yields nothing, so the page is
@@ -115,9 +159,18 @@ export const kinVisualSources = Effect.fn("Kin.visualSources")(function* (attach
       Effect.flatMap((sources) =>
         Option.isNone(sources)
           ? Effect.succeed(NO_SOURCES)
-          : Context.get(services.value, KinVisualHosts)
-              .served(sources.value.orgId)
-              .pipe(Effect.map((hosts) => ({ hosts, files: sources.value.files }))),
+          : Effect.all({
+              hosts: Context.get(services.value, KinVisualHosts).served(sources.value.orgId),
+              // A brand that can't be read is no brand: the page keeps the theme's look.
+              brand: Option.match(Context.getOption(services.value, SqlClient.SqlClient), {
+                onNone: () => Effect.undefined,
+                onSome: (sql) =>
+                  visualBrand(sources.value.orgId).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                    Effect.catchCause(() => Effect.undefined),
+                  ),
+              }),
+            }).pipe(Effect.map((found) => ({ ...found, files: sources.value.files }))),
       ),
       Effect.tapError((cause) =>
         Effect.logWarning("Kin could not read a visual's sources.", cause),

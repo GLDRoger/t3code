@@ -5,17 +5,15 @@ import {
   verifyPersistedAttachmentUpload,
 } from "@t3tools/client-runtime/state/attachments";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { msg } from "gt-react-native";
+import { m } from "../i18n/messages";
 import type {
   ChatFileAttachment,
   ChatImageAttachment,
   EnvironmentId,
   UploadChatImageAttachment,
 } from "@t3tools/contracts";
-import {
-  AuthKinChatScope,
-  AuthOrchestrationOperateScope,
-  PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
-} from "@t3tools/contracts";
+import { PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
@@ -37,11 +35,10 @@ import {
   attachmentUploadError,
   type AttachmentUploadError,
 } from "@t3tools/client-runtime/state/attachment-uploads";
+import { mayUploadAttachments } from "@t3tools/client-runtime/kin/kinAttachmentAccess";
 
-// A Kin teammate's chat-only session uploads too: the host lets it ask for upload URLs.
 const mayUpload = (environmentId: EnvironmentId) =>
-  readEnvironmentScope(environmentId, AuthOrchestrationOperateScope) ||
-  readEnvironmentScope(environmentId, AuthKinChatScope);
+  mayUploadAttachments((scope) => readEnvironmentScope(environmentId, scope));
 
 export type UploadedMobileAttachment =
   | UploadChatImageAttachment
@@ -142,7 +139,9 @@ function supportedImageWireMimeType(
   const mimeType = PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES.find(
     (type) => type === attachment.mimeType.toLowerCase() || type === inferred,
   );
-  if (!mimeType) throw new Error(`Unsupported image type for '${attachment.name}'.`);
+  if (!mimeType) {
+    throw new Error(m(msg("Unsupported image type for ''{name}''.", { name: attachment.name })));
+  }
   return mimeType;
 }
 
@@ -218,7 +217,7 @@ async function uploadFileBytes(
   const { File, Paths, UploadType } = await import("expo-file-system");
   if (signal.aborted) throw new Error("Upload cancelled.");
   if (!mayUpload(environmentId)) {
-    throw new Error("This connection cannot upload attachments.");
+    throw new Error(m(msg("This connection cannot upload attachments.")));
   }
   const fileUri = attachment.fileUri;
   const inlineDataUrl = attachment.type === "image" ? attachment.dataUrl : undefined;
@@ -252,7 +251,14 @@ async function uploadFileBytes(
         : {}),
     });
     if (result.status < 200 || result.status >= 300) {
-      throw new Error(`Upload failed for '${attachment.name}' (${result.status}).`);
+      throw new Error(
+        m(
+          msg("Upload failed for ''{name}'' ({status}).", {
+            name: attachment.name,
+            status: String(result.status),
+          }),
+        ),
+      );
     }
   } finally {
     if (fileUri === undefined && file.exists) file.delete();
@@ -261,7 +267,7 @@ async function uploadFileBytes(
 
 function requireUploadAccess(environmentId: EnvironmentId): void {
   if (!mayUpload(environmentId)) {
-    throw new Error("This connection cannot upload attachments.");
+    throw new Error(m(msg("This connection cannot upload attachments.")));
   }
 }
 
@@ -303,7 +309,7 @@ export const uploadComposerAttachment = Effect.fn("uploadComposerAttachment")(fu
       appAtomRegistry.get(environmentSession.preparedConnectionValueAtom(environmentId)),
     )
   ) {
-    return yield* attachmentUploadError(new Error("The environment is not connected."));
+    return yield* attachmentUploadError(new Error(m(msg("The environment is not connected."))));
   }
   const result = yield* runAttachmentUploadCycle({
     registry: appAtomRegistry,
@@ -335,10 +341,10 @@ export const uploadComposerAttachment = Effect.fn("uploadComposerAttachment")(fu
   }
   return yield* attachmentUploadError(
     result.step === "resolve-url" && !mayUpload(environmentId)
-      ? new Error("This connection cannot upload attachments.")
+      ? new Error(m(msg("This connection cannot upload attachments.")))
       : result.error instanceof Error
         ? result.error
-        : new Error(`Upload failed for '${attachment.name}'.`),
+        : new Error(m(msg("Upload failed for ''{name}''.", { name: attachment.name }))),
   );
 });
 

@@ -1,11 +1,14 @@
+import * as KinShell from "../shell/KinShell.ts";
 import {
   KinChatError,
   KinCompanyBank,
   KinCompanyBrand,
   KinCompanyProfileSetInput,
+  type KinDateRow,
+  kinDateRowLate,
   KinDay,
   KinGstin,
-  KinListFieldType,
+  KinWritableListFieldType,
   KinListId,
   type KinMoney,
   KinRecordKey,
@@ -13,6 +16,7 @@ import {
   KinRecordState,
   KinSacCode,
   KinWakeupId,
+  KinWidgetId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
@@ -20,6 +24,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
@@ -27,10 +32,13 @@ import { takeLogo } from "../gendocs/brand.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
+import * as CardActions from "../widgets/cardActions.ts";
+import { sealPlans } from "../widgets/cardPlans.ts";
 import { budgetsAnswer, budgetsView, setBudget } from "./budgets.ts";
 import {
   attachChangeCard,
   changeLines,
+  countryFirst,
   proposeChange,
   readProfile,
   replaceOlderChanges,
@@ -49,25 +57,48 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
-import { homeCurrency } from "./companyProfile.ts";
-import { dayIn, formatMinor, formatMoney, parseAmount } from "./money.ts";
-import { dates, moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
+import { partnersAnswer, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
+import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
+import { homeCurrency, notRegisteredFact } from "./companyProfile.ts";
+import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
+import { parseFields } from "./lists.ts";
+import {
+  dates,
+  datesOnce,
+  invoiceDays,
+  isInvoice,
+  moneySection,
+  moneySummaryForAgent,
+  ownerLevelStillToInvoice,
+} from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
-import { endOfDay, iso, notFound, ownerZone } from "./recordRows.ts";
+import {
+  endOfDay,
+  iso,
+  isSuggestion,
+  notFound,
+  ownerZone,
+  recordName,
+  suggestedStateLabel,
+} from "./recordRows.ts";
 import {
   attachCard,
   carryOut,
   type FieldDef,
+  isUnissuedDraft,
   listDef,
   PRESET_IDS,
   propose,
   proposalFor,
   stateLabel,
+  storedProposal,
   isRecipeList,
   listOrPreset,
   unknownList,
 } from "./registers.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
+import { DAY_MS } from "../durations.ts";
+import { setAsideOverdue } from "../pulse/invoiceAsides.ts";
 
 /** The lead tools for lists and money. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -87,6 +118,9 @@ const tooLongForCard = (detail: string) =>
  * was made for, bound to it by `bind` in the card's own commit. A retry with the same
  * `clientMessageId` finds the same card. Its detail is shown whole or not at all.
  */
+/** The yes option's id on an `askOwner` card: it is listed first. */
+const OWNER_CARD_YES = "option-1";
+
 export const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
   lead: Lead,
   input: {
@@ -121,10 +155,10 @@ export const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
   return widget.widgetId;
 });
 
-const Label = TrimmedNonEmptyString.check(Schema.isMaxLength(60));
+const Label = KinToolText(60);
 const FieldInput = Schema.Struct({
   label: Label,
-  type: KinListFieldType,
+  type: KinWritableListFieldType,
   choices: Schema.optional(Schema.Array(Label).check(Schema.isMaxLength(30))),
   link: Schema.optional(Schema.Literals(["clients", "projects"])),
   sensitive: Schema.optional(Schema.Boolean),
@@ -139,7 +173,7 @@ const StateNames = Schema.Struct({
 
 export const DefineInput = Schema.Struct({
   sourceEventId: TurnEvent,
-  proposal: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(40))).annotate({
+  proposal: Schema.optional(KinToolText(40)).annotate({
     description: "A proposal this tool returned in an earlier turn: creates exactly that.",
   }),
   template: Schema.optional(Schema.Literals(PRESET_IDS)).annotate({
@@ -247,7 +281,7 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
       return made;
     }
   }
-  const proposal = yield* proposalFor(lead.orgId, input);
+  const asked = yield* proposalFor(lead.orgId, input);
   const chat = yield* turnChat(lead);
   if (chat === undefined) return yield* invalid("This turn has no chat to propose a list in.");
   const proposalId = yield* propose({
@@ -255,9 +289,11 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
     agentId: lead.agentId,
     wakeupId: lead.wakeupId,
     chatId: chat.chatId,
-    proposal,
+    proposal: asked,
     now,
   });
+  // An open proposal of this list is the one its card shows, so the turn reads that one.
+  const proposal = (yield* storedProposal(lead.orgId, proposalId)) ?? asked;
   const shown =
     proposal._tag === "new"
       ? {
@@ -275,6 +311,16 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
           fields: shownFields(proposal.fields),
           categories: [...proposal.categories],
         };
+  // A new list's yes runs as the card's own action, so the tap makes it with no turn to wake;
+  // a turn that couldn't make it here offers the plain card. A typed yes works without either.
+  const chatId = KinChatId.make(chat.chatId);
+  const create =
+    proposal._tag === "new"
+      ? yield* CardActions.draw(lead, chatId, { kind: "create_list", target: proposalId }).pipe(
+          Effect.map((drawn) => drawn.plan),
+          Effect.catchTags({ KinChatError: () => Effect.undefined }),
+        )
+      : undefined;
   // The card is how a tap answers this proposal and no other; a typed yes still works without it.
   const card = yield* askOwner(
     lead,
@@ -292,7 +338,18 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
       yes: proposal._tag === "new" ? "Create it" : "Add them",
       no: "Not now",
     },
-    (widgetId) => attachCard({ orgId: lead.orgId, proposalId, widgetId }),
+    (widgetId) =>
+      Effect.gen(function* () {
+        yield* attachCard({ orgId: lead.orgId, proposalId, widgetId });
+        if (create !== undefined)
+          yield* sealPlans({
+            orgId: lead.orgId,
+            chatId,
+            widgetId: KinWidgetId.make(widgetId),
+            plans: [{ optionId: OWNER_CARD_YES, plan: create }],
+            now,
+          });
+      }),
   ).pipe(
     Effect.catchTags({
       KinChatError: (error) =>
@@ -308,7 +365,7 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
     next:
       card === undefined
         ? "Nothing is created yet. Put these fields to the owner in one short message and ask. Once they say yes, call list_define with this proposal in that later turn."
-        : "Nothing is created yet. Kin showed the owner these fields on a card to tap; ask in one short line without listing them again. Once they tap yes or say yes, call list_define with this proposal in that later turn.",
+        : "Nothing is created yet. Kin has posted the card that asks the owner, with Create it and Not now: add no kin_ask or card of your own. Ask in one short line without listing the fields again. Once they tap yes or say yes, call list_define with this proposal in that later turn.",
   };
 });
 export const define = leadTool("KinWorkTools.define", runDefine);
@@ -316,11 +373,11 @@ export const define = leadTool("KinWorkTools.define", runDefine);
 export const PaymentInput = Schema.Struct({
   sourceEventId: TurnEvent,
   key: KinRecordKey.annotate({ description: "The invoice, such as INV-4." }),
-  amount: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+  amount: Schema.optional(KinToolText(60)).annotate({
     description:
       'The cash that came in, as said: "1,20,000" or "1.2 lakh". In the invoice\'s currency.',
   }),
-  withheld: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+  withheld: Schema.optional(KinToolText(60)).annotate({
     description:
       'TDS the client deducted, as said, such as "18,000": it settles the invoice but is not cash received.',
   }),
@@ -328,7 +385,7 @@ export const PaymentInput = Schema.Struct({
     description: "The day it was received, in the owner's time zone.",
   }),
   note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
-  void: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+  void: Schema.optional(KinToolText(60)).annotate({
     description: "A paymentId from record_get to take back instead.",
   }),
 });
@@ -352,6 +409,15 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
   const writer = yield* writerFor(lead);
   const before = yield* records.get(lead.orgId, input.key);
   if (before === undefined) return yield* notFound(input.key);
+  // A suggestion's refusal says who keeps it, which comes before issuing it.
+  if (
+    input.void === undefined &&
+    !isSuggestion(before) &&
+    (yield* isUnissuedDraft(lead.orgId, before))
+  )
+    return yield* invalid(
+      `${before.key} is a draft, so nothing is owed on it yet. Issue it first with kin_issue, which takes its date as the issue day (else today; set date with record_update first if the owner gave another), then record the payment.`,
+    );
   let paymentId: string | undefined;
   let tdsPaymentId: string | undefined;
   if (input.void !== undefined) {
@@ -390,7 +456,7 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
         if (earlier.length > 0 && !(same("cash", cash) && same("tds", tds)))
           return yield* new KinChatError({
             reason: "not_allowed",
-            message: `This message already recorded a different payment on ${before.key} for ${paidOn}. Nothing was recorded. To correct it, void the earlier payment and record the right one from the owner's next message.`,
+            message: `This message already recorded a different payment on ${recordName(before.key, parseFields(before.fieldsJson).number)} for ${paidOn}. Nothing was recorded. To correct it, void the earlier payment and record the right one from the owner's next message.`,
           });
         const one = (money: KinMoney | undefined, withheld: boolean) =>
           money === undefined
@@ -436,25 +502,36 @@ export const MoneyResult = Schema.Struct({
   /** Per open project: what is agreed but not invoiced yet, beside what is owed on invoices. */
   stillToInvoice: Schema.optional(Schema.Unknown),
   nothing: Schema.optional(Schema.Literal(true)),
+  bank: Schema.optional(BankAnswer),
+  /** The company said it is not registered for its tax. */
+  taxNote: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
 const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   const now = yield* Clock.currentTimeMillis;
   // In a turn others read: figures of only the money lines they all see, such as their project's.
   const team = yield* viewOf(lead);
-  const summary = yield* moneySummary(
-    lead.orgId,
-    now,
-    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const shell = yield* KinShell.get(lead.orgId);
+  const invoices = KinShell.sectionOn(shell, "invoices");
+  const summary = yield* moneySummaryForAgent(lead.orgId, now, viewer);
+  const section = moneySection(
+    summary,
+    summary.timeZone,
+    invoices ? yield* setAsideOverdue({ orgId: lead.orgId, now, viewer }) : [],
   );
-  const section = moneySection(summary, summary.timeZone);
-  const toInvoice = team === undefined ? yield* ownerLevelStillToInvoice(lead.orgId) : [];
+  const toInvoice =
+    team === undefined && invoices ? yield* ownerLevelStillToInvoice(lead.orgId) : [];
+  const taxNote =
+    team === undefined ? notRegisteredFact(yield* readProfile(lead.orgId)) : undefined;
   return {
     asOf: iso(now),
     ...(section === undefined && toInvoice.length === 0
       ? { nothing: true as const }
       : { summary: section }),
     ...(toInvoice.length === 0 ? {} : { stillToInvoice: toInvoice }),
+    bank: bankAnswer(yield* bankKnown(lead.orgId)),
+    ...(taxNote === undefined ? {} : { taxNote }),
     sensitive: true as const,
   };
 });
@@ -462,9 +539,9 @@ export const money = leadTool("KinWorkTools.money", runMoney);
 
 const Month = Schema.String.check(Schema.isPattern(/^\d{4}-(?:0[1-9]|1[0-2])$/));
 export const MoneyQueryInput = Schema.Struct({
-  view: Schema.Literals(["cash", "outlook", "budgets"]).annotate({
+  view: Schema.Literals(["cash", "outlook", "budgets", "partners"]).annotate({
     description:
-      "cash: balances from the bank statements Kin read. outlook: due in and out ahead, and runway. budgets: this month's spending against each limit.",
+      "cash: balances from the bank statements Kin read. outlook: due in and out ahead, and runway. budgets: this month's spending against each limit. partners: what the company owes each partner back for expenses they paid themselves.",
   }),
   days: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(366)),
@@ -479,18 +556,27 @@ export const MoneyQueryResult = Schema.Struct({
   asOf: Schema.String,
   view: Schema.String,
   answer: Schema.Unknown,
+  bank: Schema.optional(BankAnswer),
   sensitive: Schema.Literal(true),
 });
 const runMoneyQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof MoneyQueryInput.Type) {
   yield* admitted(lead, "money_query", input);
   const now = yield* Clock.currentTimeMillis;
+  const cash = input.view === "cash" ? yield* cashPosition(lead.orgId, now) : undefined;
   const answer =
-    input.view === "cash"
-      ? cashAnswer(yield* cashPosition(lead.orgId, now))
+    cash !== undefined
+      ? cashAnswer(cash)
       : input.view === "outlook"
         ? outlookAnswer(yield* outlook(lead.orgId, now, input.days))
-        : budgetsAnswer(yield* budgetsView(lead.orgId, now, input.month));
-  return { asOf: iso(now), view: input.view, answer, sensitive: true as const };
+        : input.view === "partners"
+          ? partnersAnswer(
+              yield* partnersOwed(lead.orgId, yield* homeCurrency(lead.orgId)),
+              yield* partnersUnsaid(lead.orgId, yield* homeCurrency(lead.orgId)),
+              yield* ownerZone(lead.orgId),
+            )
+          : budgetsAnswer(yield* budgetsView(lead.orgId, now, input.month));
+  const bank = bankAnswer(cash?.bank ?? (yield* bankKnown(lead.orgId)), cash !== undefined);
+  return { asOf: iso(now), view: input.view, answer, bank, sensitive: true as const };
 });
 export const moneyQuery = leadTool("KinWorkTools.moneyQuery", runMoneyQuery);
 
@@ -500,7 +586,7 @@ export const BudgetInput = Schema.Struct({
     description: "One of the expenses list's categories.",
   }),
   project: Schema.optional(Project),
-  limit: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+  limit: Schema.NullOr(KinToolText(60)).annotate({
     description: 'The monthly limit as said: "50k", "₹1,20,000". null removes the budget.',
   }),
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
@@ -524,6 +610,7 @@ const runBudget = Effect.fnUntraced(function* (lead: Lead, input: typeof BudgetI
     });
   if (input.category === undefined && input.project === undefined)
     return yield* invalid("A budget is for a category, a project, or a category in a project.");
+  if (input.limit !== null) yield* countryFirst(lead.orgId, { saved: true });
   const expenses = yield* listDef(lead.orgId, "expenses");
   if (expenses === undefined)
     return yield* invalid("There is no expenses list yet: track expenses first.");
@@ -592,8 +679,14 @@ export const DatesResult = Schema.Struct({
       title: Schema.String,
       list: Schema.String,
       state: Schema.String,
-      what: Schema.String,
-      on: Schema.String,
+      /** What the day is and the day, for anything but an invoice. */
+      what: Schema.optional(Schema.String),
+      on: Schema.optional(Schema.String),
+      /** An invoice's days in range, on one entry: issued (a suggestion's "date"), and due. */
+      issued: Schema.optional(Schema.String),
+      date: Schema.optional(Schema.String),
+      due: Schema.optional(Schema.String),
+      /** Its due day has passed. Nothing else is ever late. */
       late: Schema.optional(Schema.Literal(true)),
       amount: Schema.optional(Schema.String),
       sensitive: Schema.optional(Schema.Literal(true)),
@@ -613,36 +706,51 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
       from,
       to,
       lists: input.lists,
+      shell: yield* KinShell.get(lead.orgId),
       open: input.open ?? true,
       limit: input.limit ?? 30,
       viewer: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
     },
     now,
   );
+  const entries = datesOnce(page.rows);
+  const day = (row: KinDateRow) =>
+    row.allDay ? dayIn(Date.parse(row.at), zone) : timeIn(Date.parse(row.at), zone);
   return {
     asOf: iso(now),
-    total: page.total,
-    dates: page.rows.map((row) => ({
-      key: row.record.key,
-      title: row.record.title,
-      list: row.listName,
-      state: row.stateLabel,
-      what: row.label,
-      on: row.allDay ? dayIn(Date.parse(row.at), zone) : row.at,
-      ...(row.record.late ? { late: true as const } : {}),
-      ...(row.record.amount === undefined
-        ? {}
-        : { amount: formatMoney(row.record.amount), sensitive: true as const }),
-      ...(row.record.sensitive || row.record.sensitiveInherited === true
-        ? { sensitive: true as const }
-        : {}),
-    })),
+    // The total counts an invoice's two days twice wherever both are listed.
+    total: page.total - (page.rows.length - entries.length),
+    dates: entries.map((entry): (typeof DatesResult.Type)["dates"][number] => {
+      const row = entry[0]!;
+      const { record } = row;
+      return {
+        key: record.key,
+        title: record.title,
+        list: row.listName,
+        state:
+          record.confirmed || record.state === "dropped"
+            ? row.stateLabel
+            : suggestedStateLabel(record.list ?? "work", record.state, row.stateLabel),
+        ...(isInvoice(entry)
+          ? invoiceDays(entry, day)
+          : {
+              what: row.label,
+              on: day(row),
+              ...(kinDateRowLate(row) ? { late: true as const } : {}),
+            }),
+        ...(record.amount === undefined
+          ? {}
+          : { amount: formatMoney(record.amount), sensitive: true as const }),
+        ...(record.sensitive || record.sensitiveInherited === true
+          ? { sensitive: true as const }
+          : {}),
+      };
+    }),
   };
 });
 export const datesQuery = leadTool("KinWorkTools.dates", runDates);
-const DAY_MS = 24 * 60 * 60 * 1000;
 
-const ProfileText = Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(500)));
+const ProfileText = Schema.NullOr(KinToolText(500));
 export const ProfileInput = Schema.Struct({
   sourceEventId: Schema.optional(TrimmedNonEmptyString),
   set: Schema.optional(
@@ -668,7 +776,7 @@ export const ProfileInput = Schema.Struct({
           upi: Schema.optional(KinCompanyBank.fields.upi),
         }),
       ),
-      logo: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(128)))),
+      logo: Schema.optional(Schema.NullOr(KinToolText(128))),
       brand: Schema.optional(
         Schema.Struct({
           primaryColor: Schema.optional(KinCompanyBrand.fields.primaryColor),
@@ -686,6 +794,8 @@ export const ProfileResult = Schema.Struct({
   /** What a set asked for, waiting on the owner's Confirm on the card Kin showed them. */
   proposed: Schema.optional(Schema.Array(Schema.String)),
   next: Schema.optional(Schema.String),
+  /** The company said it is not registered for its tax. */
+  taxNote: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
 const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof ProfileInput.Type) {
@@ -758,6 +868,7 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
   const kept = (value: Record<string, unknown>) =>
     Object.fromEntries(Object.entries(value).filter(([, one]) => one !== null));
   const shownBank = kept(bank);
+  const taxNote = notRegisteredFact(current);
   return {
     profile: { ...kept(rest), ...(Object.keys(shownBank).length === 0 ? {} : { bank: shownBank }) },
     rev,
@@ -767,6 +878,7 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
           proposed: [...proposed],
           next: "Nothing has changed yet. Kin showed this change on a card in this chat; it applies when they tap Confirm. Say so in one line.",
         }),
+    ...(taxNote === undefined ? {} : { taxNote }),
     sensitive: true as const,
   };
 });

@@ -1,10 +1,14 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { KIN_MARKETING, type KinCampaignResultId } from "./kinMarketing.ts";
 import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
-import { kinOwnerLevel, formatKinWhen } from "@t3tools/contracts";
+import { KIN_CAMPAIGN_SOURCE, kinOwnerLevel, formatKinWhen } from "@t3tools/contracts";
 import type {
   KinAccessMeResult,
   KinClientTouch,
   KinContact,
+  KinContactListInput,
+  KinDealsInput,
+  KinMoney,
   KinOrgId,
   KinPartiesInput,
   KinPerson,
@@ -17,12 +21,15 @@ import type {
   KinProjectState,
   KinProjectsInput,
   KinRecordKey,
+  KinShell,
+  KinTouchLogInput,
   KinWorkHistoryItem,
   KinWorkPrincipal,
 } from "@t3tools/contracts";
 
 import { kinLinkToOpen } from "./kinChatFeed.ts";
-import { kinMoneyText } from "./kinLists.ts";
+import { kinMoneyText, kinRecordName } from "./kinLists.ts";
+import { kinContractLine, kinPromiseOf, type KinPromiseView } from "./kinPromises.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import { KIN_SCOPE_ALL, kinNothingShown, type KinViewerScope } from "./kinViewerScope.ts";
 import {
@@ -34,11 +41,15 @@ import {
   kinWorkName,
   kinWorkPrivacy,
   kinWorkRow,
+  type KinWorkDraft,
   type KinWorkNames,
   type KinWorkPrivacy,
   type KinWorkRef,
   type KinWorkRowView,
 } from "./kinWork.ts";
+import { kinCount } from "./kinCount.ts";
+import { kinSectionNamed, kinSectionOn } from "./kinShell.ts";
+import { Atom } from "effect/reactivity";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -58,6 +69,8 @@ export const KIN_PROJECT_PEOPLE = {
   choose: "Who's on this project",
   detail:
     "People on a project see its tasks, milestones and docs, and are told they were added. Taken off, its tasks leave their list at once.",
+  privateDetail:
+    "People on a private project see its tasks and milestones, not its page or docs, and are told they were added. Taken off, its tasks leave their list at once.",
   agents: "Agents",
   people: "People",
   nobodyLeft: "Everyone is already on it.",
@@ -144,6 +157,8 @@ export const KIN_CLIENTS = {
   noTax: "No GSTIN or state yet. Invoices need one to work out GST.",
   all: "All clients",
   search: "Search clients",
+  /** A client the search found through one of its contacts. */
+  foundContact: (name: string) => `Contact: ${name}`,
   add: "New client",
   loadFailed: "Couldn't load your clients",
   weOwe: "To do for them",
@@ -157,6 +172,10 @@ export const KIN_CLIENTS = {
   noContacts: "No one yet. Add who you deal with there.",
   /** For someone who can't add contacts. */
   noContactsYet: "No contacts yet.",
+  contactsWho: (lookedAfter: string, vendor: boolean) =>
+    vendor
+      ? `${lookedAfter} looks after this one, and adds and changes its contacts.`
+      : `${lookedAfter} looks after this one. They, or anyone with an open deal here, add and change its contacts.`,
   projects: "Projects",
   noProjects: "No projects for them yet.",
   terms: "Terms",
@@ -170,7 +189,6 @@ export const KIN_CLIENTS = {
   noneLogged: "None logged",
   noTouches: "Nothing logged yet. Log a call, meeting or email here, or tell an agent about it.",
   touchNote: "What happened",
-  touchNotePlaceholder: "Spoke to Asha, they want the revised quote by Friday",
   touchWhen: "When",
   touchKind: "How",
   touchSave: "Log it",
@@ -184,12 +202,71 @@ export const KIN_CLIENTS = {
   earlier: "Show earlier",
   edit: "Edit",
   close: "Close client",
+  closeAsk: (name: string) => `Close ${name}?`,
+  closeDetail: "Its to-dos and what needs attention leave its page. You can reopen it from More.",
   reopen: "Reopen",
+  active: "Active",
   closed: "Closed",
   privateLabel: "Keep private",
-  privateOn: "Private. Only you see this client, its projects and what's owed.",
+  privateOn: "Private. Only the owner and co-owners see this client, its projects and what's owed.",
   privateOff: "Your team will be able to see this client. Terms and contact details stay private.",
+  kindProspect: "Prospect",
+  kindClient: "Client",
+  kindVendor: "Vendor",
+  addProspect: "Add a prospect",
+  show: "Show",
+  lookedAfterBy: "Looked after by",
+  lookedAfterMe: "Looked after by me",
+  anyone: "Anyone",
+  me: "Me",
+  someone: "Someone…",
+  order: "Within each: late first, then no next step, then by name.",
+  nextStep: "Next step",
+  noNextStep: "No next step",
+  addNextStep: "Add one",
+  nextStepTitle: "Next step",
+  nextStepPlaceholder: "What happens next, if anything",
+  nextStepWhen: "By",
+  cameFrom: "Came from",
+  tags: "Tags",
+  makeClient: "Make it a client",
+  makeProspect: "Make it a prospect again",
 };
+
+const andList = (names: ReadonlyArray<string>) =>
+  names.length <= 1
+    ? (names[0] ?? "")
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+/**
+ * The line under a client's Keep private switch. Turned on, before it is saved, it names who
+ * stops seeing the client, from the host's `privateHides`.
+ */
+export function kinClientPrivateNote(input: {
+  readonly private: boolean;
+  readonly wasPrivate: boolean;
+  readonly hides: ReadonlyArray<string> | undefined;
+}): string {
+  if (!input.private) return KIN_CLIENTS.privateOff;
+  if (input.wasPrivate || input.hides === undefined) return KIN_CLIENTS.privateOn;
+  return input.hides.length === 0
+    ? "Nobody else sees this client now, so nobody loses it."
+    : `${andList(input.hides)} will no longer see this client.`;
+}
+
+export const KIN_CLIENTS_SHOW = [
+  { id: "open", label: "All open" },
+  { id: "prospects", label: "Prospects" },
+  { id: "clients", label: "Clients" },
+  { id: "vendors", label: "Vendors" },
+  { id: "closed", label: "Closed" },
+] as const;
+export type KinClientsShow = (typeof KIN_CLIENTS_SHOW)[number]["id"];
+/** Someone who reads names only (`kinSeesClients` false) gets no choice that depends on kind. */
+export const kinClientsShowChoices = (seesClients: boolean) =>
+  seesClients
+    ? KIN_CLIENTS_SHOW
+    : KIN_CLIENTS_SHOW.filter((one) => one.id === "open" || one.id === "closed");
 
 export const KIN_CLIENT_GONE = {
   title: "This client isn't here any more",
@@ -227,7 +304,8 @@ export const KIN_PROJECTS = {
   reopen: "Reopen",
   noTarget: "No target date",
   privateLabel: "Keep private",
-  privateOn: "Private. Only you see this project and its tasks.",
+  privateOn:
+    "Private. Only you can open this project and its docs. People on it still see its tasks.",
   privateOff: "Your team will be able to see this project.",
   milestones: "Milestones",
   addMilestone: "Add milestone",
@@ -262,9 +340,6 @@ export const KIN_CLIENTS_OLDER_HOST = {
   title: "Your server needs an update",
   detail: "Clients and projects come with the next version. Tasks work as before.",
 };
-
-const plural = (count: number, one: string, many = `${one}s`) =>
-  `${count} ${count === 1 ? one : many}`;
 
 // Contact
 
@@ -303,7 +378,7 @@ export function kinClientContactLine(
   const at = party.lastContactAt;
   if (at === undefined) return null;
   const days = daysBetween(at ?? party.createdAt, now);
-  const ago = days === 0 ? "" : `, ${plural(days, "day")} ago`;
+  const ago = days === 0 ? "" : `, ${kinCount(days, "day")} ago`;
   if (at === null)
     return `No contact logged since they were added ${formatKinTime(new Date(party.createdAt), now)}${ago}`;
   return `Last contact ${formatKinTime(new Date(at), now)}${ago}${latest === undefined ? "" : `: ${latest.title}`}`;
@@ -336,6 +411,23 @@ export function kinTouchAt(day: string, now: Date): string | undefined {
   return new Date(year!, month! - 1, date!, 12).toISOString();
 }
 
+const NEXT_STEP_MAX = 280;
+
+/**
+ * The follow-up Log contact leaves, as the host takes it: a task we owe them, due all day on the
+ * day picked. Nothing for an empty title; a day alone leaves none.
+ */
+export function kinTouchNext(
+  title: string,
+  day: string,
+): KinTouchLogInput["next"] | { readonly problem: string } | undefined {
+  const text = title.trim();
+  if (text === "") return undefined;
+  if (text.length > NEXT_STEP_MAX)
+    return { problem: `Keep the next step under ${NEXT_STEP_MAX} characters.` };
+  return { title: text, ...(day === "" ? {} : { dueAt: day, dueAllDay: true }) };
+}
+
 export interface KinTouchView {
   readonly id: string;
   /** "Call · Asha" (who on our side), "Invoice issued: INV-3". */
@@ -353,7 +445,7 @@ function kinTouchView(touch: KinClientTouch, now: Date): KinTouchView {
     id: touch.id,
     title: touch.logged
       ? `${base}${touch.who === null ? "" : ` · ${touch.who}`}`
-      : `${base}${touch.record === null ? "" : `: ${touch.record.key}`}`,
+      : `${base}${touch.record === null ? "" : `: ${kinRecordName(touch.record.key, touch.number)}`}`,
     note: touch.logged ? (note === "" ? null : note) : (touch.record?.title ?? null),
     when: formatKinTime(new Date(touch.at), now),
     removable: touch.logged,
@@ -362,16 +454,160 @@ function kinTouchView(touch: KinClientTouch, now: Date): KinTouchView {
 
 // Clients
 
-/** What the clients list shows: who is active, or who was closed, optionally matching words. */
+/** What the clients list shows: which of them, who looks after them, optionally matching words. */
 export interface KinClientsFilter {
-  readonly closed: boolean;
+  readonly show: KinClientsShow;
+  readonly lookedAfter: "anyone" | KinWorkPrincipal;
   readonly text: string;
+  /** A stored source, such as `campaign:P-3`; absent for anywhere. */
+  readonly cameFrom?: string | null;
+  /** A tag on them or one of their contacts; absent for any. */
+  readonly tag?: string | null;
 }
 
-export const KIN_CLIENTS_DEFAULT_FILTER: KinClientsFilter = { closed: false, text: "" };
+export const KIN_CLIENTS_DEFAULT_FILTER: KinClientsFilter = {
+  show: "open",
+  lookedAfter: "anyone",
+  text: "",
+};
+
+/** Who sees every client's row: the owner level, and a teammate with the Clients switch on. */
+export const kinSeesClients = (
+  me: Pick<KinAccessMeResult, "access" | "places"> | null | undefined,
+): boolean => me != null && (kinOwnerLevel(me.access) || me.places?.clients === true);
+
+/** A teammate with Clients on starts on their own; the owner level starts on everyone's. */
+export function kinClientsStartFilter(
+  me: Pick<KinAccessMeResult, "access" | "places" | "personId"> | null | undefined,
+): KinClientsFilter {
+  if (me == null || kinOwnerLevel(me.access) || me.places?.clients !== true)
+    return KIN_CLIENTS_DEFAULT_FILTER;
+  return {
+    ...KIN_CLIENTS_DEFAULT_FILTER,
+    lookedAfter: { _tag: "person", personId: me.personId },
+  };
+}
+
+/**
+ * The clients a person last chose to show (which, whose, came from, tag), kept on this device
+ * while the app stays open, so a trip elsewhere doesn't put the list back where it starts. Keyed
+ * by `kinClientsChosenKey`: someone else signing in on the same device starts on their own.
+ */
+export const kinClientsChosenAtom = Atom.family((_viewer: string) =>
+  Atom.make<Omit<KinClientsFilter, "text"> | null>(null).pipe(Atom.keepAlive),
+);
+export const kinClientsChosenKey = (environmentId: string, me: string | null) =>
+  `${environmentId}\u0000${me ?? ""}`;
+
+// Mine / Everyone
+
+/** Which part of a list shows: the viewer's own, or all of the list they already get. */
+export type KinMineSide = "mine" | "everyone";
+
+export const KIN_MINE = {
+  mine: "Mine",
+  everyone: "Everyone",
+} as const;
+
+/** The clients and projects the viewer looks after or is on, by key, for what sits on them. */
+export interface KinMineHeld {
+  readonly me: KinPersonId | null;
+  readonly clients: ReadonlySet<string>;
+  readonly projects: ReadonlySet<string>;
+}
+
+/**
+ * The one rule for Clients, Deals and Docs: mine is what I look after or keep, or what sits on a
+ * client or project of mine. The host applies its first part to clients and deals (`owner`).
+ */
+export function kinIsMine(
+  row: {
+    readonly owner: KinWorkPrincipal;
+    readonly party?: { readonly key: string } | null | undefined;
+    readonly project?: { readonly key: string } | null | undefined;
+  },
+  held: KinMineHeld,
+): boolean {
+  if (held.me === null) return false;
+  if (row.owner._tag === "person" && row.owner.personId === held.me) return true;
+  return (
+    (row.party != null && held.clients.has(row.party.key)) ||
+    (row.project != null && held.projects.has(row.project.key))
+  );
+}
+
+/** Who a list's Mine asks the host for; null until the host has said who the viewer is. */
+export const kinMineOwner = (me: KinPersonId | null): KinWorkPrincipal | null =>
+  me === null ? null : { _tag: "person", personId: me };
+
+/**
+ * The side a list opens on: the side the person last chose, even an empty Mine. Unchosen, Everyone
+ * when Mine has nothing (so nobody lands on an empty Mine above a full company), else Mine; null
+ * while Mine's count is unread.
+ */
+export function kinMineOpens(
+  remembered: KinMineSide | null,
+  mine: KinMineCount | null,
+): KinMineSide | null {
+  if (remembered !== null) return remembered;
+  if (mine === null) return null;
+  return mine.n > 0 ? "mine" : "everyone";
+}
+
+/** A side's count; `atLeast` when the list holds only part of what the host has. */
+export interface KinMineCount {
+  readonly n: number;
+  readonly atLeast?: boolean;
+}
+
+const mineLabel = (label: string, count: KinMineCount | null) =>
+  count === null ? label : `${label} · ${count.n}${count.atLeast === true ? "+" : ""}`;
+
+/** The switch's two sides, each with its count once read, so nothing reads as gone. */
+export function kinMineChoices(counts: {
+  readonly mine: KinMineCount | null;
+  readonly everyone: KinMineCount | null;
+}): ReadonlyArray<{ readonly value: KinMineSide; readonly label: string }> {
+  return [
+    { value: "mine", label: mineLabel(KIN_MINE.mine, counts.mine) },
+    { value: "everyone", label: mineLabel(KIN_MINE.everyone, counts.everyone) },
+  ];
+}
+
+/** The clients filter's side: Anyone is Everyone, the viewer is Mine; anyone else is neither. */
+export function kinClientsSide(
+  lookedAfter: KinClientsFilter["lookedAfter"],
+  me: KinPersonId | null,
+): KinMineSide | null {
+  if (lookedAfter === "anyone") return "everyone";
+  return lookedAfter._tag === "person" && lookedAfter.personId === me ? "mine" : null;
+}
+
+/**
+ * Which side Deals and Docs last showed, kept as `kinClientsChosenAtom` keeps Clients' (whose
+ * side is its `lookedAfter`), by the same key and for as long.
+ */
+export const kinMineChosenAtom = Atom.family((_viewer: string) =>
+  Atom.make<{ readonly deals?: KinMineSide; readonly docs?: KinMineSide }>({}).pipe(Atom.keepAlive),
+);
+
+const lookedAfterKey = (who: KinClientsFilter["lookedAfter"]) =>
+  who === "anyone" ? who : kinWorkPrincipalKey(who);
 
 export const kinClientsSameFilter = (a: KinClientsFilter, b: KinClientsFilter) =>
-  a.closed === b.closed && a.text.trim() === b.text.trim();
+  a.show === b.show &&
+  lookedAfterKey(a.lookedAfter) === lookedAfterKey(b.lookedAfter) &&
+  a.text.trim() === b.text.trim() &&
+  (a.cameFrom ?? null) === (b.cameFrom ?? null) &&
+  (a.tag ?? null) === (b.tag ?? null);
+
+const SHOW_QUERY: Record<KinClientsShow, Partial<KinPartiesInput>> = {
+  open: {},
+  prospects: { prospect: true },
+  clients: { kind: "client" },
+  vendors: { kind: "vendor" },
+  closed: { active: false },
+};
 
 export function kinClientsQuery(
   orgId: KinOrgId,
@@ -380,9 +616,70 @@ export function kinClientsQuery(
   const text = filter.text.trim().slice(0, 200);
   return {
     orgId,
-    ...(filter.closed ? { active: false } : {}),
+    ...SHOW_QUERY[filter.show],
+    ...(filter.lookedAfter === "anyone" ? {} : { owner: filter.lookedAfter }),
     ...(text === "" ? {} : { text }),
+    ...(filter.cameFrom == null ? {} : { source: filter.cameFrom }),
+    ...(filter.tag == null ? {} : { tag: filter.tag }),
   };
+}
+
+/** The Clients list a campaign's count opens: who came from it, as that count reads them. */
+/** What a campaign's result row opens: the list that count counts, and its title. */
+export type KinCampaignResultOpen =
+  | { readonly to: "contacts"; readonly title: string; readonly input: KinContactListInput }
+  | { readonly to: "clients"; readonly title: string; readonly filter: KinClientsFilter }
+  | { readonly to: "deals"; readonly title: string; readonly input: KinDealsInput };
+
+export function kinCampaignResultOpens(
+  orgId: KinOrgId,
+  key: string,
+  name: string,
+  id: KinCampaignResultId,
+): KinCampaignResultOpen {
+  if (id === "audience") return { to: "contacts", title: name, input: { orgId, campaign: key } };
+  if (id === "deals" || id === "won")
+    return {
+      to: "deals",
+      title: `${id === "won" ? KIN_MARKETING.won : KIN_MARKETING.deals}: ${name}`,
+      input: { orgId, campaign: key as KinRecordKey, state: id === "won" ? "won" : "open" },
+    };
+  return {
+    to: "clients",
+    title: `${KIN_MARKETING.cameFrom}: ${name}`,
+    filter: {
+      ...KIN_CLIENTS_DEFAULT_FILTER,
+      show: id,
+      cameFrom: `${KIN_CAMPAIGN_SOURCE}${key}`,
+    },
+  };
+}
+
+/** "Me", "Anyone", or whoever else was picked, as the filter's chip names it. */
+export function kinClientsLookedAfterLabel(
+  who: KinClientsFilter["lookedAfter"],
+  names: KinWorkNames,
+): string {
+  if (who === "anyone") return KIN_CLIENTS.anyone;
+  return kinWorkName(who, names, KIN_CLIENTS.me);
+}
+
+/** Everyone else who could look after a client, people before agents, each by name. */
+export function kinClientsLookedAfterChoices(
+  names: Pick<KinWorkNames, "people" | "agents" | "retired" | "me">,
+): ReadonlyArray<{ readonly who: KinWorkPrincipal; readonly key: string; readonly name: string }> {
+  const people = [...names.people]
+    .filter(([personId]) => personId !== names.me)
+    .map(([personId, name]) => ({ who: { _tag: "person", personId } as KinWorkPrincipal, name }));
+  const agents = [...names.agents]
+    .filter(([agentId]) => names.retired?.has(agentId) !== true)
+    .map(([agentId, name]) => ({ who: { _tag: "agent", agentId } as KinWorkPrincipal, name }));
+  const byName = (a: { readonly name: string }, b: { readonly name: string }) =>
+    a.name.localeCompare(b.name);
+  return [...people.sort(byName), ...agents.sort(byName)].map((one) => ({
+    ...one,
+    key: kinWorkPrincipalKey(one.who),
+  }));
 }
 
 type Owed = Pick<KinPartyRow, "weOwe" | "theyOwe" | "late" | "overdue">;
@@ -401,10 +698,14 @@ function kinOwedLine(owed: Owed): string {
 export interface KinClientRowView {
   readonly key: KinRecordKey;
   readonly name: string;
-  /** "Vendor · 2 to do (1 late) · Waiting on 1". */
+  /** "Prospect" ahead of the line, in the accent colour; null for a client or a vendor. */
+  readonly mark: string | null;
+  /** "Vendor · 2 to do (1 late) · Waiting on 1", or a prospect's "Zoya" after its mark; "Contact: Ola · …" when the search found it through Ola. */
   readonly line: string;
-  /** "Next: Monthly report, Fri 14 Nov"; null with nothing owed to them. */
+  /** "Next: Monthly report, Fri 14 Nov", or "No next step"; null for a vendor with nothing owed. */
   readonly next: string | null;
+  /** `next` says there is no next step: shown in amber. */
+  readonly noNext: boolean;
   /** Something either side owes is past its date. */
   readonly late: boolean;
   readonly private: boolean;
@@ -413,29 +714,43 @@ export interface KinClientRowView {
 }
 
 export function kinClientRow(row: KinPartyRow, names: KinWorkNames, now: Date): KinClientRowView {
+  const prospect = row.prospect === true;
+  const who = kinWorkName(row.owner, names);
+  // A teammate's row comes without counts (and without a contact day): it names, it doesn't count.
+  const counted = row.lastContactAt !== undefined;
   const line = [
-    row.kind === "vendor" ? "Vendor" : null,
-    // A teammate's row comes without counts (and without a contact day): it names, it doesn't count.
-    row.active ? (row.lastContactAt === undefined ? null : kinOwedLine(row)) : "Closed",
-    row.active && row.kind === "client" ? kinLastContactLine(row.lastContactAt, now) : null,
+    row.contact === undefined ? null : KIN_CLIENTS.foundContact(row.contact),
+    row.kind === "vendor" ? KIN_CLIENTS.kindVendor : null,
+    prospect && who !== "You" ? who : null,
+    !row.active ? KIN_CLIENTS.closed : prospect || !counted ? null : kinOwedLine(row),
+    row.active && row.kind === "client" && !prospect
+      ? kinLastContactLine(row.lastContactAt, now)
+      : null,
   ]
     .filter((part) => part !== null)
     .join(" · ");
   const day = row.next === null ? null : kinWorkDueText(row.next, names, now);
+  const noNext = row.next === null && row.active && row.kind === "client" && counted;
+  const source = prospect ? (row.source?.trim() ?? "") : "";
   const next =
-    row.next === null
-      ? null
-      : `${row.next.late ? "Late" : "Next"}: ${row.next.title}${day === null ? "" : `, ${row.next.late ? "was due " : ""}${day}`}`;
+    row.next !== null
+      ? `${row.next.late ? "Late" : "Next"}: ${row.next.title}${day === null ? "" : `, ${row.next.late ? "was due " : ""}${day}`}`
+      : noNext
+        ? `${KIN_CLIENTS.noNextStep}${source === "" ? "" : ` · from ${source}`}`
+        : null;
   const late = row.late > 0 || row.overdue > 0;
+  const mark = prospect ? KIN_CLIENTS.kindProspect : null;
   return {
     key: row.key,
     name: row.name,
+    mark,
     line,
     next,
+    noNext,
     late,
     private: row.sensitive,
     closed: !row.active,
-    accessibilityLabel: [row.name, line, next, row.sensitive ? "Private" : null]
+    accessibilityLabel: [row.name, mark, line, next, row.sensitive ? "Private" : null]
       .filter((part) => part !== null && part !== "")
       .join(". "),
   };
@@ -445,6 +760,9 @@ export function kinClientRow(row: KinPartyRow, names: KinWorkNames, now: Date): 
 export function kinClientsNothing(
   filter: KinClientsFilter,
   scope: KinViewerScope = KIN_SCOPE_ALL,
+  me: KinPersonId | null = null,
+  /** What the rest is called where it is one tap away: the phone's switch says Everyone. */
+  rest: string = KIN_CLIENTS.anyone,
 ): {
   readonly title: string;
   readonly detail: string;
@@ -453,20 +771,50 @@ export function kinClientsNothing(
   const text = filter.text.trim();
   if (text !== "")
     return { title: `Nothing matches “${text}”`, detail: "Try another name.", offerNew: false };
-  if (filter.closed)
+  if (filter.show === "closed")
     return {
       title: "No closed clients",
       detail: "A client you close shows up here, with its history.",
       offerNew: false,
     };
+  const narrowed = SHOW_NOTHING[filter.show];
+  if (narrowed !== null) return { ...narrowed, offerNew: filter.show === "prospects" };
+  if (filter.lookedAfter !== "anyone")
+    return filter.lookedAfter._tag === "person" && filter.lookedAfter.personId === me
+      ? {
+          title: "You don't look after any yet",
+          detail: `Add a prospect, or show ${rest} to see the rest.`,
+          offerNew: true,
+        }
+      : {
+          title: "They don't look after any yet",
+          detail: "Show Anyone to see every client and prospect.",
+          offerNew: false,
+        };
   const shown = kinNothingShown("clients", scope);
-  if (shown !== null) return { ...shown, offerNew: false };
+  // A teammate with Clients on may still add a prospect; the button shows only to whoever can.
+  if (shown !== null) return { ...shown, offerNew: true };
   return {
-    title: "No clients yet",
+    title: "No clients or prospects yet",
     detail:
-      "Add a client or vendor to keep track of what you owe them and what they owe you. Or paste a contract into a chat with an agent and ask it to set the client up.",
+      "Add the companies you sell to or work for. A prospect becomes a client when you make it one. Or paste a contract into a chat with an agent and ask it to set the client up.",
     offerNew: true,
   };
+}
+
+const SHOW_NOTHING: Record<
+  Exclude<KinClientsShow, "closed">,
+  { readonly title: string; readonly detail: string } | null
+> = {
+  open: null,
+  prospects: { title: "No prospects", detail: "Companies you haven't sold to yet show here." },
+  clients: { title: "No clients", detail: "A prospect you make a client shows here." },
+  vendors: { title: "No vendors", detail: "Companies you buy from show here." },
+};
+
+export interface KinContactLink {
+  readonly text: string;
+  readonly href: string | null;
 }
 
 export interface KinContactView {
@@ -475,11 +823,16 @@ export interface KinContactView {
   readonly name: string;
   readonly role: string | null;
   /** What to show and what a tap opens; `href` is null when it doesn't look like one. */
-  readonly email: { readonly text: string; readonly href: string | null } | null;
-  readonly phone: { readonly text: string; readonly href: string | null } | null;
+  readonly email: KinContactLink | null;
+  readonly phone: KinContactLink | null;
+  /** Every one, main first; the main one is `email` or `phone`. */
+  readonly emails: ReadonlyArray<KinContactLink>;
+  readonly phones: ReadonlyArray<KinContactLink>;
   readonly notes: string | null;
   /** No longer someone to reach there. */
   readonly closed: boolean;
+  /** Each opens its list: every contact carrying it. */
+  readonly tags: ReadonlyArray<string>;
   readonly accessibilityLabel: string;
 }
 
@@ -497,17 +850,32 @@ const phoneHref = (phone: string) => {
   return `tel:${number}${ext === "" ? "" : `;ext=${ext}`}`;
 };
 
+/** An older host sends only the main one. */
+const allOf = (all: ReadonlyArray<string>, one: string | null) =>
+  all.length > 0 ? all : one === null ? [] : [one];
+
 function kinContactView(contact: KinContact): KinContactView {
   const notes = contact.notes.trim();
+  const emails = allOf(contact.emails, contact.email).map((text) => ({
+    text,
+    href: emailHref(text),
+  }));
+  const phones = allOf(contact.phones, contact.phone).map((text) => ({
+    text,
+    href: phoneHref(text),
+  }));
   return {
     key: contact.key,
     rev: contact.rev,
     name: contact.name,
     role: contact.role,
-    email: contact.email === null ? null : { text: contact.email, href: emailHref(contact.email) },
-    phone: contact.phone === null ? null : { text: contact.phone, href: phoneHref(contact.phone) },
+    email: emails[0] ?? null,
+    phone: phones[0] ?? null,
+    emails,
+    phones,
     notes: notes === "" ? null : notes,
     closed: !contact.active,
+    tags: contact.tags ?? [],
     accessibilityLabel: [contact.name, contact.role, contact.active ? null : "No longer a contact"]
       .filter((part) => part !== null)
       .join(". "),
@@ -515,27 +883,58 @@ function kinContactView(contact: KinContact): KinContactView {
 }
 
 /** One side of what is owed: the rows read, and how many more the host has. */
+/** A client's or deal's row, with its "Promised" mark and where it was made when it is a promise. */
+export type KinOwedRowView = KinWorkRowView & { readonly promise: KinPromiseView | null };
+
 export interface KinOwedView {
-  readonly rows: ReadonlyArray<KinWorkRowView>;
+  readonly rows: ReadonlyArray<KinOwedRowView>;
   readonly total: number;
   /** "See all 62"; null when everything is shown. */
   readonly more: string | null;
 }
 
+/** The soonest open thing we owe a client or prospect: the first thing its page shows. */
+export interface KinClientNextView {
+  readonly key: KinRecordKey;
+  readonly title: string;
+  /** "Today · Zoya · W-44", "Was due Wed 18 Nov · You · W-38". */
+  readonly line: string;
+  readonly late: boolean;
+}
+
+/** What this reader may do on a client's page; the host checks each change again. */
+export type KinClientCan = NonNullable<KinPartyPage["can"]>;
+
+const CAN_ALL: KinClientCan = { edit: true, log: true, owner: true };
+const CAN_NONE: KinClientCan = { edit: false, log: false, owner: false };
+
 export interface KinClientPageView {
   readonly key: KinRecordKey;
+  /** Whether it offers making anything new under it: not while Clients is off. */
+  readonly adds: boolean;
   readonly rev: number;
   readonly ref: KinWorkRef;
   readonly name: string;
   readonly vendor: boolean;
-  /** "Client", "Vendor · Closed", "Client · Looked after by Tech lead". */
+  readonly prospect: boolean;
+  /** "Prospect · from Harbour trade fair", "Vendor · Closed". */
   readonly line: string;
+  readonly lookedAfter: { readonly name: string; readonly avatar: KinAvatarView };
+  /** Null for a vendor, which has no Next step row; `next: null` inside says there is none. */
+  readonly nextStep: { readonly next: KinClientNextView | null } | null;
+  readonly source: string | null;
+  readonly tags: ReadonlyArray<string>;
+  readonly can: KinClientCan;
   readonly closed: boolean;
   readonly privacy: KinWorkPrivacy;
   readonly weOwe: KinOwedView;
   readonly theyOwe: KinOwedView;
+  /** "Renews 1 Mar · notice by 31 Dec" under the name; amber when `soon`. Null with no renewal. */
+  readonly contract: { readonly text: string; readonly soon: boolean } | null;
   readonly projects: ReadonlyArray<KinProjectRowView>;
   readonly contacts: ReadonlyArray<KinContactView>;
+  /** Who adds and changes its contacts, for a reader who can't; null for one who can. */
+  readonly contactsWho: string | null;
   readonly terms: string | null;
   readonly address: string | null;
   /** "GSTIN 27ABCDE1234F1Z5 · Maharashtra"; null when neither is set. */
@@ -550,44 +949,69 @@ export function kinClientPageView(
   page: KinPartyPage,
   names: KinWorkNames,
   now: Date,
+  /** A host before prospects sends no `can`: there only the owner level changes a client. */
+  ownerLevel: boolean,
+  /** The company's sections: a renamed Clients names the kind line too. */
+  shell?: KinShell | null,
 ): KinClientPageView {
   const { party } = page;
   const ref = { key: party.key, title: party.name };
-  const owed = (side: KinPartyPage["weOwe"]): KinOwedView => ({
-    rows: side.records.map((record) =>
-      kinWorkRow(record, names, now, { party: ref, project: null, sided: true }),
-    ),
+  const weOwe = page.weOwe.records.map((record) =>
+    kinWorkRow(record, names, now, { party: ref, project: null, sided: true }),
+  );
+  const owed = (side: KinPartyPage["weOwe"], rows: ReadonlyArray<KinWorkRowView>): KinOwedView => ({
+    rows: rows.map((row, index) => ({ ...row, promise: kinPromiseOf(side.records[index]!) })),
     total: side.total,
     more: side.total > side.records.length ? `See all ${side.total}` : null,
   });
-  const lookedAfter = kinWorkName(party.owner, names);
+  const theyOwe = page.theyOwe.records.map((record) =>
+    kinWorkRow(record, names, now, { party: ref, project: null, sided: true }),
+  );
+  const prospect = party.prospect === true;
+  const vendor = party.kind === "vendor";
+  const source = party.source?.trim() || null;
   const notes = party.notes.trim();
   const terms = party.terms?.trim() ?? "";
   const touches =
     page.touches === undefined ? null : page.touches.map((touch) => kinTouchView(touch, now));
+  const can = page.can ?? (ownerLevel ? CAN_ALL : CAN_NONE);
+  const lookedAfter = kinWorkName(party.owner, names);
   return {
     key: party.key,
     rev: party.rev,
     ref,
     name: party.name,
-    vendor: party.kind === "vendor",
+    adds: kinSectionOn(shell, "clients"),
+    vendor,
+    prospect,
     line: [
-      party.kind === "vendor" ? "Vendor" : "Client",
+      vendor
+        ? KIN_CLIENTS.kindVendor
+        : prospect
+          ? KIN_CLIENTS.kindProspect
+          : kinSectionNamed(shell, KIN_CLIENTS.kindClient),
       party.active ? null : KIN_CLIENTS.closed,
-      lookedAfter === "You" ? null : `Looked after by ${lookedAfter}`,
+      source === null ? null : `from ${source}`,
     ]
       .filter((part) => part !== null)
       .join(" · "),
+    lookedAfter: { name: lookedAfter, avatar: kinWorkAvatar(party.owner) },
+    nextStep: vendor ? null : { next: kinClientNext(party, weOwe, names, now) },
+    source,
+    tags: party.tags ?? [],
+    can,
     closed: !party.active,
     privacy: {
       private: party.sensitive,
       inherited: false,
       note: party.sensitive ? KIN_CLIENTS.privateOn : KIN_CLIENTS.privateOff,
     },
-    weOwe: owed(page.weOwe),
-    theyOwe: owed(page.theyOwe),
+    weOwe: owed(page.weOwe, weOwe),
+    theyOwe: owed(page.theyOwe, theyOwe),
+    contract: kinContractLine(page.contract),
     projects: page.projects.map((row) => kinProjectRow(row, names, now, ref)),
     contacts: page.contacts.map(kinContactView),
+    contactsWho: (can.contacts ?? can.edit) ? null : KIN_CLIENTS.contactsWho(lookedAfter, vendor),
     terms: terms === "" ? null : terms,
     address: party.address?.trim() || null,
     tax:
@@ -599,6 +1023,26 @@ export function kinClientPageView(
     lastContact:
       (party.kind === "client" ? kinClientContactLine(party, touches?.[0], now) : null) ??
       (touches?.length === 0 ? KIN_CLIENTS.noneLogged : null),
+  };
+}
+
+function kinClientNext(
+  party: KinPartyPage["party"],
+  weOwe: ReadonlyArray<KinWorkRowView>,
+  names: KinWorkNames,
+  now: Date,
+): KinClientNextView | null {
+  const next = party.next;
+  if (next === null) return null;
+  const day = kinWorkDueText(next, names, now);
+  const row = weOwe.find((held) => held.key === next.key);
+  const when =
+    day === null ? null : next.late ? `Was due ${day}` : day.charAt(0).toUpperCase() + day.slice(1);
+  return {
+    key: next.key,
+    title: next.title,
+    line: [when, row?.holder ?? null, next.key].filter((part) => part !== null).join(" · "),
+    late: next.late,
   };
 }
 
@@ -665,13 +1109,13 @@ export interface KinProjectRowView {
   readonly name: string;
   /** Null once the project is done or dropped. */
   readonly health: KinHealthView | null;
-  /** "Acme · 5 open · 1 late · Target Fri 14 Nov". */
+  /** "Acme · Meera · 5 open · 1 late · target Fri 14 Nov": client, lead, counts, target. */
   readonly line: string;
   readonly private: boolean;
   readonly accessibilityLabel: string;
 }
 
-export function kinProjectRow(
+function kinProjectRow(
   row: KinProjectRow,
   names: KinWorkNames,
   now: Date,
@@ -682,10 +1126,11 @@ export function kinProjectRow(
   const health = row.health === null ? null : HEALTH[row.health];
   const line = [
     row.party === null || row.party.key === within?.key ? null : row.party.title,
+    kinWorkName(row.owner, names),
     PROJECT_CLOSED[row.state],
     row.state === "open" ? `${row.open} open` : null,
     row.late > 0 ? `${row.late} late` : null,
-    target === null || row.state !== "open" ? null : `Target ${target}`,
+    target === null || row.state !== "open" ? null : `target ${target}`,
   ]
     .filter((part) => part !== null)
     .join(" · ");
@@ -732,6 +1177,67 @@ export function kinProjectsNothing(
   };
 }
 
+/** The Clients place's views: who the company works with, what it hopes to win, and the work. */
+export type KinClientsTab = "clients" | "deals" | "projects";
+
+const KIN_CLIENTS_TABS: ReadonlyArray<{
+  readonly id: KinClientsTab;
+  readonly label: string;
+}> = [
+  { id: "clients", label: KIN_CLIENTS.title },
+  { id: "deals", label: "Deals" },
+  { id: "projects", label: KIN_PROJECTS.title },
+];
+
+/**
+ * The views this person has. `seesDeals`: the owner level or Clients on, while the company runs
+ * deals (`kinSectionOn`).
+ */
+export const kinClientsTabs = (seesDeals: boolean) =>
+  seesDeals ? KIN_CLIENTS_TABS : KIN_CLIENTS_TABS.filter((held) => held.id !== "deals");
+
+/** The view to show for an asked one: a view they lack, such as Deals, shows Clients. */
+export const kinClientsTabShown = (tab: KinClientsTab, seesDeals: boolean): KinClientsTab =>
+  kinClientsTabs(seesDeals).some((held) => held.id === tab) ? tab : "clients";
+
+const KIN_PROJECTS_NO_CLIENT = "Not for a client";
+
+export interface KinProjectsGroupView {
+  readonly id: string;
+  readonly title: string;
+  /** The client the heading opens; null for projects with no client. */
+  readonly party: KinRecordKey | null;
+  readonly rows: ReadonlyArray<KinProjectRowView>;
+}
+
+/** The Projects tab: projects under their client by name, then those that are not for a client. */
+export function kinProjectsByClient(
+  rows: ReadonlyArray<KinProjectRow>,
+  names: KinWorkNames,
+  now: Date,
+): ReadonlyArray<KinProjectsGroupView> {
+  const groups = new Map<
+    string,
+    { title: string; party: KinRecordKey | null; rows: KinProjectRowView[] }
+  >();
+  for (const row of rows) {
+    const id = row.party === null ? "none" : `client:${row.party.key}`;
+    const group = groups.get(id) ?? {
+      title: row.party?.title ?? KIN_PROJECTS_NO_CLIENT,
+      party: row.party?.key ?? null,
+      rows: [],
+    };
+    // Under its client's heading, the row needn't name the client again.
+    group.rows.push(kinProjectRow(row, names, now, row.party ?? undefined));
+    groups.set(id, group);
+  }
+  return [...groups.entries()]
+    .map(([id, group]) => ({ id, ...group }))
+    .sort((a, b) =>
+      a.party === null ? 1 : b.party === null ? -1 : a.title.localeCompare(b.title),
+    );
+}
+
 export interface KinWorkTimelineLine {
   readonly key: string;
   /** "9:41" today, "7 Nov" otherwise. */
@@ -767,11 +1273,13 @@ export function kinWorkTimeline(
 /** "today", "1 day", "9 days": how long something has waited. */
 function waited(since: string, now: Date): string {
   const days = Math.floor((now.getTime() - new Date(since).getTime()) / DAY_MS);
-  return !Number.isFinite(days) || days < 1 ? "since today" : `for ${plural(days, "day")}`;
+  return !Number.isFinite(days) || days < 1 ? "since today" : `for ${kinCount(days, "day")}`;
 }
 
 export interface KinProjectPageView {
   readonly key: KinRecordKey;
+  /** Whether it offers making anything new under it: not while Clients is off. */
+  readonly adds: boolean;
   readonly rev: number;
   readonly ref: KinWorkRef;
   readonly name: string;
@@ -840,6 +1348,10 @@ export interface KinProjectPageView {
   }>;
   /** Quoted, invoiced, received, unpaid, each per currency; empty when nothing is filed here. */
   readonly money: ReadonlyArray<{ readonly label: string; readonly value: string }>;
+  /** "Campaign" for a campaign, said beside its lead; null for an ordinary project. */
+  readonly kind: string | null;
+  /** A campaign's audience tag. */
+  readonly audience: string | null;
 }
 
 export interface KinMilestoneView {
@@ -916,21 +1428,33 @@ export function kinProjectPageView(
   page: KinProjectPage,
   names: KinWorkNames,
   now: Date,
+  /** The company's sections: with Invoices and quotes off, the money it took leaves the page. */
+  shell?: KinShell | null,
 ): KinProjectPageView {
   const { project, counts } = page;
+  const invoices = kinSectionOn(shell, "invoices");
   const ref = { key: project.key, title: project.name };
   const because = project.healthBecause;
+  const client = project.party?.title ?? "the client";
   const why =
     project.health === null
       ? []
       : [
           because.targetPassed ? "The target date has passed." : null,
           because.late > 0
-            ? `${plural(because.late, "task")} ${because.late === 1 ? "is" : "are"} late.`
+            ? `${kinCount(because.late, "task")} ${because.late === 1 ? "is" : "are"} late.`
             : null,
           because.waitingOverAWeek > 0
-            ? `${plural(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
+            ? `${kinCount(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
             : null,
+          invoices && (because.overdueInvoices ?? 0) > 0
+            ? `${kinCount(because.overdueInvoices!, "invoice")} for this project ${because.overdueInvoices === 1 ? "is" : "are"} overdue.`
+            : null,
+          because.noContact === undefined
+            ? null
+            : because.noContact.lastContactAt === null
+              ? `No contact recorded with ${client}.`
+              : `No contact with ${client} for ${kinCount(because.noContact.days, "day")}.`,
         ].filter((part) => part !== null);
   const target = kinWorkDueText(
     { dueAt: project.targetAt, dueAllDay: project.targetAllDay },
@@ -945,11 +1469,18 @@ export function kinProjectPageView(
     rev: project.rev,
     ref,
     name: project.name,
+    adds: kinSectionOn(shell, "clients"),
     party: project.party === null ? null : { key: project.party.key, title: project.party.title },
+    kind: project.campaign === true ? KIN_MARKETING.campaign : null,
+    audience: project.audience ?? null,
     state: project.state,
     closed: PROJECT_CLOSED[project.state],
     health: project.health === null ? null : HEALTH[project.health],
-    why: why.length === 0 && project.health !== null ? ["Nothing is late or stuck."] : why,
+    why:
+      why.length === 0 && project.health !== null
+        ? // Its Blocked section lists what waits on someone, so "stuck" would contradict it.
+          [page.blocked.length === 0 ? "Nothing is late or stuck." : "Nothing is late."]
+        : why,
     target: target === null ? KIN_PROJECTS.noTarget : `Target ${target}`,
     targetDay: kinWorkAllDay(project.targetAt, project.targetAllDay, names),
     ledBy: ledBy === "You" ? null : `Led by ${ledBy}`,
@@ -1031,7 +1562,7 @@ export function kinProjectPageView(
       doc: one.doc.key,
     })),
     money:
-      page.money === undefined
+      page.money === undefined || !invoices
         ? []
         : (
             [
@@ -1060,21 +1591,38 @@ export const kinProjectPageKeys = (page: KinProjectPage): ReadonlySet<string> =>
     ...(page.milestones ?? []).map((one) => one.key),
     ...(page.meetings ?? []).map((one) => one.key),
     ...(page.specChanged ?? []).map((one) => one.record.key),
+    // A campaign counts every client, contact and deal the reader sees, wherever it is.
+    ...(page.results === undefined ? [] : ["C-*", "CT-*", "DL-*"]),
   ]);
 
 /**
  * What a new task may be put under for this viewer, as the host's `teamRule` takes it: anything
- * for the owner level; for a teammate only the projects they lead (whose client comes with them)
- * and no client of their own. Before the host has said (`me` null), or a host that sends no
- * `leads`, offers all and lets the host refuse.
+ * for the owner level; for a teammate the projects they lead, and the clients they see once their
+ * Clients switch is on. Before the host has said (`me` null), or a host that sends no `leads`,
+ * offers all and lets the host refuse.
  */
 export function kinNewTaskChoices<C, P extends { readonly key: KinRecordKey }>(
   choices: { readonly clients: ReadonlyArray<C>; readonly projects: ReadonlyArray<P> },
-  me: Pick<KinAccessMeResult, "access" | "leads"> | null,
+  me: Pick<KinAccessMeResult, "access" | "leads" | "places"> | null,
 ): { readonly clients: ReadonlyArray<C>; readonly projects: ReadonlyArray<P> } {
-  if (me === null || kinOwnerLevel(me.access) || me.leads === undefined) return choices;
-  const led = new Set(me.leads.map((project) => project.key));
-  return { clients: [], projects: choices.projects.filter((project) => led.has(project.key)) };
+  const led = kinTaskProjectsAllowed(me);
+  if (me === null || led === null) return choices;
+  return {
+    // With Clients on, a teammate sets any client they see on their own task.
+    clients: me.places?.clients === true ? choices.clients : [],
+    projects: choices.projects.filter((project) => led.has(project.key)),
+  };
+}
+
+/**
+ * The projects this viewer may put a task in, by key: a teammate's are the ones they lead. Null
+ * where there is no such limit, or the host hasn't said (`kinNewTaskChoices`).
+ */
+export function kinTaskProjectsAllowed(
+  me: Pick<KinAccessMeResult, "access" | "leads"> | null,
+): ReadonlySet<string> | null {
+  if (me === null || kinOwnerLevel(me.access) || me.leads === undefined) return null;
+  return new Set(me.leads.map((project) => project.key));
 }
 
 /** A client or project as a filter, a form or a picker holds it. */
@@ -1082,3 +1630,115 @@ export const kinWorkRefOf = (row: {
   readonly key: KinRecordKey;
   readonly name: string;
 }): KinWorkRef => ({ key: row.key, title: row.name });
+
+/** Each project's client by project key, for "Client stays" on a moved task (`kinWorkClientStays`). */
+export const kinProjectClients = (
+  rows: ReadonlyArray<Pick<KinProjectRow, "key" | "party">>,
+): ReadonlyMap<string, string | null> =>
+  new Map(rows.map((row) => [row.key, row.party?.key ?? null]));
+
+// Short forms: each asks its few things first and folds the rest under "More".
+
+export const KIN_SHORT_FORMS = {
+  more: "More",
+  addAnother: "Add another",
+  added: (title: string) => `Added “${title}”. Type the next one.`,
+  aboutHowMuch: "About how much?",
+  aboutHowMuchHint: "Fill it in and the deal is made with the client.",
+} as const;
+
+/** Each form's fields in the order shown: `first` always, `more` under the fold, by label. */
+const SHORT_FORM_FIELDS = {
+  task: {
+    first: ["title", "owner", "due"],
+    more: { repeat: "repeats", client: "client", project: "project", notes: "notes" },
+  },
+  party: {
+    first: ["name", "contact", "value"],
+    more: {
+      kind: "prospect, client or vendor",
+      source: "where they came from",
+      tags: "tags",
+      role: "their role",
+      terms: "terms",
+      address: "address",
+      tax: "tax details",
+      notes: "notes",
+      private: "keep private",
+    },
+  },
+  deal: {
+    first: ["client", "what", "value", "next"],
+    more: {
+      expected: "expected",
+      stage: "stage",
+      keeper: "who looks after it",
+      source: "where it came from",
+    },
+  },
+  touch: {
+    first: ["kind", "note"],
+    more: { when: "when", next: "next step" },
+  },
+} as const;
+
+type ShortForms = typeof SHORT_FORM_FIELDS;
+export type KinShortForm = keyof ShortForms;
+export type KinShortFormField<F extends KinShortForm> =
+  | ShortForms[F]["first"][number]
+  | (keyof ShortForms[F]["more"] & string);
+
+export interface KinShortFormFold<F extends KinShortForm> {
+  readonly first: ReadonlyArray<KinShortFormField<F>>;
+  readonly more: ReadonlyArray<KinShortFormField<F>>;
+  /** "Repeats, client, project and notes"; null when nothing is folded. */
+  readonly moreLine: string | null;
+}
+
+/**
+ * What a short form shows, in order. A folded field the form can't offer here is `absent`; one that
+ * already holds something when the form opens (a client it started from) is `held`, and is shown.
+ */
+export function kinShortFormFold<F extends KinShortForm>(
+  form: F,
+  options: {
+    readonly absent?: ReadonlyArray<KinShortFormField<F>>;
+    readonly held?: ReadonlyArray<KinShortFormField<F>>;
+  } = {},
+): KinShortFormFold<F> {
+  const fields = SHORT_FORM_FIELDS[form];
+  const labels: Readonly<Record<string, string>> = fields.more;
+  const absent = new Set<string>(options.absent ?? []);
+  const held = new Set<string>(options.held ?? []);
+  const folded = Object.keys(labels).filter((field) => !absent.has(field));
+  const first = [
+    ...fields.first.filter((field) => !absent.has(field)),
+    ...folded.filter((field) => held.has(field)),
+  ] as ReadonlyArray<KinShortFormField<F>>;
+  const more = folded.filter((field) => !held.has(field));
+  const names = more.map((field) => labels[field]!);
+  const line =
+    names.length === 0
+      ? null
+      : names.length === 1
+        ? names[0]!
+        : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  return {
+    first,
+    more: more as ReadonlyArray<KinShortFormField<F>>,
+    moreLine: line === null ? null : line.charAt(0).toUpperCase() + line.slice(1),
+  };
+}
+
+/** After "Add another": the next task keeps who, when and where, and starts with nothing typed. */
+export const kinWorkDraftAnother = (draft: KinWorkDraft): KinWorkDraft => ({
+  ...draft,
+  title: "",
+  notes: "",
+});
+
+/** A new client's deal from "About how much?": named as the client, at that amount. */
+export const kinPartyFirstDeal = (name: string, value: KinMoney) => ({
+  title: name.trim(),
+  value,
+});

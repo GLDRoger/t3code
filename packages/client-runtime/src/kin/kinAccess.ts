@@ -1,4 +1,5 @@
 import {
+  kinAccessAllows,
   kinOwnerLevel,
   kinRpcAccess,
   type EnvironmentId,
@@ -82,13 +83,6 @@ const failedWithoutAnswer = (
   !result.waiting &&
   !answered.has(errorTag(Cause.squash(result.cause)));
 
-/** Whether a person of `kind` may call a method of `access` (`KIN_RPC_ACCESS`). */
-function kinAccessAllows(kind: KinPersonAccess | null, access: KinRpcAccess | undefined) {
-  if (access === undefined || access === "person") return true;
-  if (kind === "owner") return true;
-  return kind === "co_owner" && access === "owner_level";
-}
-
 /** The viewer's own kind in the org the directory named, or null until the host has said. */
 function makeKinAccess<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
@@ -120,7 +114,8 @@ function makeKinAccess<R, ER>(
       );
     }),
     staleTimeMs: 30_000,
-    // A kind change moves `leads` and `people` for everyone, members included.
+    // A kind change moves `leads` and `people` for everyone, members included; a country chosen
+    // moves the company's money; a section switched moves `shell`.
     refreshTrigger: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: KinAccessMeInput;
@@ -129,7 +124,9 @@ function makeKinAccess<R, ER>(
       if (trigger === undefined) {
         const leads = refreshes("leads")(target);
         const people = refreshes("people")(target);
-        trigger = Atom.make((get) => `${get(leads)}|${get(people)}`);
+        const company = refreshes("company")(target);
+        const shell = refreshes("shell")(target);
+        trigger = Atom.make((get) => `${get(leads)}|${get(people)}|${get(company)}|${get(shell)}`);
         triggers.set(`${target.environmentId}:${target.input.orgId}`, trigger);
       }
       return trigger;
@@ -201,6 +198,14 @@ export function kinAccessAtom<R, ER>(
   return kinAccessAtoms(runtime).accessAtom(environmentId);
 }
 
+/** The viewer's kind once the host has answered (null when it refused), undefined until then. */
+export function kinAccessKnownAtom<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  environmentId: EnvironmentId,
+) {
+  return kinAccessAtoms(runtime).knownAtom(environmentId);
+}
+
 /** The viewer's kind, places and the projects they lead, or null until the host has said. */
 export function kinAccessMeAtom<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
@@ -224,6 +229,15 @@ export function retryKinAccess<R, ER>(
   environmentId: EnvironmentId,
 ) {
   registry.refresh(createEnvironmentSessionAtoms(runtime).sessionStateAtom(environmentId));
+  kinAccessAtoms(runtime).retryKind(registry, environmentId);
+}
+
+/** Reads `kin.access.me` again: a link about to be shown must carry the host's current address. */
+export function refreshKinAccessMe<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  registry: AtomRegistry.AtomRegistry,
+  environmentId: EnvironmentId,
+) {
   kinAccessAtoms(runtime).retryKind(registry, environmentId);
 }
 
@@ -278,7 +292,9 @@ export function createKinRpcCommand<
     const kind = kinAccessAtom(runtime, environmentId);
     let atom = combined.get(granted);
     if (atom === undefined) {
-      atom = Atom.make((get) => get(granted) && kinAccessAllows(get(kind), access));
+      atom = Atom.make(
+        (get) => get(granted) && (access === undefined || kinAccessAllows(get(kind), access)),
+      );
       combined.set(granted, atom);
     }
     return atom;

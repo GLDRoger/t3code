@@ -17,7 +17,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { bufferLatestLiveStream } from "../../orchestration-v2/LiveStreamBudget.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
-import { shownRecords, summary, type Viewer, viewerOf } from "./ownerWork.ts";
+import { shownRecords, summaryOf, type Viewer, viewerOf } from "./ownerWork.ts";
 import { workFailure } from "./recordRows.ts";
 import { dependentRows, teamKeyLists, teamSeq } from "./teamView.ts";
 
@@ -37,7 +37,7 @@ const REPLAY_LIMIT = 128;
 /** One viewer's pending change, keyed for `bufferLatestLiveStream`: the latest per entry wins. */
 type Pending = {
   readonly sequence: number;
-  /** An entry's key, or `START`, `RESCAN` or `GAP`. */
+  /** An entry's key, or `START`, `RESCAN`, `PLACES` or `GAP`. */
   readonly key: string;
   readonly list: string | null;
   readonly created: boolean;
@@ -50,8 +50,23 @@ const START = "*start";
 const RESCAN = "*rescan";
 /** Something moved that left no change to replay, such as an undo. */
 const GAP = "*gap";
+/**
+ * This teammate's own places moved: everything they hold is read again (`snapshot-required`),
+ * an open client page included, even where no row or count changed.
+ */
+const PLACES = "*places";
 
 type Out = KinWorkEvent;
+
+/**
+ * Each company's last owner-level counts, by the newest change number the screen that read them
+ * had heard: every owner-level person counts Work alike, so their screens share one read. A
+ * teammate's counts are their own and never kept here. One server's KinRecords keys it.
+ */
+type Counted = { readonly heard: number; readonly counted: ReturnType<typeof summaryOf> };
+const lastCounted = new WeakMap<object, Map<KinOrgId, Counted>>();
+/** Late and due-this-week move with the clock, so a shared read is kept no longer than this. */
+const COUNTED_FOR = Duration.seconds(1);
 
 /**
  * One subscriber's side of the stream: where they start, what each tick means to them, and what a
@@ -66,6 +81,10 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
   const sql = yield* SqlClient.SqlClient;
   let viewer = yield* viewerOf(people, orgId);
   let level = 0;
+  const shared = lastCounted.get(records) ?? new Map<KinOrgId, Counted>();
+  lastCounted.set(records, shared);
+  /** The newest change number this session has heard; any read begun after it has its commit. */
+  let newest = 0;
   /** A teammate's entries they were told of, and their lists: only these are ever removed. */
   let seen = new Map<string, string>();
   /** The counts the client holds; null when it holds none we know of. */
@@ -109,19 +128,34 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
   const team = () => (viewer.teammate ? { team: true as const } : {});
   const numberNow = (v: Viewer) =>
     v.teammate ? teamSeq(orgId, own(v)).pipe(workFailure) : records.seq(orgId);
-  const counts = Effect.fn("KinWorkStream.counts")(function* (seq: number) {
-    const next = yield* summary(people, { orgId });
+  /** With `heard`, owner-level counts another screen read after hearing the same are reused. */
+  const ownerLevelCounts = Effect.fn("KinWorkStream.ownerLevelCounts")(function* (heard: number) {
+    const last = shared.get(orgId);
+    if (last?.heard === heard) return yield* last.counted;
+    const counted = yield* Effect.cachedWithTTL(summaryOf(viewer, { orgId }), COUNTED_FOR);
+    shared.set(orgId, { heard, counted });
+    return yield* counted;
+  });
+  const counts = Effect.fn("KinWorkStream.counts")(function* (seq: number, heard?: number) {
+    const next =
+      heard === undefined || viewer.teammate
+        ? yield* summaryOf(viewer, { orgId })
+        : yield* ownerLevelCounts(heard);
     const moved = kinWorkCountsOf(held, next);
     held = next;
     return moved === null
       ? null
       : ({ _tag: "counts", seq, ...team(), asOf: next.asOf, ...moved } satisfies Out);
   });
-  /** Everything held is dropped: read again from `seq`, with the counts whole. */
-  const restart = Effect.fn("KinWorkStream.restart")(function* () {
+  /**
+   * Everything held is dropped: read again from `seq`, with the counts whole. `gap` is the number
+   * an owner-level announcement took (`KinRecords.announce`); no change row holds it, so the
+   * client's number moves only if it is told this one.
+   */
+  const restart = Effect.fn("KinWorkStream.restart")(function* (gap = 0) {
     seen = viewer.teammate ? yield* teamKeyLists(orgId, own(viewer)).pipe(workFailure) : new Map();
     held = null;
-    const seq = yield* numberNow(viewer);
+    const seq = Math.max(yield* numberNow(viewer), viewer.teammate ? 0 : gap);
     heardFrom(seq);
     const whole = yield* counts(seq);
     return [
@@ -203,6 +237,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
 
   /** A tick as this viewer's pending change; none when it doesn't touch what they see. */
   const pendingOf = (tick: Tick): ReadonlyArray<Pending> => {
+    newest = Math.max(newest, tick.seq);
     const base = { list: tick.registerId ?? null, created: tick.created === true, level };
     const mine = tick.people?.includes(viewer.person.personId) === true;
     if (!viewer.teammate) {
@@ -231,6 +266,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
         : [];
     return [
       ...rescan,
+      ...(mine ? [{ ...base, sequence, key: PLACES }] : []),
       ...projects,
       ...(tick.key === undefined ? [] : [{ ...base, sequence, key: tick.key }]),
     ];
@@ -246,7 +282,9 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     }
     const items = all.filter((one) => one.level === level);
     if (items.length === 0) return [];
-    if (items.some((one) => one.key === GAP)) return yield* restart();
+    const gaps = items.filter((one) => one.key === GAP);
+    if (gaps.length > 0) return yield* restart(Math.max(...gaps.map((one) => one.sequence)));
+    if (viewer.teammate && items.some((one) => one.key === PLACES)) return yield* restart();
     const top = Math.max(...items.map((one) => one.sequence));
     const keyed = items.filter((one) => one.key !== RESCAN);
     const place = (one: Pending) =>
@@ -276,7 +314,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     }
     const rows = yield* rowsNow(keyed);
     const close = yield* resumable(top).pipe(workFailure);
-    const moved = yield* counts(close);
+    const moved = yield* counts(close, newest);
     if (rows.length === 0) return moved === null ? [] : [moved];
     return [...rows, moved ?? ({ _tag: "synchronized", seq: close, ...team() } satisfies Out)];
   });
@@ -325,6 +363,59 @@ export const subscribeRows = (
       );
     }),
   );
+
+/**
+ * `kin.work.subscribe` without `acceptRows`, for an older phone: the row stream's session, tick by
+ * tick, told as `changed`. The first is where things stand; a change names each entry the row
+ * stream would send, and a fresh read is one that names none.
+ */
+export const subscribeChanged = (
+  people: ReadonlyArray<PersonIdentity>,
+  input: { readonly orgId: KinOrgId },
+) =>
+  Stream.unwrap(
+    Effect.gen(function* () {
+      const records = yield* KinRecords;
+      const session = yield* makeWorkStream(people, { orgId: input.orgId, acceptRows: true });
+      let started = false;
+      return records.changes(input.orgId).pipe(
+        Stream.mapEffect((tick) =>
+          Effect.gen(function* () {
+            if (started) {
+              const pending = session.pendingOf(tick);
+              return pending.length === 0 ? NONE : changedOf(yield* session.batch(pending));
+            }
+            started = true;
+            const opening = yield* session.start(tick.seq);
+            return opening.slice(0, 1).map(({ seq }): Changed => ({ _tag: "changed", seq }));
+          }),
+        ),
+        Stream.flattenIterable,
+      );
+    }),
+  );
+
+type Changed = Extract<Out, { readonly _tag: "changed" }>;
+const NONE: ReadonlyArray<Changed> = [];
+const changedOf = (events: ReadonlyArray<Out>): ReadonlyArray<Changed> => {
+  const named = events.flatMap((event): ReadonlyArray<Changed> => {
+    if (event._tag === "upsert")
+      return [{ _tag: "changed", seq: event.seq, key: event.record.key, list: event.list }];
+    if (event._tag === "removed")
+      return [
+        {
+          _tag: "changed",
+          seq: event.seq,
+          key: event.key,
+          ...(event.list === undefined ? {} : { list: event.list }),
+        },
+      ];
+    return [];
+  });
+  if (named.length > 0) return named;
+  const fresh = events.find((event) => event._tag === "snapshot-required");
+  return fresh === undefined ? [] : [{ _tag: "changed", seq: fresh.seq }];
+};
 
 /**
  * The entries changed after `after` up to `seq`, each at its newest number, or null when the gap

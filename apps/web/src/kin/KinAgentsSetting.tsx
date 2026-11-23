@@ -1,163 +1,164 @@
 import { useAtomValue } from "@effect/atom-react";
-import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
+import { KIN_AGENT_PAGE, kinAgentModelLine } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
+  KIN_AGENTS_COPY,
+  KIN_AGENTS_PAGE,
   KIN_OTHER_PROVIDER_AGENTS,
-  kinDomainLabel,
+  kinLeadModelName,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
-import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { KinLeadProfile, ModelSelection } from "@t3tools/contracts";
+import type { ModelSelection } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { ChevronRightIcon } from "lucide-react";
 import { useState } from "react";
 
-import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import { Switch } from "../components/ui/switch";
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../hooks/useSettings";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
-import { useOpenKinAgentPage } from "./kinAgentPageLink";
-import { KinAgentModelPicker } from "./KinAgentModelPicker";
-import { KinAvatar } from "./KinAvatar";
+import { KinAgentModelPicker, useKinAgentModels } from "./KinAgentModelPicker";
 import { kinClient } from "./kinClient";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
+import { KinSettingsField, KinSettingsFormDialog } from "./settings/KinSettingsControls";
+import { KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
 import { useKinHost } from "./useKinHost";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import type { KinWorkTarget } from "./useKinWork";
 
-/** The company's agents and the model new ones start on, for the owner and co-owners. */
+/** The old Company settings address's agents block, before Kin's Settings take it over. */
 export function KinAgentsSetting() {
   const target = kinNewLeadTarget(useKinHost());
-  return target === null ? null : <OwnerLevelAgents {...target} />;
+  return target === null ? null : <KinAgentDefaultsSections {...target} />;
 }
 
-function OwnerLevelAgents(props: KinWorkTarget) {
+/**
+ * Settings → Agents, below the list: what new agents start on, then the experiment that lets
+ * agents run on other providers. The owner and co-owners only.
+ */
+export function KinAgentDefaultsSections(props: KinWorkTarget) {
   if (!useKinOwnerLevel(props.environmentId)) return null;
   return (
-    <SettingsSection {...searchableSetting("kin-agents")}>
+    <>
       <CompanyDefault {...props} />
       <OpenAiAgents {...props} />
-      <AgentRows {...props} />
-    </SettingsSection>
+    </>
   );
 }
 
-/** The model new agents start on; the owner and co-owners change it. */
-export function KinAgentDefaultsSetting(props: KinWorkTarget) {
-  if (!useKinOwnerLevel(props.environmentId)) return null;
-  return (
-    <SettingsSection {...searchableSetting("kin-agents")}>
-      <CompanyDefault {...props} />
-      <OpenAiAgents {...props} />
-    </SettingsSection>
-  );
-}
-
-/** The host's experimental switch that lets agents run on Codex models too. */
+/** The host's experimental switch that lets agents run on Codex models too; it saves on flip. */
 function OpenAiAgents(props: KinWorkTarget) {
   const settings = useEnvironmentSettings(props.environmentId);
   const updateSettings = useUpdateEnvironmentSettings(props.environmentId);
   return (
-    <SettingsRow
-      title={KIN_OTHER_PROVIDER_AGENTS.title}
-      description={KIN_OTHER_PROVIDER_AGENTS.detail}
-      control={
-        <Switch
-          checked={settings.kinNonClaudeAgents}
-          onCheckedChange={(checked) =>
-            void updateSettings({ kinNonClaudeAgents: Boolean(checked) })
-          }
-          aria-label={KIN_OTHER_PROVIDER_AGENTS.title}
-        />
-      }
-    />
+    <KinSettingsSection title={KIN_OTHER_PROVIDER_AGENTS.section}>
+      <KinSettingsRow
+        title={KIN_OTHER_PROVIDER_AGENTS.row}
+        wrap
+        detail={KIN_OTHER_PROVIDER_AGENTS.rowDetail}
+        control={
+          <Switch
+            checked={settings.kinNonClaudeAgents}
+            onCheckedChange={(checked) =>
+              void updateSettings({ kinNonClaudeAgents: Boolean(checked) })
+            }
+            aria-label={KIN_OTHER_PROVIDER_AGENTS.row}
+          />
+        }
+      />
+    </KinSettingsSection>
   );
 }
 
+/** The model and effort new agents start on: a row saying it, opening a form to change both. */
 function CompanyDefault(props: KinWorkTarget) {
   const { environmentId, orgId } = props;
+  const searchableSetting = useSearchableSetting();
   const defaultsAtom = kinClient.agentDefaults({ environmentId, input: { orgId } });
   const defaults = Option.getOrNull(AsyncResult.value(useAtomValue(defaultsAtom)));
-  const save = useAtomCommand(kinClient.agentDefaultsSet, { reportFailure: false });
-  const [problem, setProblem] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const { providers } = useKinAgentModels(environmentId);
+  const [editing, setEditing] = useState(false);
   const base = defaults?.model ?? null;
-
-  const choose = async (model: ModelSelection) => {
-    setBusy(true);
-    const outcome = await save({ environmentId, input: { orgId, model } });
-    setBusy(false);
-    setProblem(
-      AsyncResult.isFailure(outcome)
-        ? kinFailureText(squashAtomCommandFailure(outcome), "Couldn't save that.")
-        : null,
-    );
-    appAtomRegistry.refresh(defaultsAtom);
-  };
-
+  const line =
+    base === null ? null : kinAgentModelLine(kinLeadModelName(base.model, providers), base);
   return (
-    <SettingsRow
-      title={KIN_AGENT_PAGE.defaults}
-      description={
-        problem === null ? (
-          `${KIN_AGENT_PAGE.defaultsDetail}${defaults?.chosen === false ? ` ${KIN_AGENT_PAGE.defaultsUnchosen}` : ""}`
-        ) : (
-          <span role="alert">{problem}</span>
-        )
-      }
-      control={
-        base === null ? undefined : (
-          <div className="max-w-xs">
-            <KinAgentModelPicker
-              environmentId={environmentId}
-              label={KIN_AGENT_PAGE.defaults}
-              selection={base}
-              disabled={busy}
-              onChange={(selection) => void choose(selection)}
-            />
-          </div>
-        )
-      }
-    />
+    <KinSettingsSection
+      title={KIN_AGENTS_PAGE.forNew}
+      searchId={searchableSetting("kin-agents").id}
+    >
+      <KinSettingsRow
+        title={KIN_AGENTS_PAGE.model}
+        detail={
+          line === null
+            ? undefined
+            : defaults?.chosen === false
+              ? KIN_AGENTS_PAGE.unchosen(line)
+              : line
+        }
+        openLabel={KIN_AGENTS_PAGE.defaultsTitle}
+        {...(base === null ? {} : { onOpen: () => setEditing(true) })}
+      />
+      {editing && base !== null ? (
+        <DefaultsDialog
+          {...props}
+          base={base}
+          unchosen={defaults?.chosen === false}
+          onSaved={() => appAtomRegistry.refresh(defaultsAtom)}
+          onClose={() => setEditing(false)}
+        />
+      ) : null}
+    </KinSettingsSection>
   );
 }
 
-function AgentRows(props: KinWorkTarget) {
+function DefaultsDialog(
+  props: KinWorkTarget & {
+    readonly base: ModelSelection;
+    readonly unchosen: boolean;
+    readonly onSaved: () => void;
+    readonly onClose: () => void;
+  },
+) {
   const { environmentId, orgId } = props;
-  const openPage = useOpenKinAgentPage();
-  const leads = Option.getOrNull(AsyncResult.value(useAtomValue(kinClient.agents(props))));
-  if (leads === null) return null;
-  const open = (lead: KinLeadProfile) =>
-    openPage({ environmentId, orgId, agentId: lead.agentId, chatId: lead.ownerChatId });
-  return leads.leads.map((lead) => (
-    <SettingsRow
-      key={lead.agentId}
-      title={
-        <button
-          type="button"
-          className="flex min-h-11 w-full items-center gap-3 rounded-sm text-start outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-          onClick={() => void open(lead)}
-        >
-          <KinAvatar avatar={kinAgentAvatar(lead.agentId)} size="sm" />
-          <span className="flex min-w-0 flex-col">
-            <span className="truncate">{lead.name}</span>
-            <span className="truncate text-xs font-normal text-muted-foreground">
-              {[
-                kinDomainLabel(lead.domain),
-                lead.retired !== undefined ? "Retired" : null,
-                lead.paused !== undefined ? "Paused" : null,
-                lead.agentId === leads.teamAgentId ? "Team agent" : null,
-              ]
-                .filter((part) => part !== null)
-                .join(", ")}
-            </span>
-          </span>
-          <ChevronRightIcon className="ms-auto size-4 text-muted-foreground" />
-        </button>
+  const save = useAtomCommand(kinClient.agentDefaultsSet, { reportFailure: false });
+  const [model, setModel] = useState(props.base);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const submit = async () => {
+    setBusy(true);
+    setProblem(null);
+    const outcome = await save({ environmentId, input: { orgId, model } });
+    setBusy(false);
+    props.onSaved();
+    if (AsyncResult.isSuccess(outcome)) props.onClose();
+    else setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENTS_COPY.saveFailed));
+  };
+  return (
+    <KinSettingsFormDialog
+      title={KIN_AGENTS_PAGE.defaultsTitle}
+      description={
+        props.unchosen
+          ? `${KIN_AGENT_PAGE.defaultsDetail} ${KIN_AGENT_PAGE.defaultsUnchosen}`
+          : KIN_AGENT_PAGE.defaultsDetail
       }
-    />
-  ));
+      submitLabel={KIN_AGENTS_PAGE.save}
+      busy={busy}
+      problem={problem}
+      onSubmit={() => void submit()}
+      onClose={props.onClose}
+    >
+      <KinSettingsField label={KIN_AGENTS_PAGE.defaultsLabel}>
+        {() => (
+          <KinAgentModelPicker
+            environmentId={environmentId}
+            label={KIN_AGENTS_PAGE.defaultsLabel}
+            selection={model}
+            disabled={busy}
+            onChange={setModel}
+          />
+        )}
+      </KinSettingsField>
+    </KinSettingsFormDialog>
+  );
 }

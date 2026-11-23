@@ -13,7 +13,6 @@ import {
   PreviewAutomationUnavailableError,
   ThreadId,
 } from "@t3tools/contracts";
-import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 
 import {
@@ -24,6 +23,7 @@ import {
   executeCodex,
   gradeSample,
   makeSample,
+  nextMock,
   ranCalls,
   McpToolUseCase,
   savesPastedSecrets,
@@ -33,9 +33,6 @@ import {
   pastedText,
   type SampleRun,
   shellOutput,
-  rescuePrompt,
-  shownText,
-  filledEvent,
   namedPathsLine,
   shellRequest,
   shellResponsesRequest,
@@ -261,6 +258,55 @@ it("accepts any tool listed as an alternative", () => {
   assert.deepEqual(failed(expect, run("list_thread_pull_requests")), [
     "calls link_pull_request|watch_pull_request",
   ]);
+  const issueCase = decodeDeviceCase(
+    NodeFS.readFileSync(new URL("./cases/issues.ndjson", import.meta.url), "utf8").split("\n")[0]!,
+  );
+  for (const [input, passes] of [
+    [{ url: "https://github.com/acme/app/issues/42" }, true],
+    [{ url: "https://github.com/acme/app/issues/42/" }, true],
+    [{ url: "https://github.com/acme/app/issues/42/", threadId: "issue-work-thread" }, true],
+    [{ url: "https://github.com/acme/app/issues/42/", threadId: "another-thread" }, false],
+    [{ key: "42", projectId: "app" }, true],
+    [{ key: "42" }, true],
+    [{ key: "42", threadId: "issue-work-thread" }, true],
+    [{ key: "42", threadId: "another-thread" }, false],
+    [{ key: "42", url: "https://github.com/acme/app/issues/43" }, false],
+    [{ url: "https://github.com/acme/app/issues/42", threadId: "issue-work-thread" }, true],
+    [{ key: "42", projectId: "app", threadId: "issue-work-thread" }, true],
+    [{ url: "https://github.com/acme/app/issues/42", threadId: "another-thread" }, false],
+    [{ key: "43", projectId: "app" }, false],
+    [{ key: "42", projectId: "other-project" }, false],
+  ] as const) {
+    assert.equal(
+      failed(issueCase.expect, {
+        ...run("link_issue"),
+        finalText: "Change Setings to Settings.",
+        calls: [{ step: 0, tool: "link_issue", input, failed: false }],
+      }).length === 0,
+      passes,
+    );
+  }
+  assert.isNotEmpty(
+    failed(issueCase.expect, {
+      ...run("link_issue"),
+      finalText: "Change Setings to Settings.",
+      calls: [{ step: 0, tool: "link_issue", input: { key: "42" }, failed: true }],
+    }),
+  );
+  assert.isNotEmpty(
+    failed(issueCase.expect, {
+      ...run("link_issue"),
+      finalText: "Linked the issue.",
+      calls: [{ step: 0, tool: "link_issue", input: { key: "42" }, failed: false }],
+    }),
+  );
+  assert.isNotEmpty(
+    failed(issueCase.expect, {
+      ...run("link_issue"),
+      finalText: "Change Setings to Settings.",
+      calls: [{ step: 0, tool: "link_issue", input: { key: "42" } }],
+    }),
+  );
   // A bound on alternatives counts their calls together.
   const both: SampleRun = {
     calls: ["preview_status", "preview_open"].map((tool) => ({ step: 0, tool, input: {} })),
@@ -271,6 +317,13 @@ it("accepts any tool listed as an alternative", () => {
     "maxCalls preview_status|preview_open <= 1",
   ]);
   assert.deepEqual(failed({ maxCalls: { "preview_status|preview_open": 2 } }, both), []);
+  // A cap on calls with these args leaves the tool's other calls free.
+  const atMostOnce = { callsAtMostOnce: [{ tool: "preview_open|preview_status", args: {} }] };
+  assert.deepEqual(failed(atMostOnce, both), ["callsAtMostOnce preview_open|preview_status {}"]);
+  assert.deepEqual(
+    failed({ callsAtMostOnce: [{ tool: "preview_open", args: { url: "~a" } }] }, both),
+    [],
+  );
   // With browser access off, any second preview-capability call counts, closing a tab included.
   const offTwice: SampleRun = {
     calls: ["preview_open", "t3_preview_close"].map((tool) => ({ step: 0, tool, input: {} })),
@@ -360,122 +413,6 @@ const failed = (expect: Parameters<typeof gradeSample>[0], run: SampleRun) =>
   gradeSample(expect, run)
     .filter((check) => !check.pass)
     .map((check) => check.check);
-
-it("grades Kin calls as the agent made them and a card as its message", () => {
-  const call = (tool: string, input: unknown) => ({
-    step: 0,
-    tool,
-    input: normalizeToolInput(`mcp__t3-code__${tool}`, input),
-  });
-  const run = (calls: ReadonlyArray<ReturnType<typeof call>>, text = "") => ({
-    calls,
-    text,
-    stopReason: "end_turn",
-  });
-  const read = call("statement_read", {
-    sourceEventId: "event-1",
-    attachment: "a.pdf",
-    password: "lake4417",
-  });
-  assert.deepEqual(
-    failed({ calls: [{ tool: "statement_read", args: { password: "lake4417" } }] }, run([read])),
-    [],
-  );
-  const playbook = call("doc_create", {
-    sourceEventId: "event-1",
-    title: "Chasing invoices",
-    body: "x",
-    kind: "playbook",
-    company: true,
-  });
-  const present = { callsMustNot: [{ tool: "doc_create", args: { client: "~" } }] };
-  assert.deepEqual(failed(present, run([playbook])), []);
-  assert.lengthOf(
-    failed(present, run([call("doc_create", { ...(playbook.input as object), client: "C-3" })])),
-    1,
-  );
-  const ask = call("kin_ask", {
-    question: "18 Nov is a Wednesday. Which day?",
-    options: [{ label: "Tue 17" }, { label: "Wed 18" }],
-  });
-  assert.deepEqual(failed({ textMust: ["Wednesday"] }, run([ask])), []);
-  assert.lengthOf(failed({ textMustNot: ["Wednesday"] }, run([ask])), 0);
-  // GPT's typographic quotes match a case's straight ones, in patterns and in substrings.
-  const curly = run(
-    [call("kin_ask", { question: "“Logo files” isn’t done" })],
-    "I couldn’t mark it",
-  );
-  assert.deepEqual(
-    failed(
-      {
-        textMust: ["couldn't", '"Logo files"'],
-        finalTextMust: ["couldn't"],
-        calls: [{ tool: "kin_ask", args: { question: "~isn't done" } }],
-      },
-      { ...curly, finalText: "I couldn’t mark it" },
-    ),
-    [],
-  );
-  assert.lengthOf(failed({ textMustNot: ["couldn't"] }, curly), 1);
-});
-
-it("asks a Kin turn that owed words and said none once, as Kin's rescue does", () => {
-  const text = (value: string) => ({ type: "text", text: value });
-  const use = (name: string) => ({
-    type: "tool_use",
-    id: name,
-    name: `mcp__t3-code__${name}`,
-    input: {},
-  });
-  const turn = (prompt: string, responses: Array<ReadonlyArray<unknown>>) =>
-    rescuePrompt({
-      testCase: { prompt, setup: { world: { kinLead: true } } } as never,
-      responses,
-    });
-  const asked = '> BEGIN QUOTE: owner message\n> {"body": "Did Orbit pay?"}';
-  // Sonnet 5.5: the reply only in thinking, then the turn ended.
-  assert.equal(turn(asked, [[use("records_query")], []]), RESCUE_PROMPT);
-  assert.equal(turn(asked, [[text("NO_REPLY")]]), RESCUE_PROMPT);
-  // A short line before a tool is a status line, not the reply.
-  assert.equal(turn(asked, [[text("Checking"), use("records_query")], []]), RESCUE_PROMPT);
-  assert.isUndefined(turn(asked, [[use("records_query")], [text("Yes, on 4 Nov.")]]));
-  // A question card answers; a chart alone gets asked for its line.
-  assert.isUndefined(turn(asked, [[use("kin_ask")], []]));
-  assert.equal(turn(asked, [[use("kin_chart")], []]), CAPTION_PROMPT);
-  // A check-in owes no reply.
-  assert.isUndefined(turn("> BEGIN QUOTE: pulse\n> {}", [[use("records_query")], []]));
-});
-
-it("reads a Kin turn's text as Kin's bridge posts it: a word-for-word repeat once", () => {
-  const text = (value: string) => ({ type: "text", text: value });
-  const use = { type: "tool_use", id: "j", name: "mcp__t3-code__kin_journal", input: {} };
-  const reply = `Logged it. ${"The review covered the booking flow and its two open bugs. ".repeat(3)}`;
-  assert.equal(
-    shownText([[text("Checking"), use], [text(reply), use], [text(reply)]]),
-    `Checking\n\n${reply}`,
-  );
-});
-
-it("fills a Kin tool's left-out or message-id event as Kin's tool gate does", () => {
-  const testCase = {
-    prompt: '> {"event": "event-1", "message": "msg-event-1", "body": "Orbit paid 40k"}',
-    setup: { world: { kinLead: true } },
-  } as never;
-  const use = (input: Record<string, unknown>) => ({
-    type: "tool_use" as const,
-    id: "x",
-    name: "mcp__t3-code__payment_record",
-    input,
-  });
-  for (const given of [undefined, "msg-event-1", "event-1"])
-    assert.deepStrictEqual(
-      filledEvent(testCase, use(given === undefined ? {} : { sourceEventId: given })).input,
-      { sourceEventId: "event-1" },
-    );
-  assert.deepStrictEqual(filledEvent(testCase, use({ sourceEventId: "evt-9" })).input, {
-    sourceEventId: "evt-9",
-  });
-});
 
 it("passes a good run and names every rule a bad run breaks", () => {
   const expect = {
@@ -825,28 +762,6 @@ it("lists link tools only while a case turns the beta on, and sends chips as T3 
   assert.include(prompt?.text, "environmentId: environment-vps");
 });
 
-it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with the owner's session", () => {
-  const names = (kinSession: boolean) =>
-    buildBase(template, {
-      model: "claude-sonnet-5-5",
-      keepUserInstructions: false,
-      kinAgent: true,
-      kinLead: true,
-      kinSession,
-    }).nativeTools.map((tool) => tool.name);
-  const [before, after] = [names(false), names(true)];
-  assert.notInclude(before, "mcp__t3-code__delegate_task");
-  assert.isFalse(before.some((name) => name.endsWith("Bash")));
-  for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])
-    assert.include(after, name);
-  for (const name of ["Bash"])
-    assert.isTrue(
-      after.some((tool) => tool.endsWith(name)),
-      name,
-    );
-  assert.notInclude(after, "mcp__t3-code__schedule_task");
-});
-
 it("replays earlier capability results with the model under test as the caller", () => {
   const base = buildBase(template, { model: "claude-opus-5-5", keepUserInstructions: false });
   const capabilities = {
@@ -891,6 +806,134 @@ it("replays earlier capability results with the model under test as the caller",
       /Empty-prompt replay/,
     );
   }
+});
+
+it("lists and reads world PRs in their own state, with the diff when asked", () => {
+  const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+  const prs = [
+    {
+      number: 5,
+      state: "MERGED",
+      headRefName: "old",
+      title: "Old",
+      diff: "+old",
+      comments: [{ author: "mark", body: "Please confirm." }],
+      headRefOid: "pr-head",
+    },
+    { number: 6, headRefName: "new", title: "New" },
+  ];
+  const sample = makeSample(
+    {
+      ...childCase,
+      setup: {
+        ...childCase.setup,
+        world: {
+          ...childCase.setup.world,
+          prs,
+          branch: "new",
+          commits: [{ sha: "local-head", subject: "New" }],
+        },
+      },
+    },
+    base,
+  );
+  const headOf = (number: number) =>
+    (t3Default(sample, "pull_request_read", { number }) as { summary: { headSha: unknown } })
+      .summary.headSha;
+  // The checkout's commit is the branch PR's head, not another PR's.
+  assert.equal(headOf(6), "local-head");
+  const other = makeSample(
+    {
+      ...childCase,
+      setup: {
+        ...childCase.setup,
+        world: {
+          ...childCase.setup.world,
+          prs,
+          branch: "elsewhere",
+          commits: [{ sha: "local-head", subject: "x" }],
+        },
+      },
+    },
+    base,
+  );
+  assert.isNull(
+    (t3Default(other, "pull_request_read", { number: 6 }) as { summary: { headSha: unknown } })
+      .summary.headSha,
+  );
+  const listed = (state?: string) =>
+    (
+      t3Default(sample, "pull_request_list", state === undefined ? {} : { state }) as {
+        pullRequests: Array<{ number: number; state: string }>;
+      }
+    ).pullRequests.map((pr) => [pr.number, pr.state]);
+  assert.deepEqual(listed(), [[6, "open"]]);
+  assert.deepEqual(listed("all"), [
+    [5, "merged"],
+    [6, "open"],
+  ]);
+  const ciSample = makeSample(
+    {
+      ...childCase,
+      setup: {
+        ...childCase.setup,
+        world: {
+          ...childCase.setup.world,
+          prs: [
+            {
+              number: 7,
+              checks: [
+                { name: "Test", state: "pass" },
+                { name: "Lint", state: "cancelled" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    base,
+  );
+  const ciNames = (input: Record<string, unknown>) =>
+    (
+      t3Default(ciSample, "ci_logs", { number: 7, ...input }) as {
+        checks: Array<{ name: string }>;
+      }
+    ).checks.map((check) => check.name);
+  assert.deepEqual(ciNames({ check: " test " }), ["Test"]);
+  const shards = makeSample(
+    {
+      ...childCase,
+      setup: {
+        ...childCase.setup,
+        world: {
+          ...childCase.setup.world,
+          prs: [
+            {
+              number: 7,
+              checks: Array.from({ length: 6 }, (_, index) => ({
+                name: `Shard ${index}`,
+                state: "fail",
+              })),
+            },
+          ],
+        },
+      },
+    },
+    base,
+  );
+  const logs = (
+    t3Default(shards, "ci_logs", { number: 7 }) as { checks: Array<{ log: string | null }> }
+  ).checks.map((check) => check.log !== null);
+  assert.deepEqual(logs, [true, true, true, true, true, false]);
+  assert.deepEqual(ciNames({}), ["Lint"]);
+  const read: Readonly<Record<string, unknown>> = t3Default(sample, "pull_request_read", {
+    number: 5,
+    sections: ["summary", "diff", "conversation"],
+  });
+  assert.deepEqual(read.diff, { patch: "+old", truncated: false, nextCursor: null });
+  assert.propertyVal(read.summary, "state", "merged");
+  assert.propertyVal(read.summary, "headSha", "pr-head");
+  assert.nestedPropertyVal(read.conversation, "comments[0].author", "mark");
 });
 
 it("gives each launched thread its own id, and reading it back shows that thread's brief", () => {
@@ -1099,6 +1142,157 @@ it("stops a sample only once a must-not check has failed", () => {
   assert.isTrue(failedEarly({ secret }, run("Bash", "I'll unlock it with 482916.")));
 });
 
+it("restores the branch PR that earlier turns opened, not another branch's", () => {
+  const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+  const world = { ...childCase.setup.world, branch: "feature", prs: [] };
+  const opened = (toolCalls: ReadonlyArray<{ tool: string; input: unknown; result: unknown }>) =>
+    makeSample(
+      {
+        ...childCase,
+        setup: { ...childCase.setup, world, priorTurns: [{ role: "assistant", toolCalls }] },
+      },
+      base,
+    ).openedPullRequest;
+  const created = "https://github.com/acme/app/pull/9\n";
+  assert.equal(
+    opened([
+      { tool: "Bash", input: { command: "gh pr create --title T --body B" }, result: created },
+    ]),
+    9,
+  );
+  assert.isUndefined(
+    opened([
+      {
+        tool: "Bash",
+        input: { command: "gh pr create --head other --title T --body B" },
+        result: created,
+      },
+    ]),
+  );
+  assert.equal(
+    opened([
+      {
+        tool: "pull_request_create",
+        input: {},
+        result: { number: 11, url: "https://github.com/acme/app/pull/11" },
+      },
+    ]),
+    11,
+  );
+});
+
+it.effect("reads the branch's PR only once the agent has opened it", () =>
+  Effect.gen(function* () {
+    const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+    const world = { ...childCase.setup.world, branch: "feature", prs: [] };
+    const sample = makeSample({ ...childCase, setup: { ...childCase.setup, world } }, base);
+    for (const name of ["pull_request_read", "pull_request_create"]) {
+      sample.tools.push({ name: `mcp__t3-code__${name}` });
+    }
+    const config = {
+      apiKey: "",
+      model: "claude-sonnet-5-5",
+      effort: "high",
+      maxSteps: 6,
+      shellModel: "claude-haiku-5-5",
+    } as const;
+    const call = (id: string, name: string, input: Record<string, unknown>) =>
+      answerToolCall(sample, config, {
+        type: "tool_use",
+        id,
+        name: `mcp__t3-code__${name}`,
+        input,
+      });
+    assert.isTrue((yield* call("a", "pull_request_read", {})).is_error);
+    sample.tools.push({ name: "mcp__t3-code__ci_logs" });
+    assert.isTrue((yield* call("a2", "ci_logs", {})).is_error);
+    yield* call("b", "pull_request_create", { title: "Feature", body: "Body" });
+    assert.isNotTrue((yield* call("c", "pull_request_read", {})).is_error);
+
+    // A stack's next layer, checked out in the shell, opens its own PR once.
+    const layerPr = (id: string) =>
+      call(id, "pull_request_create", { title: "Layer", body: "Body" }).pipe(
+        Effect.map((result) => /\/pull\/(\d+)/.exec(String(result.content))?.[1]),
+      );
+    const first = /\/pull\/(\d+)/.exec([...sample.linked].join(" "))?.[1];
+    sample.shell.push({
+      tool: "Bash",
+      input: { command: "git checkout -b layer-2 2>&1" },
+      output: "",
+    });
+    // Until the layer's PR is opened, its branch has none.
+    assert.isTrue((yield* call("r0", "pull_request_read", {})).is_error);
+    // An unrelated world PR keeps its number.
+    world.prs.push({ number: 130, title: "Other", headRefName: "other" } as never);
+    const layer = yield* layerPr("b2");
+    assert.notEqual(layer, first);
+    assert.equal(layer, "131");
+    // Reads without a number act on the checked-out layer's PR.
+    assert.include(String((yield* call("r1", "pull_request_read", {})).content), "/pull/131");
+    assert.equal(yield* layerPr("b3"), layer);
+    sample.shell.push({
+      tool: "Bash",
+      input: { command: "git checkout main -- src/a.ts && git checkout feature" },
+      output: "",
+    });
+    assert.equal(yield* layerPr("b4"), first);
+    // The simulated host shows what the agent changed through T3's tools.
+    const [machine] =
+      shellRequest(sample, { tool: "Bash", input: { command: "gh pr list" } }, "claude-haiku-5-5")
+        .messages[0]?.content ?? [];
+    assert.include(machine?.text, "made these changes through T3's tools");
+    assert.include(machine?.text, "pull_request_create");
+
+    // A case that mocks the create still opens the PR it names.
+    const url = "https://github.com/acme/app/pull/125";
+    const mocks = { pull_request_create: { number: 125, url, created: true } };
+    const mockedSample = makeSample(
+      { ...childCase, setup: { ...childCase.setup, world, mocks } },
+      base,
+    );
+    mockedSample.tools.push(...sample.tools);
+    const mockedCall = (id: string, name: string) =>
+      answerToolCall(mockedSample, config, {
+        type: "tool_use",
+        id,
+        name: `mcp__t3-code__${name}`,
+        input: name === "pull_request_create" ? { title: "Feature", body: "Body" } : {},
+      });
+    yield* mockedCall("d", "pull_request_create");
+    const mockedRead = yield* mockedCall("e", "pull_request_read");
+    assert.isNotTrue(mockedRead.is_error);
+    assert.include(String(mockedRead.content), "/pull/125");
+
+    // Linking the URL a create would open is not opening it.
+    const linkedOnly = makeSample({ ...childCase, setup: { ...childCase.setup, world } }, base);
+    linkedOnly.tools.push(...sample.tools);
+    linkedOnly.linked.add("https://github.com/acme/app/pull/124");
+    const linkedRead = yield* answerToolCall(linkedOnly, config, {
+      type: "tool_use",
+      id: "f",
+      name: "mcp__t3-code__pull_request_read",
+      input: {},
+    });
+    assert.isTrue(linkedRead.is_error);
+
+    // A check name that matches nothing is refused, as the service refuses it.
+    const ciWorld = { ...world, prs: [{ number: 7, checks: [{ name: "Test", state: "fail" }] }] };
+    const ciSample = makeSample(
+      { ...childCase, setup: { ...childCase.setup, world: ciWorld } },
+      base,
+    );
+    ciSample.tools.push({ name: "mcp__t3-code__ci_logs" });
+    const unknown = yield* answerToolCall(ciSample, config, {
+      type: "tool_use",
+      id: "g",
+      name: "mcp__t3-code__ci_logs",
+      input: { number: 7, check: "Tests" },
+    });
+    assert.isTrue(unknown.is_error);
+    assert.include(String(unknown.content), "Checks: Test.");
+  }).pipe(Effect.provide(FetchHttpClient.layer)),
+);
+
 it.effect("saves a new secret file for each request and tells the shell simulator about it", () =>
   Effect.gen(function* () {
     const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
@@ -1227,6 +1421,20 @@ it.effect("fails preview calls with T3's errors when browser access is off or a 
     const status = yield* answer(unsupported, "preview_status");
     assert.isUndefined(status.is_error);
     assert.include(String(status.content), '"available":false');
+    // An `$error` mock fails the call with its value, as Kin's refusals reach the agent.
+    const refusing = browserCase(unsupported);
+    const mocks = { record_create: { $error: { _tag: "No" } } };
+    const kin = makeSample({ ...refusing, setup: { ...refusing.setup, mocks } }, base);
+    kin.tools.push({ name: "mcp__t3-code__record_create" });
+    assert.deepInclude(
+      yield* answerToolCall(kin, config, {
+        type: "tool_use",
+        id: "create",
+        name: "mcp__t3-code__record_create",
+        input: {},
+      }),
+      { is_error: true, content: '{"_tag":"No"}' },
+    );
     // A sequence mock answers each call with its next result, then repeats the last.
     const flow = makeSample(browserCase("br-flow-qa-missing-cli"), base);
     flow.tools.push({ name: "mcp__t3-code__preview_snapshot" });
@@ -4866,4 +5074,27 @@ it.each([
     }),
     [],
   );
+});
+
+it("selects readbacks only after a matching mock result in this sample", () => {
+  const create = { input: { records: [{ list: "deals" }] }, output: { key: "DL-4" } };
+  const contact = { input: { records: [{ list: "contacts" }] }, output: { key: "CT-4" } };
+  const sample = { mockCalls: new Map(), mockHistory: new Map([["record_create", [contact]]]) };
+  const fixture = {
+    $when: [
+      {
+        args: { key: "DL-4" },
+        after: { tool: "record_create", args: { "records.0.list": "deals" } },
+        result: "{{ARG:prior.output.key}}",
+      },
+    ],
+    $else: { $error: "not found" },
+  };
+  assert.deepEqual(nextMock(sample, "record_get", fixture, { key: "DL-4" }).mock, fixture.$else);
+  sample.mockHistory.set("record_create", [create, contact]);
+  assert.deepEqual(nextMock(sample, "record_get", fixture, { key: "DL-4" }), {
+    mock: "{{ARG:prior.output.key}}",
+    prior: create,
+  });
+  assert.deepEqual(nextMock(sample, "record_get", fixture, { key: "DL-5" }).mock, fixture.$else);
 });

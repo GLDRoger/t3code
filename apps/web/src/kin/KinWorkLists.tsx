@@ -1,4 +1,4 @@
-import { KIN_RETRY, kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY, kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_LISTS,
@@ -19,6 +19,8 @@ import {
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
+import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
   KinListDefinition,
@@ -26,7 +28,7 @@ import type {
   KinListId,
   KinRecordKey,
 } from "@t3tools/contracts";
-import { Settings2Icon, TableIcon, XIcon } from "lucide-react";
+import { PlusIcon, Settings2Icon, TableIcon, XIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -67,8 +69,10 @@ import {
   KinLoadFailed,
   KinWorkStaleLine,
 } from "./KinWorkParts";
+import { KinNewExpenseDialog, KinNewInvoiceDialog } from "./KinMoneyForms";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
+import { KinPlaceCombobox } from "./KinPlaceCombobox";
 import {
   useKinListChanges,
   useKinListContext,
@@ -76,9 +80,12 @@ import {
   useKinLists,
 } from "./useKinMoney";
 import { useKinWorkChoices, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
 
 const ANY = "any";
 const NONE = "none";
+// "No client" in the client filter: not a client, so its key can never be a record's.
+const NO_CLIENT: KinWorkRef = { key: "none", title: KIN_LISTS.noClient };
 
 /** One list, found among all of them: its page once it is known, or why there isn't one. */
 export function KinWorkListPage(
@@ -152,8 +159,20 @@ function KinListEntries(
   );
   const [layout, setLayout] = useState<Layout>("rows");
   const [editing, setEditing] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(props.environmentId));
+  const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(props.environmentId));
+  // Invoices and Expenses take a new one typed by hand; no other list has a form of its own.
+  const adds =
+    def.archivedAt !== null
+      ? null
+      : def.list === "invoices" && canInvoice
+        ? KIN_MONEY_FORMS.invoice.title
+        : def.list === "expenses" && canExpense
+          ? KIN_MONEY_FORMS.expense.title
+          : null;
   const { filter } = state;
-  const header = kinListHeader(def, filter, totals, state.total);
+  const header = kinListHeader(def, filter, totals, state.total, context.yearStartMonth);
   const rows = state.records.map((record) =>
     kinListRow(record, def, context, { party: filter.party?.key ?? null }),
   );
@@ -161,8 +180,9 @@ function KinListEntries(
   const narrowings = kinListNarrowings(filter, def);
   const groupings = kinListGroupings(def);
   const { clients } = useKinWorkChoices(props, true);
+  const clientsOn = useKinSectionOn(props.environmentId, "clients");
+  const named = useKinSectionNamed(props.environmentId);
   const category = filter.noCategory ? NONE : (filter.category ?? ANY);
-  const client = filter.noParty ? NONE : (filter.party?.key ?? ANY);
   const nothing = kinListNothing(def, filter);
   const footer = kinListFooter(rows.length, state.total, state.more);
   const searchId = useId();
@@ -183,6 +203,12 @@ function KinListEntries(
               </p>
             )}
           </div>
+          {adds === null ? null : (
+            <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+              <PlusIcon />
+              {adds}
+            </Button>
+          )}
           {canEdit ? (
             <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
               <Settings2Icon />
@@ -282,32 +308,27 @@ function KinListEntries(
               </SelectPopup>
             </Select>
           )}
-          <Select
-            value={client}
-            onValueChange={(value) => {
-              const party = clients.find((held) => held.key === value) ?? null;
-              entries.setFilter({ ...filter, noParty: value === NONE, party });
-            }}
-          >
-            <SelectTrigger className="w-full min-w-0 sm:w-44" aria-label={KIN_LISTS.clientFilter}>
-              <SelectValue>
-                {client === ANY
-                  ? KIN_LISTS.anyClient
-                  : client === NONE
-                    ? KIN_LISTS.noClient
-                    : (filter.party?.title ?? KIN_LISTS.anyClient)}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup alignItemWithTrigger={false}>
-              <SelectItem value={ANY}>{KIN_LISTS.anyClient}</SelectItem>
-              {clients.map((held) => (
-                <SelectItem key={held.key} value={held.key}>
-                  {held.title}
-                </SelectItem>
-              ))}
-              <SelectItem value={NONE}>{KIN_LISTS.noClient}</SelectItem>
-            </SelectPopup>
-          </Select>
+          {!clientsOn ? null : (
+            <div className="w-full min-w-0 sm:w-44">
+              <KinPlaceCombobox
+                target={props}
+                noun="client"
+                label={named(KIN_LISTS.clientFilter)}
+                labelHidden
+                placeholder={named(KIN_LISTS.anyClient)}
+                value={filter.noParty ? NO_CLIENT : filter.party}
+                choices={clients}
+                extra={NO_CLIENT}
+                onChange={(party) =>
+                  entries.setFilter(
+                    party?.key === NO_CLIENT.key
+                      ? { ...filter, noParty: true, party: null }
+                      : { ...filter, noParty: false, party },
+                  )
+                }
+              />
+            </div>
+          )}
           <div>
             <ToggleGroup
               aria-label="Layout"
@@ -485,7 +506,7 @@ function KinListEntries(
         {footer === null ? null : (
           <div className="flex items-center gap-3 px-2">
             <p className="text-xs text-muted-foreground" role="status">
-              {state.moreFailed ? "Couldn't load more." : footer}
+              {state.moreFailed ? KIN_MORE_FAILED : footer}
             </p>
             <Button
               size="xs"
@@ -510,6 +531,20 @@ function KinListEntries(
           }}
         />
       ) : null}
+      {!adding ? null : def.list === "invoices" ? (
+        <KinNewInvoiceDialog
+          {...props}
+          party={filter.party}
+          onOpenKey={props.onOpenKey}
+          onClose={() => setAdding(false)}
+        />
+      ) : (
+        <KinNewExpenseDialog
+          {...props}
+          onOpenKey={props.onOpenKey}
+          onClose={() => setAdding(false)}
+        />
+      )}
     </div>
   );
 }

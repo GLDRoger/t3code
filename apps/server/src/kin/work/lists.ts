@@ -10,6 +10,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { withArticle } from "../article.ts";
 import { formatMoney } from "./money.ts";
 
 /**
@@ -17,8 +18,11 @@ import { formatMoney } from "./money.ts";
  * lists people define later (slice 5) get the same shape from configuration.
  */
 
-/** `docs` is Kin's own: its rows are docs, read and written through `docs.ts`. */
-export type ListName = KinWorkListName | "docs";
+/**
+ * `docs` is Kin's own: its rows are docs, read and written through `docs.ts`. `deals` are written
+ * only through `deals.ts`.
+ */
+export type ListName = KinWorkListName | "docs" | "deals";
 type List = {
   readonly name: string;
   readonly prefix: string;
@@ -29,6 +33,15 @@ type List = {
   readonly fields: ReadonlyArray<string>;
 };
 
+export const WATCHED_NUMBER_FIELDS: ReadonlyArray<string> = [
+  "direction",
+  "above",
+  "below",
+  "every",
+  "spec",
+  "source",
+];
+
 export const LISTS: Record<ListName, List> = {
   work: {
     name: "Work",
@@ -37,16 +50,21 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "doing", "waiting", "done", "dropped"],
     categories: ["task", "issue", "obligation", "meeting"],
     // The project spine: a milestone's key, S/M/L, why its holder was picked, the doc section it
-    // came from with that section's hash then, and a meeting's people and place.
+    // came from with that section's hash then, a meeting's people and place, the holder not
+    // told yet that it is theirs, who is on it besides its holder (`person:<id>`, `agent:<id>`),
+    // and where a promise was made (`promises.ts`).
     fields: [
       "milestone",
       "size",
       "reason",
+      "untold",
       "fromDoc",
       "fromSection",
       "fromHash",
       "attendees",
       "where",
+      "from",
+      "alsoOn",
     ],
   },
   clients: {
@@ -54,9 +72,11 @@ export const LISTS: Record<ListName, List> = {
     prefix: "C",
     noun: "client",
     states: ["open", "dropped"],
-    categories: ["client", "vendor"],
-    // Tax ids are configuration for invoices; computing tax is not Kin's.
-    fields: ["terms", "address", "gstin", "placeOfSupply"],
+    // A prospect is a client we haven't sold to yet; the wire calls it a client (`prospect`).
+    categories: ["client", "vendor", "prospect"],
+    // Tax ids are configuration for invoices; computing tax is not Kin's. `source` is where it
+    // came from and `tags` the company's own words for it.
+    fields: ["terms", "address", "gstin", "placeOfSupply", "source", "tags"],
   },
   contacts: {
     name: "Contacts",
@@ -64,16 +84,28 @@ export const LISTS: Record<ListName, List> = {
     noun: "contact",
     states: ["open", "dropped"],
     categories: [],
-    fields: ["role", "email", "phone"],
+    // `emails` and `phones` hold every one, main first, only beside a second (`contactDetails.ts`).
+    fields: ["role", "email", "phone", "emails", "phones", "tags"],
   },
   projects: {
     name: "Projects",
     prefix: "P",
     noun: "project",
     states: ["open", "done", "dropped"],
-    categories: [],
-    // `members` holds `person:<id>` and `agent:<id>`; days are `YYYY-MM-DD`.
-    fields: ["repos", "billing", "value", "startsOn", "renewsOn", "members"],
+    // None is an ordinary project; a campaign's `audience` is a tag (`tags.ts`).
+    categories: ["campaign"],
+    // `members` holds `person:<id>` and `agent:<id>`; days are `YYYY-MM-DD`; `noticeDays` a whole
+    // number as text.
+    fields: [
+      "repos",
+      "billing",
+      "value",
+      "startsOn",
+      "renewsOn",
+      "noticeDays",
+      "members",
+      "audience",
+    ],
   },
   milestones: {
     name: "Milestones",
@@ -91,7 +123,17 @@ export const LISTS: Record<ListName, List> = {
     noun: "goal",
     states: ["open", "done", "dropped"],
     categories: [],
-    fields: ["measure", "target", "current", "unit", "startsOn"],
+    fields: ["measure", "target", "current", "unit", "startsOn", ...WATCHED_NUMBER_FIELDS],
+  },
+  // What we hope to win from a client or prospect: done is won, dropped is lost. `stage` is a stage
+  // id of the company's own (`deals.ts`), `value` a `KinMoney` in any currency.
+  deals: {
+    name: "Deals",
+    prefix: "DL",
+    noun: "deal",
+    states: ["open", "done", "dropped"],
+    categories: [],
+    fields: ["stage", "value", "source", "lostReason", "concerns"],
   },
   docs: {
     name: "Docs",
@@ -107,11 +149,14 @@ export const LISTS: Record<ListName, List> = {
 
 export const listOf = (registerId: string): ListName =>
   registerId in LISTS ? (registerId as ListName) : "work";
-/** A list clients older than Docs know; callers keep docs out of what they return. */
+/** A list clients older than Docs and Deals know; callers keep docs out of what they return. */
 export const workListOf = (registerId: string): KinWorkListName => {
   const list = listOf(registerId);
-  return list === "docs" ? "work" : list;
+  return list === "docs" || list === "deals" ? "work" : list;
 };
+/** The true list, for a client that knows lists newer than `workListOf` reads them as. */
+export const listNameOf = (registerId: string) =>
+  registerId === "deals" ? { listName: "deals" as const } : {};
 
 /** Which of an entry's own fields are sensitive whatever its label says (design 4.9). */
 export const sensitiveFields = (list: ListName): ReadonlyArray<string> =>
@@ -164,7 +209,7 @@ export const checkFor = (
   const def = LISTS[list];
   if (input.state !== undefined && !def.states.includes(input.state))
     return invalid(
-      `A ${def.noun} is ${def.states.join(", ")}; ${input.state} is for Work entries.`,
+      `${withArticle(def.noun, "A")} is ${def.states.join(", ")}; ${input.state} is for Work entries.`,
     );
   if (
     input.category !== undefined &&
@@ -173,10 +218,10 @@ export const checkFor = (
   )
     return invalid(
       def.categories.length === 0
-        ? `A ${def.noun} has no category.`
-        : `A ${def.noun}'s kind is ${def.categories.join(" or ")}.`,
+        ? `${withArticle(def.noun, "A")} has no category.`
+        : `${withArticle(def.noun, "A")}'s kind is ${def.categories.join(" or ")}.`,
     );
   const extra = Object.keys(input.fields ?? {}).filter((key) => !def.fields.includes(key));
-  if (extra.length > 0) return invalid(`A ${def.noun} has no ${extra.join(", ")}.`);
+  if (extra.length > 0) return invalid(`${withArticle(def.noun, "A")} has no ${extra.join(", ")}.`);
   return undefined;
 };

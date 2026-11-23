@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { withArticle } from "../article.ts";
 import type { TextClock } from "../work/companyProfile.ts";
 
 /** What each platform takes, checked before a post reaches a card. Conservative on purpose. */
@@ -121,7 +122,7 @@ export const mediaProblem = (
   }
   const video = VIDEO_TYPES.has(media.mimeType);
   if (!video && !IMAGE_TYPES.has(media.mimeType))
-    return `${media.name} is a ${media.mimeType} file; posts take JPEG, PNG, WebP or GIF pictures and MP4 or MOV videos.`;
+    return `${media.name} is ${withArticle(media.mimeType)} file; posts take JPEG, PNG, WebP or GIF pictures and MP4 or MOV videos.`;
   if (rule.needs === "video" && !video) return `${rule.label} needs a video, not a picture.`;
   const limitMb = video ? rule.videoMb : rule.imageMb;
   if (media.bytes > limitMb * 1024 * 1024)
@@ -346,3 +347,26 @@ export const idempotencyKey = (post: Pick<PostRow, "postId" | "digest">) =>
 /** "Mon 18 Nov · 19:00" in the owner's zone and `clock`'s locale. */
 export const whenLabel = (ms: number, clock: TextClock) =>
   `${formatKinWhen(ms, "day", clock)} · ${formatKinWhen(ms, "time", clock)}`;
+
+/**
+ * Whether Kin can post on this platform (any, without one) for this client (our own, without
+ * one): its connected group, with no problem of its own, holds a working account there. Social's
+ * "no account" fact.
+ */
+export const postsTo = Effect.fn("KinSocialRows.postsTo")(function* (
+  orgId: KinOrgId,
+  platform: KinSocialPlatform | undefined,
+  partyId: string | null,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const groups = yield* sql<Pick<GroupRow, "accountsJson">>`SELECT accounts_json AS "accountsJson"
+    FROM kin_social_groups WHERE org_id = ${orgId} AND removed_at IS NULL AND problem IS NULL
+      AND party_id IS ${partyId}
+    ORDER BY group_id`;
+  return groups.some((group) =>
+    accountsOf(group).some(
+      (account) =>
+        account.problem === null && (platform === undefined || account.platform === platform),
+    ),
+  );
+});

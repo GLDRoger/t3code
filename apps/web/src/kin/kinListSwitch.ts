@@ -1,6 +1,5 @@
 import {
   kinInboxAttention,
-  kinOtherList,
   NO_KIN_LIST_ATTENTION,
   type KinList,
   type KinListAttention,
@@ -8,19 +7,30 @@ import {
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
-import type { EnvironmentId } from "@t3tools/contracts";
+import {
+  THREAD_JUMP_KEYBINDING_COMMANDS,
+  type EnvironmentId,
+  type KeybindingCommand,
+} from "@t3tools/contracts";
 import { isMacPlatform } from "@t3tools/shared/keybindings";
 import type { AnyRouter } from "@tanstack/react-router";
 import { Atom, type AtomRegistry } from "effect/reactivity";
 
-import { isAppModalPage, mainAppReturnHref } from "../components/sidebar/mainAppLocation";
+import { isAppModalPage } from "../components/sidebar/mainAppLocation";
+import { resolveShortcutCommand } from "../keybindings";
 import { registerCommands } from "../shortcuts/dispatcher";
 import { environmentPresentations } from "../state/presentation";
-import { environmentThreadShells } from "../state/threads";
+import { primaryServerKeybindingsAtom } from "../state/server";
+import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
+
+import { connectionAtomRuntime } from "../connection/runtime";
 import { kinClient } from "./kinClient";
 import { KIN_PLACE_PATH } from "./kinPlaces";
 import type { KinWorkTarget } from "./useKinWork";
-import { hasSavedKinHost, kinHostAtom } from "./useKinHost";
+import { hasSavedKinHost, kinHostAtom, kinHostKeptTarget } from "./useKinHost";
+import { kinPlacesAtom } from "./kinPlacesAtom";
+import { startKinStrayThreadLanding } from "./kinStrayThread";
+import { KIN_WEB_ONLY } from "./kinWebOnly";
 
 export function kinListAt(pathname: string): KinList {
   return pathname === "/kin" || pathname.startsWith("/kin/") ? "kin" : "threads";
@@ -29,33 +39,31 @@ export function kinListAt(pathname: string): KinList {
 let lastKinHref: string | null = null;
 let listBehindModal: KinList = "threads";
 // The chat last open, for Chats on a wide window; null before one has been.
-let lastKinChatId: string | null = null;
+// With its host: every host uses the same org id, so a chat id means nothing on another one.
+let lastKinChat: { readonly environmentId: string; readonly chatId: string } | null = null;
 
 // Pages under a company that aren't a chat; anything else there is a chat id.
 const KIN_NOT_CHAT = new Set([
   "tasks",
-  "canvas",
   "money",
   "clients",
   "docs",
+  "numbers",
   "settings",
   "team",
   "memory",
   "work",
 ]);
 
-/** Which of the five destinations `pathname` is in: a chat, the list or Settings are Chats. */
+/**
+ * Which of the five destinations `pathname` is in: a chat, the list or Settings are Chats; Numbers,
+ * a place of its own off the dock, is none of them.
+ */
 export function kinDestinationAt(pathname: string): KinDestination | null {
   if (kinListAt(pathname) !== "kin") return null;
   const page = pathname.split("/")[4];
-  if (
-    page === "tasks" ||
-    page === "canvas" ||
-    page === "money" ||
-    page === "clients" ||
-    page === "docs"
-  )
-    return page;
+  if (page === "numbers") return null;
+  if (page === "tasks" || page === "money" || page === "clients" || page === "docs") return page;
   return "chats";
 }
 
@@ -64,13 +72,27 @@ export function kinDestinationAt(pathname: string): KinDestination | null {
  * they keep that page's list instead of swapping the thread list in behind them.
  */
 export function kinListShownAt(pathname: string): KinList {
+  if (KIN_WEB_ONLY) return "kin";
   return isAppModalPage(pathname) ? listBehindModal : kinListAt(pathname);
 }
 
-/** Where the mark leads from `current`: the other list, back where you left it. */
-export function kinListSwitchHref(current: KinList): string {
-  return kinOtherList(current) === "kin" ? (lastKinHref ?? "/kin") : mainAppReturnHref();
+/** The way back into Kin: the Kin page last open, or Kin's home. */
+export function kinReturnHref(): string {
+  return lastKinHref ?? "/kin";
 }
+
+/** T3's keys for coding threads and project files; Kin has neither, so over Kin they do nothing. */
+const CODING_COMMANDS: ReadonlySet<KeybindingCommand> = new Set([
+  "chat.new",
+  "chat.newLocal",
+  "chat.newWithoutProject",
+  "thread.previous",
+  "thread.next",
+  "view.reopenClosed",
+  "filePicker.toggle",
+  "projectSearch.toggle",
+  ...THREAD_JUMP_KEYBINDING_COMMANDS,
+]);
 
 // Before environments connect and answer, the resolver reads `none` or a host it hasn't probed; only a
 // connected environment can say whether Kin still runs.
@@ -87,7 +109,7 @@ const settledKinHostAtom = Atom.make((get): KinHost => {
 }).pipe(Atom.withLabel("kin:host-settled"));
 
 /**
- * Remembers the last Kin page and chat, and opens a fresh launch to Kin while a host runs it.
+ * Remembers the last Kin page and chat, and always opens a fresh launch to Kin while a host runs it.
  * Only a launch at `/` is redirected; a deep link or a reload keeps its page.
  */
 export function startKinListTracking(
@@ -101,54 +123,93 @@ export function startKinListTracking(
     listBehindModal = list;
     if (pathname === "/") return;
     if (list === "kin") lastKinHref = href;
-    const page = pathname.split("/")[4];
-    if (page !== undefined && !KIN_NOT_CHAT.has(page) && pathname.split("/").length === 5)
-      lastKinChatId = page;
+    const [, , environmentId, , page] = pathname.split("/");
+    if (
+      environmentId !== undefined &&
+      page !== undefined &&
+      !KIN_NOT_CHAT.has(page) &&
+      pathname.split("/").length === 5
+    )
+      lastKinChat = { environmentId, chatId: page };
   };
   record();
   const stopRecording = router.subscribe("onResolved", record);
 
-  let stopBounce = () => {};
+  let stopSettle = () => {};
   let cancelled = false;
-  const openStartList = async () => {
-    if (cancelled || router.state.location.pathname !== "/") return;
-    await router.navigate({ to: "/kin", replace: true });
-    if (cancelled) return;
-    // The saved host may have turned Kin off since; then the launch belongs on threads.
+  const whenSettled = (onSettled: (host: KinHost) => void) => {
     let settled = false;
     const unsubscribe = registry.subscribe(
       settledKinHostAtom,
       (host) => {
         if (settled || host._tag === "searching") return;
         settled = true;
-        stopBounce();
-        if (host._tag === "none" && router.state.location.pathname === "/kin") {
-          void router.navigate({ to: "/", replace: true });
-        }
+        stopSettle();
+        onSettled(host);
       },
       { immediate: true },
     );
-    stopBounce = unsubscribe;
+    stopSettle = unsubscribe;
     if (settled) unsubscribe();
   };
-  if (router.state.location.pathname === "/" && hasSavedKinHost()) void openStartList();
+  const openStartList = async () => {
+    if (cancelled || router.state.location.pathname !== "/") return;
+    await router.navigate({ to: "/kin", replace: true });
+    if (cancelled) return;
+    // The saved host may have turned Kin off since; then the launch belongs on threads.
+    whenSettled((host) => {
+      if (!KIN_WEB_ONLY && host._tag === "none" && router.state.location.pathname === "/kin") {
+        void router.navigate({ to: "/", replace: true });
+      }
+    });
+  };
+  if (router.state.location.pathname === "/") {
+    if (hasSavedKinHost()) void openStartList();
+    // A host first found during this launch still opens it to Kin.
+    else
+      whenSettled((host) => {
+        if (host._tag === "host" && router.state.location.pathname === "/") {
+          void router.navigate({ to: "/kin", replace: true });
+        }
+      });
+  }
+
+  const stopStrayLanding = startKinStrayThreadLanding(router, registry);
 
   return () => {
     cancelled = true;
     stopRecording();
-    stopBounce();
+    stopSettle();
+    stopStrayLanding();
   };
 }
 
-/** The switch shortcut; it passes the key on while no host runs Kin. */
+/** Kin's shortcuts, and the coding ones closed over Kin; all pass the key on while no host runs Kin. */
 export function registerKinListCommands(
   router: AnyRouter,
   registry: AtomRegistry.AtomRegistry,
 ): () => void {
+  const keybindings = () => registry.get(primaryServerKeybindingsAtom);
+  const stopCoding = registerCommands(
+    {},
+    {
+      // Capture runs ahead of the hidden thread list's listener; the destinations below run first.
+      capture: true,
+      when: () =>
+        registry.get(kinHostAtom)._tag === "host" &&
+        kinListShownAt(router.state.location.pathname) === "kin",
+      onKeyDown: (event) => {
+        const command = resolveShortcutCommand(event, keybindings());
+        if (command === null || !CODING_COMMANDS.has(command)) return false;
+        event.preventDefault();
+      },
+    },
+  );
   const stopDestinations = registerCommands(
     {},
     {
-      // Over Kin, ⌘1 to ⌘5 (Ctrl elsewhere) open the destinations in the order the nav shows them.
+      // Over Kin, ⌘1 to ⌘5 (Ctrl elsewhere) open the destinations in the order the nav shows them,
+      // and the digit after them Numbers, so a destination keeps its digit whoever has Numbers.
       // Over threads the digits stay T3's thread jumps; capture runs ahead of the hidden thread list's.
       capture: true,
       when: () => kinListShownAt(router.state.location.pathname) === "kin",
@@ -159,28 +220,50 @@ export function registerKinListCommands(
         const shown = [...document.querySelectorAll<HTMLElement>("[data-kin-destination]")].filter(
           (element) => element.offsetParent !== null,
         );
-        const link = shown[Number(event.code.slice(5)) - 1];
-        if (link === undefined) return false;
+        const index = Number(event.code.slice(5)) - 1;
+        const kept = kinHostKeptTarget(registry.get(kinHostAtom));
+        const places = kept === null ? [] : registry.get(kinPlacesAtom(kept)).destinations;
+        const numbersLink = [...document.querySelectorAll<HTMLElement>("[data-kin-numbers]")].find(
+          (element) => element.offsetParent !== null,
+        );
+        const numbersAt = Math.max(shown.length, places.length);
+        const link = index === numbersAt ? numbersLink : shown[index];
+        // A narrow window's sidebar sheet hides its links while closed, so go by the nav's places.
+        const target = link === undefined ? kept : null;
+        const destination = target === null ? undefined : places[index];
+        const numbers =
+          target !== null && index === places.length && kinNumbersShownNow(registry, target);
+        const go =
+          link !== undefined
+            ? () => link.click()
+            : target !== null && destination !== undefined
+              ? () => void router.navigate(kinDestinationLink(destination, target, true))
+              : numbers && target !== null
+                ? () => void router.navigate(kinNumbersLink(target))
+                : null;
+        if (go === null) return false;
         event.preventDefault();
-        if (!event.repeat) link.click();
+        if (!event.repeat) go();
       },
     },
   );
-  const stopSwitch = registerCommands({
-    "kin.switchList": (event) => {
-      // Kin doesn't offer the coding threads, so the shortcut only leads back into Kin.
-      if (registry.get(kinHostAtom)._tag !== "host") return false;
-      if (kinListShownAt(router.state.location.pathname) === "kin") return false;
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.repeat) return;
-      void router.navigate({
-        href: kinListSwitchHref(kinListShownAt(router.state.location.pathname)),
-      });
+  const stopSwitch = registerCommands(
+    {
+      "kin.switchList": (event) => {
+        // Kin doesn't offer the coding threads, so the shortcut only leads back into Kin.
+        if (registry.get(kinHostAtom)._tag !== "host") return false;
+        if (kinListShownAt(router.state.location.pathname) === "kin") return false;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat) return;
+        void router.navigate({ href: kinReturnHref() });
+      },
     },
-  });
+    { keybindings },
+  );
   return () => {
     stopDestinations();
+    stopCoding();
     stopSwitch();
   };
 }
@@ -209,21 +292,6 @@ export const kinInboxAttentionAtom = Atom.family((environmentId: EnvironmentId) 
   }).pipe(Atom.withLabel(`kin:inbox-attention:${environmentId}`)),
 );
 
-/**
- * Coding threads that wait on you: an approval, a question, or a guest message. T3 has no cheap
- * all-thread unread signal; per-thread visits merge server and local watermarks.
- */
-export const threadsAttentionAtom = Atom.make((get): KinListAttention => {
-  const waiting = get(environmentThreadShells.visibleThreadShellsAtom).some(
-    (thread) =>
-      thread.hasPendingApprovals ||
-      thread.hasPendingUserInput ||
-      thread.pendingSubagentRequest != null ||
-      (thread.pendingGuestMessageCount ?? 0) > 0,
-  );
-  return waiting ? KIN_LIST_ATTENTION.waiting : KIN_LIST_ATTENTION.none;
-}).pipe(Atom.withLabel("kin:threads-attention"));
-
 /** How many unread messages the Kin inbox holds, for the badge on Chats. */
 export const kinInboxUnreadAtom = Atom.family((environmentId: EnvironmentId) =>
   Atom.make((get): number => {
@@ -236,24 +304,31 @@ export const noAttentionAtom = Atom.make(NO_KIN_LIST_ATTENTION).pipe(
   Atom.withLabel("kin:no-attention"),
 );
 
-/** Where a destination opens; the nav, the dock and the command palette all go through it. */
+/** Where a destination opens; the nav and the command palette both go through it. */
 export function kinDestinationLink(
   destination: KinDestination,
   target: KinWorkTarget,
   narrow = false,
 ) {
-  if (destination === "canvas")
-    return { to: "/kin/$environmentId/$orgId/canvas", params: target } as const;
   if (destination !== "chats") return { to: KIN_PLACE_PATH[destination], params: target } as const;
   // A wide window shows the list beside the chat, so Chats comes back to the chat you left.
-  const chatId = narrow ? null : lastKinChatId;
+  const chatId =
+    narrow || lastKinChat?.environmentId !== target.environmentId ? null : lastKinChat.chatId;
   return chatId === null
     ? ({ to: "/kin" } as const)
     : ({ to: "/kin/$environmentId/$orgId/$chatId", params: { ...target, chatId } } as const);
 }
 
-/** The destinations the nav last showed, and for which company; null before it has shown any. */
-export const kinShownDestinationsAtom = Atom.make<{
-  readonly target: KinWorkTarget;
-  readonly destinations: ReadonlyArray<KinDestination>;
-} | null>(null).pipe(Atom.keepAlive, Atom.withLabel("kin:shown-destinations"));
+/** Where Numbers opens; the nav, the palette and the shortcut all go through it. */
+export function kinNumbersLink(target: KinWorkTarget) {
+  return { to: "/kin/$environmentId/$orgId/numbers", params: target } as const;
+}
+
+/** Whether this viewer has Numbers as the host has said: the owner level, or one shared with them. */
+function kinNumbersShownNow(registry: AtomRegistry.AtomRegistry, target: KinWorkTarget): boolean {
+  if (registry.get(kinOwnerLevelAtom(connectionAtomRuntime, target.environmentId))) return true;
+  const read = registry.get(
+    kinClient.numbers({ environmentId: target.environmentId, input: { orgId: target.orgId } }),
+  );
+  return read._tag === "Success" && read.value.numbers.length > 0;
+}

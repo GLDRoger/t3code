@@ -1,45 +1,61 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinLinkKeeps } from "./kinLinkStack";
+import { kinLinkPlace, type KinLinkRoute } from "./kinLinkStack";
 
-const opened = (routes: ReadonlyArray<string>, name: string) => [
-  ...routes.slice(0, kinLinkKeeps(routes, name)),
-  name,
-];
+const route = (name: string, key?: string): KinLinkRoute => {
+  const param = { KinWorkItem: "task", KinClient: "party", KinProject: "project", KinDoc: "doc" }[
+    name
+  ];
+  return param === undefined || key === undefined ? { name } : { name, params: { [param]: key } };
+};
+const label = (one: KinLinkRoute) => {
+  const key = Object.values(one.params ?? {})[0];
+  return key === undefined ? one.name : `${one.name}:${String(key)}`;
+};
+const opened = (routes: ReadonlyArray<KinLinkRoute>, next: KinLinkRoute) => {
+  const place = kinLinkPlace(routes, next);
+  return [...routes.slice(0, place.keep), next].map(label);
+};
 
-describe("kinLinkKeeps", () => {
-  it("opens a record from a list over the list", () => {
-    expect(opened(["Home"], "KinClient")).toEqual(["Home", "KinClient"]);
-    expect(opened(["Home", "KinList"], "KinWorkItem")).toEqual(["Home", "KinList", "KinWorkItem"]);
+describe("kinLinkPlace", () => {
+  it("opens a record over the page it was followed from, so Back retraces each step", () => {
+    expect(opened([route("Home")], route("KinClient", "C-1"))).toEqual(["Home", "KinClient:C-1"]);
+    // Search result, then its project, then a doc: Back goes doc, project, task, Tasks.
+    expect(
+      opened(
+        [route("Home"), route("KinWorkItem", "W-13"), route("KinProject", "P-1")],
+        route("KinDoc", "D-2"),
+      ),
+    ).toEqual(["Home", "KinWorkItem:W-13", "KinProject:P-1", "KinDoc:D-2"]);
+    // Task to linked task: the first task stays under it.
+    expect(
+      opened([route("Home"), route("KinWorkItem", "W-1")], route("KinWorkItem", "W-2")),
+    ).toEqual(["Home", "KinWorkItem:W-1", "KinWorkItem:W-2"]);
   });
 
-  it("closes a sheet back to the record page it was opened on", () => {
-    expect(opened(["Home", "KinClient"], "KinWorkItem")).toEqual([
+  it("goes back to a page already open instead of stacking it twice", () => {
+    const routes = [
+      route("Home"),
+      route("KinProject", "P-1"),
+      route("KinWorkItem", "W-8"),
+      route("KinDoc", "D-2"),
+    ];
+    expect(kinLinkPlace(routes, route("KinProject", "P-1"))).toEqual({ keep: 1, again: true });
+    expect(opened(routes, route("KinWorkItem", "W-8"))).toEqual([
       "Home",
-      "KinClient",
-      "KinWorkItem",
-    ]);
-    // Task to linked task: the sheet is replaced, the page under it stays.
-    expect(opened(["Home", "KinProject", "KinWorkItem"], "KinWorkItem")).toEqual([
-      "Home",
-      "KinProject",
-      "KinWorkItem",
+      "KinProject:P-1",
+      "KinWorkItem:W-8",
     ]);
   });
 
-  it("replaces every record above the list when a link opens another page", () => {
-    // Task to client to project, and across a sheet and a page: Back returns to the list.
-    expect(opened(["Home", "KinClient", "KinWorkItem"], "KinProject")).toEqual([
+  it("takes the place of a search or concern sheet", () => {
+    expect(opened([route("Home"), route("KinSearch")], route("KinDoc", "D-1"))).toEqual([
       "Home",
-      "KinProject",
+      "KinDoc:D-1",
     ]);
-    expect(opened(["Home", "KinList", "KinWorkItem"], "KinClient")).toEqual([
+    expect(opened([route("Home"), route("KinDealsConcern")], { name: "KinDeal" })).toEqual([
       "Home",
-      "KinList",
-      "KinClient",
+      "KinDeal",
     ]);
-    expect(opened(["Home", "KinDoc"], "KinClient")).toEqual(["Home", "KinClient"]);
-    // What search found takes the search sheet's place.
-    expect(opened(["Home", "KinSearch"], "KinDoc")).toEqual(["Home", "KinDoc"]);
   });
 });

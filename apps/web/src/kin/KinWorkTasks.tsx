@@ -1,17 +1,45 @@
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { KIN_PROMISES } from "@t3tools/client-runtime/kin/kinPromises";
+import { connectionAtomRuntime } from "../connection/runtime";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { useKinHostAt } from "./useKinHost";
 import { useKinOwnerLevel, useKinViewerScope } from "./useKinOwnerLevel";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
+import {
+  KIN_TASK_GROUP_BY,
+  kinTaskFilterProjects,
+  KIN_TASKS,
+  kinNeedsYouCount,
+  kinTaskGroupedChip,
+  kinTaskLine,
+  kinTasksOnCount,
+  kinTaskStep,
+  kinTaskStepStatusShown,
+  kinTasksByMove,
+  kinTasksDealFacts,
+  kinTasksGroupedBy,
+  kinTasksTick,
+  kinTasksTickedShown,
+  kinTasksWithTicked,
+  type KinTaskTicked,
+  type KinTaskLine,
+  type KinTaskStep,
+  type KinTasksItem,
+} from "@t3tools/client-runtime/kin/kinTasksList";
 import {
   KIN_WORK_LOAD_FAILED,
   KIN_WORK_NEW,
   KIN_WORK_SEARCH_PLACEHOLDER,
+  kinWorkByMove,
   kinWorkHostEdits,
   kinWorkListFooter,
   kinWorkNothing,
+  kinWorkOffline,
   kinWorkOverview,
   kinWorkRow,
-  kinWorkRowMarked,
   kinWorkShown,
+  type KinTaskGroupBy,
   type KinWorkFilter,
   type KinWorkNames,
   type KinWorkOverview,
@@ -29,6 +57,7 @@ import {
   KIN_WORK_LIST_INITIAL,
   createKinListKeeper,
   createKinWorkList,
+  kinListShown,
   type KinWorkList,
   type KinWorkListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
@@ -38,24 +67,34 @@ import {
   kinWorkFilterLabel,
   kinWorkOwnerSelected,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
-import {
-  kinWorkGroupWithin,
-  kinTasksTop,
-  kinWorkGroupsShown,
-  type KinWorkGroupItem,
-} from "@t3tools/client-runtime/kin/kinWorkGroups";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import type { KinRecord, KinRecordKey } from "@t3tools/contracts";
+import { KinRecordKey, type KinRecord } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
+import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { PlusIcon, XIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import * as Schema from "effect/Schema";
+import {
+  BellIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  CircleCheckIcon,
+  FileTextIcon,
+  FlagIcon,
+  MessageSquareTextIcon,
+  PlusIcon,
+  XIcon,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
+import { useKinSectionOn } from "./useKinShell";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { toastManager } from "../components/ui/toast";
+import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useStableCallback } from "../hooks/useStableCallback";
 import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import {
@@ -66,12 +105,13 @@ import {
   KinLoadFailed,
   KinWorkStaleLine,
 } from "./KinWorkParts";
+import { KinAttentionItem } from "./KinAttention";
 import { KinAvatar } from "./KinAvatar";
-import { KinHandOverButton } from "./KinAway";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
-import { KinTasksAttention, useKinNeedsRows, type KinNeedsYouGo } from "./KinNeedsYou";
+import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
+import { useKinTaskSteps, type KinTaskStepStatus } from "./useKinTaskSteps";
 import {
   kinWorkLiveAtom,
   type KinWorkChangesHandle,
@@ -83,9 +123,31 @@ import {
 /** Task lists kept while their screen is away, so coming back reads nothing the stream brought. */
 const kinTaskLists = createKinListKeeper<KinWorkList, KinWorkListState>(Date.now);
 
+/** How Tasks groups, kept on this device as the phone keeps it. */
+const GROUP_BY_KEY = "kin:tasks:groupBy";
+const GroupBySchema = Schema.Literals(["me", "project", "person", "due", "status"]);
+
+/** Marked done or reopened from a row: the way back stays this long, as on the phone. */
+const UNDO_MS = 8_000;
+
+/** A project's heading in Tasks, which opens the project. */
+function ProjectHeading(props: {
+  readonly title: string;
+  readonly project: KinRecordKey;
+  readonly onOpen: (key: KinRecordKey) => void;
+}) {
+  return (
+    <h3 className="-ms-2 min-w-0">
+      <Button size="xs" variant="ghost" onClick={() => props.onOpen(props.project)}>
+        <span className="truncate">{props.title}</span>
+      </Button>
+    </h3>
+  );
+}
+
 /**
- * Tasks as a list: all of Work, or one project's under that project's own summary. Hundreds stay
- * cheap, because only the rows in view mount.
+ * Tasks as a list: all of Work grouped by whose move each is (or by one of its own fields), or one
+ * project's under that project's own summary. Hundreds stay cheap: only the rows in view mount.
  */
 export function KinWorkTaskList(
   props: KinWorkTarget & {
@@ -95,6 +157,8 @@ export function KinWorkTaskList(
     readonly changes: KinWorkChangesHandle;
     readonly openKey: KinRecordKey | null;
     readonly onOpen: (key: KinRecordKey) => void;
+    /** A project's heading opens the project; absent where headings stay plain. */
+    readonly onOpenProject?: (key: KinRecordKey) => void;
     readonly onAdd: (() => void) | null;
     /** Where the list starts: everything, or narrowed to a client or a project. */
     readonly initial: KinWorkFilter;
@@ -103,27 +167,36 @@ export function KinWorkTaskList(
     /** On a project's page the list is only that project's, under the project's own summary. */
     readonly within?: "project";
     readonly header?: React.ReactNode;
-    /**
-     * Where the owner's "Needs attention" rows go, over the whole company's open tasks; the tasks
-     * it shows then leave the list. Absent where the list has no such block.
-     */
-    readonly needsYou?: KinNeedsYouGo;
   },
 ) {
-  const { environmentId, orgId, live } = props;
+  const { environmentId, orgId, live, within } = props;
+  const navigate = useNavigate();
   const scope = useKinViewerScope(environmentId);
   const { names } = props.directory;
   const { state: changed, changes } = props.changes;
   const hostEdits = kinWorkHostEdits(live.summary);
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) && hostEdits;
+  const canAnswer = useAtomValue(kinClient.widgetAction.permissionAtom(environmentId));
+  const canNudge = useAtomValue(kinClient.workNudge.permissionAtom(environmentId));
   const now = new Date(useNowMinuteMs());
+  const [savedGroupBy, saveGroupBy] = useLocalStorage<KinTaskGroupBy, KinTaskGroupBy>(
+    GROUP_BY_KEY,
+    "me",
+    GroupBySchema,
+  );
+  // All of Work groups; a project's own list stays one list.
+  const [initial] = useState(() =>
+    within === undefined ? { ...props.initial, groupBy: savedGroupBy } : props.initial,
+  );
+  const viewer =
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId))?.personId ?? null;
   const [kept] = useState(() =>
     kinTaskLists.take(
-      `${environmentId}\u0000${orgId}\u0000${JSON.stringify(props.initial)}`,
+      `${environmentId}\u0000${orgId}\u0000${JSON.stringify(initial)}`,
       (onChange) =>
         createKinWorkList({
           orgId,
-          initial: props.initial,
+          initial,
           read: (input) => kinClient.workList.run(appAtomRegistry, { environmentId, input }),
           onChange,
           now: Date.now,
@@ -143,17 +216,18 @@ export function KinWorkTaskList(
               .get(kinWorkLiveAtom({ environmentId, orgId }))
               .pipe(AsyncResult.value, Option.getOrNull)?.rows ?? null,
         }),
+      viewer,
     ),
   );
   const list = kept.list;
   const [resumed] = useState(() => kinTaskLists.wasKept(kept));
   const [listState, setListState] = useState<KinWorkListState>(() =>
-    resumed ? list.getState() : { ...KIN_WORK_LIST_INITIAL, filter: props.initial },
+    resumed ? list.getState() : { ...KIN_WORK_LIST_INITIAL, filter: initial },
   );
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when the page shows (or catches a kept one up), and stops what is in flight when it leaves
   useEffect(() => {
     kinTaskLists.show(kept, setListState);
-    if (resumed) list.resume();
+    if (resumed) kinTaskLists.resume(kept);
     else list.start();
     return () => kinTaskLists.hide(kept);
   }, [kept, list, resumed]);
@@ -163,55 +237,90 @@ export function KinWorkTaskList(
   }, [list, live.seq, props.stale]);
 
   const { filter } = listState;
-  const overview = kinWorkOverview(live.summary, filter, names);
-  const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
-    kinWorkApplied(record, changed),
-  );
-  const ownerLevel = useKinOwnerLevel(environmentId);
-  const grouped = props.within === undefined && kinWorkGroupsShown(filter, names.me);
-  // The whole company's open tasks, unsearched: the owner's block leads, over "On me".
-  const showsBlock =
-    props.needsYou !== undefined && grouped && kinWorkFilterLabel(filter, names) === null;
-  const needs = useKinNeedsRows({ ...props, names }, showsBlock && ownerLevel ? [] : null);
-  const top = kinTasksTop({
-    ownerLevel: needs !== null,
-    records,
-    names,
-    now,
-    attention: needs?.attention ?? [],
-    needs: needs?.needs ?? [],
-    hidden: needs?.hidden ?? 0,
-    handled: needs?.handled.length ?? 0,
-    expanded: needs?.expanded ?? false,
-  });
-  // The plain list reads by whom each task waits on; a filtered one stays one list.
-  const items: ReadonlyArray<KinWorkGroupItem<KinRecord>> = grouped
-    ? top.items
-    : records.map((record) => ({ type: "task", key: record.key, record, section: null }));
-  const rows: ReadonlyArray<KinWorkListItem> = items.map((item) =>
-    item.type === "task"
-      ? {
-          ...item,
-          row: kinWorkRowMarked(
-            kinWorkRow(item.record, names, now, kinWorkGroupWithin(item, filter)),
-            item.mark ?? null,
-          ),
-        }
-      : item,
-  );
-  const act = (key: KinRecordKey, action: KinWorkAction) => {
-    const record = records.find((held) => held.key === key);
-    if (record !== undefined) void changes.run(record, action, names);
+  const shown = kinListShown(listState, kinHostLink(useKinHostAt(environmentId)));
+  const setFilter = (next: KinWorkFilter) => {
+    if (next.groupBy !== undefined && next.groupBy !== filter.groupBy) saveGroupBy(next.groupBy);
+    list.setFilter(next);
   };
-  const me = names.me;
-  const mineOpen =
-    props.within === undefined && me !== null
-      ? (overview.owners.find((row) => row.owner._tag === "person" && row.owner.personId === me)
-          ?.open ?? 0)
-      : 0;
+  // The host counts each task under its holder; the reader's own row counts what they are on too.
+  const overview = kinWorkOverview(
+    live.summary,
+    filter,
+    names,
+    kinTasksOnCount(listState.records, names.me),
+  );
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  const previousClientsOn = useRef(clientsOn);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- section saves do not change task sequence numbers
+  useEffect(() => {
+    if (previousClientsOn.current !== clientsOn) list.refresh();
+    previousClientsOn.current = clientsOn;
+  }, [clientsOn, list]);
+  const records = kinWorkShown(filter, listState.records, hostEdits).map((record) => {
+    const applied = kinWorkApplied(record, changed);
+    if (clientsOn) return applied;
+    const { party: _party, project: _project, ...task } = applied;
+    return task;
+  });
+  const ownerLevel = useKinOwnerLevel(environmentId);
+  const pulse = useKinAttention({ environmentId, orgId }, within === undefined);
+  const facts = kinTasksDealFacts({ ownerLevel, names, now, pulse });
+  const counts = list.counts();
+  // The same number the nav's Tasks count shows (`useKinTasksNeedsYou`).
+  const needsYou = kinNeedsYouCount({ counts, dealFacts: facts.length });
+  const groupBy = filter.groupBy ?? "me";
+  const searching = within === undefined && filter.text.trim() !== "";
   const notice = kinWorkListNotice(changed, props.openKey);
+  const [ticked, setTicked] = useState<ReadonlyArray<KinTaskTicked<KinRecord>>>([]);
+  const held = kinTasksTickedShown(ticked, changed, notice);
+  const listed: ReadonlyArray<KinTasksItem<KinRecord>> =
+    within === undefined &&
+    (kinWorkByMove(filter) || (!clientsOn && groupBy === "project" && !searching))
+      ? kinTasksByMove({
+          records,
+          moves: list.moves(),
+          counts,
+          needsYou,
+          ownerLevel,
+          clientsOn,
+          names,
+          facts,
+          read: listState.seq !== null,
+        })
+      : within === undefined && groupBy !== "me" && !searching
+        ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
+        : records.map((record, index) => ({
+            type: "task" as const,
+            key: record.key,
+            record,
+            move: null,
+            inProject: within !== undefined,
+            first: index === 0,
+            last: index === records.length - 1,
+          }));
+  const items =
+    shown !== "rows"
+      ? []
+      : kinTasksWithTicked(listed, held, (record) => kinWorkApplied(record, changed));
+  const steps = useKinTaskSteps({ environmentId, orgId });
+  const answers = useKinAttentionHandle({ environmentId, orgId });
+  const act = (key: KinRecordKey, action: KinWorkAction) => {
+    const shown = items.find((item) => item.type === "task" && item.key === key);
+    if (shown?.type !== "task") return;
+    const tick = kinTasksTick({ held, items, key, action, notice });
+    if (tick.undo) return void changes.undo(names, shown.record);
+    setTicked(tick.ticked);
+    void changes.run(shown.record, action, names);
+  };
+  const openCard = (step: KinTaskStep) => {
+    if (step.kind === "nudge" || step.kind === "told") return;
+    void navigate({
+      to: "/kin/$environmentId/$orgId/$chatId",
+      params: { environmentId, orgId, chatId: step.card.chatId },
+      search: { message: step.card.messageId },
+    });
+  };
   const nothing = kinWorkNothing(filter, names, scope);
-  // Needs attention shows some, so the count says how many are loaded in all.
   const footer = kinWorkListFooter(
     filter,
     records.length,
@@ -219,155 +328,557 @@ export function KinWorkTaskList(
     listState.more,
     hostEdits,
   );
+  const grouped = kinTaskGroupedChip(within === undefined ? filter.groupBy : undefined);
   return (
-    <LegendList<KinWorkListItem>
-      data={rows}
-      keyExtractor={(item) => item.key}
-      getItemType={(item) => item.type}
-      extraData={[listState, changed]}
-      recycleItems
-      onEndReached={() => void list.loadMore()}
-      onEndReachedThreshold={0.5}
-      ListHeaderComponent={
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
-          {props.header}
-          {needs === null || top.block === null || props.needsYou === undefined ? null : (
-            <KinTasksAttention
-              environmentId={environmentId}
-              orgId={orgId}
-              {...props.needsYou}
-              {...needs}
-              {...top.block}
-              handled={needs.handled}
-            />
-          )}
-          {props.stale || listState.stale ? (
-            <KinWorkStaleLine environmentId={environmentId} onRetry={list.refresh} />
-          ) : null}
-          <KinWorkFilters
-            overview={overview}
-            filter={filter}
-            names={names}
-            choices={props.within === undefined ? props.choices : null}
-            everyone={props.within === undefined}
-            onChange={(next) => list.setFilter(next)}
-          />
-          {me === null || mineOpen === 0 ? null : (
-            <KinHandOverButton
-              environmentId={environmentId}
-              orgId={orgId}
-              from={{ _tag: "person", personId: me }}
-              fromName={null}
-            />
-          )}
-          {notice === null ? null : (
-            <KinWorkListNotice
-              notice={notice}
-              onUndo={() =>
-                void changes.undo(
-                  names,
-                  records.find((held) => held.key === notice.key),
-                )
-              }
-              onDismiss={changes.dismiss}
-            />
-          )}
-        </div>
-      }
-      ListEmptyComponent={
-        // Every open task is already under Needs attention.
-        records.length > 0 ? null : (
-          <div className="mx-auto w-full max-w-3xl px-4">
-            {listState.loading ? (
-              <div role="status" aria-label="Loading tasks">
-                <KinWorkRowSkeletons />
-              </div>
-            ) : listState.failed !== null ? (
-              <KinLoadFailed
-                what={KIN_WORK_LOAD_FAILED}
-                cause={listState.failed}
+    <>
+      <LegendList<KinTasksItem<KinRecord>>
+        data={items}
+        keyExtractor={(item) => item.key}
+        getItemType={(item) => item.type}
+        extraData={[listState, changed, steps.status, steps.nudged, needsYou, answers.busy]}
+        recycleItems
+        onEndReached={() => void list.loadMore()}
+        onEndReachedThreshold={0.5}
+        ListHeaderComponent={
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
+            {props.header}
+            {shown === "rows" && (props.stale || listState.stale) ? (
+              <KinWorkStaleLine
+                environmentId={environmentId}
                 onRetry={list.refresh}
-                className="py-4"
+                readAt={listState.readAt}
               />
-            ) : (
-              <KinWorkNotice
-                title={nothing.title}
-                detail={nothing.detail}
-                {...(nothing.offerNew && props.onAdd !== null
-                  ? {
-                      action: (
-                        <Button onClick={props.onAdd}>
-                          <PlusIcon />
-                          {KIN_WORK_NEW}
-                        </Button>
-                      ),
-                    }
-                  : {})}
-              />
+            ) : null}
+            <KinWorkFilters
+              overview={overview}
+              filter={filter}
+              names={names}
+              choices={within === undefined ? props.choices : null}
+              records={records}
+              everyone={within === undefined}
+              grouped={grouped}
+              onChange={setFilter}
+            />
+            {notice === null || notice.undo !== null ? null : (
+              <KinWorkListNotice notice={notice} onDismiss={changes.dismiss} />
+            )}
+            {answers.problem === null ? null : (
+              <p role="alert" className="px-2 text-xs text-destructive-foreground">
+                {answers.problem}
+              </p>
             )}
           </div>
-        )
-      }
-      ListFooterComponent={
-        footer === null ? null : (
-          <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6 py-3">
-            <p className="text-xs text-muted-foreground" role="status">
-              {listState.moreFailed ? "Couldn't load more." : footer}
-            </p>
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={listState.loadingMore}
-              aria-busy={listState.loadingMore}
-              onClick={() => void list.loadMore()}
-            >
-              {listState.moreFailed ? KIN_RETRY : "Show more"}
-            </Button>
-          </div>
-        )
-      }
-      renderItem={({ item }) =>
-        item.type === "section" ? (
-          <div className="mx-auto flex w-full max-w-3xl items-baseline gap-2 px-6 pt-5 pb-1">
-            <h3 className="min-w-0 truncate text-sm font-medium text-foreground">{item.title}</h3>
-            <span className="text-xs text-muted-foreground tabular-nums">{item.count}</span>
-          </div>
-        ) : item.type === "who" ? (
-          <div className="mx-auto flex w-full max-w-3xl items-center gap-2 px-6 pt-2 pb-0.5">
-            <KinAvatar avatar={item.avatar} size="xs" />
-            <span className="min-w-0 truncate text-xs font-medium text-muted-foreground">
-              {item.name}
-            </span>
-          </div>
-        ) : (
-          <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4">
-            <KinWorkRow
-              row={item.row}
-              saving={changed.pending[item.key] !== undefined}
-              selected={item.key === props.openKey}
-              onOpen={() => props.onOpen(item.key)}
-              onAct={canChange ? (action) => act(item.key, action) : null}
-            />
-          </div>
-        )
-      }
-      estimatedItemSize={60}
-      drawDistance={640}
-      className={cn(
-        "min-h-0 flex-1 overscroll-contain pb-6",
-        // Rows stay up while they are read again; dimming says they may be about to change.
-        listState.refreshing && "opacity-70",
+        }
+        ListEmptyComponent={
+          records.length > 0 || items.length > 0 ? null : (
+            <div className="mx-auto w-full max-w-3xl px-4">
+              {shown === "offline" ? (
+                <KinWorkNotice {...kinWorkOffline("tasks")} />
+              ) : shown === "loading" ? (
+                <div role="status" aria-label="Loading tasks">
+                  <KinWorkRowSkeletons />
+                </div>
+              ) : shown === "failed" ? (
+                <KinLoadFailed
+                  what={KIN_WORK_LOAD_FAILED}
+                  cause={listState.failed}
+                  onRetry={list.refresh}
+                  className="py-4"
+                />
+              ) : (
+                <KinWorkNotice
+                  title={nothing.title}
+                  detail={nothing.detail}
+                  {...(nothing.offerNew && props.onAdd !== null
+                    ? {
+                        action: (
+                          <Button onClick={props.onAdd}>
+                            <PlusIcon />
+                            {KIN_WORK_NEW}
+                          </Button>
+                        ),
+                      }
+                    : {})}
+                />
+              )}
+            </div>
+          )
+        }
+        ListFooterComponent={
+          footer === null ? null : (
+            <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6 py-3">
+              <p className="text-xs text-muted-foreground" role="status">
+                {listState.moreFailed ? KIN_MORE_FAILED : footer}
+              </p>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={listState.loadingMore}
+                aria-busy={listState.loadingMore}
+                onClick={() => void list.loadMore()}
+              >
+                {listState.moreFailed ? KIN_RETRY : "Show more"}
+              </Button>
+            </div>
+          )
+        }
+        renderItem={({ item }) => {
+          switch (item.type) {
+            case "heading":
+              return (
+                <div className="mx-auto flex w-full max-w-3xl items-baseline gap-2 px-6 pt-5 pb-1">
+                  {item.project === null || props.onOpenProject === undefined ? (
+                    <h3 className="min-w-0 truncate text-sm font-medium text-foreground">
+                      {item.title}
+                    </h3>
+                  ) : (
+                    <ProjectHeading
+                      title={item.title}
+                      project={KinRecordKey.make(item.project.key)}
+                      onOpen={props.onOpenProject}
+                    />
+                  )}
+                  {item.count === null ? null : (
+                    <span className="text-xs text-muted-foreground tabular-nums">{item.count}</span>
+                  )}
+                  {item.aside === null ? null : (
+                    <span className="ms-auto shrink-0 truncate text-xs text-muted-foreground">
+                      {item.aside}
+                    </span>
+                  )}
+                </div>
+              );
+            case "clear":
+              return (
+                <div className="mx-auto w-full max-w-3xl px-4">
+                  <div className="flex items-start gap-3 rounded-md px-2 py-3">
+                    <CircleCheckIcon
+                      aria-hidden
+                      className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                    />
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="text-sm font-medium text-foreground">
+                        {KIN_TASKS.clearTitle}
+                      </span>
+                      <span className="text-xs text-muted-foreground">{KIN_TASKS.clearDetail}</span>
+                    </span>
+                  </div>
+                </div>
+              );
+            case "done":
+              return (
+                <div className="mx-auto w-full max-w-3xl px-4 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setFilter({ ...filter, view: "closed" })}
+                    className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+                  >
+                    <CircleCheckIcon
+                      aria-hidden
+                      className="size-4 shrink-0 text-muted-foreground"
+                    />
+                    <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                      {KIN_TASKS.done}
+                    </span>
+                    <span className="text-xs text-muted-foreground tabular-nums">{item.count}</span>
+                    <ChevronRightIcon
+                      aria-hidden
+                      className="size-4 shrink-0 text-muted-foreground"
+                    />
+                  </button>
+                </div>
+              );
+            case "foot":
+              return (
+                <p className="mx-auto w-full max-w-3xl px-6 pt-3 text-xs text-muted-foreground">
+                  {item.text}
+                </p>
+              );
+            case "fact":
+              return (
+                <ul className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-1.5">
+                  <KinAttentionItem
+                    environmentId={environmentId}
+                    orgId={orgId}
+                    row={item.row}
+                    handler={answers}
+                    onOpen={(to) => (to.type === "record" ? props.onOpen(to.key) : undefined)}
+                  />
+                </ul>
+              );
+            case "task": {
+              const { record } = item;
+              const step = kinTaskStep(record, item.move, names);
+              const shown =
+                step?.kind === "nudge" && steps.nudged.has(record.key)
+                  ? { ...step, nudged: true }
+                  : step;
+              return (
+                <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4">
+                  <KinTaskRow
+                    row={kinWorkRow(
+                      record,
+                      names,
+                      now,
+                      item.inProject ? { ...filter, project: record.project ?? null } : filter,
+                    )}
+                    line={kinTaskLine(record, names, now, {
+                      inProject: item.inProject,
+                      quietNoDate: shown !== null && shown.kind !== "told",
+                    })}
+                    step={shown}
+                    status={kinTaskStepStatusShown(steps.status[record.key], shown)}
+                    ticked={item.ticked === true}
+                    saving={changed.pending[item.key] !== undefined}
+                    selected={item.key === props.openKey}
+                    onOpen={() => props.onOpen(record.key)}
+                    onAct={canChange ? (action) => act(record.key, action) : null}
+                    onChoose={
+                      canAnswer && shown !== null && shown.kind !== "nudge" && shown.kind !== "told"
+                        ? (optionId) => void steps.choose(record.key, shown, optionId)
+                        : null
+                    }
+                    onOpenCard={() => (shown === null ? undefined : openCard(shown))}
+                    onNudge={canNudge ? () => void steps.nudge(record.key) : null}
+                    onGive={() => props.onOpen(record.key)}
+                  />
+                </div>
+              );
+            }
+          }
+        }}
+        estimatedItemSize={60}
+        drawDistance={640}
+        className={cn(
+          "min-h-0 flex-1 overscroll-contain pb-6",
+          // Rows stay up while they are read again; dimming says they may be about to change.
+          listState.refreshing && "opacity-70",
+        )}
+      />
+      {notice === null || notice.undo === null ? null : (
+        <KinTasksUndoToast
+          key={`${notice.key}:${notice.text}`}
+          text={`${notice.key}: ${notice.text}`}
+          onUndo={() =>
+            void changes.undo(
+              names,
+              records.find((held) => held.key === notice.key),
+            )
+          }
+          onDismiss={changes.dismiss}
+        />
       )}
-    />
+    </>
   );
 }
 
-/** A line of the list: a part's heading, whom a run waits on, or a task with its row. */
-type KinWorkListItem =
-  | Exclude<KinWorkGroupItem<KinRecord>, { readonly type: "task" }>
-  | (Extract<KinWorkGroupItem<KinRecord>, { readonly type: "task" }> & {
-      readonly row: KinWorkRowView;
+/** The way back from marking a task done or reopening it, for eight seconds, in the toast. */
+function KinTasksUndoToast(props: {
+  readonly text: string;
+  readonly onUndo: () => void;
+  readonly onDismiss: () => void;
+}) {
+  const { text, onDismiss } = props;
+  const onUndo = useStableCallback(props.onUndo);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- shows the change in the app's toast with its Undo, and takes it away when the list's notice goes
+  useEffect(() => {
+    const toast = toastManager.add({
+      type: "success",
+      title: text,
+      timeout: UNDO_MS,
+      data: { onClose: onDismiss },
+      actionProps: {
+        children: KIN_WORK_COPY.undo,
+        onClick: () => {
+          toastManager.close(toast);
+          onUndo();
+        },
+      },
     });
+    const timer = setTimeout(onDismiss, UNDO_MS);
+    return () => {
+      clearTimeout(timer);
+      toastManager.close(toast);
+    };
+  }, [text, onUndo, onDismiss]);
+  return null;
+}
+
+const TICK_LABEL = { done: KIN_WORK_COPY.done, reopen: KIN_WORK_COPY.reopen } as const;
+
+const LEAD_TONE = {
+  late: "text-destructive-foreground",
+  soon: "text-warning-foreground",
+  working: "text-update-foreground",
+} as const;
+
+/**
+ * One task in Tasks: the circle that marks it done, the title on at most two lines, who has it
+ * and one coloured word, and its one step with that step's buttons, each reachable by Tab.
+ */
+function KinTaskRow(props: {
+  readonly row: KinWorkRowView;
+  readonly line: KinTaskLine;
+  readonly step: KinTaskStep | null;
+  readonly status: KinTaskStepStatus | null;
+  /** Ticked done just now and held in its place until its Undo goes. */
+  readonly ticked: boolean;
+  readonly saving: boolean;
+  readonly selected: boolean;
+  readonly onOpen: () => void;
+  /** Null where this browser or this host can't change a task. */
+  readonly onAct: ((action: KinWorkAction) => void) | null;
+  /** Null where this browser can't answer a card. */
+  readonly onChoose: ((optionId: string) => void) | null;
+  readonly onOpenCard: () => void;
+  /** Null where this browser can't nudge. */
+  readonly onNudge: (() => void) | null;
+  readonly onGive: () => void;
+}) {
+  const { row, line, step, status, onAct } = props;
+  const tick = onAct === null ? null : row.tick;
+  const tail = line.lead !== null || line.rest !== "";
+  return (
+    <div className="flex items-start gap-1 py-1" aria-busy={props.saving}>
+      {tick === null || onAct === null ? (
+        <span className="mt-1.5 flex size-7 shrink-0 items-center justify-center sm:size-6">
+          <KinWorkStateIcon state={row.state} />
+        </span>
+      ) : (
+        <span className="pt-1.5">
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            disabled={props.saving}
+            aria-label={`${TICK_LABEL[tick]}: ${row.title}`}
+            title={TICK_LABEL[tick]}
+            // The second click of a double click would land on the flipped circle and undo it.
+            onClick={(event) =>
+              event.detail > 1
+                ? undefined
+                : onAct({ type: "state", state: tick === "done" ? "done" : "open" })
+            }
+          >
+            <KinWorkStateIcon state={row.state} />
+          </Button>
+        </span>
+      )}
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5 pb-1">
+        <button
+          type="button"
+          aria-label={
+            line.with === null ? row.accessibilityLabel : `${row.accessibilityLabel}, ${line.with}`
+          }
+          aria-current={props.selected ? true : undefined}
+          // Where focus goes back to when the task it opened closes.
+          data-kin-row={row.key}
+          onClick={props.onOpen}
+          className="flex min-w-0 flex-col gap-0.5 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-[current=true]:bg-accent"
+        >
+          <span
+            className={cn(
+              "line-clamp-2 text-sm",
+              props.ticked ? "text-muted-foreground line-through" : "text-foreground",
+            )}
+          >
+            {row.title}
+          </span>
+          {/* Who has it never gives way: the rest of the line cuts off before it does. */}
+          <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+            {line.urgent ? (
+              <FlagIcon
+                aria-hidden
+                className="size-3 shrink-0 fill-current text-warning-foreground"
+              />
+            ) : null}
+            <KinAvatar avatar={row.ownerAvatar} size="xs" />
+            <span className="max-w-[60%] shrink-0 truncate text-foreground/80">{line.holder}</span>
+            {line.with === null ? null : (
+              <span className="shrink-0">
+                {line.holder === null ? null : <span aria-hidden>· </span>}
+                {line.with}
+              </span>
+            )}
+            {tail ? (
+              <span className="min-w-0 truncate">
+                <span aria-hidden>· </span>
+                {line.lead === null ? null : (
+                  <span className={cn("font-medium", LEAD_TONE[line.lead.tone])}>
+                    {line.lead.text}
+                  </span>
+                )}
+                {line.lead !== null && line.rest !== "" ? " · " : null}
+                {line.rest}
+              </span>
+            ) : null}
+          </span>
+        </button>
+        {step === null || step.line === null ? null : (
+          <p className="flex min-w-0 items-start gap-1.5 px-2 text-xs text-foreground">
+            {step.kind === "send" ? (
+              <FileTextIcon aria-hidden className="mt-px size-3.5 shrink-0 text-muted-foreground" />
+            ) : (
+              <MessageSquareTextIcon
+                aria-hidden
+                className="mt-px size-3.5 shrink-0 text-muted-foreground"
+              />
+            )}
+            <span className="line-clamp-2 min-w-0">{step.line}</span>
+          </p>
+        )}
+        {step?.kind !== "send" || step.mayHaveGone === null ? null : (
+          <p className="px-2 text-xs font-medium text-destructive-foreground">{step.mayHaveGone}</p>
+        )}
+        {step === null || step.kind === "told" ? null : status?.kind === "done" ? (
+          <p role="status" className="px-2 text-xs font-medium text-foreground">
+            {status.text}
+          </p>
+        ) : (
+          <div className="flex flex-col gap-1 px-2">
+            <KinTaskStepButtons
+              step={step}
+              title={row.title}
+              busyId={status?.kind === "busy" ? status.id : null}
+              onChoose={props.onChoose}
+              onOpenCard={props.onOpenCard}
+              onNudge={props.onNudge}
+              onGive={props.onGive}
+            />
+            {status?.kind === "failed" ? (
+              <p role="alert" className="text-xs text-destructive-foreground">
+                {status.text}
+              </p>
+            ) : null}
+          </div>
+        )}
+      </div>
+      {row.suggested && onAct !== null ? (
+        <span className="flex shrink-0 items-center gap-1 pt-1.5">
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={props.saving}
+            aria-label={`${KIN_WORK_COPY.decline}: ${row.title}`}
+            onClick={() => onAct({ type: "decline" })}
+          >
+            {KIN_WORK_COPY.decline}
+          </Button>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={props.saving}
+            aria-label={`${KIN_WORK_COPY.keep}: ${row.title}`}
+            onClick={() => onAct({ type: "confirm" })}
+          >
+            {KIN_WORK_COPY.keep}
+          </Button>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function KinTaskStepButtons(props: {
+  readonly step: KinTaskStep;
+  readonly title: string;
+  readonly busyId: string | null;
+  readonly onChoose: ((optionId: string) => void) | null;
+  readonly onOpenCard: () => void;
+  readonly onNudge: (() => void) | null;
+  readonly onGive: () => void;
+}) {
+  const { step, busyId, onChoose } = props;
+  const busy = busyId !== null;
+  const label = (what: string) => `${what}: ${props.title}`;
+  if (step.kind === "told") return null;
+  if (step.kind === "nudge") {
+    const nudgeText = step.nudged ? KIN_TASKS.nudged : KIN_TASKS.nudge(step.name);
+    return (
+      <div className="flex flex-wrap items-center gap-1.5">
+        {props.onNudge === null && !step.nudged ? null : (
+          <Button
+            size="xs"
+            variant="outline"
+            aria-label={label(nudgeText)}
+            aria-busy={busyId === "nudge"}
+            disabled={busy || step.nudged || props.onNudge === null}
+            onClick={props.onNudge ?? undefined}
+          >
+            {step.nudged ? <CheckIcon aria-hidden /> : <BellIcon aria-hidden />}
+            {nudgeText}
+          </Button>
+        )}
+        {step.give ? (
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label={label(KIN_TASKS.giveTo)}
+            disabled={busy}
+            onClick={props.onGive}
+          >
+            {KIN_TASKS.giveTo}
+          </Button>
+        ) : null}
+      </div>
+    );
+  }
+  if (step.kind === "send") {
+    const { approve } = step;
+    return (
+      <div className="flex flex-wrap items-center gap-1.5">
+        {approve === null || onChoose === null ? null : (
+          <Button
+            size="xs"
+            aria-label={label(KIN_TASKS.approve)}
+            aria-busy={busyId === approve.optionId}
+            disabled={busy}
+            onClick={() => onChoose(approve.optionId)}
+          >
+            <CheckIcon aria-hidden />
+            {KIN_TASKS.approve}
+          </Button>
+        )}
+        <Button
+          size="xs"
+          variant="outline"
+          aria-label={label(KIN_TASKS.review)}
+          disabled={busy}
+          onClick={props.onOpenCard}
+        >
+          {KIN_TASKS.review}
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={step.line}>
+      {onChoose === null
+        ? null
+        : step.options.map((option) => (
+            <Button
+              key={option.optionId}
+              size="xs"
+              variant="outline"
+              title={KIN_TASKS.replyHint}
+              aria-busy={busyId === option.optionId}
+              disabled={busy}
+              onClick={() => onChoose(option.optionId)}
+            >
+              {option.label}
+            </Button>
+          ))}
+      <Button
+        size="xs"
+        variant="ghost"
+        aria-label={label(KIN_TASKS.other)}
+        disabled={busy}
+        onClick={props.onOpenCard}
+      >
+        {KIN_TASKS.other}
+      </Button>
+    </div>
+  );
+}
 
 const EVERYONE = "all";
 
@@ -377,8 +888,12 @@ function KinWorkFilters(props: {
   readonly filter: KinWorkFilter;
   readonly names: KinWorkNames;
   readonly choices: KinWorkChoices | null;
+  /** The rows in view, whose projects the Filter offers too. */
+  readonly records: ReadonlyArray<KinRecord>;
   /** Whether to narrow by who has what across all of Work, which a project's own list doesn't. */
   readonly everyone: boolean;
+  /** The chip saying the list is grouped some other way than Me first; null when it isn't. */
+  readonly grouped: string | null;
   readonly onChange: (filter: KinWorkFilter) => void;
 }) {
   const { overview, filter, choices } = props;
@@ -386,7 +901,10 @@ function KinWorkFilters(props: {
   const withHeld = (held: ReadonlyArray<KinWorkRef>, value: KinWorkRef | null) =>
     value === null || held.some((choice) => choice.key === value.key) ? held : [value, ...held];
   const clients = choices === null ? [] : withHeld(choices.clients, filter.party);
-  const projects = choices === null ? [] : withHeld(choices.projects, filter.project);
+  const projects =
+    choices === null
+      ? []
+      : withHeld(kinTaskFilterProjects(choices.projects, props.records), filter.project);
   const owners = props.everyone ? overview.owners : [];
   const scope = (
     label: string,
@@ -418,9 +936,30 @@ function KinWorkFilters(props: {
       <KinFilter
         chip={kinWorkFilterLabel(filter, props.names)}
         onClear={() => props.onChange(kinWorkFilterCleared(filter))}
+        grouped={
+          props.grouped === null
+            ? null
+            : { label: props.grouped, onClear: () => props.onChange({ ...filter, groupBy: "me" }) }
+        }
         groups={[
+          // Only all of Work groups; a project's own list leaves Group by out.
+          ...(props.everyone
+            ? [
+                {
+                  label: KIN_TASKS.groupBy,
+                  value: filter.groupBy ?? "me",
+                  options: KIN_TASK_GROUP_BY.map((one) => ({ value: one.id, label: one.label })),
+                  onChange: (id: string) => {
+                    const one = KIN_TASK_GROUP_BY.find((option) => option.id === id);
+                    if (one !== undefined) props.onChange({ ...filter, groupBy: one.id });
+                  },
+                  // Said once, here: the order never changes.
+                  note: KIN_TASKS.order,
+                } satisfies KinFilterGroup,
+              ]
+            : []),
           {
-            label: KIN_WORK_HOME.show,
+            label: props.everyone ? KIN_TASKS.showOnly : KIN_WORK_HOME.show,
             value: filter.view,
             options: overview.chips.map((chip) => ({
               value: chip.id,
@@ -474,10 +1013,9 @@ function KinWorkFilters(props: {
   );
 }
 
-/** What the last change did, with the way back, said once above the rows. */
+/** A change that failed or was refused, said once above the rows; the way back is the toast's. */
 function KinWorkListNotice(props: {
   readonly notice: KinWorkNoticeState;
-  readonly onUndo: () => void;
   readonly onDismiss: () => void;
 }) {
   const { notice } = props;
@@ -489,11 +1027,6 @@ function KinWorkListNotice(props: {
         {notice.key}: {notice.text}
       </AlertDescription>
       <AlertAction>
-        {notice.undo === null ? null : (
-          <Button size="xs" variant="outline" onClick={props.onUndo}>
-            {KIN_WORK_COPY.undo}
-          </Button>
-        )}
         <Button size="icon-xs" variant="ghost" aria-label="Dismiss" onClick={props.onDismiss}>
           <XIcon />
         </Button>
@@ -501,8 +1034,6 @@ function KinWorkListNotice(props: {
     </Alert>
   );
 }
-
-const TICK_LABEL = { done: KIN_WORK_COPY.done, reopen: KIN_WORK_COPY.reopen } as const;
 
 export function KinWorkRow(props: {
   readonly row: KinWorkRowView;
@@ -512,6 +1043,8 @@ export function KinWorkRow(props: {
   readonly onOpen: () => void;
   /** Null where this browser or this host can't change a task. */
   readonly onAct: ((action: KinWorkAction) => void) | null;
+  /** A promise to or from a client: its "Promised" mark, or the mark given, such as "They owe". */
+  readonly promised?: boolean | string;
 }) {
   const { row, onAct } = props;
   const tick = onAct === null ? null : row.tick;
@@ -529,7 +1062,12 @@ export function KinWorkRow(props: {
             disabled={props.saving}
             aria-label={`${TICK_LABEL[tick]}: ${row.title}`}
             title={TICK_LABEL[tick]}
-            onClick={() => onAct({ type: "state", state: tick === "done" ? "done" : "open" })}
+            // The second click of a double click would land on the flipped circle and undo it.
+            onClick={(event) =>
+              event.detail > 1
+                ? undefined
+                : onAct({ type: "state", state: tick === "done" ? "done" : "open" })
+            }
           >
             <KinWorkStateIcon state={row.state} />
           </Button>
@@ -539,6 +1077,8 @@ export function KinWorkRow(props: {
         type="button"
         aria-label={row.accessibilityLabel}
         aria-current={props.selected === true ? true : undefined}
+        // Where focus goes back to when the task it opened closes.
+        data-kin-row={row.key}
         onClick={props.onOpen}
         className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-[current=true]:bg-accent"
       >
@@ -546,6 +1086,12 @@ export function KinWorkRow(props: {
           <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>
           {/* Who has it never gives way: the rest of the line cuts off before it does. */}
           <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+            {row.urgent ? (
+              <FlagIcon
+                aria-hidden
+                className="size-3 shrink-0 fill-current text-warning-foreground"
+              />
+            ) : null}
             <KinAvatar avatar={row.ownerAvatar} size="xs" />
             <span className="max-w-[60%] shrink-0 truncate text-foreground/80">{row.holder}</span>
             {row.detail === "" ? null : (
@@ -556,6 +1102,11 @@ export function KinWorkRow(props: {
             )}
           </span>
         </span>
+        {props.promised === undefined || props.promised === false ? null : (
+          <Badge size="sm" variant="info">
+            {props.promised === true ? KIN_PROMISES.mark : props.promised}
+          </Badge>
+        )}
         {row.markText === null ? null : (
           <Badge
             size="sm"

@@ -1,4 +1,5 @@
 import {
+  calendarTimeMillis,
   KIN_SOCIAL_WEEK_CARD,
   KinChatError,
   type KinAgentId,
@@ -32,6 +33,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
+import { madeUnderApproval } from "../questions/approval.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -45,6 +47,7 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import { markOutside } from "../lead/OutsideContent.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { textLocale } from "../work/companyProfile.ts";
+import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import * as Cards from "./cards.ts";
 import { previewSheet } from "./preview.ts";
@@ -83,6 +86,7 @@ import {
   type SocialProvider,
 } from "./SocialProvider.ts";
 import { zernio } from "./Zernio.ts";
+import { DAY_MS } from "../durations.ts";
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const notAllowed = (message: string) => new KinChatError({ reason: "not_allowed", message });
@@ -93,7 +97,6 @@ const isProviderError = Schema.is(SocialProviderError);
 const asKinError = (cause: unknown) =>
   isKinError(cause) ? cause : unavailable("Kin couldn't do that just now. Try again in a minute.");
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
-const DAY_MS = 86_400_000;
 /** A key waits this long between Kin showing what it reaches and the owner's Confirm. */
 const CHECK_TTL_MS = 10 * 60_000;
 /** Reads are kept this long: a week's numbers don't move by the minute, and X charges per read. */
@@ -624,9 +627,11 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       input.group === undefined
         ? yield* ownerLevelGroups(lead.orgId)
         : [yield* groupNamed(lead.orgId, input.group)];
-    const since = input.since ?? iso(now - 7 * DAY_MS).slice(0, 10);
+    const since = input.since ?? dayIn(now - 7 * DAY_MS, zone);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) return yield* invalid("since is a day, YYYY-MM-DD.");
     const out = [];
+    // A client's own accounts: their captions are written outside the company.
+    const outside: Array<string> = [];
     for (const group of groups) {
       const accounts = accountsOf(group);
       if (group.problem !== null) {
@@ -645,6 +650,8 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
         ).pipe(Effect.mapError(said)),
       );
       const costs = [...new Set(accounts.flatMap((one) => provider.readCost(one.platform) ?? []))];
+      if (group.partyId !== null && got.value.posts.some((post) => (post.caption ?? "") !== ""))
+        outside.push(accounts[0]?.handle ?? group.label);
       out.push({
         group: group.label,
         accounts: accounts.map((one) => ({
@@ -667,6 +674,11 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
             }),
       });
     }
+    // Marked before the captions reach the turn, as a looked-up account's are.
+    for (const handle of outside)
+      yield* markOutside(lead, `social:${handle.slice(0, 60)}`).pipe(
+        Effect.mapError(() => unavailable("Kin couldn't note the outside read.")),
+      );
     const calendar = (yield* calendarPosts(lead.orgId, now - DAY_MS)).map((post) => ({
       postId: post.postId,
       group:
@@ -764,7 +776,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
   });
 
   const atOf = (text: string | undefined) => {
-    const ms = text === undefined ? Number.NaN : Date.parse(text);
+    const ms = text === undefined ? Number.NaN : calendarTimeMillis(text);
     return Number.isFinite(ms) && /[zZ]|[+-]\d{2}:?\d{2}$/.test(text ?? "") ? ms : undefined;
   };
 
@@ -911,6 +923,8 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       drafts,
       title,
     }).pipe(
+      // A post made under the owner's Approve: its week card is that approval's one result.
+      Effect.tap((card) => madeUnderApproval(lead, { kind: "post", cardId: card.cardId })),
       sql.withTransaction,
       Effect.provide(context),
       Effect.tapError((error) =>
@@ -1277,7 +1291,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
                   : null,
               })),
             files,
-            day: iso(yield* Clock.currentTimeMillis).slice(0, 10),
+            day: dayIn(yield* Clock.currentTimeMillis, yield* ownerZone(orgId)),
           }),
         );
     let preview: KinSocialMedia | null = null;

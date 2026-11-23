@@ -1,3 +1,4 @@
+import { KIN_CHAT_COPY } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useEffect, useState, type ReactNode } from "react";
 import { AccessibilityInfo, View } from "react-native";
 import Animated, {
@@ -66,6 +67,8 @@ export function KinPresenceLine(props: {
   /** Null when the viewer can't stop this lead. */
   readonly onStop: (() => void) | null;
   readonly stop: KinStopState;
+  /** The pill above the composer is saying it: keep the row's height and its announcements only. */
+  readonly quiet?: boolean;
 }) {
   const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
   const line = kinPresenceLine(props.presence, now);
@@ -79,6 +82,7 @@ export function KinPresenceLine(props: {
   const animate = line !== null && props.visible && !reduceMotion;
 
   const { onStop } = props;
+  if (props.quiet === true) return <View className="h-8" />;
   const stoppable = line?.stalled === true && onStop !== null;
   const timerStart = kinPresenceTimerStart(props.presence);
   return (
@@ -111,7 +115,7 @@ export function KinPresenceLine(props: {
           {/* The 44 pt target overhangs the 32 pt row, so the row keeps its height. */}
           <View className="-my-1.5">
             <ComposerActionButton
-              accessibilityLabel={props.stop === "failed" ? "Try stopping again" : "Stop"}
+              accessibilityLabel={props.stop === "failed" ? KIN_CHAT_COPY.stopAgain : "Stop"}
               icon="stop.fill"
               variant="danger"
               disabled={props.stop === "stopping"}

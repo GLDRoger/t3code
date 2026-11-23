@@ -6,9 +6,11 @@ import {
   type AuthEnvironmentScope,
   type EnvironmentId,
   type KinPersonAccess,
+  type KinShell,
   type SessionGrantInput,
 } from "@t3tools/contracts";
 import { kinDestinations, type KinDestination, type KinPlacesRefused } from "./kinNavigation.ts";
+import { kinSectionOn } from "./kinShell.ts";
 import { readKinJoinLink } from "@t3tools/shared/remote";
 
 /** A join link a teammate gave the app, and the address it points at, shown before joining. */
@@ -174,19 +176,23 @@ export function kinDockTabs(
   });
 }
 
-/** Which places someone besides the owner reaches: switched on for them, or a project they lead. */
+/**
+ * Which places someone besides the owner reaches: switched on for them, or a project they lead,
+ * while the company has that place's section on. Their own switches stay as set while it is off.
+ */
 export type KinPlaceReach = KinDockRefused;
 export function kinPlaceReach(
   me: {
     readonly places?: KinDockRefused | undefined;
     readonly leads?: ReadonlyArray<unknown> | undefined;
+    readonly shell?: KinShell | undefined;
   } | null,
 ): KinPlaceReach | null {
   if (me === null || me.places === undefined) return null;
   const lead = (me.leads?.length ?? 0) > 0;
   return {
-    money: me.places.money || lead,
-    clients: me.places.clients || lead,
+    money: kinSectionOn(me.shell, "money") && (me.places.money || lead),
+    clients: kinSectionOn(me.shell, "clients") && (me.places.clients || lead),
     docs: me.places.docs || lead,
   };
 }

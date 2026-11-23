@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { kinNow } from "./kinNow.ts";
 import {
   KinChatSummary,
   KinMessage,
@@ -24,6 +25,7 @@ import {
 import { applyKinReaction, mergeKinReactions } from "./kinReactions.ts";
 
 export const KIN_CACHED_MESSAGE_LIMIT = 50;
+export const KIN_WAITING_TITLE = "Waiting on you";
 
 // Chat list + Waiting on you
 
@@ -102,16 +104,33 @@ export interface KinInboxRow {
   readonly fold: KinInboxFold;
 }
 
+/** What waits on someone else that the viewer may look at but not answer, oldest first. */
+export interface KinWaitsForGroup {
+  readonly personId: string;
+  readonly name: string;
+  readonly items: ReadonlyArray<KinWaitingItem>;
+}
+
 export interface KinInboxView {
   /** Needs you, then Working, then the rest; most recent activity first within each. */
   readonly rows: ReadonlyArray<KinInboxRow>;
   /** Chats per fold. */
   readonly folds: Readonly<Record<KinInboxFold, number>>;
-  /** Waiting on you, oldest first. */
+  /** Waiting on you, oldest first: the viewer's own, never someone else's. */
   readonly waiting: ReadonlyArray<KinWaitingItem>;
+  /** What waits on others the viewer may see, one group per person (`waitsFor`). */
+  readonly waitsFor: ReadonlyArray<KinWaitsForGroup>;
   readonly unreadCount: number;
+  /** `kinWaitingCount` of `waiting`. */
   readonly waitingCount: number;
 }
+
+/**
+ * Waiting on you's number, alike on every screen: everything that waits on the viewer, a
+ * question, a mail ready to send, a draft sent up, an approval; never what waits on someone else.
+ */
+export const kinWaitingCount = (waiting: ReadonlyArray<KinWaitingItem>) =>
+  waiting.filter((item) => item.waitsFor === undefined).length;
 
 const activityAt = (chat: KinChatSummary) => chat.lastMessageAt ?? chat.createdAt;
 
@@ -125,8 +144,18 @@ function kinInboxFold(chat: KinChatSummary, waitingCount: number): KinInboxFold 
 }
 
 export function selectKinInboxView(state: KinInboxState): KinInboxView {
-  const waitingByChat = new Map<KinChatId, number>();
+  const byAge = (a: KinWaitingItem, b: KinWaitingItem) =>
+    a.createdAt.localeCompare(b.createdAt) || a.waitingId.localeCompare(b.waitingId);
+  const waiting = state.waiting.filter((item) => item.waitsFor === undefined);
+  const groups = new Map<string, { name: string; items: Array<KinWaitingItem> }>();
   for (const item of state.waiting) {
+    if (item.waitsFor === undefined) continue;
+    const group = groups.get(item.waitsFor.personId) ?? { name: item.waitsFor.name, items: [] };
+    group.items.push(item);
+    groups.set(item.waitsFor.personId, group);
+  }
+  const waitingByChat = new Map<KinChatId, number>();
+  for (const item of waiting) {
     waitingByChat.set(item.chatId, (waitingByChat.get(item.chatId) ?? 0) + 1);
   }
   const folds = { needsYou: 0, working: 0, rest: 0 };
@@ -147,11 +176,14 @@ export function selectKinInboxView(state: KinInboxState): KinInboxView {
   return {
     rows,
     folds,
-    waiting: [...state.waiting].sort(
-      (a, b) => a.createdAt.localeCompare(b.createdAt) || a.waitingId.localeCompare(b.waitingId),
-    ),
+    waiting: [...waiting].sort(byAge),
+    waitsFor: [...groups].map(([personId, group]) => ({
+      personId,
+      name: group.name,
+      items: [...group.items].sort(byAge),
+    })),
     unreadCount: kinBadgeCount(state),
-    waitingCount: state.waiting.length,
+    waitingCount: kinWaitingCount(waiting),
   };
 }
 
@@ -280,7 +312,7 @@ function advanceContiguous(messages: ReadonlyArray<KinMessage>, from: number): n
 export function applyKinChatEvent(
   state: KinChatState,
   event: KinChatStreamEvent,
-  now: string = new Date().toISOString(),
+  now: string = kinNow().toISOString(),
 ): KinChatState {
   switch (event._tag) {
     case "backlog": {

@@ -15,7 +15,7 @@ import * as Schema from "effect/Schema";
 import { createDeterministicAttachmentId } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { logoPath } from "./brand.ts";
-import { computeData } from "./compute.ts";
+import { computeData, type TaxRegime } from "./compute.ts";
 import type { Recipe, Value } from "./recipe.ts";
 import { type Taken, typeMismatch } from "./returnPath.ts";
 import { fileName, tableFiles, tableTooLarge } from "./tables.ts";
@@ -63,6 +63,8 @@ export type RenderRequest = {
   readonly logo?: { readonly bytes: Uint8Array; readonly extension: string } | null;
   /** Also make the first page as a PNG, for a look at it in a chat. */
   readonly page?: boolean;
+  /** The company's tax; India's GST when absent, as a recipe's own sample is worked out. */
+  readonly tax?: TaxRegime;
 };
 
 /** Pixels per inch of a page preview: an A4 page about 900 pixels wide. */
@@ -161,6 +163,7 @@ type Run =
  * Runs `command` with processor time capped, and, with no systemd scope to hold its memory, its
  * address space too. Each is the host's to refuse: macOS refuses an address-space limit, so there
  * the wall-clock and output caps and the processor-time limit are all that bound a render.
+ * Linux sends SIGKILL at the hard limit, so the soft one sits a second below it to send SIGXCPU.
  */
 export const limitedCommand = (
   command: string,
@@ -170,7 +173,7 @@ export const limitedCommand = (
   command: "/bin/sh",
   args: [
     "-c",
-    `ulimit -t ${limits.cpuSeconds} 2>/dev/null; ${limits.addressSpaceKiB === undefined ? "" : `ulimit -v ${limits.addressSpaceKiB} 2>/dev/null; `}exec "$@"`,
+    `ulimit -c 0 2>/dev/null; ulimit -St ${limits.cpuSeconds} 2>/dev/null; ulimit -Ht ${limits.cpuSeconds + 1} 2>/dev/null; ${limits.addressSpaceKiB === undefined ? "" : `ulimit -v ${limits.addressSpaceKiB} 2>/dev/null; `}exec "$@"`,
     "kin-render",
     command,
     ...args,
@@ -506,7 +509,7 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
               );
             return yield* checked(files.map((file) => taken(file.name, file.bytes)));
           }
-          const computed = computeData(request.inputs, request.recipe.computed);
+          const computed = computeData(request.inputs, request.recipe.computed, request.tax);
           if ("error" in computed) return failed(computed.error);
           return yield* typst(request, computed.data);
         },

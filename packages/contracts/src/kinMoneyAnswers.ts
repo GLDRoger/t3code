@@ -3,22 +3,22 @@ import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChatError, KinOrgId, KinTrimmedText } from "./kinChat.ts";
+import { KinChatError, KinOrgId, KinPersonId, KinTrimmedText } from "./kinChat.ts";
 import { KinSacCode } from "./kinFinance.ts";
-import { KinCurrency, KinDay, KinMoney, KinMoneyTotals } from "./kinMoney.ts";
+import {
+  KinBankKnown,
+  KinCurrency,
+  KinDay,
+  KinMoney,
+  KinMoneyTotals,
+  KinSignedMoney,
+} from "./kinMoney.ts";
 import { KinRecordKey } from "./kinWork.ts";
 
 /**
  * What Money answers from the host's own sums: cash from confirmed statements, what is expected
  * in and out next, runway, budgets, and quotes turned into invoices. Owner only, on the server.
  */
-
-const SignedMinor = Schema.Int.check(
-  Schema.isBetween({ minimum: -Number.MAX_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER }),
-);
-/** A balance or a net: below zero is owed or overdrawn. */
-export const KinSignedMoney = Schema.Struct({ minor: SignedMinor, currency: KinCurrency });
-export type KinSignedMoney = typeof KinSignedMoney.Type;
 
 /** Why a read statement gives no balance of record. */
 export const KinStatementStanding = Schema.Literals([
@@ -29,6 +29,9 @@ export const KinStatementStanding = Schema.Literals([
 export type KinStatementStanding = typeof KinStatementStanding.Type;
 
 const AccountKind = Schema.Literals(["account", "card"]);
+/** The available balance a bank alert mail printed, and when it was sent: the bank's figure then. */
+export const KinCashAlert = Schema.Struct({ balance: KinSignedMoney, at: IsoDateTime });
+export type KinCashAlert = typeof KinCashAlert.Type;
 export const KinCashAccount = Schema.Struct({
   /** "HDFC Account ••1234". */
   label: Schema.String,
@@ -44,6 +47,8 @@ export const KinCashAccount = Schema.Struct({
   newerRead: Schema.NullOr(
     Schema.Struct({ balance: KinSignedMoney, on: KinDay, standing: KinStatementStanding }),
   ),
+  /** A bank alert from after `on`: the balance shown. Absent from older hosts. */
+  alert: Schema.optional(KinCashAlert),
 });
 export type KinCashAccount = typeof KinCashAccount.Type;
 
@@ -58,7 +63,8 @@ export const KinCashCurrency = Schema.Struct({
   stale: Schema.Boolean,
   /** Recorded in Kin since, with no account known. */
   receivedSince: KinMoney,
-  spentSince: KinMoney,
+  /** A refund lowers it. */
+  spentSince: KinSignedMoney,
   /** Total plus received minus spent since, when every balance is from one day: an estimate. */
   estimate: Schema.NullOr(KinSignedMoney),
 });
@@ -80,6 +86,12 @@ export const KinCash = Schema.Struct({
     }),
   ),
   byCurrency: Schema.Array(KinCashCurrency),
+  /** Absent from older hosts. */
+  bankKnown: Schema.optional(KinBankKnown),
+  /** Accounts known only from bank alerts: "HDFC Bank ••4821". Absent from older hosts. */
+  alertAccounts: Schema.optional(
+    Schema.Array(Schema.Struct({ label: Schema.String, alert: KinCashAlert })),
+  ),
 });
 export type KinCash = typeof KinCash.Type;
 export const KinCashInput = Schema.Struct({ orgId: KinOrgId });
@@ -90,7 +102,7 @@ export const KinOutlookItem = Schema.Struct({
   title: Schema.String,
   list: Schema.String,
   on: KinDay,
-  money: KinMoney,
+  money: KinSignedMoney,
   repeats: Schema.Boolean,
 });
 export type KinOutlookItem = typeof KinOutlookItem.Type;
@@ -102,7 +114,7 @@ export const KinRunway = Schema.Struct({
       /** `2026-08`. */
       month: Schema.String,
       received: KinMoney,
-      spent: KinMoney,
+      spent: KinSignedMoney,
       net: KinSignedMoney,
     }),
   ),
@@ -119,6 +131,37 @@ export const KinRunway = Schema.Struct({
   runwayTenths: Schema.NullOr(NonNegativeInt),
 });
 export type KinRunway = typeof KinRunway.Type;
+
+/** One expense as the person saw it, so a match changes exactly what was shown. */
+export const KinPartnerSeenEntry = Schema.Struct({ key: KinRecordKey, rev: NonNegativeInt });
+export type KinPartnerSeenEntry = typeof KinPartnerSeenEntry.Type;
+
+/**
+ * What the company owes one partner back for Paid expenses they funded: a Kin person, or an
+ * import's address that no person matches yet (`personId` null).
+ */
+export const KinPartnerOwed = Schema.Struct({
+  personId: Schema.NullOr(KinPersonId),
+  name: Schema.String,
+  address: Schema.NullOr(Schema.String),
+  owed: KinMoneyTotals,
+  expenses: NonNegativeInt,
+  oldest: KinDay,
+  /** With no person yet: the expenses a match would name them on. Absent from older hosts. */
+  entries: Schema.optional(Schema.Array(KinPartnerSeenEntry)),
+});
+export type KinPartnerOwed = typeof KinPartnerOwed.Type;
+
+/** Paid expenses an import says an address paid personally, not counted as owed until said. */
+export const KinPartnerUnsaid = Schema.Struct({
+  address: Schema.String,
+  expenses: NonNegativeInt,
+  total: KinMoneyTotals,
+  oldest: KinDay,
+  /** The expenses a match would settle. Absent from older hosts. */
+  entries: Schema.optional(Schema.Array(KinPartnerSeenEntry)),
+});
+export type KinPartnerUnsaid = typeof KinPartnerUnsaid.Type;
 
 /** The next `days`: invoices due in, amounts owed and repeating bills out, and runway. */
 export const KinOutlook = Schema.Struct({
@@ -137,6 +180,13 @@ export const KinOutlook = Schema.Struct({
   pastDueOut: Schema.Array(KinOutlookItem),
   /** Overdue invoices: listed, never counted as coming in. */
   overdueIn: Schema.Array(KinOutlookItem),
+  /**
+   * What partners are owed back, per currency: a positive balance counts going out now, a negative
+   * one (refunds they hold) coming in; never netted across partners. Absent from older hosts.
+   */
+  owedToPartners: Schema.optional(Schema.Array(KinPartnerOwed)),
+  /** Imported partner addresses waiting for the owner's word; counted as before until then. */
+  partnersUnsaid: Schema.optional(Schema.Array(KinPartnerUnsaid)),
   /** Keys of repeating entries that repeat more often than the host projects. */
   incomplete: Schema.Array(Schema.String),
   runway: Schema.Array(KinRunway),
@@ -157,10 +207,14 @@ export const KinMoneyBudget = Schema.Struct({
     Schema.Struct({ key: Schema.NullOr(KinRecordKey), title: Schema.NullOr(Schema.String) }),
   ),
   limit: KinMoney,
-  spent: KinMoney,
+  spent: KinSignedMoney,
   expenses: NonNegativeInt,
   /** Over is past the limit; near is at it or past 80% of it. */
   status: KinMoneyBudgetStatus,
+  /** Spending on the same target in other currencies, which `spent` leaves out; absent when none. */
+  notCounted: Schema.optional(
+    Schema.Array(Schema.Struct({ currency: KinCurrency, spent: KinSignedMoney })),
+  ),
 });
 export type KinMoneyBudget = typeof KinMoneyBudget.Type;
 export const KinMoneyBudgets = Schema.Struct({
@@ -216,6 +270,83 @@ export const KinInvoiceFromQuoteResult = Schema.Struct({
 });
 export type KinInvoiceFromQuoteResult = typeof KinInvoiceFromQuoteResult.Type;
 
+/**
+ * An invoice typed by hand: a draft for the client, never numbered or owed until it is issued,
+ * and its document made with these lines, which set its amount and tax.
+ */
+export const KinNewInvoiceInput = Schema.Struct({
+  orgId: KinOrgId,
+  client: KinRecordKey,
+  title: KinTrimmedText.check(Schema.isMaxLength(280)),
+  lines: Schema.Array(KinDocumentLine).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
+  /** GST percent, in India only; elsewhere the company's own tax applies. */
+  gstRate: Schema.optional(
+    Schema.String.check(Schema.isPattern(/^(?:100|\d{1,2}(?:\.\d{1,3})?)$/)),
+  ),
+  dueOn: Schema.optional(KinDay),
+  notes: Schema.optional(Schema.String.check(Schema.isMaxLength(4_000))),
+  project: Schema.optional(KinRecordKey),
+  /**
+   * A form that can ask sends false: an amount far above its list is refused with the error's
+   * `farAbove` for the person to confirm, and true saves it. Left out, nothing is asked.
+   */
+  amountConfirmed: Schema.optional(Schema.Boolean),
+  /** The same id with the same details returns what that request made. */
+  clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinNewInvoiceInput = typeof KinNewInvoiceInput.Type;
+
+/** An expense typed by hand; the company's Expenses list is made the first time. */
+export const KinNewExpenseInput = Schema.Struct({
+  orgId: KinOrgId,
+  title: KinTrimmedText.check(Schema.isMaxLength(280)),
+  amount: KinSignedMoney,
+  paidOn: KinDay,
+  /** Who was paid, as said. */
+  vendor: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(200))),
+  /** One of the Expenses list's own categories. */
+  category: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(60))),
+  /** One of its "Paid with" choices. */
+  paidWith: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(60))),
+  /** The partner who paid from their own money; left out, the company did. */
+  fundedBy: Schema.optional(KinPersonId),
+  /** Files already in the person's chats (`kin.work.files`). */
+  receipt: Schema.optional(
+    Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(128))).check(Schema.isMaxLength(5)),
+  ),
+  /**
+   * A form that can ask sends false: an amount far above its list is refused with the error's
+   * `farAbove` for the person to confirm, and true saves it. Left out, nothing is asked.
+   */
+  amountConfirmed: Schema.optional(Schema.Boolean),
+  clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinNewExpenseInput = typeof KinNewExpenseInput.Type;
+export const KinNewExpenseResult = Schema.Struct({ expense: KinRecordKey });
+export type KinNewExpenseResult = typeof KinNewExpenseResult.Type;
+
+/**
+ * The owner or a co-owner says which person an import's partner address is, and for its expenses
+ * nobody has said yet, whether they are still owed or were already paid back. With no address, the
+ * owed expenses that name no partner at all take them.
+ */
+export const KinMatchPartnerInput = Schema.Struct({
+  orgId: KinOrgId,
+  address: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
+  personId: KinPersonId,
+  settled: Schema.optional(Schema.Literals(["owed", "repaid"])),
+  /**
+   * The expenses and per-currency totals the person saw (`entries` and the total of the row):
+   * a host changes exactly those, or nothing when any moved. Older clients send none.
+   */
+  seen: Schema.optional(
+    Schema.Struct({ entries: Schema.Array(KinPartnerSeenEntry), totals: KinMoneyTotals }),
+  ),
+});
+export type KinMatchPartnerInput = typeof KinMatchPartnerInput.Type;
+export const KinMatchPartnerResult = Schema.Struct({ matched: Schema.Array(KinRecordKey) });
+export type KinMatchPartnerResult = typeof KinMatchPartnerResult.Type;
+
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 export const KinMoneyAnswerRpcs = [
   Rpc.make("kin.work.cash", { payload: KinCashInput, success: KinCash, error }),
@@ -236,6 +367,21 @@ export const KinMoneyAnswerRpcs = [
     success: KinInvoiceFromQuoteResult,
     error,
   }),
+  Rpc.make("kin.work.newInvoice", {
+    payload: KinNewInvoiceInput,
+    success: KinInvoiceFromQuoteResult,
+    error,
+  }),
+  Rpc.make("kin.work.newExpense", {
+    payload: KinNewExpenseInput,
+    success: KinNewExpenseResult,
+    error,
+  }),
+  Rpc.make("kin.work.matchPartner", {
+    payload: KinMatchPartnerInput,
+    success: KinMatchPartnerResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_MONEY_ANSWER_RPC_SCOPES = {
@@ -245,4 +391,7 @@ export const KIN_MONEY_ANSWER_RPC_SCOPES = {
   "kin.work.setBudget": AuthKinChatScope,
   "kin.work.entryLines": AuthKinChatScope,
   "kin.work.invoiceFromQuote": AuthKinChatScope,
+  "kin.work.newInvoice": AuthKinChatScope,
+  "kin.work.newExpense": AuthKinChatScope,
+  "kin.work.matchPartner": AuthKinChatScope,
 } as const;

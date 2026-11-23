@@ -5,9 +5,12 @@ import {
   KinEventId,
   KinMessageId,
   KinOrgId,
+  KinCardAsker,
+  KinReminderCard,
   KinScheduledTaskCard,
   KinWidgetId,
   type KinWidget,
+  KIN_TROUBLE_WHY,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -22,8 +25,10 @@ import { isSqlError } from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import { directChatWith } from "../triggers/deferralOrigin.ts";
 
 export type DeliveryKind = "reminder" | "routine" | "scheduled_task";
 
@@ -97,6 +102,18 @@ const excerpt = (body: string) => {
     : chars.join("");
 };
 
+const decodeAsker = Schema.decodeUnknownOption(Schema.Struct({ askedBy: KinCardAsker }));
+const decodeReminder = Schema.decodeUnknownOption(KinReminderCard);
+/** Who asked for a shared chat's own card, from its state. */
+const askedByOf = (state: unknown) => Option.getOrUndefined(decodeAsker(state))?.askedBy;
+
+/** A shared chat's own card (`askedBy`) is written for everyone there; any other, for the owner. */
+export const cardAudience = (
+  state: unknown,
+  otherwise: Repository.WriteAudience = "owner",
+): Repository.WriteAudience =>
+  typeof state === "object" && state !== null && "askedBy" in state ? "chat" : otherwise;
+
 /** Server card writes shared by deliveries and the cards they settle. Runs in the caller's transaction. */
 export const makeCardWriter = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -136,7 +153,7 @@ export const makeCardWriter = Effect.gen(function* () {
     now: number,
   ) {
     const row = widgetRow(orgId, chatId, messageId, widget, iso(now));
-    yield* repo.insertWidget({ ...row, audience: "owner" });
+    yield* repo.insertWidget({ ...row, audience: cardAudience(widget.state) });
     const message = yield* repo.getMessage({ orgId, messageId });
     if (Option.isSome(message))
       yield* publish({ type: "message.posted", orgId, message: message.value });
@@ -151,8 +168,9 @@ export const makeCardWriter = Effect.gen(function* () {
     body: string,
     widget: Delivery["widget"],
     now: number,
-    audience: Repository.WriteAudience = "owner",
+    given: Repository.WriteAudience = "owner",
   ) {
+    const audience = cardAudience(widget.state, given);
     const existing = yield* repo.getWidget({ orgId, widgetId: widget.widgetId });
     if (Option.isSome(existing)) return existing.value;
     const at = iso(now);
@@ -196,7 +214,7 @@ export const makeCardWriter = Effect.gen(function* () {
     const at = iso(now);
     const updated = yield* repo.updateWidget({
       ...widget,
-      audience: "owner",
+      audience: cardAudience(state),
       state,
       expectedRevision: widget.revision,
       closedAt: closed === undefined ? widget.closedAt : closed ? at : null,
@@ -224,6 +242,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Repository.KinChatRepository;
   const queue = yield* KinEventQueue.KinEventQueue;
+  const care = yield* Effect.serviceOption(KinHostCare);
   const ticks = yield* Scheduler.Scheduler;
   const hub = yield* Effect.serviceOption(KinChatHub);
   const cards = yield* makeCardWriter;
@@ -257,15 +276,31 @@ const make = Effect.gen(function* () {
   ) {
     const { orgId } = delivery;
     if (delivery.kind === "scheduled_task") {
+      // Why the run didn't happen, when an open trouble knows it; once the owner was told of
+      // that trouble, this line rings no one.
+      const why = Option.isSome(care)
+        ? yield* care.value.causeFor(orgId, delivery.agentId)
+        : undefined;
+      const title = /"(.*)"/.exec(delivery.fallbackBody)?.[1];
+      const asker = askedByOf(delivery.widget.state);
+      // A room's own routine: its title stays out of the room, whoever reads it now.
+      const body =
+        asker !== undefined
+          ? `A routine ${asker.left === true ? "someone who has left" : asker.name} set didn't run this time.`
+          : why === undefined
+            ? delivery.fallbackBody
+            : title === undefined
+              ? `${delivery.fallbackBody.replace(/\.$/, "")}: ${KIN_TROUBLE_WHY[why.cause]}.`
+              : `"${title}" didn't run: ${KIN_TROUBLE_WHY[why.cause]}.`;
       yield* repo
         .insertMessage({
           orgId,
           chatId: delivery.chatId,
-          audience: "owner",
+          audience: cardAudience(delivery.widget.state),
           messageId: KinMessageId.make(`kin-run-failed:${delivery.eventId}`),
           author: { _tag: "system" },
           kind: "system",
-          body: delivery.fallbackBody,
+          body,
           intent: null,
           mentions: [],
           replyTo: null,
@@ -276,6 +311,7 @@ const make = Effect.gen(function* () {
           clientMessageId: null,
           createdAt: iso(now),
           editedAt: null,
+          ...(why?.told === true ? { silent: true as const } : {}),
         })
         .pipe(
           Effect.tap((message) =>
@@ -294,13 +330,16 @@ const make = Effect.gen(function* () {
             onSome: (card) => card.lastRun?.at ?? iso(now),
           }),
           status: "failed",
-          note: excerpt(delivery.fallbackBody),
+          note: excerpt(body),
         },
         now,
       );
       return;
     }
     const { widget } = delivery;
+    const asker = askedByOf(widget.state);
+    if (delivery.kind === "reminder" && delivery.forChat === undefined && asker !== undefined)
+      return yield* roomReminder(delivery, asker, now);
     const marked =
       delivery.kind === "reminder" &&
       delivery.forChat === undefined &&
@@ -317,6 +356,86 @@ const make = Effect.gen(function* () {
       now,
       delivery.forChat === undefined ? "owner" : "chat",
     );
+  });
+  /**
+   * A room's own reminder its lead didn't write, re-resolved now: the room gets only that it is
+   * due, while its agent still posts there; the asker the reminder, in their own chat with that
+   * agent; with neither, the owner one bare line. Nothing goes to anyone else's chat.
+   */
+  const roomReminder = Effect.fn("KinLeadDelivery.roomReminder")(function* (
+    delivery: Delivery,
+    asker: KinCardAsker,
+    now: number,
+  ) {
+    const { orgId, widget } = delivery;
+    const name = asker.left === true ? "Someone who has left" : asker.name;
+    const [room] = yield* sql<{ title: string | null }>`SELECT c.title FROM kin_chats c
+      WHERE c.org_id = ${orgId} AND c.chat_id = ${delivery.chatId} AND c.archived_at IS NULL
+        AND EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id
+          AND m.chat_id = c.chat_id AND m.principal_kind = 'agent'
+          AND m.agent_id = ${delivery.agentId} AND m.left_at IS NULL)`;
+    const line = (
+      chatId: KinChatId,
+      id: string,
+      body: string,
+      audience: Repository.WriteAudience,
+    ) =>
+      repo
+        .insertMessage({
+          orgId,
+          chatId,
+          audience,
+          messageId: KinMessageId.make(`${widget.widgetId}:${id}`),
+          author: { _tag: "system" },
+          kind: "system",
+          body,
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          clientMessageId: null,
+          createdAt: iso(now),
+          editedAt: null,
+        })
+        .pipe(
+          Effect.tap((message) =>
+            Option.isSome(hub)
+              ? sql.afterCommit(hub.value.publish({ type: "message.posted", orgId, message }))
+              : Effect.void,
+          ),
+        );
+    if (room !== undefined)
+      yield* line(delivery.chatId, "bare", `A reminder ${name} set is due.`, "chat");
+    const theirs =
+      asker.left === true
+        ? undefined
+        : yield* directChatWith(sql, orgId, asker.personId, delivery.agentId);
+    const card = Option.getOrUndefined(decodeReminder(widget.state));
+    if (theirs !== undefined && card !== undefined) {
+      const { askedBy: _askedBy, ...state } = card;
+      return yield* cards.post(
+        orgId,
+        theirs,
+        KinMessageId.make(widget.widgetId),
+        delivery.fallbackBody,
+        { ...widget, state: { ...state, fallback: true } },
+        now,
+        "chat",
+      );
+    }
+    if (room !== undefined) return;
+    const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
+      FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${delivery.agentId}`;
+    if (lead !== undefined)
+      yield* line(
+        KinChatId.make(lead.ownerChatId),
+        "unreached",
+        `A reminder ${name} set is due, but it couldn't reach them or that chat.`,
+        "owner",
+      );
   });
   const settleOne = Effect.fn("KinLeadDelivery.settleOne")(function* (
     orgId: KinOrgId,
@@ -337,6 +456,8 @@ const make = Effect.gen(function* () {
       fallbackBody: row.fallbackBody,
       deadlineAt: row.deadlineAt,
     };
+    // A held turn that passed its time leaves its trouble's count.
+    let lapsed = false;
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const [pending] = yield* sql`SELECT 1 FROM kin_lead_deliveries
@@ -370,6 +491,7 @@ const make = Effect.gen(function* () {
             WHERE org_id = ${orgId} AND event_id = ${row.eventId} AND state = 'queued'
             RETURNING event_id`;
           if (expired.length === 0) return;
+          lapsed = true;
           return yield* fallback;
         }
         // Done: the lead's last message in its lane during that wake-up carries the card.
@@ -413,6 +535,7 @@ const make = Effect.gen(function* () {
         yield* finish("delivered", message.messageId);
       }),
     );
+    if (lapsed && Option.isSome(care)) yield* care.value.refresh(orgId);
   });
 
   const settle = Effect.fn("KinLeadDelivery.settle")(

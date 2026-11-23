@@ -33,6 +33,7 @@ import { Route as ChatSettingsThreadsRouteImport } from './routes/_chat.settings
 import { Route as ChatSettingsStorageRouteImport } from './routes/_chat.settings.storage'
 import { Route as ChatSettingsSourceControlRouteImport } from './routes/_chat.settings.source-control'
 import { Route as ChatSettingsSnapShotRouteImport } from './routes/_chat.settings.snap-shot'
+import { Route as ChatSettingsSectionsRouteImport } from './routes/_chat.settings.sections'
 import { Route as ChatSettingsSecretsRouteImport } from './routes/_chat.settings.secrets'
 import { Route as ChatSettingsScheduledTasksRouteImport } from './routes/_chat.settings.scheduled-tasks'
 import { Route as ChatSettingsProvidersRouteImport } from './routes/_chat.settings.providers'
@@ -40,6 +41,7 @@ import { Route as ChatSettingsProjectsRouteImport } from './routes/_chat.setting
 import { Route as ChatSettingsOpenSourceLicensesRouteImport } from './routes/_chat.settings.open-source-licenses'
 import { Route as ChatSettingsMaintenanceRouteImport } from './routes/_chat.settings.maintenance'
 import { Route as ChatSettingsLabsRouteImport } from './routes/_chat.settings.labs'
+import { Route as ChatSettingsKinProfileRouteImport } from './routes/_chat.settings.kin-profile'
 import { Route as ChatSettingsKinConnectionsRouteImport } from './routes/_chat.settings.kin-connections'
 import { Route as ChatSettingsKeybindingsRouteImport } from './routes/_chat.settings.keybindings'
 import { Route as ChatSettingsIntegrationsRouteImport } from './routes/_chat.settings.integrations'
@@ -47,6 +49,7 @@ import { Route as ChatSettingsGeneralRouteImport } from './routes/_chat.settings
 import { Route as ChatSettingsDiffsRouteImport } from './routes/_chat.settings.diffs'
 import { Route as ChatSettingsDiagnosticsRouteImport } from './routes/_chat.settings.diagnostics'
 import { Route as ChatSettingsDevicesRouteImport } from './routes/_chat.settings.devices'
+import { Route as ChatSettingsDealsRouteImport } from './routes/_chat.settings.deals'
 import { Route as ChatSettingsConnectionsRouteImport } from './routes/_chat.settings.connections'
 import { Route as ChatSettingsCompanyRouteImport } from './routes/_chat.settings.company'
 import { Route as ChatSettingsCheckInsRouteImport } from './routes/_chat.settings.check-ins'
@@ -63,6 +66,7 @@ import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$e
 import { Route as ChatKinEnvironmentIdOrgIdWorkRouteImport } from './routes/_chat.kin.$environmentId.$orgId.work'
 import { Route as ChatKinEnvironmentIdOrgIdTeamRouteImport } from './routes/_chat.kin.$environmentId.$orgId.team'
 import { Route as ChatKinEnvironmentIdOrgIdSettingsRouteImport } from './routes/_chat.kin.$environmentId.$orgId.settings'
+import { Route as ChatKinEnvironmentIdOrgIdNumbersRouteImport } from './routes/_chat.kin.$environmentId.$orgId.numbers'
 import { Route as ChatKinEnvironmentIdOrgIdMemoryRouteImport } from './routes/_chat.kin.$environmentId.$orgId.memory'
 import { Route as ChatKinEnvironmentIdOrgIdCanvasRouteImport } from './routes/_chat.kin.$environmentId.$orgId.canvas'
 import { Route as ChatKinEnvironmentIdOrgIdPlacesRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places'
@@ -195,6 +199,11 @@ const ChatSettingsSnapShotRoute = ChatSettingsSnapShotRouteImport.update({
   path: '/snap-shot',
   getParentRoute: () => ChatSettingsRoute,
 } as any)
+const ChatSettingsSectionsRoute = ChatSettingsSectionsRouteImport.update({
+  id: '/sections',
+  path: '/sections',
+  getParentRoute: () => ChatSettingsRoute,
+} as any)
 const ChatSettingsSecretsRoute = ChatSettingsSecretsRouteImport.update({
   id: '/secrets',
   path: '/secrets',
@@ -232,6 +241,11 @@ const ChatSettingsLabsRoute = ChatSettingsLabsRouteImport.update({
   path: '/labs',
   getParentRoute: () => ChatSettingsRoute,
 } as any)
+const ChatSettingsKinProfileRoute = ChatSettingsKinProfileRouteImport.update({
+  id: '/kin-profile',
+  path: '/kin-profile',
+  getParentRoute: () => ChatSettingsRoute,
+} as any)
 const ChatSettingsKinConnectionsRoute =
   ChatSettingsKinConnectionsRouteImport.update({
     id: '/kin-connections',
@@ -267,6 +281,11 @@ const ChatSettingsDiagnosticsRoute = ChatSettingsDiagnosticsRouteImport.update({
 const ChatSettingsDevicesRoute = ChatSettingsDevicesRouteImport.update({
   id: '/devices',
   path: '/devices',
+  getParentRoute: () => ChatSettingsRoute,
+} as any)
+const ChatSettingsDealsRoute = ChatSettingsDealsRouteImport.update({
+  id: '/deals',
+  path: '/deals',
   getParentRoute: () => ChatSettingsRoute,
 } as any)
 const ChatSettingsConnectionsRoute = ChatSettingsConnectionsRouteImport.update({
@@ -351,6 +370,12 @@ const ChatKinEnvironmentIdOrgIdSettingsRoute =
   ChatKinEnvironmentIdOrgIdSettingsRouteImport.update({
     id: '/$environmentId/$orgId/settings',
     path: '/$environmentId/$orgId/settings',
+    getParentRoute: () => ChatKinRoute,
+  } as any)
+const ChatKinEnvironmentIdOrgIdNumbersRoute =
+  ChatKinEnvironmentIdOrgIdNumbersRouteImport.update({
+    id: '/$environmentId/$orgId/numbers',
+    path: '/$environmentId/$orgId/numbers',
     getParentRoute: () => ChatKinRoute,
   } as any)
 const ChatKinEnvironmentIdOrgIdMemoryRoute =
@@ -443,6 +468,7 @@ export interface FileRoutesByFullPath {
   '/settings/check-ins': typeof ChatSettingsCheckInsRoute
   '/settings/company': typeof ChatSettingsCompanyRoute
   '/settings/connections': typeof ChatSettingsConnectionsRoute
+  '/settings/deals': typeof ChatSettingsDealsRoute
   '/settings/devices': typeof ChatSettingsDevicesRoute
   '/settings/diagnostics': typeof ChatSettingsDiagnosticsRoute
   '/settings/diffs': typeof ChatSettingsDiffsRoute
@@ -450,6 +476,7 @@ export interface FileRoutesByFullPath {
   '/settings/integrations': typeof ChatSettingsIntegrationsRoute
   '/settings/keybindings': typeof ChatSettingsKeybindingsRoute
   '/settings/kin-connections': typeof ChatSettingsKinConnectionsRoute
+  '/settings/kin-profile': typeof ChatSettingsKinProfileRoute
   '/settings/labs': typeof ChatSettingsLabsRoute
   '/settings/maintenance': typeof ChatSettingsMaintenanceRoute
   '/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
@@ -457,6 +484,7 @@ export interface FileRoutesByFullPath {
   '/settings/providers': typeof ChatSettingsProvidersRoute
   '/settings/scheduled-tasks': typeof ChatSettingsScheduledTasksRoute
   '/settings/secrets': typeof ChatSettingsSecretsRoute
+  '/settings/sections': typeof ChatSettingsSectionsRoute
   '/settings/snap-shot': typeof ChatSettingsSnapShotRoute
   '/settings/source-control': typeof ChatSettingsSourceControlRoute
   '/settings/storage': typeof ChatSettingsStorageRoute
@@ -469,6 +497,7 @@ export interface FileRoutesByFullPath {
   '/kin/$environmentId/$orgId': typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
   '/kin/$environmentId/$orgId/canvas': typeof ChatKinEnvironmentIdOrgIdCanvasRoute
   '/kin/$environmentId/$orgId/memory': typeof ChatKinEnvironmentIdOrgIdMemoryRoute
+  '/kin/$environmentId/$orgId/numbers': typeof ChatKinEnvironmentIdOrgIdNumbersRoute
   '/kin/$environmentId/$orgId/settings': typeof ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren
   '/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
@@ -507,6 +536,7 @@ export interface FileRoutesByTo {
   '/settings/check-ins': typeof ChatSettingsCheckInsRoute
   '/settings/company': typeof ChatSettingsCompanyRoute
   '/settings/connections': typeof ChatSettingsConnectionsRoute
+  '/settings/deals': typeof ChatSettingsDealsRoute
   '/settings/devices': typeof ChatSettingsDevicesRoute
   '/settings/diagnostics': typeof ChatSettingsDiagnosticsRoute
   '/settings/diffs': typeof ChatSettingsDiffsRoute
@@ -514,6 +544,7 @@ export interface FileRoutesByTo {
   '/settings/integrations': typeof ChatSettingsIntegrationsRoute
   '/settings/keybindings': typeof ChatSettingsKeybindingsRoute
   '/settings/kin-connections': typeof ChatSettingsKinConnectionsRoute
+  '/settings/kin-profile': typeof ChatSettingsKinProfileRoute
   '/settings/labs': typeof ChatSettingsLabsRoute
   '/settings/maintenance': typeof ChatSettingsMaintenanceRoute
   '/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
@@ -521,6 +552,7 @@ export interface FileRoutesByTo {
   '/settings/providers': typeof ChatSettingsProvidersRoute
   '/settings/scheduled-tasks': typeof ChatSettingsScheduledTasksRoute
   '/settings/secrets': typeof ChatSettingsSecretsRoute
+  '/settings/sections': typeof ChatSettingsSectionsRoute
   '/settings/snap-shot': typeof ChatSettingsSnapShotRoute
   '/settings/source-control': typeof ChatSettingsSourceControlRoute
   '/settings/storage': typeof ChatSettingsStorageRoute
@@ -533,6 +565,7 @@ export interface FileRoutesByTo {
   '/kin/$environmentId/$orgId': typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
   '/kin/$environmentId/$orgId/canvas': typeof ChatKinEnvironmentIdOrgIdCanvasRoute
   '/kin/$environmentId/$orgId/memory': typeof ChatKinEnvironmentIdOrgIdMemoryRoute
+  '/kin/$environmentId/$orgId/numbers': typeof ChatKinEnvironmentIdOrgIdNumbersRoute
   '/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
   '/kin/$environmentId/$orgId/clients': typeof ChatKinEnvironmentIdOrgIdPlacesClientsRoute
@@ -573,6 +606,7 @@ export interface FileRoutesById {
   '/_chat/settings/check-ins': typeof ChatSettingsCheckInsRoute
   '/_chat/settings/company': typeof ChatSettingsCompanyRoute
   '/_chat/settings/connections': typeof ChatSettingsConnectionsRoute
+  '/_chat/settings/deals': typeof ChatSettingsDealsRoute
   '/_chat/settings/devices': typeof ChatSettingsDevicesRoute
   '/_chat/settings/diagnostics': typeof ChatSettingsDiagnosticsRoute
   '/_chat/settings/diffs': typeof ChatSettingsDiffsRoute
@@ -580,6 +614,7 @@ export interface FileRoutesById {
   '/_chat/settings/integrations': typeof ChatSettingsIntegrationsRoute
   '/_chat/settings/keybindings': typeof ChatSettingsKeybindingsRoute
   '/_chat/settings/kin-connections': typeof ChatSettingsKinConnectionsRoute
+  '/_chat/settings/kin-profile': typeof ChatSettingsKinProfileRoute
   '/_chat/settings/labs': typeof ChatSettingsLabsRoute
   '/_chat/settings/maintenance': typeof ChatSettingsMaintenanceRoute
   '/_chat/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
@@ -587,6 +622,7 @@ export interface FileRoutesById {
   '/_chat/settings/providers': typeof ChatSettingsProvidersRoute
   '/_chat/settings/scheduled-tasks': typeof ChatSettingsScheduledTasksRoute
   '/_chat/settings/secrets': typeof ChatSettingsSecretsRoute
+  '/_chat/settings/sections': typeof ChatSettingsSectionsRoute
   '/_chat/settings/snap-shot': typeof ChatSettingsSnapShotRoute
   '/_chat/settings/source-control': typeof ChatSettingsSourceControlRoute
   '/_chat/settings/storage': typeof ChatSettingsStorageRoute
@@ -599,6 +635,7 @@ export interface FileRoutesById {
   '/_chat/kin/$environmentId/$orgId/_places': typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
   '/_chat/kin/$environmentId/$orgId/canvas': typeof ChatKinEnvironmentIdOrgIdCanvasRoute
   '/_chat/kin/$environmentId/$orgId/memory': typeof ChatKinEnvironmentIdOrgIdMemoryRoute
+  '/_chat/kin/$environmentId/$orgId/numbers': typeof ChatKinEnvironmentIdOrgIdNumbersRoute
   '/_chat/kin/$environmentId/$orgId/settings': typeof ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren
   '/_chat/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/_chat/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
@@ -640,6 +677,7 @@ export interface FileRouteTypes {
     | '/settings/check-ins'
     | '/settings/company'
     | '/settings/connections'
+    | '/settings/deals'
     | '/settings/devices'
     | '/settings/diagnostics'
     | '/settings/diffs'
@@ -647,6 +685,7 @@ export interface FileRouteTypes {
     | '/settings/integrations'
     | '/settings/keybindings'
     | '/settings/kin-connections'
+    | '/settings/kin-profile'
     | '/settings/labs'
     | '/settings/maintenance'
     | '/settings/open-source-licenses'
@@ -654,6 +693,7 @@ export interface FileRouteTypes {
     | '/settings/providers'
     | '/settings/scheduled-tasks'
     | '/settings/secrets'
+    | '/settings/sections'
     | '/settings/snap-shot'
     | '/settings/source-control'
     | '/settings/storage'
@@ -666,6 +706,7 @@ export interface FileRouteTypes {
     | '/kin/$environmentId/$orgId'
     | '/kin/$environmentId/$orgId/canvas'
     | '/kin/$environmentId/$orgId/memory'
+    | '/kin/$environmentId/$orgId/numbers'
     | '/kin/$environmentId/$orgId/settings'
     | '/kin/$environmentId/$orgId/team'
     | '/kin/$environmentId/$orgId/work'
@@ -704,6 +745,7 @@ export interface FileRouteTypes {
     | '/settings/check-ins'
     | '/settings/company'
     | '/settings/connections'
+    | '/settings/deals'
     | '/settings/devices'
     | '/settings/diagnostics'
     | '/settings/diffs'
@@ -711,6 +753,7 @@ export interface FileRouteTypes {
     | '/settings/integrations'
     | '/settings/keybindings'
     | '/settings/kin-connections'
+    | '/settings/kin-profile'
     | '/settings/labs'
     | '/settings/maintenance'
     | '/settings/open-source-licenses'
@@ -718,6 +761,7 @@ export interface FileRouteTypes {
     | '/settings/providers'
     | '/settings/scheduled-tasks'
     | '/settings/secrets'
+    | '/settings/sections'
     | '/settings/snap-shot'
     | '/settings/source-control'
     | '/settings/storage'
@@ -730,6 +774,7 @@ export interface FileRouteTypes {
     | '/kin/$environmentId/$orgId'
     | '/kin/$environmentId/$orgId/canvas'
     | '/kin/$environmentId/$orgId/memory'
+    | '/kin/$environmentId/$orgId/numbers'
     | '/kin/$environmentId/$orgId/team'
     | '/kin/$environmentId/$orgId/work'
     | '/kin/$environmentId/$orgId/clients'
@@ -769,6 +814,7 @@ export interface FileRouteTypes {
     | '/_chat/settings/check-ins'
     | '/_chat/settings/company'
     | '/_chat/settings/connections'
+    | '/_chat/settings/deals'
     | '/_chat/settings/devices'
     | '/_chat/settings/diagnostics'
     | '/_chat/settings/diffs'
@@ -776,6 +822,7 @@ export interface FileRouteTypes {
     | '/_chat/settings/integrations'
     | '/_chat/settings/keybindings'
     | '/_chat/settings/kin-connections'
+    | '/_chat/settings/kin-profile'
     | '/_chat/settings/labs'
     | '/_chat/settings/maintenance'
     | '/_chat/settings/open-source-licenses'
@@ -783,6 +830,7 @@ export interface FileRouteTypes {
     | '/_chat/settings/providers'
     | '/_chat/settings/scheduled-tasks'
     | '/_chat/settings/secrets'
+    | '/_chat/settings/sections'
     | '/_chat/settings/snap-shot'
     | '/_chat/settings/source-control'
     | '/_chat/settings/storage'
@@ -795,6 +843,7 @@ export interface FileRouteTypes {
     | '/_chat/kin/$environmentId/$orgId/_places'
     | '/_chat/kin/$environmentId/$orgId/canvas'
     | '/_chat/kin/$environmentId/$orgId/memory'
+    | '/_chat/kin/$environmentId/$orgId/numbers'
     | '/_chat/kin/$environmentId/$orgId/settings'
     | '/_chat/kin/$environmentId/$orgId/team'
     | '/_chat/kin/$environmentId/$orgId/work'
@@ -989,6 +1038,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatSettingsSnapShotRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
+    '/_chat/settings/sections': {
+      id: '/_chat/settings/sections'
+      path: '/sections'
+      fullPath: '/settings/sections'
+      preLoaderRoute: typeof ChatSettingsSectionsRouteImport
+      parentRoute: typeof ChatSettingsRoute
+    }
     '/_chat/settings/secrets': {
       id: '/_chat/settings/secrets'
       path: '/secrets'
@@ -1038,6 +1094,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatSettingsLabsRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
+    '/_chat/settings/kin-profile': {
+      id: '/_chat/settings/kin-profile'
+      path: '/kin-profile'
+      fullPath: '/settings/kin-profile'
+      preLoaderRoute: typeof ChatSettingsKinProfileRouteImport
+      parentRoute: typeof ChatSettingsRoute
+    }
     '/_chat/settings/kin-connections': {
       id: '/_chat/settings/kin-connections'
       path: '/kin-connections'
@@ -1085,6 +1148,13 @@ declare module '@tanstack/react-router' {
       path: '/devices'
       fullPath: '/settings/devices'
       preLoaderRoute: typeof ChatSettingsDevicesRouteImport
+      parentRoute: typeof ChatSettingsRoute
+    }
+    '/_chat/settings/deals': {
+      id: '/_chat/settings/deals'
+      path: '/deals'
+      fullPath: '/settings/deals'
+      preLoaderRoute: typeof ChatSettingsDealsRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
     '/_chat/settings/connections': {
@@ -1197,6 +1267,13 @@ declare module '@tanstack/react-router' {
       path: '/$environmentId/$orgId/settings'
       fullPath: '/kin/$environmentId/$orgId/settings'
       preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdSettingsRouteImport
+      parentRoute: typeof ChatKinRoute
+    }
+    '/_chat/kin/$environmentId/$orgId/numbers': {
+      id: '/_chat/kin/$environmentId/$orgId/numbers'
+      path: '/$environmentId/$orgId/numbers'
+      fullPath: '/kin/$environmentId/$orgId/numbers'
+      preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdNumbersRouteImport
       parentRoute: typeof ChatKinRoute
     }
     '/_chat/kin/$environmentId/$orgId/memory': {
@@ -1320,6 +1397,7 @@ interface ChatKinRouteChildren {
   ChatKinEnvironmentIdOrgIdPlacesRoute: typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
   ChatKinEnvironmentIdOrgIdCanvasRoute: typeof ChatKinEnvironmentIdOrgIdCanvasRoute
   ChatKinEnvironmentIdOrgIdMemoryRoute: typeof ChatKinEnvironmentIdOrgIdMemoryRoute
+  ChatKinEnvironmentIdOrgIdNumbersRoute: typeof ChatKinEnvironmentIdOrgIdNumbersRoute
   ChatKinEnvironmentIdOrgIdSettingsRoute: typeof ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren
   ChatKinEnvironmentIdOrgIdTeamRoute: typeof ChatKinEnvironmentIdOrgIdTeamRoute
   ChatKinEnvironmentIdOrgIdWorkRoute: typeof ChatKinEnvironmentIdOrgIdWorkRoute
@@ -1332,6 +1410,7 @@ const ChatKinRouteChildren: ChatKinRouteChildren = {
     ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren,
   ChatKinEnvironmentIdOrgIdCanvasRoute: ChatKinEnvironmentIdOrgIdCanvasRoute,
   ChatKinEnvironmentIdOrgIdMemoryRoute: ChatKinEnvironmentIdOrgIdMemoryRoute,
+  ChatKinEnvironmentIdOrgIdNumbersRoute: ChatKinEnvironmentIdOrgIdNumbersRoute,
   ChatKinEnvironmentIdOrgIdSettingsRoute:
     ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren,
   ChatKinEnvironmentIdOrgIdTeamRoute: ChatKinEnvironmentIdOrgIdTeamRoute,
@@ -1353,6 +1432,7 @@ interface ChatSettingsRouteChildren {
   ChatSettingsCheckInsRoute: typeof ChatSettingsCheckInsRoute
   ChatSettingsCompanyRoute: typeof ChatSettingsCompanyRoute
   ChatSettingsConnectionsRoute: typeof ChatSettingsConnectionsRoute
+  ChatSettingsDealsRoute: typeof ChatSettingsDealsRoute
   ChatSettingsDevicesRoute: typeof ChatSettingsDevicesRoute
   ChatSettingsDiagnosticsRoute: typeof ChatSettingsDiagnosticsRoute
   ChatSettingsDiffsRoute: typeof ChatSettingsDiffsRoute
@@ -1360,6 +1440,7 @@ interface ChatSettingsRouteChildren {
   ChatSettingsIntegrationsRoute: typeof ChatSettingsIntegrationsRoute
   ChatSettingsKeybindingsRoute: typeof ChatSettingsKeybindingsRoute
   ChatSettingsKinConnectionsRoute: typeof ChatSettingsKinConnectionsRoute
+  ChatSettingsKinProfileRoute: typeof ChatSettingsKinProfileRoute
   ChatSettingsLabsRoute: typeof ChatSettingsLabsRoute
   ChatSettingsMaintenanceRoute: typeof ChatSettingsMaintenanceRoute
   ChatSettingsOpenSourceLicensesRoute: typeof ChatSettingsOpenSourceLicensesRoute
@@ -1367,6 +1448,7 @@ interface ChatSettingsRouteChildren {
   ChatSettingsProvidersRoute: typeof ChatSettingsProvidersRoute
   ChatSettingsScheduledTasksRoute: typeof ChatSettingsScheduledTasksRoute
   ChatSettingsSecretsRoute: typeof ChatSettingsSecretsRoute
+  ChatSettingsSectionsRoute: typeof ChatSettingsSectionsRoute
   ChatSettingsSnapShotRoute: typeof ChatSettingsSnapShotRoute
   ChatSettingsSourceControlRoute: typeof ChatSettingsSourceControlRoute
   ChatSettingsStorageRoute: typeof ChatSettingsStorageRoute
@@ -1387,6 +1469,7 @@ const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
   ChatSettingsCheckInsRoute: ChatSettingsCheckInsRoute,
   ChatSettingsCompanyRoute: ChatSettingsCompanyRoute,
   ChatSettingsConnectionsRoute: ChatSettingsConnectionsRoute,
+  ChatSettingsDealsRoute: ChatSettingsDealsRoute,
   ChatSettingsDevicesRoute: ChatSettingsDevicesRoute,
   ChatSettingsDiagnosticsRoute: ChatSettingsDiagnosticsRoute,
   ChatSettingsDiffsRoute: ChatSettingsDiffsRoute,
@@ -1394,6 +1477,7 @@ const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
   ChatSettingsIntegrationsRoute: ChatSettingsIntegrationsRoute,
   ChatSettingsKeybindingsRoute: ChatSettingsKeybindingsRoute,
   ChatSettingsKinConnectionsRoute: ChatSettingsKinConnectionsRoute,
+  ChatSettingsKinProfileRoute: ChatSettingsKinProfileRoute,
   ChatSettingsLabsRoute: ChatSettingsLabsRoute,
   ChatSettingsMaintenanceRoute: ChatSettingsMaintenanceRoute,
   ChatSettingsOpenSourceLicensesRoute: ChatSettingsOpenSourceLicensesRoute,
@@ -1401,6 +1485,7 @@ const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
   ChatSettingsProvidersRoute: ChatSettingsProvidersRoute,
   ChatSettingsScheduledTasksRoute: ChatSettingsScheduledTasksRoute,
   ChatSettingsSecretsRoute: ChatSettingsSecretsRoute,
+  ChatSettingsSectionsRoute: ChatSettingsSectionsRoute,
   ChatSettingsSnapShotRoute: ChatSettingsSnapShotRoute,
   ChatSettingsSourceControlRoute: ChatSettingsSourceControlRoute,
   ChatSettingsStorageRoute: ChatSettingsStorageRoute,

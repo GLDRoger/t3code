@@ -1,11 +1,45 @@
 # Moving your records into Kin
 
-Kin can take in what you kept in another system: clients, projects, Work entries, entries of your
-lists (expenses, invoices, dates or any list you define) and payments received. Everything comes
-in as yours, with its original dates. There is no screen for this: you run one command on the
-machine that hosts Kin.
+Kin can take in what you kept in another system. Clients, prospects, their contacts and deals come
+in from a spreadsheet, in Kin itself. Projects, Work entries, entries of your lists (expenses,
+invoices, dates or any list you define) and payments received come in through one command on the
+machine that hosts Kin. Only the owner and co-owners import.
 
-## The import file
+## Clients, contacts and deals from a spreadsheet
+
+In Clients, choose **Add**, then **Import a file** (on the phone, the import button beside Add; on
+the web, also "Import a file" in the command palette). Choose a CSV file: a spreadsheet saved as
+CSV, or the export of the CRM you use now. Kin reads UTF-8 and UTF-16, separated by commas,
+semicolons or tabs, up to 50,000 rows and 10 MB. Nothing is added until you import.
+
+1. **Columns.** Kin proposes where each column goes from its header: Company, Contact name,
+   E-mail, Phone, Opportunity, Amount, Stage, Close date, Owner and the like. Change any that are
+   wrong, or leave a column out. A contact may have several emails and phones: give each its own
+   column, or put several in one cell, separated by `;` (emails also by `,`).
+2. **Check.** Kin shows what it will add, which rows match clients you already have and how it
+   knows, and what needs a look. Each row goes under the company its own row names: it matches a
+   client you have only by the same name (case, spacing and punctuation aside), and rows naming
+   the same company become one client. A row that names no company goes with the client of a
+   contact's email, or of the email's web domain.
+3. **Decide.** A name only close to one you have, such as "Lumen Grove (Oslo)" beside Lumen
+   Grove, or one whose contact's email is already at another client, is never merged by itself:
+   it is marked **Decide**, and you pick the client it is, a new one, or leave its rows out. Names
+   that differ in their numbers, such as Works 001 and Works 002, are different companies. A deal stage that isn't one of yours is never made up: pick which
+   of your stages those deals go in. Kin also asks the currency of amounts written without one,
+   and whether days like 03/04/2026 are written day first or month first.
+4. **Import.** A client or contact you already have only gains what it lacks; nothing you typed
+   changes. Deals arrive open, with no next step, and nobody is pinged about them. Importing the
+   same file again changes nothing.
+
+**Earlier imports** lists each file with who brought it in, when and what it added. **Undo this
+import** takes away what that import added, and empties what it filled in on clients and contacts
+you had. Anything someone changed since, or that something else now uses, stays and is listed
+with the reason. A client or prospect someone logged a call, meeting or email with stays too, with
+its contacts. An undo that can't finish takes nothing away. An import already undone says so.
+
+A "Why we may mail them" column isn't imported yet; it is listed under "Not imported".
+
+## The import file (on the host)
 
 An import is one text file with one JSON object per line. The first line names the import and
 the lists it needs. Each line after it is a client, a project or an entry, and may refer only to
@@ -22,10 +56,20 @@ lines above it:
   imported before.
 - A list named in the first line is made if you don't have it yet, from a template or with your
   own fields, states and categories. A list you already have only gains new fields and categories.
-- A contact at a client is an entry on `contacts` naming its `client`, with `role`, `email` and
-  `phone` as fields.
-- Amounts are plain decimals in the list's currency unless a row names another. Dates are days
-  (`2026-04-30`) or times with an offset.
+- A contact is a `contact` row naming its `client`, with `name`, `role`, `notes`, and `emails`
+  and `phones` as lists, main one first. Kin cleans them as it does for a contact you type, and
+  keeps at most eight of each.
+- A deal is a `deal` row naming its `client`, `title` and `stage` (one of your stage ids), with
+  `value` (`{"amount":"18000","currency":"EUR"}`), `expected` (a day) and `owner` if you have
+  them. Deals come in through **Import a file** in Kin; the command reports deal rows as left out.
+- Amounts in the JSON Lines file use a decimal point and can group digits with commas, as in
+  `1450.50`, `1,450.50`, or `12,34,567`. They use the list's currency unless a row names
+  another. Dates are days (`2026-04-30`) or times with an offset.
+- An entry whose amount is over a thousand times the largest in its list, or an invoice dated after
+  its own due day, is refused as a likely slip. Add `"confirmed":true` to the entry if it is right.
+- `"suggested":true` marks an entry an agent suggested that nobody has kept yet. Download
+  everything writes it, and the entry comes back as a suggestion, in no money figure until you keep
+  it. Without it, an entry comes in kept.
 - An invoice keeps the number it was issued. Kin's own numbering carries on after the highest
   imported number in that year's series.
 - Payments are recorded as **Record payment** records them: an invoice paid in full becomes Paid,
@@ -53,7 +97,7 @@ When the plan reads right, apply it:
 t3 kin import --file ./oldbooks.jsonl --apply
 ```
 
-Running it again is safe. Rows imported before are skipped, and anything you or a lead changed in
+Running it again is safe. Rows imported before are skipped, and anything you or an agent changed in
 Kin since is left alone and listed. If an import stops part way, run it again to finish it. A file
 takes up to 200,000 rows; for more, split it into files with the same `batch` and import them in
 order. Open Kin screens show the imported records after a refresh.
@@ -70,14 +114,15 @@ t3 kin import --undo oldbooks --apply
 Undo removes the clients, projects, entries and payments the batch made, and lists it made that
 hold nothing else. It leaves alone, and lists, entries someone changed since the import (add
 `--include-changed` to remove those too), and anything still used by a record that stays, such as
-a client you've since added work for. An invoice or receipt you've paid in Kin or given a Kin
-number always stays, with or without `--include-changed`. Invoice numbering doesn't go back, so no
-number is ever issued twice. You can apply the same file again afterwards. Entry keys such as `INV-4` do go back
-when nothing came after them, so a corrected file applied again gets the keys the batch had.
+a client you've since added work for or logged contact with. An invoice or receipt you've paid in
+Kin or given a Kin number always stays, with or without `--include-changed`. Invoice numbering
+doesn't go back, so no number is ever issued twice. You can apply the same file again afterwards.
+Entry keys such as `C-4` don't go back either, so what an agent remembers about a removed entry
+never passes to a new one; only a list the undo removed starts its keys again if it is made again.
 
 ## What an import doesn't do
 
 - It brings no files. Put links to where your documents live in a text field instead.
-- It sends nothing: no notifications, reminders or messages, and no lead is woken, however old or
+- It sends nothing: no notifications, reminders or messages, and no agent is woken, however old or
   overdue the entries are.
 - It doesn't fill your company profile or bank details. Set those in Kin yourself.

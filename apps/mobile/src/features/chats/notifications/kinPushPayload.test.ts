@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { EnvironmentId } from "@t3tools/contracts";
+import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
+import { EnvironmentId, KinWidgetId } from "@t3tools/contracts";
 
 import {
   KIN_DEFAULT_ACTION_IDENTIFIER,
@@ -25,10 +26,12 @@ function response(input: {
   readonly action?: string;
   readonly category?: string | null;
   readonly identifier?: string;
+  readonly date?: number;
 }) {
   return {
     actionIdentifier: input.action ?? KIN_DEFAULT_ACTION_IDENTIFIER,
     notification: {
+      ...(input.date === undefined ? {} : { date: input.date }),
       request: {
         identifier: input.identifier ?? "note-1",
         content: { data: input.data, categoryIdentifier: input.category ?? null },
@@ -57,15 +60,21 @@ describe("kinNotificationRoute", () => {
       },
       chatLink,
     ],
+    // The host's approval push names no chat: Waiting on you shows the card in full.
     [
       "an approval with no chat",
       { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/actions/act-1" },
-      "/kin",
+      "/kin/waiting",
     ],
     [
       "a phone that can now approve, or no longer can",
       { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/approvals" },
       "/kin/env-1/kin-default/approvals",
+    ],
+    [
+      "a device linked to the person",
+      { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/people/zoya/devices" },
+      "/kin/env-1/kin-default/people/zoya/devices",
     ],
     ["JSON-encoded data", JSON.stringify(deferral), chatLink],
     // Each lead's DM and each group is its own chat, so each push opens its own chat.
@@ -89,9 +98,77 @@ describe("kinNotificationRoute", () => {
       },
       "/kin/env-1/kin-default/chats/c1f0e2d4-group",
     ],
+    // What it is about opens over its chat, so Back from it, or a gone entry, lands in the chat.
+    [
+      "a card, to its message in the chat",
+      { ...deferral, subject: { _tag: "message", messageId: "msg 7" } },
+      `${chatLink}?message=msg%207`,
+    ],
+    [
+      "a task, to its sheet over the chat",
+      { ...deferral, subject: { _tag: "record", key: "W-4", kind: "task" } },
+      [chatLink, "/kin/env-1/kin-default/work/W-4"],
+    ],
+    [
+      "an invoice, to its entry over the chat",
+      { ...deferral, subject: { _tag: "record", key: "INV-12", kind: "entry" } },
+      [chatLink, "/kin/env-1/kin-default/work/INV-12"],
+    ],
+    [
+      "a client, to its page over the chat",
+      { ...deferral, subject: { _tag: "record", key: "C-1", kind: "client" } },
+      [chatLink, "/kin/env-1/kin-default/clients/C-1"],
+    ],
+    [
+      "a doc, to its page over the chat",
+      { ...deferral, subject: { _tag: "record", key: "D-3", kind: "doc" } },
+      [chatLink, "/kin/env-1/kin-default/docs/D-3"],
+    ],
+    [
+      "several tasks, to Tasks over the chat",
+      { ...deferral, subject: { _tag: "tasks" } },
+      [chatLink, "/kin/env-1/kin-default/work"],
+    ],
+    // A subject a later build sends, or one that isn't well formed, still opens the chat.
+    [
+      "a subject this build doesn't know, to the chat",
+      { ...deferral, subject: { _tag: "meeting", meetingId: "m-1" } },
+      chatLink,
+    ],
+    [
+      "a malformed key, to the chat",
+      { ...deferral, subject: { _tag: "record", key: "../settings", kind: "task" } },
+      chatLink,
+    ],
+    [
+      "a subject on an approval, to where the approval opens",
+      {
+        kin: 1,
+        orgId: "kin-default",
+        deepLink: "/kin/env-1/kin-default/approvals",
+        subject: { _tag: "record", key: "W-4", kind: "task" },
+      },
+      "/kin/env-1/kin-default/approvals",
+    ],
+    // Someone's moves on the reader's tasks come in no chat.
+    [
+      "someone's moves on several of your tasks, to Tasks",
+      { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/work" },
+      "/kin/env-1/kin-default/work",
+    ],
+    [
+      "someone's move on one task, to it over Tasks",
+      { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/work/W-31" },
+      ["/kin/env-1/kin-default/work", "/kin/env-1/kin-default/work/W-31"],
+    ],
+    [
+      "being put on a project, to the project",
+      { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/projects/P-2" },
+      "/kin/env-1/kin-default/projects/P-2",
+    ],
   ])("routes %s", (_name, data, path) => {
     const route = kinNotificationRoute(response({ data }));
-    expect(route?.path).toBe(path);
+    expect(route?.paths).toEqual(typeof path === "string" ? [path] : path);
     expect(route?.act).toBeNull();
   });
 
@@ -107,6 +184,15 @@ describe("kinNotificationRoute", () => {
     ["an encoded dot segment", { ...deferral, deepLink: "/kin/%2E%2E/kin-default/chats/chat-1" }],
     ["a trailing segment", { ...deferral, deepLink: `${chatLink}/extra` }],
     ["another org's approvals", { ...deferral, deepLink: "/kin/env-1/other-org/approvals" }],
+    ["another org's Tasks", { ...deferral, deepLink: "/kin/env-1/other-org/work" }],
+    [
+      "another org's devices",
+      { ...deferral, deepLink: "/kin/env-1/other-org/people/zoya/devices" },
+    ],
+    [
+      "a person's other page",
+      { ...deferral, deepLink: "/kin/env-1/kin-default/people/zoya/notes" },
+    ],
     [
       "a link to another approval",
       {
@@ -131,7 +217,7 @@ describe("kinNotificationRoute", () => {
     expect(route).toEqual({
       responseKey: "note-1\u0000monday",
       environmentId: "env-1",
-      path: chatLink,
+      paths: [chatLink],
       act: {
         widgetId: "deferral:kin-default:item-7",
         revision: 3,
@@ -142,14 +228,69 @@ describe("kinNotificationRoute", () => {
     });
   });
 
-  it("acts once per notification and button, whichever path delivers it", () => {
-    const monday = (identifier: string) =>
+  it("answers a two-answer question as a tap on its card would", () => {
+    const question = {
+      kin: 1,
+      orgId: "kin-default",
+      chatId: "chat-1",
+      widgetId: "w-ask",
+      revision: 1,
+      choices: ["option-1", "option-2"],
+      subject: { _tag: "message", messageId: "msg-ask" },
+      deepLink: chatLink,
+    };
+    const answer = (action: string, data: object = question) =>
+      kinNotificationRoute(response({ data, action, category: "kin.choice" }));
+    for (const [action, optionId] of [
+      ["answer_1", "option-1"],
+      ["answer_2", "option-2"],
+    ] as const)
+      expect(answer(action)).toEqual({
+        responseKey: `note-1\u0000${action}`,
+        environmentId: "env-1",
+        // Opened at the card, which shows the answer once the host records it.
+        paths: [`${chatLink}?message=msg-ask`],
+        act: kinChoiceActInput(
+          { widgetId: KinWidgetId.make("w-ask"), revision: 1 },
+          optionId,
+          `push:note-1:${action}`,
+        ),
+      });
+    // On Android the app draws the banner from FCM's data: the same answer, under FCM's id.
+    expect(
+      kinNotificationRoute(
+        response({
+          data: question,
+          action: "answer_2",
+          category: "kin.choice",
+          identifier: "0:1794096000%fcm",
+        }),
+      )?.act,
+    ).toEqual(
+      kinChoiceActInput(
+        { widgetId: KinWidgetId.make("w-ask"), revision: 1 },
+        "option-2",
+        "push:0:1794096000%fcm:answer_2",
+      ),
+    );
+    // The banner itself, or a push without its choices, opens the card and answers nothing.
+    expect(answer(KIN_DEFAULT_ACTION_IDENTIFIER)?.act).toBeNull();
+    expect(answer("answer_2", { ...question, choices: undefined })?.act).toBeNull();
+    // A build that doesn't know the category opens the card from either button.
+    expect(
+      kinNotificationRoute(response({ data: question, action: "answer_1", category: "kin.later" })),
+    ).toMatchObject({ paths: [`${chatLink}?message=msg-ask`], act: null });
+  });
+
+  it("acts once per delivery and button, whichever path delivers it", () => {
+    const monday = (identifier: string, date?: number) =>
       kinNotificationRoute(
         response({
           data: deferral,
           action: "monday",
           category: "kin.deferral.heads_up",
           identifier,
+          ...(date === undefined ? {} : { date }),
         }),
       );
     expect(monday("note-1")?.act?.clientActionId).toBe(monday("note-1")?.act?.clientActionId);
@@ -158,6 +299,14 @@ describe("kinNotificationRoute", () => {
       response({ data: deferral, category: "kin.deferral.heads_up" }),
     );
     expect(banner?.responseKey).not.toBe(monday("note-1")?.responseKey);
+    // A chat's pushes share its collapse id as their identifier; only the date tells them apart.
+    const tap = (date: number) =>
+      kinNotificationRoute(response({ data: deferral, identifier: "kin:7d82459c4d43", date }));
+    expect(tap(1795000000.25)?.responseKey).toBe(tap(1795000000.25)?.responseKey);
+    expect(tap(1795000090.5)?.responseKey).not.toBe(tap(1795000000.25)?.responseKey);
+    expect(monday("kin:7d82459c4d43", 1795000090.5)?.act?.clientActionId).not.toBe(
+      monday("kin:7d82459c4d43", 1795000000.25)?.act?.clientActionId,
+    );
   });
 
   it.each([
@@ -189,7 +338,7 @@ describe("kinNotificationRoute", () => {
     ],
   ])("opens the chat without acting for %s", (_name, action, category, data) => {
     const route = kinNotificationRoute(response({ data, action, category }));
-    expect(route?.path).toBe(chatLink);
+    expect(route?.paths).toEqual([chatLink]);
     expect(route?.act).toBeNull();
   });
 });
@@ -237,6 +386,13 @@ describe("kinClearedChat", () => {
     const cleared = kinClearedChat({ data: { dataString: JSON.stringify(body) }, aps: {} });
     expect(cleared?.chatId ?? null).toBe(chatId);
     if (chatId !== null) expect(cleared?.environmentId).toBe("env-1");
+    // Android's background task gets FCM's message, its data map holding the same body.
+    const android = kinClearedChat({
+      messageId: "0:1794096000%fcm",
+      data: { body: JSON.stringify(body), dataString: JSON.stringify(body) },
+      notification: null,
+    });
+    expect(android).toEqual(cleared);
   });
 });
 

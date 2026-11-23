@@ -13,6 +13,7 @@ import {
   KIN_PROJECT_GONE,
   KIN_PROJECT_REFUSED,
   KIN_PROJECT_LEAD,
+  kinCampaignResultOpens,
   kinProjectPageView,
   type KinProjectPageView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
@@ -37,27 +38,31 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useNowMinuteMs } from "../../lib/clock";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import {
   KinFoldSection,
+  KinGateView,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkPrivateMark,
   KinWorkProblemNotice,
   KinWorkTaskRow,
   KinWorkTimelineLines,
-  KinGateView,
+  KinWorkToggleRow,
 } from "./components/KinWorkPieces";
 import { KinWorkHealthWord } from "./KinWorkLists";
-import { KinWorkTaskList } from "./KinWorkScreen";
+import { KinTasksList } from "./KinTasksList";
 import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
+import { KinCampaignResultsSection } from "./KinMarketing";
+import { useKinSectionOn, useKinShell } from "./state/useKinShell";
+import { kinSectionOffLine } from "@t3tools/client-runtime/kin/kinShell";
 import { KinProjectPeopleSection } from "./KinProjectPeopleScreen";
 import { kinClient } from "./state/kinClient";
+import { useKinAskRecord } from "./state/useKinAskRecord";
 import { kinHostConnected, useKinGate } from "./state/useKinHost";
 import {
   useKinProjectPage,
@@ -66,8 +71,10 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
-import { KinAttentionSection } from "./KinAttention";
+import { KinAsideNote, KinAttentionSection } from "./KinAttention";
+import { KinProjectNoteSection } from "./components/KinProjectNote";
 import { useKinWorkLink } from "./state/kinWorkLink";
+import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 
 export type KinProjectParams = {
   readonly environmentId: string;
@@ -178,11 +185,16 @@ function KinProjectBody(
   const openRecord = useKinWorkLink();
   const { environmentId, orgId } = props;
   const canChange = useAtomValue(kinClient.workProjectUpdate.permissionAtom(environmentId));
+  const canNote = useAtomValue(kinClient.workProjectNote.permissionAtom(environmentId));
+  const dealsOn = useKinSectionOn(environmentId, "deals");
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const now = new Date(useNowMinuteMs());
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
-  const view = kinProjectPageView(props.page, props.directory.names, now);
+  const shell = useKinShell(environmentId);
+  const view = kinProjectPageView(props.page, props.directory.names, now, shell);
+  // A project goes with Clients: opened by its link while that is off, it says so.
+  const offLine = kinSectionOffLine(shell, "clients", useKinIsOwnerLevel(environmentId));
   // A project's lead adds its milestones too; the host checks they still lead it.
   const leads =
     view.lead.personId !== null &&
@@ -210,10 +222,11 @@ function KinProjectBody(
       if (outcome.problem.kind === "conflict") props.onRefresh();
     }
   };
+  const asker = useKinAskRecord(props, { key: view.key, title: view.name });
   const openTask = (task: KinRecordKey) =>
     openRecord("KinWorkItem", { environmentId, orgId, task });
   return (
-    <KinWorkTaskList
+    <KinTasksList
       environmentId={environmentId}
       orgId={orgId}
       live={props.live}
@@ -224,9 +237,11 @@ function KinProjectBody(
       choices={null}
       initial={{ ...KIN_WORK_DEFAULT_FILTER, project: view.ref }}
       within={{
+        adds: view.adds,
         bar: canChange
           ? {
               actions: [
+                ...asker.actions,
                 {
                   accessibilityLabel: KIN_PROJECTS.edit,
                   icon: "pencil",
@@ -240,6 +255,7 @@ function KinProjectBody(
                 },
               ],
               menus: [
+                ...asker.menus,
                 {
                   title: "More",
                   icon: "ellipsis",
@@ -271,9 +287,14 @@ function KinProjectBody(
                 },
               ],
             }
-          : {},
+          : asker,
         header: (
           <>
+            {offLine === null ? null : (
+              <Text textRole="footnote" className="px-2 text-foreground-muted">
+                {offLine}
+              </Text>
+            )}
             <KinProjectSummary
               view={view}
               problem={problem}
@@ -281,7 +302,7 @@ function KinProjectBody(
               onOpenTask={openTask}
               onOpenClient={(to) => openRecord("KinClient", { environmentId, orgId, party: to })}
               onAddMilestone={
-                (canChange || leads) && view.state === "open"
+                (canChange || leads) && view.adds && view.state === "open"
                   ? () =>
                       navigation.navigate("KinMilestoneForm", {
                         environmentId,
@@ -320,6 +341,31 @@ function KinProjectBody(
                   }
                 />
               }
+              results={
+                props.page.results === undefined ? null : (
+                  <KinCampaignResultsSection
+                    results={props.page.results}
+                    audience={view.audience}
+                    deals={dealsOn}
+                    onOpen={(id) => {
+                      const opened = kinCampaignResultOpens(orgId, view.key, view.name, id);
+                      navigation.navigate("KinMarketingList", {
+                        environmentId,
+                        orgId,
+                        title: opened.title,
+                        ...(opened.to === "contacts"
+                          ? { campaign: view.key }
+                          : opened.to === "deals"
+                            ? { campaign: view.key, deals: id === "won" ? "won" : "open" }
+                            : {
+                                cameFrom: opened.filter.cameFrom ?? "",
+                                show: id === "prospects" ? "prospects" : "clients",
+                              }),
+                      });
+                    }}
+                  />
+                )
+              }
               docs={
                 <KinDocsUnder
                   environmentId={environmentId}
@@ -330,6 +376,22 @@ function KinProjectBody(
               }
             />
             <View className="gap-5 px-4 pb-2">
+              {props.page.can?.note === undefined ? null : (
+                <KinProjectNoteSection
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  projectKey={view.key}
+                  note={props.page.note ?? null}
+                  canEdit={props.page.can.note && canNote}
+                  onChanged={props.onRefresh}
+                />
+              )}
+              <KinAsideNote
+                environmentId={environmentId}
+                orgId={orgId}
+                record={view.key}
+                names={props.directory.names}
+              />
               <KinAttentionSection
                 environmentId={environmentId}
                 orgId={orgId}
@@ -374,6 +436,8 @@ function KinProjectSummary(props: {
   readonly docs: ReactNode;
   /** Who is on it, and the ways to change that. */
   readonly people: ReactNode;
+  /** A campaign's results, for a reader with Clients. */
+  readonly results: ReactNode;
 }) {
   const { view } = props;
   const { party } = view;
@@ -398,7 +462,9 @@ function KinProjectSummary(props: {
           )}
         </View>
         <Text textRole="footnote" className="text-foreground-muted">
-          {[party?.title, view.target, view.ledBy].filter((part) => part != null).join(" · ")}
+          {[view.kind, party?.title, view.target, view.ledBy]
+            .filter((part) => part != null)
+            .join(" · ")}
         </Text>
         {view.terms === null ? null : (
           <Text textRole="footnote" className="text-foreground-muted">
@@ -427,6 +493,7 @@ function KinProjectSummary(props: {
           />
         </ListSection>
       )}
+      {props.results}
       <ListSection title={KIN_PROJECT_LEAD.title}>
         {props.onChangeLead === null ? (
           <ListRowLayout label={view.lead.name} />
@@ -590,7 +657,7 @@ function KinProjectSummary(props: {
             </View>
           )}
           {props.privacy.shown ? (
-            <ListToggleRow
+            <KinWorkToggleRow
               icon="lock"
               label={KIN_PROJECTS.privateLabel}
               description={view.privacy.note}

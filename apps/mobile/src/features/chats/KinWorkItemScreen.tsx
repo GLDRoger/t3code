@@ -1,8 +1,39 @@
-import { useKinOpensClients } from "./state/kinChatOnly";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_DOCS } from "@t3tools/client-runtime/kin/kinDocs";
+import { useKinIsOwnerLevel, useKinOpensClients } from "./state/kinChatOnly";
+import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import {
+  KIN_LINKED,
+  kinLinked,
+  kinLinkedRest,
+  type KinLinkedGroupName,
+} from "@t3tools/client-runtime/kin/kinLinked";
+import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import { useAtomValue } from "@effect/atom-react";
-import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinTaskProjectsAllowed } from "@t3tools/client-runtime/kin/kinWorkClients";
+import { kinSectionOf, kinSectionOffLine } from "@t3tools/client-runtime/kin/kinShell";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  KIN_TASK_LINK,
+  KIN_TASK_NOTE_COPY,
+  KIN_TASK_RECORD,
+  kinProjectNoteLine,
+  kinTaskLinkProblem,
+  kinBriefBy,
+  kinNextStep,
+  kinRecordAskedBy,
+  kinRecordChip,
+  kinRecordWho,
+  kinTaskControls,
+  kinTaskActivity,
+  kinTaskPeopleFolded,
+  kinTaskWith,
+  kinTaskWithout,
+  type KinActivityLine,
+  type KinNextStepAct,
+  type KinRecordChipTone,
+  type KinRecordWho,
+} from "@t3tools/client-runtime/kin/kinTaskRecord";
 import {
   KIN_WORK_GONE,
   KIN_WORK_HAND_BACK,
@@ -12,13 +43,20 @@ import {
   KIN_WORK_NOTES_MAX,
   kinWorkOnlyOwner,
   KIN_WORK_REPEAT,
-  KIN_WORK_TITLE_MAX,
+  KIN_WORK_STEPS,
+  KIN_WORK_URGENT,
+  kinSameRepeat,
+  kinWorkStepProblem,
   kinWorkAssignees,
+  kinWorkClientStays,
   kinWorkHostClients,
   kinWorkItemState,
   kinWorkItemView,
+  kinWorkTitleCount,
+  kinWorkTitleTooLong,
   type KinWorkItemView,
   type KinWorkLinkView,
+  type KinWorkStepsView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_WORK_COPY,
@@ -26,8 +64,11 @@ import {
   kinWorkEditMoved,
   kinWorkStatusOffer,
   kinWorkItemNotice,
+  kinWorkTakeLabel,
+  type KinWorkAction,
   type KinWorkNotice,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentId,
   KIN_RECORD_CHANGES_CAP,
@@ -35,47 +76,61 @@ import {
   KinRecordKey,
   type KinAgentId,
   type KinChatId,
+  type KinRecordComment,
+  type KinRecordDetail,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
-import { TextInput, View } from "react-native";
+import { Pressable, TextInput, View } from "react-native";
 
-import { useState } from "react";
+import { useState, type ReactNode, useRef, type ComponentRef } from "react";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
-import { AppBar } from "../../components/ui/AppBar";
-import type { AppSymbolName } from "../../components/ui/AppSymbol";
+import type { AppBarMenu, AppBarMenuItem } from "../../components/ui/AppBar";
+import { SymbolView, type AppSymbolName } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
+import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
+import { RowPressable } from "../../components/ui/RowPressable";
 import { Notice } from "../../components/ui/Notice";
-import { ScreenContent } from "../../components/ui/ScreenContent";
-import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../lib/clock";
+import { cn } from "../../lib/cn";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { KIN_ONLY } from "../../lib/kinOnly";
 import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinNotesVersions } from "./KinNotesVersions";
 import { KinAvatar } from "./components/KinAvatar";
-import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
-import {
-  KinWorkDueRow,
-  KinWorkPlaceRow,
-  KinWorkRepeatRow,
-  KinWorkStatusRow,
-} from "./components/KinWorkTaskMenus";
+import { KinAttachments } from "./components/KinMessageBubble";
+import { KinTaskNoteComposer } from "./components/KinTaskNoteComposer";
+import { KinNextStep } from "./components/KinNextStep";
+import { connectionAtomRuntime } from "../../connection/runtime";
+import { KinDayField } from "./components/KinDayField";
+import { KinWorkStatusRow } from "./components/KinWorkTaskMenus";
+import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinListEntryBody } from "./KinListEntry";
-import { KinMakeDocumentStep, type KinMakeStep } from "./KinInvoice";
-import { KinWorkTaskRow } from "./components/KinWorkPieces";
+import { KinMakeDocumentStep } from "./KinInvoice";
+import type { KinMakeStep } from "./kinMakeStep";
+import {
+  KIN_URGENT_SYMBOL,
+  KinWorkFieldBox,
+  KinWorkFrame,
+  KinWorkLoading,
+  KinWorkTaskRow,
+  KinWorkToggleRow,
+} from "./components/KinWorkPieces";
 import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
+import { useKinAskRecord } from "./state/useKinAskRecord";
 import {
   useKinWork,
   useKinWorkAnswer,
@@ -87,8 +142,13 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
-import { useKinGate } from "./state/useKinHost";
+import { useKinGate, useKinHostAt } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import { KinWatchLine } from "./KinWatchLine";
+import { KinTaskWithRows } from "./components/KinTaskWithRows";
+import { kinTaskLeftAtom } from "./state/kinTaskLeft";
+import { useKinSectionOn, useKinShell } from "./state/useKinShell";
 
 export type KinWorkItemParams = {
   readonly environmentId: string;
@@ -110,7 +170,62 @@ const LINK_SYMBOL: Record<KinWorkLinkView["kind"], AppSymbolName> = {
   link: "link",
 };
 
-/** One task: where it stands, who has it, what it links to and how it got here. */
+const ACTIVITY_SYMBOL: Record<KinActivityLine["icon"], AppSymbolName> = {
+  comment: "bubble.left",
+  made: "plus",
+  gave: "person.crop.circle",
+  due: "clock",
+  brief: "pencil",
+  title: "pencil",
+  state: "checkmark.circle",
+  link: "link",
+  change: "circle",
+};
+
+const CHIP: Record<
+  KinRecordChipTone,
+  {
+    readonly box: string;
+    readonly text: string;
+    readonly tint: string;
+    readonly icon: AppSymbolName;
+  }
+> = {
+  wait: {
+    box: "bg-warning",
+    text: "text-warning-foreground",
+    tint: "accent-warning-foreground",
+    icon: "clock",
+  },
+  doing: {
+    box: "bg-update",
+    text: "text-update-foreground",
+    tint: "accent-update-foreground",
+    icon: "ellipsis.circle",
+  },
+  late: {
+    box: "bg-danger",
+    text: "text-danger-foreground",
+    tint: "accent-danger-foreground",
+    icon: "exclamationmark.circle",
+  },
+  done: {
+    box: "bg-grouped-card",
+    text: "text-foreground",
+    tint: "accent-icon-muted",
+    icon: "checkmark.circle.fill",
+  },
+  plain: {
+    box: "bg-grouped-card",
+    text: "text-foreground-muted",
+    tint: "accent-icon-muted",
+    icon: "circle",
+  },
+};
+
+const MENU_REPEAT = "repeat:";
+
+/** One task as a full page: where it stands, the next step, details, brief, activity, links. */
 export function KinWorkItemScreen({ route }: StaticScreenProps<KinWorkItemParams>) {
   const navigation = useNavigation();
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
@@ -118,41 +233,17 @@ export function KinWorkItemScreen({ route }: StaticScreenProps<KinWorkItemParams
   const key = Option.getOrNull(decodeKey(route.params.task));
   if (environmentId === null || orgId === null || key === null) {
     return (
-      <Frame title="Task" onClose={() => navigation.goBack()}>
+      <KinWorkFrame title="Task" onBack={() => navigation.goBack()}>
         <EmptyState
           variant="plain"
           title="This link doesn't name a task"
           detail="Open Work from your Kin chats."
         />
-      </Frame>
+      </KinWorkFrame>
     );
   }
   // A fresh screen per task, so one task's changes never show on the next one opened from it.
   return <KinWorkItemGate key={key} environmentId={environmentId} orgId={orgId} itemKey={key} />;
-}
-
-function Frame(props: {
-  readonly title: string;
-  readonly onClose: () => void;
-  readonly children: React.ReactNode;
-}) {
-  return (
-    <View collapsable={false} className="flex-1 bg-screen">
-      <AppBar title={props.title} onClose={props.onClose} />
-      <ScreenContent surface="screen">
-        <ScreenScrollView
-          className="flex-1"
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="interactive"
-          automaticallyAdjustKeyboardInsets
-          contentInsetAdjustmentBehavior="automatic"
-          contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
-        >
-          {props.children}
-        </ScreenScrollView>
-      </ScreenContent>
-    </View>
-  );
 }
 
 type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey };
@@ -166,19 +257,22 @@ function KinWorkItemGate(props: ItemTarget) {
   // A teammate who follows a link asks the host nothing.
   if (gate !== null) {
     return (
-      <Frame title="Task" onClose={() => navigation.goBack()}>
+      <KinWorkFrame title="Task" onBack={() => navigation.goBack()}>
         <KinGateView gate={gate} refused={kinWorkOnlyOwner("tasks")} label="Task" />
-      </Frame>
+      </KinWorkFrame>
     );
   }
   return <KinWorkItemBody {...props} />;
 }
 
 function KinWorkItemBody(props: ItemTarget) {
+  const titleField = useRef<ComponentRef<typeof TextInput>>(null);
+  const briefField = useRef<ComponentRef<typeof TextInput>>(null);
   const navigation = useNavigation();
   const openRecord = useKinWorkLink();
   const openDetail = useOpenWorkspaceDetail();
   const { environmentId, orgId, itemKey } = props;
+  const openLinked = useKinOpenLinked(props);
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
   const { state: changed, changes } = useKinWorkChanges(props);
   const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, itemKey));
@@ -191,29 +285,49 @@ function KinWorkItemBody(props: ItemTarget) {
   const directory = useKinWorkDirectory(props, true);
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
+  const canComment = useAtomValue(kinClient.workComment.permissionAtom(environmentId));
+  const host = useKinHostAt(environmentId);
+  const insets = useSafeAreaInsets();
+  const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
+  // Pages of comments older than the sheet's, read on asking; a newer sheet keeps them.
+  const [older, setOlder] = useState<{
+    readonly comments: ReadonlyArray<KinRecordComment>;
+    readonly more: boolean;
+  } | null>(null);
+  const readOlder = useAtomCommand(kinClient.workComments, { reportFailure: false });
+  const removeComment = useAtomCommand(kinClient.workCommentRemove, { reportFailure: false });
+  const addLink = useAtomCommand(kinClient.workLinkAdd, { reportFailure: false });
+  const removeLink = useAtomCommand(kinClient.workLinkRemove, { reportFailure: false });
+  const canLink = useAtomValue(kinClient.workLinkAdd.permissionAtom(environmentId));
   const place = useKinWorkPlace(environmentId);
   const work = useKinWork(props);
-  // Make invoice and Make its PDF are a step of this sheet, never a sheet over it.
+  // Make invoice and Make its PDF are a step of this page, never a sheet over it.
   const [making, setMaking] = useState<KinMakeStep | null>(null);
+  // Asked by and Held by, folded under one row when the card on top already names them.
+  const [peopleOpen, setPeopleOpen] = useState(false);
   // An older server has no clients or projects: the task shows as it always did.
   const opensClients = useKinOpensClients(environmentId);
-  const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
+  // With Clients off its pickers leave the task; it reads as it always did otherwise.
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  const shell = useKinShell(environmentId);
+  const ownerLevel = useKinIsOwnerLevel(environmentId);
+  const hostClients =
+    kinWorkHostClients(work._tag === "ready" ? work.live.summary : null) && clientsOn;
   const choices = useKinWorkChoices(props, hostClients && canChange);
+  // A teammate moves a task only into a project they lead, as the host takes it.
+  const projectsAllowed = kinTaskProjectsAllowed(
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)),
+  );
   const now = new Date(useNowMinuteMs());
-  const close = () => navigation.goBack();
+  const back = () => navigation.goBack();
+  const task = state._tag === "ready" && state.item.list === undefined ? state.item : null;
+  const asker = useKinAskRecord(props, task === null ? null : { key: task.key, title: task.title });
 
   if (state._tag !== "ready") {
     return (
-      <Frame title="Task" onClose={close}>
+      <KinWorkFrame title="Task" onBack={back}>
         {state._tag === "loading" ? (
-          <View
-            className="items-center py-12"
-            accessible
-            accessibilityRole="progressbar"
-            accessibilityLabel="Loading task"
-          >
-            <AppActivityIndicator />
-          </View>
+          <KinWorkLoading label="Loading task" />
         ) : state._tag === "gone" ? (
           <EmptyState variant="plain" {...KIN_WORK_GONE} />
         ) : (
@@ -229,11 +343,87 @@ function KinWorkItemBody(props: ItemTarget) {
             }
           />
         )}
-      </Frame>
+      </KinWorkFrame>
     );
   }
   const { item } = state;
   const { orgs, people, joined, invited, names } = directory;
+  const openChat = (chatId: KinChatId) =>
+    navigation.navigate("KinChat", { environmentId, orgId, chatId });
+  const openLink = (link: KinWorkLinkView) => {
+    const { open } = link;
+    if (open === null) return;
+    if (open.type === "chat") return openChat(open.chatId);
+    if (open.type === "task")
+      return openRecord("KinWorkItem", { environmentId, orgId, task: open.key });
+    void tryOpenExternalUrl(open.href, "markdown-link");
+  };
+  const openThread = (thread: NonNullable<KinWorkLinkView["thread"]>) =>
+    openDetail({ name: "Thread", params: thread });
+  const linkFailed = (outcome: AsyncResult.AsyncResult<unknown, unknown>, what: string) => {
+    if (!AsyncResult.isFailure(outcome)) return false;
+    Dialog.alert(kinFailureText(squashAtomCommandFailure(outcome), what));
+    return true;
+  };
+  const askLink = () =>
+    Dialog.prompt({
+      title: KIN_TASK_LINK.add,
+      message: KIN_TASK_LINK.url,
+      placeholder: KIN_TASK_LINK.urlPlaceholder,
+      initialValue: "",
+      confirmText: KIN_TASK_LINK.next,
+      onConfirm: (typed) => {
+        const url = typed.trim();
+        if (url === "") return;
+        const problem = kinTaskLinkProblem(url);
+        if (problem !== null) return Dialog.alert(problem);
+        Dialog.prompt({
+          title: KIN_TASK_LINK.add,
+          message: KIN_TASK_LINK.name,
+          initialValue: "",
+          confirmText: KIN_TASK_LINK.save,
+          onConfirm: (named) => {
+            const name = named.trim();
+            void addLink({
+              environmentId,
+              input: { orgId, key: itemKey, url, ...(name === "" ? {} : { name }) },
+            }).then((outcome) => {
+              if (!linkFailed(outcome, KIN_TASK_LINK.notAdded)) appAtomRegistry.refresh(itemAtom);
+            });
+          },
+        });
+      },
+    });
+  const askUnlink = (link: KinWorkLinkView) => {
+    const { removeUrl } = link;
+    if (removeUrl === undefined) return;
+    Dialog.confirm({
+      title: KIN_TASK_LINK.removeTitle,
+      message: link.label,
+      confirmText: KIN_TASK_LINK.removeConfirm,
+      destructive: true,
+      onConfirm: () =>
+        void removeLink({ environmentId, input: { orgId, key: itemKey, url: removeUrl } }).then(
+          (outcome) => {
+            if (!linkFailed(outcome, KIN_TASK_LINK.notRemoved)) appAtomRegistry.refresh(itemAtom);
+          },
+        ),
+    });
+  };
+  const linkedSection = (
+    detail: KinRecordDetail,
+    links: ReadonlyArray<KinWorkLinkView>,
+    editsLinks = false,
+  ) => (
+    <KinWorkLinked
+      detail={detail}
+      links={links}
+      onOpen={openLinked}
+      onOpenLink={openLink}
+      onOpenThread={openThread}
+      {...(editsLinks ? { onAddLink: askLink, onRemoveLink: askUnlink } : {})}
+    />
+  );
   if (item.list !== undefined && making !== null)
     return (
       <KinMakeDocumentStep
@@ -245,8 +435,16 @@ function KinWorkItemBody(props: ItemTarget) {
     );
   if (item.list !== undefined) {
     const read = kinWorkItemView(item, names, now, KIN_RECORD_CHANGES_CAP, place);
+    // A record of a section that is off, opened by its link, says so.
+    const section = kinSectionOf({ list: item.list });
+    const offLine = section === null ? null : kinSectionOffLine(shell, section, ownerLevel);
     return (
-      <Frame title={item.title} onClose={close}>
+      <KinWorkFrame title={item.title} onBack={back}>
+        {offLine === null ? null : (
+          <Text textRole="footnote" className="px-2 text-foreground-muted">
+            {offLine}
+          </Text>
+        )}
         <KinListEntryBody
           {...props}
           onMake={setMaking}
@@ -254,59 +452,19 @@ function KinWorkItemBody(props: ItemTarget) {
           view={read}
           directory={directory}
           now={now}
-          links={
-            read.links.length === 0 ? null : (
-              <ListSection title="Links">
-                {read.links.map((link) => (
-                  <KinWorkLink
-                    key={link.key}
-                    link={link}
-                    onOpen={() => {
-                      const { open } = link;
-                      if (open === null) return;
-                      if (open.type === "chat") {
-                        navigation.goBack();
-                        return navigation.navigate("KinChat", {
-                          environmentId,
-                          orgId,
-                          chatId: open.chatId,
-                        });
-                      }
-                      if (open.type === "task")
-                        return openRecord("KinWorkItem", {
-                          environmentId,
-                          orgId,
-                          task: open.key,
-                        });
-                      void tryOpenExternalUrl(open.href, "markdown-link");
-                    }}
-                    onOpenThread={(thread) => {
-                      navigation.goBack();
-                      openDetail({ name: "Thread", params: thread });
-                    }}
-                  />
-                ))}
-              </ListSection>
-            )
-          }
+          links={linkedSection(item, read.links)}
           history={<KinWorkHistory view={read} />}
         />
-      </Frame>
+      </KinWorkFrame>
     );
   }
-  const view = kinWorkItemView(
-    kinWorkApplied(item, changed),
-    names,
-    now,
-    KIN_RECORD_CHANGES_CAP,
-    place,
-  );
+  const shown = kinWorkApplied(item, changed);
+  const view = kinWorkItemView(shown, names, now, KIN_RECORD_CHANGES_CAP, place);
+  const clientStays = hostClients ? kinWorkClientStays(shown, choices.projectClients) : null;
   const saving = changed.pending[itemKey] !== undefined;
   const notice = kinWorkItemNotice(changed, item);
   // Each control shows only where the host said it takes it (`view.can`).
-  const act = canChange
-    ? (action: Parameters<typeof changes.run>[1]) => void changes.run(item, action, names)
-    : null;
+  const act = canChange ? (action: KinWorkAction) => void changes.run(item, action, names) : null;
   const reword = view.can.edit ? act : null;
   const offer = kinWorkStatusOffer(view);
   const waitingOn = kinWorkAssignees({
@@ -318,56 +476,278 @@ function KinWorkItemBody(props: ItemTarget) {
     names,
     current: view.waitingOn,
   });
-  const openChat = (chatId: KinChatId) => {
-    navigation.goBack();
-    navigation.navigate("KinChat", { environmentId, orgId, chatId });
+  const giveTo = () =>
+    navigation.navigate("KinWorkAssign", { environmentId, orgId, task: itemKey });
+  const handBack = () =>
+    navigation.navigate("KinWorkHandBack", {
+      environmentId,
+      orgId,
+      task: itemKey,
+      to: view.handBackTo ?? "",
+    });
+  const step = kinNextStep({ item: shown, view, names, now, change: act !== null, give: canGive });
+  const onStep = (id: KinNextStepAct) => {
+    if (id === "openWaiting" && step.waiting !== null)
+      return navigation.navigate("KinChat", {
+        environmentId,
+        orgId,
+        chatId: step.waiting.chatId,
+        message: step.waiting.messageId,
+      });
+    if (id === "give") return giveTo();
+    if (id === "handBack") return handBack();
+    if (act === null) return;
+    if (id === "keep") return act({ type: "confirm" });
+    if (id === "decline") return act({ type: "decline" });
+    act({ type: "state", state: id === "done" ? "done" : "open" });
   };
   const openParty = () =>
     openRecord("KinClient", { environmentId, orgId, party: view.party?.key ?? "" });
   const openProject = () =>
     openRecord("KinProject", { environmentId, orgId, project: view.project?.key ?? "" });
-  const openLink = (link: KinWorkLinkView) => {
-    const { open } = link;
-    if (open === null) return;
-    if (open.type === "chat") return openChat(open.chatId);
-    if (open.type === "task")
-      return openRecord("KinWorkItem", { environmentId, orgId, task: open.key });
-    void tryOpenExternalUrl(open.href, "markdown-link");
-  };
   const { edit } = changed;
   const moved = edit === null ? null : kinWorkEditMoved(edit, item);
   const saveEdit = async () => {
     if (saving || edit === null || edit.title.trim() === "") return;
     if (await changes.saveEdit(item, names)) appAtomRegistry.refresh(itemAtom);
   };
+  const askedBy = kinRecordAskedBy(item);
+  const heldBy = kinRecordWho(item.owner, names);
+  const briefBy = kinBriefBy(shown, names, now);
+  const chip = kinRecordChip(shown, view, names, now);
+  const folded = kinTaskPeopleFolded(shown, step, names);
+  const withView = kinTaskWith({
+    item: shown,
+    names,
+    edit: view.can.edit,
+    change: act !== null,
+    joined,
+    invited,
+  });
+  // The fold names who's on it only when the reader is: then their With line folds with Held by.
+  const withFolded =
+    folded?.held === true &&
+    !peopleOpen &&
+    (shown.alsoOn ?? []).some((who) => who._tag === "person" && who.personId === names.me);
+  const leave = async (action: KinWorkAction) => {
+    if (!(await changes.run(item, action, names))) return;
+    const { notice, answers } = changes.getState();
+    const answer = answers[item.key];
+    if (notice !== null && answer !== undefined)
+      appAtomRegistry.set(kinTaskLeftAtom, {
+        environmentId,
+        orgId,
+        record: answer,
+        undo: notice.undo,
+        text: notice.text,
+      });
+    // They may no longer see it: Tasks says so, with its Undo.
+    back();
+  };
+  const setWith = (said: "removed" | "left", key: string) => {
+    const who = withView.people.find((one) => one.key === key)?.principal;
+    if (who === undefined) return;
+    const action = { type: "alsoOn" as const, alsoOn: kinTaskWithout(shown, who), who, said };
+    if (said === "left") void leave(action);
+    else act?.(action);
+  };
+  const controls = kinTaskControls({
+    view,
+    change: act !== null,
+    give: canGive,
+    step: step.acts,
+  });
+  const dated = view.due !== null;
+  const repeats = act !== null && view.can.repeat === true && !view.closed;
+  const repeatMenu: ReadonlyArray<AppBarMenuItem> = !repeats
+    ? []
+    : [
+        {
+          id: "repeat",
+          title: KIN_WORK_REPEAT.menu(view.repeat?.text ?? null),
+          items: [
+            ...(dated
+              ? []
+              : [
+                  {
+                    id: `${MENU_REPEAT}needs-due`,
+                    title: KIN_WORK_REPEAT.needsDue,
+                    disabled: true,
+                    onPress: () => undefined,
+                  },
+                ]),
+            ...KIN_WORK_REPEAT.choices.map((choice, index) => ({
+              id: `${MENU_REPEAT}${index}`,
+              title: choice.label,
+              selected: kinSameRepeat(choice.rule, view.repeat?.rule ?? null),
+              disabled: !dated,
+              onPress: () => act({ type: "repeat", rule: choice.rule }),
+            })),
+            ...(view.repeat === null
+              ? []
+              : [
+                  {
+                    id: `${MENU_REPEAT}stop`,
+                    title: KIN_WORK_REPEAT.stop,
+                    onPress: () => act({ type: "repeat", rule: null }),
+                  },
+                ]),
+          ],
+        },
+      ];
+  // The less-used moves; each is here only where the host takes it from this viewer.
+  const moreItems: ReadonlyArray<AppBarMenuItem> = [
+    ...(controls.menu.give && view.assignLabel !== null
+      ? [{ id: "give", title: view.assignLabel, onPress: giveTo }]
+      : []),
+    ...repeatMenu,
+    ...(controls.menu.handBack
+      ? [{ id: "hand-back", title: KIN_WORK_HAND_BACK.button, onPress: handBack }]
+      : []),
+    ...(controls.menu.takeBack
+      ? [
+          {
+            id: "take-back",
+            title: kinWorkTakeLabel(item, names),
+            onPress: () => void changes.run(item, { type: "takeBack" }, names),
+          },
+        ]
+      : []),
+    ...(controls.menu.drop && act !== null
+      ? [
+          {
+            id: "dropped",
+            title: KIN_WORK_COPY.drop,
+            destructive: true,
+            onPress: () => act({ type: "state", state: "dropped" }),
+          },
+        ]
+      : []),
+  ];
+  const menus: ReadonlyArray<AppBarMenu> =
+    moreItems.length === 0 || saving
+      ? []
+      : [{ title: KIN_TASK_RECORD.more, icon: "ellipsis", items: moreItems }];
+  const sheetComments = item.comments ?? [];
+  const firstSeq = sheetComments[0]?.seq;
+  const earlier = (older?.comments ?? []).filter(
+    (one) => firstSeq === undefined || one.seq < firstSeq,
+  );
+  const comments = [...earlier, ...sheetComments];
+  const moreComments = older === null ? item.olderComments === true : older.more;
+  const loadOlder = async () => {
+    const before = comments[0]?.seq;
+    if (before === undefined) return;
+    const outcome = await readOlder({
+      environmentId,
+      input: { orgId, key: itemKey, beforeSeq: before },
+    });
+    if (AsyncResult.isFailure(outcome)) return;
+    setOlder({ comments: [...outcome.value.comments, ...earlier], more: outcome.value.older });
+  };
+  const askRemove = (commentId: string) =>
+    Dialog.confirm({
+      title: KIN_TASK_NOTE_COPY.removeTitle,
+      message: KIN_TASK_RECORD.removeDetail,
+      confirmText: KIN_TASK_NOTE_COPY.remove,
+      destructive: true,
+      onConfirm: () =>
+        void removeComment({ environmentId, input: { orgId, key: itemKey, commentId } }).then(
+          () => {
+            setOlder(null);
+            appAtomRegistry.refresh(itemAtom);
+          },
+        ),
+    });
+  const connected = host._tag === "host" && host.connected;
+  const footer =
+    canComment && edit === null
+      ? {
+          node: (
+            <KinTaskNoteComposer
+              environmentId={environmentId}
+              orgId={orgId}
+              itemKey={itemKey}
+              connected={connected}
+              bottomInset={Math.max(insets.bottom, 12)}
+            />
+          ),
+          bottomInset: Math.max(insets.bottom, 12),
+        }
+      : undefined;
   return (
-    <Frame title={view.heading} onClose={close}>
+    <KinWorkFrame
+      title={view.title}
+      onBack={back}
+      actions={asker.actions}
+      menus={[...asker.menus, ...menus]}
+      form={edit !== null}
+      // The form opens at the top, wherever the page was scrolled to.
+      showTop={edit === null ? null : edit.key}
+      {...(footer === undefined ? {} : { footer })}
+    >
+      <View className="gap-2.5 px-1">
+        <View className="flex-row flex-wrap items-center gap-2">
+          <KinRecordChip tone={chip.tone} label={chip.label} />
+          {view.urgent && !view.closed ? <KinUrgentFlag /> : null}
+          <Text textRole="footnote" className="text-foreground-muted">
+            {view.heading === "Task" ? item.key : `${item.key} · ${view.heading}`}
+          </Text>
+        </View>
+        {edit !== null ? null : (
+          <Text
+            textRole="title"
+            accessibilityRole="header"
+            selectable
+            className="font-t3-medium text-foreground"
+          >
+            {view.title}
+          </Text>
+        )}
+        {view.remarks.map((line) => (
+          <Text key={line} textRole="footnote" className="text-foreground-muted">
+            {line}
+          </Text>
+        ))}
+      </View>
+      <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={itemKey} />
       {edit === null ? null : (
         <View className="gap-3">
           <ListSection>
-            <View className="gap-2 px-4 py-3">
-              <Text className="text-sm text-foreground-muted">Title</Text>
+            <KinWorkFieldBox label={"Title"} input={titleField}>
               <TextInput
+                ref={titleField}
                 accessibilityLabel="Title"
                 value={edit.title}
                 editable={!saving}
-                autoFocus
                 autoCapitalize="sentences"
                 returnKeyType="done"
-                maxLength={KIN_WORK_TITLE_MAX}
                 onChangeText={(title) => changes.setEdit({ title })}
                 textAlignVertical="center"
-                placeholder={KIN_WORK_NEW_COPY.titlePlaceholder}
                 placeholderTextColorClassName="accent-placeholder"
                 className="min-h-8 font-sans text-base text-foreground"
               />
-            </View>
-            <View className="gap-2 px-4 py-3">
-              <Text className="text-sm text-foreground-muted">{KIN_WORK_NEW_COPY.notesLabel}</Text>
+              {kinWorkTitleCount(edit.title) === null ? null : (
+                <Text
+                  textRole="footnote"
+                  className={
+                    kinWorkTitleTooLong(edit.title)
+                      ? "text-danger-foreground tabular-nums"
+                      : "text-foreground-muted tabular-nums"
+                  }
+                >
+                  {kinWorkTitleCount(edit.title)}
+                </Text>
+              )}
+            </KinWorkFieldBox>
+            <KinWorkFieldBox label={KIN_TASK_RECORD.brief} input={briefField}>
               <TextInput
-                accessibilityLabel={KIN_WORK_NEW_COPY.notesLabel}
+                ref={briefField}
+                accessibilityLabel={KIN_TASK_RECORD.brief}
                 value={edit.notes}
                 editable={!saving}
+                // Opened from the brief's own Edit: the words go there, not into the title.
+                autoFocus
                 multiline
                 maxLength={KIN_WORK_NOTES_MAX}
                 onChangeText={(notes) => changes.setEdit({ notes })}
@@ -376,11 +756,11 @@ function KinWorkItemBody(props: ItemTarget) {
                 placeholderTextColorClassName="accent-placeholder"
                 className="min-h-24 font-sans text-base text-foreground"
               />
-            </View>
+            </KinWorkFieldBox>
           </ListSection>
           {[
-            moved?.title == null ? null : `It now says: ${moved.title}`,
-            moved?.notes == null ? null : `The notes now say: ${moved.notes}`,
+            moved?.title == null ? null : KIN_WORK_COPY.nowSays(moved.title),
+            moved?.notes == null ? null : `The brief now says: ${moved.notes}`,
           ].map((line) =>
             line === null ? null : (
               <Text key={line} textRole="footnote" className="px-2 text-foreground-muted">
@@ -407,87 +787,14 @@ function KinWorkItemBody(props: ItemTarget) {
           </View>
         </View>
       )}
-      <View className="gap-3 px-2">
-        {edit !== null ? null : (
-          <Text
-            textRole="headline"
-            accessibilityRole="header"
-            className="font-t3-bold text-foreground"
-          >
-            {view.title}
-          </Text>
-        )}
-        <View className="flex-row flex-wrap items-center gap-2">
-          <KinWorkStateSymbol state={view.state} />
-          <Text textRole="body" className="text-foreground">
-            {view.status}
-          </Text>
-          {view.late ? (
-            <Text textRole="footnote" className="font-t3-medium text-danger-foreground">
-              Late
-            </Text>
-          ) : null}
-        </View>
-        {[view.given, view.reason === null ? null : `“${view.reason}”`, ...view.remarks].map(
-          (line) =>
-            line === null ? null : (
-              <Text key={line} textRole="footnote" className="text-foreground-muted">
-                {line}
-              </Text>
-            ),
-        )}
-      </View>
-      {act === null || view.suggestion === null || !view.can.confirm ? null : (
-        <View className="gap-3 px-2">
-          <Text textRole="body" className="text-foreground">
-            {view.suggestion} Keep it?
-          </Text>
-          <View className="flex-row gap-2">
-            <Button
-              tone="primary"
-              size="compact"
-              label={KIN_WORK_COPY.keep}
-              disabled={saving}
-              onPress={() => act({ type: "confirm" })}
-            />
-            <Button
-              tone="secondary"
-              size="compact"
-              label={KIN_WORK_COPY.decline}
-              disabled={saving}
-              onPress={() => act({ type: "decline" })}
-            />
-          </View>
-        </View>
-      )}
-      {act === null || !(offer.done || offer.reopen) ? null : (
-        <View className="gap-2">
-          {offer.reopen ? (
-            <Button
-              tone="secondary"
-              fullWidth
-              icon="arrow.uturn.backward"
-              label={KIN_WORK_COPY.reopen}
-              loading={saving}
-              onPress={() => act({ type: "state", state: "open" })}
-            />
-          ) : (
-            <Button
-              tone="primary"
-              fullWidth
-              icon="checkmark"
-              label={KIN_WORK_COPY.done}
-              loading={saving}
-              onPress={() => act({ type: "state", state: "done" })}
-            />
-          )}
-          {view.leadNote === null ? null : (
-            <Text textRole="footnote" className="px-2 text-foreground-muted">
-              {view.leadNote}
-            </Text>
-          )}
-        </View>
-      )}
+      <KinNextStep
+        step={step}
+        busy={saving}
+        onAct={onStep}
+        footnote={
+          step.acts.some((one) => one.id === "done" || one.id === "reopen") ? view.leadNote : null
+        }
+      />
       {notice === null ? null : (
         <KinWorkNoticeLine
           notice={notice}
@@ -496,69 +803,43 @@ function KinWorkItemBody(props: ItemTarget) {
           onDismiss={changes.dismiss}
         />
       )}
-      <ListSection>
-        <ListRowLayout
-          leading={<KinAvatar avatar={view.owner.avatar} size="mini" />}
-          label={view.owner.name}
-          detail={view.owner.retired ? "Has it · Retired" : "Has it"}
+      {view.steps === null ? null : (
+        <KinTaskSteps
+          steps={view.steps}
+          disabled={saving}
+          onTick={
+            act === null || !view.steps.editable
+              ? null
+              : (index, title, done) => act({ type: "tick", index, title, done })
+          }
+          onChange={
+            act === null || !view.steps.editable
+              ? null
+              : (steps, said) => act({ type: "steps", steps, said })
+          }
         />
-        {act === null || !offer.menu ? null : (
-          <KinWorkStatusRow
-            view={view}
-            offer={offer}
-            people={[...waitingOn.people, ...waitingOn.leads]}
-            disabled={saving}
-            onAct={act}
+      )}
+      <ListSection title={KIN_TASK_RECORD.details}>
+        {askedBy === null || (folded?.asked === true && !peopleOpen) ? null : (
+          <KinDetailPerson
+            icon="person.crop.circle"
+            label={KIN_TASK_RECORD.askedBy}
+            who={kinRecordWho(askedBy, names)}
           />
         )}
-        {reword !== null && !view.closed ? (
-          <KinWorkDueRow view={view} now={now} disabled={saving} onAct={reword} />
-        ) : view.due === null ? null : (
-          <ListRowLayout
-            icon="clock"
-            label={view.due.charAt(0).toUpperCase() + view.due.slice(1)}
-            detail="Due"
+        {folded?.held === true && !peopleOpen ? null : (
+          <KinDetailPerson
+            icon="person.fill.checkmark"
+            label={KIN_TASK_RECORD.heldBy}
+            who={view.owner.retired ? { ...heldBy, name: `${heldBy.name} (retired)` } : heldBy}
+            description={[
+              view.given,
+              step.words === null && view.reason !== null ? `“${view.reason}”` : null,
+            ]
+              .filter((line) => line !== null)
+              .join("\n")}
           />
         )}
-        {act !== null && view.can.repeat === true && !view.closed ? (
-          <KinWorkRepeatRow view={view} disabled={saving} onAct={act} />
-        ) : view.repeat === null ? null : (
-          <ListRowLayout
-            icon="arrow.clockwise"
-            label={view.repeat.text}
-            detail={KIN_WORK_REPEAT.label}
-          />
-        )}
-        {canGive && view.assignLabel !== null ? (
-          <ListActionRow
-            label={view.assignLabel}
-            disabled={saving}
-            onPress={() =>
-              navigation.navigate("KinWorkAssign", { environmentId, orgId, task: itemKey })
-            }
-          />
-        ) : null}
-        {act !== null && view.handBackTo !== null ? (
-          <ListActionRow
-            label={KIN_WORK_HAND_BACK.button}
-            disabled={saving}
-            onPress={() =>
-              navigation.navigate("KinWorkHandBack", {
-                environmentId,
-                orgId,
-                task: itemKey,
-                to: view.handBackTo ?? "",
-              })
-            }
-          />
-        ) : null}
-        {canGive && view.takeBack ? (
-          <ListActionRow
-            label={KIN_WORK_COPY.takeBack}
-            disabled={saving}
-            onPress={() => void changes.run(item, { type: "takeBack" }, names)}
-          />
-        ) : null}
         {view.owner.principal._tag === "agent" ? (
           <KinWorkLeadChat
             {...props}
@@ -567,84 +848,158 @@ function KinWorkItemBody(props: ItemTarget) {
             onOpen={openChat}
           />
         ) : null}
-        {reword === null || edit !== null ? null : (
-          <ListActionRow
-            label="Edit title and notes"
-            disabled={saving}
-            onPress={() => changes.startEdit(item)}
+        {withFolded || (withView.people.length === 0 && !withView.add) ? null : (
+          <KinTaskWithRows
+            with={withView}
+            saving={saving}
+            onAdd={() =>
+              navigation.navigate("KinWorkAssign", {
+                environmentId,
+                orgId,
+                task: itemKey,
+                with: "yes",
+              })
+            }
+            onRemove={(key) => setWith("removed", key)}
+            onLeave={() => {
+              const me = withView.people.find((one) => one.act === "leave");
+              if (me !== undefined) setWith("left", me.key);
+            }}
           />
         )}
-      </ListSection>
-      {!hostClients ? null : (
-        <ListSection>
-          {act === null || !view.can.party ? (
-            view.party === null ? null : opensClients ? (
-              <ListRow
-                icon="person.2"
-                label={KIN_WORK_NEW_COPY.clientLabel}
-                detail={view.party.title}
-                {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
-                onPress={openParty}
-              />
-            ) : (
-              <View className="bg-grouped-card">
-                <ListRowLayout
-                  icon="person.2"
-                  label={KIN_WORK_NEW_COPY.clientLabel}
-                  detail={view.party.title}
-                  {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
-                />
-              </View>
-            )
-          ) : (
-            <KinWorkPlaceRow
-              icon="person.2"
-              label={KIN_WORK_NEW_COPY.clientLabel}
-              none={KIN_WORK_NEW_COPY.none}
-              held={view.party}
-              choices={choices.clients}
-              disabled={saving}
-              onPick={(party) => act({ type: "place", party })}
-              onOpen={openParty}
-              side={{ value: view.side, onPick: (side) => act({ type: "place", side }) }}
-            />
-          )}
-          {act === null || !view.can.project ? (
-            view.project === null ? null : (
-              <ListRow
-                icon="folder"
-                label={KIN_WORK_NEW_COPY.projectLabel}
-                detail={view.project.title}
-                onPress={openProject}
-              />
-            )
-          ) : (
-            <KinWorkPlaceRow
+        {act === null || controls.page.status === null ? null : (
+          <KinWorkStatusRow
+            view={view}
+            offer={offer}
+            status={controls.page.status}
+            people={[...waitingOn.people, ...waitingOn.leads]}
+            disabled={saving}
+            onAct={act}
+          />
+        )}
+        {act === null || view.steps?.editable !== true || view.closed ? null : (
+          <KinWorkToggleRow
+            icon={KIN_URGENT_SYMBOL}
+            label={KIN_WORK_URGENT.label}
+            value={view.urgent}
+            disabled={saving}
+            onValueChange={(urgent) => act({ type: "urgent", urgent })}
+          />
+        )}
+        {reword !== null && !view.closed ? (
+          <KinDayField
+            icon="clock"
+            label={KIN_TASK_RECORD.due}
+            day={view.dueDay}
+            // A timed date has no one day to mark, so the row says it as it is.
+            {...(view.due !== null && view.dueDay === null ? { detail: capital(view.due) } : {})}
+            none={KIN_WORK_COPY.noDate}
+            zone={names.zone}
+            now={now}
+            disabled={saving}
+            onPick={(day) => reword({ type: "due", day })}
+          />
+        ) : view.due === null ? null : (
+          <ListRowLayout
+            icon="clock"
+            label={KIN_TASK_RECORD.due}
+            detail={capital(view.due)}
+            {...(view.late ? { tone: "danger" as const } : {})}
+          />
+        )}
+        {!hostClients ? null : act === null || !view.can.project ? (
+          view.project === null ? null : (
+            <ListRow
               icon="folder"
               label={KIN_WORK_NEW_COPY.projectLabel}
-              none={KIN_WORK_NEW_COPY.none}
-              held={view.project}
-              choices={choices.projects}
-              clearable={view.can.clearProject}
-              disabled={saving}
-              onPick={(project) => act({ type: "place", project })}
-              onOpen={openProject}
+              detail={view.project.title}
+              detailEllipsizeMode="tail"
+              onPress={openProject}
             />
-          )}
-          {view.milestone === null ? null : (
+          )
+        ) : (
+          <KinWorkPlacePicker
+            target={props}
+            noun="project"
+            icon="folder"
+            label={KIN_WORK_NEW_COPY.projectLabel}
+            held={view.project}
+            choices={choices.projects}
+            done={choices.doneProjects}
+            only={projectsAllowed}
+            clearable={view.can.clearProject}
+            disabled={saving}
+            onPick={(project) => act({ type: "place", project })}
+            onOpen={openProject}
+          />
+        )}
+        {!hostClients ? null : act === null || !view.can.party ? (
+          view.party === null ? null : opensClients ? (
             <ListRow
-              icon="list.bullet"
-              label={KIN_WORK_MILESTONE.label}
-              detail={view.milestone.title}
-              onPress={() =>
-                openRecord("KinWorkItem", {
-                  environmentId,
-                  orgId,
-                  task: view.milestone?.key ?? "",
-                })
-              }
+              icon="person.2"
+              label={KIN_WORK_NEW_COPY.clientLabel}
+              detail={view.party.title}
+              detailEllipsizeMode="tail"
+              {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
+              onPress={openParty}
             />
-          )}
+          ) : (
+            <ListRowLayout
+              icon="person.2"
+              label={KIN_WORK_NEW_COPY.clientLabel}
+              detail={view.party.title}
+              detailEllipsizeMode="tail"
+              {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
+            />
+          )
+        ) : (
+          <KinWorkPlacePicker
+            target={props}
+            noun="client"
+            icon="person.2"
+            label={KIN_WORK_NEW_COPY.clientLabel}
+            held={view.party}
+            choices={choices.clients}
+            disabled={saving}
+            onPick={(party) => act({ type: "place", party })}
+            onOpen={openParty}
+            side={{ value: view.side, onPick: (side) => act({ type: "place", side }) }}
+          />
+        )}
+        {clientStays === null ? null : (
+          <Text textRole="footnote" className="px-4 pb-3 text-foreground-muted">
+            {clientStays}
+          </Text>
+        )}
+        {view.milestone === null ? null : (
+          <ListRow
+            icon="list.bullet"
+            label={KIN_WORK_MILESTONE.label}
+            detail={view.milestone.title}
+            onPress={() =>
+              openRecord("KinWorkItem", {
+                environmentId,
+                orgId,
+                task: view.milestone?.key ?? "",
+              })
+            }
+          />
+        )}
+        {repeats || view.repeat === null ? null : (
+          <ListRowLayout
+            icon="arrow.clockwise"
+            label={KIN_WORK_REPEAT.label}
+            detail={view.repeat.text}
+          />
+        )}
+        {folded === null || peopleOpen ? null : (
+          <ListRow
+            icon="person.crop.circle"
+            label={folded.label}
+            onPress={() => setPeopleOpen(true)}
+          />
+        )}
+        {!hostClients ? null : (
           <KinWorkAudienceRow
             environmentId={environmentId}
             orgId={orgId}
@@ -654,8 +1009,8 @@ function KinWorkItemBody(props: ItemTarget) {
             disabled={saving}
             onMark={act === null ? null : (on) => act({ type: "private", private: on })}
           />
-        </ListSection>
-      )}
+        )}
+      </ListSection>
       {view.tasks === null ? null : (
         <ListSection title={KIN_WORK_MILESTONE.tasks}>
           {view.tasks.length === 0 ? (
@@ -674,16 +1029,44 @@ function KinWorkItemBody(props: ItemTarget) {
           )}
         </ListSection>
       )}
-      {edit !== null || (view.notes === null && !kinHasNotesHistory(item)) ? null : (
-        <View className="gap-2 px-2">
-          <Text textRole="footnote" className="text-foreground-muted">
-            Notes
-          </Text>
-          {view.notes === null ? null : (
-            <Text textRole="body" selectable className="text-foreground">
-              {view.notes}
-            </Text>
-          )}
+      {edit !== null ? null : (
+        <View className="gap-2">
+          <ListSection
+            title={KIN_TASK_RECORD.brief}
+            {...(reword === null
+              ? {}
+              : {
+                  trailing: (
+                    <Button
+                      tone="text"
+                      size="compact"
+                      label={KIN_TASK_RECORD.edit}
+                      accessibilityLabel={KIN_TASK_RECORD.editBrief}
+                      onPress={() => changes.startEdit(item)}
+                    />
+                  ),
+                })}
+          >
+            <View className="gap-2.5 px-4 py-3.5">
+              <Text
+                textRole="body"
+                selectable
+                className={view.notes === null ? "text-foreground-muted" : "text-foreground"}
+              >
+                {view.notes ?? KIN_TASK_RECORD.noBrief}
+              </Text>
+              {briefBy === null ? null : (
+                <View className="flex-row items-center gap-1.5">
+                  {briefBy.avatar === null ? null : (
+                    <KinAvatar avatar={briefBy.avatar} size="mini" />
+                  )}
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {briefBy.name}, {briefBy.when}
+                  </Text>
+                </View>
+              )}
+            </View>
+          </ListSection>
           <KinNotesVersions
             item={item}
             names={names}
@@ -693,23 +1076,390 @@ function KinWorkItemBody(props: ItemTarget) {
           />
         </View>
       )}
-      {view.links.length === 0 ? null : (
-        <ListSection title="Links">
-          {view.links.map((link) => (
-            <KinWorkLink
-              key={link.key}
-              link={link}
-              onOpen={() => openLink(link)}
-              onOpenThread={(thread) => {
-                navigation.goBack();
-                openDetail({ name: "Thread", params: thread });
-              }}
+      <KinActivity
+        lines={kinTaskActivity({ changes: item.changes, comments }, names, now)}
+        note={view.historyNote}
+        environmentId={environmentId}
+        onPressPreview={setPreviewFile}
+        onRemove={askRemove}
+        {...(moreComments ? { onOlder: () => void loadOlder() } : {})}
+        {...(item.projectNote === undefined
+          ? {}
+          : { projectNote: kinProjectNoteLine(item.projectNote, names, now) })}
+        onOpenProject={(project) => openRecord("KinProject", { environmentId, orgId, project })}
+      />
+      {linkedSection(shown, view.links, canLink && view.can.links === true)}
+      <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
+    </KinWorkFrame>
+  );
+}
+
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** A task someone marked urgent, beside where it stands. */
+function KinUrgentFlag() {
+  return (
+    <View className="flex-row items-center gap-1">
+      <SymbolView
+        name={KIN_URGENT_SYMBOL}
+        size={12}
+        tintColorClassName="accent-warning-foreground"
+        type="monochrome"
+      />
+      <Text textRole="footnote" className="font-t3-medium text-warning-foreground">
+        {KIN_WORK_URGENT.label}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * A task's checklist: a tap on a box ticks it; a step is added at the foot and removed with its
+ * cross. Ticking every step leaves the task open: done is still the top card's to say.
+ */
+function KinTaskSteps(props: {
+  readonly steps: KinWorkStepsView;
+  readonly disabled: boolean;
+  readonly onTick: ((index: number, title: string, done: boolean) => void) | null;
+  readonly onChange:
+    | ((
+        steps: ReadonlyArray<{ readonly title: string; readonly done: boolean }>,
+        said: "added" | "removed",
+      ) => void)
+    | null;
+}) {
+  const { steps, onTick, onChange } = props;
+  const [draft, setDraft] = useState("");
+  const held = steps.items.map((item) => ({ title: item.title, done: item.done }));
+  const problem = draft.trim() === "" ? null : kinWorkStepProblem(draft, held.length);
+  const add = () => {
+    const title = draft.trim();
+    if (onChange === null || title === "" || problem !== null) return;
+    onChange([...held, { title, done: false }], "added");
+    setDraft("");
+  };
+  return (
+    <View className="gap-2">
+      <ListSection
+        title={
+          steps.count === null ? KIN_WORK_STEPS.title : `${KIN_WORK_STEPS.title} · ${steps.count}`
+        }
+      >
+        {steps.items.map((item) => (
+          <View key={`${item.index}:${item.title}`} className="min-h-12 flex-row items-center">
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: item.done, disabled: onTick === null }}
+              accessibilityLabel={onTick === null ? item.title : item.label}
+              disabled={onTick === null || props.disabled}
+              onPress={() => onTick?.(item.index, item.title, !item.done)}
+              className="min-w-0 flex-1 flex-row items-center gap-3 py-3 pl-4 active:opacity-60"
+            >
+              <SymbolView
+                name={item.done ? "checkmark.circle.fill" : "circle"}
+                size={20}
+                tintColorClassName={item.done ? "accent-icon" : "accent-icon-muted"}
+                type="monochrome"
+              />
+              <Text
+                textRole="body"
+                className={cn(
+                  "min-w-0 flex-1",
+                  item.done ? "text-foreground-muted line-through" : "text-foreground",
+                )}
+              >
+                {item.title}
+              </Text>
+            </Pressable>
+            {onChange === null ? (
+              <View className="w-4" />
+            ) : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${KIN_WORK_STEPS.remove}: ${item.title}`}
+                disabled={props.disabled}
+                hitSlop={8}
+                onPress={() =>
+                  onChange(
+                    held.filter((_, index) => index !== item.index),
+                    "removed",
+                  )
+                }
+                className="px-4 py-3 active:opacity-60"
+              >
+                <SymbolView
+                  name="xmark"
+                  size={12}
+                  tintColorClassName="accent-icon-muted"
+                  type="monochrome"
+                />
+              </Pressable>
+            )}
+          </View>
+        ))}
+        {onChange === null ? null : (
+          <View className="min-h-12 flex-row items-center gap-3 px-4 py-2">
+            <SymbolView
+              name="plus"
+              size={16}
+              tintColorClassName="accent-icon-muted"
+              type="monochrome"
             />
-          ))}
-        </ListSection>
+            <TextInput
+              accessibilityLabel={KIN_WORK_STEPS.add}
+              value={draft}
+              editable={!props.disabled}
+              autoCapitalize="sentences"
+              returnKeyType="done"
+              submitBehavior="submit"
+              onChangeText={setDraft}
+              onSubmitEditing={add}
+              placeholder={KIN_WORK_STEPS.placeholder}
+              placeholderTextColorClassName="accent-placeholder"
+              className="min-h-8 min-w-0 flex-1 font-sans text-base text-foreground"
+            />
+          </View>
+        )}
+      </ListSection>
+      {problem === null ? null : (
+        <Text accessibilityRole="alert" textRole="footnote" className="px-2 text-danger-foreground">
+          {problem}
+        </Text>
       )}
-      <KinWorkHistory view={view} />
-    </Frame>
+      {steps.allDone === null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {steps.allDone}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+/** Where the task stands for this viewer, in one word or two, above its title. */
+function KinRecordChip(props: { readonly tone: KinRecordChipTone; readonly label: string }) {
+  const look = CHIP[props.tone];
+  return (
+    <View className={cn("flex-row items-center gap-1.5 rounded-full px-2.5 py-1", look.box)}>
+      <SymbolView name={look.icon} size={13} tintColorClassName={look.tint} />
+      <Text textRole="footnote" className={cn("font-t3-medium", look.text)}>
+        {props.label}
+      </Text>
+    </View>
+  );
+}
+
+/** A person or agent in Details, with their picture so an agent reads as one at a glance. */
+function KinDetailPerson(props: {
+  readonly icon: AppSymbolName;
+  readonly label: string;
+  readonly who: KinRecordWho;
+  readonly description?: string;
+}) {
+  const grows = useKinTextGrows();
+  return (
+    <View
+      accessible
+      accessibilityLabel={[`${props.label}: ${props.who.name}`, props.description]
+        .filter(Boolean)
+        .join(". ")}
+    >
+      <ListRowLayout
+        icon={props.icon}
+        label={props.label}
+        {...(props.description ? { description: props.description } : {})}
+        accessory={
+          <View className="max-w-[55%] shrink flex-row items-center gap-1.5">
+            <KinAvatar avatar={props.who.avatar} size="mini" />
+            <Text
+              textRole="footnote"
+              numberOfLines={kinLines(1, grows)}
+              className="shrink text-foreground-muted"
+            >
+              {props.who.name}
+            </Text>
+          </View>
+        }
+      />
+    </View>
+  );
+}
+
+/** Who did what to the task and when, oldest first: its changes and its notes in one thread. */
+function KinActivity(props: {
+  readonly lines: ReadonlyArray<KinActivityLine>;
+  readonly note: string | null;
+  readonly environmentId: EnvironmentId;
+  readonly onPressPreview: (source: FilePreviewSource) => void;
+  readonly onRemove: (commentId: string) => void;
+  readonly onOlder?: () => void;
+  readonly projectNote?: ReturnType<typeof kinProjectNoteLine>;
+  readonly onOpenProject: (key: KinRecordKey) => void;
+}) {
+  const pinned = props.projectNote;
+  return (
+    <View className="gap-3">
+      <Text
+        textRole="footnote"
+        accessibilityRole="header"
+        className="px-2 font-t3-medium text-foreground-muted"
+      >
+        {KIN_TASK_RECORD.activity}
+      </Text>
+      {props.note === null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {props.note}
+        </Text>
+      )}
+      {pinned === undefined ? null : (
+        <View
+          accessible
+          accessibilityLabel={`${KIN_TASK_RECORD.fromProject}, ${pinned.project.title}. ${pinned.body}`}
+          className="flex-row gap-2.5 px-1"
+        >
+          <View className="w-7 items-center pt-0.5">
+            <SymbolView name="folder" size={15} tintColorClassName="accent-icon-muted" />
+          </View>
+          <View className="min-w-0 flex-1">
+            <Text textRole="footnote" className="text-foreground-muted">
+              <Text className="font-t3-medium text-foreground">{KIN_TASK_RECORD.fromProject} </Text>
+              <Text
+                accessibilityRole="link"
+                className="text-foreground underline"
+                onPress={() => props.onOpenProject(pinned.project.key)}
+              >
+                {pinned.project.title}
+              </Text>
+              {` · ${pinned.who}, ${pinned.when}`}
+            </Text>
+            <Text textRole="body" selectable className="mt-1 text-foreground">
+              {pinned.body}
+            </Text>
+          </View>
+        </View>
+      )}
+      {props.onOlder === undefined ? null : (
+        <View className="px-1">
+          <Button
+            tone="text"
+            size="compact"
+            label={KIN_TASK_RECORD.older}
+            onPress={props.onOlder}
+          />
+        </View>
+      )}
+      {props.lines.length === 0 ? (
+        pinned !== undefined ? null : (
+          <Text textRole="footnote" className="px-2 text-foreground-muted">
+            {KIN_TASK_RECORD.noActivity}
+          </Text>
+        )
+      ) : (
+        props.lines.map((line) => (
+          <View key={line.key} className="flex-row gap-2.5 px-1">
+            <View className="w-7 items-center pt-0.5">
+              <SymbolView
+                name={ACTIVITY_SYMBOL[line.icon]}
+                size={15}
+                tintColorClassName="accent-icon-muted"
+              />
+            </View>
+            <View className="min-w-0 flex-1">
+              <Text textRole="footnote" className="text-foreground-muted">
+                {line.who === null ? null : (
+                  <Text className="font-t3-medium text-foreground">{line.who} </Text>
+                )}
+                {activityTail(line)}
+              </Text>
+              {line.comment === null || line.comment.removed ? null : (
+                <KinCommentBody
+                  comment={line.comment}
+                  environmentId={props.environmentId}
+                  onPressPreview={props.onPressPreview}
+                  onRemove={() => props.onRemove(line.comment?.commentId ?? "")}
+                />
+              )}
+              {line.before === null && line.after === null ? null : (
+                <KinBeforeAfter before={line.before} after={line.after} />
+              )}
+            </View>
+          </View>
+        ))
+      )}
+    </View>
+  );
+}
+
+/** What follows the name: "gave it to Zoya, via Chief of staff · 2h", or a note's time alone. */
+const activityTail = (line: KinActivityLine) => {
+  const said = [line.text, line.via === null ? "" : `via ${line.via}`]
+    .filter((part) => part !== "")
+    .join(", ");
+  return said === "" ? `· ${line.when}` : `${said} · ${line.when}`;
+};
+
+/** A note's words and files, and the way to take it back for whoever may. */
+function KinCommentBody(props: {
+  readonly comment: NonNullable<KinActivityLine["comment"]>;
+  readonly environmentId: EnvironmentId;
+  readonly onPressPreview: (source: FilePreviewSource) => void;
+  readonly onRemove: () => void;
+}) {
+  const { comment } = props;
+  return (
+    <View className="mt-1 gap-1.5">
+      {comment.body === "" ? null : (
+        <Text textRole="body" selectable className="text-foreground">
+          {comment.body}
+        </Text>
+      )}
+      {comment.files.length === 0 ? null : (
+        <KinAttachments
+          attachments={comment.files}
+          environmentId={props.environmentId}
+          onPressPreview={props.onPressPreview}
+        />
+      )}
+      {comment.canRemove ? (
+        <View className="flex-row">
+          <Button
+            tone="text"
+            size="compact"
+            label={KIN_TASK_NOTE_COPY.remove}
+            accessibilityLabel={KIN_TASK_NOTE_COPY.removeLabel}
+            onPress={props.onRemove}
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** What a change replaced, struck through, over what it became; two lines each until tapped. */
+function KinBeforeAfter(props: { readonly before: string | null; readonly after: string | null }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Before: ${props.before ?? "nothing"}. After: ${props.after ?? "nothing"}`}
+      accessibilityHint={open ? "Shows two lines of each" : "Shows all of it"}
+      onPress={() => setOpen(!open)}
+      className="mt-1.5 gap-1 rounded-xl bg-grouped-card px-2.5 py-2"
+    >
+      {props.before === null ? null : (
+        <Text
+          textRole="footnote"
+          numberOfLines={open ? undefined : 2}
+          className="text-foreground-muted line-through"
+        >
+          {props.before}
+        </Text>
+      )}
+      {props.after === null ? null : (
+        <Text textRole="footnote" numberOfLines={open ? undefined : 2} className="text-foreground">
+          {props.after}
+        </Text>
+      )}
+    </Pressable>
   );
 }
 
@@ -735,10 +1485,156 @@ function KinWorkNoticeLine(props: {
   );
 }
 
+/** Everything linked to an entry, both ways, by kind; then its pull requests, workers and pages. */
+function KinWorkLinked(props: {
+  readonly detail: KinRecordDetail;
+  readonly links: ReadonlyArray<KinWorkLinkView>;
+  readonly onOpen: (to: KinNotificationDestination) => void;
+  readonly onOpenLink: (link: KinWorkLinkView) => void;
+  readonly onOpenThread: (thread: NonNullable<KinWorkLinkView["thread"]>) => void;
+  /** Only where this viewer may change the entry's web links. */
+  readonly onAddLink?: () => void;
+  readonly onRemoveLink?: (link: KinWorkLinkView) => void;
+}) {
+  const rest = kinLinkedRest(props.links);
+  const { onAddLink, onRemoveLink } = props;
+  return (
+    <KinLinkedSection
+      item={props.detail}
+      // Both pages show the entry's client, project and milestone in their rows already.
+      parentsShown
+      onOpen={props.onOpen}
+    >
+      {rest.length === 0 && onAddLink === undefined ? null : (
+        <>
+          {rest.map((link) => (
+            <KinWorkLink
+              key={link.key}
+              link={link}
+              onOpen={() => props.onOpenLink(link)}
+              onOpenThread={props.onOpenThread}
+              {...(onRemoveLink === undefined || link.removeUrl === undefined
+                ? {}
+                : { onRemove: () => onRemoveLink(link) })}
+            />
+          ))}
+          {onAddLink === undefined ? null : (
+            <ListActionRow label={KIN_TASK_LINK.add} onPress={onAddLink} />
+          )}
+        </>
+      )}
+    </KinLinkedSection>
+  );
+}
+
+/** Opens a Linked row: a chat at its message, a record as a record link, a doc as a doc. */
+export function useKinOpenLinked(target: KinWorkTarget) {
+  const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
+  const { environmentId, orgId } = target;
+  return (to: KinNotificationDestination) =>
+    to._tag === "chat"
+      ? navigation.navigate("KinChat", {
+          environmentId,
+          orgId,
+          chatId: to.chatId,
+          ...(to.messageId === null ? {} : { message: to.messageId }),
+        })
+      : to._tag !== "record"
+        ? undefined
+        : to.kind === "client"
+          ? openRecord("KinClient", { environmentId, orgId, party: to.key })
+          : to.kind === "project"
+            ? openRecord("KinProject", { environmentId, orgId, project: to.key })
+            : to.kind === "doc"
+              ? openRecord("KinDoc", { environmentId, orgId, doc: to.key })
+              : openRecord("KinWorkItem", { environmentId, orgId, task: to.key });
+}
+
+/** What links to an entry or doc and what it links to, by kind; `children` follow the groups. */
+export function KinLinkedSection(props: {
+  readonly item: Parameters<typeof kinLinked>[0];
+  readonly parentsShown: boolean;
+  readonly onOpen: (to: KinNotificationDestination) => void;
+  readonly children?: ReactNode;
+}) {
+  const grows = useKinTextGrows();
+  const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
+  const linked = kinLinked(props.item, undefined, { expanded, parentsShown: props.parentsShown });
+  const children = props.children ?? null;
+  if (linked.groups.length === 0 && children === null && linked.unlisted === 0) return null;
+  return (
+    <ListSection
+      title={KIN_TASK_RECORD.linked}
+      {...(linked.unlisted === 0 ? {} : { footer: KIN_LINKED.unlisted(linked.unlisted) })}
+    >
+      {linked.groups.map((group) => (
+        <View key={group.group}>
+          <Text textRole="footnote" className="px-4 pt-3 text-foreground-muted">
+            {KIN_LINKED.group[group.group]}
+          </Text>
+          {group.items.map((item) => {
+            const title = item.title ?? KIN_LINKED.message;
+            const { open } = item;
+            const row = (
+              <View className="min-w-0 flex-row gap-2 px-4 py-3">
+                {item.kind === "message" ? null : (
+                  <Text textRole="body" className="text-foreground-muted">
+                    {item.name}
+                  </Text>
+                )}
+                <Text
+                  textRole="body"
+                  numberOfLines={kinLines(1, grows)}
+                  className="min-w-0 flex-1 text-foreground"
+                >
+                  {title}
+                </Text>
+                {item.deleted === true ? (
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {KIN_DOCS.archived}
+                  </Text>
+                ) : null}
+              </View>
+            );
+            return open === null ? (
+              <View key={item.key} accessibilityLabel={title} className="bg-grouped-card">
+                {row}
+              </View>
+            ) : (
+              <RowPressable
+                key={item.key}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  item.kind === "message"
+                    ? title
+                    : `${item.name}, ${title}${item.deleted === true ? `, ${KIN_DOCS.archived}` : ""}`
+                }
+                onPress={() => props.onOpen(open)}
+                className="bg-grouped-card"
+              >
+                {row}
+              </RowPressable>
+            );
+          })}
+          {group.more === 0 ? null : (
+            <ListActionRow
+              label={KIN_LINKED.more(group.more)}
+              onPress={() => setExpanded(new Set([...expanded, group.group]))}
+            />
+          )}
+        </View>
+      ))}
+      {children}
+    </ListSection>
+  );
+}
+
 function KinWorkLink(props: {
   readonly link: KinWorkLinkView;
   readonly onOpen: () => void;
   readonly onOpenThread: (thread: NonNullable<KinWorkLinkView["thread"]>) => void;
+  readonly onRemove?: () => void;
 }) {
   const { link } = props;
   const { thread } = link;
@@ -759,6 +1655,13 @@ function KinWorkLink(props: {
         <ListActionRow
           label={KIN_WORK_COPY.openThread}
           onPress={() => props.onOpenThread(thread)}
+        />
+      )}
+      {props.onRemove === undefined ? null : (
+        <ListActionRow
+          tone="danger"
+          label={KIN_TASK_LINK.remove(link.label)}
+          onPress={props.onRemove}
         />
       )}
     </>
@@ -792,6 +1695,7 @@ function KinWorkLeadChat(
   );
 }
 
+/** A list entry's history, as it read before tasks had Activity. */
 function KinWorkHistory({ view }: { readonly view: KinWorkItemView }) {
   if (view.history.length === 0) return null;
   return (

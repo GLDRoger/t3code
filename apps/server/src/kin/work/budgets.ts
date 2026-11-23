@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { dayIn, formatMinor, monthOf, shiftMonth } from "./money.ts";
+import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth } from "./money.ts";
 import { countedEntry, moneyDay, ownerZone, startOfDay } from "./recordRows.ts";
 
 /**
@@ -156,12 +156,18 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
   return {
     month: shown,
     budgets: budgets.map((budget) => {
-      const members = spent.filter(
+      const onTarget = spent.filter(
         (one) =>
-          one.currency === budget.currency &&
           (budget.category === null ||
             one.category?.toLowerCase() === budget.category.toLowerCase()) &&
           (budget.projectId === null || one.projectId === budget.projectId),
+      );
+      const members = onTarget.filter((one) => one.currency === budget.currency);
+      // A currency with its own budget on this target is counted there, not left out here.
+      const budgeted = new Set(
+        budgets
+          .filter((other) => targetOf(other) === targetOf(budget))
+          .map((other) => other.currency),
       );
       const total = members.reduce((sum, one) => sum + BigInt(one.minor), 0n);
       const limit = BigInt(budget.limitMinor);
@@ -170,6 +176,10 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
         spent: total,
         expenses: members.length,
         status: statusOf(total, limit),
+        notCounted: addUp(
+          onTarget.filter((one) => !budgeted.has(one.currency)),
+          budget.currency,
+        ),
       };
     }),
   };
@@ -199,10 +209,18 @@ export const budgetsAnswer = (view: BudgetsView) => ({
         : { over: formatMinor(-left, one.currency) }),
       expenses: one.expenses,
       status: one.status,
+      ...(one.notCounted.length === 0
+        ? {}
+        : {
+            notCounted: one.notCounted.map((money) => ({
+              currency: money.currency,
+              spent: formatMoney(money),
+            })),
+          }),
     };
   }),
   ...(view.budgets.length === 0 ? { none: "No budgets are set." } : {}),
-  basis: `Spent is paid expenses dated in ${view.month} in the owner's time zone. over is past the limit; near is at the limit or past ${NEAR_PERCENT}% of it.`,
+  basis: `Spent is paid expenses dated in ${view.month} in the owner's time zone. over is past the limit; near is at the limit or past ${NEAR_PERCENT}% of it. notCounted is spending on the same target in other currencies, which the budget's spent does not include.`,
 });
 
 /** This month's budgets over or near their limit, for the morning brief; nothing when none are. */

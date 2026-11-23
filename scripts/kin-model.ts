@@ -57,7 +57,9 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/lead/KinEventQueue.ts",
     "apps/server/src/kin/pulse/told.ts",
     "apps/server/src/kin/triggers/quietHold.ts",
+    "apps/server/src/kin/triggers/quietHours.ts",
     "apps/server/src/kin/triggers/heldDelivery.ts",
+    "apps/server/src/kin/push/KinPushSender.ts",
     "apps/server/src/kin/lead/LevelGate.ts",
     "apps/server/src/kin/lead/Handoff.ts",
     "apps/server/src/kin/work/assignNotices.ts",
@@ -79,6 +81,7 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/work/teamView.ts",
     "apps/server/src/kin/lead/Audience.ts",
     "apps/server/src/kin/lead/ChatSharing.ts",
+    "apps/server/src/kin/pulse/senses/work.ts",
   ],
   stream: [
     "apps/server/src/kin/work/workStream.ts",
@@ -92,12 +95,12 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/work/leadWork.ts",
     "apps/server/src/kin/work/ownerWork.ts",
     "apps/server/src/kin/work/assignNotices.ts",
-    "apps/server/src/kin/pulse/nudge.ts",
     "apps/server/src/kin/work/teamView.ts",
     "apps/server/src/kin/pulse/senses/work.ts",
   ],
   questions: [
     "apps/server/src/kin/questions/openQuestions.ts",
+    "apps/server/src/kin/questions/askPerson.ts",
     "apps/server/src/kin/questions/rules.ts",
     "apps/server/src/kin/widgets/choiceCard.ts",
     "apps/server/src/kin/work/cardAnswers.ts",
@@ -112,13 +115,13 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/chat/KinGroups.ts",
     "apps/server/src/kin/lead/Handoff.ts",
     "apps/server/src/kin/lead/WakeupRunner.ts",
+    "apps/server/src/kin/lead/ChatWake.ts",
   ],
   "github-events": [
     "apps/server/src/kin/github/GitHubWatch.ts",
     "apps/server/src/kin/github/githubTriggers.ts",
     "apps/server/src/kin/github/agentMark.ts",
     "apps/server/src/kin/github/ghSign.ts",
-    "apps/server/src/kin/triggers/githubEvents.ts",
   ],
   social: [
     "apps/server/src/kin/social/SocialService.ts",
@@ -135,6 +138,16 @@ export const modelsFor = (files: ReadonlyArray<string>) =>
         file.startsWith(`verification/kin/${name}/`) ||
         file === "scripts/kin-model.ts",
     ),
+  );
+/**
+ * Models a change selects through their covered code while their own folder is untouched. TLC
+ * reads only the spec, so their pass says nothing about the change until someone re-confirms it.
+ */
+export const modelsToReconfirm = (files: ReadonlyArray<string>) =>
+  Object.keys(MODEL_COVERS).filter(
+    (name) =>
+      files.some((file) => MODEL_COVERS[name]!.includes(file)) &&
+      !files.some((file) => file.startsWith(`verification/kin/${name}/`)),
   );
 const MODELS = NodePath.join(ROOT, "verification", "kin");
 
@@ -478,6 +491,9 @@ const runTlc = async (
         // TLC unpacks Naturals.tla and friends into java.io.tmpdir; a shared one races between runs.
         `-Djava.io.tmpdir=${work}`,
         "-XX:+UseParallelGC",
+        // The default MSBDiskFPSet can report a duplicate fingerprint and crash dividing by zero
+        // in reportSuccess after a clean search (seen on macOS, JBR 21); this set does not.
+        "-Dtlc2.tool.fp.FPSet.impl=tlc2.tool.fp.OffHeapDiskFPSet",
         "-cp",
         jar,
         "tlc2.TLC",

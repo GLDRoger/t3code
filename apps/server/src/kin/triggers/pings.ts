@@ -296,7 +296,8 @@ const make = Effect.gen(function* () {
                 yield* sql`SELECT m.message_id FROM kin_messages m JOIN kin_ping_deliveries d
               ON d.org_id = m.org_id AND d.person = ${r.person} AND d.item_id = ${r.itemId}
               WHERE m.org_id = ${orgId} AND m.chat_id = ${r.chatId} AND m.author_person_id = ${r.person}
-              AND m.author_kind = 'human' AND m.status = 'posted' AND m.seq > d.seq
+              AND m.author_kind = 'human' AND m.status = 'posted' AND m.origin_json IS NULL
+              AND m.seq > d.seq
               AND (m.reply_to = d.message_id OR d.item_count = 1) ORDER BY m.seq LIMIT 1`;
 
               if (closed || replies.length > 0) {

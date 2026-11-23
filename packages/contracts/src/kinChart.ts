@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { KinTrimmedText } from "./kinChat.ts";
+import { KinTrimmedText } from "./baseSchemas.ts";
 
 // Every number below bounds what a chat row stores and a phone draws. None is a taste limit.
 /** A year of days fits; past this a chart is a table. */

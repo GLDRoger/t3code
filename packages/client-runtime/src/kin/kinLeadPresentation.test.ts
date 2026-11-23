@@ -1,7 +1,10 @@
+// @effect-diagnostics globalDate:off - Fixtures build times relative to a fixed clock.
 import { KinAgentId, KinPersonId, ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  kinAgentRowLine,
+  kinChatReadOnlyLine,
   kinDomainLabel,
   kinDomainSlug,
   kinLeadChanges,
@@ -29,6 +32,17 @@ describe("lead domains", () => {
 
   it.each(["", "   ", "123", "—"])("has no slug for %j", (typed) => {
     expect(kinDomainSlug(typed)).toBeNull();
+  });
+
+  it("says what an agent does in its list row, never its name again or its charter", () => {
+    const lead = { name: "Finance", domain: "finance", intro: "", roleTags: [] };
+    expect(kinAgentRowLine(lead)).toBeNull();
+    expect(kinAgentRowLine({ ...lead, name: "Chief of staff", domain: "chief" })).toBeNull();
+    expect(kinAgentRowLine({ ...lead, name: "Asha" })).toBe("Finance");
+    expect(kinAgentRowLine({ ...lead, roleTags: ["billing", "payroll"] })).toBe("billing, payroll");
+    expect(
+      kinAgentRowLine({ ...lead, intro: " Ask me about invoices. ", roleTags: ["billing"] }),
+    ).toBe("Ask me about invoices.");
   });
 
   it("reads a slug back as words that make the same slug", () => {
@@ -113,10 +127,44 @@ describe("lead draft", () => {
 describe("what a lead has in hand", () => {
   it("adds the due time when there is one", () => {
     expect(kinLeadTrackingDetail({ kind: "work" })).toBe("Working on it now");
-    expect(kinLeadTrackingDetail({ kind: "scheduled" })).toBe("Repeats");
+    expect(kinLeadTrackingDetail({ kind: "scheduled" })).toBeNull();
     expect(
       kinLeadTrackingDetail({ kind: "reminder", dueAt: "2026-11-13T09:00:00.000Z" }, "UTC"),
     ).toBe("Reminder, Fri, Nov 13, 9:00 AM");
+    // K227: a due day is the day alone, never its end-of-day time.
+    const day = { kind: "work", dueAt: "2026-11-27T23:59:59.999Z", dueAllDay: true } as const;
+    expect(kinLeadTrackingDetail(day, "UTC", new Date("2026-11-18T09:00:00.000Z"))).toBe(
+      "Working on it now, due Fri, Nov 27",
+    );
+    // Given no zone, the company's from `names`, never this device's: Friday in Honolulu.
+    const honolulu = { people: new Map(), agents: new Map(), me: null, zone: "Pacific/Honolulu" };
+    const friday = { ...day, dueAt: "2026-11-28T09:59:59.999Z" };
+    expect(
+      kinLeadTrackingDetail(friday, undefined, new Date("2026-11-18T09:00:00.000Z"), honolulu),
+    ).toBe("Working on it now, due Fri, Nov 27");
+  });
+
+  it("says a waiting task is waiting, as the Tasks list does, never that it is under way", () => {
+    const names = {
+      people: new Map([["ambermill-rhea", "Rhea"]]),
+      agents: new Map(),
+      me: KinPersonId.make("ambermill-rhea"),
+      zone: "UTC",
+    };
+    const waiting = {
+      kind: "work",
+      dueAt: "2026-11-19T23:59:59.999Z",
+      dueAllDay: true,
+      state: "waiting",
+      waitingOn: { _tag: "person", personId: KinPersonId.make("ambermill-rhea") },
+    } as const;
+    const now = new Date("2026-11-18T09:00:00.000Z");
+    expect(kinLeadTrackingDetail(waiting, "UTC", now, names)).toBe("Waiting on you, due tomorrow");
+    expect(kinLeadTrackingDetail(waiting, "UTC", now)).toBe("Waiting, due tomorrow");
+    expect(kinLeadTrackingDetail({ ...waiting, state: "doing" }, "UTC", now, names)).toBe(
+      "Working on it now, due tomorrow",
+    );
+    expect(kinLeadTrackingDetail({ kind: "work", state: "open" })).toBe("Working on it now");
   });
 });
 
@@ -164,17 +212,44 @@ describe("kinWorkingAgents", () => {
   });
 
   it.each([
-    ["a direct chat with it is working", [row(true, "finance")], ["finance"]],
-    ["its turn ended: the row says so", [row(false, "finance")], []],
-    ["a host without the flag", [row(undefined, "finance")], []],
-    ["another agent's chat is working", [row(true, "chief"), row(false, "finance")], ["chief"]],
+    ["a direct chat with it is working", [row(true, "finance")], [], ["finance"]],
+    ["its turn ended: the row says so", [row(false, "finance")], [], []],
+    ["a host without the flag", [row(undefined, "finance")], [], []],
+    ["another agent's chat is working", [row(true, "chief"), row(false, "finance")], [], ["chief"]],
     // A group's row names only the viewer, so it can't say which agent is on a run.
-    ["a working group names nobody", [row(true)], []],
-  ] as const)("%s", (_, chats, working) => {
-    expect([...kinWorkingAgents(chats)]).toEqual(working);
+    ["a working group names nobody", [row(true)], [], []],
+    // The leads list says which agents are on a run, reread when a group's flag flips.
+    [
+      "a group or the Team room it works in",
+      [row(true), row(false, "finance")],
+      ["finance"],
+      ["finance"],
+    ],
+    ["a group's turn ended", [row(false), row(false, "finance")], ["finance"], []],
+    ["a stale lead flag with no group working", [row(false, "finance")], ["finance"], []],
+  ] as const)("%s", (_, chats, leads, working) => {
+    const listed = leads.map((agentId) => ({ agentId: KinAgentId.make(agentId), working: true }));
+    expect([...kinWorkingAgents(chats, listed)]).toEqual(working);
   });
 
   it("knows nobody is working before the chat list has loaded", () => {
     expect(kinWorkingAgents(null).size).toBe(0);
+  });
+});
+
+describe("kinChatReadOnlyLine", () => {
+  it("names the agent, or the person in a chat between two people", () => {
+    expect(kinChatReadOnlyLine({ kind: "agent", name: "Finance" })).toBe(
+      "You can read this chat, but you can no longer message Finance.",
+    );
+    expect(kinChatReadOnlyLine({ kind: "agent", name: null })).toBe(
+      "You can read this chat, but you can no longer message this agent.",
+    );
+    expect(kinChatReadOnlyLine({ kind: "person", name: "Zoya Sheikh" })).toBe(
+      "You can read this chat, but you and Zoya Sheikh can no longer message each other.",
+    );
+    expect(kinChatReadOnlyLine({ kind: "person", name: null })).toBe(
+      "You can read this chat, but you two can no longer message each other.",
+    );
   });
 });

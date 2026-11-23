@@ -9,6 +9,7 @@ import {
   kinRateInput,
   kinRateMicros,
   kinSettled,
+  kinOwedAbout,
   kinTotalsEstimate,
   type KinRates,
 } from "./kinCurrency.ts";
@@ -57,6 +58,21 @@ describe("kinCurrency", () => {
     expect(kinMissingRates([usd(1), { minor: 1, currency: "EUR" }, inr(1)], rates)).toEqual([
       "EUR",
     ]);
+  });
+
+  it("shows the host's estimate beside what is owed, naming what it leaves out", () => {
+    const owed = { total: [inr(1), usd(1), { minor: 1, currency: "AED" }] };
+    const about = { home: "INR", total: inr(4_10_000), missing: ["AED"] };
+    expect(kinOwedAbout({ owed, about: { owed: about } }, rates)).toEqual({
+      text: "About ₹4,10,000 owed at your rates; AED not included",
+      basis: [expect.stringMatching(/^At ₹84.25 per \$1, as of /)],
+    });
+    const two = { ...about, missing: ["AED", "EUR"] };
+    expect(kinOwedAbout({ owed, about: { owed: two } }, null)?.text).toBe(
+      "About ₹4,10,000 owed at your rates; AED and EUR not included",
+    );
+    // One currency: the host sends no estimate, and none is made here.
+    expect(kinOwedAbout({ owed, about: {} }, rates)).toBeNull();
   });
 
   it("sets, replaces and removes one rate without touching the others", () => {

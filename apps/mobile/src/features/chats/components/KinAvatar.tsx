@@ -9,7 +9,10 @@ import { useKinHostProfiles } from "../state/useKinProfiles";
 
 const SIZE = { mini: 18, small: 28, regular: 40, large: 48, profile: 88 } as const;
 
-/** Who a chat is with: the picture they chose, else the blobatar for their stable id. */
+/**
+ * Who a chat is with: the picture they chose, else the blobatar for their stable id. An agent is
+ * drawn the same way, from its own id.
+ */
 export function KinAvatar(props: {
   readonly avatar: KinAvatarView;
   /** `mini` leads an author line; `small` sits beside a title; `large` heads a details sheet. */

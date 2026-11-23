@@ -1,16 +1,21 @@
 import {
-  KIN_INVITE_LOCAL_ONLY_NOTE,
+  KIN_NEW_TEAMMATE_SEES,
+  KIN_PLACE_SWITCHES,
+  KIN_TEAM_COPY,
   KIN_INVITE_PHONE_NOTE,
   KIN_TEAMMATE_NAME_MAX,
   KIN_TEAM_ADD_COPY,
-  kinInviteLink,
   kinInviteLinkCopy,
-  kinInviteLinkLocalOnly,
+  kinInviteTyped,
+  kinRemovedNamesake,
+  kinShareLink,
   kinTeammateNameCheck,
+  kinTeammateNameMatch,
   type KinMadeInvite,
   type KinTeamActions,
+  type KinTeamList,
 } from "@t3tools/client-runtime/kin/kinTeam";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, KinPersonPlaceSwitches } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { CheckIcon, CopyIcon, ShareIcon } from "lucide-react";
 import { useId, useState } from "react";
@@ -28,9 +33,12 @@ import {
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
-import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { usePreparedConnection } from "../state/session";
+import { useKinFormDiscard } from "./KinFormDiscard";
+import { useKinPublicUrl } from "./useKinOwnerLevel";
 
 /** What the dialog is showing: the name form, or a link the host just made. */
 export type KinInviteDialogState =
@@ -45,15 +53,19 @@ export function KinInviteDialog(props: {
   readonly state: KinInviteDialogState;
   readonly environmentId: EnvironmentId;
   readonly actions: KinTeamActions;
+  readonly list: KinTeamList;
   readonly onMade: (invite: KinMadeInvite) => void;
   readonly onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  // Only the name form asks before closing; once the link is made there is nothing left to lose.
+  const [typed, setTyped] = useState(false);
+  const { close, ask } = useKinFormDiscard(props.state.stage === "name" && typed, props.onClose);
   return (
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open && !busy) props.onClose();
+        if (!open && !busy) close();
       }}
     >
       <DialogPopup className="max-w-lg">
@@ -62,8 +74,10 @@ export function KinInviteDialog(props: {
             busy={busy}
             setBusy={setBusy}
             actions={props.actions}
+            list={props.list}
             onMade={props.onMade}
-            onClose={props.onClose}
+            onTyped={setTyped}
+            onClose={close}
           />
         ) : (
           <InviteLink
@@ -72,6 +86,7 @@ export function KinInviteDialog(props: {
             onClose={props.onClose}
           />
         )}
+        {ask}
       </DialogPopup>
     </Dialog>
   );
@@ -81,28 +96,52 @@ function NameForm(props: {
   readonly busy: boolean;
   readonly setBusy: (busy: boolean) => void;
   readonly actions: KinTeamActions;
+  readonly list: KinTeamList;
   readonly onMade: (invite: KinMadeInvite) => void;
+  /** Whether what is typed would be lost on closing (`kinInviteTyped`), told as it changes. */
+  readonly onTyped: (typed: boolean) => void;
   readonly onClose: () => void;
 }) {
   const { busy } = props;
   const [name, setName] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
+  // The host's offer to bring back a removed person by this name, and who that is.
+  const [offer, setOffer] = useState<{
+    readonly text: string;
+    readonly person: ReturnType<typeof kinRemovedNamesake>;
+  } | null>(null);
+  const [sees, setSees] = useState<KinPersonPlaceSwitches>(KIN_NEW_TEAMMATE_SEES);
   const nameId = useId();
   const checked = kinTeammateNameCheck(name);
+  const match = kinTeammateNameMatch(props.list, name);
 
-  const save = async () => {
+  const make = async (
+    person: NonNullable<ReturnType<typeof kinRemovedNamesake>> | null,
+    newPerson?: true,
+  ) => {
     if (!checked.ok || busy) return;
     props.setBusy(true);
     setProblem(null);
+    setOffer(null);
     const made = await props.actions.makeLink({
-      displayName: checked.name,
-      personId: null,
-      replaces: null,
+      displayName: person?.displayName ?? checked.name,
+      personId: person?.personId ?? null,
+      ...(newPerson === true ? { newPerson } : {}),
+      // Someone coming back gets back what they had; only someone new starts with these.
+      ...(person === null ? { sees } : {}),
+      replaces:
+        person === null
+          ? null
+          : (props.list.invites.find((held) => held.personId === person.personId)?.inviteId ??
+            null),
     });
     props.setBusy(false);
     if (made.ok) props.onMade(made.invite);
+    else if (made.bringBack === true)
+      setOffer({ text: made.problem, person: kinRemovedNamesake(props.list, checked.name) });
     else setProblem(made.problem);
   };
+  const save = () => make(null);
 
   return (
     <form
@@ -114,7 +153,7 @@ function NameForm(props: {
     >
       <DialogHeader>
         <DialogTitle>{KIN_TEAM_ADD_COPY.title}</DialogTitle>
-        <DialogDescription>{KIN_TEAM_ADD_COPY.detail}</DialogDescription>
+        <DialogDescription>{KIN_TEAM_ADD_COPY.detail(false)}</DialogDescription>
       </DialogHeader>
       <DialogPanel>
         <div className="flex flex-col gap-4">
@@ -124,16 +163,78 @@ function NameForm(props: {
               id={nameId}
               value={name}
               maxLength={KIN_TEAMMATE_NAME_MAX}
-              placeholder={KIN_TEAM_ADD_COPY.namePlaceholder}
               autoComplete="off"
               autoFocus
-              onChange={(event) => setName(event.target.value)}
+              onChange={(event) => {
+                setName(event.target.value);
+                props.onTyped(kinInviteTyped({ name: event.target.value, sees }));
+              }}
             />
             <p className="text-xs text-muted-foreground">{KIN_TEAM_ADD_COPY.nameHint}</p>
           </div>
+          {match === null ? null : (
+            <Alert variant="warning">
+              <AlertDescription>{match}</AlertDescription>
+            </Alert>
+          )}
+          <fieldset className="flex flex-col gap-3">
+            <legend className="mb-2 text-sm font-medium text-foreground">
+              {KIN_TEAM_COPY.canSee}
+            </legend>
+            {KIN_PLACE_SWITCHES.map((entry) => {
+              const id = `${nameId}-${entry.place}`;
+              return (
+                <div key={entry.place} className="flex items-start justify-between gap-3">
+                  <label htmlFor={id} className="flex min-w-0 flex-col gap-0.5">
+                    <span className="text-sm text-foreground">{entry.label}</span>
+                    <span className="text-xs text-muted-foreground">{entry.detail}</span>
+                  </label>
+                  <Switch
+                    id={id}
+                    checked={sees[entry.place]}
+                    disabled={busy}
+                    onCheckedChange={(on) => {
+                      const next = { ...sees, [entry.place]: on };
+                      setSees(next);
+                      props.onTyped(kinInviteTyped({ name, sees: next }));
+                    }}
+                  />
+                </div>
+              );
+            })}
+            <p className="text-xs text-muted-foreground">{KIN_TEAM_ADD_COPY.seesFooter}</p>
+          </fieldset>
           {problem === null ? null : (
             <Alert variant="error">
               <AlertDescription>{problem}</AlertDescription>
+            </Alert>
+          )}
+          {offer === null ? null : (
+            <Alert>
+              <AlertDescription>
+                {offer.text}
+                {offer.person === null ? null : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="self-start"
+                    disabled={busy}
+                    onClick={() => void make(offer.person)}
+                  >
+                    Bring back {offer.person.displayName}
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="self-start"
+                  disabled={busy}
+                  onClick={() => void make(null, true)}
+                >
+                  {KIN_TEAM_ADD_COPY.someoneElse}
+                </Button>
+              </AlertDescription>
             </Alert>
           )}
         </div>
@@ -159,11 +260,18 @@ function InviteLink(props: {
 }) {
   const { invite } = props;
   const connection = Option.getOrNull(usePreparedConnection(props.environmentId));
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "invite link" });
+  const publicUrl = useKinPublicUrl(props.environmentId);
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: namedClipboardTarget("invite link"),
+  });
   const linkId = useId();
   const copy = kinInviteLinkCopy(invite);
   // The connection can drop while the dialog is up; the link was made, so say how to get another.
-  const link = connection === null ? null : kinInviteLink(connection.httpBaseUrl, invite.secret);
+  const shared =
+    connection === null
+      ? null
+      : kinShareLink({ publicUrl, httpBaseUrl: connection.httpBaseUrl }, invite.secret);
+  const link = shared?.link ?? null;
   return (
     <>
       <DialogHeader>
@@ -171,14 +279,14 @@ function InviteLink(props: {
         <DialogDescription>{copy.detail}</DialogDescription>
       </DialogHeader>
       <DialogPanel>
-        {link === null || connection === null ? (
+        {link === null || shared === null ? (
           <Alert variant="error">
             <AlertDescription>{KIN_TEAM_ADD_COPY.linkDropped(invite.displayName)}</AlertDescription>
           </Alert>
         ) : (
           <div className="flex flex-col gap-3">
             <Label htmlFor={linkId} className="sr-only">
-              Invite link for {invite.displayName}
+              {KIN_TEAM_COPY.inviteLinkFor(invite.displayName)}
             </Label>
             <Textarea
               id={linkId}
@@ -205,11 +313,11 @@ function InviteLink(props: {
               ) : null}
             </div>
             <p className="text-xs text-muted-foreground">{KIN_INVITE_PHONE_NOTE}</p>
-            {kinInviteLinkLocalOnly(connection.httpBaseUrl) ? (
+            {shared.note === null ? null : (
               <Alert variant="warning">
-                <AlertDescription>{KIN_INVITE_LOCAL_ONLY_NOTE}</AlertDescription>
+                <AlertDescription>{shared.note}</AlertDescription>
               </Alert>
-            ) : null}
+            )}
           </div>
         )}
       </DialogPanel>

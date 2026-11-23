@@ -45,6 +45,8 @@ import { memoryIdentity } from "./memoryIdentity.ts";
 import {
   MemoryItemError,
   memoryDateMillis as dateMillis,
+  openBy,
+  reviewOverdueBy,
   parseFrontMatter,
 } from "./frontMatter.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
@@ -154,6 +156,8 @@ export class MemoryRecoveryHooks extends Context.Service<
       conflictBranch?: string;
       /** What the owner reads, in plain words, when they must act or lost something; else only logged. */
       owner?: string;
+      /** The agent whose turn a restart cut, so the owner's line names it. */
+      restartOf?: KinAgentId;
     }) => Effect.Effect<void>;
   }
 >()("t3/kin/memory/Memory/MemoryRecoveryHooks") {}
@@ -294,6 +298,13 @@ export class Memory extends Context.Service<
       orgId: KinOrgId,
       view?: MemoryView,
     ) => Effect.Effect<ReadonlyArray<MemoryCache.MemoryItem>, MemoryFailure>;
+    /**
+     * The default branch's items as last loaded, or none before the first load: no lock, git,
+     * trigger sync or repair, so a caller holding a database transaction may read it.
+     */
+    readonly snapshotItems: (
+      orgId: KinOrgId,
+    ) => Effect.Effect<ReadonlyArray<MemoryCache.MemoryItem> | undefined>;
     readonly query: (
       orgId: KinOrgId,
       query: MemoryQuery,
@@ -633,6 +644,7 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     paths: { writer: string; repo: { repoUrl: string } },
     checkTip = true,
+    repairMissingRef = false,
   ) {
     yield* Effect.gen(function* () {
       const entry = yield* fs.lstat(path.join(paths.writer, ".git"));
@@ -652,7 +664,18 @@ const make = Effect.gen(function* () {
             reason: "Invalid git directory",
           });
       }
-      const head = (yield* git(orgId, paths.writer, ["rev-parse", `refs/heads/${branch}`])).trim();
+      const ref = `refs/heads/${branch}`;
+      const head = (yield* git(orgId, paths.writer, ["rev-parse", "--verify", ref]).pipe(
+        Effect.catchTags({
+          MemoryError: (error) =>
+            repairMissingRef
+              ? restoreMissingDefaultRef(orgId, paths.writer, ref, expected).pipe(
+                  Effect.andThen(git(orgId, paths.writer, ["rev-parse", "--verify", ref])),
+                  Effect.mapError(() => error),
+                )
+              : Effect.fail(error),
+        }),
+      )).trim();
       if (!checkTip) return;
       if (head !== expected) {
         yield* git(orgId, paths.writer, ["update-ref", `refs/heads/${branch}`, expected, head]);
@@ -681,6 +704,7 @@ const make = Effect.gen(function* () {
   const ensureCheckouts = Effect.fn("Memory.ensureCheckouts")(function* (
     orgId: KinOrgId,
     reusePin = false,
+    repairMissingRef = false,
   ) {
     const paths = yield* pathsFor(orgId);
     if (reusePin && initializedCheckouts.has(orgId) && pinnedHeads.has(orgId)) {
@@ -690,7 +714,7 @@ const make = Effect.gen(function* () {
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
     yield* removeStaleClones(orgId, paths.root);
     if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
-      yield* validateWriter(orgId, paths, false);
+      yield* validateWriter(orgId, paths, false, repairMissingRef);
     } else {
       // The remote can still hold the old history until the purge's push lands.
       yield* refuseDuringPurge(orgId, "clone");
@@ -1088,11 +1112,12 @@ const make = Effect.gen(function* () {
       .filter(
         (item) =>
           (q.kind === undefined || item.kind === q.kind) &&
-          (q.status === undefined || item.status === q.status) &&
+          (q.status === undefined ||
+            (q.status === "open" ? openBy(item, now) : item.status === q.status)) &&
           (!q.excludeInvalid || item.invalid_at === null) &&
           (q.dueBefore === undefined || dateMillis(item.due) <= dateMillis(q.dueBefore)) &&
           (q.dueAfter === undefined || dateMillis(item.due) >= dateMillis(q.dueAfter)) &&
-          (q.reviewOverdue === undefined || dateMillis(item.review_by) < now === q.reviewOverdue) &&
+          (q.reviewOverdue === undefined || reviewOverdueBy(item, now) === q.reviewOverdue) &&
           (q.saidBy === undefined || item.said_by === q.saidBy) &&
           (q.linksTo === undefined || item.links.includes(q.linksTo)),
       )
@@ -1232,6 +1257,33 @@ const make = Effect.gen(function* () {
     );
     yield* git(orgId, writer, ["push", "--", url, `${head}:refs/heads/${branch}`]);
     return branch;
+  });
+
+  const restoreMissingDefaultRef = Effect.fn("Memory.restoreMissingDefaultRef")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    ref: string,
+    head: string,
+  ) {
+    yield* refuseDuringPurge(orgId, "recover");
+    yield* refuseUnfinishedOperation(orgId, writer);
+    // Older Git can replace a dangling symbolic ref even with --no-deref and a zero expected tip.
+    if (yield* git(orgId, writer, ["symbolic-ref", "--quiet", ref]).pipe(Effect.isSuccess))
+      return yield* new MemoryCheckoutInvalid({
+        orgId,
+        operation: "recover",
+        reason: "Default ref is symbolic",
+      });
+    yield* readFiles(orgId, writer, head).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(VcsProcess, vcs),
+    );
+    // A zero expected tip can only recreate an absent ref. Existing refs and the worktree stay put.
+    yield* git(orgId, writer, ["update-ref", "--no-deref", ref, head, "0".repeat(head.length)]);
+    yield* Effect.logInfo("Kin restored missing memory ref from its SQLite anchor", {
+      orgId,
+      branch: mainBranch,
+    });
   });
 
   const recover = Effect.fn("Memory.recover")(function* (orgId: KinOrgId, reclone = false) {
@@ -1458,12 +1510,16 @@ const make = Effect.gen(function* () {
     const generation = historyGenerations.get(orgId) ?? 0;
     return { generation, fetched: yield* fetchRemote(orgId, writer, repo.repoUrl) };
   });
-  // A purge that ran since the fetch dropped the checkout its objects went to.
+  // A purge may have dropped the fetched objects; an invalid prefetch must be rechecked under lock.
   const stillFetched = (
     orgId: KinOrgId,
     prefetched: Effect.Success<ReturnType<typeof prefetch>>,
   ) =>
-    prefetched?.generation === (historyGenerations.get(orgId) ?? 0)
+    prefetched?.generation === (historyGenerations.get(orgId) ?? 0) &&
+    !(
+      prefetched.fetched._tag === "Failure" &&
+      prefetched.fetched.failure._tag === "MemoryCheckoutInvalid"
+    )
       ? prefetched.fetched
       : undefined;
 
@@ -1523,6 +1579,7 @@ const make = Effect.gen(function* () {
   ) {
     const { wakeupId } = options;
     const paths = yield* pathsFor(orgId);
+    yield* refuseUnfinishedOperation(orgId, paths.writer);
     yield* validateWriter(orgId, paths);
     if (options.fsck)
       yield* git(orgId, paths.writer, [
@@ -1532,7 +1589,6 @@ const make = Effect.gen(function* () {
         "--no-reflogs",
         yield* anchor(orgId, config.defaultBranch ?? "main"),
       ]);
-    yield* refuseUnfinishedOperation(orgId, paths.writer);
     const { repo } = yield* pathsFor(orgId);
     const branch = config.defaultBranch ?? "main";
     let head = yield* anchor(orgId, branch);
@@ -1824,10 +1880,10 @@ const make = Effect.gen(function* () {
     view?: LeadView,
     prefetched?: Fetched,
   ) {
-    const paths = yield* ensureCheckouts(orgId);
+    const paths = yield* ensureCheckouts(orgId, false, true);
     if (synced.get(orgId) === true) {
-      yield* validateWriter(orgId, yield* pathsFor(orgId));
       yield* refuseUnfinishedOperation(orgId, paths.writer);
+      yield* validateWriter(orgId, yield* pathsFor(orgId));
     } else
       yield* checkedSync(orgId, prefetched, {
         fsck: true,
@@ -2122,6 +2178,9 @@ const make = Effect.gen(function* () {
     readRules: Effect.fn("Memory.readRules")((orgId) => locked(orgId, readFile(orgId, "rules.md"))),
     items: Effect.fn("Memory.items")((orgId, view) =>
       locked(orgId, load(orgId, false, view).pipe(Effect.map((snapshot) => snapshot.items))),
+    ),
+    snapshotItems: Effect.fn("Memory.snapshotItems")((orgId) =>
+      Effect.sync(() => snapshots.get(snapshotKey(orgId, mainBranch))?.items),
     ),
     query: Effect.fn("Memory.queryLocked")((orgId, q, view) =>
       locked(orgId, query(orgId, q, view)),

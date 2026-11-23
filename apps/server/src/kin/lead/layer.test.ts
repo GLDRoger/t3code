@@ -1,15 +1,38 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { KinChatId, KinOrgId, ThreadId } from "@t3tools/contracts";
+import { McpServer } from "effect/ai";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { FetchHttpClient } from "effect/http";
 import { vi } from "vite-plus/test";
+import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
+import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import { ProcessRunner } from "../../processRunner.ts";
+import { KinServer } from "../KinServer.ts";
+import { KinSocial } from "../social/SocialService.ts";
+import { KinPictures } from "../pictures/KinPictures.ts";
+import * as PreviewBrowser from "../../preview/PreviewBrowser.ts";
+import { zernio } from "../social/Zernio.ts";
+import { KinSocialToolkit } from "../social/mcp.ts";
+import { KinSalesToolkit } from "../sales/mcp.ts";
+import { KinPulseToolkit } from "../pulse/mcp.ts";
+import { KinDocumentToolkit } from "../gendocs/mcp.ts";
+import { KinPictureToolkit } from "../pictures/mcp.ts";
+import { KinWorkToolkit } from "../work/mcp/tools.ts";
+import { KinDocsToolkit } from "../work/mcp/docTools.ts";
+import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
+import { KinLeadToolkit } from "./mcp/tools.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as ServerConfig from "../../config.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
@@ -40,10 +63,26 @@ const external = Layer.mergeAll(
     lines: () => [],
     orgLines: () => [],
   }),
-  ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-layer-" }),
   Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(VcsProcess.VcsProcess)({}),
-).pipe(Layer.provideMerge(NodeServices.layer));
+  // What the server and Kin's own services hand the runtime in `kin/mcp/layer.ts`.
+  McpHttpServer.layerInProcessMcpServer,
+  Layer.mock(KinServer)({
+    services: Option.none(),
+    subscribeForViewer: Option.none(),
+    taskCardUpdater: Layer.empty,
+  }),
+  Layer.mock(KinSocial)({ provider: zernio }),
+  Layer.mock(KinPictures)({}),
+  Layer.mock(PreviewBrowser.PreviewBrowser)({}),
+  Layer.mock(ProcessRunner)({}),
+  Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+  FetchHttpClient.layer,
+).pipe(
+  Layer.provideMerge(ServerSecretStore.layer),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-layer-" })),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+);
 
 vi.mock("../memory/Memory.ts", async (importOriginal) => {
   const original = await importOriginal<typeof import("../memory/Memory.ts")>();
@@ -78,6 +117,7 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
               };
             }),
           items: () => Effect.die("Unused"),
+          snapshotItems: () => Effect.die("Unused"),
           readPromptSnapshot: (_orgId, head) =>
             prepared && head === "fixture-head"
               ? Effect.succeed({
@@ -101,6 +141,22 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
   };
 });
 
+// The runtime builds its own writer; a test that hands it one is heard instead.
+vi.mock("../memory/MemoryWriter.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../memory/MemoryWriter.ts")>();
+  const Effect = await import("effect/Effect");
+  const Layer = await import("effect/Layer");
+  const Option = await import("effect/Option");
+  return {
+    ...original,
+    layer: Layer.unwrap(
+      Effect.map(Effect.serviceOption(original.MemoryWriter), (given) =>
+        Option.isSome(given) ? Layer.succeed(original.MemoryWriter, given.value) : original.layer,
+      ),
+    ),
+  };
+});
+
 it.effect("starts configured Kin with the real prompt and the runner's pinned memory", () =>
   Effect.gen(function* () {
     const entered = yield* Deferred.make<void>();
@@ -113,8 +169,10 @@ it.effect("starts configured Kin with the real prompt and the runner's pinned me
         finding: "Review requested three days ago",
         itemIds: [],
       });
-      yield* Layer.build(
-        Layer.fresh(KinLead.layerServer).pipe(
+      const built = yield* Layer.build(
+        Layer.fresh(
+          KinLead.layerRuntime.pipe(Layer.provideMerge(McpHttpServer.layerInProcessMcpServer)),
+        ).pipe(
           Layer.provide(external),
           Layer.provide(
             ConfigProvider.layer(
@@ -125,6 +183,22 @@ it.effect("starts configured Kin with the real prompt and the runner's pinned me
           ),
         ),
       );
+      // Every Kin toolkit the agents reach is registered by the same build.
+      const registered = new Set(
+        Context.get(built, McpServer.McpServer).tools.map(({ tool }) => tool.name),
+      );
+      for (const toolkit of [
+        KinLeadToolkit,
+        KinWorkToolkit,
+        KinDocsToolkit,
+        KinStatementToolkit,
+        KinDocumentToolkit,
+        KinPictureToolkit,
+        KinPulseToolkit,
+        KinSocialToolkit,
+        KinSalesToolkit,
+      ])
+        for (const name of Object.keys(toolkit.tools)) assert.isTrue(registered.has(name), name);
       yield* TestClock.adjust("20 seconds");
       yield* Deferred.await(entered);
       const sql = yield* SqlClient.SqlClient;
@@ -147,7 +221,7 @@ it.effect("starts configured Kin with the real prompt and the runner's pinned me
 it.effect("unconfigured Kin builds no runner and says once in the log why agents can't run", () =>
   Effect.gen(function* () {
     const entries: Array<{ readonly message: unknown }> = [];
-    yield* Layer.build(KinLead.layerServer).pipe(
+    yield* Layer.build(KinLead.layerRuntime).pipe(
       Effect.provide(
         Layer.mergeAll(
           ConfigProvider.layer(ConfigProvider.fromUnknown({})),
@@ -184,7 +258,7 @@ it.effect("a cleared chat and each memory sync sweep deleted messages' quotes", 
       ),
     });
     yield* Layer.build(
-      Layer.fresh(KinLead.layerServer).pipe(
+      Layer.fresh(KinLead.layerRuntime).pipe(
         Layer.provide(Layer.mergeAll(writer, hub)),
         Layer.provide(external),
         Layer.provide(

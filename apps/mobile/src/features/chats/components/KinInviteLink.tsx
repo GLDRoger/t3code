@@ -1,10 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
-  KIN_INVITE_LOCAL_ONLY_NOTE,
+  KIN_TEAM_COPY,
   KIN_INVITE_PHONE_NOTE,
-  kinInviteLink,
   kinInviteLinkCopy,
-  kinInviteLinkLocalOnly,
+  kinShareLink,
   type KinMadeInvite,
   KIN_TEAM_ADD_COPY,
 } from "@t3tools/client-runtime/kin/kinTeam";
@@ -19,6 +18,7 @@ import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { ListSection } from "../../../components/ui/ListSection";
 import { tryCopyTextWithHaptic } from "../../../lib/copyTextWithHaptic";
 import { environmentSession } from "../../../state/session";
+import { useKinPublicUrl } from "../state/kinChatOnly";
 
 /**
  * A teammate's link, shown once with copy and the share sheet. The caller holds the invite in
@@ -32,12 +32,16 @@ export function KinInviteLink(props: {
   const connection = Option.getOrNull(
     useAtomValue(environmentSession.preparedConnectionValueAtom(props.environmentId)),
   );
+  const publicUrl = useKinPublicUrl(props.environmentId);
   const [copied, setCopied] = useState(false);
   const copy = kinInviteLinkCopy(invite);
   if (connection === null) {
     return <ErrorBanner message={KIN_TEAM_ADD_COPY.linkDropped(invite.displayName)} />;
   }
-  const link = kinInviteLink(connection.httpBaseUrl, invite.secret);
+  const { link, note } = kinShareLink(
+    { publicUrl, httpBaseUrl: connection.httpBaseUrl },
+    invite.secret,
+  );
   return (
     <>
       <View className="gap-2 px-2">
@@ -53,18 +57,18 @@ export function KinInviteLink(props: {
           <Text
             textRole="body"
             selectable
-            accessibilityLabel={`Invite link for ${invite.displayName}`}
+            accessibilityLabel={KIN_TEAM_COPY.inviteLinkFor(invite.displayName)}
             className="text-foreground"
           >
             {link}
           </Text>
         </View>
       </ListSection>
-      {kinInviteLinkLocalOnly(connection.httpBaseUrl) ? (
+      {note === null ? null : (
         <Text textRole="footnote" className="px-4 text-warning-foreground">
-          {KIN_INVITE_LOCAL_ONLY_NOTE}
+          {note}
         </Text>
-      ) : null}
+      )}
       <View className="gap-3">
         <Button
           tone="primary"

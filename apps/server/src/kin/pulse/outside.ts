@@ -13,10 +13,14 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeCrypto from "node:crypto";
 
 import type { KinConnectionActivity, KinConnections } from "../connections/ConnectionsService.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { addressesIn } from "../connections/MailProvider.ts";
+import { isBankAlertSender } from "../work/statements/bankAlerts.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { logTouch } from "../work/touches.ts";
+import { byNumber, recordName } from "../work/recordRows.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 
 /** What is new at an org's connections since its last check-in, and the cursors that marks. */
@@ -41,7 +45,6 @@ export const noOutside: OutsideSource = {
   seen: () => Effect.void,
 };
 
-const LINES_PER_CONNECTION = 50;
 const cut = (text: string | null | undefined, max: number) =>
   text === null || text === undefined ? null : Array.from(text).slice(0, max).join("");
 const isoOf = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
@@ -79,40 +82,35 @@ const linesOf = (
           ),
           where: cut(event.start, 200),
         })),
-      ].slice(0, LINES_PER_CONNECTION);
-    case "github":
-      return activity.deliveries
-        .slice(0, LINES_PER_CONNECTION)
-        .map((delivery): KinPulseOutsideLine => ({
-          source: "github",
-          connection,
-          id: cut(delivery.deliveryId ?? delivery.fireId, 200)!,
-          at: isoOf(delivery.receivedAt),
-          who: null,
-          subject: cut(
-            [delivery.eventName, delivery.summary].filter((part) => part !== null).join(": ") ||
-              null,
-            300,
-          ),
-          where: cut(delivery.repo, 200),
-        }));
+      ];
     case "unsupported":
       return [];
   }
 };
 
+/** What else a pass does with one mailbox's new mail (bank alerts): false when it couldn't. */
+export type OnMail = (
+  orgId: KinOrgId,
+  activity: Extract<KinConnectionActivity, { readonly _tag: "mail" }>,
+) => Effect.Effect<boolean>;
+
 /** Every live connection that is signed in and not paused, through the connections service. */
 export const fromConnections = (
   connections: KinConnections["Service"],
   sql: SqlClient.SqlClient,
+  onMail?: OnMail,
 ): OutsideSource => ({
   read: Effect.fn("KinPulseOutside.read")(
     function* (orgId: KinOrgId) {
       const rows = yield* sql<{ connectionId: string; label: string }>`SELECT connection_id AS
         "connectionId", label FROM kin_connections
       WHERE org_id = ${orgId} AND removed_at IS NULL AND paused_at IS NULL AND state = 'active'
-        AND preset IN ${sql.in([...MAIL_PRESETS, "github"])}
+        AND preset IN ${sql.in(MAIL_PRESETS)} AND person_id IS NULL
       ORDER BY created_at, connection_id`;
+      const money = KinShell.sectionOn(
+        yield* KinShell.get(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        "money",
+      );
       const lines: Array<KinPulseOutsideLine> = [];
       const seen: Array<{ connectionId: string; until: number; cursor: string | null }> = [];
       for (const row of rows) {
@@ -126,7 +124,21 @@ export const fromConnections = (
           ),
         );
         if (activity === undefined || activity._tag === "unsupported") continue;
-        lines.push(...linesOf(row.label, activity));
+        // As with a failed read: the mailbox stays where it was, and the next pass reads it again.
+        if (onMail !== undefined && !(yield* onMail(orgId, activity))) continue;
+        lines.push(
+          ...linesOf(
+            row.label,
+            money
+              ? activity
+              : {
+                  ...activity,
+                  mail: activity.mail.filter(
+                    (mail) => !isBankAlertSender(addressesIn(mail.from)[0]),
+                  ),
+                },
+          ),
+        );
         seen.push({
           connectionId: row.connectionId,
           until: activity.until,
@@ -180,6 +192,25 @@ const personToUs = (line: KinPulseOutsideLine, from: string | undefined) => {
 /** First mail from someone Kin doesn't know wakes the Chief of staff, a few a poll at most. */
 const NEW_SENDERS_PER_POLL = 3;
 
+/** Letters, digits and the joins numbers are written with: "INV/26-27/004" is not "004". */
+const numberIn = (number: string, subject: string) =>
+  new RegExp(
+    `(?<![\\p{L}\\p{N}/_.-])${escaped(number)}(?![\\p{L}\\p{N}/_-]|\\.[\\p{L}\\p{N}])`,
+    "u",
+  ).test(subject);
+
+/** The open invoice or quote whose issued number the subject shows, as stored, if only one does. */
+const namedByNumber = Effect.fn("KinPulseOutside.namedByNumber")(function* <
+  Row extends { readonly key: string; readonly number: unknown },
+>(orgId: KinOrgId, money: ReadonlyArray<Row>, subject: string) {
+  for (const row of money) {
+    if (typeof row.number !== "string" || row.number.trim() === "") continue;
+    if (!numberIn(row.number.trim(), subject)) continue;
+    return (yield* byNumber(orgId, row.number))?.key === row.key ? row : undefined;
+  }
+  return undefined;
+});
+
 export interface Matched {
   readonly line: KinPulseOutsideLine;
   /** Money threads go to Finance; client mail and meetings to the Chief of staff. */
@@ -206,15 +237,23 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
     clientId: string | null;
     clientKey: string | null;
     clientTitle: string | null;
-  }>`SELECT lower(json_extract(r.fields_json, '$.email')) AS email, r.key, r.title,
+    main: number;
+  }>`SELECT lower(e.value) AS email, e.key = 'email' AS main, r.key, r.title,
       c.record_id AS "clientId", c.key AS "clientKey", c.title AS "clientTitle"
     FROM kin_records r
+      JOIN (SELECT r2.record_id, 'email' AS key, json_extract(r2.fields_json, '$.email') AS value
+          FROM kin_records r2 WHERE r2.org_id = ${orgId} AND r2.register_id = 'contacts'
+        UNION ALL SELECT r2.record_id, 'emails', j.value
+          FROM kin_records r2, json_each(r2.fields_json, '$.emails') j
+          WHERE r2.org_id = ${orgId} AND r2.register_id = 'contacts') e
+        ON e.record_id = r.record_id
       LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
         AND c.register_id = 'clients'
     WHERE r.org_id = ${orgId} AND r.register_id = 'contacts' AND r.state = 'open'
-      AND json_extract(r.fields_json, '$.email') IS NOT NULL
-    ORDER BY r.key`;
-  const money = yield* sql<{ key: string; list: string }>`SELECT key, register_id AS list
+      AND e.value IS NOT NULL
+    ORDER BY main, r.key`;
+  const money = yield* sql<{ key: string; list: string; number: unknown }>`SELECT key,
+      register_id AS list, json_extract(fields_json, '$.number') AS number
     FROM kin_records WHERE org_id = ${orgId} AND register_id IN ('invoices', 'quotes')
       AND state IN ('open', 'waiting')
     ORDER BY key`;
@@ -223,6 +262,7 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
     WHERE org_id = ${orgId} AND state IN ('open', 'doing', 'waiting')
       AND ((register_id = 'work' AND category = 'meeting') OR register_id = 'clients')
     ORDER BY key`;
+  // A contact's main address is matched as before; another one only where no main one has it.
   const byEmail = new Map(contacts.map((row) => [row.email, row]));
   const matched: Array<Matched> = [];
   let newSenders = 0;
@@ -230,15 +270,16 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
     const subject = (line.subject ?? "").toLowerCase();
     if (line.source === "mail") {
       const contact = byEmail.get(addressOf(line.who) ?? "");
-      const named = money.find((row) =>
-        new RegExp(`(^|[^a-z0-9-])${escaped(row.key.toLowerCase())}($|[^a-z0-9])`).test(subject),
-      );
+      const named =
+        money.find((row) =>
+          new RegExp(`(^|[^a-z0-9-])${escaped(row.key.toLowerCase())}($|[^a-z0-9])`).test(subject),
+        ) ?? (yield* namedByNumber(orgId, money, line.subject ?? ""));
       const client = contact?.clientId == null ? {} : { clientId: contact.clientId };
       if (named !== undefined)
         matched.push({
           line: {
             ...line,
-            matched: `${named.list === "invoices" ? "invoice" : "quote"} ${named.key}`,
+            matched: `${named.list === "invoices" ? "invoice" : "quote"} ${recordName(named.key, named.number)}`,
           },
           domain: "finance",
           ...client,

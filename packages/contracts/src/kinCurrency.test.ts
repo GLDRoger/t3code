@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { formatKinMoney, KIN_CURRENCY_CODES, kinCurrency, parseKinMoney } from "./kinCurrency.ts";
+import {
+  formatKinMoney,
+  KIN_CURRENCY_CODES,
+  kinCurrency,
+  mentionsKinMoney,
+  parseKinMoney,
+} from "./kinCurrency.ts";
 
 const intlDecimals = (code: string) =>
   new Intl.NumberFormat("en", { style: "currency", currency: code }).resolvedOptions()
@@ -58,6 +64,40 @@ describe("one currency table", () => {
     expect(parseKinMoney("120 for web", "INR")).toHaveProperty("error");
     expect(parseKinMoney("PKR\u00a01500.50", "INR")).toHaveProperty("error");
     expect(parseKinMoney("$5 and ₹5", "INR")).toHaveProperty("error");
+  });
+
+  // K005: a comma or dot is read as one grouping only, and a form that fits none is refused.
+  it.each([
+    ["USD 12,00", "INR", 1_200, "USD"],
+    ["1.234,56 EUR", "INR", 123_456, "EUR"],
+    ["1.234.567,89", "EUR", 123_456_789, "EUR"],
+    ["1,234,567.89", "USD", 123_456_789, "USD"],
+    ["12,34,567.89", "INR", 123_456_789, "INR"],
+    ["12,000", "USD", 1_200_000, "USD"],
+    ["JPY 1,500", "INR", 1_500, "JPY"],
+    ["-20", "INR", -2_000, "INR"],
+  ] as const)("reads %s one way", (text, fallback, minor, currency) => {
+    expect(parseKinMoney(text, fallback)).toEqual({ money: { minor, currency } });
+  });
+  it.each([
+    ["12,00,0", "INR", "12,00,0 is not an amount. Write it as 12000 or 120.00."],
+    ["JPY 12,00", "INR", "JPY 12,00 is not an amount. Write it as 1200 or 1,200."],
+    ["1,2,3", "USD", "1,2,3 is not an amount. Write it as 123 or 1.23."],
+    ["a lot", "INR", "a lot is not an amount. Give a number such as 4200, 4,200.50 or 12k."],
+  ] as const)("refuses %s, showing how to write it", (text, fallback, error) => {
+    expect(parseKinMoney(text, fallback)).toEqual({ error });
+  });
+
+  // K146: a title names money only when the figure carries a currency's mark.
+  it.each([
+    ["Chase Orbit Dental: 4,200 owed", false],
+    ["Send 0 INR refund notice", true],
+    ["Taxi ₹450", true],
+    ["Pay 45k to the vendor", true],
+    ["Try 3 options for the top 3", false],
+    ["Q3 plan for 2026", false],
+  ] as const)("%s names money: %s", (title, named) => {
+    expect(mentionsKinMoney(title)).toBe(named);
   });
 
   it("writes an axis compactly in the currency's own grouping", () => {

@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   KIN_MESSAGE_LINKS_CAP,
   type KinChatMember,
   type KinMessage,
@@ -6,12 +7,20 @@ import {
   type KinMessageLinkTarget,
   type KinOrgId,
   type KinPersonId,
+  type KinTurnChanges,
 } from "@t3tools/contracts";
+import {
+  hasThreadLinks,
+  parseThreadLinkHref,
+  replaceThreadLinks,
+  threadLinkRefs,
+} from "@t3tools/shared/threadLinks";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { turnChanges } from "../lead/turnChanges.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { KIN_OWNER_LEVEL, seenBy, viewerOfPeople, type KinViewer } from "../work/teamView.ts";
 
@@ -63,7 +72,7 @@ const around = (pattern: string, flags: string) =>
 
 /**
  * What a message names among `names` and `keys`, by exact spelling: keys (INV-1) and printed
- * numbers (INV/26-27/004) of entries, and whole names of agents, people, clients and projects,
+ * numbers (INV/26-27/004) of entries, and whole names of agents, people, clients, projects and deals,
  * case and all ("Finance", not "finance"), longest first, each once. An agent also matches as
  * "<name> chat" in any case. Built once for a batch; its patterns run only where a name appears.
  */
@@ -124,7 +133,9 @@ const STATE_WORDS: Record<string, string> = {
   done: "Done",
   dropped: "Dropped",
 };
-const kindOf = (register: string): Extract<KinMessageLinkTarget, { _tag: "record" }>["kind"] =>
+export const kindOf = (
+  register: string,
+): Extract<KinMessageLinkTarget, { _tag: "record" }>["kind"] =>
   register === "work" || register === "milestones"
     ? "task"
     : register === "clients"
@@ -150,6 +161,8 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   viewer: KinViewer,
   keys: ReadonlyArray<string>,
   numbers: ReadonlyArray<string>,
+  /** The batch's linkable text, for the open tasks it names by title. */
+  text: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   // Their own direct chats with agents: the chat a name like "Finance" opens.
@@ -168,8 +181,19 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
     WHERE org_id = ${orgId} AND removed_at IS NULL AND person_id <> ${personId}`;
   const named = yield* sql<{ key: string; title: string; register: string; state: string }>`SELECT
       r.key, r.title, r.register_id AS register, r.state FROM kin_records r
-    WHERE r.org_id = ${orgId} AND r.register_id IN ('clients', 'projects')
+    WHERE r.org_id = ${orgId} AND r.register_id IN ('clients', 'projects', 'deals')
       AND r.state <> 'dropped' AND ${seenBy(sql, viewer)}`;
+  // Open tasks written by their whole title, found here rather than listing every task. A title of
+  // one word is an ordinary word too often.
+  const titled =
+    text.trim() === ""
+      ? []
+      : yield* sql<{ key: string; title: string; register: string; state: string }>`SELECT
+          r.key, r.title, r.register_id AS register, r.state FROM kin_records r
+        WHERE r.org_id = ${orgId} AND r.register_id = 'work'
+          AND r.state NOT IN ('done', 'dropped') AND instr(trim(r.title), ' ') > 0
+          AND instr(${text}, trim(r.title)) > 0 AND ${seenBy(sql, viewer)}
+        ORDER BY r.key`;
   // A document's own number, such as INV/26-27/004, as it is printed and mailed.
   const numbered =
     numbers.length === 0
@@ -215,9 +239,17 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
       to: { _tag: "person" as const, personId: row.personId },
       note: null,
     })),
-    ...named.map((row) => ({ name: row.title, ...record(row) })),
+    ...named
+      .filter((row) => row.register !== "deals")
+      .map((row) => ({ name: row.title, ...record(row) })),
     ...numbered.map((row) => ({ name: row.number, ...record(row) })),
+    ...titled.map((row) => ({ name: row.title.trim(), ...record(row) })),
   ];
+  // A deal named like its client, or anything else, leaves that name to it.
+  const others = new Set(names.map((one) => one.name));
+  for (const row of named)
+    if (row.register === "deals" && !others.has(row.title))
+      names.push({ name: row.title, ...record(row) });
   // Two things by one name would be a guess, so neither links.
   const counts = new Map<string, number>();
   for (const one of names) counts.set(one.name, (counts.get(one.name) ?? 0) + 1);
@@ -227,11 +259,105 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   };
 });
 
+// What an agent pastes without Markdown around it: a bare thread link, or a delegated task's id.
+const BARE_THREAD =
+  /t3-thread:\/\/v[12]\/[^\s<>()[\]`"']*[^\s<>()[\]`"'.,;:!?]|thread:delegated-task:[^\s<>()[\]`"']*[^\s<>()[\]`"'.,;:!?]/g;
+// Only a link's thread id matters here; a v1 link names no environment.
+const ANY_ENVIRONMENT = EnvironmentId.make("kin");
+const HELPER_TASK = "a helper task";
+const plainTitle = (title: string) => title.replace(/\s+/g, " ").trim();
+const bareThreadId = (token: string) =>
+  token.startsWith("t3-thread:") ? (parseThreadLinkHref(token)?.threadId ?? null) : token;
+
+/**
+ * An agent's message for people with every T3 thread link (Markdown, bare or hosted) and every
+ * pasted helper id written as words, since Kin opens no thread: a helper's title from its card in
+ * this chat, an agent's own thread as its name, else the link's words or "a helper task". Code is
+ * left as written.
+ */
+export const nameThreads = Effect.fn("KinMessageLinks.nameThreads")(function* (
+  orgId: KinOrgId,
+  chatId: string,
+  body: string,
+) {
+  const bare = (text: string) => [...linkableText(text).matchAll(BARE_THREAD)];
+  const ids = [
+    ...new Set([
+      ...threadLinkRefs(body, ANY_ENVIRONMENT).map((ref) => ref.threadId),
+      ...bare(body).flatMap((match) => bareThreadId(match[0]) ?? []),
+    ]),
+  ];
+  if (ids.length === 0 && !hasThreadLinks(body)) return body;
+  const sql = yield* SqlClient.SqlClient;
+  // A card's title only where its own chat reads it; elsewhere it could say more than the agent did.
+  const cards =
+    ids.length === 0
+      ? []
+      : yield* sql<{ threadId: string; title: string | null }>`SELECT
+          json_extract(state_json, '$.threadId') AS "threadId",
+          json_extract(state_json, '$.title') AS title
+        FROM kin_widgets
+        WHERE org_id = ${orgId} AND chat_id = ${chatId} AND type = 'task'
+          AND json_extract(state_json, '$.threadId') IN ${sql.in(ids)}
+        ORDER BY updated_at, widget_id`;
+  const agents =
+    ids.length === 0
+      ? []
+      : yield* sql<{ threadId: string; title: string | null }>`SELECT t.thread_id AS "threadId",
+          a.display_name AS title
+        FROM kin_agent_threads t
+        JOIN kin_agents a ON a.org_id = t.org_id AND a.agent_id = t.agent_id
+        WHERE t.org_id = ${orgId} AND t.thread_id IN ${sql.in(ids)}
+        ORDER BY t.thread_id`;
+  const titles = new Map<string, string>();
+  for (const row of [...agents, ...cards])
+    if (row.title !== null && plainTitle(row.title) !== "")
+      titles.set(row.threadId, plainTitle(row.title));
+  const titleOf = (threadId: string) => {
+    const title = titles.get(threadId);
+    if (title !== undefined) return title;
+    try {
+      return titles.get(decodeURIComponent(threadId));
+    } catch {
+      return undefined;
+    }
+  };
+  let out = replaceThreadLinks(
+    body,
+    (link, label) => titleOf(link.threadId) ?? (label?.trim() || HELPER_TASK),
+  );
+  // From the end, so earlier indexes stay put. An id nobody knows stays: it opens nothing.
+  for (const match of bare(out).toReversed()) {
+    const threadId = bareThreadId(match[0]);
+    const title =
+      (threadId === null ? undefined : titleOf(threadId)) ??
+      (match[0].startsWith("t3-thread:") ? HELPER_TASK : undefined);
+    if (title === undefined) continue;
+    out = `${out.slice(0, match.index)}${title}${out.slice(match.index + match[0].length)}`;
+  }
+  return out;
+});
+
 /** A name written in place of an entry's key, kept so the name still links to it. */
 const NamedKeys = Schema.Array(Schema.Struct({ text: Schema.String, key: Schema.String }));
 export type NamedKey = (typeof NamedKeys.Type)[number];
 const decodeNames = Schema.decodeUnknownOption(Schema.fromJsonString(NamedKeys));
 export const encodeNames = Schema.encodeSync(Schema.fromJsonString(NamedKeys));
+
+/** What every person in the chat may see: owner level only when all of them are. */
+export const chatReaders = Effect.fn("KinMessageLinks.chatReaders")(function* (
+  orgId: KinOrgId,
+  chatId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const members = yield* sql<{ personId: KinPersonId }>`SELECT person_id AS "personId"
+    FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chatId}
+      AND principal_kind = 'person' AND left_at IS NULL ORDER BY person_id`;
+  const restricted: Array<KinPersonId> = [];
+  for (const { personId } of members)
+    if (!(yield* ownerLevel(orgId, personId))) restricted.push(personId);
+  return restricted.length === 0 ? KIN_OWNER_LEVEL : viewerOfPeople(restricted);
+});
 
 /**
  * An agent's message for people with each bare entry key (W-3, EXP-12) written as people name
@@ -246,13 +372,7 @@ export const nameKeys = Effect.fn("KinMessageLinks.nameKeys")(function* (
   const keys = keysIn(body);
   if (keys.length === 0) return { body, names: [] as ReadonlyArray<NamedKey> };
   const sql = yield* SqlClient.SqlClient;
-  const members = yield* sql<{ personId: KinPersonId }>`SELECT person_id AS "personId"
-    FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chatId}
-      AND principal_kind = 'person' AND left_at IS NULL ORDER BY person_id`;
-  const restricted: Array<KinPersonId> = [];
-  for (const { personId } of members)
-    if (!(yield* ownerLevel(orgId, personId))) restricted.push(personId);
-  const viewer = restricted.length === 0 ? KIN_OWNER_LEVEL : viewerOfPeople(restricted);
+  const viewer = yield* chatReaders(orgId, chatId);
   const rows = yield* sql<{ key: string; title: string; number: string | null }>`SELECT r.key,
       r.title, json_extract(r.fields_json, '$.number') AS number FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(keys)} AND ${seenBy(sql, viewer)}`;
@@ -307,6 +427,8 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
   orgId: KinOrgId,
   reader: KinChatMember["principal"] | undefined,
   messages: ReadonlyArray<KinMessage>,
+  // A chat list's preview has no use for what a turn changed.
+  options: { readonly receipts: boolean } = { receipts: true },
 ) {
   if (reader?._tag !== "person") return messages;
   const texts = messages.filter(
@@ -332,7 +454,14 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
     ]),
   ];
   const numbers = [...new Set(texts.flatMap((message) => numbersIn(message.body)))].slice(0, 500);
-  const sources = yield* linkSources(orgId, reader.personId, viewer, keys, numbers);
+  const sources = yield* linkSources(
+    orgId,
+    reader.personId,
+    viewer,
+    keys,
+    numbers,
+    texts.map((message) => linkableText(message.body)).join("\n"),
+  );
   // A name Kin wrote for a key links where the key did, for a reader who may open it.
   const taken = new Set(sources.names.map((one) => one.name));
   const written = new Map<string, LinkName>();
@@ -342,9 +471,21 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
       written.set(one.text, { name: one.text, ...link });
   }
   const match = linkMatcher([...sources.names, ...written.values()], sources.keys, owner);
+  const receipts = options.receipts
+    ? yield* turnChanges(
+        viewer,
+        orgId,
+        agentTexts.map((message) => message.messageId),
+      )
+    : new Map<string, KinTurnChanges>();
   return messages.map((message) => {
     if (message.kind !== "text" || message.status === "deleted") return message;
     const links = match(message.body);
-    return links.length === 0 ? message : { ...message, links };
+    const turn = receipts.get(message.messageId);
+    return {
+      ...message,
+      ...(links.length === 0 ? {} : { links }),
+      ...(turn === undefined ? {} : { turnChanges: turn }),
+    };
   });
 });

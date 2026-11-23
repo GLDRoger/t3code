@@ -1,8 +1,14 @@
-import { KinAgentId, KinMemberId, type KinChatMembersResult } from "@t3tools/contracts";
+import {
+  KIN_TEAM_ROOM_TEAM_ID,
+  KinAgentId,
+  KinMemberId,
+  type KinChatMembersResult,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   kinApplyMention,
+  kinGroupTakesAdds,
   kinGroupMemberViews,
   kinGroupNameCheck,
   kinMentionCandidates,
@@ -90,5 +96,13 @@ describe("kin group mentions", () => {
     expect(kinGroupNameCheck("  Launch  ")).toEqual({ ok: true, title: "Launch" });
     expect(kinGroupNameCheck("   ").ok).toBe(false);
     expect(kinGroupNameCheck("x".repeat(61)).ok).toBe(false);
+  });
+});
+
+describe("kinGroupTakesAdds", () => {
+  it("offers Add in a group, never in the Team room, whose members Kin keeps", () => {
+    expect(kinGroupTakesAdds({ teamId: null })).toBe(true);
+    expect(kinGroupTakesAdds({ teamId: "launch" })).toBe(true);
+    expect(kinGroupTakesAdds({ teamId: KIN_TEAM_ROOM_TEAM_ID })).toBe(false);
   });
 });

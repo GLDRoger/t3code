@@ -20,6 +20,7 @@ import {
 } from "./MailProvider.ts";
 import { looksLikeSignInMail, senderCheck, WITHHELD } from "./MailText.ts";
 import type { ListedTool } from "./Pinning.ts";
+import { DAY_MS } from "../durations.ts";
 
 /** Kin's mail tools, arguments, errors, cutting and limits: the same for every mail vendor. */
 
@@ -59,7 +60,6 @@ export const answeredWith = (error: KinGatewayError, status: number) =>
 const MAX_RECIPIENTS = 10;
 const MESSAGE_CHARS = 12_000;
 const PREVIEW_CHARS = 300;
-const DAY_MS = 24 * 60 * 60 * 1000;
 const LINE_BREAK = /[\r\n]/;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
@@ -433,8 +433,9 @@ const activity = Effect.fn("KinMail.activity")(function* (
   context: MailContext,
   since: number,
   cursor: string | null,
+  now: number,
 ) {
-  const found = yield* vendor.activity(context, since, cursor);
+  const found = yield* vendor.activity(context, since, cursor, now);
   return {
     mail: found.threads
       .filter((thread) => thread.length > 0)
@@ -455,8 +456,12 @@ const activity = Effect.fn("KinMail.activity")(function* (
       updated,
     })),
     cursor: found.cursor,
+    ...(found.until === undefined ? {} : { until: found.until }),
   };
 });
+
+// The feed's reads name messages by id, never by which address got them.
+const NO_MAILBOX: Mailbox = { account: null, addresses: [] };
 
 /** A vendor as Kin uses it: its descriptor and mapping behind the one tool layer. */
 export const mailProvider = (vendor: MailVendor): MailProvider => {
@@ -479,11 +484,26 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
     sendAs: vendor.sendAs,
     call: (http, token, mailbox, tool, args, now) =>
       call(vendor, { http, token, mailbox }, tool, args, now),
-    activity: (http, token, mailbox, since, cursor) =>
-      activity(vendor, { http, token, mailbox }, since, cursor),
+    activity: (http, token, mailbox, since, cursor, now) =>
+      activity(vendor, { http, token, mailbox }, since, cursor, now),
+    // A thread deleted since it was listed has nothing to read; it mustn't hold a pass back.
+    messages: (http, token, mailbox, threadId) =>
+      vendor.thread({ http, token, mailbox }, threadId, false).pipe(
+        Effect.catchIf(
+          (error) => answeredWith(error, 404),
+          () => Effect.succeed([]),
+        ),
+      ),
     replyTarget: (http, token, mailbox, threadId) =>
       replyTarget(vendor, { http, token, mailbox }, threadId),
+    mailStart: (http, token, now) => vendor.mailStart({ http, token, mailbox: NO_MAILBOX }, now),
+    changes: (http, token, position) =>
+      vendor.changes({ http, token, mailbox: NO_MAILBOX }, position),
+    arrival: (http, token, messageId) =>
+      vendor.arrival({ http, token, mailbox: NO_MAILBOX }, messageId),
     sendMessage: vendor.sendMessage,
     saveEvent: vendor.saveEvent,
+    calendarName: (http, token, mailbox, calendarId) =>
+      vendor.calendarName({ http, token, mailbox }, calendarId),
   };
 };

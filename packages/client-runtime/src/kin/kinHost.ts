@@ -5,8 +5,9 @@ import {
   type KinOrgsListResult,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 
 import type { EnvironmentConnectionPresentation } from "../connection/presentation.ts";
 
@@ -28,6 +29,12 @@ const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 const defectMessage = (defect: unknown) =>
   typeof defect === "string" ? defect : defect instanceof Error ? defect.message : "";
 
+/** A server without the call answers `Exit.die("Unknown request tag: ...")`. */
+export const kinHostLacksCall = (cause: Cause.Cause<unknown>) =>
+  cause.reasons
+    .filter(Cause.isDieReason)
+    .some((reason) => defectMessage(reason.defect).includes("Unknown request tag"));
+
 export function classifyKinProbe(
   result: AsyncResult.AsyncResult<KinOrgsListResult, unknown>,
 ): KinProbe {
@@ -47,11 +54,7 @@ export function classifyKinProbe(
     }
   }
   if (failures.length === 0 && Cause.hasDies(result.cause)) {
-    // A server without the Kin RPCs answers `Exit.die("Unknown request tag: ...")`.
-    const unknownTag = result.cause.reasons
-      .filter(Cause.isDieReason)
-      .some((reason) => defectMessage(reason.defect).includes("Unknown request tag"));
-    if (unknownTag) return { _tag: "notKin" };
+    if (kinHostLacksCall(result.cause)) return { _tag: "notKin" };
     // Any other defect, such as a decode failure, is a broken Kin host, not a missing one.
     return { _tag: "error", message: Cause.pretty(result.cause), transient: false };
   }
@@ -97,8 +100,11 @@ export function kinHostCandidate(
 export type KinHost =
   /** Still loading the saved host or waiting on a probe. */
   | { readonly _tag: "searching" }
-  /** No environment hosts Kin; hide every Kin entry point. */
-  | { readonly _tag: "none" }
+  /**
+   * No environment hosts Kin; hide every Kin entry point. `unreachable`: some saved here aren't
+   * answering, so Kin may be on one of them, rather than none running it.
+   */
+  | { readonly _tag: "none"; readonly unreachable?: true }
   | {
       readonly _tag: "host";
       readonly environmentId: EnvironmentId;
@@ -208,7 +214,10 @@ export function resolveKinHost(input: {
       fallback = { _tag: "host", environmentId: candidate.environmentId, connected: true, probe };
     }
   }
-  return fallback ?? { _tag: "none" };
+  if (fallback !== null) return fallback;
+  return input.candidates.some((candidate) => !candidate.connected)
+    ? { _tag: "none", unreachable: true }
+    : { _tag: "none" };
 }
 
 /**
@@ -301,3 +310,48 @@ export function kinStandInLine(
 
 /** The action that makes the computer standing in the usual one, so the line goes for good. */
 export const KIN_USE_THIS_HOST = "Use this one";
+
+/**
+ * The app's Kin host and a route's host, one wiring for web and phone. Each app passes its own
+ * candidates, probe, offline directory and saved id; `savedHostId` is `undefined` while it loads.
+ */
+export function makeKinHostAtoms(source: {
+  readonly ready: (get: Atom.AtomContext) => boolean;
+  readonly candidates: (get: Atom.AtomContext) => ReadonlyArray<KinHostCandidate>;
+  readonly probe: (get: Atom.AtomContext) => (environmentId: EnvironmentId) => KinProbe;
+  readonly cachedOrgs: (
+    get: Atom.AtomContext,
+  ) => (environmentId: EnvironmentId) => KinOrgsListResult | null;
+  readonly savedHostId: (get: Atom.AtomContext) => EnvironmentId | null | undefined;
+  /** Called before the saved host's first probe, so an outage there keeps it, not hides Kin. */
+  readonly markKnown: (environmentId: EnvironmentId) => void;
+}) {
+  const hostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
+    if (!source.ready(get)) return { _tag: "searching" };
+    const savedHostId = source.savedHostId(get);
+    if (savedHostId) source.markKnown(savedHostId);
+    return resolveKinHost({
+      candidates: source.candidates(get),
+      savedHostId,
+      probe: source.probe(get),
+      cachedOrgs: source.cachedOrgs(get),
+      ...Option.match(get.self<KinHost>(), {
+        onNone: () => ({}),
+        onSome: (previous) => ({ previous }),
+      }),
+    });
+  }).pipe(Atom.withLabel("kin:host"));
+
+  const hostAtAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get): KinRouteHost => {
+      if (!source.ready(get)) return { _tag: "searching" };
+      return resolveKinHostAt({
+        candidates: source.candidates(get),
+        environmentId,
+        probe: source.probe(get),
+        cachedOrgs: source.cachedOrgs(get),
+      });
+    }).pipe(Atom.withLabel(`kin:host:${environmentId}`)),
+  );
+  return { hostAtom, hostAtAtom };
+}

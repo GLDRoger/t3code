@@ -15,9 +15,13 @@ import * as Stream from "effect/Stream";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import type { KinPushCaller } from "./KinPushDevices.ts";
 
-/** A watcher not refreshed for this long no longer counts as on screen. */
-const KIN_PUSH_PRESENCE_TTL = Duration.seconds(45);
-const KIN_PUSH_BEAT_INTERVAL = Duration.seconds(15);
+/**
+ * A watcher not refreshed for this long no longer counts as on screen. An iOS app sent to the
+ * background suspends its socket without closing the watch, so this is how long a phone that left
+ * the chat can still miss a push: one beat and its ack's round trip, no more.
+ */
+const KIN_PUSH_BEAT_INTERVAL = Duration.seconds(5);
+const KIN_PUSH_PRESENCE_TTL = Duration.seconds(8);
 
 /**
  * Which sessions have a chat open right now. Upstream owns the phone's foreground handler,

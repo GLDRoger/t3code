@@ -38,6 +38,7 @@ import { bootstrapLeadProject, leadProjectId } from "../lead/leadProject.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import * as Memory from "../memory/Memory.ts";
+import * as RoutineContent from "../lead/RoutineContent.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import {
   nextRun,
@@ -50,10 +51,21 @@ import { queueCheckIn } from "../pulse/checkIn.ts";
 import { missedCheckIns } from "../pulse/checkInCatchUp.ts";
 import { followOwnerZone, seedCheckIns } from "../pulse/checkInSeeds.ts";
 import { fromConnections, noOutside } from "../pulse/outside.ts";
-import { cardChatFor, firingOrigin } from "./deferralOrigin.ts";
+import { alertsOnMail } from "../work/statements/alertMail.ts";
+import {
+  askerOf,
+  cardChatFor,
+  directChatWith,
+  firingOrigin,
+  sharedChatOf,
+  theirDirectChat,
+  wordsReadable,
+} from "./deferralOrigin.ts";
 import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinSchedules from "./kinSchedules.ts";
+import { pauseTriggers } from "./KinTriggerStore.ts";
+import { MINUTE_MS } from "../durations.ts";
 
 /** A run more than this late (the host was off) is skipped; the next slot runs as usual. */
 const SCHEDULED_RUN_LATE_MS = 2 * 60 * 60_000;
@@ -88,6 +100,13 @@ const triggerNext = (sql: SqlClient.SqlClient, orgId: KinOrgId, itemId: string) 
     WHERE org_id = ${orgId} AND trigger_id = ${scheduledTaskTriggerId(itemId)} ORDER BY trigger_id`.pipe(
     Effect.map((rows) => rows[0]?.nextRunAt ?? null),
   );
+
+/** A schedule as `sharedChatOf` reads it: set for its chat when its row's audience is 'shared'. */
+const sourceOf = (row: Pick<KinSchedules.KinSchedule, "chatId" | "sourceEvent" | "audience">) => ({
+  chat: row.chatId,
+  source_event: KinEventId.make(row.sourceEvent),
+  ...(row.audience === "shared" ? { for_chat: true as const } : {}),
+});
 
 /** Writes the standing card: in place when it exists, else posted to `chatId`. */
 const writeCard = Effect.fn("KinScheduledTasks.writeCard")(function* (input: {
@@ -168,9 +187,7 @@ export const syncScheduledTasks = Effect.fn("KinScheduledTasks.sync")(function* 
     yield* sql`UPDATE kin_scheduled_tasks SET state = 'disarmed', run_now_at = NULL,
           updated_at = ${now}
         WHERE org_id = ${orgId} AND item_id = ${itemId} AND state <> 'disarmed'`;
-    yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
-          updated_at = max(updated_at, ${now})
-        WHERE org_id = ${orgId} AND trigger_id = ${scheduledTaskTriggerId(itemId)}`;
+    yield* pauseTriggers(orgId, [scheduledTaskTriggerId(itemId)], now);
     const widget = yield* repo.getWidget({ orgId, widgetId: scheduledTaskWidgetId(orgId, itemId) });
     if (Option.isSome(widget) && widget.value.closedAt === null) {
       const card = yield* decodeCard(widget.value.state);
@@ -312,17 +329,25 @@ const make = Effect.gen(function* () {
       Effect.provideService(KinEventQueue.KinEventQueue, eventQueue),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
-  const outsideSource = Option.match(yield* Effect.serviceOption(KinConnections), {
-    onNone: () => noOutside,
-    onSome: (connections) => fromConnections(connections, sql),
-  });
+  const routineContent = yield* Effect.serviceOption(RoutineContent.KinRoutineContent);
+  const connections = yield* Effect.serviceOption(KinConnections);
+  const outsideSource = Option.isNone(connections)
+    ? noOutside
+    : fromConnections(connections.value, sql, yield* alertsOnMail(connections.value));
 
-  const notice = (orgId: KinOrgId, chatId: KinChatId, runId: string, body: string, now: number) =>
+  const notice = (
+    orgId: KinOrgId,
+    chatId: KinChatId,
+    runId: string,
+    body: string,
+    now: number,
+    audience: Repository.WriteAudience = "owner",
+  ) =>
     repo
       .insertMessage({
         orgId,
         chatId,
-        audience: "owner",
+        audience,
         messageId: KinMessageId.make(`kin-run-skipped:${hex(runId)}`),
         author: { _tag: "system" },
         kind: "system",
@@ -376,6 +401,20 @@ const make = Effect.gen(function* () {
     const lead = yield* scheduleLead(orgId, schedule.agentId);
     const hash = task === undefined ? undefined : yield* KinSchedules.promptSha256(task.prompt);
     const confirmed = hash === schedule.contentSha256;
+    // A shared chat's own routine runs there, as its lead; an unconfirmed wording never does.
+    const chatOwn =
+      lead === undefined || !confirmed
+        ? undefined
+        : yield* sharedChatOf(sql, orgId, sourceOf(schedule));
+    // Set up for someone alone in their own chat with the lead (a co-owner's too): it runs there.
+    const theirs =
+      lead === undefined || !confirmed || chatOwn !== undefined
+        ? undefined
+        : yield* theirDirectChat(sql, orgId, schedule.chatId, lead.agentId);
+    const lane = chatOwn?.open === true ? chatOwn.chatId : theirs;
+    // Words set before someone now reading the room joined: the room's turn gets none of them.
+    const withheld =
+      chatOwn?.open === true && !(yield* wordsReadable(sql, orgId, schedule.sourceEvent));
     // An unconfirmed wording is asked about in the owner's chat, as an owner-only turn.
     const origin =
       lead === undefined || !confirmed
@@ -403,17 +442,29 @@ const make = Effect.gen(function* () {
       schedule.checkIn === 1 && confirmed && admitted && !paused
         ? yield* outsideSource.read(orgId)
         : undefined;
+    // The evening summary comes only on a day with something to sum up, as it always did.
+    const nothingToSum =
+      outside !== undefined &&
+      !manual &&
+      schedule.scheduleId === "checkin-evening" &&
+      lead !== undefined &&
+      Option.isSome(routineContent)
+        ? (yield* routineContent.value
+            .eveningFacts(orgId, lead.agentId)
+            .pipe(Effect.orElseSucceed(() => ""))) === null
+        : false;
     let checkedIn = false;
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const row = yield* KinSchedules.readSchedule(sql, orgId, schedule.scheduleId);
-        // Deleted, or paused (from the card or T3's screen) since the slot fired: drop the fire.
+        // Deleted, or paused (from the card or T3's screen, a Run now too), or its setter gone
+        // since the slot fired: drop the fire.
         if (
           row === undefined ||
           task === undefined ||
           hash === undefined ||
           row.deletedAt !== null ||
-          (!manual && (row.pendingEnabled ?? task.enabled) !== 1)
+          !(yield* KinSchedules.runnable(sql, row, task))
         )
           return yield* consume;
         const itemId = row.scheduleId;
@@ -428,13 +479,14 @@ const make = Effect.gen(function* () {
         if (every === undefined) return yield* consume;
         const base: KinScheduledTaskCard = {
           itemId,
-          title: task.title,
+          title: withheld ? "" : task.title,
           every,
           timeZone: KinSchedules.hostTimeZone(),
           status: task.enabled === 1 ? "active" : "paused",
           nextRunAt: task.nextRunAt,
           around: KinSchedules.isAround(task, row.looseAt),
           lastRun: card?.lastRun ?? null,
+          ...(card?.askedBy === undefined ? {} : { askedBy: card.askedBy }),
         };
         const at = fire.dueAt;
         const settleCard = (lastRun: KinScheduledTaskCard["lastRun"]) =>
@@ -455,6 +507,10 @@ const make = Effect.gen(function* () {
         if (paused) return yield* skip("Kin is paused.");
         if (lead === undefined) return yield* skip("there is no agent to run it.");
         if (!admitted) return yield* skip("today's budget is used up.");
+        if (row.checkIn === 1 && confirmed && outside !== undefined && nothingToSum) {
+          yield* settleCard({ at, status: "skipped", note: "Nothing to sum up today." });
+          return yield* consume;
+        }
         if (row.checkIn === 1 && confirmed && outside !== undefined) {
           const result = yield* withQueue(
             queueCheckIn({
@@ -464,7 +520,8 @@ const make = Effect.gen(function* () {
               title,
               what: task.prompt,
               dueAt: Date.parse(fire.dueAt),
-              looseAt: row.looseAt,
+              // Made exact on T3's screen since, it fires at the time shown there.
+              looseAt: base.around ? row.looseAt : null,
               manualId: manual ? fire.fireId : undefined,
               zone: KinSchedules.hostTimeZone(),
               at: now,
@@ -473,14 +530,20 @@ const make = Effect.gen(function* () {
           );
           checkedIn = true;
           yield* settleCard(
-            result._tag === "nothing_new" || result._tag === "folded"
+            result._tag === "nothing_new" ||
+              result._tag === "folded" ||
+              result._tag === "past_its_day"
               ? {
                   at,
                   status: "skipped",
                   note:
                     result._tag === "folded"
-                      ? "The weekly brief covers it today."
-                      : "Nothing untold since the last check-in.",
+                      ? result.into === "checkin-weekly"
+                        ? "The weekly brief covers it today."
+                        : "The morning brief covers it today."
+                      : result._tag === "past_its_day"
+                        ? "Its day is over by then, so it isn't sent."
+                        : "Nothing untold since the last check-in.",
                 }
               : {
                   at,
@@ -491,6 +554,45 @@ const make = Effect.gen(function* () {
                   )}.`,
                 },
           );
+          return yield* consume;
+        }
+        if (chatOwn !== undefined && !chatOwn.open) {
+          // Paused until someone resumes it, so whoever set it is told once.
+          yield* sql`UPDATE kin_schedules SET pending_enabled = 0, updated_at = ${now}
+            WHERE task_id = ${row.taskId}`;
+          const why = `it was for ${chatOwn.name}, which ${lead.name} can no longer post in.`;
+          yield* settleCard({ at, status: "skipped", note: `Paused: ${why}` });
+          const setter = yield* askerOf(sql, orgId, row.saidBy);
+          const to =
+            setter === undefined || setter.left === true
+              ? undefined
+              : yield* directChatWith(sql, orgId, setter.personId, lead.agentId);
+          yield* notice(
+            orgId,
+            to ?? lead.ownerChatId,
+            fire.fireId,
+            `Paused "${title}": ${why}`,
+            now,
+            "chat",
+          );
+          return yield* consume;
+        }
+        // One run at a time per routine: a slot while the last is still owed or going is skipped.
+        const [going] = yield* sql`SELECT 1 FROM kin_lead_deliveries WHERE org_id = ${orgId}
+          AND kind = 'scheduled_task' AND widget_id = ${scheduledTaskWidgetId(orgId, itemId)}
+          AND status = 'pending' LIMIT 1`;
+        if (going !== undefined) {
+          const skipped = (card?.overlapSkipped ?? 0) + 1;
+          if (Option.isSome(widget))
+            yield* cards.update(
+              widget.value,
+              {
+                ...base,
+                lastRun: { at, status: "skipped", note: "the last run was still going" },
+                overlapSkipped: skipped,
+              },
+              now,
+            );
           return yield* consume;
         }
         if (!confirmed) {
@@ -505,6 +607,22 @@ const make = Effect.gen(function* () {
           yield* sql`UPDATE kin_schedules SET asked_sha256 = ${hash}, updated_at = ${now}
             WHERE task_id = ${row.taskId}`;
         }
+        if (withheld) {
+          const setter = yield* askerOf(sql, orgId, row.saidBy);
+          const to =
+            setter === undefined || setter.left === true
+              ? undefined
+              : yield* directChatWith(sql, orgId, setter.personId, lead.agentId);
+          if (to !== undefined)
+            yield* notice(
+              orgId,
+              to,
+              `${fire.fireId}:withheld`,
+              `"${title}" ran in ${chatOwn?.name ?? "its chat"} without its wording: someone there now couldn't read where you set it. It asked: ${task.prompt}`,
+              now,
+              "chat",
+            );
+        }
         const runId = fire.fireId;
         const dedupeKey = `scheduled:${runId}`;
         const eventId = KinEventId.make(`scheduled_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`);
@@ -518,7 +636,11 @@ const make = Effect.gen(function* () {
           dedupeKey,
           subject: { type: "scheduled_task", itemId, runId },
           lateByMs: fire.lateByMs,
-          ...(origin === undefined ? {} : { origin }),
+          ...(lane === undefined
+            ? origin === undefined
+              ? {}
+              : { origin }
+            : { origin: { agentId: lead.agentId, chatId: lane }, chatId: lane }),
         });
         const running = { ...base, lastRun: { at, status: "running" as const } };
         yield* deliveries.handOff(event, {
@@ -526,7 +648,7 @@ const make = Effect.gen(function* () {
           eventId,
           kind: "scheduled_task",
           agentId: lead.agentId,
-          chatId: lead.ownerChatId,
+          chatId: lane ?? lead.ownerChatId,
           widget: {
             widgetId: scheduledTaskWidgetId(orgId, itemId),
             type: "scheduled_task",
@@ -580,27 +702,41 @@ const make = Effect.gen(function* () {
       }
       const every = KinSchedules.everyOf(task, row.looseAt) ?? card?.every;
       if (every === undefined) continue;
-      const lead = yield* scheduleLead(orgId, row.agentId);
-      const chatId = yield* cardChatFor(sql, orgId, row.chatId, lead?.ownerChatId ?? null);
+      // A check-in has no card to post (`writeCard`).
+      if (Option.isNone(widget) && row.checkIn === 1) continue;
       const enabled = row.pendingEnabled === null ? task.enabled === 1 : row.pendingEnabled === 1;
+      const chatOwn = yield* sharedChatOf(sql, orgId, sourceOf(row));
+      const askedBy = chatOwn === undefined ? undefined : yield* askerOf(sql, orgId, row.saidBy);
+      // A room's own shows its title only while everyone there could read where it was set.
+      const titled = chatOwn === undefined || (yield* wordsReadable(sql, orgId, row.sourceEvent));
+      const state = {
+        itemId: row.scheduleId,
+        title: titled ? task.title : "",
+        every,
+        timeZone: KinSchedules.hostTimeZone(),
+        status: enabled ? ("active" as const) : ("paused" as const),
+        nextRunAt: enabled ? task.nextRunAt : null,
+        around: KinSchedules.isAround(task, row.looseAt),
+        lastRun: card?.lastRun ?? null,
+        ...(askedBy === undefined ? {} : { askedBy }),
+        ...(card?.overlapSkipped === undefined ? {} : { overlapSkipped: card.overlapSkipped }),
+      };
+      // Most passes change nothing: an open card that already reads so is left without a write.
+      if (
+        card !== undefined &&
+        Option.isSome(widget) &&
+        widget.value.closedAt === null &&
+        (yield* cardJson(card)) === (yield* cardJson(state))
+      )
+        continue;
+      const lead = Option.isSome(widget) ? undefined : yield* scheduleLead(orgId, row.agentId);
+      const chatId = Option.isSome(widget)
+        ? null
+        : chatOwn?.open === true
+          ? chatOwn.chatId
+          : yield* cardChatFor(sql, orgId, row.chatId, lead?.ownerChatId ?? null);
       yield* sql.withTransaction(
-        write({
-          orgId,
-          itemId: row.scheduleId,
-          chatId,
-          state: {
-            itemId: row.scheduleId,
-            title: task.title,
-            every,
-            timeZone: KinSchedules.hostTimeZone(),
-            status: enabled ? "active" : "paused",
-            nextRunAt: enabled ? task.nextRunAt : null,
-            around: KinSchedules.isAround(task, row.looseAt),
-            lastRun: card?.lastRun ?? null,
-          },
-          closed: false,
-          now,
-        }),
+        write({ orgId, itemId: row.scheduleId, chatId, state, closed: false, now }),
       );
     }
   });
@@ -860,7 +996,9 @@ const make = Effect.gen(function* () {
     }
   });
 
+  yield* KinSchedules.watchStrayTasks().pipe(Effect.forkScoped);
   const seeded = new Set<string>();
+  const lastMinutely = new Map<string, number>();
   yield* ticks.register(
     "kin-scheduled-tasks",
     Effect.gen(function* () {
@@ -868,11 +1006,16 @@ const make = Effect.gen(function* () {
         orgId: string;
       }>`SELECT org_id AS "orgId" FROM kin_orgs ORDER BY org_id`;
       for (const { orgId } of orgs) {
-        yield* ensureLeadProjects(KinOrgId.make(orgId)).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("Kin lead projects scan failed", { orgId, cause }),
-          ),
-        );
+        const now = yield* Clock.currentTimeMillis;
+        // Lead projects and the owner's zone change rarely and matter at minute grain.
+        const minutely = now - (lastMinutely.get(orgId) ?? -Infinity) >= MINUTE_MS;
+        if (minutely) lastMinutely.set(orgId, now);
+        if (minutely)
+          yield* ensureLeadProjects(KinOrgId.make(orgId)).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Kin lead projects scan failed", { orgId, cause }),
+            ),
+          );
         if (!seeded.has(orgId))
           yield* seedCheckIns(KinOrgId.make(orgId), schedules).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
@@ -885,7 +1028,7 @@ const make = Effect.gen(function* () {
               Effect.logWarning("Kin default check-ins not written", { orgId, cause }),
             ),
           );
-        else
+        else if (minutely)
           yield* followOwnerZone(KinOrgId.make(orgId), schedules).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.catch((cause) =>

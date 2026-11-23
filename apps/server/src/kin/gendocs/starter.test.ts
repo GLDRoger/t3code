@@ -3,7 +3,8 @@ import * as NodeZlib from "node:zlib";
 
 import { assert, describe, it } from "@effect/vitest";
 
-import { computeData } from "./compute.ts";
+import { computeData, type TaxRegime } from "./compute.ts";
+import { taxRegimeOf } from "./facts.ts";
 import { sampleInputs } from "./recipeLabels.ts";
 import { assembleInputs, parseRecipe, type Recipe, type Value } from "./recipe.ts";
 import { typeMismatch } from "./returnPath.ts";
@@ -17,6 +18,7 @@ const recipe = (name: string): Recipe => {
   return parsed;
 };
 const invoice = recipe("invoice");
+const notRegistered = taxRegimeOf({ country: "IN", tax: null, taxRegistered: false });
 const inr = (minor: number) => ({ minor, currency: "INR" });
 const base: Readonly<Record<string, Value>> = {
   invoiceKey: "INV-9",
@@ -33,15 +35,17 @@ const base: Readonly<Record<string, Value>> = {
   lines: [{ description: "Advisory", sac: null, quantity: "3", unit: null, rate: inr(33333) }],
 };
 /** The invoice as its template reads it: every declared input, null unless given. */
-const computeInvoice = (given: Readonly<Record<string, Value>>) => {
+const computeInvoice = (given: Readonly<Record<string, Value>>, tax?: TaxRegime) => {
   const inputs = Object.fromEntries(
     invoice.inputs.map((input) => [input.name, given[input.name] ?? null]),
   );
-  const result = computeData(inputs, invoice.computed);
+  const result = computeData(inputs, invoice.computed, tax);
   if ("error" in result) throw new Error(result.error);
   return result.data as {
     readonly tax: {
       readonly registered: boolean;
+      readonly notCharged?: string;
+      readonly placeOfSupply: string | null;
       readonly exportUnderLut: boolean;
       readonly country: string | null;
       readonly taxable: { readonly text: string };
@@ -59,6 +63,88 @@ const computeInvoice = (given: Readonly<Record<string, Value>>) => {
 };
 
 describe("invoice", () => {
+  it("charges a company outside India its own one tax, and none without a rate", () => {
+    const gbp = (minor: number) => ({ minor, currency: "GBP" });
+    const uk = taxRegimeOf({
+      country: "GB",
+      tax: { name: "VAT", rate: "20", pricesInclude: null },
+    });
+    const lines = [
+      { description: "Advisory", sac: null, quantity: "3", unit: null, rate: gbp(33333) },
+    ];
+    // No GSTIN, SAC or place of supply: none is asked for outside India.
+    const plain = { ...base, supplierGstin: null, supplierPlace: null, sac: null, lines };
+    const cases = [
+      {
+        name: "on top",
+        input: plain,
+        tax: uk,
+        taxes: [["VAT", "20%", "£200.00"]],
+        total: "£1,199.99",
+      },
+      {
+        name: "in the prices",
+        input: plain,
+        tax: { ...uk, pricesInclude: true },
+        taxes: [["VAT", "20%", "£166.66"]],
+        total: "£999.99",
+      },
+      {
+        name: "out of the entry's total",
+        input: { ...plain, lines: null, total: gbp(120000) },
+        tax: uk,
+        taxes: [["VAT", "20%", "£200.00"]],
+        total: "£1,200.00",
+      },
+      {
+        name: "no rate set",
+        input: plain,
+        tax: taxRegimeOf({
+          country: "US",
+          tax: { name: "Sales tax", rate: null, pricesInclude: null },
+        }),
+        taxes: [],
+        total: "£999.99",
+      },
+      {
+        name: "no country",
+        input: plain,
+        tax: taxRegimeOf({ country: null, tax: null }),
+        taxes: [],
+        total: "£999.99",
+      },
+      {
+        name: "said it isn't registered for its tax",
+        input: plain,
+        tax: taxRegimeOf({
+          country: "GB",
+          tax: { name: "VAT", rate: "20", pricesInclude: null },
+          taxRegistered: false,
+        }),
+        taxes: [],
+        total: "£999.99",
+        notCharged: "VAT not charged: the supplier is not registered for VAT.",
+      },
+    ];
+    for (const one of cases) {
+      const { tax } = computeInvoice(one.input, one.tax);
+      assert.deepStrictEqual(
+        tax.taxes.map((line) => [line.name, `${line.rate}%`, line.amount.text]),
+        one.taxes,
+        one.name,
+      );
+      assert.strictEqual(tax.total.text, one.total, one.name);
+      assert.isFalse(tax.registered, one.name);
+      assert.strictEqual(
+        tax.notCharged,
+        "notCharged" in one ? one.notCharged : undefined,
+        one.name,
+      );
+    }
+    // India keeps its GST from the states, whatever the profile's tax says.
+    assert.deepStrictEqual(taxRegimeOf({ country: "IN", tax: null }), { _tag: "gst" });
+  });
+
   it("decides the tax lines from the states and keeps every paisa", () => {
     const cases = [
       // 3 x 333.33 = 999.99; 9% of it is 89.9991, so 90.00 each way.
@@ -102,10 +188,29 @@ describe("invoice", () => {
         taxes: [],
         total: "₹999.99",
         registered: false,
+        placeOfSupply: "Maharashtra (27)",
+      },
+      {
+        name: "a company that said it isn't registered for GST",
+        input: { ...base, supplierGstin: null, clientPlace: "Maharashtra" },
+        tax: notRegistered,
+        taxes: [],
+        total: "₹999.99",
+        registered: false,
+        notCharged: "GST not charged: the supplier is not registered under GST.",
+      },
+      {
+        name: "a GSTIN left over on a company that said it isn't registered",
+        input: { ...base, clientGstin: "29BBBBB2222B1Z5" },
+        tax: notRegistered,
+        taxes: [],
+        total: "₹999.99",
+        registered: false,
+        notCharged: "GST not charged: the supplier is not registered under GST.",
       },
     ];
     for (const one of cases) {
-      const { tax } = computeInvoice(one.input);
+      const { tax } = computeInvoice(one.input, "tax" in one ? one.tax : undefined);
       assert.deepStrictEqual(
         tax.taxes.map((line) => [line.name, `${line.rate}%`, line.amount.text]),
         one.taxes,
@@ -113,6 +218,16 @@ describe("invoice", () => {
       );
       assert.strictEqual(tax.total.text, one.total, one.name);
       assert.strictEqual(tax.registered, one.registered, one.name);
+      // Only a company that said it isn't registered gets the line, and no place of supply.
+      if ("notCharged" in one)
+        assert.deepStrictEqual(
+          [tax.notCharged, tax.placeOfSupply],
+          [one.notCharged, null],
+          one.name,
+        );
+      else assert.notProperty(tax, "notCharged", one.name);
+      if ("placeOfSupply" in one)
+        assert.strictEqual(tax.placeOfSupply, one.placeOfSupply, one.name);
     }
     const exported = computeInvoice({ ...base, clientPlace: "United States" }).tax;
     assert.deepStrictEqual([exported.exportUnderLut, exported.country], [true, "United States"]);
@@ -172,7 +287,20 @@ describe("invoice", () => {
       () => computeInvoice({ ...base, total: inr(118000), clientPlace: "Maharashtra" }),
       "the lines come to ₹1,179.99 with tax, but the entry is recorded at ₹1,180.00",
     );
-    assert.throws(() => computeInvoice(base), /no place of supply/);
+    assert.throws(
+      () => computeInvoice(base),
+      /the client has no place of supply and needs a GSTIN or a place of supply/,
+    );
+    // Tax recorded on an entry of a company that isn't registered is never printed as charged.
+    for (const lines of [null, base.lines!])
+      assert.throws(
+        () =>
+          computeInvoice(
+            { ...base, lines, total: inr(99999), taxRecorded: inr(15254), supplierGstin: null },
+            notRegistered,
+          ),
+        "the entry records tax, but the company isn't registered for GST, so its invoices charge none",
+      );
     const spelled = computeData({ a: inr(1234567890), b: { minor: 100, currency: "USD" } }, [
       ["x", { words: "a" }],
       ["y", { words: "b" }],
@@ -373,6 +501,7 @@ it("ships four recipes that parse, read only what Kin supplies, and make their s
       "tds-2026-10.csv",
       "expenses-2026-10.csv",
       "unpaid-expenses-2026-10.csv",
+      "owed-to-partners-2026-10.csv",
       "bank-2026-10.csv",
     ],
   );

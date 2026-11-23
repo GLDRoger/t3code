@@ -1,6 +1,9 @@
+import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_RESTORE_ACTION,
   KIN_RETIRE_ACTION,
+  KIN_RETIRE_NEXT_TEAM_AGENT,
+  kinNextTeamAgentChoices,
   kinRestoreProblem,
   kinRetireCopy,
   kinRetireOffer,
@@ -8,7 +11,9 @@ import {
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinAgentId, KinOrgId } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
+import { ChevronDownIcon } from "lucide-react";
 import { useState } from "react";
 
 import {
@@ -21,6 +26,7 @@ import {
   AlertDialogTitle,
 } from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
+import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../components/ui/menu";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient, refreshKinAgents } from "./kinClient";
 
@@ -108,17 +114,31 @@ export function KinRetireAgent(props: {
 }) {
   const { agent } = props;
   const retire = useAtomCommand(kinClient.leadRetire, { reportFailure: false });
+  const list = Option.getOrNull(
+    AsyncResult.value(
+      useAtomValue(
+        kinClient.leads({ environmentId: agent.environmentId, input: { orgId: agent.orgId } }),
+      ),
+    ),
+  );
   const [state, setState] = useState<"idle" | "confirm" | "retiring">("idle");
   const [problem, setProblem] = useState<string | null>(null);
+  const [next, setNext] = useState<KinAgentId | null>(null);
   const offer = kinRetireOffer(agent, props.activeAgents);
   const copy = kinRetireCopy(agent.name);
+  const nextChoices = list === null ? null : kinNextTeamAgentChoices(list, agent.agentId);
+  const nextName = nextChoices?.find((lead) => lead.agentId === next)?.name ?? null;
 
   const run = async () => {
     setState("retiring");
     setProblem(null);
     const result = await retire({
       environmentId: agent.environmentId,
-      input: { orgId: agent.orgId, agentId: agent.agentId },
+      input: {
+        orgId: agent.orgId,
+        agentId: agent.agentId,
+        ...(nextChoices === null || next === null ? {} : { nextTeamAgentId: next }),
+      },
     });
     setState("idle");
     // Read again either way: a refusal usually means the list this screen holds is behind.
@@ -161,9 +181,40 @@ export function KinRetireAgent(props: {
             <AlertDialogTitle>{copy.title}</AlertDialogTitle>
             <AlertDialogDescription>{copy.detail}</AlertDialogDescription>
           </AlertDialogHeader>
+          {nextChoices === null ? null : (
+            <div className="flex items-center justify-between gap-3 px-6 pb-4">
+              <span className="text-sm font-medium text-foreground">
+                {KIN_RETIRE_NEXT_TEAM_AGENT}
+              </span>
+              <Menu>
+                <MenuTrigger render={<Button size="sm" variant="outline" />}>
+                  {nextName ?? "Choose an agent"}
+                  <ChevronDownIcon aria-hidden />
+                </MenuTrigger>
+                <MenuPopup align="end" side="bottom">
+                  <MenuRadioGroup
+                    value={next ?? ""}
+                    onValueChange={(value) =>
+                      setNext(nextChoices.find((lead) => lead.agentId === value)?.agentId ?? null)
+                    }
+                  >
+                    {nextChoices.map((lead) => (
+                      <MenuRadioItem key={lead.agentId} value={lead.agentId}>
+                        {lead.name}
+                      </MenuRadioItem>
+                    ))}
+                  </MenuRadioGroup>
+                </MenuPopup>
+              </Menu>
+            </div>
+          )}
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button variant="destructive" onClick={() => void run()}>
+            <Button
+              variant="destructive"
+              disabled={nextChoices !== null && nextName === null}
+              onClick={() => void run()}
+            >
               {copy.confirm}
             </Button>
           </AlertDialogFooter>

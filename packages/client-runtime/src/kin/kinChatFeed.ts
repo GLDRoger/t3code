@@ -1,4 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { kinNow } from "./kinNow.ts";
+import { kinMessageText } from "./kinMessagePage.ts";
 import {
   EnvironmentAuthorizationError,
   KinTaskCardState,
@@ -10,7 +12,10 @@ import {
   type KinPersonId,
   type KinRecordKey,
   type KinWidget,
+  kinIsBrief,
+  kinThreadLinksAsWords,
   kinWhenFormat,
+  scanKinDocFences,
 } from "@t3tools/contracts";
 import { KIN_VISUAL_FILE_SCHEME } from "@t3tools/shared/kinVisual";
 import * as Cause from "effect/Cause";
@@ -246,11 +251,14 @@ export type KinFeedRow =
       readonly retry: string | null;
       /** The task or project a hand-off notice is about, to open from the line; null for none. */
       readonly open: KinNoticeOpen | null;
+      /** The Team-room discussion the line names, to open from it; null for none. */
+      readonly discussionId: string | null;
     }
   /**
    * Words carried into this chat (`relay`): `sent_by` what one agent asked another, `reply_from`
    * the answer or a Team-room outcome (`discussionId` links it). With `personLabel`, a person's
    * words an agent passed on ("Sent by Rhea, via Chief of staff"), `text` their words alone.
+   * `summary` is the one line an agent's row folds to; null keeps the row open (`kinRelaySummary`).
    */
   | {
       readonly type: "relay";
@@ -259,8 +267,11 @@ export type KinFeedRow =
       readonly relay: "sent_by" | "reply_from";
       readonly agentLabel: string;
       readonly discussionId: string | null;
+      readonly summary: string | null;
       readonly personLabel?: string;
       readonly text?: string;
+      /** "Sent after reading: mail from …": the outside text the sending turn had read. */
+      readonly afterReading?: string;
     }
   /**
    * A centred time divider: it starts each local day and any message after a quiet gap
@@ -275,6 +286,10 @@ export type KinFeedRow =
       readonly authors: ReadonlyArray<string>;
       /** The run's last `decision` message body, if it reached one. */
       readonly decision: string | null;
+      /** The Team-room discussion the run is, or null for any other run. */
+      readonly discussionId: string | null;
+      /** The discussion is still going, as its host last said; false for any other run. */
+      readonly open: boolean;
       readonly expanded: boolean;
       /** The run's latest seq, seen once the fold is on screen. */
       readonly lastSeq: number;
@@ -298,6 +313,34 @@ const kinRelayWords = (body: string) => {
   const quoted = /^[^\n]+ asked [^\n]+:\n"([\s\S]*)"$/.exec(body);
   return quoted?.[1] ?? body;
 };
+
+/**
+ * The first line an agent's relayed words fold to, as T3 folds a message from another thread:
+ * the full reply already sits in the chat it came from. A reply holding a card, a chart or visual,
+ * or ending on a question stays open (null), so nothing the owner may act on hides behind a tap.
+ */
+function kinRelaySummary(
+  message: Pick<KinMessage, "body" | "widgetId">,
+  kind: "sent_by" | "reply_from",
+): string | null {
+  const lines: Array<string> = [];
+  let fenced = false;
+  for (const line of message.body.split(/\r?\n/)) {
+    if (/^\s{0,3}(```|~~~)/.test(line)) fenced = !fenced;
+    else if (!fenced && line.trim() !== "") lines.push(line);
+  }
+  const summary = kinPlainText(lines[0] ?? "");
+  if (kind === "sent_by") return summary;
+  const asks = /\?$/.test(kinPlainText(lines.at(-1) ?? ""));
+  if (message.widgetId !== null || scanKinDocFences(message.body).found.length > 0 || asks)
+    return null;
+  return summary;
+}
+
+const kinRelayAfterReading = (relay: NonNullable<KinMessage["relay"]>) =>
+  relay.afterReading === undefined
+    ? {}
+    : { afterReading: `Sent after reading: ${relay.afterReading}` };
 
 const isSystem = (message: KinMessage) =>
   message.kind === "system" || message.author._tag === "system";
@@ -417,7 +460,7 @@ export function buildKinFeedRows(
   messages: ReadonlyArray<KinMessage>,
   viewer: KinFeedViewer,
   expandedRuns: ReadonlySet<string>,
-  now: Date = new Date(),
+  now: Date = kinNow(),
   drafts: ReadonlyArray<KinHeldDraft> = [],
   /**
    * The Team room, where discussions are the point: each opens by default under its line, and
@@ -477,8 +520,10 @@ export function buildKinFeedRows(
         relay: "sent_by",
         agentLabel: viewer.agentNames.get(passedOn.agentId) ?? kinAuthorLabel(message, viewer),
         discussionId: null,
+        summary: null,
         personLabel: passedOn.personName ?? "A teammate",
         text: kinRelayWords(message.body),
+        ...kinRelayAfterReading(passedOn),
       });
       previousAuthor = null;
       return;
@@ -491,16 +536,20 @@ export function buildKinFeedRows(
         relay: message.relay.kind,
         agentLabel: viewer.agentNames.get(message.relay.agentId) ?? "Another agent",
         discussionId: message.discussionId ?? null,
+        summary: kinRelaySummary(message, message.relay.kind),
+        ...kinRelayAfterReading(message.relay),
       });
       previousAuthor = null;
       return;
     }
-    // Host cards (memory changes, routines) arrive as system messages carrying a widget, and a
-    // worker's screenshots as one carrying files: both draw as messages, not a line.
+    // Host cards (memory changes, routines) arrive as system messages carrying a widget, a
+    // worker's screenshots as one carrying files, and Kin's own page as a brief: all draw as
+    // messages, not a line.
     if (
       isSystem(message) &&
       message.widgetId === null &&
-      (message.attachments ?? []).length === 0
+      (message.attachments ?? []).length === 0 &&
+      !kinIsBrief(message.body, message.form)
     ) {
       const notice = retryNotice(message);
       const retry = notice ? lastOwnText : null;
@@ -518,6 +567,7 @@ export function buildKinFeedRows(
         text: notice ? message.body.replace(RETRY_HINT, "") : message.body,
         retry,
         open: kinNoticeOpen(message),
+        discussionId: message.discussionId ?? null,
       });
       previousAuthor = null;
       return;
@@ -563,6 +613,7 @@ export function buildKinFeedRows(
     const decision =
       run.findLast((message) => message.intent === "decision" && message.status !== "deleted")
         ?.body ?? null;
+    const last = run[run.length - 1]!;
     const expanded = expandedRuns.has(runId) !== openRuns;
     // Keyed by run so a page prepended into the run keeps the row; a run split by another
     // author falls back to its first message.
@@ -577,8 +628,10 @@ export function buildKinFeedRows(
       count: run.length,
       authors,
       decision,
+      discussionId: last.discussionId ?? null,
+      open: last.discussionId !== undefined && last.discussionOpen === true,
       expanded,
-      lastSeq: run[run.length - 1]!.seq,
+      lastSeq: last.seq,
     });
     previousAuthor = null;
     if (expanded) run.forEach(pushMessage);
@@ -623,7 +676,7 @@ const kinWeekdayFormat = kinWhenFormat("day");
 const kinFullDateFormat = kinWhenFormat("dateYear");
 
 /** A day separator: "Today", "Yesterday", "Mon, 3 Nov", or with the year once it differs. */
-export function kinDayLabel(iso: string, now: Date = new Date()): string {
+export function kinDayLabel(iso: string, now: Date = kinNow()): string {
   const day = kinLocalDayKey(iso);
   if (day === kinLocalDayKey(now.toISOString())) return "Today";
   const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
@@ -637,7 +690,7 @@ export function kinDayLabel(iso: string, now: Date = new Date()): string {
 const kinDividerTimeFormat = kinWhenFormat("time");
 
 /** A time divider: "Today 12:55 PM", "Yesterday 9:10 AM", "Mon, 3 Nov 8:02 AM". */
-function kinTimeDividerLabel(iso: string, now: Date = new Date()): string {
+function kinTimeDividerLabel(iso: string, now: Date = kinNow()): string {
   return `${kinDayLabel(iso, now)} ${kinDividerTimeFormat.format(new Date(iso))}`;
 }
 
@@ -648,7 +701,7 @@ const BARE_URL = /<?(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])>?/g;
 
 /** Markdown read aloud: link text without its address, no markers, one sentence per line. */
 export function kinPlainText(markdown: string): string {
-  return kinPlainTables(markdown)
+  return kinPlainTables(kinThreadLinksAsWords(markdown))
     .split("\n")
     .filter((line) => !/^\s*(```|~~~)/.test(line))
     .map((line) =>
@@ -705,7 +758,7 @@ const imageAsText = (alt: string) => (alt.trim() ? `Image: ${alt.trim()}` : "Ima
  * the native parser) can load or open an agent's image URL.
  */
 export const kinBodyMarkdown = (body: string) =>
-  body
+  kinThreadLinksAsWords(body)
     .replace(MARKDOWN_IMAGE, (_match, alt: string) => imageAsText(alt))
     .replace(HTML_IMAGE, "Image");
 
@@ -726,7 +779,7 @@ export const kinDocMarkdown = (
   body: string,
   src: (id: string) => string = (id) => `${KIN_VISUAL_FILE_SCHEME}${id}`,
 ) =>
-  body
+  kinThreadLinksAsWords(body)
     .replace(MARKDOWN_IMAGE, (_match, alt: string, destination: string | undefined) => {
       const id = destination === undefined ? null : kinDocFileId(destination);
       return id === null ? imageAsText(alt) : `![${alt}](${src(id)})`;
@@ -744,7 +797,7 @@ export function kinMessageLabel(row: MessageRow, time: string): string {
   const parts = [row.own ? "You" : `${row.authorLabel}, ${row.authorKind}`];
   if (deleted) parts.push("Message deleted");
   else {
-    parts.push(kinPlainText(message.body));
+    parts.push(kinPlainText(kinMessageText(message, (title) => title)));
     if (message.attachments !== undefined) parts.push(kinAttachmentSummary(message.attachments));
   }
   parts.push(time);
@@ -852,6 +905,11 @@ export function kinFeedViewer(orgs: KinOrgsListResult | null, orgId: string | nu
 
 /** Words in an open chat and its rows. */
 export const KIN_CHAT_COPY = {
+  back: "Back to chats",
+  loadingEarlier: "Loading earlier messages…",
+  none: "No messages yet",
+  sayHello: (agentName: string) => `Say hello to ${agentName}`,
+  stopAgain: "Try stopping again",
   earlierFailed: "Couldn't load earlier messages.",
   empty: "Messages in this chat show up here.",
   awayHolds: (away: string) => `${away}. Kin holds what can wait until then.`,

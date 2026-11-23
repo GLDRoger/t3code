@@ -1,9 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
+import { kinIssuedAmountQuestion } from "@t3tools/client-runtime/kin/kinInvoices";
 import {
+  KIN_AMOUNT_SLIP,
   KIN_FIELD_FILES_MAX,
   KIN_LISTS,
+  kinAmountAsking,
   kinAmountCheck,
   kinFieldCheck,
   kinListEntryView,
@@ -16,6 +19,7 @@ import {
   KinOrgId,
   KinRecordKey,
   type KinFieldValue,
+  type KinMoney,
   type KinRecordDetail,
   KIN_DEFAULT_HOME_CURRENCY,
   kinWhenFormat,
@@ -27,16 +31,19 @@ import { type TextInputInstance, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
+import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
 import { SearchField } from "../../components/ui/SearchField";
 import { useNowMinuteMs } from "../../lib/clock";
+import { KinCountryFirstField } from "./components/KinCountryFirst";
 import { KinMonthGrid } from "./components/KinMonthGrid";
 import { KinWorkFrame, KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import {
+  useKinCountryNeeded,
   kinListsOf,
   useKinEntryChanges,
   useKinListContext,
@@ -183,32 +190,47 @@ function TypedEdit(
   const [text, setText] = useState(field === null ? (amount?.draft ?? "") : field.draft);
   const [problem, setProblem] = useState<string | null>(null);
   const numeric = field === null || field.type === "money";
+  // An amount waits on the company's country; the field gives way to that step.
+  const waiting = useKinCountryNeeded(props) && numeric;
   const save = async () => {
     const checked =
       field === null
-        ? kinAmountCheck(text, currency, amount?.received ?? null)
+        ? kinAmountCheck(text, currency, amount?.received ?? null, amount?.belowZero ?? false)
         : kinFieldCheck(field, text, currency);
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);
-    const saved = await changes.update(
-      item.rev,
-      field === null
-        ? { amount: checked.value as never }
-        : fieldPatch(field, checked.value as KinFieldValue | null),
-    );
-    if (saved) props.onClose();
+    const keep = async () => {
+      const saved = await changes.update(
+        item.rev,
+        field === null
+          ? { amount: checked.value as never }
+          : fieldPatch(field, checked.value as KinFieldValue | null),
+        field === null ? text.trim() : undefined,
+      );
+      if (saved) props.onClose();
+    };
+    const question =
+      field === null ? kinIssuedAmountQuestion(item, checked.value as KinMoney | null) : null;
+    if (question === null) return keep();
+    Dialog.confirm({
+      title: question.title,
+      message: question.message,
+      confirmText: question.confirm,
+      onConfirm: () => void keep(),
+    });
   };
   const shown = problem ?? changes.problem;
+  const asking = field === null ? kinAmountAsking(changes.ask, text.trim()) : null;
   return (
     <KinWorkFrame
       title={props.label}
       form
       onClose={props.onClose}
       confirm={{
-        label: KIN_LISTS.entry.save,
+        label: asking === null ? KIN_LISTS.entry.save : KIN_AMOUNT_SLIP.save,
         onPress: () => void save(),
         loading: changes.busy,
-        disabled: changes.busy,
+        disabled: changes.busy || waiting,
       }}
     >
       <View className="px-2">
@@ -218,17 +240,24 @@ function TypedEdit(
       </View>
       {shown === null ? null : <Notice message={shown} tone="danger" />}
       <ListSection>
-        <KinWorkTextField
-          label={props.label}
-          value={text}
-          autoFocus
-          multiline={!numeric}
-          keyboard={numeric ? "numbers" : "plain"}
-          disabled={changes.busy}
-          {...(numeric ? { placeholder: KIN_LISTS.entry.amountPlaceholder } : {})}
-          onChangeText={setText}
-        />
+        <KinCountryFirstField target={props} label={props.label}>
+          <KinWorkTextField
+            label={props.label}
+            value={text}
+            autoFocus
+            multiline={!numeric}
+            keyboard={numeric ? "numbers" : "plain"}
+            disabled={changes.busy}
+            {...(numeric ? { placeholder: KIN_LISTS.entry.amountPlaceholder } : {})}
+            onChangeText={setText}
+          />
+        </KinCountryFirstField>
       </ListSection>
+      {asking === null ? null : (
+        <Text textRole="body" accessibilityLiveRegion="polite" className="px-2 text-foreground">
+          {asking.line}
+        </Text>
+      )}
     </KinWorkFrame>
   );
 }
