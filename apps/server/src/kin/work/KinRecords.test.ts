@@ -4892,9 +4892,17 @@ it.effect("keeps a project lead's legacy list fields and totals separate from th
     const scope = scopeOf(lead);
     const legacyAgentSheet = yield* encodeGet(yield* LeadWork.get(scope, { key: original.key }));
     assert.property(legacyAgentSheet.fields, "price");
+    const labelled = yield* ownerTask("Labelled project", {
+      list: "projects",
+      owner: { _tag: "person", personId: arjun.personId },
+      sensitive: true,
+    });
+    const kept = yield* book("Labelled project booking", { projectId: labelled.recordId });
+    assert.include(keysOf(yield* browse()), kept.key);
 
     yield* TestClock.adjust("1 millis");
     yield* setBookingTeam(true, 1);
+    assert.include(keysOf(yield* browse()), kept.key);
     const opened = yield* book("Outside the project", {
       amount: price,
       fields: { note: "Second", price },

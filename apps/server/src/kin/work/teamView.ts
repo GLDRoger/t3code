@@ -262,14 +262,14 @@ const legacyPersonSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Stat
     AND ${placeOn(sql, personId, "sees_clients")})
   OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND ${teamListRow(sql, personId)})) END)`;
 
+/** A team list adds its unlabelled entries from its opening on; it takes nothing the older rule gives. */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`COALESCE(CASE WHEN ${onTeamList(sql)} THEN
-    CASE WHEN r.sensitive <> 0 OR ${inheritedSensitive(sql)} THEN 0 ELSE
-      (SELECT CASE WHEN ${teamSectionOff(sql)} THEN 0
-          WHEN r.created_at >= json_extract(g.definition_json, '$.teamSince')
-            OR (r.created_by_kind = 'person' AND r.created_by_id = ${personId}) THEN 1 END
-        FROM kin_registers g WHERE g.org_id = r.org_id AND g.register_id = r.register_id)
-    END
+    (SELECT CASE WHEN ${teamSectionOff(sql)} THEN 0
+        WHEN r.sensitive = 0 AND NOT ${inheritedSensitive(sql)}
+          AND (r.created_at >= json_extract(g.definition_json, '$.teamSince')
+            OR (r.created_by_kind = 'person' AND r.created_by_id = ${personId})) THEN 1 END
+      FROM kin_registers g WHERE g.org_id = r.org_id AND g.register_id = r.register_id)
   END, ${legacyPersonSees(sql, personId)})`;
 
 /** Version `pv` of doc `r` as this person reads it: the doc, and a picture's version by its own rule. */
