@@ -119,6 +119,88 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("shows active own mailboxes only in the teammate's direct turn", () =>
+  Effect.gen(function* () {
+    yield* leadWithOwner;
+    const sql = yield* SqlClient.SqlClient;
+    const prompt = yield* KinLeadPrompt;
+    const direct = KinChatId.make("mate-direct");
+    const group = KinChatId.make("mate-group");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES (${teammateId}, ${orgId}, 'mate', 'Teammate', ${timestamp}, 'member')`;
+    yield* sql`UPDATE kin_chats SET kind = 'direct', direct_key = ${`${personId}:${agentId}`}
+      WHERE org_id = ${orgId} AND chat_id = ${chatId}`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
+      VALUES (${direct}, ${orgId}, 'direct', 0, ${timestamp}, ${`${teammateId}:${agentId}`}),
+        (${group}, ${orgId}, 'team_group', 0, ${timestamp}, NULL)`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES (${teammateMember}, ${orgId}, ${direct}, 'person', ${teammateId}, 'member', ${timestamp}),
+        ('group-mate', ${orgId}, ${group}, 'person', ${teammateId}, 'member', ${timestamp})`;
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+        author_member_id, author_role, kind, body, mentions_json, status, created_at)
+      SELECT 'message-' || chat_id, org_id, chat_id, 1, 'human', person_id, member_id, role, 'text',
+        'Invented mail request', '[]', 'posted', ${timestamp}
+      FROM kin_chat_members WHERE org_id = ${orgId} AND principal_kind = 'person'
+        AND chat_id IN (${chatId}, ${direct}, ${group})`;
+    const turn = (chatId: KinChatId, who: KinPersonId, member: KinMemberId) => {
+      const wakeupId = KinWakeupId.make(`wake-${chatId}`);
+      return {
+        ...input,
+        wakeupId,
+        lane: { chatId, mode: "reply" } as const,
+        events: [
+          decodeEvent({
+            _tag: "chat.message",
+            orgId,
+            agentId,
+            eventId: `event-${chatId}`,
+            messageId: `message-${chatId}`,
+            receivedAt: timestamp,
+            dedupeKey: null,
+            chatId,
+            provenance: { _tag: "human", personId: who, memberId: member },
+          }),
+        ],
+      };
+    };
+    const mate = turn(direct, teammateId, teammateMember);
+    const owner = turn(chatId, personId, memberId);
+    const room = turn(group, teammateId, KinMemberId.make("group-mate"));
+    for (const built of [mate, owner, room]) yield* stored(built.wakeupId, built.events);
+    const before = yield* prompt.build(mate);
+    const ownerBefore = yield* prompt.build(owner);
+    const groupBefore = yield* prompt.build(room);
+    const addMailbox = (who: KinPersonId, address: string) =>
+      sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host, auth, reach,
+          state, account_label, created_at, updated_at, person_id, account_key)
+        VALUES (${orgId}, ${address}, 'google', 'Mail', 'builtin', 'google', 'oauth', 'closed',
+          'active', ${address}, 0, 0, ${who}, ${address})`;
+    yield* addMailbox(teammateId, "mate@ambermill.example");
+    yield* addMailbox(personId, "owner@ambermill.example");
+    const speaker = before.split("\n").find((line) => line.startsWith("You are talking with "))!;
+    const after = (line: string) => before.replace(speaker, `${speaker}\n${line}`);
+    expect(yield* prompt.build(mate)).toBe(
+      after(
+        'Their own mailbox "mate@ambermill.example" is connected: a mail they ask you to write is drafted from it with kin_connection_call mail_send and waits on a Confirm card for them, not for the owner. Nothing goes until they tap Confirm: never say it was sent.',
+      ),
+    );
+    expect(yield* prompt.build(owner)).toBe(ownerBefore);
+    expect(yield* prompt.build(room)).toBe(groupBefore);
+
+    yield* sql`UPDATE kin_connections SET paused_at = 1 WHERE org_id = ${orgId} AND person_id = ${teammateId}`;
+    expect(yield* prompt.build(mate)).toBe(before);
+    yield* sql`UPDATE kin_connections SET paused_at = NULL WHERE org_id = ${orgId} AND person_id = ${teammateId}`;
+    // The live schema allows only one; exercise the requested wording without changing that limit.
+    yield* sql`DROP INDEX kin_connections_live_person`;
+    yield* addMailbox(teammateId, "second@ambermill.example");
+    expect(yield* prompt.build(mate)).toBe(
+      after(
+        'Their own mailboxes "mate@ambermill.example", "second@ambermill.example" are connected: a mail they ask you to write is drafted from one of them with kin_connection_call mail_send and waits on a Confirm card for them, not for the owner. Nothing goes until they tap Confirm: never say it was sent.',
+      ),
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect.each([
   { case: "a group whose only human is the owner", audience: "owner_only", alone: true },
   // Fifth review of cfb0c8993b: a chat someone else could once read stays shared after they leave.

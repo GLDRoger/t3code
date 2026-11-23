@@ -3,6 +3,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import { KIN_PROFILE_COPY, kinRoleLine } from "@t3tools/client-runtime/kin/kinProfiles";
+import { KIN_MY_MAILBOX_COPY } from "@t3tools/client-runtime/kin/kinConnections";
 import {
   KIN_NOTIFICATIONS_OPENS,
   KIN_SET_UP_ON_COMPUTER,
@@ -175,6 +176,21 @@ export function KinSettings(props: {
                       value={KIN_NOTIFICATIONS_OPENS}
                       valuePosition="below"
                       onPress={() => void openKinNotificationSettings()}
+                    />
+                  );
+                case "mailbox":
+                  return host._tag !== "host" || orgId === null ? null : (
+                    <SettingsRow
+                      labelWholeWords
+                      key={page}
+                      icon="envelope"
+                      label={KIN_MY_MAILBOX_COPY.title}
+                      onPress={() =>
+                        navigation.navigate("KinMyMailbox", {
+                          environmentId: host.environmentId,
+                          orgId,
+                        })
+                      }
                     />
                   );
                 case "appearance":
