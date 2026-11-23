@@ -798,11 +798,13 @@ it.effect.each([true, false])(
         }>`SELECT key, party_id AS "partyId" FROM kin_records
           WHERE org_id = ${person.orgId} AND title = ${typed.title}`;
         assert.isNull(typedInvoice!.partyId);
+        // Outside India a tax number has no shape Kin knows, so it is kept as typed.
         const edited = yield* leadCall("record_update", {
           key: typedInvoice!.key,
-          fields: { billToEmail: "asha@example.com" },
+          fields: { billToEmail: "asha@example.com", billToTaxNumber: "GB 123 4567 89" },
         });
         assert.include(edited, '"isError":false', edited);
+        assert.include(yield* leadCall("record_get", { key: typedInvoice!.key }), "GB 123 4567 89");
         const typedRows = yield* leadCall("records_query", { list: "invoices", text: typed.title });
         assert.include(typedRows, "Asha Rao");
         assert.include(typedRows, "asha@example.com");

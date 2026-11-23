@@ -1648,7 +1648,10 @@ describe("recipe documents", () => {
         billTo: { ...billTo, taxNumber: "GSTIN 29ABCDE1234F1Z5" },
         clientRequestId: "malformed-gstin",
       }).pipe(Effect.flip);
-      assert.match(badTaxNumber.message, /Expected a string matching.*at \["gstin"\]/s);
+      assert.strictEqual(
+        badTaxNumber.message,
+        "billToTaxNumber is not a GSTIN: give the 15 characters alone, like 29ABCDE1234F1Z5. Nothing changed.",
+      );
       for (const field of ["address", "email", "place", "taxNumber"]) {
         const decoded = yield* decodeInvoiceForm({
           ...withoutClient,

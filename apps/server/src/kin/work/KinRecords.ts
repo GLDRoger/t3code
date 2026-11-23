@@ -935,6 +935,11 @@ const make = Effect.gen(function* () {
   const choicesMoved = (orgId: KinOrgId, list: string) =>
     list === "clients" || list === "projects" ? refreshes.touch(orgId, "workChoices") : Effect.void;
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  const gstCompany = (orgId: KinOrgId) =>
+    companyMoney(orgId).pipe(
+      provideSql,
+      Effect.map((money) => money.country === "IN"),
+    );
 
   const failed = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
@@ -1828,7 +1833,7 @@ const make = Effect.gen(function* () {
       hasBillTo(list) &&
       Object.keys(fields).some((field) => Object.hasOwn(BILL_TO_FIELDS, field))
     ) {
-      yield* validateBillTo(undefined, party, fields, fields.billToName, false);
+      yield* validateBillTo(gstCompany(orgId), undefined, party, fields, fields.billToName, false);
       if (party === undefined && billToNameOf(fields) === null)
         for (const field of Object.keys(clearedBillTo)) delete fields[field];
     }
@@ -2483,7 +2488,7 @@ const make = Effect.gen(function* () {
         if (billToPatch !== undefined) {
           const client =
             newParty ?? (partyId === null ? undefined : yield* target(orgId, partyId, "clients"));
-          yield* validateBillTo(row.key, client, billToPatch, name, partyChanged);
+          yield* validateBillTo(gstCompany(orgId), row.key, client, billToPatch, name, partyChanged);
         }
         const clearBilling =
           hasBillTo(list) &&

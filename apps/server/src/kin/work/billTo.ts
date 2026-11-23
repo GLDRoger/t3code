@@ -72,10 +72,11 @@ export const clearedBillTo = {
   billToEmail: null,
 };
 
-const decodeGstin = Schema.decodeEffect(Schema.Struct({ gstin: KinGstin }));
+const isGstin = Schema.is(KinGstin);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
 export const validateBillTo = Effect.fn("KinBillTo.validate")(function* (
+  gstCompany: Effect.Effect<boolean>,
   key: string | undefined,
   client: { readonly title: string } | undefined,
   patch: Fields,
@@ -98,9 +99,12 @@ export const validateBillTo = Effect.fn("KinBillTo.validate")(function* (
   ) {
     return yield* invalid("Give the name to bill first (billToName). Nothing changed.");
   }
-  const gstin = text(patch, "billToTaxNumber");
-  if (gstin !== null)
-    yield* decodeGstin({ gstin }).pipe(Effect.mapError((error) => invalid(error.message)));
+  // Only India's number has a shape Kin knows; any other country's is kept as typed.
+  const taxNumber = text(patch, "billToTaxNumber");
+  if (taxNumber !== null && !isGstin(taxNumber) && (yield* gstCompany))
+    return yield* invalid(
+      "billToTaxNumber is not a GSTIN: give the 15 characters alone, like 29ABCDE1234F1Z5. Nothing changed.",
+    );
 });
 
 export const billingClientId = (entry: { readonly partyId: string | null } | undefined) =>
