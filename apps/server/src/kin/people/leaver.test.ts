@@ -6,7 +6,9 @@ import {
   AuthStandardClientScopes,
   KinAgentId,
   KinChatError,
+  KinChatId,
   KinEventId,
+  KinMessageId,
   KinPersonId,
   KinWidgetId,
   KIN_LEFT_FIELD,
@@ -27,6 +29,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { SessionStore } from "../../auth/SessionStore.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshHub } from "../chat/KinRefreshHub.ts";
@@ -583,6 +586,95 @@ it.effect("what the company owes a partner who leaves stays owed to them, by nam
       assert.deepStrictEqual(yield* owed, before);
     }),
   ),
+);
+
+it.effect(
+  "a leaver's reminders in a shared chat stay, saying they left; their routines there pause and the owner is told once",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const repo = Context.get(ctx.services, KinChatRepository);
+        const { sql, orgId } = ctx;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+          VALUES ('plans-room', ${orgId}, 'team_group', 'Plans', 0, ${at})`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, wakeup_id)
+          VALUES ('asked-in-room', ${orgId}, ${chief}, 'chat.message', 'P0',
+            ${JSON.stringify({ chatId: "plans-room" })}, 0, 0, 'done', NULL)`;
+        // Arjun asked the room for a reminder and a Monday routine.
+        const reminder = KinWidgetId.make(`deferral:${orgId}:def-room`);
+        const message = yield* repo.insertMessage({
+          orgId,
+          chatId: KinChatId.make("plans-room"),
+          audience: "chat",
+          messageId: KinMessageId.make(reminder),
+          author: { _tag: "system" },
+          kind: "system",
+          body: "Set for Friday.",
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          clientMessageId: null,
+          createdAt: at,
+          editedAt: null,
+        });
+        yield* repo.insertWidget({
+          orgId,
+          chatId: KinChatId.make("plans-room"),
+          messageId: message.messageId,
+          widgetId: reminder,
+          widgetClass: "native",
+          type: "deferral",
+          state: {
+            itemId: "def-room",
+            title: "Invented: send the report",
+            dueAt: "1970-01-03T10:00:00.000Z",
+            onDue: "remind",
+            text: "Set for Friday.",
+            askedBy: { personId: arjunId, name: "Arjun" },
+          },
+          source: null,
+          feed: null,
+          awaiting: [],
+          pinnedAt: null,
+          closedAt: null,
+          updatedAt: at,
+          audience: "chat",
+        });
+        yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
+            project_id, workspace_strategy_json, model_selection_json, runtime_mode,
+            interaction_mode, created_by, creation_source, created_at, updated_at,
+            last_run_status, run_count)
+          VALUES ('task-room', 'Invented: open tasks', 'Post what is open here.', 1, '{}', 'p',
+            '{}', '{}', 'approval-required', 'plan', 'system', 'server', ${at}, ${at}, 'never', 0)`;
+        yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+            source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+          VALUES ('task-room', ${orgId}, 'sch-room', ${chief}, 'plans-room', 'asked-in-room',
+            ${arjunId}, 'shared', 'hash', 'inbox', 0, 0)`;
+
+        yield* ctx.people.removeAccess(ownerSession, { orgId, personId: arjunId });
+        const card = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: reminder }));
+        assert.isNull(card.closedAt);
+        assert.deepInclude(card.state, {
+          askedBy: { personId: arjunId, name: "Arjun", left: true },
+        });
+        const [routine] = yield* sql<{ pending: number | null }>`SELECT pending_enabled AS pending
+          FROM kin_schedules WHERE task_id = 'task-room'`;
+        assert.equal(routine?.pending, 0);
+        const told = yield* sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+          FROM kin_messages WHERE org_id = ${orgId} AND body LIKE 'Arjun left%' ORDER BY seq`;
+        assert.deepStrictEqual(told, [
+          {
+            chatId: ctx.ownerChat,
+            body: 'Arjun left, so 1 routine they set up is paused: "Invented: open tasks" in Plans. Resume or delete each from its card.',
+          },
+        ]);
+      }),
+    ),
 );
 
 it.effect(

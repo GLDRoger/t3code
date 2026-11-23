@@ -40,6 +40,7 @@ import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentati
 import {
   formatKinDeferralTime,
   KIN_DEFERRAL_ACTIONS,
+  kinAskedByLine,
   kinDeferralCardView,
   kinDeferralIsBookkeeping,
   type KinDeferralCardView,
@@ -310,7 +311,7 @@ export function kinReminderCardView(
   const card = decoded.value;
   const title = clamp(card.title, 200) || "This reminder";
   const open = widget.closedAt === null && card.status !== "done";
-  const lines =
+  const lines: Array<string> =
     widget.closedAt !== null
       ? ["Closed."]
       : card.status === "done"
@@ -318,6 +319,8 @@ export function kinReminderCardView(
         : card.status === "snoozed" && card.snoozedUntil !== undefined
           ? [`Snoozed until ${formatKinDeferralTime(Date.parse(card.snoozedUntil), timeZone)}.`]
           : [`Due ${formatKinDeferralTime(Date.parse(card.dueAt), timeZone)}.`];
+  const asked = kinAskedByLine(card.askedBy);
+  if (asked !== null) lines.push(asked);
   return {
     widgetId: widget.widgetId,
     revision: widget.revision,
@@ -338,6 +341,8 @@ export function kinReminderCardView(
  */
 function reminderActions(card: KinReminderCard, ownerLevel: boolean | undefined) {
   const finish = [actions.done, actions.snooze_10m, actions.snooze_1h, actions.snooze_tomorrow];
+  // A shared chat's own: its asker, the owner or a co-owner finishes it; the host says who.
+  if (card.askedBy !== undefined) return finish;
   if (ownerLevel !== false || card.theirs === true) return [...finish, actions.change];
   return card.theirs === false ? finish : [];
 }
@@ -422,6 +427,10 @@ export function kinScheduledTaskCardView(
           ? [`Next run ${formatKinDeferralTime(nextMs, timeZone)}.`]
           : []),
         ...(card.lastRun === null ? [] : [lastRunLine(card.lastRun, timeZone)]),
+        ...((card.overlapSkipped ?? 0) > 1
+          ? [`Skipped ${card.overlapSkipped} runs in a row.`]
+          : []),
+        ...[kinAskedByLine(card.askedBy)].filter((line) => line !== null),
       ];
   const running = card.lastRun?.status === "running";
   return {
