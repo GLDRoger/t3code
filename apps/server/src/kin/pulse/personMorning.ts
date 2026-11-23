@@ -346,7 +346,9 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
       const due = listed(fact) ? undefined : dueOf(fact);
       if (due === undefined) return [];
       const line = holderLine(ctx, fact, due.dueAt);
-      return [`${line.key} ${line.title}, ${line.state}`];
+      return [
+        `${line.key} ${line.title}, ${line.state}${line.reminder === undefined ? "" : `. ${line.reminder}`}`,
+      ];
     });
     const steps = !clientsOn
       ? []

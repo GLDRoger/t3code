@@ -17,7 +17,7 @@ import { queueCheckIn } from "./checkIn.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { morningMoneyLines } from "./morningMoney.ts";
 import { UNREADABLE_BANK_ALERTS_KEY } from "./senses/bank.ts";
-import { factSig, settleCheckInTold, toldBy } from "./told.ts";
+import { factSig, markTold, settleCheckInTold, toldBy, untold } from "./told.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 
 // Invented facts only.
@@ -173,8 +173,38 @@ it.effect.each([
     );
   }).pipe(Effect.provide(fixture())),
 );
+it.effect(
+  "a failed pulse event releases its fact until three events for that signature failed",
+  () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const personId = "owner-a";
+      const invoice = fact({});
+      const input = { orgId, personId, at: MONDAY, zone: "UTC", facts: [invoice] };
+      for (const no of [1, 2, 3]) {
+        const eventId = `invented-pulse-${no}`;
+        yield* sql`INSERT INTO kin_events (org_id, event_id, agent_id, tag, priority, json,
+          received_at, queued_at, state)
+        VALUES (${orgId}, ${eventId}, 'lead-a', 'pulse', 'P2', '{}', ${MONDAY}, ${MONDAY}, 'queued')`;
+        yield* markTold({ ...input, eventId });
+        assert.isEmpty(yield* untold({ ...input, anyState: true }));
+        yield* sql`UPDATE kin_events SET state = 'failed' WHERE org_id = ${orgId} AND event_id = ${eventId}`;
+        const fresh = no < 3 ? [invoice] : [];
+        assert.deepStrictEqual(yield* untold({ ...input, anyState: true }), fresh);
+        assert.deepStrictEqual(yield* untold(input), fresh);
+      }
+      assert.lengthOf(yield* untold({ ...input, facts: [overdue(8)] }), 1);
+    }).pipe(Effect.provide(fixture())),
+);
+
 const overdue = (days: number) =>
   fact({ measure: { value: days, unit: "days", threshold: 7, from: { _tag: "default" } } });
+const lateTask = (days: number) =>
+  fact({
+    sense: "task_late",
+    measure: { value: days * 24, unit: "hours", threshold: 0, from: { _tag: "default" } },
+  });
 const dueIn = (hours: number) =>
   fact({
     sense: "task_due_soon",
@@ -190,6 +220,11 @@ const held = (agentId: string) => ({
 
 describe("what a told fact is compared on", () => {
   it.each([
+    { name: "a late task from day one to two", a: lateTask(1), b: lateTask(2), same: true },
+    { name: "a late task reaches day three", a: lateTask(2), b: lateTask(3), same: false },
+    { name: "a late task from day three to six", a: lateTask(3), b: lateTask(6), same: true },
+    { name: "a late task reaches day seven", a: lateTask(6), b: lateTask(7), same: false },
+    { name: "a late task reaches day fourteen", a: lateTask(13), b: lateTask(14), same: false },
     { name: "a day older, same chase interval", a: overdue(8), b: overdue(13), same: true },
     { name: "past another chase interval", a: overdue(13), b: overdue(14), same: false },
     { name: "due tomorrow, then due today", a: dueIn(30), b: dueIn(5), same: false },

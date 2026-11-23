@@ -73,10 +73,10 @@ const identity = Layer.mock(KinIdentity)({
 /** Kin's consumer over the real native scheduler; `recorded` holds what would be bare threads. */
 const harness = (
   projects?: Set<string>,
-  routine:
+  services:
     | Layer.Layer<never>
-    | Layer.Layer<RoutineContent.KinRoutineContent>
-    | Layer.Layer<KinHostCare> = Layer.empty,
+    | Layer.Layer<KinHostCare>
+    | Layer.Layer<RoutineContent.KinRoutineContent> = Layer.empty,
 ) => {
   const recorded = {
     launches: [] as ThreadLaunchService.ThreadLaunchInput[],
@@ -100,7 +100,7 @@ const harness = (
         }),
       }),
     ),
-    Layer.provideMerge(routine),
+    Layer.provideMerge(services),
   );
   return { recorded, workers, kinTicks, layer };
 };
@@ -1034,12 +1034,11 @@ it.effect(
 it.effect(
   "briefs are their receiver's own: Settings and the chat move one schedule, and days and off reach it",
   () => {
-    // What the evening summary would sum up today, as `KinRoutineContent` gathers it.
-    const today: { evening: string | null } = { evening: null };
+    let evening: string | null = null;
     const { layer, kinTicks, workers } = harness(
       undefined,
       Layer.mock(RoutineContent.KinRoutineContent)({
-        eveningFacts: () => Effect.sync(() => today.evening),
+        eveningFacts: () => Effect.sync(() => evening),
       }),
     );
     return Effect.gen(function* () {
@@ -1062,19 +1061,38 @@ it.effect(
         { kind: "evening", at: "18:30", days: weekdays, around: true, on: true },
       ]);
 
-      // A day with nothing to sum up brings no evening summary; a day with something does.
       const summaries = sql<{ key: string }>`SELECT dedupe_key AS key FROM kin_events
         WHERE org_id = ${orgId} AND tag = 'pulse' AND dedupe_key LIKE 'checkin:checkin-evening:%'
         ORDER BY queued_at`;
-      for (const [facts, queued] of [
-        [null, 0],
-        ['{"routine":"evening_summary"}', 1],
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'work', 'Work', 'W', 1, 0) ON CONFLICT DO NOTHING`;
+      const hour = 60 * 60_000;
+      for (const { activity, task, queued } of [
+        { activity: null, task: null, queued: 0 },
+        { activity: '{"routine":"evening_summary"}', task: null, queued: 1 },
+        { activity: null, task: "due today", queued: 1 },
+        { activity: null, task: "untold late task", queued: 1 },
       ] as const) {
-        today.evening = facts;
-        yield* TestClock.setTime(Date.parse((yield* native("Evening summary")).nextRunAt!));
+        const before = (yield* summaries).length;
+        const at = Date.parse((yield* native("Evening summary")).nextRunAt!);
+        evening = activity;
+        if (task !== null) {
+          const dueAt = task === "due today" ? at + hour : at - 48 * hour;
+          yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+              owner_kind, owner_id, due_at, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+            VALUES (${orgId}, 'invented-task', 'work', 'W-91', 'Invented handoff', 'doing', 'person',
+              ${owner.personId}, ${dueAt}, 'person', ${owner.personId}, 'invented-task', ${at}, ${at})`;
+        }
+        yield* TestClock.setTime(at);
         yield* workers.get("scheduled-tasks")!;
         yield* drain;
-        assert.lengthOf(yield* summaries, queued);
+        assert.lengthOf(
+          yield* summaries,
+          before + queued,
+          task ?? (activity === null ? "quiet" : "activity only"),
+        );
+        if (task !== null)
+          yield* sql`DELETE FROM kin_records WHERE org_id = ${orgId} AND record_id = 'invented-task'`;
       }
 
       // Off: the task stops, so its next slot brings nothing; on again, it comes back.
@@ -1089,7 +1107,7 @@ it.effect(
       yield* TestClock.adjust("1 day");
       yield* workers.get("scheduled-tasks")!;
       yield* drain;
-      assert.lengthOf(yield* summaries, 1);
+      assert.lengthOf(yield* summaries, 3);
       yield* save({ kind: "evening", at: "18:30", days: weekdays, on: true });
       yield* drain;
       assert.isTrue((yield* native("Evening summary")).enabled);
@@ -1210,11 +1228,7 @@ it.effect(
       // Made exact on T3's screen at a time before its old window, it fires at that time.
       yield* save({ kind: "morning", at: "11:00", days: weekdays, on: true });
       const nine = onHostClock("09:00", weekdays, zone, host, yield* Clock.currentTimeMillis);
-      const fires = KinSchedules.timeOnDayOf(
-        (yield* Clock.currentTimeMillis) + 24 * 60 * 60_000,
-        host,
-        nine.at,
-      );
+      const fires = KinSchedules.timeOnDayOf(Date.UTC(2026, 10, 17, 12), host, nine.at);
       const morningTask = KinSchedules.scheduleTaskId(orgId, "checkin-morning");
       yield* sql`UPDATE scheduled_tasks SET next_run_at = ${DateTime.formatIso(DateTime.makeUnsafe(fires))},
         schedule_json = json_set(schedule_json, '$.timeOfDay', ${nine.at},
