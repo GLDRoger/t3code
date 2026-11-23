@@ -128,6 +128,8 @@ export const OUTSIDE_TOOLS = {
   company_profile: "allowed",
   // Only a card: the owner's Confirm applies it, in their own tap.
   company_sections: "allowed",
+  // A feed it proposes would fetch from a source outside text named, on a schedule.
+  numbers_watch: "refused",
   statement_read: "allowed",
   statement_rows: "allowed",
   kin_document: recipeOnly,

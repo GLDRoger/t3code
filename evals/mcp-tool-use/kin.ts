@@ -88,6 +88,12 @@ import {
   workForText,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
+import {
+  feedTurnText,
+  offTurnText,
+  proposedAnswer,
+} from "../../apps/server/src/kin/numbers/words.ts";
+import { thisCompanyLines } from "../../apps/server/src/kin/shell/words.ts";
 import { REVIEW_WAKE_TEXT } from "../../apps/server/src/kin/pulse/reviewWake.ts";
 import { OWN_MESSAGE_REFUSALS } from "../../apps/server/src/kin/chat/ownMessages.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
@@ -437,7 +443,22 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names))
     .replace(/\{\{JOINED_WORK:([^|}]+)\|([^}]+)\}\}/g, (_, adder: string, holder: string) =>
       joinedWork(adder, holder),
-    );
+    )
+    // Watched numbers' lines and turn texts as Kin writes them, each placeholder on its own line.
+    .replace(/^\{\{NUMBERS_LINES:(.+)\}\}$/gm, (_, json: string) =>
+      thisCompanyLines({ rev: 0, sections: [] }, JSON.parse(json) as never).join("\n"),
+    )
+    .replace(/^\{\{NUMBER_OFF:(.+)\}\}$/gm, (_, json: string) =>
+      offTurnText(JSON.parse(json) as never),
+    )
+    .replace(/^\{\{NUMBER_FEED:(.+)\}\}$/gm, (_, json: string) => {
+      const feed = JSON.parse(json) as {
+        numbers: ReadonlyArray<{ key: string; name: string }>;
+        source: string;
+        period: string;
+      };
+      return feedTurnText(feed.numbers, feed.source, feed.period);
+    });
 
 const decodeMoneySummary = Schema.decodeUnknownSync(KinMoneySummary);
 /**
@@ -450,6 +471,12 @@ const STARTER_RECIPES = Object.entries(STARTER_FILES).flatMap(([file, text]) => 
   return "_tag" in recipe ? [] : [recipe];
 });
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  // numbers_watch's answer for numbers not watched yet: the owner's card lines, as Kin draws them.
+  numbersWatch: (input: { numbers: unknown; feed: unknown }) =>
+    proposedAnswer(
+      Array.isArray(input.numbers) ? input.numbers : [],
+      isRecord(input.feed) ? (input.feed as never) : undefined,
+    ),
   moneySection: (input: { summary: unknown; zone: string }) =>
     moneySection(decodeMoneySummary(input.summary), input.zone),
   // social_pack's answer for the call's at, as KinSocial.pack writes it; an at it refuses is its error.

@@ -2,7 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 
-import type { KinPushSendingStatus, KinPushToken } from "@t3tools/contracts";
+import { KIN_PUSH_KEPT_MS, type KinPushSendingStatus, type KinPushToken } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -180,7 +180,12 @@ export const makeFcmTransport = Effect.fn("KinFcm.makeTransport")(function* (
       HttpClientRequest.post(url).pipe(
         HttpClientRequest.bearerToken(token),
         HttpClientRequest.bodyJsonUnsafe({
-          message: { token: push.token, data: push.data, android: { priority: push.priority } },
+          message: {
+            token: push.token,
+            data: push.data,
+            // Never delivered once the host has forgotten it sent it.
+            android: { priority: push.priority, ttl: `${KIN_PUSH_KEPT_MS / 1000}s` },
+          },
         }),
       ),
     ).pipe(

@@ -101,8 +101,8 @@ export function kinMessageSubject(message: {
 /**
  * The one stable thing a push is about, which a newer push about it replaces and which is
  * withdrawn once it no longer needs the person: `c:` a chat's messages, `w:` a card, `q:` an open
- * question, `a:` an approval, `r:` a task, `f:` Kin's notice of several, `t:` a trouble on Kin's
- * computer, `u:` nothing else (never replaced). Ids only.
+ * question, `a:` an approval, `r:` a task, `f:` Kin's notice of several, `b:` task news held
+ * through quiet hours, `t:` a trouble on Kin's computer, `u:` nothing else (never replaced). Ids only.
  */
 export const KinPushTopic = Schema.String.check(
   Schema.makeFilter((value: string) => /^[a-z]:\S{1,200}$/.test(value), {
@@ -111,8 +111,22 @@ export const KinPushTopic = Schema.String.check(
 );
 export type KinPushTopic = typeof KinPushTopic.Type;
 
+/**
+ * How long a host remembers a push it sent (`kin_push_sent`), and so how long a push may wait for
+ * a phone: one delivered later could never be withdrawn. Seven days.
+ */
+export const KIN_PUSH_KEPT_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** At most this many topics in one withdrawal or one reconcile. */
 export const KIN_PUSH_TOPICS_MAX = 200;
+
+/**
+ * A topic as far as `version`: each push about a topic is its person's next version of it, so a
+ * withdrawal or a reconcile answer removes what shows that version or older, never a newer push
+ * that overtook it on the way.
+ */
+export const KinPushWithdrawn = Schema.Struct({ topic: KinPushTopic, version: NonNegativeInt });
+export type KinPushWithdrawn = typeof KinPushWithdrawn.Type;
 
 /**
  * What a Kin push carries besides `aps`, under the payload's `body` key, which is what
@@ -136,9 +150,13 @@ export const KinPushData = Schema.Struct({
   subject: Schema.optional(KinPushSubject),
   /** What it is about, to a build that registered `withdraws`. */
   topic: Schema.optional(KinPushTopic),
+  /** With `topic`: which push about it this is, for this person (`KinPushWithdrawn`). */
+  version: Schema.optional(NonNegativeInt),
+  /** On iOS's silent push: the badge the host counts for them, which the woken app sets. */
+  badge: Schema.optional(NonNegativeInt),
   /** On a silent push: these topics' notifications are settled, so the phone removes them. */
   withdraw: Schema.optional(
-    Schema.Array(KinPushTopic).check(Schema.isMaxLength(KIN_PUSH_TOPICS_MAX)),
+    Schema.Array(KinPushWithdrawn).check(Schema.isMaxLength(KIN_PUSH_TOPICS_MAX)),
   ),
   deepLink: Schema.String.check(
     Schema.makeFilter((value: string) => /^\/kin\/[A-Za-z0-9._~%/-]+$/.test(value), {
@@ -191,9 +209,13 @@ export const KinPushReconcileInput = Schema.Struct({
 });
 export type KinPushReconcileInput = typeof KinPushReconcileInput.Type;
 
-/** Of those, the ones sent to the caller that are settled, and the caller's badge now. */
+/**
+ * Of those, the ones sent to the caller that are settled, the ones the host keeps no record of
+ * (never sent to them, or forgotten after `KIN_PUSH_KEPT_MS`), and the caller's badge now.
+ */
 export const KinPushReconcileResult = Schema.Struct({
-  remove: Schema.Array(KinPushTopic),
+  remove: Schema.Array(KinPushWithdrawn),
+  unknown: Schema.Array(KinPushTopic),
   badge: NonNegativeInt,
 });
 export type KinPushReconcileResult = typeof KinPushReconcileResult.Type;

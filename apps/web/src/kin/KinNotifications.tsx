@@ -39,7 +39,7 @@ import { KinSettingsChoice } from "./settings/KinSettingsControls";
 import { KinSettingsPage, KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
 import { KinQuietHoursSetting } from "./settings/KinQuietHoursSetting";
 import type { KinSettingsTarget } from "./settings/kinSettingsTarget";
-import { closeSettledKinAlerts, keepKinAlert } from "./kinSystemAlerts";
+import { closeSettledKinAlerts, keepKinAlert, kinAlertTag } from "./kinSystemAlerts";
 import { useKinInbox } from "./useKinHost";
 
 /** Settings → You → Notifications: this computer's alerts for Kin messages, and your quiet hours. */
@@ -139,7 +139,7 @@ export function KinMessageAlerts() {
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- raises the system's notification and sound, outside React, for a message that just arrived
   useEffect(() => {
     if (rows === null || environmentId === null) return;
-    closeSettledKinAlerts(rows);
+    closeSettledKinAlerts(environmentId, rows);
     const arrivals = kinNewArrivals(seen.current, rows);
     seen.current = kinUnreadSeen(rows);
     if (arrivals.length === 0 || mode === "off") return;
@@ -172,8 +172,11 @@ export function KinMessageAlerts() {
     if (Notification.permission !== "granted") return;
     for (const row of system) {
       const { title, body } = kinArrivalText(row);
-      const alert = new Notification(title, { body, tag: `kin:${row.chat.chatId}` });
-      keepKinAlert(row.chat.chatId, alert);
+      const alert = new Notification(title, {
+        body,
+        tag: kinAlertTag(environmentId, row.chat.chatId),
+      });
+      keepKinAlert(environmentId, row.chat.chatId, alert);
       alert.onclick = () => {
         window.focus();
         open(row);

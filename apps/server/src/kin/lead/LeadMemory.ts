@@ -79,6 +79,7 @@ import {
 import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
 import { scheduledTaskTriggerId } from "../widgets/scheduledTaskCard.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { feedOf, isFeedSchedule } from "../numbers/numberRows.ts";
 import { slug } from "../work/docBody.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 import { TurnEvent } from "./eventIds.ts";
@@ -1535,6 +1536,18 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           // Again under the lock: a join may have aborted the turn since.
           const { ctx, chatId, forChat } = yield* routineTurn(scope, input);
+          // A feed of watched numbers is the numbers card's to change, and its ids are its own.
+          if (
+            input.replaces !== undefined &&
+            (yield* feedOf(ctx.orgId, input.replaces).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            )) !== undefined
+          )
+            return yield* invalid(
+              "That schedule fetches watched numbers. Change it with numbers_watch, or archive the number to stop it.",
+            );
+          if (input.itemId !== undefined && isFeedSchedule(input.itemId))
+            return yield* invalid("That id is a feed's. Leave itemId out and Kin picks one.");
           yield* checkSource(ctx, input.sourceEventId);
           const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
             input.sourceEventId,

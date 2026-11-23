@@ -596,7 +596,7 @@ const draftUp = Effect.fn("KinDocTools.draftUp")(function* (lead: Lead, refused:
 const draftNote = (draft: KinDocCardDraft, key: string, placed: boolean) =>
   [
     placed
-      ? `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it; say in one line it is filed as ${key}${draft.sendTo === undefined ? "" : `; ${draft.sendTo.name} hasn't seen it, and it reaches ${draft.sendTo.name} only when the person in this chat presses Send to ${draft.sendTo.name}`}.`
+      ? `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it or name ${key}; say in one line what it is${draft.sendTo === undefined ? "" : `; ${draft.sendTo.name} hasn't seen it, and it reaches ${draft.sendTo.name} only when the person in this chat presses Send to ${draft.sendTo.name}`}.`
       : `Filed as ${key}, but its card couldn't be shown here: give the draft in your reply.`,
     ...(draft.noAccount === undefined
       ? []

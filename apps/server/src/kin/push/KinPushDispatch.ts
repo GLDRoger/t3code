@@ -214,7 +214,7 @@ const make = Effect.gen(function* () {
 
 /**
  * A task done, dropped or handed on settles what pushes told of it: its own topic, and Kin's
- * notices that name several. Runs for as long as the caller's scope, from Kin's layer, which holds
+ * notices and quiet-hours bundles that name it among others, found by its key. Runs for as long as the caller's scope, from Kin's layer, which holds
  * the tasks service this layer sits beside.
  */
 export const settleTasks = Effect.fn("KinPushDispatch.settleTasks")(function* <E>(
@@ -225,7 +225,7 @@ export const settleTasks = Effect.fn("KinPushDispatch.settleTasks")(function* <E
   yield* Stream.runForEach(changes, (tick) =>
     tick.key === undefined
       ? Effect.void
-      : sender.settle(orgId, { topics: [taskTopic(tick.key)], kinds: ["f"] }),
+      : sender.settle(orgId, { topics: [taskTopic(tick.key)], keys: [`task:${tick.key}`] }),
   ).pipe(
     Effect.catchCause((cause) => Effect.logWarning("Kin push stopped following tasks", { cause })),
     Effect.forkScoped,

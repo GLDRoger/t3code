@@ -349,7 +349,8 @@ it.effect("removing a device takes the devices linked from it and the links it l
           flushKeyPushes: Effect.succeed(0),
           settle: () => Effect.void,
           drainWithdrawals: Effect.void,
-          reconcile: () => Effect.succeed({ remove: [], badge: 0 }),
+          recover: Effect.void,
+          reconcile: () => Effect.succeed({ remove: [], unknown: [], badge: 0 }),
         }),
       ),
     );

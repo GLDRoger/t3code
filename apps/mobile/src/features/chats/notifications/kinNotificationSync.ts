@@ -17,7 +17,13 @@ import { AppState, Platform } from "react-native";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { kinClient } from "../state/kinClient";
 import { kinHostAtom } from "../state/useKinHost";
-import { kinDeliveredTopics, kinSettledNotificationIds, kinWithdrawnIds } from "./kinPushPayload";
+import { kinCoalesced } from "./kinCoalesced";
+import {
+  kinDeliveredTopics,
+  kinIncomingSettled,
+  kinReconcileRemovals,
+  kinSettledNotificationIds,
+} from "./kinPushPayload";
 
 const warn = (what: string) => (cause: unknown) => console.warn(what, cause);
 
@@ -34,12 +40,56 @@ export async function dismissKinNotifications(
   );
 }
 
+const ASK_WITHIN_MS = 1_500;
+
+/** The host's reconcile answer, or null when it fails or takes longer than `ASK_WITHIN_MS`. */
+async function askHost(
+  environmentId: EnvironmentId,
+  input: { readonly orgId: KinOrgId; readonly topics: ReadonlyArray<KinPushTopic> },
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ASK_WITHIN_MS);
+  });
+  const asked = runAtomCommand(
+    appAtomRegistry,
+    kinClient.reconcilePush,
+    { environmentId, input: { orgId: input.orgId, topics: [...input.topics] } },
+    { reportFailure: false },
+  ).then((result) => (result._tag === "Success" ? result.value : null));
+  return Promise.race([asked, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Before a push is shown in front: whether the Kin host already settled what it is about, as
+ * happens when it was held up on its way. Not a Kin push of the current host: false, at once.
+ */
+export function kinPushSettledNow(notification: unknown): Promise<boolean> {
+  const host = appAtomRegistry.get(kinHostAtom);
+  if (host._tag !== "host") return Promise.resolve(false);
+  return kinIncomingSettled(notification, host.environmentId, (input) =>
+    askHost(host.environmentId, input),
+  ).catch(() => false);
+}
+
 /**
  * Asks the host once which of its delivered notifications are settled and removes those, healing
- * a withdrawal the OS never woke the app for. Nothing delivered from it, nothing to ask.
+ * a withdrawal the OS never woke the app for. `incoming` are pushes that just arrived, which the
+ * tray may not list yet. Nothing delivered from it, nothing to ask.
  */
-async function reconcileWithHost(environmentId: EnvironmentId): Promise<void> {
-  const presented = await Notifications.getPresentedNotificationsAsync();
+async function reconcileWithHost(
+  environmentId: EnvironmentId,
+  incoming: ReadonlyArray<unknown>,
+): Promise<void> {
+  const listed = await Notifications.getPresentedNotificationsAsync();
+  const ids = new Set(listed.map((one) => one.request.identifier));
+  const presented = [
+    ...listed,
+    ...incoming.filter(
+      (one) =>
+        !ids.has(String((one as { request?: { identifier?: unknown } }).request?.identifier)),
+    ),
+  ];
   const byOrg = new Map<KinOrgId, Set<KinPushTopic>>();
   for (const { orgId, topic } of kinDeliveredTopics(presented, environmentId))
     byOrg.set(orgId, (byOrg.get(orgId) ?? new Set()).add(topic));
@@ -52,8 +102,8 @@ async function reconcileWithHost(environmentId: EnvironmentId): Promise<void> {
     );
     if (result._tag !== "Success") continue;
     await Promise.all(
-      kinWithdrawnIds(presented, environmentId, result.value.remove).map((identifier) =>
-        Notifications.dismissNotificationAsync(identifier),
+      kinReconcileRemovals(presented, { environmentId, orgId }, result.value, Date.now()).map(
+        (identifier) => Notifications.dismissNotificationAsync(identifier),
       ),
     );
     if (Platform.OS === "ios") await Notifications.setBadgeCountAsync(result.value.badge);
@@ -69,18 +119,17 @@ export function installKinNotificationSync(): () => void {
   let unsubscribeInbox: (() => void) | null = null;
   let inbox: KinInboxState | null = null;
   let badge: number | null = null;
-  // Once per coming to the front, when the host first answers; again whenever a push arrives.
+  // Once per coming to the front, when the host first answers; again whenever a push arrives,
+  // with that push in the ask. Pushes during a check make one more check after it.
   let reconciled = false;
-  let reconciling = false;
-  const reconcileOnce = () => {
-    if (environmentId === null || reconciling) return;
-    reconciling = true;
-    void reconcileWithHost(environmentId)
-      .catch(warn("Reconciling Kin notifications failed"))
-      .finally(() => {
-        reconciling = false;
-      });
-  };
+  const arrivals: Array<unknown> = [];
+  const reconcileOnce = kinCoalesced(async () => {
+    const incoming = arrivals.splice(0);
+    if (environmentId === null) return;
+    await reconcileWithHost(environmentId, incoming).catch(
+      warn("Reconciling Kin notifications failed"),
+    );
+  });
 
   const reconcile = () => {
     if (environmentId === null || inbox === null) return;
@@ -126,7 +175,10 @@ export function installKinNotificationSync(): () => void {
 
   const unsubscribeHost = appAtomRegistry.subscribe(kinHostAtom, sync, { immediate: true });
   const appState = AppState.addEventListener("change", sync);
-  const arrived = Notifications.addNotificationReceivedListener(reconcileOnce);
+  const arrived = Notifications.addNotificationReceivedListener((notification) => {
+    arrivals.push(notification);
+    reconcileOnce();
+  });
   return () => {
     unsubscribeHost();
     appState.remove();

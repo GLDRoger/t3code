@@ -139,6 +139,7 @@ const tableNames = [
   "kin_pulse_nudges",
   "kin_pulse_seeds",
   "kin_pulse_told",
+  "kin_push_about",
   "kin_push_devices",
   "kin_push_rings",
   "kin_push_sent",
@@ -532,6 +533,7 @@ describe("Kin migrations", () => {
           ["kin_executions", ["started_at", "finished_at"]],
           ["kin_push_devices", ["created_at", "updated_at"]],
           ["kin_push_sent", ["sent_at", "withdrawn_at"]],
+          ["kin_push_about", ["at"]],
           ["kin_chat_levels", ["level_since"]],
           ["kin_reactions", ["created_at", "removed_at", "woke_at"]],
         ] as const) {
@@ -617,7 +619,11 @@ describe("Kin migrations", () => {
           { name: "idx_kin_pr_review_posts_widget" },
           { name: "idx_kin_pull_requests_state" },
           { name: "idx_kin_pulse_facts_open" },
+          { name: "idx_kin_push_about_at" },
+          { name: "idx_kin_push_about_key" },
           { name: "idx_kin_push_devices_person" },
+          { name: "idx_kin_push_sent_at" },
+          { name: "idx_kin_push_sent_due" },
           { name: "idx_kin_push_sent_live" },
           { name: "idx_kin_push_sent_message" },
           { name: "idx_kin_reaction_wakes_chat" },
@@ -2568,6 +2574,7 @@ describe("Kin migrations", () => {
         yield* runKinMigrations();
         // A host on K212: no sent rows, its phones registered before topics.
         yield* sql`DROP TABLE kin_push_sent`;
+        yield* sql`DROP TABLE kin_push_about`;
         yield* sql`ALTER TABLE kin_push_devices DROP COLUMN withdraws`;
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 213`;
         yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;

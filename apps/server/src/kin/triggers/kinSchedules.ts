@@ -234,6 +234,8 @@ export interface SaveInput {
   readonly keepWording?: true | undefined;
   /** The owner's own time it was set at, kept so a clock change moves `every` and not that. */
   readonly ownerTime?: MemoryItemEvery | undefined;
+  /** The person who confirmed it just asked for it to run: a pause, from any screen, ends. */
+  readonly resume?: true | undefined;
   readonly now: number;
 }
 
@@ -313,7 +315,7 @@ const make = Effect.gen(function* () {
       title: input.title,
       prompt: input.prompt,
       // A change keeps a pause set in the Scheduled tasks screen.
-      enabled: existing === undefined ? true : existing.enabled === 1,
+      enabled: existing === undefined || input.resume === true ? true : existing.enabled === 1,
       schedule: {
         type: "fixed_time",
         timeOfDay: input.around === true ? windowStart(input.every.at) : input.every.at,
@@ -341,7 +343,9 @@ const make = Effect.gen(function* () {
         ${input.now}, ${input.around === true ? input.every.at : null},
         ${input.checkIn === true ? 1 : 0},
         ${input.ownerTime === undefined ? null : yield* encodeOwnerTime({ ...input.ownerTime, host: input.every })})
-      ON CONFLICT (task_id) DO UPDATE SET chat_id = excluded.chat_id,
+      ON CONFLICT (task_id) DO UPDATE SET agent_id = excluded.agent_id, chat_id = excluded.chat_id,
+        pending_enabled = CASE WHEN ${input.resume === true ? 1 : 0} THEN NULL
+          ELSE pending_enabled END,
         loose_at = excluded.loose_at, check_in = excluded.check_in,
         owner_time_json = excluded.owner_time_json,
         source_event = excluded.source_event, said_by = excluded.said_by,
