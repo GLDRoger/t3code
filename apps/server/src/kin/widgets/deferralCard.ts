@@ -45,7 +45,7 @@ const isDeferralAction = (actionId: string): actionId is KinDeferralCardAction =
   KIN_DEFERRAL_CARD_ACTIONS.some((action) => action === actionId);
 
 /** The taps the host takes on a card; one written before cards carried them offers Undo only. */
-export const deferralCardActions = (card: KinDeferralCard): ReadonlyArray<string> =>
+const deferralCardActions = (card: KinDeferralCard): ReadonlyArray<string> =>
   card.actions ?? (card.phase === undefined ? ["undo"] : []);
 
 const LABELS: Record<KinDeferralCardAction, string> = {

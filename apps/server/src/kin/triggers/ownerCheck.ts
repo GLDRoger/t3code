@@ -95,7 +95,7 @@ export function pickOwnerCheckItems(
 }
 
 /** Verifies a claimed widget tap as the org owner's own action on an open card of `type`. */
-export const verifyOwnerTap = Effect.fn("OwnerCheck.verifyOwnerTap")(function* (
+const verifyOwnerTap = Effect.fn("OwnerCheck.verifyOwnerTap")(function* (
   orgId: KinOrgId,
   wakeupId: string,
   eventId: KinEventId,
