@@ -330,9 +330,12 @@ const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const shortHash = (text: string) =>
   NodeCrypto.createHash("sha256").update(text).digest("hex").slice(0, 32);
 
+export const outsideKey = (line: KinPulseOutsideLine) =>
+  `outside:${shortHash(`${line.connection}\0${line.source}\0${line.id}`)}`;
+
 /**
  * Between check-ins: reads what is new, and wakes an agent once per item a watch matched. The
- * cursors stay where the last check-in left them, so the next check-in still lists everything.
+ * cursors stay where the last check-in left them, so unsettled mail can reach the next one.
  */
 export const poll = Effect.fn("KinPulseOutside.poll")(function* (
   orgId: KinOrgId,
@@ -353,7 +356,7 @@ export const poll = Effect.fn("KinPulseOutside.poll")(function* (
   for (const { line, domain, clientId } of matched) {
     const agentId = domain === "finance" ? (finance?.agentId ?? chief?.agentId) : chief?.agentId;
     if (agentId === undefined) continue;
-    const key = `outside:${shortHash(`${line.connection}\0${line.source}\0${line.id}`)}`;
+    const key = outsideKey(line);
     if (clientId !== undefined) {
       const sent = line.at === null ? Number.NaN : Date.parse(line.at);
       yield* logTouch(orgId, {
