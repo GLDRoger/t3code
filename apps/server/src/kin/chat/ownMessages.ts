@@ -11,37 +11,57 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { effectiveAudience } from "../lead/Audience.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import * as Questions from "../questions/openQuestions.ts";
 import type { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { KinChatHub } from "./KinChatHub.ts";
 import { KinChatRepository } from "./KinChatRepository.ts";
 import { encodeNames, nameKeys, nameThreads } from "./messageLinks.ts";
+import { historyFloor } from "./sharing.ts";
 
 /** Unread messages of its own an agent's turn lists, newest first; older ones are counted. */
 export const OWN_UNREAD_SHOWN = 20;
 /** How much of each one's text a turn shows. */
 const OWN_UNREAD_CLIP = 200;
 
-/**
- * No person in the chat now has read message `m`: it is past every one's read mark. The same
- * messages leave the unread count once withdrawn (`status`), so both read one rule.
- */
-export const unreadByAll = (
-  sql: SqlClient.SqlClient,
-) => sql`m.seq > COALESCE((SELECT MAX(r.last_read_seq)
-    FROM kin_chat_members p JOIN kin_read_state r ON r.org_id = p.org_id AND r.chat_id = p.chat_id
+/** A person, in the chat now or once, has a read mark at or past message `m`: read for good. */
+const everRead = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1 FROM kin_chat_members p
+    JOIN kin_read_state r ON r.org_id = p.org_id AND r.chat_id = p.chat_id
       AND r.member_id = p.member_id
     WHERE p.org_id = m.org_id AND p.chat_id = m.chat_id AND p.principal_kind = 'person'
-      AND p.left_at IS NULL), 0)
-  AND EXISTS (SELECT 1 FROM kin_chat_members p WHERE p.org_id = m.org_id
-    AND p.chat_id = m.chat_id AND p.principal_kind = 'person' AND p.left_at IS NULL)`;
+      AND r.last_read_seq >= m.seq)`;
 
-/** An agent's message people see as one: posted, not silent, not a closed card's status. */
-export const agentMessage = (sql: SqlClient.SqlClient) => sql`m.author_kind = 'agent'
-  AND m.status = 'posted' AND m.silent = 0 AND m.kind = 'text'
-  AND NOT (m.body = '' AND EXISTS (SELECT 1 FROM kin_widgets w
-    WHERE w.org_id = m.org_id AND w.message_id = m.message_id AND w.closed_at IS NOT NULL))`;
+/** Someone is in `m`'s chat now to read it. */
+export const someoneThere = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1
+    FROM kin_chat_members p WHERE p.org_id = m.org_id AND p.chat_id = m.chat_id
+      AND p.principal_kind = 'person' AND p.left_at IS NULL)`;
+
+/** Nothing on `m` but words: no file, figure, picture, page, time, discussion or carried words. */
+const wordsOnly = (sql: SqlClient.SqlClient) => sql`m.relay_json IS NULL AND m.origin_json IS NULL
+  AND m.attachments_json IS NULL AND m.refs_json IS NULL AND m.embeds_json IS NULL
+  AND m.form IS NULL AND m.when_json IS NULL AND m.discussion_id IS NULL`;
+
+/** Every card on `m` is an ordinary question its agent asked that is still open. */
+const onlyOwnOpenQuestion = (sql: SqlClient.SqlClient) => sql`NOT EXISTS (SELECT 1
+    FROM kin_widgets g WHERE g.org_id = m.org_id
+      AND (g.message_id = m.message_id OR g.widget_id = m.widget_id)
+      AND NOT EXISTS (SELECT 1 FROM kin_questions q WHERE q.org_id = g.org_id
+        AND q.agent_id = m.author_agent_id AND q.state = 'open' AND q.draft_json IS NULL
+        AND (q.widget_id = g.widget_id OR q.raise_widget_id = g.widget_id)))`;
+
+/**
+ * Message `m` is one its agent may still take back: its own posted words, with no card but its
+ * own open question, that no person has ever read. The turn's list, the review sweep and both
+ * tools read this one rule; replace further takes no card at all.
+ */
+export const amendable = (sql: SqlClient.SqlClient) => sql`m.author_kind = 'agent'
+  AND m.status = 'posted' AND m.silent = 0 AND m.kind = 'text' AND ${wordsOnly(sql)}
+  AND ${onlyOwnOpenQuestion(sql)} AND NOT ${everRead(sql)}`;
+
+/** In a shared turn, `m` is at or past its chat's history floor (`historyFloor`). */
+export const withinView = (sql: SqlClient.SqlClient, shared: boolean) =>
+  shared ? sql`m.seq >= ${historyFloor(sql, sql`m.org_id`, sql`m.chat_id`)}` : sql`1 = 1`;
 
 export interface OwnUnread {
   readonly messageId: KinMessageId;
@@ -53,18 +73,21 @@ export interface OwnUnread {
 }
 
 /**
- * This agent's messages in these chats that no person there has read yet, newest first, at most
+ * This agent's messages in these chats it may still change (`amendable`), newest first, at most
  * `OWN_UNREAD_SHOWN`, and how many in all. From stored rows: read marks, never notifications.
  */
 export const ownUnread = Effect.fn("KinOwnMessages.unread")(function* (input: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly chatIds: ReadonlyArray<KinChatId>;
+  /** A turn others read: only what its history shows. */
+  readonly shared: boolean;
 }) {
   if (input.chatIds.length === 0) return { shown: [] as ReadonlyArray<OwnUnread>, total: 0 };
   const sql = yield* SqlClient.SqlClient;
   const where = sql`m.org_id = ${input.orgId} AND m.chat_id IN ${sql.in(input.chatIds)}
-    AND m.author_agent_id = ${input.agentId} AND ${agentMessage(sql)} AND ${unreadByAll(sql)}`;
+    AND m.author_agent_id = ${input.agentId} AND ${amendable(sql)} AND ${someoneThere(sql)}
+    AND ${withinView(sql, input.shared)}`;
   const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM kin_messages m
     WHERE ${where}`;
   const rows = yield* sql<{
@@ -83,7 +106,7 @@ export const ownUnread = Effect.fn("KinOwnMessages.unread")(function* (input: {
         AND (g.message_id = m.message_id OR g.widget_id = m.widget_id)
       ORDER BY g.widget_id LIMIT 1)
     WHERE ${where}
-    ORDER BY m.seq DESC, m.chat_id LIMIT ${OWN_UNREAD_SHOWN}`;
+    ORDER BY m.created_at DESC, m.chat_id, m.seq DESC LIMIT ${OWN_UNREAD_SHOWN}`;
   return {
     shown: rows.map((row): OwnUnread => ({
       messageId: KinMessageId.make(row.messageId),
@@ -134,67 +157,111 @@ export const OWN_MESSAGE_REFUSALS = {
     `${name} has read that message. Say what changed in a new message instead.`,
   confirm:
     "That message carries a Confirm card for money or mail. It is withdrawn through its card, not here.",
-  openCard:
-    "That message carries a card that still waits on someone. Close the card first, or say what changed in a new message.",
-  brief: "That message is a brief's page. Withdraw it, or say what changed in a new message.",
+  moreThanWords: "That message carries more than words. Say what changed in a new message.",
+  openQuestion:
+    "It asks a question that is still open: withdraw it, or say what changed in a new message.",
+  outside:
+    "You read text from outside in this turn, so your earlier message stays as it is. Say what changed in a new message, with where you read it.",
 } as const;
 
 type Stored = {
   chatId: string;
   authorKind: string;
   agentId: string | null;
+  carried: number;
   status: string;
   seq: number;
-  kind: string;
   body: string;
-  form: string | null;
+  payload: number;
+  createdAt: string;
+  threadId: string | null;
+  wakeupId: string | null;
   withdrawn: string | null;
 };
 
-/** The message, checked as the agent's own, in a chat it is in, that no person there has read. */
-const ownUnreadMessage = Effect.fnUntraced(function* (input: {
+type Turn = {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
-  readonly messageId: KinMessageId;
-}) {
+  readonly wakeupId: string;
+};
+
+/**
+ * The message, checked as the agent's own, in a chat it is in, within what the turn's history
+ * shows; `reader` is the first person who ever read it, in the chat now or not.
+ */
+const ownMessage = Effect.fnUntraced(function* (
+  input: Turn & { readonly messageId: KinMessageId },
+) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<Stored>`SELECT m.chat_id AS "chatId", m.author_kind AS "authorKind",
-      m.author_agent_id AS "agentId", m.status, m.seq, m.kind, m.body, m.form,
+      m.author_agent_id AS "agentId", (m.relay_json IS NOT NULL OR m.origin_json IS NOT NULL)
+        AS carried, m.status, m.seq, m.body,
+      NOT (${wordsOnly(sql)}) AS payload, m.created_at AS "createdAt",
+      m.author_thread_id AS "threadId", m.source_wakeup_id AS "wakeupId",
       json_extract(m.withdrawn_json, '$.why') AS withdrawn
     FROM kin_messages m WHERE m.org_id = ${input.orgId} AND m.message_id = ${input.messageId}`;
   if (row === undefined) return yield* refuse(OWN_MESSAGE_REFUSALS.unknown, "not_found");
-  if (row.authorKind === "human") return yield* refuse(OWN_MESSAGE_REFUSALS.person);
+  if (row.authorKind === "human" || row.carried === 1)
+    return yield* refuse(OWN_MESSAGE_REFUSALS.person);
   if (row.authorKind !== "agent" || row.agentId !== input.agentId)
     return yield* refuse(OWN_MESSAGE_REFUSALS.otherAuthor);
   const member = yield* sql`SELECT 1 FROM kin_chat_members WHERE org_id = ${input.orgId}
     AND chat_id = ${row.chatId} AND principal_kind = 'agent' AND agent_id = ${input.agentId}
     AND left_at IS NULL`;
   if (member.length === 0) return yield* refuse(OWN_MESSAGE_REFUSALS.notMember);
+  // A shared turn's history starts at the floor: before it, nothing is there to change.
+  if ((yield* effectiveAudience(input)) !== "owner_only") {
+    const [seen] = yield* sql<{ seen: number }>`SELECT (m.seq >= ${historyFloor(sql, sql`m.org_id`, sql`m.chat_id`)}) AS seen
+      FROM kin_messages m WHERE m.org_id = ${input.orgId} AND m.message_id = ${input.messageId}`;
+    if (seen?.seen !== 1) return yield* refuse(OWN_MESSAGE_REFUSALS.unknown, "not_found");
+  }
   const [reader] = yield* sql<{ name: string }>`SELECT p.display_name AS name
     FROM kin_chat_members c
     JOIN kin_read_state r ON r.org_id = c.org_id AND r.chat_id = c.chat_id
       AND r.member_id = c.member_id
     JOIN kin_people p ON p.org_id = c.org_id AND p.person_id = c.person_id
     WHERE c.org_id = ${input.orgId} AND c.chat_id = ${row.chatId} AND c.principal_kind = 'person'
-      AND c.left_at IS NULL AND r.last_read_seq >= ${row.seq}
+      AND r.last_read_seq >= ${row.seq}
     ORDER BY r.updated_at, p.display_name LIMIT 1`;
   return { ...row, chatId: KinChatId.make(row.chatId), reader: reader?.name };
 });
 
-/** The cards on a message: a Confirm refuses both tools, as one still waiting on someone does. */
+/** The cards on a message. */
 const cardsOf = Effect.fnUntraced(function* (orgId: KinOrgId, messageId: KinMessageId) {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql<{
-    widgetId: string;
-    type: string;
-    open: number;
-    awaiting: number;
-  }>`SELECT g.widget_id AS "widgetId", g.type, (g.closed_at IS NULL) AS open,
-      (g.closed_at IS NULL AND g.awaiting_json <> '[]') AS awaiting
+  return yield* sql<{ widgetId: string; type: string }>`SELECT g.widget_id AS "widgetId", g.type
     FROM kin_widgets g WHERE g.org_id = ${orgId} AND (g.message_id = ${messageId}
       OR g.widget_id = (SELECT widget_id FROM kin_messages WHERE org_id = ${orgId}
         AND message_id = ${messageId}))
     ORDER BY g.widget_id`;
+});
+
+/**
+ * The question asked in words that rides on this message: the open one its writing turn stored
+ * (`textQuestionId`). The turn is the one the message carries, else the run of this agent's
+ * thread it was posted in.
+ */
+const textQuestionOf = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  row: Pick<Stored, "createdAt" | "threadId" | "wakeupId"> & { readonly chatId: KinChatId },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const at = Date.parse(row.createdAt);
+  const turns =
+    row.wakeupId !== null
+      ? [row.wakeupId]
+      : (yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+          WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${row.threadId}
+            AND started_at <= ${at} AND (ended_at IS NULL OR ended_at >= ${at})
+          ORDER BY wakeup_id`).map((one) => one.wakeupId);
+  if (turns.length === 0) return undefined;
+  const [open] = yield* sql<{ questionId: string }>`SELECT question_id AS "questionId"
+    FROM kin_questions WHERE org_id = ${orgId} AND agent_id = ${agentId}
+      AND chat_id = ${row.chatId} AND kind = 'text' AND state = 'open'
+      AND question_id IN ${sql.in(turns.map(Questions.textQuestionId))}
+    ORDER BY question_id LIMIT 1`;
+  return open?.questionId;
 });
 
 /** Publishes the message as it now reads, and any Waiting on you rows it settled, after commit. */
@@ -229,14 +296,11 @@ const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 /**
  * `message_withdraw`, inside `KinLevelGate.amend`'s transaction. The words stay stored; people see
- * one line with `why`. An open question goes by its own path; a Confirm or other waiting card
- * refuses. A retry with the same `why` answers as the first did.
+ * one line with `why`. Its own open question, on a card or in its words, goes with it. A retry
+ * with the same `why` answers as the first did.
  */
 export const withdrawOwn = Effect.fn("KinOwnMessages.withdraw")(function* (
-  input: {
-    readonly orgId: KinOrgId;
-    readonly agentId: KinAgentId;
-    readonly wakeupId: string;
+  input: Turn & {
     readonly messageId: KinMessageId;
     readonly why: string;
     readonly now: number;
@@ -246,7 +310,7 @@ export const withdrawOwn = Effect.fn("KinOwnMessages.withdraw")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const why = input.why.replace(/\s+/g, " ").trim();
-  const row = yield* ownUnreadMessage(input);
+  const row = yield* ownMessage(input);
   if (row.status !== "posted") {
     if (row.withdrawn === why) return { messageId: input.messageId, withdrawn: true } as const;
     return yield* refuse(OWN_MESSAGE_REFUSALS.withdrawn);
@@ -255,6 +319,7 @@ export const withdrawOwn = Effect.fn("KinOwnMessages.withdraw")(function* (
   const cards = yield* cardsOf(input.orgId, input.messageId);
   if (cards.some((card) => card.type === "approval"))
     return yield* refuse(OWN_MESSAGE_REFUSALS.confirm);
+  if (row.payload === 1) return yield* refuse(OWN_MESSAGE_REFUSALS.moreThanWords);
   const ids = cards.map((card) => card.widgetId);
   const asked =
     ids.length === 0
@@ -262,22 +327,17 @@ export const withdrawOwn = Effect.fn("KinOwnMessages.withdraw")(function* (
       : yield* sql<{ questionId: string; widgetId: string | null; raiseWidgetId: string | null }>`
           SELECT question_id AS "questionId", widget_id AS "widgetId",
             raise_widget_id AS "raiseWidgetId"
-          FROM kin_questions WHERE org_id = ${input.orgId} AND state = 'open'
+          FROM kin_questions WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}
+            AND state = 'open' AND draft_json IS NULL
             AND (widget_id IN ${sql.in(ids)} OR raise_widget_id IN ${sql.in(ids)})
           ORDER BY question_id`;
   const questionCards = new Set(asked.flatMap((q) => [q.widgetId, q.raiseWidgetId]));
-  if (cards.some((card) => card.awaiting === 1 && !questionCards.has(card.widgetId)))
-    return yield* refuse(OWN_MESSAGE_REFUSALS.openCard);
-  for (const question of asked)
+  if (cards.some((card) => !questionCards.has(card.widgetId)))
+    return yield* refuse(OWN_MESSAGE_REFUSALS.moreThanWords);
+  const inWords = yield* textQuestionOf(input.orgId, input.agentId, row);
+  for (const questionId of [...asked.map((q) => q.questionId), ...(inWords ? [inWords] : [])])
     yield* Questions.closeQuestion(
-      {
-        orgId: input.orgId,
-        agentId: input.agentId,
-        wakeupId: input.wakeupId,
-        questionId: question.questionId,
-        outcome: "withdrawn",
-        now: input.now,
-      },
+      { ...input, questionId, outcome: "withdrawn", now: input.now },
       chat,
       queue,
     );
@@ -300,25 +360,28 @@ export const withdrawOwn = Effect.fn("KinOwnMessages.withdraw")(function* (
 });
 
 /**
- * `message_replace`: the agent puts the current version in place of its own message that no
- * person in the chat has read. It shows in place, marked updated (`editedAt`). Its words are named
- * as a new post's are. Run inside the post gate's transaction (`KinLevelGate.amend`).
+ * `message_replace`: the agent puts the current version in place of its own plain message that no
+ * person has read. It shows in place, marked updated (`editedAt`). Its words are named as a new
+ * post's are. Run inside the post gate's transaction (`KinLevelGate.amend`).
  */
-export const replaceOwn = Effect.fn("KinOwnMessages.replace")(function* (input: {
-  readonly orgId: KinOrgId;
-  readonly agentId: KinAgentId;
-  readonly messageId: KinMessageId;
-  readonly body: string;
-  readonly now: number;
-}) {
+export const replaceOwn = Effect.fn("KinOwnMessages.replace")(function* (
+  input: Turn & {
+    readonly messageId: KinMessageId;
+    readonly body: string;
+    readonly now: number;
+  },
+) {
   const sql = yield* SqlClient.SqlClient;
-  const row = yield* ownUnreadMessage(input);
+  const row = yield* ownMessage(input);
   if (row.status !== "posted") return yield* refuse(OWN_MESSAGE_REFUSALS.withdrawn);
   if (row.reader !== undefined) return yield* refuse(OWN_MESSAGE_REFUSALS.read(row.reader));
-  if (row.form === "brief") return yield* refuse(OWN_MESSAGE_REFUSALS.brief);
   const cards = yield* cardsOf(input.orgId, input.messageId);
   if (cards.some((card) => card.type === "approval"))
     return yield* refuse(OWN_MESSAGE_REFUSALS.confirm);
+  if (row.payload === 1 || cards.length > 0)
+    return yield* refuse(OWN_MESSAGE_REFUSALS.moreThanWords);
+  if ((yield* textQuestionOf(input.orgId, input.agentId, row)) !== undefined)
+    return yield* refuse(OWN_MESSAGE_REFUSALS.openQuestion);
   const named = yield* nameKeys(
     input.orgId,
     row.chatId,

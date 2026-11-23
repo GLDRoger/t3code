@@ -9,8 +9,10 @@ import {
   type KinChatId,
   KinEvent,
   KinMemberId,
+  type KinMessage,
   KinMessageId,
   KinOrgId,
+  KinPersonId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -21,6 +23,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -34,18 +37,26 @@ import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
+import { markOutside } from "../lead/OutsideContent.ts";
 import { KinLeadPrompt, PROMPT_HEADINGS, UNREAD_RULE } from "../lead/LeadPrompt.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as Memory from "../memory/Memory.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
-import { REVIEW_UNREAD_MS, reviewWakes } from "../pulse/reviewWake.ts";
+import {
+  REVIEW_UNREAD_MS,
+  reviewStillDue,
+  reviewWakes,
+  reviewWakeText,
+} from "../pulse/reviewWake.ts";
+import * as Questions from "../questions/openQuestions.ts";
 import * as Team from "../team/KinTeam.ts";
 import { presetDefinition } from "../work/registers.ts";
 import { KinChatRepository } from "./KinChatRepository.ts";
 import { KinChatService } from "./KinChatService.ts";
 import { KinIdentity } from "./KinIdentity.ts";
-import { OWN_MESSAGE_REFUSALS, OWN_UNREAD_SHOWN } from "./ownMessages.ts";
+import { withLinks } from "./messageLinks.ts";
+import { OWN_MESSAGE_REFUSALS, OWN_UNREAD_SHOWN, replaceOwn } from "./ownMessages.ts";
 import { environment } from "./TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "./WakeupAuthority.testkit.ts";
 
@@ -115,15 +126,25 @@ const callAs = Effect.fn("test.callAs")(function* (
 ) {
   const server = yield* McpServer.McpServer;
   const identity = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinIdentity);
-  const result = yield* server
-    .callTool({ name, arguments: args })
-    .pipe(
-      Effect.provideService(McpInvocationContext, scopeOf(agent)),
-      Effect.provideService(KinIdentity, identity),
-      Effect.provideService(McpSchema.McpServerClient, client),
-    );
-  const text = result.content.find((item) => item.type === "text")?.text ?? "{}";
-  return { ok: result.isError !== true, text, value: JSON.parse(text) as Record<string, unknown> };
+  const answer = yield* server.callTool({ name, arguments: args }).pipe(
+    Effect.provideService(McpInvocationContext, scopeOf(agent)),
+    Effect.provideService(KinIdentity, identity),
+    Effect.provideService(McpSchema.McpServerClient, client),
+    Effect.map((result) => ({
+      isError: result.isError === true,
+      text: result.content.find((item) => item.type === "text")?.text ?? "{}",
+    })),
+    // A gate's refusal (`ToolCallRefused`) reaches the agent as its answer.
+    Effect.catch((error) =>
+      Effect.succeed({
+        isError: true,
+        text: Predicate.hasProperty(error, "message") ? String(error.message) : String(error),
+      }),
+    ),
+  );
+  const text = answer.text;
+  if (answer.isError) return { ok: false, text, value: {} };
+  return { ok: true, text, value: JSON.parse(text) as Record<string, unknown> };
 });
 
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
@@ -175,12 +196,17 @@ const ambermill = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
       created_at, definition_json)
     VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
-  const say = Effect.fn("test.say")(function* (agent: string, id: string, body: string) {
+  const say = Effect.fn("test.say")(function* (
+    agent: string,
+    id: string,
+    body: string,
+    audience: "owner" | "chat" = "owner",
+  ) {
     const chatId = chatOf.get(agent)!;
     const [member] = yield* sql<{ memberId: string }>`SELECT member_id AS "memberId"
       FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chatId} AND agent_id = ${agent}`;
     return yield* repo.insertMessage({
-      audience: "owner",
+      audience,
       orgId,
       chatId,
       messageId: KinMessageId.make(id),
@@ -206,11 +232,12 @@ const ambermill = Effect.gen(function* () {
       serverPosted: true,
     });
   });
-  const wake = (agent: string) =>
+  const wake = (agent: string, message?: KinMessage) =>
     startAgentWakeup({
       orgId,
       agentId: KinAgentId.make(agent),
       threadId: ThreadId.make(`${agent}-thread`),
+      ...(message === undefined ? {} : { message }),
     });
   return { sql, chats, repo, owner, orgId, chatOf: (id: string) => chatOf.get(id)!, say, wake };
 });
@@ -266,7 +293,7 @@ it.effect("an agent takes back or puts right only its own message that no one ha
       assert.notInclude(byChief.text, '"withdrawn":true');
       yield* wake("finance");
 
-      // A Confirm card refuses both tools; another card still waiting on someone refuses withdraw.
+      // A Confirm card refuses both tools with its own words; any other card is more than words.
       for (const [widget, message, type, awaiting] of [
         ["w-confirm", "m-confirm", "approval", "[]"],
         ["w-choice", "m-choice", "choice", JSON.stringify([owner.personId])],
@@ -286,16 +313,9 @@ it.effect("an agent takes back or puts right only its own message that no one ha
         yield* callAs("finance", "message_replace", { messageId: "m-confirm", body: "New" }),
         OWN_MESSAGE_REFUSALS.confirm,
       );
-      refused(yield* withdraw("finance", "m-choice"), OWN_MESSAGE_REFUSALS.openCard);
-      // A brief's page is withdrawn whole, never rewritten.
-      yield* say("finance", "m-brief", "Monday brief: two invoices late.");
-      yield* sql`UPDATE kin_messages SET form = 'brief' WHERE message_id = 'm-brief'`;
-      refused(
-        yield* callAs("finance", "message_replace", { messageId: "m-brief", body: "New" }),
-        OWN_MESSAGE_REFUSALS.brief,
-      );
+      refused(yield* withdraw("finance", "m-choice"), OWN_MESSAGE_REFUSALS.moreThanWords);
 
-      // The turn lists what Rhea hasn't read, newest first, cards marked.
+      // The turn lists what Rhea hasn't read and it may change, newest first.
       const turnOf = Effect.fn("test.turnOf")(function* () {
         const turn = yield* wake("finance");
         const stored = yield* sql<{ json: string }>`SELECT json FROM kin_events
@@ -317,8 +337,9 @@ it.effect("an agent takes back or puts right only its own message that no one ha
         listed,
         '- m-chase, 09:30: "Lumen Grove still owes INV-14 (₹85,000), 12 days late."',
       );
-      assert.include(listed, 'its "approval" card is open');
-      assert.isBelow(listed.indexOf("m-brief"), listed.indexOf("m-gst"));
+      assert.notInclude(listed, "m-confirm");
+      assert.notInclude(listed, "m-choice");
+      assert.isBelow(listed.indexOf("m-gst"), listed.indexOf("m-chase"));
       assert.notInclude(listed, "older ones");
 
       // Withdrawn: one quiet line for everyone, its words for the owner, out of the unread count.
@@ -380,8 +401,13 @@ it.effect("a question card goes with its message, and Waiting on you lets it go"
     TestClock.setTime(IST_MON_0930),
     Effect.gen(function* () {
       const { sql, chats, repo, owner, orgId, chatOf, wake } = yield* ambermill;
-      yield* chats.send(owner, { chatId: chatOf("finance"), body: "VIOM?", clientMessageId: "m1" });
-      yield* wake("finance");
+      // Woken by Rhea's words, not a brief: a brief's messages are its page.
+      const viom = yield* chats.send(owner, {
+        chatId: chatOf("finance"),
+        body: "VIOM?",
+        clientMessageId: "m1",
+      });
+      yield* wake("finance", viom);
       const asked = yield* callAs("finance", "kin_ask", {
         question: "Shall I draft VIOM's payment reminder for INV-8?",
         options: [{ label: "Draft it" }, { label: "Leave it" }],
@@ -527,6 +553,327 @@ it.effect("a review wake needs time unread, a change since, and no review pendin
         seq: latest!.seq,
       });
       assert.deepStrictEqual(yield* sweep(tuesday0945 + 5), []);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+const cardOn = (orgId: string, chatId: string, message: string, widget: string, type: string) =>
+  Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+        type, revision, state_json, awaiting_json, updated_at)
+      VALUES (${widget}, ${orgId}, ${chatId}, ${message}, 'native', ${type}, 1, '{}', '[]', ${at})`,
+  );
+
+it.effect("an agent changes only a plain message of its own that no one has read", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_0930),
+    Effect.gen(function* () {
+      const { sql, owner, orgId, chatOf, say, wake } = yield* ambermill;
+      const chat = chatOf("finance");
+      const withdraw = (messageId: string) =>
+        callAs("finance", "message_withdraw", { messageId, why: "Lumen Grove paid" });
+      const replace = (messageId: string) =>
+        callAs("finance", "message_replace", { messageId, body: "Lumen Grove paid on Friday." });
+      const refused = (result: { ok: boolean; text: string }, text: string, what: string) => {
+        assert.isFalse(result.ok, `${what}: ${result.text}`);
+        assert.include(result.text, text, what);
+      };
+      const turn = yield* wake("finance");
+
+      // More than words: a card that is not its own open question, a draft sent up, a file, a figure.
+      for (const [message, widget, type] of [
+        ["m-task", "w-task", "task"],
+        ["m-worker", "w-worker", "worker"],
+        ["m-chart", "w-chart", "chart"],
+        ["m-statement", "w-statement", "bank_statement"],
+      ] as const) {
+        yield* say("finance", message, "Here it is.");
+        yield* cardOn(orgId, chat, message, widget, type);
+      }
+      yield* say("finance", "m-draft", "Draft reminder for Lumen Grove.");
+      yield* cardOn(orgId, chat, "m-draft", "w-draft", "choice");
+      yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
+          widget_id, question, safe, asked_at, due_at, act_at, state, draft_json)
+        VALUES ('q-draft', ${orgId}, 'finance', ${owner.personId}, ${chat}, 'card', 'w-draft',
+          'Send this reminder?', 0, 0, 0, 0, 'open', '{"doc":"d-1"}')`;
+      for (const [message, column, value] of [
+        ["m-file", "attachments_json", '[{"id":"a-1"}]'],
+        ["m-figure", "embeds_json", '[{"figure":"f-1"}]'],
+        ["m-page", "form", "brief"],
+      ] as const) {
+        yield* say("finance", message, "Here it is.");
+        yield* sql`UPDATE kin_messages SET ${sql.literal(column)} = ${value}
+          WHERE message_id = ${message}`;
+      }
+      for (const message of [
+        "m-task",
+        "m-worker",
+        "m-chart",
+        "m-statement",
+        "m-draft",
+        "m-file",
+        "m-figure",
+        "m-page",
+      ]) {
+        refused(yield* withdraw(message), OWN_MESSAGE_REFUSALS.moreThanWords, `withdraw ${message}`);
+        refused(yield* replace(message), OWN_MESSAGE_REFUSALS.moreThanWords, `replace ${message}`);
+      }
+      const [draft] = yield* sql<{ state: string }>`SELECT state FROM kin_questions
+        WHERE question_id = 'q-draft'`;
+      assert.strictEqual(draft!.state, "open");
+
+      // A teammate's words an agent carried are theirs.
+      yield* say("finance", "m-relay", "Meera asks: can INV-14 wait a week?");
+      yield* sql`UPDATE kin_messages SET relay_json = '{"personId":"meera","said":"can INV-14 wait"}'
+        WHERE message_id = 'm-relay'`;
+      refused(yield* withdraw("m-relay"), OWN_MESSAGE_REFUSALS.person, "withdraw relay");
+      refused(yield* replace("m-relay"), OWN_MESSAGE_REFUSALS.person, "replace relay");
+
+      // A question asked in words rides on its message: replace waits, withdraw takes both.
+      yield* say("finance", "m-ask", "Shall I chase Lumen Grove for INV-14 today?");
+      const question = yield* Questions.recordTextQuestion({
+        orgId,
+        agentId: KinAgentId.make("finance"),
+        chatId: chat,
+        wakeupId: turn,
+        question: "Shall I chase Lumen Grove for INV-14 today?",
+        now: yield* Clock.currentTimeMillis,
+      });
+      refused(yield* replace("m-ask"), OWN_MESSAGE_REFUSALS.openQuestion, "replace text question");
+
+      // Listed: only what it may change, newest first.
+      const built = yield* Effect.flatMap(KinLeadPrompt, (prompt) =>
+        prompt.build({
+          orgId,
+          agentId: KinAgentId.make("finance"),
+          wakeupId: turn,
+          events: [],
+          memoryHead: "fixture",
+          lane: { chatId: chat, mode: "reply" },
+        }),
+      ).pipe(Effect.provide(promptLayer));
+      const listed = unreadSection(built)!;
+      for (const message of ["m-task", "m-draft", "m-file", "m-page", "m-relay"])
+        assert.notInclude(listed, `- ${message},`, message);
+      assert.include(listed, "- m-ask,");
+
+      const gone = yield* withdraw("m-ask");
+      assert.isTrue(gone.ok, gone.text);
+      const [asked] = yield* sql<{ state: string }>`SELECT state FROM kin_questions
+        WHERE question_id = ${question!}`;
+      assert.strictEqual(asked!.state, "withdrawn");
+
+      // After outside text the turn says what changed in a new message.
+      yield* say("finance", "m-plain", "INV-14 is 12 days late.");
+      yield* markOutside({ orgId, wakeupId: turn }, "mail-connection");
+      refused(yield* withdraw("m-plain"), OWN_MESSAGE_REFUSALS.outside, "withdraw after outside");
+      refused(yield* replace("m-plain"), OWN_MESSAGE_REFUSALS.outside, "replace after outside");
+
+      // The writer's own check, past the gate: another agent, a system line, another company.
+      yield* wake("finance");
+      const services = Option.getOrThrow((yield* Kin.KinServer).services);
+      const direct = (agent: string, messageId: string) =>
+        replaceOwn({
+          orgId,
+          agentId: KinAgentId.make(agent),
+          wakeupId: turn,
+          messageId: KinMessageId.make(messageId),
+          body: "x",
+          now: 0,
+        }).pipe(Effect.provide(Layer.succeedContext(services)), Effect.flip);
+      assert.strictEqual(
+        (yield* direct("chief", "m-plain")).message,
+        OWN_MESSAGE_REFUSALS.otherAuthor,
+      );
+      yield* Context.get(services, KinChatService).notice({
+        audience: "chat",
+        orgId,
+        chatId: chat,
+        messageId: KinMessageId.make("m-system"),
+        body: "Finance joined.",
+      });
+      assert.strictEqual(
+        (yield* direct("finance", "m-system")).message,
+        OWN_MESSAGE_REFUSALS.otherAuthor,
+      );
+      refused(yield* withdraw("m-system"), OWN_MESSAGE_REFUSALS.otherAuthor, "system line");
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('elsewhere', 'Elsewhere', ${at})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('elsewhere-chat', 'elsewhere', 'team_group', 1, ${at})`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_role, kind, body, mentions_json, status, created_at)
+        VALUES ('m-elsewhere', 'elsewhere', 'elsewhere-chat', 1, 'system', 'member', 'system',
+          'Elsewhere.', '[]', 'posted', ${at})`;
+      refused(yield* withdraw("m-elsewhere"), OWN_MESSAGE_REFUSALS.unknown, "another company");
+      assert.strictEqual(
+        (yield* direct("finance", "m-elsewhere")).message,
+        OWN_MESSAGE_REFUSALS.unknown,
+      );
+      // Out of the chat, its messages there are no longer its to change.
+      yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE chat_id = ${chat}
+        AND agent_id = 'finance'`;
+      assert.strictEqual(
+        (yield* direct("finance", "m-plain")).message,
+        OWN_MESSAGE_REFUSALS.notMember,
+      );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("a shared turn changes only what its history shows, and once read is read for good", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_0930),
+    Effect.gen(function* () {
+      const { sql, repo, owner, orgId, chatOf, say, wake } = yield* ambermill;
+      const chat = chatOf("finance");
+      const org = KinOrgId.make(orgId);
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('dev', ${orgId}, 'dev', 'Dev Patel', ${at}, 'member')`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+        VALUES (${orgId}, 'rec-inv14', 'invoices', 'INV-14', 'Lumen Grove retainer', 'person',
+          ${owner.personId}, 'person', 'inv14', 0, 0, '{"number":"INV/26-27/014"}')`;
+      // Written for Rhea alone, before Dev joined.
+      yield* say("finance", "m-old", "Rhea, your salary draft is ready.");
+      const devMember = KinMemberId.make("dev-member");
+      yield* repo.addMember({
+        orgId,
+        chatId: chat,
+        memberId: devMember,
+        principal: { _tag: "person", personId: KinPersonId.make("dev") },
+        role: "member",
+        joinedAt: at,
+        leftAt: null,
+        mutedUntil: null,
+      });
+      yield* say("finance", "m-new", "Lumen Grove still owes INV-14.", "chat");
+      yield* say("finance", "m-later", "The site copy is due Friday.", "chat");
+      const turn = yield* wake("finance");
+      const withdraw = (messageId: string) =>
+        callAs("finance", "message_withdraw", { messageId, why: "No longer so" });
+
+      const built = yield* Effect.flatMap(KinLeadPrompt, (prompt) =>
+        prompt.build({
+          orgId,
+          agentId: KinAgentId.make("finance"),
+          wakeupId: turn,
+          events: [],
+          memoryHead: "fixture",
+          lane: { chatId: chat, mode: "reply" },
+        }),
+      ).pipe(Effect.provide(promptLayer));
+      const listed = unreadSection(built)!;
+      assert.include(listed, "- m-new,");
+      assert.notInclude(listed, "m-old");
+      const old = yield* withdraw("m-old");
+      assert.isFalse(old.ok, old.text);
+      assert.include(old.text, OWN_MESSAGE_REFUSALS.unknown);
+
+      // An invoice Dev can't see changing wakes no review of a chat Dev reads.
+      yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
+          via, kind, fields_json)
+        VALUES (${orgId}, 'rec-inv14', 2, ${IST_MON_0930 + HOUR}, 'person', ${owner.personId},
+          'owner', 'updated', '[{"field":"state","from":"waiting","to":"done"}]')`;
+      const due = IST_MON_0930 + REVIEW_UNREAD_MS + HOUR;
+      yield* TestClock.setTime(due);
+      assert.deepStrictEqual(yield* reviewWakes({ orgId: org, at: due }), []);
+
+      // Dev sees the withdrawn line, never its words; Rhea sees both.
+      const later = yield* withdraw("m-later");
+      assert.isTrue(later.ok, later.text);
+      const line = Option.getOrThrow(
+        yield* repo.getMessage({ orgId: org, messageId: KinMessageId.make("m-later") }),
+      );
+      const [forDev] = yield* withLinks(org, { _tag: "person", personId: KinPersonId.make("dev") }, [
+        line,
+      ]);
+      assert.isUndefined(forDev!.withdrawn?.said);
+      const [forRhea] = yield* withLinks(org, { _tag: "person", personId: owner.personId }, [line]);
+      assert.strictEqual(forRhea!.withdrawn?.said, "The site copy is due Friday.");
+
+      // Dev read it, then left: it stays read.
+      const [mark] = yield* sql<{ seq: number }>`SELECT seq FROM kin_messages
+        WHERE message_id = 'm-new'`;
+      yield* sql`INSERT INTO kin_read_state (chat_id, member_id, org_id, last_read_seq, updated_at)
+        VALUES (${chat}, ${devMember}, ${orgId}, ${mark!.seq}, ${at})`;
+      yield* repo.leaveChat({ orgId, chatId: chat, memberId: devMember, leftAt: at });
+      const left = yield* withdraw("m-new");
+      assert.isFalse(left.ok, left.text);
+      assert.include(left.text, OWN_MESSAGE_REFUSALS.read("Dev Patel"));
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("a review wake names only entries matched exactly that its turn may read", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_0930),
+    Effect.gen(function* () {
+      const { sql, owner, orgId, chatOf, say, wake } = yield* ambermill;
+      const org = KinOrgId.make(orgId);
+      const record = (id: string, key: string, title: string, number: string) =>
+        sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+          VALUES (${orgId}, ${id}, 'invoices', ${key}, ${title}, 'person', ${owner.personId},
+            'person', ${id}, 0, 0, ${JSON.stringify({ number })})`;
+      const moved = (id: string, when: number) =>
+        sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
+            via, kind, fields_json)
+          VALUES (${orgId}, ${id}, ${when}, ${when}, 'person', ${owner.personId}, 'owner',
+            'updated', '[{"field":"state","from":"waiting","to":"done"}]')`;
+      const sweep = Effect.fn("test.sweep")(function* (when: number) {
+        yield* TestClock.setTime(when);
+        return yield* reviewWakes({ orgId: org, at: when });
+      });
+      const done = sql`UPDATE kin_events SET state = 'done' WHERE dedupe_key LIKE 'review:%'`;
+      yield* record("rec-042", "INV-42", "Orbit retainer", "INV/26-27/042");
+      yield* record("rec-a", "INV-50", "Patient onboarding copy", "INV/26-27/050");
+      yield* record("rec-b", "INV-51", "Patient onboarding copy", "INV/26-27/051");
+      // A longer number is another invoice; a title two entries share names neither.
+      yield* say("finance", "m-longer", "Orbit still owes INV/26-27/0421.");
+      yield* say("chief", "m-title", "The patient onboarding copy still needs a budget.");
+      yield* moved("rec-042", IST_MON_0930 + HOUR);
+      yield* moved("rec-a", IST_MON_0930 + HOUR);
+      const due = IST_MON_0930 + REVIEW_UNREAD_MS + HOUR;
+      assert.deepStrictEqual(yield* sweep(due), []);
+
+      // The exact number wakes it, but not while its agent is paused.
+      yield* say("finance", "m-exact", "Orbit still owes INV/26-27/042 (₹40,000).");
+      yield* moved("rec-042", due + HOUR);
+      yield* sql`UPDATE kin_agents SET paused_at = ${at} WHERE agent_id = 'finance'`;
+      const later = due + REVIEW_UNREAD_MS + HOUR;
+      assert.deepStrictEqual(yield* sweep(later), []);
+      yield* sql`UPDATE kin_agents SET paused_at = NULL WHERE agent_id = 'finance'`;
+      assert.deepStrictEqual(yield* sweep(later + 1), [
+        { agentId: "finance", chatId: chatOf("finance") },
+      ]);
+
+      // What changed is data the turn reads, not part of its instruction.
+      const turn = yield* wake("finance");
+      const [stored] = yield* sql<{ json: string }>`SELECT json FROM kin_events
+        WHERE dedupe_key LIKE 'review:%' AND state <> 'done'`;
+      const decoded = decodeEvent(JSON.parse(stored!.json));
+      assert.strictEqual(decoded._tag, "pulse");
+      const event = decoded as Extract<KinEvent, { readonly _tag: "pulse" }>;
+      const made = yield* reviewWakeText(
+        { orgId: org, agentId: KinAgentId.make("finance"), wakeupId: turn },
+        event,
+        later + 2,
+      );
+      assert.isDefined(made);
+      assert.include(made!.changed.join("\n"), "INV-42 (Orbit retainer)");
+      assert.notInclude(made!.text, "Orbit");
+      // Read before its turn starts: nothing is left for it.
+      assert.isTrue(yield* reviewStillDue(org, event));
+      const [latest] = yield* sql<{ seq: number }>`SELECT MAX(seq) AS seq FROM kin_messages
+        WHERE chat_id = ${chatOf("finance")}`;
+      const services = Option.getOrThrow((yield* Kin.KinServer).services);
+      yield* Context.get(services, KinChatService).markRead(owner, {
+        chatId: chatOf("finance"),
+        seq: latest!.seq,
+      });
+      assert.isFalse(yield* reviewStillDue(org, event));
+      yield* done;
     }).pipe(Effect.provide(layer)),
   ),
 );
