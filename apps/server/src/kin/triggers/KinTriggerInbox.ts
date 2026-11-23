@@ -50,6 +50,7 @@ const PendingRequest = Schema.Struct({
     Schema.Union([Schema.Array(KinRoutine), Schema.Literals(["deferral", "scheduled_task"])]),
   ),
   kinds: Schema.optional(Schema.Array(FireKind)),
+  after: Schema.optional(KinTriggerFireId),
 });
 
 /**
@@ -83,6 +84,7 @@ export class KinTriggerInbox extends Context.Service<
       limit?: number,
       subjects?: ReadonlyArray<KinRoutine> | "deferral" | "scheduled_task",
       kinds?: ReadonlyArray<FireKind>,
+      after?: KinTriggerFireId,
     ) => Effect.Effect<ReadonlyArray<KinTriggerFired>, InboxError>;
     readonly markConsumed: (
       orgId: KinOrgId,
@@ -106,7 +108,7 @@ const make = Effect.gen(function* () {
   const pending = SqlSchema.findAll({
     Request: PendingRequest,
     Result: InboxRow,
-    execute: ({ orgId, limit, routines, kinds }) => sql`
+    execute: ({ orgId, limit, routines, kinds, after }) => sql`
       SELECT payload_json AS payload FROM kin_trigger_inbox
       WHERE org_id = ${orgId} AND consumed_at IS NULL
         AND NOT ${retirementHeld(sql, sql`kin_trigger_inbox`)}
@@ -121,6 +123,14 @@ const make = Effect.gen(function* () {
           kinds === undefined
             ? sql``
             : sql`AND json_extract(payload_json, '$.payload.kind') IN (${sql.join(",", false)(kinds.map((kind) => sql`${kind}`))})`
+        }
+        ${
+          after === undefined
+            ? sql``
+            : sql`AND (received_at, fire_id) > (
+          SELECT received_at, fire_id FROM kin_trigger_inbox
+          WHERE org_id = ${orgId} AND fire_id = ${after}
+        )`
         }
       ORDER BY received_at, fire_id LIMIT ${limit}
     `,
@@ -184,12 +194,13 @@ const make = Effect.gen(function* () {
       Effect.mapError(toInboxError("KinTriggerInbox.put")),
     ),
     listPending: Effect.fn("KinTriggerInbox.listPending")(
-      function* (orgId, limit = 100, routines, kinds) {
+      function* (orgId, limit = 100, routines, kinds, after) {
         return (yield* pending({
           orgId,
           limit,
           ...(routines === undefined ? {} : { routines }),
           ...(kinds === undefined ? {} : { kinds }),
+          ...(after === undefined ? {} : { after }),
         }).pipe(NodeSqliteClient.readOnly)).map((row) => row.payload);
       },
       Effect.mapError(toInboxError("KinTriggerInbox.listPending")),
