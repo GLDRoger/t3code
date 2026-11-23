@@ -1,8 +1,10 @@
 import { KIN_MORE_FAILED, KIN_RETRY, kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_LISTS,
   KIN_LIST_LABEL_MAX,
+  KIN_LIST_WATCHES_CHANGE,
   kinCategoryLabel,
   kinListCanTogglePayments,
   kinListChips,
@@ -16,6 +18,7 @@ import {
   kinListNothing,
   kinListRow,
   kinListStateLabel,
+  kinListWatches,
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
@@ -80,6 +83,8 @@ import {
   useKinLists,
 } from "./useKinMoney";
 import { useKinWorkChoices, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import { useKinAttention } from "./useKinAttention";
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
 
 const ANY = "any";
@@ -186,6 +191,10 @@ function KinListEntries(
   const nothing = kinListNothing(def, filter);
   const footer = kinListFooter(rows.length, state.total, state.more);
   const searchId = useId();
+  const watches = kinListWatches(def);
+  const ownerLevel = useKinOwnerLevel(props.environmentId);
+  // Late, due today or off its check, in the host's own words: the pulse read Tasks shares.
+  const facts = kinEntryFacts(useKinAttention(props));
   return (
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
       <div
@@ -201,6 +210,14 @@ function KinListEntries(
               <p className="text-xs text-muted-foreground">
                 {KIN_LISTS.archived}. {KIN_LISTS.edit.archiveDetail}
               </p>
+            )}
+            {watches.length === 0 ? null : (
+              <div className="flex flex-col text-xs text-muted-foreground">
+                {watches.map((line) => (
+                  <p key={line}>{line}</p>
+                ))}
+                {ownerLevel ? <p>{KIN_LIST_WATCHES_CHANGE}</p> : null}
+              </div>
             )}
           </div>
           {adds === null ? null : (
@@ -479,6 +496,10 @@ function KinListEntries(
                               <span className="truncate text-foreground">{row.title}</span>
                               <span className="shrink-0 text-muted-foreground">{row.key}</span>
                             </button>
+                          ) : column.id === "state" && facts.has(row.key) ? (
+                            <span className="text-destructive-foreground">
+                              {facts.get(row.key)?.join(" ")}
+                            </span>
                           ) : column.id === "due" && row.late ? (
                             <span className="text-destructive-foreground">
                               {row.cells[column.id]}
@@ -497,7 +518,11 @@ function KinListEntries(
             <ul className="flex flex-col">
               {rows.map((row) => (
                 <li key={row.key} className="border-b border-border/60 last:border-b-0">
-                  <KinListRow row={row} onOpen={() => props.onOpenKey(row.key)} />
+                  <KinListRow
+                    row={row}
+                    facts={facts.get(row.key)}
+                    onOpen={() => props.onOpenKey(row.key)}
+                  />
                 </li>
               ))}
             </ul>
@@ -550,7 +575,12 @@ function KinListEntries(
 }
 
 /** An entry of any list as a row: what it is, where it stands, and its amount when it has one. */
-export function KinListRow(props: { readonly row: KinListRowView; readonly onOpen: () => void }) {
+export function KinListRow(props: {
+  readonly row: KinListRowView;
+  /** What the host says of it being late, due today or off its check. */
+  readonly facts?: ReadonlyArray<string> | undefined;
+  readonly onOpen: () => void;
+}) {
   const { row } = props;
   return (
     <button
@@ -572,6 +602,9 @@ export function KinListRow(props: { readonly row: KinListRowView; readonly onOpe
           {row.title}
         </span>
         <span className="truncate text-xs text-muted-foreground">{row.line}</span>
+        {props.facts === undefined ? null : (
+          <span className="text-xs text-destructive-foreground">{props.facts.join(" ")}</span>
+        )}
       </span>
       {row.late ? (
         <Badge size="sm" variant="error">
