@@ -56,6 +56,7 @@ import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { feedTurn } from "../numbers/feeds.ts";
+import { reviewStillDue } from "../pulse/reviewWake.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
 import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
@@ -499,6 +500,9 @@ const make = Effect.gen(function* () {
         return (
           (yield* offTurnTexts(orgId, event.factKeys, yield* Clock.currentTimeMillis)).length === 0
         );
+      // A review whose messages were all read or taken back since it was queued.
+      if (event._tag === "pulse" && event.review === true)
+        return !(yield* reviewStillDue(orgId, event));
       if (event._tag !== "deferral.due") return false;
       const subject = event.subject;
       if (subject.type === "scheduled_task") {

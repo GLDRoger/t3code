@@ -91,6 +91,7 @@ import {
   githubTriggerEvent,
   ASSIGNED_NOT_IN_PERSON,
   HANDED_BACK_WORK,
+  UNREAD_RULE,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
   joinedWork,
@@ -103,6 +104,8 @@ import {
   proposedAnswer,
 } from "../../apps/server/src/kin/numbers/words.ts";
 import { thisCompanyLines } from "../../apps/server/src/kin/shell/words.ts";
+import { REVIEW_WAKE_TEXT } from "../../apps/server/src/kin/pulse/reviewWake.ts";
+import { OWN_MESSAGE_REFUSALS } from "../../apps/server/src/kin/chat/ownMessages.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
 import { DECLINED_RULE } from "../../apps/server/src/kin/lead/declinedSection.ts";
@@ -443,6 +446,10 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{APPROVED_TURN_TEXT}}", APPROVED_TURN_TEXT)
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
+    .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
+    .replace(/\{\{REVIEW_WAKE:([^|}]+)\|(\d+)\}\}/g, (_, who: string, count: string) =>
+      REVIEW_WAKE_TEXT({ who: who.split(", "), count: Number(count) }),
+    )
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names))
     .replace(/\{\{JOINED_WORK:([^|}]+)\|([^}]+)\}\}/g, (_, adder: string, holder: string) =>
       joinedWork(adder, holder),
@@ -528,6 +535,20 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   // Anything but the approved make or a read, refused in an approved draft's turn.
   approvedRefusal: () => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: APPROVED_REFUSAL },
+  }),
+  // message_withdraw or message_replace refused, as `chat/ownMessages.ts` says it.
+  ownMessageRefusal: (input: {
+    readonly why: "read" | "otherAuthor" | "outside" | "moreThanWords";
+    readonly name?: string;
+  }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_allowed",
+      message:
+        input.why === "read"
+          ? OWN_MESSAGE_REFUSALS.read(input.name ?? "")
+          : OWN_MESSAGE_REFUSALS[input.why],
+    },
   }),
   // An agent with no person asking in its turn, refused a change to who is on a task.
   alsoOnUnasked: () => ({
