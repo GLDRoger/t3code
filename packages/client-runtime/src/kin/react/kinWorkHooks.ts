@@ -308,6 +308,8 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
       /** The signed-in person (`useKinViewer`): another's kept list is never shown. */
       readonly viewer: string | null;
     },
+    /** False until the viewer may read this list: nothing is asked of the host before then. */
+    active = true,
   ) {
     const [kept] = useState(() =>
       keep === undefined ? null : keep.keeper.take(keep.key, make, keep.viewer),
@@ -322,6 +324,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     const keeper = keep?.keeper ?? null;
     // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when it shows (or catches a kept one up), and abandons what is in flight when it leaves
     useEffect(() => {
+      if (!active) return;
       if (keeper === null || kept === null) {
         list.start();
         return list.dispose;
@@ -330,7 +333,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
       if (resumed) keeper.resume(kept);
       else list.start();
       return () => keeper.hide(kept);
-    }, [keeper, kept, list, resumed]);
+    }, [active, keeper, kept, list, resumed]);
     // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the list's reader the host's latest change number, so it reads again only when the rows are behind
     useEffect(() => {
       if (seq !== null) list.changed(seq);
@@ -377,6 +380,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     { environmentId, orgId }: KinScreenTarget,
     seq: number | null,
     view: KinProjectsFilter["view"] = "open",
+    active = true,
   ) {
     const initial = { ...KIN_PROJECTS_DEFAULT_FILTER, view };
     return useKinPagedList<KinProjectsFilter, KinProjectRow>(
@@ -403,6 +407,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
         key: JSON.stringify([environmentId, orgId, view]),
         viewer: useKinViewer(app.runtime, environmentId),
       },
+      active,
     );
   }
 

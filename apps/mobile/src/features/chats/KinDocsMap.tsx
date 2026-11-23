@@ -217,7 +217,7 @@ function KinDocsMapReady(
             style={{ bottom }}
           >
             <View className="min-w-0 shrink">
-              <KinCanvasPartial lines={data.partial} />
+              <KinCanvasPartial lines={data.partial} onRetry={data.failed ? data.retry : null} />
             </View>
             {empty ? null : (
               <KinCanvasZoomControls

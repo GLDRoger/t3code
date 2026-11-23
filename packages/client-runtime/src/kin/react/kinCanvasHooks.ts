@@ -9,6 +9,7 @@ import {
   KIN_CANVAS_MAX_DOCS,
   KIN_CANVAS_MAX_TASKS,
   kinCanvasModel,
+  kinCanvasStatus,
 } from "../kinCanvasView.ts";
 import { kinHostLink, type KinRouteHost } from "../kinHost.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
@@ -88,6 +89,8 @@ export function makeKinCanvasHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinCanva
           rows: () => live()?.rows ?? null,
         }),
       enabled ? seq : null,
+      undefined,
+      enabled,
     );
     useReadUpTo(paged.state, paged.list.loadMore, KIN_CANVAS_MAX_TASKS, enabled);
     return paged;
@@ -106,9 +109,14 @@ export function makeKinCanvasHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinCanva
     const docsLive = docs.useKinDocsLive(target);
     const docsAllowed = !docsLive.refused;
     const tasks = useMapTasks(target, seq, tasksAllowed);
-    const docRead = docs.useKinDocsList(target, docsAllowed ? (docsLive.live?.seq ?? null) : null);
+    const docRead = docs.useKinDocsList(
+      target,
+      docsAllowed ? (docsLive.live?.seq ?? null) : null,
+      "",
+      docsAllowed,
+    );
     useReadUpTo(docRead.state, docRead.list.loadMore, KIN_CANVAS_MAX_DOCS, docsAllowed);
-    const projects = work.useKinProjectsList(target, seq);
+    const projects = work.useKinProjectsList(target, seq, "open", tasksAllowed);
     useReadUpTo(projects.state, projects.list.loadMore, MAX_PROJECTS, tasksAllowed);
     const link = kinHostLink(uses.useKinHostAt(target.environmentId));
     const nowMs = uses.useNowMinuteMs();
@@ -138,24 +146,22 @@ export function makeKinCanvasHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinCanva
     if (docsAllowed && docRead.state.more && docRead.state.records.length >= KIN_CANVAS_MAX_DOCS)
       partial.push(KIN_CANVAS.partial(docRows.length, null, "docs"));
 
-    const sources = [
-      tasksAllowed
-        ? kinListShown(tasks.state, link)
-        : workState._tag === "offline" || workState._tag === "failed"
-          ? workState._tag
-          : "rows",
-      docsAllowed ? kinListShown(docRead.state, link) : "rows",
-    ];
-    const status: "refused" | "loading" | "offline" | "failed" | "ready" =
-      workState._tag === "refused" && !docsAllowed
-        ? "refused"
-        : workState._tag === "loading" || sources.includes("loading")
-          ? "loading"
-          : sources.includes("offline")
-            ? "offline"
-            : sources.includes("failed") && model.items.length === 0
-              ? "failed"
-              : "ready";
+    const taskShown = tasksAllowed
+      ? kinListShown(tasks.state, link)
+      : workState._tag === "offline" || workState._tag === "failed"
+        ? workState._tag
+        : "rows";
+    const docShown = docsAllowed ? kinListShown(docRead.state, link) : "rows";
+    const sources = [taskShown, docShown];
+    const tasksFailed = taskShown === "failed" || (tasksAllowed && tasks.state.moreFailed);
+    const docsFailed = docShown === "failed" || (docsAllowed && docRead.state.moreFailed);
+    if (tasksFailed) partial.push(KIN_CANVAS.tasksFailed);
+    if (docsFailed) partial.push(KIN_CANVAS.docsFailed);
+    const status = kinCanvasStatus({
+      refused: workState._tag === "refused" && !docsAllowed,
+      showing: model.items.length > 0,
+      sources: workState._tag === "loading" ? [...sources, "loading"] : sources,
+    });
 
     return {
       status,
@@ -165,12 +171,15 @@ export function makeKinCanvasHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinCanva
       holders,
       view,
       partial,
-      stale: tasks.state.stale || docRead.state.stale,
+      /** A source failed, so the notice offers Retry. */
+      failed: tasksFailed || docsFailed,
       setView: (next: KinCanvasTasks) => tasks.list.setFilter(tasksFilter(next)),
       retry: () => {
         if (workState._tag === "failed") registry.refresh(work.kinWorkLiveAtom(target));
-        if (tasks.state.failed !== null) tasks.list.refresh();
-        if (docRead.state.failed !== null) docRead.list.refresh();
+        if (tasks.state.seq === null && tasks.state.failed !== null) tasks.list.refresh();
+        else if (tasks.state.moreFailed) void tasks.list.loadMore();
+        if (docRead.state.seq === null && docRead.state.failed !== null) docRead.list.refresh();
+        else if (docRead.state.moreFailed) void docRead.list.loadMore();
       },
     };
   }

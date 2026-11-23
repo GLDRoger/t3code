@@ -26,10 +26,14 @@ export const KIN_CANVAS = {
   doing: "In progress",
   allOpen: "All open",
   agentWorking: "An agent is working on it now",
+  board: "Map of tasks and docs",
+  boardHint: "Drag to move around, pinch or double-tap to zoom",
   loading: "Loading the map",
   loadFailed: "Couldn't load the map",
   loadFailedDetail: "Tasks and docs didn't come through. Retry to read them again.",
   readFailed: "Couldn't load this doc",
+  tasksFailed: "Some tasks didn't load",
+  docsFailed: "Some docs didn't load",
   offlineTitle: "You're offline",
   offlineDetail: "The map comes back when the connection does.",
   refusedTitle: "The map isn't open to you here",
@@ -40,6 +44,25 @@ export const KIN_CANVAS = {
       ? `Showing the first ${shown.toLocaleString("en")} ${what}`
       : `Showing ${shown.toLocaleString("en")} of ${total.toLocaleString("en")} ${what}`,
 } as const;
+
+export type KinCanvasStatus = "refused" | "loading" | "offline" | "failed" | "ready";
+
+/**
+ * Whether the map shows or a whole-screen message does. Only a map with nothing to show waits or
+ * fails whole; one with cards keeps them while the rest loads (as after the In progress / All open
+ * switch) and its notice says what is missing.
+ */
+export function kinCanvasStatus(input: {
+  readonly refused: boolean;
+  readonly showing: boolean;
+  readonly sources: ReadonlyArray<"rows" | "loading" | "offline" | "failed">;
+}): KinCanvasStatus {
+  if (input.refused) return "refused";
+  if (input.showing) return "ready";
+  for (const status of ["loading", "offline", "failed"] as const)
+    if (input.sources.includes(status)) return status;
+  return "ready";
+}
 
 /** Most tasks and docs the map reads; past these it says where it stops. */
 export const KIN_CANVAS_MAX_TASKS = 300;

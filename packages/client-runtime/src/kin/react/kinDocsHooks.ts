@@ -100,6 +100,7 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
     seq: number | null,
     /** What the search bar already holds when the list opens. */
     text = "",
+    active = true,
   ) {
     const { environmentId, orgId } = target;
     const initial = { ...KIN_DOCS_DEFAULT_FILTER, text };
@@ -135,6 +136,7 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
         key: JSON.stringify([environmentId, orgId, text]),
         viewer: useKinViewer(app.runtime, environmentId),
       },
+      active,
     );
   }
 

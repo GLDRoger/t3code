@@ -32,6 +32,8 @@ export interface KinCanvasCardProps {
   readonly detail: KinCanvasDetail;
   /** How much larger type is drawn zoomed out, so titles stay readable. */
   readonly inv: number;
+  /** One of the few docs nearest the middle at the nearest zoom: its text is read onto the card. */
+  readonly readsText: boolean;
   readonly peeked: boolean;
   readonly onPress: (key: string) => void;
 }
@@ -84,7 +86,7 @@ export const KinCanvasCard = memo(function KinCanvasCard(props: KinCanvasCardPro
           <Text textRole="footnote" numberOfLines={2} className="mt-1.5 font-t3-medium">
             {card.title}
           </Text>
-          {detail === "near" && card.kind === "doc" ? (
+          {detail === "near" && props.readsText ? (
             <DocText target={props.target} docKey={card.key as KinRecordKey} />
           ) : (
             <>

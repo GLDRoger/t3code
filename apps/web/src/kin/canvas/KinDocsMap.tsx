@@ -1,5 +1,6 @@
 import { kinCanvasLayout } from "@t3tools/client-runtime/kin/kinCanvasLayout";
 import { kinCanvasFit } from "@t3tools/client-runtime/kin/kinCanvasCamera";
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_CANVAS, kinCanvasHeadline } from "@t3tools/client-runtime/kin/kinCanvasView";
 import type { KinRecordKey } from "@t3tools/contracts";
 import { ExternalLinkIcon, MaximizeIcon, MinusIcon, PlusIcon } from "lucide-react";
@@ -182,12 +183,17 @@ export function KinDocsMap(
                 onSized={onSized}
               />
               {data.partial.length === 0 ? null : (
-                <p
+                <div
                   role="status"
-                  className="pointer-events-none absolute start-3 bottom-3 max-w-[calc(100%-10rem)] rounded-lg border bg-popover px-2.5 py-1.5 text-muted-foreground text-xs shadow-xs/5"
+                  className="absolute start-3 bottom-3 flex max-w-[calc(100%-10rem)] items-center gap-2 rounded-lg border bg-popover px-2.5 py-1 text-muted-foreground text-xs shadow-xs/5"
                 >
-                  {data.partial.join(" · ")}
-                </p>
+                  <span className="py-0.5">{data.partial.join(" · ")}</span>
+                  {data.failed ? (
+                    <Button size="micro" variant="outline" onClick={data.retry}>
+                      {KIN_RETRY}
+                    </Button>
+                  ) : null}
+                </div>
               )}
               <div
                 className={cn(
@@ -225,6 +231,7 @@ export function KinDocsMap(
           {peek === null || wide ? null : (
             <Peek
               peek={peek}
+              title={model.cards.get(keyOfPeek(peek))?.title ?? keyOfPeek(peek)}
               wide={false}
               renderPeek={props.renderPeek}
               onPeek={show}
@@ -234,7 +241,14 @@ export function KinDocsMap(
         </div>
       </div>
       {peek === null || !wide ? null : (
-        <Peek peek={peek} wide renderPeek={props.renderPeek} onPeek={show} onOpen={props.onOpen} />
+        <Peek
+          peek={peek}
+          title={model.cards.get(keyOfPeek(peek))?.title ?? keyOfPeek(peek)}
+          wide
+          renderPeek={props.renderPeek}
+          onPeek={show}
+          onOpen={props.onOpen}
+        />
       )}
     </div>
   );
@@ -242,6 +256,7 @@ export function KinDocsMap(
 
 function Peek(props: {
   readonly peek: KinDocsMapPeek;
+  readonly title: string;
   readonly wide: boolean;
   readonly renderPeek: (
     peek: KinDocsMapPeek,
@@ -252,7 +267,7 @@ function Peek(props: {
 }) {
   return (
     <aside
-      aria-label={keyOfPeek(props.peek)}
+      aria-label={props.title}
       className={cn(
         "flex min-h-0 flex-col bg-background",
         props.wide

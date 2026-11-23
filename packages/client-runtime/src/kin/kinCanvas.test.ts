@@ -17,7 +17,7 @@ import {
   kinCanvasZoom,
 } from "./kinCanvasCamera.ts";
 import { kinCanvasLayout, kinCanvasOverlaps } from "./kinCanvasLayout.ts";
-import { kinCanvasModel } from "./kinCanvasView.ts";
+import { kinCanvasModel, kinCanvasStatus } from "./kinCanvasView.ts";
 import type { KinWorkNames } from "./kinWork.ts";
 
 const orgId = KinOrgId.make("invented-org");
@@ -214,5 +214,29 @@ describe("canvas model", () => {
     });
     expect(model.cards.size).toBe(0);
     expect(model.groups).toEqual([]);
+  });
+});
+
+describe("canvas status", () => {
+  it("keeps the cards on screen while a source reloads or fails, and blocks only with nothing to show", () => {
+    // After the In progress / All open switch the task list reloads while the docs stay.
+    expect(kinCanvasStatus({ refused: false, showing: true, sources: ["loading", "rows"] })).toBe(
+      "ready",
+    );
+    expect(kinCanvasStatus({ refused: false, showing: true, sources: ["failed", "rows"] })).toBe(
+      "ready",
+    );
+    expect(
+      kinCanvasStatus({ refused: false, showing: false, sources: ["loading", "failed"] }),
+    ).toBe("loading");
+    expect(kinCanvasStatus({ refused: false, showing: false, sources: ["rows", "failed"] })).toBe(
+      "failed",
+    );
+    expect(kinCanvasStatus({ refused: false, showing: false, sources: ["offline", "rows"] })).toBe(
+      "offline",
+    );
+    expect(kinCanvasStatus({ refused: true, showing: false, sources: ["rows", "rows"] })).toBe(
+      "refused",
+    );
   });
 });

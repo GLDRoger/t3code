@@ -10,7 +10,7 @@ import {
   kinCanvasOverlaps,
   type KinCanvasLayout,
 } from "@t3tools/client-runtime/kin/kinCanvasLayout";
-import type { KinCanvasModel } from "@t3tools/client-runtime/kin/kinCanvasView";
+import { KIN_CANVAS, type KinCanvasModel } from "@t3tools/client-runtime/kin/kinCanvasView";
 import { useState, type ReactNode } from "react";
 import { View } from "react-native";
 import {
@@ -35,6 +35,8 @@ import type { CanvasCamera } from "./useCanvasCamera";
 
 /** Past this many cards, only those near the view are mounted. */
 const CULL_FROM = 60;
+/** Docs read whole at the nearest zoom at once, nearest the middle first, as on web. */
+const NEAR_READS = 3;
 const DETAILS: ReadonlyArray<KinCanvasDetail> = ["dots", "titles", "cards", "near"];
 
 /** `kinCanvasNearScale` and `kinCanvasMaxScale` again, as worklets for the UI thread. */
@@ -114,7 +116,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
     onUpdate: (event) => {
       const s = scale.get();
       const next = Math.min(
-        KIN_CANVAS_MAX_SCALE,
+        maxScale(width.get()),
         Math.max(KIN_CANVAS_MIN_SCALE, s * event.scaleChange),
       );
       const fx = event.focalX - width.get() / 2;
@@ -164,6 +166,19 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
   const shown =
     near === null ? boxes : boxes.filter((box) => near.some((n) => kinCanvasOverlaps(box, n)));
   const groupOf = new Map(props.model.groups.map((group) => [group.key, group]));
+  const reading = new Set(
+    detail !== "near"
+      ? []
+      : shown
+          .filter((box) => props.model.cards.get(box.key)?.kind === "doc")
+          .map((box) => ({
+            key: box.key,
+            d: Math.hypot(box.x + box.w / 2 - at.x, box.y + box.h / 2 - at.y),
+          }))
+          .sort((a, b) => a.d - b.d)
+          .slice(0, NEAR_READS)
+          .map((doc) => doc.key),
+  );
 
   return (
     <View
@@ -181,8 +196,8 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
         <View
           collapsable={false}
           className="absolute inset-0"
-          accessibilityLabel="Map of tasks and docs"
-          accessibilityHint="Drag to move around, pinch or double-tap to zoom"
+          accessibilityLabel={KIN_CANVAS.board}
+          accessibilityHint={KIN_CANVAS.boardHint}
         >
           <Animated.View
             style={[
@@ -254,6 +269,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
                   card={card}
                   detail={detail}
                   inv={inv}
+                  readsText={reading.has(box.key)}
                   peeked={props.peek === box.key}
                   onPress={props.onCard}
                 />
