@@ -234,6 +234,7 @@ export const SECTIONS = {
     deal_date_passed: "deals",
     number_off: null,
     number_stale: null,
+    // A list section's own facts: each carries its `list:<id>` section, whose switch silences it.
     entry_late: null,
     entry_check: null,
     // A project's contract renewal, which needs no deal (`KIN_PROMISE_SENSES`).
