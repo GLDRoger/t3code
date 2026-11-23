@@ -3,6 +3,7 @@ import type { SectionId } from "../shell/sections.ts";
 import { MATERIAL } from "../you/projection.ts";
 import {
   KinChatError,
+  KinChatId,
   KinDay,
   KinDocumentLine,
   KinFieldValue,
@@ -56,6 +57,7 @@ import {
 } from "./reads.ts";
 import { CodingAgentCall } from "../work/keyCall.ts";
 import * as Acts from "./acts.ts";
+import { askAgent, readChat } from "./chat.ts";
 import { listPeople } from "./people.ts";
 import {
   commentMine,
@@ -303,6 +305,13 @@ const EntryState = Schema.Literals(["open", "doing", "waiting", "done"]);
 const Cursor = Schema.String.check(Schema.isMaxLength(200)).annotate({
   description: "The next value of the page before, for the page after it.",
 });
+const ChatLine = Schema.Struct({
+  seq: Schema.Int,
+  by: Schema.String,
+  at: Schema.String,
+  text: Schema.String,
+});
+
 const TasksKeyToolkit = Toolkit.make(
   Tool.make("list_people", {
     ...shared,
@@ -575,7 +584,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("write_doc", {
     ...shared,
     description:
-      'Write a new version of one section of a text doc, as the person may in their Docs editor, marked as from their coding agent: section is its heading as the doc has it ("" for the text before the first heading), text its new words. Pass the version read_doc gave: if the doc changed since, nothing is written and you are told to read it again. Every earlier version stays in its history. New docs are made by an agent in Kin.',
+      'Write a new version of one section of a text doc, as the person may in their Docs editor, marked as from their coding agent: section is its heading as the doc has it ("" for the text before the first heading), text its new words. Pass the version read_doc gave: if the doc changed since, nothing is written and you are told to read it again. Every earlier version stays in its history. New docs are made by an agent: ask_agent.',
     parameters: Schema.Struct({
       key: KinRecordKey.annotate({ description: "The doc's key, such as D-7." }),
       version: Schema.Int.annotate({ description: "The version read_doc gave." }),
@@ -809,6 +818,52 @@ const TasksKeyToolkit = Toolkit.make(
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
+  Tool.make("ask_agent", {
+    ...shared,
+    description:
+      "Send a message to one of Kin's agents (a name from list_people), as the person, in their own chat with it; it starts that agent's turn as their message would, and the chat shows it came from their coding agent. Use it for what an agent does for them: remember something, set a reminder, draft a quote or a new doc, look into something. Waits up to 45 seconds for the reply; if the agent is still working, read it later with read_chat and the chat's id. Anything the agent then wants that needs the person's Confirm becomes a card for them in Kin.",
+    parameters: Schema.Struct({
+      agent: PersonName.annotate({ description: "The agent's name, as list_people gives it." }),
+      text: KinTrimmedText.check(Schema.isMinLength(1), Schema.isMaxLength(8_000)).annotate({
+        description: "The message, in plain words.",
+      }),
+    }),
+    success: Schema.Struct({
+      chat: Schema.String,
+      sent: Schema.Int,
+      replied: Schema.Boolean,
+      reply: Schema.NullOr(ChatLine),
+      note: Schema.NullOr(Schema.String),
+      material: Schema.String,
+    }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("read_chat", {
+    ...shared,
+    description:
+      "Read the newest messages of one of the person's chats, newest last, text only: by chat id (as ask_agent gives it), or their chat with an agent by its name. A page at a time: pass before back for older messages.",
+    parameters: Schema.Struct({
+      chat: Schema.optional(KinChatId.annotate({ description: "The chat's id." })),
+      agent: Schema.optional(PersonName.annotate({ description: "An agent's name." })),
+      before: Schema.optional(
+        Schema.Int.annotate({ description: "The before value of the page after, for older ones." }),
+      ),
+    }),
+    success: Schema.Struct({
+      chat: Schema.String,
+      messages: Schema.Array(ChatLine),
+      more: Schema.Boolean,
+      before: Schema.NullOr(Schema.Int),
+      material: Schema.String,
+    }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   Tool.make("list_my_tasks", {
     ...shared,
     description:
@@ -978,7 +1033,7 @@ export const TASKS_KEY_TOOLS = Object.keys(TasksKeyToolkit.tools);
 
 /** The one standing line an outside agent reads on connecting: who it acts as, and what it can't. */
 export const TASKS_KEY_INSTRUCTIONS =
-  "Kin, as the person this key belongs to: every tool acts as them, with what they can see and do in the Kin app, and what it writes is marked as from their coding agent. Name people and agents as list_people gives them. These stay a tap in the Kin app and have no tool here: answering a card (Confirm, a choice, an approval, Post it); anything that sends money or mail out of the company or records money as paid or received; people, roles, places and invitations (Settings → Team); connections, sign-ins and coding agent keys (Settings → Connections, Settings → Profile); updates, backups and the company's settings (Settings → Company details); deleting or archiving anything. When asked for one of these, say it is a tap in Kin and where, and don't look for a tool.";
+  "Kin, as the person this key belongs to: every tool acts as them, with what they can see and do in the Kin app, and what it writes is marked as from their coding agent. Name people and agents as list_people gives them; what an agent does for the person (remember, remind, draft) goes through ask_agent. These stay a tap in the Kin app and have no tool here: answering a card (Confirm, a choice, an approval, Post it); anything that sends money or mail out of the company or records money as paid or received; people, roles, places and invitations (Settings → Team); connections, sign-ins and coding agent keys (Settings → Connections, Settings → Profile); updates, backups and the company's settings (Settings → Company details); deleting or archiving anything. When asked for one of these, say it is a tap in Kin and where, and don't look for a tool.";
 /** Listed, and callable, only for a person whose own screens open Money or Memory now. */
 const ownerWithMoney = (holder: TasksKeyHolder) =>
   Effect.zipWith(readsMoney(holder), readsMemory(holder), (money, owner) => money && owner);
@@ -1097,6 +1152,16 @@ const namesFor = Effect.fn("KinTasksKeyTools.names")(function* (holder: TasksKey
 });
 
 const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
+  ask_agent: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.askAgent")((input) =>
+      asHolder((holder) => askAgent(holder, input)),
+    ),
+  ),
+  read_chat: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.readChat")((input) =>
+      asHolder((holder) => readChat(holder, input)),
+    ),
+  ),
   create_client: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.createClient")((input) =>
       asHolder((holder) =>

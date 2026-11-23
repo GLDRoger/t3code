@@ -50,7 +50,8 @@ export const personInTurn = Effect.fn("KinDismissedHold.personInTurn")(function*
 
 /**
  * Whether a person's own words woke this turn: their message or card tap in the chat the event
- * names, not an agent-made event (`$.origin`) and not Kin's copy of group words taken private.
+ * names, not an agent-made event (`$.origin`), Kin's copy of group words taken private, or words
+ * their coding agent sent through its key.
  */
 export const personSpokeInTurn = Effect.fn("KinDismissedHold.personSpokeInTurn")(function* (
   orgId: string,
@@ -66,6 +67,7 @@ export const personSpokeInTurn = Effect.fn("KinDismissedHold.personSpokeInTurn")
       AND e.tag IN ('chat.message', 'widget.action') AND json_extract(e.json, '$.origin') IS NULL
       AND m.author_kind = 'human' AND m.author_person_id IS NOT NULL
       AND COALESCE(m.client_message_id, '') NOT LIKE 'send:private:%'
+      AND COALESCE(m.client_message_id, '') NOT LIKE 'key:%'
     LIMIT 1`;
   return rows.length > 0;
 });

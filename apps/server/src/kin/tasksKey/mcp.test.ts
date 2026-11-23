@@ -213,6 +213,8 @@ it.effect(
         read_numbers: read,
         record_number: write,
         list_waiting: read,
+        ask_agent: write,
+        read_chat: read,
       };
       // A new teammate has Clients and Docs, so Zoya's key lists their tools; she has no Money or
       // Memory and makes no projects, so it lists none of theirs.

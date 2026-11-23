@@ -670,7 +670,7 @@ export const addEntry = Effect.fn("KinTasksKeyActs.addEntry")(function* (
       error.reason === "invalid_state" && error.message.startsWith('Expected "milestones"')
         ? new KinChatError({
             reason: "not_allowed",
-            message: `Entries are added by hand only to a list shared with the team, and ${input.list.slice(0, 60)} isn't. An agent in Kin can add it, or the person does.`,
+            message: `Entries are added by hand only to a list shared with the team, and ${input.list.slice(0, 60)} isn't. Ask an agent with ask_agent, or the person adds it in Kin.`,
           })
         : error,
     ),
