@@ -756,7 +756,9 @@ const make = Effect.gen(function* () {
       const answers = asked !== undefined;
       answersAnyone ||= answers;
       const direct = chat.people && row.author_kind === "human";
-      const hold = ownerTimed ? undefined : yield* holdNow(orgId, recipient.personId);
+      // In a chat with other people each reader keeps their own quiet hours.
+      const hold =
+        ownerTimed && chat.direct ? undefined : yield* holdNow(orgId, recipient.personId);
       if (direct && hold === "quiet" && !recipient.muted) later.push(recipient.personId);
       // A brief opens at itself; a reply whose turn left a card waiting on them, at the card.
       const card = turnCards.find((one) => one.awaiting.includes(recipient.personId));
