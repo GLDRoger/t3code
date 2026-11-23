@@ -268,8 +268,7 @@ export const kinInvoiceBillsByName = (
     readonly offered: boolean;
     readonly projectClient: string | null;
   },
-) =>
-  !context.clientsOn || (context.projectClient === null && context.offered && draft.byName);
+) => !context.clientsOn || (context.projectClient === null && context.offered && draft.byName);
 
 const billToInput = (billTo: KinBillToDraft) => {
   const text = (value: string, max: number) => value.trim().slice(0, max);

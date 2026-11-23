@@ -13,6 +13,7 @@ import type {
   KinRecordKey,
 } from "@t3tools/contracts";
 
+import { kinBilledName } from "./kinBillTo.ts";
 import { kinWorkDayOfTime, kinWorkDueLabel, type KinWorkNames } from "./kinWork.ts";
 import {
   kinDraftShowsNoBalance,
@@ -333,7 +334,7 @@ export function kinInvoiceView(
     }),
     documents: documents.reverse(),
     prefix: def?.numbering?.prefix ?? null,
-    issueTotal: kinConfirmTotal(item.amount, item.party?.title),
+    issueTotal: kinConfirmTotal(item.amount, kinBilledName(item)),
     sent: (item.sent ?? []).map((mail) =>
       KIN_INVOICES.sentTo(
         mail.to.join(", "),

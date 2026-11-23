@@ -22,7 +22,12 @@ import type {
   KinWritableListFieldType,
   KinWorkPrincipal,
 } from "@t3tools/contracts";
-import { KIN_BILL_TO_NAME, kinBillToEditable, kinIsBillToField } from "./kinBillTo.ts";
+import {
+  KIN_BILL_TO_NAME,
+  kinBillToEditable,
+  kinBillToName,
+  kinIsBillToField,
+} from "./kinBillTo.ts";
 import {
   formatKinMoney,
   KIN_DEFAULT_HOME_CURRENCY,
@@ -1151,8 +1156,14 @@ export function kinListRow(
     record.balance.minor > 0 &&
     record.balance.minor < record.amount.minor;
   const owed = partPaid ? `${kinMoneyText(record.balance!)} still owed` : null;
+  // An invoice or quote with no client bills its typed name, said in the client's place.
+  const billed = record.party === undefined ? kinBillToName(record.fields) : null;
   const party =
-    record.party === undefined || record.party.key === within?.party ? null : record.party.title;
+    record.party === undefined
+      ? billed
+      : record.party.key === within?.party
+        ? null
+        : record.party.title;
   const dueLine = due === null || closed ? null : `${def?.dueLabel ?? "Due"} ${afterLabel(due)}`;
   const parts = [
     kinRecordName(record.key, record.fields?.number),
@@ -1172,7 +1183,11 @@ export function kinListRow(
       : { category: kinCategoryLabel(record.listCategory, def) }),
     ...(date === null ? {} : { date }),
     ...(due === null ? {} : { due }),
-    ...(record.party === undefined ? {} : { party: record.party.title }),
+    ...(record.party === undefined
+      ? billed === null
+        ? {}
+        : { party: billed }
+      : { party: record.party.title }),
     ...(record.amount === undefined ? {} : { amount: kinMoneyText(record.amount, true) }),
     ...(record.balance === undefined || kinDraftShowsNoBalance(record)
       ? {}
