@@ -2,10 +2,10 @@ import {
   KinChatError,
   type KinDocumentLine,
   type KinFieldValue,
+  type KinOpenRow,
   type KinRecord,
   type KinRecordKey,
   type KinRecordState,
-  type KinSignedMoney,
   type KinTouchKind,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
@@ -13,7 +13,9 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
-import { KinNumbers } from "../numbers/KinNumbers.ts";
+import { KinNumbers, normalizeDecimal } from "../numbers/KinNumbers.ts";
+import { numberFields } from "../numbers/numberRows.ts";
+import { parseFields } from "../work/lists.ts";
 import * as Open from "../open/people.ts";
 import { keyHidden } from "../work/codingAgent.ts";
 import { outlineOf } from "../work/docBody.ts";
@@ -24,18 +26,12 @@ import * as Money from "../work/ownerMoney.ts";
 import * as MoneyAnswers from "../work/ownerMoneyAnswers.ts";
 import * as Work from "../work/ownerWork.ts";
 import { workFailure } from "../work/recordRows.ts";
-import { MATERIAL } from "../you/projection.ts";
+import { companyList, moneyOf } from "../work/keyGuard.ts";
+import { listDef } from "../work/registers.ts";
+import { MATERIAL, taskSheet } from "../you/projection.ts";
 import { whoNamed } from "./people.ts";
 import { unknownKey } from "./reads.ts";
-import {
-  asPerson,
-  getMine,
-  keyed,
-  reachable,
-  reachKey,
-  requestIdOf,
-  setStateMine,
-} from "./tasks.ts";
+import { asPerson, getMine, keyed, reachable, reachKey, requestIdOf } from "./tasks.ts";
 import type { TasksKeyHolder } from "./TasksKeys.ts";
 
 /**
@@ -47,6 +43,7 @@ const ROWS = 50;
 const keyedRead = { keyed: true } as const;
 const ref = (one: { readonly key: string; readonly title: string } | null | undefined) =>
   one === null || one === undefined ? null : { key: one.key, title: one.title };
+const isString = (value: unknown): value is string => typeof value === "string";
 const day = (value: string) => ({ dueAt: value, dueAllDay: true });
 const nothingAsked = new KinChatError({
   reason: "invalid_state",
@@ -305,8 +302,7 @@ export const updateDeal = Effect.fn("KinTasksKeyActs.updateDeal")(function* (
     readonly value?: { readonly minor: number; readonly currency: string } | null | undefined;
     readonly expected?: string | null | undefined;
     readonly stage?: string | undefined;
-    readonly outcome?: "won" | "lost" | "reopen" | undefined;
-    readonly lostReason?: string | undefined;
+    readonly outcome?: "won" | "reopen" | undefined;
     readonly nextStep?: { readonly title: string; readonly due?: string | undefined } | undefined;
   },
   name: (who: KinWorkPrincipal) => string,
@@ -319,20 +315,13 @@ export const updateDeal = Effect.fn("KinTasksKeyActs.updateDeal")(function* (
     ...(input.expected === undefined ? {} : { expectedOn: input.expected }),
   };
   const move =
-    input.outcome === "lost"
-      ? { _tag: "lost" as const, reason: input.lostReason ?? "" }
-      : input.outcome === "won"
-        ? { _tag: "won" as const }
-        : input.outcome === "reopen"
-          ? { _tag: "reopen" as const }
-          : input.stage === undefined
-            ? undefined
-            : { _tag: "stage" as const, stage: input.stage };
-  if (move?._tag === "lost" && move.reason.trim() === "")
-    return yield* new KinChatError({
-      reason: "invalid_state",
-      message: "A lost deal needs lostReason: one line on why.",
-    });
+    input.outcome === "won"
+      ? { _tag: "won" as const }
+      : input.outcome === "reopen"
+        ? { _tag: "reopen" as const }
+        : input.stage === undefined
+          ? undefined
+          : { _tag: "stage" as const, stage: input.stage };
   if (Object.keys(fields).length === 0 && move === undefined && input.nextStep === undefined)
     return yield* nothingAsked;
   const rev = Effect.fn("KinTasksKeyActs.dealRev")(function* (
@@ -405,8 +394,78 @@ export const addPromise = Effect.fn("KinTasksKeyActs.addPromise")(function* (
   return yield* getMine(holder, made.key);
 });
 
-export const closePromise = (holder: TasksKeyHolder, key: KinRecordKey) =>
-  setStateMine(holder, { key, state: "done" });
+/** Only a promise: any other entry's key is not found. */
+export const closePromise = Effect.fn("KinTasksKeyActs.closePromise")(function* (
+  holder: TasksKeyHolder,
+  key: KinRecordKey,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { connection, people } = asPerson(holder, "promise");
+  return yield* Work.update(people, { orgId: holder.orgId, key, state: "done" }, connection).pipe(
+    Effect.flatMap((sheet) => taskSheet(connection, sheet)),
+    sql.withTransaction,
+    workFailure,
+  );
+});
+
+/** A list a key's entry tools don't reach reads as one that isn't there. */
+const noSuchList = (list: string) =>
+  new KinChatError({
+    reason: "not_found",
+    message: `There is no list ${list.slice(0, 40)} here. list_lists names the lists entries go on.`,
+  });
+const ownList = Effect.fn("KinTasksKeyActs.ownList")(function* (
+  holder: TasksKeyHolder,
+  list: string,
+) {
+  const def = yield* listDef(holder.orgId, list).pipe(workFailure);
+  if (def === undefined || !companyList(def.id, moneyOf(def))) return yield* noSuchList(list);
+});
+
+/**
+ * The record ids a key can't reach among an entry's field values (link fields name client,
+ * project or entry ids): left out of what it reads, refused in what it writes.
+ */
+const hiddenLinks = Effect.fn("KinTasksKeyActs.hiddenLinks")(function* (
+  holder: TasksKeyHolder,
+  fields: Readonly<Record<string, unknown>>,
+) {
+  const values = Object.values(fields).flatMap((value) =>
+    typeof value === "string" ? [value] : Array.isArray(value) ? value.filter(isString) : [],
+  );
+  return yield* keyHidden(holder.orgId, values).pipe(workFailure);
+});
+const withoutHidden = (
+  fields: Readonly<Record<string, KinFieldValue | null>>,
+  hidden: ReadonlySet<string>,
+) =>
+  Object.fromEntries(
+    Object.entries(fields).flatMap(
+      ([name, value]): ReadonlyArray<[string, KinFieldValue | null]> =>
+        typeof value === "string"
+          ? hidden.has(value)
+            ? []
+            : [[name, value]]
+          : Array.isArray(value)
+            ? [[name, value.filter((one) => !hidden.has(one))]]
+            : [[name, value]],
+    ),
+  );
+const refuseHiddenLinks = Effect.fn("KinTasksKeyActs.refuseHiddenLinks")(function* (
+  holder: TasksKeyHolder,
+  fields: Readonly<Record<string, unknown>> | undefined,
+) {
+  if (fields !== undefined && (yield* hiddenLinks(holder, fields)).size > 0)
+    return yield* unknownKey;
+});
+/** A replayed create answers with the stored entry only while the key still reaches it. */
+const stillReached = Effect.fn("KinTasksKeyActs.stillReached")(function* (
+  holder: TasksKeyHolder,
+  recordId: string,
+) {
+  if ((yield* keyHidden(holder.orgId, [recordId]).pipe(workFailure)).size > 0)
+    return yield* unknownKey;
+});
 
 // ── Docs ─────────────────────────────────────────────────────────────────────────────────────
 
@@ -527,6 +586,35 @@ export const listInvoices = Effect.fn("KinTasksKeyActs.listInvoices")(function* 
   };
 });
 
+/**
+ * Whether the key reaches the document an entry's lines are read from (`quotes.quotedInputs`):
+ * its latest made document, by the docs filed under that job's origin. A labelled job or doc is
+ * out of reach, and so are its lines.
+ */
+const documentReached = Effect.fn("KinTasksKeyActs.documentReached")(function* (
+  holder: TasksKeyHolder,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [job] = yield* sql<{ origin: string; sensitive: number }>`SELECT doc_origin AS origin,
+      sensitive FROM kin_doc_jobs
+    WHERE org_id = ${holder.orgId} AND entry_record_id = ${recordId} AND recipe IS NOT NULL
+      AND given_json IS NOT NULL AND outcome_json IS NOT NULL
+    ORDER BY created_at DESC, worker_id DESC LIMIT 1`.pipe(workFailure);
+  if (job === undefined) return true;
+  if (job.sensitive === 1) return false;
+  const docs = yield* sql<{ id: string }>`SELECT record_id AS id FROM kin_records
+    WHERE org_id = ${holder.orgId} AND register_id = 'docs'
+      AND substr(origin_key, 1, ${job.origin.length + 1}) = ${`${job.origin}:`}
+    ORDER BY record_id`.pipe(workFailure);
+  return (
+    (yield* keyHidden(
+      holder.orgId,
+      docs.map((doc) => doc.id),
+    ).pipe(workFailure)).size === 0
+  );
+});
+
 export const openInvoice = Effect.fn("KinTasksKeyActs.openInvoice")(function* (
   holder: TasksKeyHolder,
   key: KinRecordKey,
@@ -536,7 +624,10 @@ export const openInvoice = Effect.fn("KinTasksKeyActs.openInvoice")(function* (
     Effect.gen(function* () {
       const entry = yield* Work.get(people, { orgId: holder.orgId, key });
       if (entry.list !== "invoices") return yield* unknownKey;
-      const { lines } = yield* MoneyAnswers.entryLines(people, { orgId: holder.orgId, key });
+      // Its lines come from its latest document: shown only when the key reaches that doc.
+      const lines = (yield* documentReached(holder, entry.recordId))
+        ? (yield* MoneyAnswers.entryLines(people, { orgId: holder.orgId, key })).lines
+        : null;
       return { ...moneyRow(entry), notes: entry.notes, lines, material: MATERIAL };
     }),
   );
@@ -570,34 +661,15 @@ export const draftInvoice = Effect.fn("KinTasksKeyActs.draftInvoice")(function* 
       ...request,
     }),
   );
-  return { key: made.invoice, problems: made.problems };
-});
-
-export const recordExpense = Effect.fn("KinTasksKeyActs.recordExpense")(function* (
-  holder: TasksKeyHolder,
-  input: {
-    readonly title: string;
-    readonly amount: KinSignedMoney;
-    readonly day: string;
-    readonly vendor?: string | undefined;
-    readonly category?: string | undefined;
-  },
-) {
-  const request = {
-    title: input.title,
-    amount: input.amount,
-    paidOn: input.day,
-    ...(input.vendor === undefined ? {} : { vendor: input.vendor }),
-    ...(input.category === undefined ? {} : { category: input.category }),
-  };
-  const made = yield* keyed(holder, (people) =>
-    MoneyAnswers.newExpense(people, {
-      orgId: holder.orgId,
-      clientRequestId: requestIdOf(holder, "expense", request),
-      ...request,
-    }),
+  const [stored] = yield* SqlClient.SqlClient.pipe(
+    Effect.flatMap(
+      (sql) => sql<{ id: string }>`SELECT record_id AS id FROM kin_records
+      WHERE org_id = ${holder.orgId} AND key = ${made.invoice}`,
+    ),
+    workFailure,
   );
-  return { key: made.expense };
+  if (stored !== undefined) yield* stillReached(holder, stored.id);
+  return { key: made.invoice, problems: made.problems };
 });
 
 // ── The company's own lists ──────────────────────────────────────────────────────────────────
@@ -606,7 +678,9 @@ export const listLists = Effect.fn("KinTasksKeyActs.listLists")(function* (holde
   const found = yield* keyed(holder, (people) => Money.lists(people, { orgId: holder.orgId }));
   return {
     lists: found.lists
-      .filter((one) => !one.builtIn)
+      .filter((one) =>
+        companyList(one.list, { paidOverTime: one.payments === true, carriesAmount: one.amount }),
+      )
       .map((one) => ({
         list: one.list,
         name: one.name,
@@ -632,11 +706,16 @@ export const listEntries = Effect.fn("KinTasksKeyActs.listEntries")(function* (
     readonly cursor?: string | undefined;
   },
 ) {
+  yield* ownList(holder, input.list);
   const page = yield* listPage(holder, input);
+  const hidden = yield* hiddenLinks(
+    holder,
+    Object.assign({}, ...page.records.map((one) => one.fields ?? {})),
+  );
   return {
     entries: page.records.map((one) => ({
       ...moneyRow(one),
-      fields: one.fields ?? {},
+      fields: withoutHidden(one.fields ?? {}, hidden),
     })),
     more: page.next !== null,
     next: page.next,
@@ -653,7 +732,9 @@ export const addEntry = Effect.fn("KinTasksKeyActs.addEntry")(function* (
     readonly fields?: FieldValues | undefined;
   },
 ) {
-  const { connection, people } = asPerson(holder);
+  yield* ownList(holder, input.list);
+  yield* refuseHiddenLinks(holder, input.fields);
+  const { connection, people } = asPerson(holder, "entry");
   const request = {
     list: input.list,
     title: input.title,
@@ -675,6 +756,7 @@ export const addEntry = Effect.fn("KinTasksKeyActs.addEntry")(function* (
         : error,
     ),
   );
+  yield* stillReached(holder, made.recordId);
   return { key: made.key, title: made.title, state: made.state, fields: made.fields ?? {} };
 });
 
@@ -687,9 +769,10 @@ export const updateEntry = Effect.fn("KinTasksKeyActs.updateEntry")(function* (
     readonly fields?: FieldValues | undefined;
   },
 ) {
-  const { connection, people } = asPerson(holder);
+  const { connection, people } = asPerson(holder, "entry");
   const { key, ...patch } = input;
   if (Object.values(patch).every((value) => value === undefined)) return yield* nothingAsked;
+  yield* refuseHiddenLinks(holder, input.fields);
   const changed = yield* Work.update(
     people,
     { orgId: holder.orgId, key, ...patch },
@@ -699,11 +782,32 @@ export const updateEntry = Effect.fn("KinTasksKeyActs.updateEntry")(function* (
     key: changed.key,
     title: changed.title,
     state: changed.state,
-    fields: changed.fields ?? {},
+    fields: withoutHidden(changed.fields ?? {}, yield* hiddenLinks(holder, changed.fields ?? {})),
   };
 });
 
 // ── Numbers ──────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The numbers Kin works out from its own records (`kind` computed): figures over entries a key may
+ * not reach, so a key reads their names only.
+ */
+const computedNumbers = Effect.fn("KinTasksKeyActs.computedNumbers")(function* (
+  holder: TasksKeyHolder,
+  keys: ReadonlyArray<string>,
+) {
+  if (keys.length === 0) return new Set<string>();
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ key: string; fields: string }>`SELECT key, fields_json AS fields
+    FROM kin_records WHERE org_id = ${holder.orgId} AND register_id = 'goals'
+      AND key IN ${sql.in(keys)}
+    ORDER BY key`.pipe(workFailure);
+  return new Set(
+    rows
+      .filter((row) => numberFields(parseFields(row.fields))?.kind === "computed")
+      .map((row) => row.key),
+  );
+});
 
 export const readNumbers = Effect.fn("KinTasksKeyActs.readNumbers")(function* (
   holder: TasksKeyHolder,
@@ -717,20 +821,43 @@ export const readNumbers = Effect.fn("KinTasksKeyActs.readNumbers")(function* (
   const me = personOf(holder);
   if (input.number === undefined) {
     const listed = yield* keyed(holder, () => numbers.list(me));
+    const computed = yield* computedNumbers(
+      holder,
+      listed.numbers.map((one) => one.key),
+    );
     return {
-      numbers: listed.numbers.map((one) => ({
-        key: one.key,
-        name: one.name,
-        unit: one.unit ?? null,
-        value: one.value,
-        asOf: one.asOf,
-        late: one.stale,
-        canRecord: one.canType,
-      })),
+      numbers: listed.numbers.map((one) =>
+        computed.has(one.key)
+          ? {
+              key: one.key,
+              name: one.name,
+              unit: one.unit ?? null,
+              computed: true,
+              value: null,
+              asOf: null,
+              late: false,
+              canRecord: false,
+            }
+          : {
+              key: one.key,
+              name: one.name,
+              unit: one.unit ?? null,
+              computed: false,
+              value: one.value,
+              asOf: one.asOf,
+              late: one.stale,
+              canRecord: one.canType,
+            },
+      ),
       values: null,
     };
   }
   const number = input.number;
+  if ((yield* computedNumbers(holder, [number])).size > 0)
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: `${number} is a number Kin works out from its own records: read it in Kin.`,
+    });
   const read = yield* keyed(holder, () =>
     numbers.values(me, number, input.from ?? "0001-01-01", input.to ?? "9999-12-31"),
   );
@@ -745,7 +872,8 @@ export const recordNumber = Effect.fn("KinTasksKeyActs.recordNumber")(function* 
   input: { readonly number: KinRecordKey; readonly value: string; readonly day: string },
 ) {
   const numbers = yield* KinNumbers;
-  const value = { number: input.number, value: input.value, asOf: input.day };
+  // The same value however it is spelt ("9", "9.0") is the same request.
+  const value = { number: input.number, value: normalizeDecimal(input.value), asOf: input.day };
   const done = yield* keyed(holder, () =>
     numbers.record(personOf(holder), [value], requestIdOf(holder, "number", value)),
   );
@@ -754,8 +882,10 @@ export const recordNumber = Effect.fn("KinTasksKeyActs.recordNumber")(function* 
 
 // ── What waits on the person ─────────────────────────────────────────────────────────────────
 
+/** A record key as text names one (INV-4, W-12). */
+const KEY_WORDS = /\b[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}\b/g;
 type WaitingRow = {
-  readonly what: "task" | "card" | "money" | "news";
+  readonly what: "task" | "card" | "news";
   readonly key: string | null;
   readonly text: string;
   readonly late: boolean;
@@ -763,6 +893,51 @@ type WaitingRow = {
 };
 const IN_KIN = "The person answers it in Kin; no tool here answers a card.";
 const ON_A_TASK = "A task: get_task, update_task and set_task_state work on it by its key.";
+/**
+ * Needs you's rows as a key reads them: none about an entry it can't reach (`withheld`, and each
+ * card's subject in `about`), and no money aggregate, which is money_summary's.
+ */
+export const waitingRows = (
+  rows: ReadonlyArray<KinOpenRow>,
+  withheld: ReadonlySet<string>,
+  about: ReadonlyMap<string, ReadonlyArray<string>>,
+) =>
+  rows.flatMap((row): ReadonlyArray<WaitingRow> => {
+    const { item } = row;
+    const key =
+      item._tag === "task"
+        ? item.key
+        : item._tag === "fact" && item.fact.subject.kind === "record"
+          ? item.fact.subject.key
+          : null;
+    if (key !== null && withheld.has(key)) return [];
+    if (item._tag === "task")
+      return [{ what: "task", key, text: item.title, late: row.late, answer: ON_A_TASK }];
+    if (item._tag === "waiting")
+      return (about.get(item.waiting.waitingId) ?? []).some((one) => withheld.has(one))
+        ? []
+        : [
+            {
+              what: "card",
+              key: null,
+              text: item.waiting.question ?? "A card waits for the person's answer.",
+              late: row.late,
+              answer: IN_KIN,
+            },
+          ];
+    // Overdue money is money_summary's, which leaves out what a key never carries.
+    if (item._tag === "money") return [];
+    return [
+      {
+        what: "news",
+        key,
+        text: item.fact.subject.title,
+        late: row.late,
+        answer: null,
+      },
+    ];
+  });
+
 export const listWaiting = Effect.fn("KinTasksKeyActs.listWaiting")(function* (
   holder: TasksKeyHolder,
 ) {
@@ -770,13 +945,32 @@ export const listWaiting = Effect.fn("KinTasksKeyActs.listWaiting")(function* (
   const open = yield* keyed(holder, (people) =>
     Open.read(people, { orgId: holder.orgId, acceptSenses: undefined }),
   );
-  const keys = open.rows.flatMap((row) =>
-    row.item._tag === "task"
-      ? [row.item.key]
-      : row.item._tag === "fact" && row.item.fact.subject.kind === "record"
-        ? [row.item.fact.subject.key]
-        : [],
-  );
+  // A card's subject: the entries its question is about, and any key its words name.
+  const cards = open.rows.flatMap((row) => (row.item._tag === "waiting" ? [row.item.waiting] : []));
+  const about = new Map<string, ReadonlyArray<string>>();
+  for (const card of cards) {
+    const [asked] =
+      card.widgetId === null
+        ? []
+        : yield* sql<{ about: string }>`SELECT about FROM kin_questions
+            WHERE org_id = ${holder.orgId}
+              AND (widget_id = ${card.widgetId} OR raise_widget_id = ${card.widgetId})
+            ORDER BY question_id LIMIT 1`.pipe(workFailure);
+    about.set(card.waitingId, [
+      ...(asked === undefined || asked.about === "" ? [] : asked.about.split(" ")),
+      ...((card.question ?? "").match(KEY_WORDS) ?? []),
+    ]);
+  }
+  const keys = [
+    ...open.rows.flatMap((row) =>
+      row.item._tag === "task"
+        ? [row.item.key]
+        : row.item._tag === "fact" && row.item.fact.subject.kind === "record"
+          ? [row.item.fact.subject.key]
+          : [],
+    ),
+    ...[...about.values()].flat(),
+  ];
   const found =
     keys.length === 0
       ? []
@@ -787,48 +981,5 @@ export const listWaiting = Effect.fn("KinTasksKeyActs.listWaiting")(function* (
     found.map((row) => row.id),
   ).pipe(workFailure);
   const withheld = new Set(found.filter((row) => hidden.has(row.id)).map((row) => row.key));
-  return {
-    waiting: open.rows.flatMap((row): ReadonlyArray<WaitingRow> => {
-      const { item } = row;
-      const key =
-        item._tag === "task"
-          ? item.key
-          : item._tag === "fact" && item.fact.subject.kind === "record"
-            ? item.fact.subject.key
-            : null;
-      if (key !== null && withheld.has(key)) return [];
-      if (item._tag === "task")
-        return [{ what: "task", key, text: item.title, late: row.late, answer: ON_A_TASK }];
-      if (item._tag === "waiting")
-        return [
-          {
-            what: "card",
-            key: null,
-            text: item.waiting.question ?? "A card waits for the person's answer.",
-            late: row.late,
-            answer: IN_KIN,
-          },
-        ];
-      if (item._tag === "money")
-        return [
-          {
-            what: "money",
-            key: null,
-            text: `${item.invoices} overdue ${item.invoices === 1 ? "invoice" : "invoices"}`,
-            late: row.late,
-            answer: null,
-          },
-        ];
-      return [
-        {
-          what: "news",
-          key,
-          text: item.fact.subject.title,
-          late: row.late,
-          answer: null,
-        },
-      ];
-    }),
-    material: MATERIAL,
-  };
+  return { waiting: waitingRows(open.rows, withheld, about), material: MATERIAL };
 });

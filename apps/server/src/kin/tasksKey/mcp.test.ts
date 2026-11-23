@@ -1,6 +1,7 @@
 import * as KinShell from "../shell/KinShell.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { assert, it } from "@effect/vitest";
+import { Tool } from "effect/ai";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -214,7 +215,6 @@ it.effect(
         record_number: write,
         list_waiting: read,
         ask_agent: write,
-        read_chat: read,
       };
       // A new teammate has Clients and Docs, so Zoya's key lists their tools; she has no Money or
       // Memory and makes no projects, so it lists none of theirs.
@@ -239,7 +239,6 @@ it.effect(
         list_invoices: read,
         open_invoice: read,
         draft_invoice: write,
-        record_expense: write,
         money_summary: read,
         search_memory: read,
       });
@@ -265,25 +264,26 @@ it.effect(
       assert.notProperty(ownerTools, "money_summary");
       assert.notProperty(ownerTools, "open_project");
       assert.notProperty(ownerTools, "open_client");
-      for (const name of ["create_project", "create_client", "list_invoices", "record_expense"])
+      for (const name of ["create_project", "create_client", "list_invoices"])
         assert.notProperty(ownerTools, name);
       assert.property(ownerTools, "find");
+      // Called anyway, a tool of a section that is off answers as one that isn't there.
       const calls = [
-        ["money_summary", {}, "Money"],
-        ["open_client", { key: "C-3" }, "Clients"],
-        ["open_project", { key: "P-3" }, "Clients"],
-        ["create_project", { title: "Invented" }, "Clients"],
-        ["create_client", { name: "Invented" }, "Clients"],
-        ["list_invoices", {}, "Invoices and quotes"],
+        ["money_summary", {}],
+        ["open_client", { key: "C-3" }],
+        ["open_project", { key: "P-3" }],
+        ["create_project", { title: "Invented" }],
+        ["create_client", { name: "Invented" }],
+        ["list_invoices", {}],
       ] as const;
-      for (const [name, args, label] of calls) {
+      const ownerCall = Effect.fn("test.ownerCall")(function* (name: string, args: object) {
         const started = yield* call({
           token: owners.secret,
           method: "initialize",
           params: initialize,
         });
         const session = started.headers["mcp-session-id"];
-        const body = yield* text(
+        return yield* text(
           yield* call({
             token: owners.secret,
             method: "tools/call",
@@ -291,8 +291,13 @@ it.effect(
             ...(session === undefined ? {} : { session }),
           }),
         );
-        assert.include(body, `${label} is turned off for this company.`);
-      }
+      });
+      const notThere = yield* ownerCall("no_such_tool", {});
+      for (const [name, args] of calls)
+        assert.strictEqual(
+          (yield* ownerCall(name, args)).replaceAll(name, "no_such_tool"),
+          notThere,
+        );
       const started = yield* call({
         token: owners.secret,
         method: "initialize",
@@ -325,14 +330,6 @@ it.effect(
         ["search_memory", { text: "kiln" }],
         ["create_project", { title: "Invented: kiln" }],
         ["list_invoices", {}],
-        [
-          "record_expense",
-          {
-            title: "Invented: kiln",
-            amount: { minor: 100, currency: "INR" },
-            day: "2026-11-02",
-          },
-        ],
       ] as const) {
         const refused = yield* text(
           yield* call({
@@ -454,20 +451,17 @@ it.effect(
     }).pipe(Effect.scoped, Effect.provide(layer)),
 );
 
-it("what stays a tap in Kin has no tool behind a key, and the connecting agent is told so", () => {
-  // Each group the app keeps to a person's own tap, by the words a tool for it would be named with.
-  const stays = {
-    cards: ["confirm", "approve", "reject", "answer", "choose", "choice", "decline", "post"],
-    moneyOrMailOut: ["send", "mail", "email", "pay", "paid", "payment", "issue", "receipt"],
-    people: ["invite", "role", "access", "places", "switch", "remove_person", "person"],
-    connections: ["connect", "sign_in", "signin", "github", "social", "key"],
-    host: ["backup", "update_host", "host", "settings", "section", "shell"],
-    deleteOrArchive: ["delete", "archive", "remove", "drop", "void", "forget", "clear"],
-  };
-  for (const [group, words] of Object.entries(stays))
-    for (const tool of KinTasksKeyMcp.TASKS_KEY_TOOLS)
-      for (const word of words)
-        assert.notInclude(tool.split("_").concat(tool), word, `${tool} reaches ${group}`);
-  for (const place of ["a card", "money or mail out", "Settings → Team", "deleting or archiving"])
+it("the connecting agent is told what stays a tap in Kin, and no tool offers to mark a deal lost", () => {
+  // The six groups are tried through a key in reach.test.ts; this is the one line that says so.
+  for (const place of [
+    "a card",
+    "money or mail out",
+    "Settings → Team",
+    "deleting or archiving",
+    "ask_agent",
+  ])
     assert.include(KinTasksKeyMcp.TASKS_KEY_INSTRUCTIONS, place);
+  const updateDeal = KinTasksKeyMcp.TasksKeyToolkit.tools.update_deal;
+  assert.notInclude(JSON.stringify(Tool.getJsonSchema(updateDeal)), '"lost"');
+  assert.include(Tool.getDescription(updateDeal) ?? "", "Marking a deal lost is done in Kin.");
 });

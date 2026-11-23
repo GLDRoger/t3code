@@ -517,6 +517,12 @@ it.effect(
         next: { title: "Invented: send the quote", due: "2026-12-02" },
       });
       assert.strictEqual(yield* count("Invented: send the quote"), 1);
+      // Its history shows it came through her coding agent.
+      const logged = yield* Clients.party([{ _tag: "person", orgId, personId: rhea.personId }], {
+        orgId,
+        key: lantern,
+      });
+      assert.strictEqual(logged.touches?.[0]?.who, "Rhea (coding agent)");
 
       // A deal on it, then moved on; and a promise to them, kept.
       const name = (who: KinWorkPrincipal) => (who._tag === "person" ? who.personId : who.agentId);
@@ -572,8 +578,9 @@ it.effect(
         ),
         "conflict",
       );
-      const versions = yield* sql<{ body: string }>`SELECT body FROM kin_doc_versions
-        WHERE record_id = ${doc.row.recordId} ORDER BY version`;
+      const versions = yield* sql<{ body: string; summary: string }>`SELECT body, summary
+        FROM kin_doc_versions WHERE record_id = ${doc.row.recordId} ORDER BY version`;
+      assert.strictEqual(versions.at(-1)?.summary, 'Changed "Prices" through their coding agent');
       assert.deepStrictEqual(
         versions.map((one) => one.body.includes("Tea 10")),
         [true, false],
@@ -626,15 +633,10 @@ it.effect(
       );
       assert.isTrue((yield* marks(added.key)).every((viaKey) => viaKey === rheaKey.sessionId));
 
-      // What Zoya's screens refuse, her key is refused: money drafts, and a client labelled private.
+      // What Zoya's screens refuse, her key is refused: making a project, and a client labelled
+      // private.
       assert.strictEqual(
-        yield* reason(
-          Acts.recordExpense(zoyaKey, {
-            title: "Invented: taxi",
-            amount: { minor: 500, currency: "INR" },
-            day: "2026-11-02",
-          }),
-        ),
+        yield* reason(createProject(zoyaKey, { title: "Invented: taxi" })),
         "not_allowed",
       );
       yield* records.update(orgId, writerFor(rhea.personId), lantern, { sensitive: true });

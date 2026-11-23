@@ -142,6 +142,7 @@ import {
 import { contactFields } from "./contactDetails.ts";
 import { directionOf, findBankList } from "./statements/bankList.ts";
 import { markedKey } from "./keyCall.ts";
+import { keyRefusal, moneyOf } from "./keyGuard.ts";
 import { cleanTags } from "./tags.ts";
 import { notAVendor } from "./vendorName.ts";
 import {
@@ -229,12 +230,6 @@ export type Writer = {
     readonly tappedBy?: KinPersonId;
   };
 };
-/** Deleting or archiving stays a person's own tap in the app: no coding agent's key does it. */
-const KEY_KEEPS = new KinChatError({
-  reason: "not_allowed",
-  message: "Deleting or archiving stays a tap in Kin: the person does it there.",
-});
-
 /** What an agent on a task hears when it tries what only its holder, or a person's word, may do. */
 export const ALSO_ON_UNASKED =
   "Who is on a task changes only when a person asks for it in this turn. Nothing was saved: ask them.";
@@ -1619,6 +1614,12 @@ const make = Effect.gen(function* () {
         AND ${seenBy === undefined ? sql`1 = 1` : crmSees(sql, seenBy)}
       ORDER BY +r.key LIMIT 1`;
     if (row !== undefined) {
+      // Through a coding agent's key, one it can't reach is named by nothing.
+      if (row.sensitive === 1 && (yield* markedKey({})) !== undefined)
+        return yield* new KinChatError({
+          reason: "conflict",
+          message: "Another entry already has that name.",
+        });
       const error = {
         reason: "conflict" as const,
         message: `There is already ${withArticle(LISTS[list].noun)} named ${title.slice(0, 80)}: ${row.key}.`,
@@ -1852,6 +1853,15 @@ const make = Effect.gen(function* () {
                 ? yield* ownerZone(orgId).pipe(provideSql)
                 : "UTC",
           }));
+    if ((yield* markedKey(writer)) !== undefined) {
+      const refused = keyRefusal({
+        list,
+        money: moneyOf(def),
+        state,
+        numbered: "number" in fields,
+      });
+      if (refused !== undefined) return yield* refused;
+    }
     const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
     const givenAway =
       !(writer.actor._tag === "agent" && samePrincipal(writer.actor, input.owner)) &&
@@ -2261,8 +2271,28 @@ const make = Effect.gen(function* () {
                 ...given,
                 fields: yield* cleanTags(orgId, row.registerId, given.fields).pipe(provideSql),
               };
-        if (patch.state === "dropped" && (yield* markedKey(writer)) !== undefined)
-          return yield* KEY_KEEPS;
+        if ((yield* markedKey(writer)) !== undefined) {
+          const stored = parseFields(row.fieldsJson);
+          const listed = yield* listDef(orgId, row.registerId).pipe(provideSql);
+          const refused = keyRefusal({
+            list: row.registerId,
+            money:
+              listed === undefined
+                ? { paidOverTime: row.takesPayments === 1, carriesAmount: false }
+                : moneyOf(listed),
+            state: patch.state ?? row.state,
+            numbered: "number" in stored || patch.fields?.number != null,
+            before: { state: row.state, numbered: "number" in stored },
+            touches: Object.entries(patch).flatMap(([field, value]) =>
+              value === undefined
+                ? []
+                : field === "fields" && value !== null && typeof value === "object"
+                  ? Object.keys(value)
+                  : [field],
+            ),
+          });
+          if (refused !== undefined) return yield* refused;
+        }
         const write = {
           row,
           changes: true,
@@ -2622,10 +2652,22 @@ const make = Effect.gen(function* () {
           isClosed(state) &&
           !isClosed(row.state)
         ) {
-          const open = yield* sql<{ key: string }>`SELECT key FROM kin_records
-            WHERE org_id = ${orgId} AND (party_id = ${row.recordId} OR project_id = ${row.recordId})
-              AND register_id IN ('work', 'projects') AND state NOT IN ${sql.in(CLOSED)}
-            ORDER BY created_at, key`;
+          const open = yield* sql<{ key: string; withheld: number }>`SELECT r.key,
+              ${keyWithheld(sql)} AS withheld FROM kin_records r
+            WHERE r.org_id = ${orgId}
+              AND (r.party_id = ${row.recordId} OR r.project_id = ${row.recordId})
+              AND r.register_id IN ('work', 'projects') AND r.state NOT IN ${sql.in(CLOSED)}
+            ORDER BY r.created_at, r.key`;
+          // Through a coding agent's key, what it can't reach is not named or counted.
+          if (open.length > 0 && (yield* markedKey(writer)) !== undefined) {
+            const shown = open.filter((one) => one.withheld !== 1).map((one) => one.key);
+            return yield* new KinChatError({
+              reason: "invalid_state",
+              message: `${row.key} still has open entries pointing at it${
+                shown.length === 0 ? "" : `: ${shown.slice(0, OPEN_KEYS_NAMED).join(", ")}`
+              }${shown.length < open.length ? ", and open entries you cannot see here" : ""}. Close or move them first.`,
+            });
+          }
           if (open.length > 0) {
             const named = open.slice(0, OPEN_KEYS_NAMED).map((one) => one.key);
             const more = open.length - named.length;

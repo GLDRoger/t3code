@@ -42,6 +42,7 @@ import {
   connectionEnded,
   connectionLive,
   connectionReaches,
+  keyHidden,
 } from "./codingAgent.ts";
 import { summaryGroups } from "./crm.ts";
 import {
@@ -186,18 +187,37 @@ export const connectionViewer = Effect.fn("KinWork.connectionViewer")(function* 
  * A write as the viewer's screen makes it; through a coding agent's connection, the key's checks
  * and the write in one transaction.
  */
-const keyedWrite = Effect.fn("KinWork.keyedWrite")(function* <A, R>(
+export const keyedWrite = Effect.fn("KinWork.keyedWrite")(function* <A, R>(
   viewer: Viewer,
   connection: CodingAgentConnection | undefined,
-  write: Effect.Effect<A, KinChatError, R>,
+  write: (viewer: Viewer) => Effect.Effect<A, KinChatError, R>,
 ) {
-  if (connection === undefined) return yield* asViewer(viewer, write);
+  if (connection === undefined) return yield* asViewer(viewer, write(viewer));
   const sql = yield* SqlClient.SqlClient;
+  // The person as they are now, read in the write's own transaction: the write is theirs as such.
   return yield* connectionViewer([viewer.person], connection, connection.orgId).pipe(
-    Effect.andThen(write),
+    Effect.tap(() => connectionNames(connection)),
+    Effect.flatMap(write),
     sql.withTransaction,
     workFailure,
   );
+});
+/** In the write's transaction: every entry the call names is one the key reaches now. */
+const connectionNames = Effect.fn("KinWork.connectionNames")(function* (
+  connection: CodingAgentConnection,
+) {
+  const named = connection.names ?? [];
+  if (named.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ id: string; key: string }>`SELECT record_id AS id, key
+    FROM kin_records WHERE org_id = ${connection.orgId} AND key IN ${sql.in(named)}
+    ORDER BY key`.pipe(workFailure);
+  const hidden = yield* keyHidden(
+    connection.orgId,
+    rows.map((row) => row.id),
+  ).pipe(workFailure);
+  const out = rows.find((row) => hidden.has(row.id));
+  if (out !== undefined) return yield* notFound(out.key);
 });
 /** A coding agent's call: its checks and its work in one transaction. */
 const throughConnection = Effect.fn("KinWork.throughConnection")(function* <A, R>(
@@ -1047,7 +1067,7 @@ export const create = Effect.fn("KinWork.create")(function* (
     });
   // Before anything about the task is read, so its outcome turns on the agent alone.
   if (viewer.teammate) yield* teamAgent(person, owner);
-  const write = Effect.gen(function* () {
+  const write = Effect.fn("KinWork.createWrite")(function* (viewer: Viewer) {
     if (custom !== undefined && !(yield* teamLists(input.orgId).pipe(workFailure)).has(custom)) {
       if ((yield* listDef(input.orgId, custom).pipe(workFailure))?.team === true)
         return yield* TEAM_REFUSED;
@@ -1105,7 +1125,7 @@ export const create = Effect.fn("KinWork.create")(function* (
   });
   const { row, shown } = yield* custom === undefined || connection !== undefined
     ? keyedWrite(viewer, connection, write)
-    : (yield* SqlClient.SqlClient).withTransaction(write).pipe(workFailure);
+    : (yield* SqlClient.SqlClient).withTransaction(write(viewer)).pipe(workFailure);
   yield* tellMoved(person, undefined, row);
   return shown;
 });
@@ -1258,16 +1278,11 @@ export const handOver = Effect.fn("KinWork.handOver")(function* (
  * With a coding agent's connection, only a task its key reaches, as the person's screen may change
  * it; the change is marked with the key.
  */
-export const update = Effect.fn("KinWork.update")(function* (
-  people: ReadonlyArray<PersonIdentity>,
-  // A coding agent changes a task without a revision, as its key always has.
-  input: Omit<KinWorkUpdateInput, "rev"> & { readonly rev?: number },
-  connection?: CodingAgentConnection,
+/** The change a person's Work screen asks for, as the repository takes it. */
+const patchOf = Effect.fn("KinWork.patchOf")(function* (
+  viewer: Viewer,
+  input: Omit<KinWorkUpdateInput, "rev">,
 ) {
-  const viewer = yield* viewerOf(people, input.orgId);
-  const { person } = viewer;
-  // The rest of a teammate's patch is `teamGuard`'s: a project's lead may set more inside it.
-  if (viewer.teammate && input.listCategory !== undefined) return yield* TEAM_REFUSED;
   const due: Patch =
     input.dueAt === undefined
       ? input.dueAllDay === undefined
@@ -1281,6 +1296,52 @@ export const update = Effect.fn("KinWork.update")(function* (
           };
   const partyId = yield* refId(viewer, input.orgId, input.party, "clients");
   const projectId = yield* refId(viewer, input.orgId, input.project, "projects");
+  const patch: Patch = {
+    ...(input.listCategory === undefined ? {} : { category: input.listCategory }),
+    ...(input.fields === undefined ? {} : { fields: input.fields }),
+    ...(input.title === undefined ? {} : { title: input.title }),
+    ...(input.notes === undefined ? {} : { notes: input.notes }),
+    ...(input.state === undefined ? {} : { state: input.state }),
+    ...(input.waitingOn === undefined ? {} : { waitingOn: input.waitingOn }),
+    ...(input.category === undefined ? {} : { category: input.category }),
+    ...(partyId === undefined ? {} : { partyId }),
+    ...(projectId === undefined ? {} : { projectId }),
+    ...(input.side === undefined ? {} : { side: input.side }),
+    ...(input.repo === undefined ? {} : { repo: input.repo }),
+    ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
+    ...(input.amount === undefined ? {} : { amount: input.amount }),
+    ...(input.amountConfirmed === false ? { askSlip: true } : {}),
+    ...(input.repeat === undefined ? {} : { repeat: input.repeat }),
+    ...(input.steps === undefined ? {} : { steps: input.steps }),
+    ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
+    ...(input.alsoOn === undefined
+      ? {}
+      : { fields: { ...input.fields, alsoOn: input.alsoOn.map(principalText) } }),
+    ...due,
+    ...(input.dateAt === undefined
+      ? input.dateAllDay === undefined
+        ? {}
+        : { dateAllDay: input.dateAllDay }
+      : input.dateAt === null
+        ? { dateAt: null, dateAllDay: false }
+        : {
+            dateAt: yield* dueMillis(input.orgId, input.dateAt, input.dateAllDay),
+            dateAllDay: input.dateAllDay === true,
+          }),
+  };
+  return patch;
+});
+
+export const update = Effect.fn("KinWork.update")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  // A coding agent changes a task without a revision, as its key always has.
+  input: Omit<KinWorkUpdateInput, "rev"> & { readonly rev?: number },
+  connection?: CodingAgentConnection,
+) {
+  const viewer = yield* viewerOf(people, input.orgId);
+  const { person } = viewer;
+  // The rest of a teammate's patch is `teamGuard`'s: a project's lead may set more inside it.
+  if (viewer.teammate && input.listCategory !== undefined) return yield* TEAM_REFUSED;
   // A teammate's task is read only inside the write, so an earlier read decides nothing.
   const row = viewer.teammate ? undefined : yield* inList(input.orgId, input.key, "work");
   const defined = row !== undefined && !isBuiltIn(row.registerId);
@@ -1298,39 +1359,7 @@ export const update = Effect.fn("KinWork.update")(function* (
     viewer,
     input.orgId,
     input.key,
-    {
-      ...(input.listCategory === undefined ? {} : { category: input.listCategory }),
-      ...(input.fields === undefined ? {} : { fields: input.fields }),
-      ...(input.title === undefined ? {} : { title: input.title }),
-      ...(input.notes === undefined ? {} : { notes: input.notes }),
-      ...(input.state === undefined ? {} : { state: input.state }),
-      ...(input.waitingOn === undefined ? {} : { waitingOn: input.waitingOn }),
-      ...(input.category === undefined ? {} : { category: input.category }),
-      ...(partyId === undefined ? {} : { partyId }),
-      ...(projectId === undefined ? {} : { projectId }),
-      ...(input.side === undefined ? {} : { side: input.side }),
-      ...(input.repo === undefined ? {} : { repo: input.repo }),
-      ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
-      ...(input.amount === undefined ? {} : { amount: input.amount }),
-      ...(input.amountConfirmed === false ? { askSlip: true } : {}),
-      ...(input.repeat === undefined ? {} : { repeat: input.repeat }),
-      ...(input.steps === undefined ? {} : { steps: input.steps }),
-      ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
-      ...(input.alsoOn === undefined
-        ? {}
-        : { fields: { ...input.fields, alsoOn: input.alsoOn.map(principalText) } }),
-      ...due,
-      ...(input.dateAt === undefined
-        ? input.dateAllDay === undefined
-          ? {}
-          : { dateAllDay: input.dateAllDay }
-        : input.dateAt === null
-          ? { dateAt: null, dateAllDay: false }
-          : {
-              dateAt: yield* dueMillis(input.orgId, input.dateAt, input.dateAllDay),
-              dateAllDay: input.dateAllDay === true,
-            }),
-    },
+    yield* patchOf(viewer, input),
     input.rev,
     connection,
   );
@@ -1356,6 +1385,32 @@ export const update = Effect.fn("KinWork.update")(function* (
     .pipe(workFailure);
   yield* tellMoved(person, moved.before, moved.after);
   return moved.shown;
+});
+
+/**
+ * Through a coding agent's key: the change and the hand-over it asks for, together in one
+ * transaction, so nothing is saved when any part is refused; who is told hears after it commits.
+ */
+export const updateAndGive = Effect.fn("KinWork.updateAndGive")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: Omit<KinWorkUpdateInput, "rev">,
+  to: KinWorkPrincipal | undefined,
+  connection: CodingAgentConnection,
+) {
+  const viewer = yield* viewerOf(people, input.orgId);
+  if (viewer.teammate && to !== undefined) yield* teamAgent(viewer.person, to);
+  const patch = yield* patchOf(viewer, input);
+  const records = yield* KinRecords;
+  const sql = yield* SqlClient.SqlClient;
+  const moved = yield* Effect.gen(function* () {
+    const before = yield* records.get(input.orgId, input.key);
+    if (Object.keys(patch).length > 0)
+      yield* change(viewer, input.orgId, input.key, patch, undefined, connection);
+    if (to !== undefined)
+      yield* change(viewer, input.orgId, input.key, { owner: to }, undefined, connection);
+    return { before, after: yield* records.get(input.orgId, input.key) };
+  }).pipe(sql.withTransaction, workFailure);
+  yield* tellMoved(viewer.person, moved.before, moved.after);
 });
 
 /** Ticks one of a task's steps, by whoever may change the task, through the same write. */
@@ -1569,9 +1624,7 @@ const change = Effect.fn("KinWork.change")(function* (
   connection?: CodingAgentConnection,
 ) {
   const records = yield* KinRecords;
-  return yield* keyedWrite(
-    viewer,
-    connection,
+  return yield* keyedWrite(viewer, connection, (viewer) =>
     Effect.gen(function* () {
       if (connection !== undefined) {
         const held = yield* records.get(orgId, key);

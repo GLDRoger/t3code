@@ -8,18 +8,19 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { keySentClientId } from "../chat/keySent.ts";
 import { type CodingAgentConnection, connectionOf, keyHidden } from "../work/codingAgent.ts";
 import { CodingAgentCall } from "../work/keyCall.ts";
 import { requestHashOf as entryHashOf } from "../work/KinRecords.ts";
 import * as Clients from "../work/ownerClients.ts";
 import {
-  assign,
   connectionViewer,
   create,
   get,
   list,
   listSeen,
   update,
+  updateAndGive,
 } from "../work/ownerWork.ts";
 import { requestHashOf } from "../work/recordComments.ts";
 import { workFailure } from "../work/recordRows.ts";
@@ -34,8 +35,8 @@ export type TaskState = Extract<KinRecordState, "open" | "doing" | "done">;
 const LIST_CAP = 100;
 
 /** The key's person, as their own screens' Work methods take them, with the key's connection. */
-export const asPerson = (holder: TasksKeyHolder) => {
-  const connection: CodingAgentConnection = connectionOf(holder);
+export const asPerson = (holder: TasksKeyHolder, kind?: CodingAgentConnection["kind"]) => {
+  const connection: CodingAgentConnection = connectionOf(holder, kind);
   const people: ReadonlyArray<PersonIdentity> = [
     { _tag: "person", orgId: holder.orgId, personId: holder.personId },
   ];
@@ -83,7 +84,10 @@ export const reachable = <K extends KinRecordKey | null | undefined>(
 
 /** The same request from the same key is the same request id, so a retry makes nothing new. */
 export const requestIdOf = (holder: TasksKeyHolder, kind: string, request: object) =>
-  `key:${holder.sessionId}:${kind}:${entryHashOf({ clientRequestId: "", ...request }).slice(0, 40)}`;
+  keySentClientId(
+    holder.sessionId,
+    `${kind}:${entryHashOf({ clientRequestId: "", ...request }).slice(0, 40)}`,
+  );
 
 const due = (day: string | null | undefined) =>
   day === undefined ? {} : day === null ? { dueAt: null } : { dueAt: day, dueAllDay: true };
@@ -199,6 +203,10 @@ export const listSeenBy = Effect.fn("KinTasksKey.listSeen")(function* (
   return { ...rows, next: page.nextCursor };
 });
 
+/** The other entries a call names, for the write's own reach check (`ownerWork.keyedWrite`). */
+const named = (...keys: ReadonlyArray<KinRecordKey | null | undefined>) =>
+  keys.filter((key): key is KinRecordKey => key !== undefined && key !== null);
+
 export type TaskFields = {
   readonly title?: string | undefined;
   readonly brief?: string | undefined;
@@ -236,7 +244,7 @@ export const createTask = Effect.fn("KinTasksKey.createTask")(function* (
   const made = yield* create(
     people,
     { orgId: holder.orgId, clientRequestId: requestIdOf(holder, "task", request), ...request },
-    connection,
+    { ...connection, names: named(project, party) },
   ).pipe(workFailure);
   return yield* sheetOf(holder, made.key);
 });
@@ -267,14 +275,10 @@ export const updateTask = Effect.fn("KinTasksKey.updateTask")(function* (
       reason: "invalid_state",
       message: "Nothing to change: give a field to change or someone to give it to.",
     });
-  if (Object.keys(patch).length > 0)
-    yield* update(people, { orgId: holder.orgId, key: input.key, ...patch }, connection).pipe(
-      workFailure,
-    );
-  if (to !== undefined)
-    yield* assign(people, { orgId: holder.orgId, key: input.key, to }, connection).pipe(
-      workFailure,
-    );
+  yield* updateAndGive(people, { orgId: holder.orgId, key: input.key, ...patch }, to, {
+    ...connection,
+    names: named(project, party),
+  }).pipe(workFailure);
   return yield* sheetOf(holder, input.key);
 });
 

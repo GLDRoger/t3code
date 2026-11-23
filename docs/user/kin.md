@@ -301,12 +301,13 @@ you. It sees what you can see in Kin and does what you can do there, under the s
 tasks and gives them to people or agents, changes them, comments on them and sets them going or
 done; adds and changes clients, contacts, deals, promises and entries on the team's lists; logs
 contact with a client; writes a new version of a doc; records a watched number; reads what waits on
-you; asks your agents in your own chats with them; and reads your chats. Owners and co-owners can
-also make projects, and with Money draft invoices and record expenses. Everything it changes, and
-every message it sends, shows as from your coding agent. Some things stay a tap in Kin itself and
-have no way in through a key: answering cards (Confirm, choices, approvals), sending money or mail
-out of the company or marking money paid, people and their access, connections, sign-ins and keys,
-updates, backups and company settings, and deleting or archiving anything.
+you; and sends your agents messages in your own chats with them, whose answers you read in Kin.
+Owners and co-owners can also make projects, and with Money draft invoices. Everything it changes,
+and every message it sends, shows as from your coding agent. Some things stay a tap in Kin itself
+and have no way in through a key: answering cards (Confirm, choices, approvals), sending money or
+mail out of the company, recording or changing money (an invoice draft aside), people and their
+access, connections, sign-ins and keys, updates, backups and company settings, and deleting or
+archiving anything.
 
 Clients, projects, tasks, deals, docs and money entries marked private, and everything under a
 private client or project, stay in Kin: no key reads them, whoever holds it, the owner's included.
