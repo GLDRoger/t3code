@@ -943,6 +943,9 @@ function kinWorkPageAffected(
  * shows, never for one it covers or another client's. A change naming anything else might have
  * just become this page's, so `newest` asks for the page's latest change number first.
  */
+// The sections revision each page read was first shown under, kept with the read across mounts.
+const shellRevOfPage = new WeakMap<object, number>();
+
 export function createKinWorkPageWatch(options: {
   readonly own: KinRecordKey;
   readonly reread: () => void;
@@ -953,6 +956,13 @@ export function createKinWorkPageWatch(options: {
   let handled = 0;
   let asking = false;
   return {
+    /** Call with the page as read and each revision of the company's sections, which shape it. */
+    shell: (rev: number | undefined, page: object | null) => {
+      if (rev === undefined || page === null) return;
+      const at = shellRevOfPage.get(page);
+      shellRevOfPage.set(page, rev);
+      if (at !== undefined && at !== rev) options.reread();
+    },
     /** Call with each state of Work and the page as held; `page` is null while it is first read. */
     changed: (
       live: Pick<KinWorkLive, "changed" | "unnamed">,

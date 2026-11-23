@@ -434,7 +434,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
   function useKinWorkPageWatch(
     { environmentId, orgId }: KinScreenTarget,
     own: KinRecordKey,
-    page: { readonly seq: number; readonly held: ReadonlySet<string> } | null,
+    page: { readonly of: object; readonly seq: number; readonly held: ReadonlySet<string> } | null,
     reread: () => void,
   ) {
     const live = Option.getOrNull(
@@ -457,6 +457,11 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     useEffect(() => {
       if (live !== null) watch.changed(live, page);
     }, [watch, live, page]);
+    const shellRev = useAtomValue(kinAccessMeAtom(app.runtime, environmentId))?.shell?.rev;
+    // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the open page from the host again when the company's sections change, which shape what the host sends
+    useEffect(() => {
+      watch.shell(shellRev, page?.of ?? null);
+    }, [watch, shellRev, page]);
   }
 
   /** A client's page, kept current without reading it for changes that are someone else's. */
