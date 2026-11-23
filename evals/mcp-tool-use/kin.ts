@@ -67,6 +67,8 @@ import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
 import { KinPictureToolkit } from "../../apps/server/src/kin/pictures/mcp.ts";
 import { GENERATE_SENTENCES } from "../../apps/server/src/kin/pictures/KinPictures.ts";
 import { pictureNote } from "../../apps/server/src/kin/work/leadDocs.ts";
+import { APPROVED_TURN_TEXT } from "../../apps/server/src/kin/questions/sentUpDraft.ts";
+import { APPROVED_REFUSAL, approvedWords } from "../../apps/server/src/kin/lead/approvedDraft.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
@@ -429,6 +431,7 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK)
     .replaceAll("{{PEOPLE_LABEL}}", PEOPLE_LABEL)
     .replaceAll("{{UNISSUED_INVOICE}}", UNISSUED_INVOICE)
+    .replaceAll("{{APPROVED_TURN_TEXT}}", APPROVED_TURN_TEXT)
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names))
@@ -504,6 +507,14 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       reason: "not_allowed",
       message: helperRefusal(input.holder, input.key),
     },
+  }),
+  // An approved draft's one make that changed the approved words, refused at Kin's gate.
+  approvedWords: (input: { tool: string }) => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: approvedWords(input.tool) },
+  }),
+  // Anything but the approved make or a read, refused in an approved draft's turn.
+  approvedRefusal: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: APPROVED_REFUSAL },
   }),
   // An agent with no person asking in its turn, refused a change to who is on a task.
   alsoOnUnasked: () => ({
