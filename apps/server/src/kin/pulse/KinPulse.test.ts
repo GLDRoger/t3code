@@ -29,6 +29,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { wordOf } from "./holds.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { headStarts } from "./headStart.ts";
 import { buildPulseSection } from "./prompt.ts";
@@ -49,7 +50,8 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const stamp = "2026-10-01T00:00:00.000Z";
 
-const layer = KinEventQueue.layer.pipe(
+const layer = KinShell.layer.pipe(
+  Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
 );
@@ -508,6 +510,30 @@ describe("KinPulse", () => {
         key: "D-1",
         title: "Invented D-1",
       });
+      yield* insert({
+        id: "W-16",
+        category: "meeting",
+        partyId: "r-C-1",
+        dateAt: B - 31 * DAY,
+      });
+      yield* sql`UPDATE kin_records SET party_id = 'r-C-1'
+        WHERE org_id = ${orgId} AND record_id IN ('r-QT-1', 'r-INV-6')`;
+      yield* sql`UPDATE kin_records SET date_at = ${B + 2 * DAY}
+        WHERE org_id = ${orgId} AND record_id = 'r-QT-1'`;
+      const shell = yield* KinShell.KinShell;
+      let rev = (yield* shell.get(orgId)).rev;
+      for (const [sections, words] of [
+        [[], "calls, meetings, mail, invoices and payments count; the last was a quote"],
+        [
+          [{ id: "invoices", on: false }],
+          "calls, meetings, mail and payments count; the last was a payment",
+        ],
+        [[{ id: "money", on: false }], "calls, meetings and mail count; the last was a meeting"],
+      ] as const) {
+        rev = (yield* shell.set(orgId, owner, rev, sections)).rev;
+        const [fact] = keyed((yield* read(B + 60 * DAY)).facts, "client_cold", "C-1");
+        assert.include(fact?.consequence, words);
+      }
     }).pipe(Effect.provide(layer)),
   );
 
