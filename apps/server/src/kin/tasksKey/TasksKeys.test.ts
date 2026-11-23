@@ -8,6 +8,7 @@ import {
   EnvironmentHttpApi,
   KIN_RECORD_COMMENTS_PAGE,
   type KinPersonId,
+  type KinWorkPrincipal,
   type KinTasksKeysIssueInput,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -42,6 +43,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as People from "../people/KinPeople.ts";
 import * as Deals from "../work/deals.ts";
+import * as Clients from "../work/ownerClients.ts";
 import * as Records from "../work/KinRecords.ts";
 import { dealLink } from "../work/promises.ts";
 import * as Work from "../work/ownerWork.ts";
@@ -50,8 +52,8 @@ import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import * as MemoryChanges from "../memory/MemoryChanges.ts";
 import { authorise, fingerprint } from "../memory/sensitivity.ts";
 import * as Docs from "../work/docs.ts";
-import { presetDefinition } from "../work/registers.ts";
-import { money } from "../work/ownerMoney.ts";
+import { defineList, presetDefinition, proposalFor } from "../work/registers.ts";
+import { lists, money, updateList } from "../work/ownerMoney.ts";
 import { MATERIAL } from "../you/projection.ts";
 import {
   findDocs,
@@ -64,6 +66,7 @@ import {
   searchMemory,
   unknownKey,
 } from "./reads.ts";
+import * as Acts from "./acts.ts";
 import { listPeople } from "./people.ts";
 import {
   commentMine,
@@ -463,6 +466,195 @@ it.effect(
         (yield* sql<{ key: string }>`SELECT key FROM kin_records
         WHERE title = 'Invented: after revoking'`)[0],
       );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a key does by hand what its person's screens do, marked as theirs, and nothing their screens refuse",
+  () =>
+    Effect.gen(function* () {
+      const { orgId, rhea, zoya } = yield* team;
+      const records = yield* Records.KinRecords;
+      const sql = yield* SqlClient.SqlClient;
+      const rheaKey = yield* admitted((yield* TasksKeys.issue(rhea.app, { orgId })).secret);
+      const zoyaKey = yield* admitted((yield* TasksKeys.issue(zoya.app, { orgId })).secret);
+      const marks = (key: string) =>
+        sql<{ viaKey: string | null }>`SELECT c.coding_agent_key AS "viaKey"
+          FROM kin_record_changes c JOIN kin_records r ON r.record_id = c.record_id
+          WHERE r.key = ${key} ORDER BY c.seq`.pipe(
+          Effect.map((rows) => rows.map((row) => row.viaKey)),
+        );
+      const count = (title: string) =>
+        sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records WHERE title = ${title}`.pipe(
+          Effect.map(([row]) => row?.n ?? 0),
+        );
+
+      // A client, with its first contact; the same request again is the same client.
+      const client = { name: "Invented Lantern Co", contact: { name: "Invented Ira" } };
+      const lantern = yield* Acts.createClient(rheaKey, client);
+      assert.strictEqual(yield* Acts.createClient(rheaKey, client), lantern);
+      assert.strictEqual(yield* count(client.name), 1);
+      yield* Acts.updateClient(rheaKey, {
+        key: lantern,
+        notes: "Invented: prefers mornings",
+        newContact: { name: "Invented Omar", role: "Buyer" },
+      });
+      const page = yield* Clients.party([{ _tag: "person", orgId, personId: rhea.personId }], {
+        orgId,
+        key: lantern,
+      });
+      assert.strictEqual(page.party.notes, "Invented: prefers mornings");
+      assert.sameMembers(
+        page.contacts.map((one) => one.name),
+        ["Invented Ira", "Invented Omar"],
+      );
+      assert.isTrue((yield* marks(lantern)).every((viaKey) => viaKey === rheaKey.sessionId));
+      // A call logged, with its follow-up the person's own task.
+      yield* Acts.logContact(rheaKey, {
+        client: lantern,
+        kind: "call",
+        note: "Invented: wants a quote",
+        next: { title: "Invented: send the quote", due: "2026-12-02" },
+      });
+      assert.strictEqual(yield* count("Invented: send the quote"), 1);
+
+      // A deal on it, then moved on; and a promise to them, kept.
+      const name = (who: KinWorkPrincipal) => (who._tag === "person" ? who.personId : who.agentId);
+      const deal = yield* Acts.createDeal(
+        rheaKey,
+        {
+          client: lantern,
+          title: "Invented: spring order",
+          value: { minor: 90_000, currency: "INR" },
+        },
+        name,
+      );
+      assert.deepInclude(deal, { title: "Invented: spring order", state: "open" });
+      const won = yield* Acts.updateDeal(rheaKey, { key: deal.key, outcome: "won" }, name);
+      assert.strictEqual(won.state, "won");
+      assert.isTrue((yield* marks(deal.key)).every((viaKey) => viaKey === rheaKey.sessionId));
+      const promise = yield* Acts.addPromise(rheaKey, {
+        client: lantern,
+        what: "Invented: samples by Friday",
+        due: "2026-12-04",
+      });
+      assert.strictEqual((yield* Acts.closePromise(rheaKey, promise.key)).state, "done");
+
+      // A doc gets a new version of one section; one read before it changed writes nothing.
+      const doc = yield* Docs.create(
+        orgId,
+        { actor: { _tag: "person", personId: rhea.personId }, via: "owner" },
+        {},
+        {
+          title: "Invented price list",
+          body: "Intro.\n\n## Prices\n\nTea 10 invented credits.\n",
+          owner: { _tag: "person", personId: rhea.personId },
+          summary: "Created",
+          company: true,
+          originKey: "test:price-list",
+        },
+      );
+      const wrote = yield* Acts.writeDoc(rheaKey, {
+        key: doc.row.key,
+        version: doc.version.version,
+        section: "Prices",
+        text: "Tea 12 invented credits.",
+      });
+      assert.strictEqual(wrote.version, doc.version.version + 1);
+      assert.strictEqual(
+        yield* reason(
+          Acts.writeDoc(rheaKey, {
+            key: doc.row.key,
+            version: doc.version.version,
+            section: "Prices",
+            text: "Tea 9 invented credits.",
+          }),
+        ),
+        "conflict",
+      );
+      const versions = yield* sql<{ body: string }>`SELECT body FROM kin_doc_versions
+        WHERE record_id = ${doc.row.recordId} ORDER BY version`;
+      assert.deepStrictEqual(
+        versions.map((one) => one.body.includes("Tea 10")),
+        [true, false],
+      );
+
+      // The company's own list: an entry added once, then changed.
+      yield* defineList(
+        orgId,
+        yield* proposalFor(orgId, {
+          name: "Invented samples",
+          fields: [{ label: "Colour", type: "text" }],
+        }),
+        0,
+      );
+      const listed = (yield* Acts.listLists(rheaKey)).lists.find(
+        (one) => one.name === "Invented samples",
+      );
+      assert.isDefined(listed);
+      // By hand, as in the app, entries go only on a list shared with the team.
+      const refusedEntry = yield* Effect.flip(
+        Acts.addEntry(rheaKey, { list: listed!.list, title: "Invented: too early" }),
+      );
+      assert.include(refusedEntry.message, "shared with the team");
+      const rheaPerson = [{ _tag: "person" as const, orgId, personId: rhea.personId }];
+      const definition = (yield* lists(rheaPerson, { orgId })).lists.find(
+        (one) => one.list === listed!.list,
+      );
+      yield* updateList(rheaPerson, {
+        orgId,
+        list: listed!.list,
+        rev: definition!.rev,
+        team: true,
+      });
+      const entry = {
+        list: listed!.list,
+        title: "Invented: oak sample",
+        fields: { colour: "Oak" },
+      };
+      const added = yield* Acts.addEntry(rheaKey, entry);
+      assert.strictEqual((yield* Acts.addEntry(rheaKey, entry)).key, added.key);
+      assert.strictEqual(
+        (yield* Acts.updateEntry(rheaKey, { key: added.key, state: "done" })).state,
+        "done",
+      );
+      assert.deepStrictEqual(
+        (yield* Acts.listEntries(rheaKey, { list: listed!.list, state: "done" })).entries.map(
+          (one) => one.key,
+        ),
+        [added.key],
+      );
+      assert.isTrue((yield* marks(added.key)).every((viaKey) => viaKey === rheaKey.sessionId));
+
+      // What Zoya's screens refuse, her key is refused: money drafts, and a client labelled private.
+      assert.strictEqual(
+        yield* reason(
+          Acts.recordExpense(zoyaKey, {
+            title: "Invented: taxi",
+            amount: { minor: 500, currency: "INR" },
+            day: "2026-11-02",
+          }),
+        ),
+        "not_allowed",
+      );
+      yield* records.update(orgId, writerFor(rhea.personId), lantern, { sensitive: true });
+      for (const refused of [
+        Acts.updateClient(rheaKey, { key: lantern, notes: "Invented" }),
+        Acts.logContact(rheaKey, { client: lantern, kind: "call" }),
+        Acts.addPromise(rheaKey, { client: lantern, what: "Invented" }).pipe(Effect.asVoid),
+      ])
+        assert.strictEqual(yield* reason(refused), "not_found");
+      assert.isFalse(
+        (yield* Acts.listWaiting(rheaKey)).waiting.some((one) => one.key === promise.key),
+      );
+
+      // Revoked, it does nothing more.
+      yield* TasksKeys.revoke(rhea.app, { orgId, sessionId: rheaKey.sessionId });
+      assert.strictEqual(
+        yield* reason(Acts.createClient(rheaKey, { name: "Invented after" })),
+        "not_allowed",
+      );
+      assert.strictEqual(yield* count("Invented after"), 0);
     }).pipe(Effect.provide(layer)),
 );
 

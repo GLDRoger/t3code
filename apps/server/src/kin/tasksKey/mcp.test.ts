@@ -206,14 +206,38 @@ it.effect(
         open_project: read,
         open_client: read,
         read_doc: read,
+        list_lists: read,
+        list_entries: read,
+        add_entry: write,
+        update_entry: write,
+        read_numbers: read,
+        record_number: write,
+        list_waiting: read,
       };
-      // Zoya has no Money and no Memory page and makes no projects, so her key lists none of them.
-      assert.deepStrictEqual(yield* toolsOf(issued.secret), everyone);
+      // A new teammate has Clients and Docs, so Zoya's key lists their tools; she has no Money or
+      // Memory and makes no projects, so it lists none of theirs.
+      const places = {
+        create_client: write,
+        update_client: write,
+        log_contact: write,
+        list_deals: read,
+        create_deal: write,
+        update_deal: write,
+        add_promise: write,
+        close_promise: write,
+        write_doc: write,
+      };
+      assert.deepStrictEqual(yield* toolsOf(issued.secret), { ...everyone, ...places });
       const owners = yield* TasksKeys.issue(rhea.app, { orgId });
       assert.deepStrictEqual(yield* toolsOf(owners.secret), {
         ...everyone,
+        ...places,
         create_project: write,
         update_project: write,
+        list_invoices: read,
+        open_invoice: read,
+        draft_invoice: write,
+        record_expense: write,
         money_summary: read,
         search_memory: read,
       });
@@ -239,13 +263,16 @@ it.effect(
       assert.notProperty(ownerTools, "money_summary");
       assert.notProperty(ownerTools, "open_project");
       assert.notProperty(ownerTools, "open_client");
-      assert.notProperty(ownerTools, "create_project");
+      for (const name of ["create_project", "create_client", "list_invoices", "record_expense"])
+        assert.notProperty(ownerTools, name);
       assert.property(ownerTools, "find");
       const calls = [
         ["money_summary", {}, "Money"],
         ["open_client", { key: "C-3" }, "Clients"],
         ["open_project", { key: "P-3" }, "Clients"],
         ["create_project", { title: "Invented" }, "Clients"],
+        ["create_client", { name: "Invented" }, "Clients"],
+        ["list_invoices", {}, "Invoices and quotes"],
       ] as const;
       for (const [name, args, label] of calls) {
         const started = yield* call({
@@ -295,6 +322,15 @@ it.effect(
         ["money_summary", {}],
         ["search_memory", { text: "kiln" }],
         ["create_project", { title: "Invented: kiln" }],
+        ["list_invoices", {}],
+        [
+          "record_expense",
+          {
+            title: "Invented: kiln",
+            amount: { minor: 100, currency: "INR" },
+            day: "2026-11-02",
+          },
+        ],
       ] as const) {
         const refused = yield* text(
           yield* call({

@@ -4,17 +4,25 @@ import { MATERIAL } from "../you/projection.ts";
 import {
   KinChatError,
   KinDay,
+  KinDocumentLine,
+  KinFieldValue,
   KinMoney,
+  KinNumber,
+  KinNumberDecimal,
+  KinSignedMoney,
+  KinTouchKind,
   KinMoneySummary,
   KinMoneyTotals,
   KinRecordKey,
   KinRecordState,
   KinTrimmedText,
+  type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -23,6 +31,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { parseBearerToken } from "../../auth/EnvironmentAuth.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
+import { ServerConfig } from "../../config.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
@@ -30,6 +39,7 @@ import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { clean } from "../connections/ResultText.ts";
 import { KinServer, type Services } from "../KinServer.ts";
 import { toolVisibility } from "../mcp/toolPolicy.ts";
+import { orgOwner, toolName, toolNamesOf } from "../work/toolNames.ts";
 import {
   findDocs,
   listClients,
@@ -38,11 +48,14 @@ import {
   openClient,
   openProject,
   readDoc,
+  readsClients,
+  readsDocs,
   readsMemory,
   readsMoney,
   searchMemory,
 } from "./reads.ts";
 import { CodingAgentCall } from "../work/keyCall.ts";
+import * as Acts from "./acts.ts";
 import { listPeople } from "./people.ts";
 import {
   commentMine,
@@ -60,7 +73,12 @@ import { admit, type TasksKeyHolder } from "./TasksKeys.ts";
 /** Who this request's key acts as, and Kin's services: provided per request by `auth` below. */
 class TasksKeyCaller extends Context.Service<
   TasksKeyCaller,
-  { readonly holder: TasksKeyHolder; readonly services: Context.Context<Services> }
+  {
+    readonly holder: TasksKeyHolder;
+    readonly services: Context.Context<Services>;
+    /** The host's files, where a document is made, as Kin's own MCP gives them. */
+    readonly files: Option.Option<Context.Context<FileSystem.FileSystem | ServerConfig>>;
+  }
 >()("t3/kin/tasksKey/mcp/TasksKeyCaller") {}
 
 const TaskSummary = Schema.Struct({
@@ -241,6 +259,50 @@ const ProjectFields = {
   ),
 };
 
+const ClientRef = Schema.NullOr(Schema.Struct({ key: Schema.String, title: Schema.String }));
+const Contact = {
+  name: Name,
+  role: Schema.optional(Schema.String.check(Schema.isMaxLength(120))),
+  email: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+  phone: Schema.optional(Schema.String.check(Schema.isMaxLength(60))),
+};
+const Notes = Schema.String.check(Schema.isMaxLength(4_000));
+const Step = Schema.Struct({
+  title: TaskTitle,
+  due: Schema.optional(Day),
+}).annotate({ description: "The next step: a task for whoever is doing it, with its day." });
+const DealRow = Schema.Struct({
+  key: Schema.String,
+  title: Schema.String,
+  client: ClientRef,
+  state: Schema.String,
+  stage: Schema.NullOr(Schema.String),
+  value: Schema.NullOr(KinMoney),
+  expected: Schema.NullOr(Schema.String),
+  holder: Schema.String,
+});
+const MoneyRow = {
+  key: Schema.String,
+  title: Schema.String,
+  state: Schema.String,
+  client: ClientRef,
+  amount: Schema.NullOr(KinSignedMoney),
+  due: Schema.NullOr(Schema.String),
+};
+const Fields = Schema.Record(Schema.String, Schema.NullOr(KinFieldValue));
+const Entry = Schema.Struct({
+  key: Schema.String,
+  title: Schema.String,
+  state: Schema.String,
+  fields: Fields,
+});
+const ListId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(60)).annotate({
+  description: "A list's id, as list_lists gives it.",
+});
+const EntryState = Schema.Literals(["open", "doing", "waiting", "done"]);
+const Cursor = Schema.String.check(Schema.isMaxLength(200)).annotate({
+  description: "The next value of the page before, for the page after it.",
+});
 const TasksKeyToolkit = Toolkit.make(
   Tool.make("list_people", {
     ...shared,
@@ -352,6 +414,401 @@ const TasksKeyToolkit = Toolkit.make(
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
   // No `parameters`: an empty Struct serializes to a schema MCP clients reject.
+  Tool.make("create_client", {
+    ...shared,
+    description:
+      "Add a client, a prospect or a vendor in Kin as the person this key belongs to, marked as from their coding agent, as their Clients screen adds one, with its first contact if given. The same request again adds nothing new. Answers as open_client does, with the client's key.",
+    parameters: Schema.Struct({
+      name: Name,
+      prospect: Schema.optional(
+        Schema.Boolean.annotate({ description: "A client we haven't sold to yet." }),
+      ),
+      vendor: Schema.optional(
+        Schema.Boolean.annotate({ description: "Someone we buy from, not a client." }),
+      ),
+      notes: Schema.optional(Notes),
+      contact: Schema.optional(Schema.Struct(Contact)),
+    }),
+    success: ClientSheet,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("update_client", {
+    ...shared,
+    description:
+      "Change a client by its key as the person may on its page, marked as from their coding agent: name, notes, prospect or client, who looks after it (a name from list_people), add a contact (newContact) or change one by its key (contact). What is left out stays. Answers as open_client does.",
+    parameters: Schema.Struct({
+      key: ClientKey,
+      name: Schema.optional(Name),
+      notes: Schema.optional(Notes),
+      prospect: Schema.optional(Schema.Boolean),
+      lookedAfterBy: Schema.optional(PersonName),
+      newContact: Schema.optional(Schema.Struct({ ...Contact, notes: Schema.optional(Notes) })),
+      contact: Schema.optional(
+        Schema.Struct({
+          key: KinRecordKey.annotate({ description: "The contact's key, from open_client." }),
+          name: Schema.optional(Name),
+          role: Schema.optional(Schema.NullOr(Contact.role.schema)),
+          email: Schema.optional(Schema.NullOr(Contact.email.schema)),
+          phone: Schema.optional(Schema.NullOr(Contact.phone.schema)),
+          notes: Schema.optional(Notes),
+        }),
+      ),
+    }),
+    success: ClientSheet,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("log_contact", {
+    ...shared,
+    description:
+      "Log a call, meeting, email or message with a client, as the person, marked as from their coding agent, as their client page logs one; with next, the follow-up becomes their task in the same step. The same request again logs nothing new.",
+    parameters: Schema.Struct({
+      client: ClientKey,
+      kind: KinTouchKind,
+      note: Schema.optional(Notes),
+      day: Schema.optional(Day.annotate({ description: "When it happened; today if left out." })),
+      next: Schema.optional(Step),
+    }),
+    success: Schema.Struct({ client: Schema.String, logged: Schema.Boolean }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("list_deals", {
+    ...shared,
+    description:
+      "List the deals the person can see in Kin, open ones unless a state is asked: by client key, holder (a name from list_people) or state (open, won or lost). Each gives its key, client, stage, value, expected day and holder.",
+    parameters: Schema.Struct({
+      client: Schema.optional(ClientKey),
+      holder: Schema.optional(PersonName),
+      state: Schema.optional(Schema.Literals(["open", "won", "lost"])),
+    }),
+    success: Schema.Struct({
+      deals: Schema.Array(DealRow),
+      more: Schema.Boolean,
+      material: Schema.String,
+    }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("create_deal", {
+    ...shared,
+    description:
+      "Add a deal for a client or prospect as the person, marked as from their coding agent, as their Deals screen adds one: title, stage (a stage id; the first if left out), value, expected day, notes and a first next step. The same request again adds nothing new. Answers with the deal and its key.",
+    parameters: Schema.Struct({
+      client: ClientKey,
+      title: TaskTitle,
+      stage: Schema.optional(Schema.String.check(Schema.isMaxLength(60))),
+      value: Schema.optional(KinMoney),
+      expected: Schema.optional(Day),
+      notes: Schema.optional(Notes),
+      nextStep: Schema.optional(Step),
+    }),
+    success: Schema.Struct({ ...DealRow.fields, material: Schema.String }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("update_deal", {
+    ...shared,
+    description:
+      "Change a deal by its key as the person may, marked as from their coding agent: title, notes, value, expected day, its stage, won, lost (with lostReason) or reopen, and a next step. What is left out stays; null clears value or expected day.",
+    parameters: Schema.Struct({
+      key: KinRecordKey.annotate({ description: "The deal's key." }),
+      title: Schema.optional(TaskTitle),
+      notes: Schema.optional(Notes),
+      value: Schema.optional(Schema.NullOr(KinMoney)),
+      expected: Schema.optional(Schema.NullOr(Day)),
+      stage: Schema.optional(Schema.String.check(Schema.isMaxLength(60))),
+      outcome: Schema.optional(Schema.Literals(["won", "lost", "reopen"])),
+      lostReason: Schema.optional(TaskTitle),
+      nextStep: Schema.optional(Step),
+    }),
+    success: Schema.Struct({ ...DealRow.fields, material: Schema.String }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("add_promise", {
+    ...shared,
+    description:
+      "Record a promise to or from a client as the person, marked as from their coding agent, as their client page adds one: what was promised, by when, and theyOwe when the client owes it (then whoever looks after the client chases it). It is a task: close it with close_promise. The same request again adds nothing new.",
+    parameters: Schema.Struct({
+      client: ClientKey,
+      what: TaskTitle,
+      due: Schema.optional(Day),
+      theyOwe: Schema.optional(Schema.Boolean),
+      deal: Schema.optional(KinRecordKey.annotate({ description: "The deal it sits on." })),
+      where: Schema.optional(
+        Schema.String.check(Schema.isMaxLength(280)).annotate({
+          description: "Where it was promised, in the person's words.",
+        }),
+      ),
+    }),
+    success: TaskDetail,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("close_promise", {
+    ...shared,
+    description:
+      "Mark a promise kept, by its key, as the person, marked as from their coding agent; who may is as in the app.",
+    parameters: Schema.Struct({ key: TaskKey }),
+    success: TaskDetail,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("write_doc", {
+    ...shared,
+    description:
+      'Write a new version of one section of a text doc, as the person may in their Docs editor, marked as from their coding agent: section is its heading as the doc has it ("" for the text before the first heading), text its new words. Pass the version read_doc gave: if the doc changed since, nothing is written and you are told to read it again. Every earlier version stays in its history. New docs are made by an agent in Kin.',
+    parameters: Schema.Struct({
+      key: KinRecordKey.annotate({ description: "The doc's key, such as D-7." }),
+      version: Schema.Int.annotate({ description: "The version read_doc gave." }),
+      section: Schema.String.check(Schema.isMaxLength(200)),
+      text: Schema.String.check(Schema.isMaxLength(100_000)),
+    }),
+    success: Schema.Struct({ key: Schema.String, title: Schema.String, version: Schema.Int }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("list_invoices", {
+    ...shared,
+    description:
+      "List the invoices the person's Money screens show, newest due first, by client key or state; each with its key, client, amount and due day. A page at a time: pass next back as cursor.",
+    parameters: Schema.Struct({
+      client: Schema.optional(ClientKey),
+      state: Schema.optional(EntryState),
+      cursor: Schema.optional(Cursor),
+    }),
+    success: Schema.Struct({
+      invoices: Schema.Array(Schema.Struct(MoneyRow)),
+      more: Schema.Boolean,
+      next: Schema.NullOr(Schema.String),
+      material: Schema.String,
+    }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("open_invoice", {
+    ...shared,
+    description:
+      "Open one invoice by its key: client, amount, state, due day, notes and its lines. Issuing it, sending it and recording a payment stay a tap in Kin.",
+    parameters: Schema.Struct({
+      key: KinRecordKey.annotate({ description: "The invoice's key." }),
+    }),
+    success: Schema.Struct({
+      ...MoneyRow,
+      notes: Schema.String,
+      lines: Schema.NullOr(Schema.Array(KinDocumentLine)),
+      material: Schema.String,
+    }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("draft_invoice", {
+    ...shared,
+    description:
+      "For owners and co-owners with Money: draft an invoice for a client from its lines, as their New invoice form does, marked as from their coding agent. It stays a draft that nobody owes until the person issues it in Kin; nothing is numbered or sent. problems says what the draft lacks. The same request again drafts nothing new.",
+    parameters: Schema.Struct({
+      client: ClientKey,
+      title: TaskTitle,
+      lines: Schema.Array(KinDocumentLine).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
+      due: Schema.optional(Day),
+      notes: Schema.optional(Notes),
+      project: Schema.optional(ProjectKey),
+    }),
+    success: Schema.Struct({ key: Schema.String, problems: Schema.Array(Schema.String) }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("record_expense", {
+    ...shared,
+    description:
+      "For owners and co-owners with Money: record an expense the company had, as their New expense form does, marked as from their coding agent: what, amount, the day it was paid (a day ahead makes it to pay), who was paid and its category. The same request again records nothing new.",
+    parameters: Schema.Struct({
+      title: TaskTitle,
+      amount: KinSignedMoney,
+      day: Day,
+      vendor: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+      category: Schema.optional(Schema.String.check(Schema.isMaxLength(60))),
+    }),
+    success: Schema.Struct({ key: Schema.String }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("list_lists", {
+    ...shared,
+    description:
+      "List the company's own lists the person can see in Kin (not tasks, clients or money, which have their own tools): each list's id, name, states, categories and fields, for list_entries, add_entry and update_entry.",
+    success: Schema.Struct({
+      lists: Schema.Array(
+        Schema.Struct({
+          list: Schema.String,
+          name: Schema.String,
+          states: Schema.Array(Schema.String),
+          categories: Schema.Array(Schema.String),
+          fields: Schema.Array(
+            Schema.Struct({
+              key: Schema.String,
+              label: Schema.String,
+              type: Schema.String,
+              choices: Schema.optional(Schema.Array(Schema.String)),
+            }),
+          ),
+        }),
+      ),
+    }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("list_entries", {
+    ...shared,
+    description:
+      "List the entries of one of the company's lists that the person can see, by state, a page at a time: each with its key, title, state and fields.",
+    parameters: Schema.Struct({
+      list: ListId,
+      state: Schema.optional(EntryState),
+      cursor: Schema.optional(Cursor),
+    }),
+    success: Schema.Struct({
+      entries: Schema.Array(Schema.Struct({ ...MoneyRow, fields: Fields })),
+      more: Schema.Boolean,
+      next: Schema.NullOr(Schema.String),
+      material: Schema.String,
+    }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("add_entry", {
+    ...shared,
+    description:
+      "Add an entry to one of the company's lists as the person, marked as from their coding agent: its title and fields by their keys from list_lists. The same request again adds nothing new.",
+    parameters: Schema.Struct({
+      list: ListId,
+      title: TaskTitle,
+      fields: Schema.optional(Fields),
+    }),
+    success: Entry,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("update_entry", {
+    ...shared,
+    description:
+      "Change an entry of one of the company's lists by its key as the person may, marked as from their coding agent: title, state or fields (null clears one). What is left out stays.",
+    parameters: Schema.Struct({
+      key: KinRecordKey.annotate({ description: "The entry's key." }),
+      title: Schema.optional(TaskTitle),
+      state: Schema.optional(EntryState),
+      fields: Schema.optional(Fields),
+    }),
+    success: Entry,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("read_numbers", {
+    ...shared,
+    description:
+      "The numbers the company watches that the person can see: without number, each with its key, latest value and whether it is late; with a number's key, its values between from and to.",
+    parameters: Schema.Struct({
+      number: Schema.optional(KinRecordKey.annotate({ description: "A number's key." })),
+      from: Schema.optional(Day),
+      to: Schema.optional(Day),
+    }),
+    success: Schema.Struct({
+      numbers: Schema.NullOr(
+        Schema.Array(
+          Schema.Struct({
+            key: Schema.String,
+            name: Schema.String,
+            unit: Schema.NullOr(Schema.String),
+            value: KinNumber.fields.value,
+            asOf: Schema.NullOr(Schema.String),
+            late: Schema.Boolean,
+            canRecord: Schema.Boolean,
+          }),
+        ),
+      ),
+      values: Schema.NullOr(
+        Schema.Array(
+          Schema.Struct({ value: Schema.String, asOf: Schema.String, by: Schema.String }),
+        ),
+      ),
+    }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("record_number", {
+    ...shared,
+    description:
+      "Record a watched number's value for a day as the person, as their Numbers screen does, where read_numbers says canRecord. The same value again records nothing new.",
+    parameters: Schema.Struct({
+      number: KinRecordKey.annotate({ description: "The number's key." }),
+      value: KinNumberDecimal.annotate({ description: "The value, such as 42 or 3.5." }),
+      day: Day,
+    }),
+    success: Schema.Struct({ number: Schema.String, recorded: Schema.Boolean }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("list_waiting", {
+    ...shared,
+    description:
+      "What waits on the person now, as their Needs you list shows it: cards to answer, their late or due tasks, overdue money and news, each saying what it is. Cards are answered by the person in Kin, never here.",
+    success: Schema.Struct({
+      waiting: Schema.Array(
+        Schema.Struct({
+          what: Schema.Literals(["task", "card", "money", "news"]),
+          key: Schema.NullOr(Schema.String),
+          text: Schema.String,
+          late: Schema.Boolean,
+          answer: Schema.NullOr(Schema.String),
+        }),
+      ),
+      material: Schema.String,
+    }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   Tool.make("list_my_tasks", {
     ...shared,
     description:
@@ -523,6 +980,8 @@ export const TASKS_KEY_TOOLS = Object.keys(TasksKeyToolkit.tools);
 export const TASKS_KEY_INSTRUCTIONS =
   "Kin, as the person this key belongs to: every tool acts as them, with what they can see and do in the Kin app, and what it writes is marked as from their coding agent. Name people and agents as list_people gives them. These stay a tap in the Kin app and have no tool here: answering a card (Confirm, a choice, an approval, Post it); anything that sends money or mail out of the company or records money as paid or received; people, roles, places and invitations (Settings → Team); connections, sign-ins and coding agent keys (Settings → Connections, Settings → Profile); updates, backups and the company's settings (Settings → Company details); deleting or archiving anything. When asked for one of these, say it is a tap in Kin and where, and don't look for a tool.";
 /** Listed, and callable, only for a person whose own screens open Money or Memory now. */
+const ownerWithMoney = (holder: TasksKeyHolder) =>
+  Effect.zipWith(readsMoney(holder), readsMemory(holder), (money, owner) => money && owner);
 const GATED: Partial<
   Record<string, (holder: TasksKeyHolder) => Effect.Effect<boolean, KinChatError, Services>>
 > = {
@@ -530,6 +989,19 @@ const GATED: Partial<
   search_memory: readsMemory,
   create_project: readsMemory,
   update_project: readsMemory,
+  list_invoices: readsMoney,
+  open_invoice: readsMoney,
+  draft_invoice: ownerWithMoney,
+  record_expense: ownerWithMoney,
+  create_client: readsClients,
+  update_client: readsClients,
+  log_contact: readsClients,
+  add_promise: readsClients,
+  close_promise: readsClients,
+  list_deals: readsClients,
+  create_deal: readsClients,
+  update_deal: readsClients,
+  write_doc: readsDocs,
 };
 
 const TOOL_SECTIONS: Readonly<Partial<Record<string, SectionId>>> = {
@@ -538,6 +1010,19 @@ const TOOL_SECTIONS: Readonly<Partial<Record<string, SectionId>>> = {
   open_project: "clients",
   create_project: "clients",
   update_project: "clients",
+  create_client: "clients",
+  update_client: "clients",
+  log_contact: "clients",
+  add_promise: "clients",
+  close_promise: "clients",
+  list_deals: "deals",
+  create_deal: "deals",
+  update_deal: "deals",
+  write_doc: "docs",
+  list_invoices: "invoices",
+  open_invoice: "invoices",
+  draft_invoice: "invoices",
+  record_expense: "money",
 };
 const shellOf = Effect.fn("KinTasksKeyTools.shell")((holder: TasksKeyHolder) =>
   KinShell.get(holder.orgId).pipe(Effect.mapError(() => unavailable)),
@@ -557,7 +1042,7 @@ const requireSection = Effect.fn("KinTasksKeyTools.requireSection")(function* (
 // Read from the request, not declared: tool services are built with the server, and the holder
 // exists only per request. Without `auth` in front there is none, and every call fails.
 // Every answer passes here: text a reader can't see but a model reads is taken out of it.
-const asHolder = Effect.fnUntraced(function* <A, R extends Services>(
+const asHolder = Effect.fnUntraced(function* <A, R>(
   run: (holder: TasksKeyHolder) => Effect.Effect<A, KinChatError, R>,
 ) {
   const caller = yield* Effect.serviceOption(TasksKeyCaller);
@@ -584,7 +1069,174 @@ const cleanedValue = (value: unknown): unknown =>
 
 // The key's holder is the only authority here, checked by the service; T3's caller
 // declarations describe threads and clients, which a person's key is neither.
+/** What makes a document needs the host's files; a server without them makes none. */
+const withFiles = <A, R>(
+  run: Effect.Effect<A, KinChatError, R>,
+): Effect.Effect<A, KinChatError, Exclude<R, FileSystem.FileSystem | ServerConfig>> =>
+  Effect.flatMap(Effect.serviceOption(TasksKeyCaller), (caller) =>
+    Option.isNone(caller) || Option.isNone(caller.value.files)
+      ? Effect.fail(unavailable)
+      : run.pipe(Effect.provide(caller.value.files.value)),
+  );
+/** A tool listed under a section runs only while it is on, as the screen opens only then. */
+const inSection = <A, R>(
+  name: string,
+  holder: TasksKeyHolder,
+  run: Effect.Effect<A, KinChatError, R>,
+) => {
+  const section = TOOL_SECTIONS[name];
+  return section === undefined ? run : requireSection(holder, section).pipe(Effect.andThen(run));
+};
+const namesFor = Effect.fn("KinTasksKeyTools.names")(function* (holder: TasksKeyHolder) {
+  const names = yield* orgOwner(holder.orgId).pipe(
+    Effect.flatMap((owner) => toolNamesOf(holder.orgId, owner)),
+    Effect.mapError(() => unavailable),
+  );
+  return (who: KinWorkPrincipal) =>
+    toolName(who, names, { _tag: "person", personId: holder.personId });
+});
+
 const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
+  create_client: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.createClient")((input) =>
+      asHolder((holder) =>
+        inSection(
+          "create_client",
+          holder,
+          Acts.createClient(holder, input).pipe(Effect.flatMap((key) => openClient(holder, key))),
+        ),
+      ),
+    ),
+  ),
+  update_client: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.updateClient")((input) =>
+      asHolder((holder) =>
+        inSection(
+          "update_client",
+          holder,
+          Acts.updateClient(holder, input).pipe(Effect.flatMap((key) => openClient(holder, key))),
+        ),
+      ),
+    ),
+  ),
+  log_contact: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.logContact")((input) =>
+      asHolder((holder) =>
+        inSection(
+          "log_contact",
+          holder,
+          Acts.logContact(holder, input).pipe(Effect.map((client) => ({ client, logged: true }))),
+        ),
+      ),
+    ),
+  ),
+  list_deals: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.listDeals")((input) =>
+      asHolder((holder) =>
+        inSection(
+          "list_deals",
+          holder,
+          namesFor(holder).pipe(Effect.flatMap((name) => Acts.listDeals(holder, input, name))),
+        ),
+      ),
+    ),
+  ),
+  create_deal: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.createDeal")((input) =>
+      asHolder((holder) =>
+        inSection(
+          "create_deal",
+          holder,
+          namesFor(holder).pipe(Effect.flatMap((name) => Acts.createDeal(holder, input, name))),
+        ),
+      ),
+    ),
+  ),
+  update_deal: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.updateDeal")((input) =>
+      asHolder((holder) =>
+        inSection(
+          "update_deal",
+          holder,
+          namesFor(holder).pipe(Effect.flatMap((name) => Acts.updateDeal(holder, input, name))),
+        ),
+      ),
+    ),
+  ),
+  add_promise: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.addPromise")((input) =>
+      asHolder((holder) => inSection("add_promise", holder, Acts.addPromise(holder, input))),
+    ),
+  ),
+  close_promise: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.closePromise")((input) =>
+      asHolder((holder) =>
+        inSection("close_promise", holder, Acts.closePromise(holder, input.key)),
+      ),
+    ),
+  ),
+  write_doc: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.writeDoc")((input) =>
+      asHolder((holder) => inSection("write_doc", holder, Acts.writeDoc(holder, input))),
+    ),
+  ),
+  list_invoices: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.listInvoices")((input) =>
+      asHolder((holder) => inSection("list_invoices", holder, Acts.listInvoices(holder, input))),
+    ),
+  ),
+  open_invoice: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.openInvoice")((input) =>
+      asHolder((holder) => inSection("open_invoice", holder, Acts.openInvoice(holder, input.key))),
+    ),
+  ),
+  draft_invoice: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.draftInvoice")((input) =>
+      asHolder((holder) =>
+        inSection("draft_invoice", holder, withFiles(Acts.draftInvoice(holder, input))),
+      ),
+    ),
+  ),
+  record_expense: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.recordExpense")((input) =>
+      asHolder((holder) => inSection("record_expense", holder, Acts.recordExpense(holder, input))),
+    ),
+  ),
+  list_lists: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.listLists")(() =>
+      asHolder((holder) => inSection("list_lists", holder, Acts.listLists(holder))),
+    ),
+  ),
+  list_entries: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.listEntries")((input) =>
+      asHolder((holder) => inSection("list_entries", holder, Acts.listEntries(holder, input))),
+    ),
+  ),
+  add_entry: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.addEntry")((input) =>
+      asHolder((holder) => inSection("add_entry", holder, Acts.addEntry(holder, input))),
+    ),
+  ),
+  update_entry: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.updateEntry")((input) =>
+      asHolder((holder) => inSection("update_entry", holder, Acts.updateEntry(holder, input))),
+    ),
+  ),
+  read_numbers: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.readNumbers")((input) =>
+      asHolder((holder) => inSection("read_numbers", holder, Acts.readNumbers(holder, input))),
+    ),
+  ),
+  record_number: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.recordNumber")((input) =>
+      asHolder((holder) => inSection("record_number", holder, Acts.recordNumber(holder, input))),
+    ),
+  ),
+  list_waiting: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.listWaiting")(() =>
+      asHolder((holder) => inSection("list_waiting", holder, Acts.listWaiting(holder))),
+    ),
+  ),
   list_people: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.people")(() => asHolder(listPeople)),
   ),
@@ -721,6 +1373,14 @@ const auth = HttpRouter.middleware<{ provides: TasksKeyCaller }>()<
   Effect.gen(function* () {
     const kin = yield* KinServer;
     const sessions = yield* Effect.serviceOption(SessionStore);
+    const files = Option.map(
+      Option.all({
+        fs: yield* Effect.serviceOption(FileSystem.FileSystem),
+        config: yield* Effect.serviceOption(ServerConfig),
+      }),
+      ({ fs, config }) =>
+        Context.make(FileSystem.FileSystem, fs).pipe(Context.add(ServerConfig, config)),
+    );
     // Untraced: a span here would wrap the tool call; the HTTP server span already covers it.
     return Effect.fnUntraced(function* (effect: Admitted) {
       if (Option.isNone(kin.services) || Option.isNone(sessions))
@@ -734,7 +1394,7 @@ const auth = HttpRouter.middleware<{ provides: TasksKeyCaller }>()<
       );
       if (Option.isNone(holder)) return refused;
       return yield* effect.pipe(
-        Effect.provideService(TasksKeyCaller, { holder: holder.value, services }),
+        Effect.provideService(TasksKeyCaller, { holder: holder.value, services, files }),
       );
     });
   }),

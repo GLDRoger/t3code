@@ -454,14 +454,15 @@ export const list = Effect.fn("KinWork.list")(function* (
 });
 
 /**
- * Through a coding agent's connection: the Work tasks the person's own Tasks list shows them, by
- * holder, project or state, without what no key carries, soonest due first.
+ * Through a coding agent's connection: the entries the person's own lists show them (Tasks unless
+ * another list is named), by holder, client, project or state, without what no key carries,
+ * soonest due first.
  */
 export const listSeen = Effect.fn("KinWork.listSeen")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: Pick<
     KinWorkListInput,
-    "orgId" | "owner" | "project" | "states" | "open" | "limit" | "cursor"
+    "orgId" | "list" | "owner" | "party" | "project" | "states" | "open" | "limit" | "cursor"
   >,
   connection: CodingAgentConnection,
 ) {

@@ -46,10 +46,11 @@ export const asPerson = (holder: TasksKeyHolder) => {
  * `run` as the key's person, as their own screen's method runs it, with the key's checks in the
  * same transaction: the key still theirs and live.
  */
-const keyed = Effect.fn("KinTasksKey.keyed")(function* <A, E extends { readonly _tag: string }, R>(
-  holder: TasksKeyHolder,
-  run: (people: ReadonlyArray<PersonIdentity>) => Effect.Effect<A, E, R>,
-) {
+export const keyed = Effect.fn("KinTasksKey.keyed")(function* <
+  A,
+  E extends { readonly _tag: string },
+  R,
+>(holder: TasksKeyHolder, run: (people: ReadonlyArray<PersonIdentity>) => Effect.Effect<A, E, R>) {
   const sql = yield* SqlClient.SqlClient;
   const { connection, people } = asPerson(holder);
   return yield* connectionViewer(people, connection, holder.orgId).pipe(
@@ -61,7 +62,7 @@ const keyed = Effect.fn("KinTasksKey.keyed")(function* <A, E extends { readonly 
 });
 
 /** A key a key never carries (labelled, or under a labelled client or project) is unknown. */
-const reachKey = Effect.fn("KinTasksKey.reachKey")(function* (
+export const reachKey = Effect.fn("KinTasksKey.reachKey")(function* (
   holder: TasksKeyHolder,
   key: KinRecordKey,
 ) {
@@ -72,13 +73,16 @@ const reachKey = Effect.fn("KinTasksKey.reachKey")(function* (
     return yield* new KinChatError({ reason: "not_found", message: `No ${key} here.` });
   return key;
 });
-const reachable = <K extends KinRecordKey | null | undefined>(holder: TasksKeyHolder, key: K) =>
+export const reachable = <K extends KinRecordKey | null | undefined>(
+  holder: TasksKeyHolder,
+  key: K,
+) =>
   key === undefined || key === null
     ? Effect.succeed(key)
     : reachKey(holder, key).pipe(Effect.as(key));
 
 /** The same request from the same key is the same request id, so a retry makes nothing new. */
-const requestIdOf = (holder: TasksKeyHolder, kind: string, request: object) =>
+export const requestIdOf = (holder: TasksKeyHolder, kind: string, request: object) =>
   `key:${holder.sessionId}:${kind}:${entryHashOf({ clientRequestId: "", ...request }).slice(0, 40)}`;
 
 const due = (day: string | null | undefined) =>

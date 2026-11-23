@@ -56,9 +56,9 @@ export const connectionLive = Effect.fn("KinCodingAgent.live")(function* (
 });
 
 /**
- * In the caller's transaction: what the key adds to the screen's own check for one task: a Work
- * task nobody dropped, and neither it nor its client or project labelled now. Whether the person
- * may read or change it is their screen's rule, decided by the Work method as for their app.
+ * In the caller's transaction: what the key adds to the screen's own check for one entry: nobody
+ * dropped it, and neither it nor its client or project is labelled now. Whether the person may
+ * read or change it is their screen's rule, decided by the Work method as for their app.
  */
 export const connectionReaches = Effect.fn("KinCodingAgent.reaches")(function* (
   connection: CodingAgentConnection,
@@ -67,7 +67,7 @@ export const connectionReaches = Effect.fn("KinCodingAgent.reaches")(function* (
   const sql = yield* SqlClient.SqlClient;
   const found = yield* sql`SELECT 1 FROM kin_records r
     WHERE r.org_id = ${connection.orgId} AND r.record_id = ${recordId}
-      AND r.register_id = 'work' AND r.state <> 'dropped' AND NOT ${keyWithheld(sql)}`;
+      AND r.state <> 'dropped' AND NOT ${keyWithheld(sql)}`;
   return found.length > 0;
 });
 
