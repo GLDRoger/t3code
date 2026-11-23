@@ -29,11 +29,15 @@ export const recordingSchedules = (saves: KinSchedules.SaveInput[], cancels: str
       KinSchedules.KinSchedules.of({
         save: (input) =>
           sql`INSERT OR REPLACE INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
-              source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+              source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at,
+              pending_enabled)
             VALUES (${KinSchedules.scheduleTaskId(input.orgId, input.scheduleId)}, ${input.orgId},
               ${input.scheduleId}, ${input.agentId}, ${input.chatId}, ${input.sourceEvent},
               ${input.saidBy}, ${input.audience ?? "owner_only"}, 'hash', 'inbox', ${input.now},
-              ${input.now})`.pipe(
+              ${input.now}, CASE WHEN ${input.resume === true ? 1 : 0} THEN NULL
+                ELSE (SELECT pending_enabled FROM kin_schedules
+                  WHERE task_id = ${KinSchedules.scheduleTaskId(input.orgId, input.scheduleId)})
+                END)`.pipe(
             Effect.tap(() => Effect.sync(() => saves.push(input))),
             Effect.asVoid,
             Effect.orDie,

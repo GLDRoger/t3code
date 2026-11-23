@@ -547,3 +547,69 @@ it.effect("a number the team sees says so on the card when it gains a feed or a 
     ]);
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect("one source has one schedule: a paused feed is reused and resumed, never doubled", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const schedules = yield* KinSchedules.KinSchedules;
+    yield* turn(1);
+    yield* watch(scope, dailyUsers);
+    yield* answer((yield* cards)[0]!.widgetId, ownerId);
+    yield* makeFeeds(orgId, schedules);
+    // A person paused it, then the owner asked for the feed again.
+    yield* sql`UPDATE kin_schedules SET pending_enabled = 0`;
+    yield* turn(2);
+    yield* watch(scope, { ...dailyUsers, numbers: [{ name: "Daily users", below: "900" }] });
+    yield* answer((yield* cards).at(-1)!.widgetId, ownerId);
+    yield* makeFeeds(orgId, schedules);
+    assert.deepStrictEqual(cancels, []);
+    assert.deepStrictEqual(
+      yield* sql`SELECT schedule_id AS "scheduleId", pending_enabled AS paused FROM kin_schedules
+        WHERE deleted_at IS NULL ORDER BY schedule_id`,
+      [{ scheduleId: saves[0]!.scheduleId, paused: null }],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a source moving to another keeper takes all its numbers, on one card, in place", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const schedules = yield* KinSchedules.KinSchedules;
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id,
+        created_at) VALUES ('fin', ${orgId}, 'Finance', 'lead', ${ownerId}, ${at})`;
+    yield* turn(1);
+    yield* watch(scope, dailyUsers);
+    yield* answer((yield* cards)[0]!.widgetId, ownerId);
+    yield* makeFeeds(orgId, schedules);
+    // Finance keeps the source and both its numbers now.
+    yield* sql`UPDATE kin_records SET owner_id = 'fin' WHERE org_id = ${orgId}`;
+    yield* sql`UPDATE kin_schedules SET agent_id = 'fin'`;
+    yield* turn(2);
+    const moving = yield* watch(scope, {
+      ...dailyUsers,
+      numbers: [{ name: "Daily users", below: "900" }],
+    });
+    assert.deepStrictEqual(moving.proposed, [
+      `Change "Daily users" (G-1): speak up below 900 users (now below 1,000 users); from "${SOURCE}", fetched every day at 08:00; kept by Chief of staff (was Finance)`,
+      `"${SOURCE}" moves from Finance to Chief of staff, with 2 numbers.`,
+    ]);
+    yield* answer((yield* cards).at(-1)!.widgetId, ownerId);
+    assert.deepStrictEqual(
+      (yield* watched).map(({ key, keeper }) => ({ key, keeper })),
+      [
+        { key: "G-1", keeper: lead },
+        { key: "G-2", keeper: lead },
+      ],
+    );
+    yield* makeFeeds(orgId, schedules);
+    // The same schedule, saved in place for the new keeper: never none, never two.
+    assert.deepStrictEqual(cancels, []);
+    assert.deepStrictEqual(
+      yield* sql`SELECT schedule_id AS "scheduleId", agent_id AS "agentId" FROM kin_schedules
+        WHERE deleted_at IS NULL ORDER BY schedule_id`,
+      [{ scheduleId: saves[0]!.scheduleId, agentId: lead }],
+    );
+  }).pipe(Effect.provide(layer)),
+);

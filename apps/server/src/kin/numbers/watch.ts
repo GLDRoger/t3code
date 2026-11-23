@@ -75,6 +75,7 @@ export const NumbersWatchResult = Schema.Struct({
   next: Schema.String,
 });
 
+const quoted = (word: string) => `"${word}"`;
 const nameKey = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
 
 /** Each agent's and person's name in this company, by `kind:id`. */
@@ -149,6 +150,16 @@ export const drawCard = Effect.fn("KinNumbersWatch.draw")(function* (
             : undefined;
     return cardLine(number, feed, existing, { keptBy, computed, shared });
   });
+  // One source has one keeper: taking it over takes every number it feeds.
+  const fromSource =
+    feed === undefined
+      ? []
+      : all.filter((one) => one.kind === "recorded" && one.definedSource === feed.source);
+  const current = feeds[0]?.agentId ?? fromSource.find((one) => one.keeper !== undefined)?.keeper;
+  if (feed !== undefined && current !== undefined && current !== agentId)
+    lines.push(
+      `${quoted(feed.source)} moves from ${nameOf("agent", current)} to ${asker}, with ${fromSource.length} ${fromSource.length === 1 ? "number" : "numbers"}.`,
+    );
   if (feed?.how !== undefined) lines.push(howLine(feed.how));
   const base = retryKey(
     stableStringify({
@@ -179,7 +190,12 @@ export const drawCard = Effect.fn("KinNumbersWatch.draw")(function* (
       lines,
     }),
   );
-  return { matched, lines, base };
+  return {
+    matched,
+    lines,
+    base,
+    moving: fromSource.filter((one) => one.keeper !== agentId).map((one) => one.key),
+  };
 });
 
 /** A source given as one of the company's connections' ids reads as that connection's label. */

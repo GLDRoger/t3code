@@ -13,6 +13,7 @@ import {
   decodeNumbersChange,
   FEED_EVENT,
   FEED_SCHEDULE,
+  feedSchedules,
   liveFeeds,
   NUMBERS_CHANGE,
 } from "./numberRows.ts";
@@ -88,9 +89,11 @@ export const makeFeeds = Effect.fn("KinNumbers.makeFeeds")(function* (
       yield* done;
       continue;
     }
-    const same = (yield* liveFeeds(orgId)).filter((one) => one.feed.source === feed.source);
-    const kept = same.find((one) => one.agentId === row.agentId);
-    for (const other of same) if (other !== kept) yield* schedules.cancel(orgId, other.scheduleId);
+    // Every schedule of the source, paused ones too: the first is saved in place, for this
+    // keeper and running again; any other goes after, so there is never none and never two.
+    const [kept, ...others] = (yield* feedSchedules(orgId)).filter(
+      (one) => one.feed.source === feed.source,
+    );
     const ownerTime = { at: feed.at, days: daysOf(feed.every) };
     yield* schedules.save({
       orgId,
@@ -112,8 +115,10 @@ export const makeFeeds = Effect.fn("KinNumbers.makeFeeds")(function* (
         now,
       ),
       ownerTime,
+      resume: true,
       now,
     });
+    for (const other of others) yield* schedules.cancel(orgId, other.scheduleId);
     yield* done;
   }
 });

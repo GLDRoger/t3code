@@ -51,7 +51,7 @@ export const answerNumbersChange = Effect.fn("KinNumbersWatch.answer")(function*
     return { title: "Not watched", text: "You said no, so nothing is watched." };
   }
   const change = yield* decodeNumbersChange(row.patch).pipe(Effect.orDie);
-  const { matched, base } = yield* drawCard(
+  const { matched, base, moving } = yield* drawCard(
     input.orgId,
     row.agentId,
     {
@@ -95,6 +95,10 @@ export const answerNumbersChange = Effect.fn("KinNumbersWatch.answer")(function*
       // Whoever asks keeps what the card makes or changes; the card said so where it moves.
       yield* records.update(input.orgId, writer, number.key, { fields, owner });
   }
+  // The source's other numbers go with it to its new keeper, as the card said.
+  const onCard = new Set(change.numbers.flatMap((number) => number.key ?? []));
+  for (const key of moving)
+    if (!onCard.has(key)) yield* records.update(input.orgId, writer, key, { owner });
   yield* sql`UPDATE kin_profile_changes SET applied_at = ${input.now},
       patch_json = json_set(patch_json, '$.by', ${input.personId})
     WHERE org_id = ${input.orgId} AND change_id = ${row.changeId}`;
