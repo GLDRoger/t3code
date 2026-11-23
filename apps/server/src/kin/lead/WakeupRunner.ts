@@ -60,6 +60,8 @@ import { offTurnTexts } from "../pulse/senses/numbers.ts";
 import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
 import { dismissalGone } from "../questions/dismissed.ts";
+import { writeQueuedApproval } from "../questions/sentUpDraft.ts";
+import { KinRecords } from "../work/KinRecords.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
@@ -363,6 +365,7 @@ const make = Effect.gen(function* () {
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const chat = yield* Effect.serviceOption(KinChatService);
+  const records = yield* Effect.serviceOption(KinRecords);
   const scope = yield* Effect.scope;
   const spaceChecks = new Set<KinOrgId>();
   const spaceFolders = Option.map(yield* Effect.serviceOption(ServerConfig), (config) =>
@@ -484,7 +487,7 @@ const make = Effect.gen(function* () {
    * it starts no turn. A failed read keeps the event for the turn.
    */
   const goneBeforeTurn = Effect.fn("WakeupRunner.goneBeforeTurn")(
-    function* (orgId: KinOrgId, event: KinEvent) {
+    function* (orgId: KinOrgId, wakeupId: KinWakeupId, event: KinEvent) {
       if (event._tag === "record.changed" && event.reason === "joined")
         return !(yield* stillJoined(orgId, event.agentId, event.recordId));
       // A number's crossing whose episode ended, was handled or went quiet since it was queued.
@@ -516,6 +519,17 @@ const make = Effect.gen(function* () {
           .readItemQuietly(orgId, subject.itemId, "triggers")
           .pipe(Effect.as(false), Effect.catchTags({ MemoryNotFound: () => Effect.succeed(true) }));
       }
+      // A proposal or client terms approved before Kin wrote them itself: written now, no turn.
+      if (
+        subject.type === "question" &&
+        subject.approved === true &&
+        Option.isSome(records) &&
+        Option.isSome(chat)
+      )
+        return yield* writeQueuedApproval(
+          { orgId, agentId: event.agentId, wakeupId },
+          chat.value,
+        ).pipe(Effect.provideService(KinRecords, records.value));
       if (subject.type !== "question" || subject.undone === true || subject.answered === true)
         return false;
       if (subject.dismissed === true) return yield* dismissalGone(orgId, subject);
@@ -1301,7 +1315,7 @@ const make = Effect.gen(function* () {
                 : Effect.succeed(true),
             );
             events = yield* Effect.filter(events, (event) =>
-              goneBeforeTurn(orgId, event).pipe(Effect.map((gone) => !gone)),
+              goneBeforeTurn(orgId, wakeupId, event).pipe(Effect.map((gone) => !gone)),
             );
             if (events.length === 0) {
               yield* queue.finish({ orgId, wakeupId, status: "completed" });

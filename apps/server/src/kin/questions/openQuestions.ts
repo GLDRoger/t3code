@@ -72,8 +72,9 @@ import {
   draftDetail,
   DRAFT_WORDS,
   type StoredDraft,
+  writtenOnApprove,
 } from "./approval.ts";
-import { capital, inDocs, tellMade, writeApproved, writtenOnApprove } from "./sentUpDraft.ts";
+import { capital, inDocs, tellMade, writeApproved } from "./sentUpDraft.ts";
 
 /** The fixed headings of the open-questions sections; Kin's evals check a case's against these. */
 export const OPEN_QUESTION_HEADINGS = {

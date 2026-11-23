@@ -89,8 +89,21 @@ import * as OwnerWork from "../work/ownerWork.ts";
 import { DRAFT_OWN_CHAT_ONLY } from "../work/teamView.ts";
 import * as Questions from "./openQuestions.ts";
 import * as Dismissed from "./dismissed.ts";
-import { approvalOf, type DraftKind, madeUnderApproval } from "./approval.ts";
-import { APPROVED_TURN_TEXT, approvedTurnText, tellDraftMade } from "./sentUpDraft.ts";
+import {
+  approvalDedupeKey,
+  approvalEventId,
+  approvalOf,
+  approvedClient,
+  type DraftKind,
+  madeUnderApproval,
+} from "./approval.ts";
+import { approvedRefusal, WRITTEN_ITSELF } from "../lead/approvedDraft.ts";
+import {
+  APPROVED_TURN_TEXT,
+  approvedTurnText,
+  tellDraftMade,
+  writeQueuedApproval,
+} from "./sentUpDraft.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
 import { holdLine } from "../triggers/quietHold.ts";
 import { defaultDue } from "./rules.ts";
@@ -2061,8 +2074,28 @@ it.effect("the owner's Approve writes a sent-up proposal, or queues a turn to ma
       yield* tellDraftMade(turn, chats);
       assert.lengthOf(yield* team.kinLines(zoya.chatId), zoyaHeard);
       // The quote's one entry, made at the write sink: kept, Draft, recorded against it; Zoya
-      // hears once.
+      // hears once. For another client than its card's, or none, nothing is written.
       const records = Context.get(team.services, KinRecords);
+      for (const party of [{ partyId: "rec_tidewater" }, {}]) {
+        const refusal = yield* Effect.flip(
+          records.create(
+            org,
+            { actor: { _tag: "agent", agentId: chief }, via: "lead", wakeupId: turn.wakeupId },
+            {
+              list: "quotes",
+              originKey: `elsewhere-quote-${JSON.stringify(party)}`,
+              title: "Harbourline quote",
+              owner: { _tag: "agent", agentId: chief },
+              ...party,
+            },
+          ),
+        );
+        assert.strictEqual(refusal.message, approvedClient("Harbourline Hotels"));
+      }
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_records WHERE org_id = ${orgId} AND register_id = 'quotes'`,
+        0,
+      );
       const { row: entry } = yield* records.create(
         org,
         { actor: { _tag: "agent", agentId: chief }, via: "lead", wakeupId: turn.wakeupId },
@@ -2226,9 +2259,18 @@ it.effect("the owner's Approve writes a sent-up proposal, or queues a turn to ma
       assert.isNull(yield* approvedAt("q-older-terms"));
       assert.lengthOf(yield* approvedDocs, docsBefore);
       assert.deepStrictEqual(yield* team.kinLines(arjunChat), arjunHeard);
-      // With its client there, his Approve writes them as any other, private like a proposal.
-      yield* sql`UPDATE kin_questions SET draft_json = ${olderTerms("rec_tidewater")}
+      // A result recorded for it already, which nothing should do: the write fails the same way.
+      yield* sql`UPDATE kin_questions SET draft_json = ${olderTerms("rec_tidewater")},
+          draft_made_json = '{"kind":"mail","askId":"ask-elsewhere"}'
         WHERE question_id = 'q-older-terms'`;
+      assert.strictEqual(
+        (yield* Effect.flip(approveOlder)).message,
+        "Kin couldn't write the client terms, so nothing was approved. Changes first sends it back for a new one.",
+      );
+      assert.deepInclude(yield* questionRow(sql, "q-older-terms"), { state: "open", answer: null });
+      assert.lengthOf(yield* approvedDocs, docsBefore);
+      // With its client there, his Approve writes them as any other, private like a proposal.
+      yield* sql`UPDATE kin_questions SET draft_made_json = NULL WHERE question_id = 'q-older-terms'`;
       const older = yield* approveOlder;
       assert.deepInclude((yield* approvedDocs).at(-1), {
         title: "Client terms for Tidewater Freight",
@@ -2258,6 +2300,8 @@ it.effect("the owner's Approve writes a sent-up proposal, or queues a turn to ma
         kind: "proposal",
         for: "DL-3",
       });
+      yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
+        VALUES (${orgId}, ${dealUp.questionId}, 'mail:invented')`;
       yield* tap(owner, dealUp.questionId, "option-1", "rhea-approve-deal");
       const dealDoc = (yield* approvedDocs).at(-1)!;
       assert.deepInclude(dealDoc, {
@@ -2269,6 +2313,116 @@ it.effect("the owner's Approve writes a sent-up proposal, or queues a turn to ma
         yield* sql`SELECT relation FROM kin_record_links WHERE org_id = ${orgId}
           AND record_id = ${dealDoc.recordId} AND kind = 'record' AND target = 'rec_tide_deal'`,
         [{ relation: "relates" }],
+      );
+      // The outside read that shaped it marks both ends of the link, each in its own history.
+      const stampedLinks = (recordId: string) =>
+        sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_changes c
+          WHERE c.org_id = ${orgId} AND c.record_id = ${recordId} AND c.kind = 'linked'
+            AND EXISTS (SELECT 1 FROM kin_event_outside o WHERE o.org_id = c.org_id
+              AND o.event_id = 'record-change:' || c.record_id || ':' || c.seq)`.pipe(
+          Effect.map(([row]) => row!.n),
+        );
+      assert.strictEqual(yield* stampedLinks(dealDoc.recordId), 1);
+      assert.strictEqual(yield* stampedLinks("rec_tide_deal"), 1);
+      // Zoya reads the deal's sheet: no line of its history leads to the doc she can't see.
+      const linksTo = (detail: {
+        readonly changes: ReadonlyArray<{
+          readonly fields: ReadonlyArray<{ readonly to: string | null }>;
+        }>;
+      }) =>
+        detail.changes.some((change) =>
+          change.fields.some((field) => field.to === dealDoc.recordId),
+        );
+      assert.isTrue(linksTo(yield* OwnerWork.get([owner], { orgId, key: "DL-3" })));
+      assert.isFalse(linksTo(yield* OwnerWork.get([person("zoya")], { orgId, key: "DL-3" })));
+
+      // A proposal approved before Kin wrote them itself, its turn still queued: the check before
+      // a turn writes it as the Approve now would and tells Zoya, so the wake starts no turn. Its
+      // turn, were it to run, makes no doc.
+      yield* drained;
+      const legacy = yield* sendUp("zoya", "Harbourline winter proposal: four shoots", {
+        kind: "proposal",
+        for: "C-7",
+      });
+      yield* drained;
+      yield* sql`UPDATE kin_questions SET state = 'answered', answer = 'Approve',
+          closed_at = ${IST_MON_1130}, approved_at = ${IST_MON_1130}
+        WHERE question_id = ${legacy.questionId}`;
+      yield* queue.enqueue(
+        decodeEvent({
+          _tag: "deferral.due",
+          eventId: approvalEventId(org, legacy.questionId),
+          orgId: org,
+          agentId: chief,
+          receivedAt: "2026-11-16T06:00:00.000Z",
+          provenance: { _tag: "system" },
+          dedupeKey: approvalDedupeKey(legacy.questionId),
+          subject: {
+            type: "question",
+            questionId: legacy.questionId,
+            answered: true,
+            approved: true,
+          },
+          lateByMs: 0,
+        }),
+      );
+      const legacyTurn = {
+        orgId: org,
+        agentId: chief,
+        wakeupId: yield* startAgentWakeup({
+          orgId,
+          agentId: chief,
+          threadId: ThreadId.make("chief-thread"),
+          queued: true,
+        }),
+      };
+      assert.strictEqual(
+        yield* approvedRefusal(legacyTurn, "doc_create", {
+          title: "Winter terms",
+          body: "Harbourline winter proposal: four shoots",
+          company: true,
+        }),
+        WRITTEN_ITSELF,
+      );
+      assert.isTrue(yield* writeQueuedApproval(legacyTurn, chats));
+      assert.deepInclude((yield* approvedDocs).at(-1), {
+        title: "Proposal for Harbourline Hotels",
+        partyId: "rec_harbourline",
+        owner: "agent:chief",
+        category: "proposal",
+        sensitive: 1,
+        body: "Harbourline winter proposal: four shoots\n",
+      });
+      assert.strictEqual(
+        (yield* team.kinLines(legacy.chatId)).at(-1),
+        "Rhea Rao approved; the proposal is in Docs.",
+      );
+      const afterLegacy = (yield* approvedDocs).length;
+      assert.isTrue(yield* writeQueuedApproval(legacyTurn, chats));
+      assert.lengthOf(yield* approvedDocs, afterLegacy);
+
+      // Zoya's next send-up may say what her own approved proposals are called; anyone else's
+      // private title still holds it back.
+      const again = yield* wakeOn(
+        "chief",
+        "zoya",
+        zoyaChat,
+        "Draft the spring Harbourline proposal",
+      );
+      const nextUp = yield* askFor("chief", again, {
+        ...upInput("zoya", "Harbourline spring proposal: two shoots"),
+        question: "Approve the proposal for Harbourline Hotels?",
+        intent: "harbourline spring proposal",
+        draft: { kind: "proposal", for: "C-7" },
+      });
+      assert.strictEqual(nextUp.state, "posted");
+      const others = yield* wakeOn("chief", "zoya", zoyaChat, "Draft the summer proposal");
+      yield* refused(
+        askFor("chief", others, {
+          ...upInput("zoya", "Like the Proposal from Arjun Nair, two shoots"),
+          intent: "harbourline summer proposal",
+        }),
+        "Not for Zoya Sheikh: it repeats a private entry or a client's terms they can't see.",
       );
 
       // Her own figure rides up in the draft; one she didn't give is still not for her.

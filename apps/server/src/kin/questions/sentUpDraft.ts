@@ -2,7 +2,6 @@ import {
   KinAgentId,
   KinChatError,
   KinChatId,
-  type KinDocKind,
   KinMessageId,
   type KinOrgId,
   KinPersonId,
@@ -11,18 +10,21 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { KinChatService } from "../chat/KinChatService.ts";
-import { changeStampKey, stampEvent, storedStamp } from "../lead/OutsideContent.ts";
+import { storedStamp } from "../lead/OutsideContent.ts";
 import * as Reach from "../lead/Reach.ts";
 import * as Docs from "../work/docs.ts";
 import type { Writer } from "../work/KinRecords.ts";
 import { personSees } from "../work/teamView.ts";
 import {
   type Approval,
+  approvedDocOrigin,
   approvedFor,
   DRAFT_WORDS,
   type DraftKind,
   recordMade,
   type StoredDraft,
+  writtenDocKind,
+  writtenOnApprove,
 } from "./approval.ts";
 import { personOfChat } from "./openQuestions.ts";
 
@@ -114,7 +116,7 @@ export const tellMade = Effect.fn("KinSentUpDraft.tell")(function* (
           ? inDocs(approval.draft.kind, entry.sees === 1 ? entry.key : undefined)
           : `the ${word} is a draft in Money${entry.sees === 1 ? `: ${entry.key}` : ""}`
       }.`;
-  } else if (made?.kind === "mail" || made?.kind === "post")
+  } else if (made?.kind === "mail" || (made?.kind === "post" && made.cardId !== undefined))
     body = `${owner} approved; the ${made.kind} is with ${owner} to confirm.`;
   else if (startedAt !== undefined) {
     const [asked] = yield* sql`SELECT 1 FROM kin_questions
@@ -135,15 +137,11 @@ export const tellMade = Effect.fn("KinSentUpDraft.tell")(function* (
   });
 });
 
-/** The kinds Kin writes itself on the owner's Approve, word for word and with no turn: a doc each. */
-const WRITTEN: Partial<Record<DraftKind, KinDocKind>> = { proposal: "proposal", terms: "other" };
-export const writtenOnApprove = (kind: DraftKind) => WRITTEN[kind] !== undefined;
-
 /**
- * The owner's Approve on a proposal or client terms, in his tap: the doc the agent would have made,
- * written from the stored draft word for word, for the card's client and linked to its deal,
- * private as money terms are. What the asking turn had read from outside marks it, as a turn's
- * write would be. Any failure fails the tap, so nothing is approved.
+ * The owner's Approve on a proposal or client terms: the doc the agent would have made, written
+ * from the stored draft word for word, for the card's client and linked to its deal, private as
+ * money terms are. Each change it makes carries the asking turn's outside stamp, as that turn's
+ * write would. Any failure fails the caller, so nothing is approved or made.
  */
 export const writeApproved = Effect.fn("KinSentUpDraft.write")(function* (
   orgId: KinOrgId,
@@ -154,20 +152,20 @@ export const writeApproved = Effect.fn("KinSentUpDraft.write")(function* (
     readonly draft: StoredDraft;
   },
 ) {
-  const sql = yield* SqlClient.SqlClient;
   const { draft } = approval;
-  const kind = WRITTEN[draft.kind] ?? "other";
-  const writer: Writer = {
-    actor: { _tag: "agent", agentId: approval.agentId },
-    via: "lead",
-    chatId: KinChatId.make(approval.ownerChatId),
-    askedBy: null,
-  };
   const failed = new KinChatError({
     reason: "conflict",
     message: `Kin couldn't write the ${DRAFT_WORDS[draft.kind]}, so nothing was approved. Changes first sends it back for a new one.`,
   });
   return yield* Effect.gen(function* () {
+    const stamp = yield* storedStamp(orgId, approval.questionId);
+    const writer: Writer = {
+      actor: { _tag: "agent", agentId: approval.agentId },
+      via: "lead",
+      chatId: KinChatId.make(approval.ownerChatId),
+      askedBy: null,
+      ...(stamp === undefined ? {} : { outside: stamp }),
+    };
     const written = yield* Docs.create(
       orgId,
       writer,
@@ -179,21 +177,17 @@ export const writeApproved = Effect.fn("KinSentUpDraft.write")(function* (
         owner: { _tag: "agent", agentId: approval.agentId },
         summary: "Created",
         ...(draft.for?.partyId == null ? {} : { partyId: draft.for.partyId }),
-        kind,
+        kind: writtenDocKind(draft.kind) ?? "other",
         sensitive: true,
-        originKey: `approved-draft:${approval.questionId}`,
+        originKey: approvedDocOrigin(approval.questionId),
       },
     );
     const { recordId, key } = written.row;
     if (draft.for?.list === "deals")
       yield* Docs.link(orgId, writer, { key }, [draft.for.key], "relates");
-    const stamp = yield* storedStamp(orgId, approval.questionId);
-    if (stamp !== undefined)
-      for (const { seq } of yield* sql<{ seq: number }>`SELECT seq FROM kin_record_changes
-        WHERE org_id = ${orgId} AND record_id = ${recordId} ORDER BY seq`)
-        yield* stampEvent(orgId, changeStampKey(recordId, seq), stamp);
     const made = { kind: "doc", recordId, key } as const;
-    yield* recordMade(orgId, approval.questionId, made);
+    // Nothing else records a result for a question still being approved: if one did, nothing goes.
+    if (!(yield* recordMade(orgId, approval.questionId, made))) return yield* failed;
     return made;
   }).pipe(
     Effect.catchTags({
@@ -203,4 +197,36 @@ export const writeApproved = Effect.fn("KinSentUpDraft.write")(function* (
         ),
     }),
   );
+});
+
+/**
+ * A proposal or client terms approved before Kin wrote them itself, whose turn was still queued:
+ * written now as the Approve would write them, and the teammate told, instead of that turn. True
+ * when the wake was that approval's, so it starts no turn.
+ */
+export const writeQueuedApproval = Effect.fn("KinSentUpDraft.writeQueued")(function* (
+  turn: Turn,
+  chat: Pick<KinChatService["Service"], "notice">,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const approval = yield* approvedFor(turn);
+  if (approval === undefined || !writtenOnApprove(approval.draft.kind)) return false;
+  if (approval.made !== null) return true;
+  const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
+    FROM kin_leads WHERE org_id = ${turn.orgId} AND agent_id = ${approval.agentId}`;
+  if (lead === undefined) return false;
+  yield* Effect.gen(function* () {
+    const made = yield* writeApproved(turn.orgId, {
+      questionId: approval.questionId,
+      agentId: KinAgentId.make(approval.agentId),
+      ownerChatId: lead.ownerChatId,
+      draft: approval.draft,
+    });
+    yield* tellMade(turn.orgId, { ...approval, made }, chat).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Kin couldn't tell the asker an approved draft is made", { cause }),
+      ),
+    );
+  }).pipe(sql.withTransaction);
+  return true;
 });
