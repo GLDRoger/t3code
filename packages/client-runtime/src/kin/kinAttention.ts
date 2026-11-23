@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host times and local days for React render, outside an Effect runtime.
 import {
   kinCurrency,
+  KIN_PROMISE_SENSES,
   KIN_PULSE_URGENT,
   kinPulseFactRecord,
   type KinGoal,
@@ -124,6 +125,7 @@ const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
   "invoice_overdue",
   "retainer_due",
   "renewal_due",
+  ...KIN_PROMISE_SENSES,
 ]);
 
 /** The host's filter for a scope: what it sends covers what `inScope` keeps. */

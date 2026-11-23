@@ -1,3 +1,4 @@
+import { KIN_PROMISES } from "@t3tools/client-runtime/kin/kinPromises";
 import {
   useKinClientsStart,
   useKinOwnerLevel,
@@ -11,7 +12,6 @@ import {
   kinWorkPrincipalKey,
   type KinWorkDraft,
   type KinWorkRef,
-  type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
@@ -69,7 +69,14 @@ import type {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react";
-import { EllipsisIcon, MailIcon, PencilIcon, PhoneIcon, PlusIcon } from "lucide-react";
+import {
+  CalendarIcon,
+  EllipsisIcon,
+  MailIcon,
+  PencilIcon,
+  PhoneIcon,
+  PlusIcon,
+} from "lucide-react";
 import { useId, useState } from "react";
 
 import { Badge } from "../components/ui/badge";
@@ -102,6 +109,7 @@ import {
   KinWorkTimeline,
   KinWorkStaleLine,
 } from "./KinWorkParts";
+import { KinPromiseFrom } from "./KinPromises";
 import { KinWorkRow } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { KinClientDeals } from "./KinDeals";
@@ -778,14 +786,16 @@ function ClientPage(
         <p className="text-sm text-muted-foreground">{empty}</p>
       ) : (
         <ul className="flex flex-col">
-          {side.rows.map((row: KinWorkRowView) => (
+          {side.rows.map((row) => (
             <li key={row.key} className="border-b border-border/60 last:border-b-0">
               <KinWorkRow
                 row={row}
                 saving={changed.pending[row.key] !== undefined}
                 onOpen={() => props.onOpenTask(row.key)}
                 onAct={props.canChangeTasks ? (action) => act(row.key, action) : null}
+                promised={row.promise !== null}
               />
+              <KinPromiseFrom environmentId={environmentId} orgId={orgId} promise={row.promise} />
             </li>
           ))}
         </ul>
@@ -828,6 +838,18 @@ function ClientPage(
                 <KinAvatar avatar={view.lookedAfter.avatar} size="xs" />
                 <span className="truncate text-foreground">{view.lookedAfter.name}</span>
               </p>
+              {view.contract === null ? null : (
+                <div>
+                  <Badge
+                    size="lg"
+                    variant={view.contract.soon ? "warning" : "secondary"}
+                    aria-label={`${KIN_PROMISES.contract}: ${view.contract.text}`}
+                  >
+                    <CalendarIcon />
+                    {view.contract.text}
+                  </Badge>
+                </div>
+              )}
             </div>
             {can.edit || can.owner || (canInvoice && invoicesOn) ? (
               <div className="flex shrink-0 items-center gap-1">

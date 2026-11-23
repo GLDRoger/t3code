@@ -24,9 +24,11 @@ import {
   KinWorkFrame,
   KinWorkLoading,
   KinWorkTextField,
+  KinWorkToggleRow,
   useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
+import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { useKinDealPage, useKinDealSend } from "./state/useKinDeals";
 import { useKinHomeCurrency } from "./state/useKinMoney";
 import { useKinWorkDirectory, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
@@ -78,6 +80,7 @@ function KinDealEditForm(
   const now = new Date(useNowMinuteMs());
   const send = useKinDealSend(props);
   const home = useKinHomeCurrency(props) ?? null;
+  const ownerLevel = useKinIsOwnerLevel(props.environmentId);
   const [opened] = useState(() => kinDealEditDraft({ ...deal, notes: page.notes }, names));
   const [draft, setDraft] = useState(opened);
   const quotes = kinDealQuoteChoices(page, draft.quote);
@@ -162,6 +165,18 @@ function KinDealEditForm(
           <KinDealQuoteRow quotes={quotes} disabled={saving} onPick={(quote) => set({ quote })} />
         )}
       </ListSection>
+      {!ownerLevel ? null : (
+        <ListSection>
+          <KinWorkToggleRow
+            icon="lock"
+            label={KIN_DEALS.privateLabel}
+            description={draft.private ? KIN_DEALS.privateOn : KIN_DEALS.privateOff}
+            value={draft.private}
+            disabled={saving}
+            onValueChange={(on) => set({ private: on })}
+          />
+        </ListSection>
+      )}
     </FormShell>
   );
 }

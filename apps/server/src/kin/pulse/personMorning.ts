@@ -18,10 +18,10 @@ import { ownerLevel } from "../people/KinAccess.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
 import { dueWhenText, endOfDay, ownerZone, startOfDay } from "../work/recordRows.ts";
-import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
+import { KIN_OWNER_LEVEL, seenBy, viewerOfPeople } from "../work/teamView.ts";
 import { asideOf, type Hold } from "./holds.ts";
 import { holderLine, noticeHolder } from "./holderNotice.ts";
-import { DEAL_SENSES } from "./senses/deals.ts";
+import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
 import { type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { DAY_MS, HOUR_MS } from "./thresholds.ts";
 import { forHolder, markTold, untold } from "./told.ts";
@@ -156,7 +156,7 @@ export const importedSince = Effect.fn("KinPulse.importedSince")(function* (
   from: number,
 ) {
   const ids = facts.flatMap((fact) =>
-    DEAL_SENSES.has(fact.sense) && fact.subject.recordId !== undefined
+    LOOKED_AFTER_SENSES.has(fact.sense) && fact.subject.recordId !== undefined
       ? [fact.subject.recordId]
       : [],
   );
@@ -252,26 +252,85 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
     const late = yield* importedSince(orgId, facts, from + minutes(morning.at) * 60_000);
     const deals = facts.filter(
       (fact) =>
-        DEAL_SENSES.has(fact.sense) &&
+        LOOKED_AFTER_SENSES.has(fact.sense) &&
         (fact.subject.recordId === undefined || !late.has(fact.subject.recordId)),
     );
     const work = facts.filter((fact) => forHolder(fact, at, ctx.zone));
+    const viewer = (yield* ownerLevel(orgId, personId))
+      ? KIN_OWNER_LEVEL
+      : viewerOfPeople([personId]);
     const to = endOfDay(day, zone);
+    const day7 = to + COMING_DAYS * DAY_MS;
+    const clock = { zone, locale: KIN_TEXT_LOCALE };
+    const when = (row: { readonly dueAt: number; readonly allDay: number }) =>
+      dueWhenText(row.dueAt, row.allDay === 1, ctx.zone, clock, "day");
     const [today] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'ours'
         AND r.state IN ('open', 'doing', 'waiting') AND r.party_id IS NOT NULL
+        AND COALESCE(r.category, '') <> 'obligation'
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
         AND r.due_at >= ${from} AND r.due_at <= ${to}`;
-    const followUps = sectionOn(input.shell, "clients") ? (today?.count ?? 0) : 0;
+    const clientsOn = sectionOn(input.shell, "clients");
+    const followUps = clientsOn ? (today?.count ?? 0) : 0;
+    // Promises of theirs due from today through the week, each once: here, not in Needs you.
+    const promised = !clientsOn
+      ? []
+      : yield* sql<{
+          recordId: string;
+          title: string;
+          client: string;
+          dueAt: number;
+          allDay: number;
+        }>`SELECT r.record_id AS "recordId", r.title, c.title AS client, r.due_at AS "dueAt",
+        r.due_all_day AS "allDay"
+      FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+      WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'ours'
+        AND r.category = 'obligation' AND r.state IN ('open', 'doing', 'waiting')
+        AND r.owner_kind = 'person' AND r.owner_id = ${personId}
+        AND r.due_at >= ${from} AND r.due_at <= ${day7} AND ${seenBy(sql, viewer)}
+      ORDER BY r.due_at, r.key`;
+    const promisedIds = new Set(promised.map((row) => row.recordId));
+    // What a client owes them that is late is a line on the client, not their own late task.
+    const listed = (fact: KinPulseFact) =>
+      fact.sense === "theirs_late" ||
+      (fact.sense === "task_due_soon" &&
+        fact.subject.recordId !== undefined &&
+        promisedIds.has(fact.subject.recordId));
+    const dues = new Map(
+      work.length === 0
+        ? []
+        : (yield* sql<{ recordId: string; dueAt: number; allDay: number }>`SELECT
+            record_id AS "recordId", due_at AS "dueAt", due_all_day AS "allDay"
+            FROM kin_records WHERE org_id = ${orgId}
+              AND record_id IN ${sql.in(work.flatMap((fact) => fact.subject.recordId ?? []))}
+              AND due_at IS NOT NULL ORDER BY record_id`).map((row) => [row.recordId, row]),
+    );
+    const dueOf = (fact: KinPulseFact) =>
+      fact.subject.recordId === undefined ? undefined : dues.get(fact.subject.recordId);
+    const owedLate = work.flatMap((fact) => {
+      const due = fact.sense === "theirs_late" ? dueOf(fact) : undefined;
+      if (due === undefined) return [];
+      return [
+        fact.scope.clientTitle === undefined
+          ? `${fact.subject.title} was owed by ${when(due)}.`
+          : `${fact.scope.clientTitle} owed ${fact.subject.title} by ${when(due)}.`,
+      ];
+    });
     const clients = [
       ...(followUps === 0 ? [] : [`Follow-ups today: ${followUps}.`]),
+      ...(promised.length === 0 ? [] : [`Promised this week: ${promised.length}.`]),
+      ...promised.map(
+        (row) =>
+          `${row.title} for ${row.client}, ${row.dueAt <= to ? "due today" : `by ${when(row)}`}.`,
+      ),
+      ...owedLate,
       ...deals.map((fact) => fact.consequence),
     ];
     // Money still owed or unanswered, for a reader who may see it: every morning until settled.
     const money = yield* morningMoneyLines({
       orgId,
       now: at,
-      viewer: (yield* ownerLevel(orgId, personId)) ? KIN_OWNER_LEVEL : viewerOfPeople([personId]),
+      viewer,
     });
     // Written from what is true at its minute, and only with something untold: else none that day.
     if ((clients.length === 0 || deals.length + work.length === 0) && money.length === 0) {
@@ -280,25 +339,13 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
         ON CONFLICT DO NOTHING`;
       continue;
     }
-    const dues = new Map(
-      work.length === 0
-        ? []
-        : (yield* sql<{ recordId: string; dueAt: number }>`SELECT record_id AS "recordId",
-            due_at AS "dueAt" FROM kin_records WHERE org_id = ${orgId}
-              AND record_id IN ${sql.in(work.flatMap((fact) => fact.subject.recordId ?? []))}
-              AND due_at IS NOT NULL ORDER BY record_id`).map((row) => [row.recordId, row.dueAt]),
-    );
     const needsYou = work.flatMap((fact) => {
-      const due = fact.subject.recordId === undefined ? undefined : dues.get(fact.subject.recordId);
+      const due = listed(fact) ? undefined : dueOf(fact);
       if (due === undefined) return [];
-      const line = holderLine(ctx, fact, due);
+      const line = holderLine(ctx, fact, due.dueAt);
       return [`${line.key} ${line.title}, ${line.state}`];
     });
-    const day7 = to + COMING_DAYS * DAY_MS;
-    const clock = { zone, locale: KIN_TEXT_LOCALE };
-    const when = (row: { readonly dueAt: number; readonly allDay: number }) =>
-      dueWhenText(row.dueAt, row.allDay === 1, ctx.zone, clock, "day");
-    const steps = !sectionOn(input.shell, "clients")
+    const steps = !clientsOn
       ? []
       : yield* sql<{
           title: string;
@@ -308,9 +355,25 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
         }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
       FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'ours'
+        AND COALESCE(r.category, '') <> 'obligation'
         AND r.state IN ('open', 'doing', 'waiting')
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
         AND r.due_at > ${to} AND r.due_at <= ${day7}
+      ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
+    // What clients promised them, coming due this week; once late, it is a Clients line instead.
+    const owed = !clientsOn
+      ? []
+      : yield* sql<{
+          title: string;
+          client: string;
+          dueAt: number;
+          allDay: number;
+        }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
+      FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+      WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'theirs'
+        AND r.category = 'obligation' AND r.state IN ('open', 'doing', 'waiting')
+        AND r.owner_kind = 'person' AND r.owner_id = ${personId}
+        AND r.due_at >= ${at} AND r.due_at <= ${day7} AND ${seenBy(sql, viewer)}
       ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
     const expected = !sectionOn(input.shell, "deals")
       ? []
@@ -322,7 +385,7 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
         }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
       FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       WHERE r.org_id = ${orgId} AND r.register_id = 'deals' AND r.state = 'open'
-        AND r.owner_kind = 'person' AND r.owner_id = ${personId}
+        AND r.owner_kind = 'person' AND r.owner_id = ${personId} AND ${seenBy(sql, viewer)}
         AND r.due_at > ${to} AND r.due_at <= ${day7}
       ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
     const comingUp = [
@@ -333,6 +396,10 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
       ...expected.map((row) => ({
         at: row.dueAt,
         line: `${row.title} for ${row.client} is expected by ${when(row)}.`,
+      })),
+      ...owed.map((row) => ({
+        at: row.dueAt,
+        line: `${row.title} from ${row.client}, by ${when(row)}.`,
       })),
     ]
       .toSorted((a, b) => a.at - b.at)

@@ -37,6 +37,7 @@ import { KinTeamEntry } from "./KinTeamScreen";
 import { KinWorkEntry } from "./KinWorkScreen";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
+import { KinNumbersEntry } from "./KinNumbersScreens";
 import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
@@ -162,6 +163,15 @@ export function KinChatsList({
               {state._tag === "ready" && myPersonId !== null ? (
                 <KinWhatKinIs environmentId={state.environmentId} personId={myPersonId} />
               ) : null}
+              {
+                // Numbers is a place off the dock: its row sits here, where Chats opens.
+                newLeadAt === null ? null : (
+                  <KinNumbersEntry
+                    environmentId={newLeadAt.environmentId}
+                    orgId={newLeadAt.orgId}
+                  />
+                )
+              }
               {
                 // Where Kin is the whole app, or a dock is drawn under the list, these are
                 // Settings pages and tabs, and the list is chats.
