@@ -13,7 +13,7 @@ const plain = (decimal: string, unit: string | undefined) =>
     : `${figure(decimal, undefined)} ${unit}`;
 
 /** The key `number_off` gives a number outside a limit: one fact per time it goes outside. */
-export const numberOffPrefix = (key: string, side: "above" | "below", limit: string) =>
+const numberOffPrefix = (key: string, side: "above" | "below", limit: string) =>
   `number_off:${key}:${side}=${limit}:since=`;
 
 /**
