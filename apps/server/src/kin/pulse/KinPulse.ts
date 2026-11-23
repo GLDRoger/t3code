@@ -65,6 +65,7 @@ import {
 } from "./told.ts";
 import { visibleOverflow } from "./senses/capped.ts";
 import { draftWakes } from "./draftWake.ts";
+import { reviewWakes } from "./reviewWake.ts";
 import {
   asideOf,
   asideView,
@@ -851,6 +852,8 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         }),
         sees: (personId, some) => visibleTo(orgId, { _tag: "people", people: [personId] }, some),
       });
+      // An agent's unread messages whose subject moved on: one wake to keep them true.
+      const reviewed = yield* reviewWakes({ orgId, at });
       if (moved > 0 || sensedNow !== lastSensed.get(orgId)) yield* refreshes.touch(orgId, "pulse");
       yield* sql.afterCommit(
         Effect.sync(() => {
@@ -859,7 +862,15 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         }),
       );
       gone = cleared.map((row) => row.fact_key);
-      return { facts: facts.length, cleared: cleared.length, woken, told, pages, drafted };
+      return {
+        facts: facts.length,
+        cleared: cleared.length,
+        woken,
+        told,
+        pages,
+        drafted,
+        reviewed,
+      };
     }),
   );
   yield* settleNotices(orgId, gone);

@@ -3108,6 +3108,68 @@ describe("KinPushSender withdrawals", () => {
     },
   );
 
+  it.effect("an agent's withdrawn or replaced message changes its chat's banner quietly", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql, sender } = yield* seedTopical;
+      yield* pairChat(sql);
+      const from = { personId: member, memberId: "m_priya_pair" };
+      const chatId = KinChatId.make("chat_pair");
+      const shown = () =>
+        apns.sent
+          .filter((push) => push.token === ownerPhone && !push.background)
+          .map((push) => {
+            const { aps } = push.payload as {
+              aps: { alert?: { body: string }; sound?: string };
+            };
+            return [aps.alert?.body ?? null, aps.sound ?? null, payloadOf(push).body.version];
+          });
+      const withdrawn = () =>
+        apns.sent
+          .filter((push) => push.token === ownerPhone)
+          .flatMap((push) => (payloadOf(push).body.withdraw as Array<unknown> | undefined) ?? []);
+      const a = yield* postMessage(sql, from, "posted", { chatId, body: "The deck is ready" });
+      yield* notify({ _tag: "message", orgId, messageId: a });
+      const b = yield* postMessage(sql, from, "posted", { chatId, body: "Printer says Tuesday" });
+      yield* notify({ _tag: "message", orgId, messageId: b });
+      apns.sent.length = 0;
+
+      // Put right: the banner shows the new words, with no sound.
+      yield* sql`UPDATE kin_messages SET body = 'Printer says Wednesday' WHERE message_id = ${b}`;
+      yield* notify({ _tag: "restate", orgId, chatId, messageId: b });
+      assert.deepStrictEqual(shown(), [["Printer says Wednesday", null, 3]]);
+      // A message the banner no longer shows changes nothing on the phone.
+      apns.sent.length = 0;
+      yield* notify({ _tag: "restate", orgId, chatId, messageId: a });
+      yield* afterBatch(sender);
+      assert.deepStrictEqual([shown(), withdrawn()], [[], []]);
+
+      // Taken back: the banner shows the older unread one's words, quietly.
+      yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id = ${b}`;
+      yield* notify({ _tag: "restate", orgId, chatId, messageId: b });
+      assert.deepStrictEqual(shown(), [["The deck is ready", null, 4]]);
+      // With nothing older unread, it goes.
+      apns.sent.length = 0;
+      yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id = ${a}`;
+      yield* notify({ _tag: "restate", orgId, chatId, messageId: a });
+      yield* afterBatch(sender);
+      assert.deepStrictEqual(shown(), []);
+      assert.deepStrictEqual(withdrawn(), [{ topic: "c:chat_pair", version: 4 }]);
+
+      // Read by the time it is built: no banner comes back.
+      const c = yield* postMessage(sql, from, "posted", { chatId, body: "Invoice sent" });
+      yield* notify({ _tag: "message", orgId, messageId: c });
+      yield* sql`INSERT OR REPLACE INTO kin_read_state (org_id, chat_id, member_id, last_read_seq,
+          updated_at)
+        SELECT 'org_01', 'chat_pair', 'm_owner_pair', seq, ${T} FROM kin_messages
+        WHERE message_id = ${c}`;
+      yield* sql`UPDATE kin_messages SET body = 'Invoice sent to Orbit' WHERE message_id = ${c}`;
+      apns.sent.length = 0;
+      yield* notify({ _tag: "restate", orgId, chatId, messageId: c });
+      assert.deepStrictEqual(shown(), []);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
   it.effect("a chat's banner goes once its newest message is read, whatever came after", () => {
     const apns = makeApns();
     return Effect.gen(function* () {

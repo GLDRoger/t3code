@@ -794,6 +794,8 @@ export const kinImageText = (image: { readonly alt: string | null }) =>
 export function kinMessageLabel(row: MessageRow, time: string): string {
   const { message } = row;
   const deleted = message.status === "deleted";
+  const withdrawn = kinWithdrawnLine(row);
+  if (withdrawn !== null) return kinSentences([withdrawn, time]);
   const parts = [row.own ? "You" : `${row.authorLabel}, ${row.authorKind}`];
   if (deleted) parts.push("Message deleted");
   else {
@@ -802,8 +804,22 @@ export function kinMessageLabel(row: MessageRow, time: string): string {
   }
   parts.push(time);
   if (message.status === "suggested") parts.push("Suggestion, not sent yet");
-  else if (message.editedAt !== null && !deleted) parts.push("Edited");
+  else if (message.editedAt !== null && !deleted)
+    parts.push(message.author._tag === "agent" ? "Updated" : "Edited");
   return kinSentences(parts);
+}
+
+/** A message its agent took back, as the one line everyone sees; null for any other message. */
+export function kinWithdrawnLine(row: MessageRow): string | null {
+  const { withdrawn } = row.message;
+  if (withdrawn === undefined) return null;
+  return `${row.own ? "You" : row.authorLabel} withdrew a message: ${withdrawn.why}`;
+}
+
+/** The mark under a changed message: an agent puts the current version in place, a person edits. */
+export function kinChangedMark(message: KinMessage, time: (iso: string) => string): string | null {
+  if (message.editedAt === null || message.status !== "posted") return null;
+  return message.author._tag === "agent" ? `Updated ${time(message.editedAt)}` : "Edited";
 }
 
 // Follow-the-end
@@ -906,6 +922,8 @@ export function kinFeedViewer(orgs: KinOrgsListResult | null, orgId: string | nu
 /** Words in an open chat and its rows. */
 export const KIN_CHAT_COPY = {
   back: "Back to chats",
+  showWithdrawn: "Show what it said",
+  hideWithdrawn: "Hide what it said",
   loadingEarlier: "Loading earlier messages…",
   none: "No messages yet",
   sayHello: (agentName: string) => `Say hello to ${agentName}`,
