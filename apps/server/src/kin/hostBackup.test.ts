@@ -159,6 +159,48 @@ const notices = Effect.gen(function* () {
   return rows.map((row) => row.body);
 });
 
+it.effect.each(["retired", "none"] as const)(
+  "tells the owner once a day with %s leads and clears the notice on recovery",
+  (scenario) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const retiredAt = DateTime.formatIso(DateTime.makeUnsafe(DAY_START));
+      yield* sql`UPDATE kin_agents SET retired_at = ${retiredAt} WHERE org_id = ${orgId}`;
+      if (scenario === "none") {
+        yield* sql`UPDATE kin_people SET access = 'owner' WHERE org_id = ${orgId} AND person_id = 'rhea'`;
+        yield* sql`UPDATE kin_chats SET archived_at = ${retiredAt} WHERE org_id = ${orgId}`;
+        yield* sql`DELETE FROM kin_leads WHERE org_id = ${orgId}`;
+      }
+      const messages = sql<{ body: string; resolvedAt: string | null }>`SELECT m.body,
+        w.resolved_at AS "resolvedAt" FROM kin_messages m
+        JOIN kin_waiting w ON w.org_id = m.org_id AND w.message_id = m.message_id
+        WHERE m.org_id = ${orgId} AND m.message_id LIKE 'kin-no-lead:%'
+        ORDER BY m.created_at, m.message_id`;
+      const body =
+        "No agent is running\n\nNobody is watching for you right now: every agent is paused or retired. Resume one, or add one, in Settings, Agents.";
+      yield* HostBackupCheck.check();
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* messages, [{ body, resolvedAt: null }]);
+      yield* TestClock.adjust("1 day");
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(
+        (yield* messages).map((message) => message.body),
+        [body, body],
+      );
+      if (scenario === "none")
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES ('chief', ${orgId}, 'Chief of staff', 0, '{}', '[]', 'rhea-chief')`;
+      yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE org_id = ${orgId} AND agent_id = 'chief'`;
+      yield* TestClock.adjust("1 day");
+      yield* HostBackupCheck.check();
+      const resolved = yield* messages;
+      assert.lengthOf(resolved, 2);
+      assert.isTrue(resolved.every((message) => message.resolvedAt !== null));
+    }).pipe(Effect.provide(services)),
+);
+
 const decodeCard = Schema.decodeUnknownSync(Schema.fromJsonString(KinHostTroubleCard));
 const cards = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
