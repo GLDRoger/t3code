@@ -173,6 +173,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   readonly zone: string;
   readonly at: number;
   readonly outside: OutsideRead;
+  readonly sumUp?: boolean;
 }) {
   const queue = yield* KinEventQueue.KinEventQueue;
   const { orgId, at } = input;
@@ -299,7 +300,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
         day !== undefined && (input.scheduleId === MORNING || input.scheduleId === EVENING)
           ? yield* hasDueToday(orgId, day, company)
           : false;
-      if (!due) return { _tag: "nothing_new" } as const;
+      if (!due && input.sumUp !== true) return { _tag: "nothing_new" } as const;
     }
   }
   // Nobody asked for it: one that lands in the owner's quiet hours waits for them to end.

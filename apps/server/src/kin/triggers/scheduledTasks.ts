@@ -34,6 +34,7 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
+import * as RoutineContent from "../lead/RoutineContent.ts";
 import { bootstrapLeadProject, leadProjectId } from "../lead/leadProject.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
@@ -329,6 +330,7 @@ const make = Effect.gen(function* () {
       Effect.provideService(KinEventQueue.KinEventQueue, eventQueue),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
+  const routineContent = yield* Effect.serviceOption(RoutineContent.KinRoutineContent);
   const connections = yield* Effect.serviceOption(KinConnections);
   const outsideSource = Option.isNone(connections)
     ? noOutside
@@ -441,6 +443,15 @@ const make = Effect.gen(function* () {
       schedule.checkIn === 1 && confirmed && admitted && !paused
         ? yield* outsideSource.read(orgId)
         : undefined;
+    const sumUp =
+      outside !== undefined &&
+      !manual &&
+      schedule.scheduleId === "checkin-evening" &&
+      lead !== undefined &&
+      (Option.isNone(routineContent) ||
+        (yield* routineContent.value
+          .eveningFacts(orgId, lead.agentId)
+          .pipe(Effect.orElseSucceed(() => ""))) !== null);
     let checkedIn = false;
     yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -510,6 +521,7 @@ const make = Effect.gen(function* () {
               zone: KinSchedules.hostTimeZone(),
               at: now,
               outside,
+              sumUp,
             }),
           );
           checkedIn = true;
