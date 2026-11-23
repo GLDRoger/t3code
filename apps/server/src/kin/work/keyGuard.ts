@@ -13,11 +13,11 @@ export const MONEY_LISTS: ReadonlyArray<string> = [
   "subscriptions",
 ];
 export type ListMoney = { readonly paidOverTime: boolean; readonly carriesAmount: boolean };
-export const holdsMoney = (list: string, money: ListMoney) =>
+const holdsMoney = (list: string, money: ListMoney) =>
   MONEY_LISTS.includes(list) || money.paidOverTime || money.carriesAmount;
 
 /** The one refusal a write through a coding agent's key meets at the repository. */
-export const KEY_REFUSED = new KinChatError({
+const KEY_REFUSED = new KinChatError({
   reason: "not_allowed",
   message:
     "A coding agent's key never deletes or archives anything, nor records or changes money: the person does that in Kin.",
