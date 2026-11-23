@@ -18,6 +18,7 @@ import {
   formatKinWhen,
   KIN_TEXT_LOCALE,
   kinWhenFormat,
+  type MemoryItemEvery,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -94,6 +95,7 @@ import { companyAccounts } from "../github/githubWatchStore.ts";
 import { inheritOutside, itemSource, renderSource, storedStamp } from "./OutsideContent.ts";
 import { outsideReview } from "./outsideReview.ts";
 import { askedWhereOthersRead, wordsReadable } from "../triggers/deferralOrigin.ts";
+import { setInChat } from "./KinLeadProvision.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules, teamRules } from "./instructions.ts";
 import { socialRules } from "../social/instructions.ts";
@@ -1430,6 +1432,16 @@ export class KinLeadPrompt extends Context.Service<
           room === undefined
             ? undefined
             : new Map(room.map(({ member, name }) => [member.memberId as string, name]));
+        // What is set for this chat, so a turn here knows what it may be asked to change.
+        const setHere =
+          laneChat === undefined || laneChat.kind === "direct"
+            ? []
+            : yield* setInChat(orgId, laneChat.chatId).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.catch((cause) =>
+                  Effect.logWarning("Kin chat's reminders unavailable", cause).pipe(Effect.as([])),
+                ),
+              );
         // A brief is sent on a quiet day too (`pulse/checkIn.ts`), so it is never told to stay silent.
         const briefDue = input.events.some(
           (event) =>
@@ -1871,6 +1883,7 @@ export class KinLeadPrompt extends Context.Service<
                         groupLine(room, agentId, laneChat.leadAgentId ?? null, inTeamRoom),
                       ),
                     ]),
+                ...(setHere.length === 0 ? [] : [sharedPart(setInChatLine(setHere, timeZone))]),
                 ...(input.lane.mode === "reply" || replyDue || briefDue || inTeamRoom
                   ? []
                   : [sharedPart("Nobody is waiting on this turn.")]),
@@ -2671,6 +2684,49 @@ function groupLine(
             : "You answer here only when a message names you.",
         ]),
   ].join("\n");
+}
+const WEEKDAY_NAMES = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+] as const;
+/** "every Monday 09:00", "every weekday 08:30", "every day 18:00". */
+const everyWords = (every: MemoryItemEvery) => {
+  const days = [...new Set(every.days)].toSorted((a, b) => a - b).join("");
+  const when =
+    days === "0123456"
+      ? "day"
+      : days === "12345"
+        ? "weekday"
+        : [...days].map((day) => WEEKDAY_NAMES[Number(day)] ?? day).join(", ");
+  return `every ${when} ${every.at}`;
+};
+/**
+ * The reminders and routines set for this shared chat: id as the tool takes it, when, and who
+ * asked; a title only where its card shows one (`setInChat`).
+ */
+function setInChatLine(
+  items: Effect.Success<ReturnType<typeof setInChat>>,
+  zone: string | undefined,
+): string {
+  const timeZone = zone ?? "UTC";
+  const day = kinWhenFormat("day", { zone: timeZone, locale: KIN_TEXT_LOCALE });
+  const listed = items.map((item) => {
+    const titled = item.title.trim() === "" ? "" : ` (${encoded(item.title.trim())})`;
+    const who = encoded(item.asker.left === true ? "someone who has left" : item.asker.name);
+    return item.kind === "reminder"
+      ? `reminder ${encoded(item.itemId)}${titled} due ${day.format(item.dueAt)}, ${formatKinWhen(
+          item.dueAt,
+          "time",
+          { zone: timeZone, locale: KIN_TEXT_LOCALE },
+        )}, asked by ${who}`
+      : `routine ${encoded(item.itemId)}${titled} ${everyWords(item.every)}, set by ${who}`;
+  });
+  return `Set in this chat: ${listed.join("; ")}. Only the person who asked, the owner or a co-owner can change one; kin_cancel takes its id.`;
 }
 const eventsLimit = 60_000;
 
