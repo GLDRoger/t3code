@@ -15,6 +15,7 @@ import {
   type KinRecordLink,
   type KinRunway,
   type KinSignedMoney,
+  type KinShell,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -28,6 +29,7 @@ import {
   kinSuggestionText,
   kinTotalsLines,
 } from "./kinLists.ts";
+import { kinSectionOn } from "./kinShell.ts";
 import { formatKinTime } from "./kinScreenState.ts";
 import { kinWorkDueLabel, type KinWorkRef } from "./kinWork.ts";
 
@@ -628,10 +630,16 @@ export function kinQuoteInvoice(links: ReadonlyArray<KinRecordLink>): KinRecordK
 }
 
 /** A quote invoiced once offers its invoice, not another one. */
-export function kinQuoteActions(state: KinQuoteState, numbered: boolean, invoiced = false) {
+export function kinQuoteActions(
+  state: KinQuoteState,
+  numbered: boolean,
+  invoiced = false,
+  /** The company's sections: a quote opened by its link while they're off makes no invoice. */
+  shell?: KinShell | null,
+) {
   return {
     send: state === "draft" && numbered,
-    makeInvoice: state !== "declined" && !invoiced,
+    makeInvoice: state !== "declined" && !invoiced && kinSectionOn(shell, "invoices"),
     accept: state === "draft" || state === "sent" || state === "expired",
     decline: state !== "declined" && state !== "accepted",
     unaccept: state === "accepted",

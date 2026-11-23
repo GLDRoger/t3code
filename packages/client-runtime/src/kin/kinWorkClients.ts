@@ -906,6 +906,8 @@ const CAN_NONE: KinClientCan = { edit: false, log: false, owner: false };
 
 export interface KinClientPageView {
   readonly key: KinRecordKey;
+  /** Whether it offers making anything new under it: not while Clients is off. */
+  readonly adds: boolean;
   readonly rev: number;
   readonly ref: KinWorkRef;
   readonly name: string;
@@ -973,6 +975,7 @@ export function kinClientPageView(
     rev: party.rev,
     ref,
     name: party.name,
+    adds: kinSectionOn(shell, "clients"),
     vendor,
     prospect,
     line: [
@@ -1268,6 +1271,8 @@ function waited(since: string, now: Date): string {
 
 export interface KinProjectPageView {
   readonly key: KinRecordKey;
+  /** Whether it offers making anything new under it: not while Clients is off. */
+  readonly adds: boolean;
   readonly rev: number;
   readonly ref: KinWorkRef;
   readonly name: string;
@@ -1457,6 +1462,7 @@ export function kinProjectPageView(
     rev: project.rev,
     ref,
     name: project.name,
+    adds: kinSectionOn(shell, "clients"),
     party: project.party === null ? null : { key: project.party.key, title: project.party.title },
     kind: project.campaign === true ? KIN_MARKETING.campaign : null,
     audience: project.audience ?? null,
