@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { billingClientId } from "../work/billTo.ts";
 import type { Documented } from "./amounts.ts";
 import { companyMoney } from "../work/companyProfile.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
@@ -142,12 +143,14 @@ const paymentDays = Effect.fn("KinNumbers.paymentDays")(function* (
   row: RecordRow,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [client] = yield* sql<{ id: string; terms: string | null }>`SELECT c.record_id AS id,
+  const partyId = yield* billingClientId(orgId, row);
+  const [client] =
+    partyId === null
+      ? []
+      : yield* sql<{ id: string; terms: string | null }>`SELECT c.record_id AS id,
       json_extract(c.fields_json, '$.terms') AS terms
     FROM kin_records c
-    WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.record_id = COALESCE(
-      ${row.partyId}, (SELECT p.party_id FROM kin_records p
-        WHERE p.org_id = ${orgId} AND p.record_id = ${row.projectId}))`;
+    WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.record_id = ${partyId}`;
   return (
     termsDays(client?.terms) ??
     (yield* playbookThreshold(orgId, "payment_due_days", client?.id)).value

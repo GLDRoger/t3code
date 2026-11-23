@@ -637,9 +637,7 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => []),
     );
     return [
-      ...new Set(
-        owed.flatMap((invoice) => (invoice.partyTitle === null ? [] : [invoice.partyTitle])),
-      ),
+      ...new Set(owed.flatMap((invoice) => invoice.partyTitle ?? invoice.billTo ?? [])),
     ].filter((name) => name.trim().length >= 3);
   });
 

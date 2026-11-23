@@ -759,6 +759,82 @@ it.effect.each([true, false])(
         const madeReceipt = yield* leadCall("record_create", receipt);
         assert.include(madeReceipt, '"isError":false', madeReceipt);
         assert.include(yield* leadCall("record_get", readClient), '"isError":false');
+        const typed = {
+          list: "invoices",
+          title: "Saturday's workshop",
+          amount: "4,000",
+          fields: { billToName: "Asha Rao", billToAddress: "9 Invented Road" },
+        };
+        yield* store(9, [{ id: "clients", on: false, name: "Donors" }]);
+        assert.include(
+          yield* leadCall("record_create", { records: [{ ...typed, client: client.key }] }),
+          "Donors is turned off for this company.",
+        );
+        const madeTyped = yield* leadCall("record_create", { records: [typed] });
+        assert.include(madeTyped, '"isError":false', madeTyped);
+        assert.include(
+          yield* leadCall("record_create", {
+            records: [{ ...typed, title: "No name", fields: { billToEmail: "asha@example.com" } }],
+          }),
+          "Give the name to bill first (billToName). Nothing changed.",
+        );
+        const [invoice] = yield* sql<{
+          key: string;
+          partyId: string | null;
+        }>`SELECT key, party_id AS "partyId" FROM kin_records
+          WHERE org_id = ${person.orgId} AND title = ${typed.title}`;
+        assert.isNull(invoice!.partyId);
+        const edited = yield* leadCall("record_update", {
+          key: invoice!.key,
+          fields: { billToEmail: "asha@example.com" },
+        });
+        assert.include(edited, '"isError":false', edited);
+        const typedRows = yield* leadCall("records_query", { list: "invoices" });
+        assert.include(typedRows, "Asha Rao");
+        assert.include(typedRows, "asha@example.com");
+        const typedGet = yield* leadCall("record_get", { key: invoice!.key });
+        assert.include(typedGet, "Asha Rao");
+        yield* store(10, []);
+        const lumen = yield* OwnerClients.createParty([person], {
+          orgId: person.orgId,
+          name: "Lumen",
+          clientRequestId: "shell-lumen",
+        }).pipe(Effect.provideContext(kin.services.value));
+        const madeLinked = yield* leadCall("record_create", {
+          records: [{ list: "invoices", title: "The audit", amount: "12,000", client: "Lumen" }],
+        });
+        assert.include(madeLinked, '"isError":false', madeLinked);
+        const [audit] = yield* sql<{
+          key: string;
+          partyId: string | null;
+          fieldsJson: string;
+        }>`SELECT
+          key, party_id AS "partyId", fields_json AS "fieldsJson" FROM kin_records
+          WHERE org_id = ${person.orgId} AND title = 'The audit'`;
+        assert.isNotNull(audit!.partyId);
+        assert.notInclude(audit!.fieldsJson, "billToName");
+        const linkedRows = yield* leadCall("records_query", { list: "clients", text: "Lumen" });
+        assert.include(linkedRows, "Lumen", linkedRows);
+        const refusedTyped = yield* leadCall("record_update", {
+          key: invoice!.key,
+          client: lumen.key,
+        });
+        assert.include(
+          refusedTyped,
+          `${invoice!.key} bills Asha Rao by name. Clear that name first to give it a client. Nothing changed.`,
+        );
+        assert.include(
+          yield* leadCall("record_update", {
+            key: audit!.key,
+            fields: { billToName: "Asha Rao" },
+          }),
+          `${audit!.key} is for Lumen: its billing details come from that client. Nothing changed.`,
+        );
+        const linkedAddress = yield* leadCall("record_update", {
+          key: audit!.key,
+          fields: { billToAddress: "9 Invented Road" },
+        });
+        assert.include(linkedAddress, '"isError":false', linkedAddress);
         yield* sql`UPDATE kin_leads SET thread_id = NULL
           WHERE org_id = ${person.orgId} AND agent_id = ${agentId}`;
         const elsewhere = [

@@ -29,6 +29,7 @@ import type { ImportEntry } from "./importFormat.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { parseFields } from "./lists.ts";
+import { presetList } from "./registers.ts";
 import { matchPartner, partnerPayees, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
 
 // Invented org, people and amounts only.
@@ -1255,6 +1256,66 @@ describe("KinImport", () => {
       assert.strictEqual(all.removes.entries, 1);
       assert.strictEqual(yield* recordOf("i2"), undefined);
       assert.strictEqual((yield* recordOf("c1"))?.key, acme.key);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("imports invoice and quote bill-to fields through existing list definitions", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const sql = yield* SqlClient.SqlClient;
+      const bills = ["invoices", "quotes"] as const;
+      const empty = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf({ ...header, lists: [header.lists[0]] }, [rows[0], rows[1]]),
+      );
+      yield* presetList(orgId, "quotes", NOW);
+      assert.deepStrictEqual(empty.problems, []);
+      yield* sql`UPDATE kin_registers SET definition_json = json_remove(definition_json,
+        '$.fields[7]', '$.fields[6]', '$.fields[5]', '$.fields[4]', '$.fields[3]')
+        WHERE org_id = ${orgId} AND register_id IN ('invoices', 'quotes')`;
+      const fields = {
+        billToName: "Asha Rao",
+        billToAddress: "9 Invented Road",
+        billToTaxNumber: "12345",
+        billToPlace: "Invented place",
+        billToEmail: "asha@example.com",
+      };
+      const entries = bills.flatMap((list) => [
+        { entry: { source: list, list, title: `Workshop ${list}`, fields } },
+        {
+          entry: {
+            source: `invalid-${list}`,
+            list,
+            title: `Another ${list}`,
+            project: "p1",
+            fields,
+          },
+        },
+      ]);
+      const report = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf({ ...header, lists: [] }, entries),
+      );
+      assert.deepStrictEqual(
+        report.problems.map((one) => one.reason),
+        [
+          "This is for Invented Acme: its billing details come from that client. Nothing changed.",
+          "This is for Invented Acme: its billing details come from that client. Nothing changed.",
+        ],
+      );
+      const records = yield* KinRecords.KinRecords;
+      for (const list of bills) {
+        const entry = (yield* recordOf(list))!;
+        const row = (yield* records.get(orgId, entry.key))!;
+        assert.isNull(row.partyId);
+        assert.deepInclude(JSON.parse(row.fieldsJson), fields);
+        const [stored] = yield* sql<{ definition: string }>`SELECT definition_json AS definition
+          FROM kin_registers WHERE org_id = ${orgId} AND register_id = ${list}`;
+        assert.notInclude(stored!.definition, "billToName");
+      }
     }).pipe(Effect.provide(layer)),
   );
 

@@ -77,6 +77,7 @@ import {
   shownField,
   TEAM_LIST_RESERVED,
 } from "./lists.ts";
+import { BILL_TO_FIELDS, billToRefusal, billingClientId, hasBillTo } from "./billTo.ts";
 import {
   addUp,
   askSlip,
@@ -1566,8 +1567,13 @@ const make = Effect.gen(function* () {
     recordId: string,
     list: "clients" | "projects",
   ) {
-    const [row] = yield* sql<{ key: string; partyId: string | null; state: KinRecordState }>`
-      SELECT key, party_id AS "partyId", state FROM kin_records
+    const [row] = yield* sql<{
+      key: string;
+      title: string;
+      partyId: string | null;
+      state: KinRecordState;
+    }>`
+      SELECT key, title, party_id AS "partyId", state FROM kin_records
       WHERE org_id = ${orgId} AND record_id = ${recordId} AND register_id = ${list}`;
     if (row === undefined)
       return yield* new KinChatError({
@@ -1818,6 +1824,15 @@ const make = Effect.gen(function* () {
     const invalidRefs = checkRefs(def, partyId, projectId);
     if (invalidRefs !== undefined) return yield* invalidRefs;
     const party = partyId === null ? undefined : yield* target(orgId, partyId, "clients");
+    if (
+      hasBillTo(list) &&
+      Object.keys(fields).some((field) => Object.hasOwn(BILL_TO_FIELDS, field))
+    ) {
+      const client =
+        party ?? (inherited === null ? undefined : yield* target(orgId, inherited, "clients"));
+      const refusal = billToRefusal(undefined, client, fields, fields, false);
+      if (refusal !== undefined) return yield* invalid(refusal);
+    }
     yield* sameName(orgId, list, input.title, partyId, null, input.category, writer.namesSeenBy);
     if (batch === undefined) yield* ownerExists(orgId, input.owner);
     if (list === "work") {
@@ -2441,6 +2456,20 @@ const make = Effect.gen(function* () {
           fieldsChanged = true;
           if (value === null) delete merged[field];
           else merged[field] = value;
+        }
+        const relinked = partyId !== row.partyId || projectId !== row.projectId;
+        if (
+          hasBillTo(list) &&
+          (relinked ||
+            Object.keys(patch.fields ?? {}).some((field) => Object.hasOwn(BILL_TO_FIELDS, field)))
+        ) {
+          const effectiveClient = yield* billingClientId(orgId, { partyId, projectId }).pipe(
+            provideSql,
+          );
+          const client =
+            effectiveClient === null ? undefined : yield* target(orgId, effectiveClient, "clients");
+          const refusal = billToRefusal(row.key, client, patch.fields ?? {}, merged, relinked);
+          if (refusal !== undefined) return yield* invalid(refusal);
         }
         // Why it was given no longer holds once it moves on with no new why; its history keeps the old.
         const movedOn =

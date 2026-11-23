@@ -13,7 +13,8 @@ import { unregisteredTax } from "../work/region.ts";
 import { GST_REGIME, type TaxRegime } from "./compute.ts";
 import { logoFile, logoPath } from "./brand.ts";
 import { KinRecords } from "../work/KinRecords.ts";
-import { type FieldValues, parseFields } from "../work/lists.ts";
+import { billToAddress, billedParty, billingClientId, hasBillTo } from "../work/billTo.ts";
+import { fieldText, type FieldValues, parseFields } from "../work/lists.ts";
 import { dayIn } from "../work/money.ts";
 import {
   countedEntry,
@@ -204,7 +205,18 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       ? yield* sql<Money>`SELECT amount_minor AS minor, currency FROM kin_record_payments
           WHERE org_id = ${orgId} AND payment_id = ${fields.payment}`
       : [];
-  const client = entry?.partyId == null ? undefined : yield* records.getById(orgId, entry.partyId);
+  const partyId =
+    entry === undefined
+      ? null
+      : hasBillTo(entry.registerId)
+        ? yield* billingClientId(orgId, entry)
+        : entry.partyId;
+  const client = partyId === null ? undefined : yield* records.getById(orgId, partyId);
+  const billed = billedParty(entry, client);
+  const addressOverride =
+    billed?.fromClient === true && entry !== undefined && hasBillTo(entry.registerId)
+      ? billToAddress(fields)
+      : null;
   const clientFields = client === undefined ? {} : parseFields(client.fieldsJson);
   const number =
     entry === undefined
@@ -261,12 +273,15 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       const rows = yield* sql<{
         invoice: string | null;
         client: string | null;
+        registerId: string;
+        fieldsJson: string;
         minor: number;
         currency: string;
         paidOn: string;
         receipt: string | null;
       }>`SELECT CASE WHEN r.register_id = 'invoices' THEN COALESCE(n.number, r.key) END AS invoice,
-          p2.title AS client, p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn",
+          p2.title AS client, r.register_id AS "registerId", r.fields_json AS "fieldsJson",
+          p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn",
           CASE WHEN r.register_id = 'receipts' THEN COALESCE(n.number, r.key) ELSE
           (SELECT COALESCE(rn.number, rc.key) FROM kin_records rc
             LEFT JOIN kin_issued_numbers rn ON rn.org_id = rc.org_id AND rn.record_id = rc.record_id
@@ -275,7 +290,9 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
             ORDER BY rc.created_at DESC, rc.record_id DESC LIMIT 1) END AS receipt
         FROM kin_record_payments p
         JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
-        LEFT JOIN kin_records p2 ON p2.org_id = r.org_id AND p2.record_id = r.party_id
+        LEFT JOIN kin_records project ON project.org_id = r.org_id AND project.record_id = r.project_id
+        LEFT JOIN kin_records p2 ON p2.org_id = r.org_id AND p2.record_id =
+          COALESCE(r.party_id, CASE WHEN r.register_id = 'invoices' THEN project.party_id END)
         LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
         WHERE p.org_id = ${orgId} AND ${countedPayment(sql)}
           AND r.register_id IN ('invoices', 'receipts')
@@ -286,7 +303,9 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         rows.map((row) =>
           pick(input, {
             invoice: row.invoice,
-            client: row.client,
+            client:
+              billedParty(row, row.client === null ? undefined : { title: row.client })?.name ??
+              null,
             amount: { minor: row.minor, currency: row.currency },
             paidOn: row.paidOn,
             receipt: row.receipt,
@@ -334,7 +353,9 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         r.fields_json AS "fieldsJson", p.title AS client, p.fields_json AS "clientFields",
         n.number, ${sensitiveNow(sql)} AS sensitive
       FROM kin_records r
-      LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.party_id
+      LEFT JOIN kin_records proj ON proj.org_id = r.org_id AND proj.record_id = r.project_id
+      LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id =
+        ${hasBillTo(list.id) ? sql`COALESCE(r.party_id, proj.party_id)` : sql`r.party_id`}
       LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
       WHERE r.org_id = ${orgId} AND r.register_id = ${list.id} AND ${countedEntry(sql)}
         AND ${moneyDay(sql)} >= ${start} AND ${moneyDay(sql)} < ${end}
@@ -356,12 +377,17 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       input.name,
       inMonth.map((row) => {
         const own = parseFields(row.fieldsJson);
-        const party = row.clientFields === null ? {} : parseFields(row.clientFields);
+        const party = billedParty(
+          { registerId: list.id, fieldsJson: row.fieldsJson },
+          row.client === null
+            ? undefined
+            : { title: row.client, fieldsJson: row.clientFields ?? "{}" },
+        );
         const amount = amountOf(row.minor, row.currency);
         const tax = cellOf(own, "tax");
         return pick(input, {
-          clientGstin: clientTaxNumber ? cellOf(party, "gstin") : null,
-          placeOfSupply: cellOf(own, "placeOfSupply") ?? cellOf(party, "placeOfSupply"),
+          clientGstin: clientTaxNumber ? (party?.taxNumber ?? null) : null,
+          placeOfSupply: cellOf(own, "placeOfSupply") ?? party?.place ?? null,
           // Only what the entry holds: no tax, or another currency's, leaves it blank.
           taxable:
             amount !== null && isMoney(tax) && tax.currency === amount.currency
@@ -376,7 +402,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
           tax,
           date: dayIn(row.dateAt, zone),
           due: day(row.dueAt),
-          client: row.client,
+          client: party?.name ?? null,
           category: row.category,
           number: row.number ?? (cellOf(own, "number") as string | null),
           ...Object.fromEntries(
@@ -419,9 +445,21 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       case "entryField":
         return entry === undefined ? undefined : cellOf(fields, source.field);
       case "client":
-        if (client === undefined) return undefined;
-        if (source.key === "gstin" && !clientTaxNumber) return null;
-        return source.key === "name" ? client.title : cellOf(clientFields, source.key);
+        if (billed === undefined) return undefined;
+        switch (source.key) {
+          case "name":
+            return billed.name;
+          case "address":
+            return addressOverride ?? billed.address;
+          case "gstin":
+            return clientTaxNumber ? billed.taxNumber : null;
+          case "placeOfSupply":
+            return billed.place;
+          case "terms":
+            return fieldText(clientFields, "terms");
+          default:
+            return undefined;
+        }
       case "company": {
         const [head, tail] = source.key.split(".");
         const value: unknown =
@@ -461,6 +499,9 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       case "client":
         return (
           (client !== undefined && entrySensitive(client, clientDef)) ||
+          (entryLabelled &&
+            (billed?.fromClient === false ||
+              (source.key === "address" && addressOverride !== null))) ||
           SENSITIVE_CLIENT.has(source.key) ||
           clientKeys.has(source.key)
         );

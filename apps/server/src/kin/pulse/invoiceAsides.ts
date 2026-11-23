@@ -160,7 +160,10 @@ export const setAsideOverdue = Effect.fn("KinInvoiceAsides.overdue")(function* (
           {
             invoice: one.key,
             ...issuedNumber(one.number),
-            client: one.partyTitle === null ? "no client" : `${one.partyTitle} (${one.partyKey})`,
+            client:
+              one.partyTitle === null
+                ? (one.billTo ?? "no client")
+                : `${one.partyTitle} (${one.partyKey})`,
             owed: one.balance,
             daysOverdue: one.daysOverdue,
             until: aside.until === null ? "until lifted" : dayIn(aside.until, zone),

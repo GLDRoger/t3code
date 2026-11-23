@@ -1648,7 +1648,8 @@ describe("KinPulse", () => {
         new Map(
           (shown?.byProject ?? []).flatMap((group) => group.facts).map((one) => [one.key, one]),
         );
-      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/001')
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/001',
+        '$.billToName', 'Asha Rao', '$.billToEmail', 'asha@example.com')
         WHERE org_id = ${orgId} AND record_id = 'r-INV-1'`;
       const first = yield* section();
       const byKey = rows(first);
@@ -1660,7 +1661,7 @@ describe("KinPulse", () => {
         document: { key: "D-wk-5", file: "INV-5.pdf", draft: true },
       });
       assert.deepInclude(byKey.get(keys[1]!), {
-        writeTo: "no client on it, so nobody to write to",
+        writeTo: { name: "Asha Rao", email: "asha@example.com" },
         document: "no document made for it yet",
       });
       assert.deepInclude(byKey.get(keys[2]!), {
@@ -1677,7 +1678,7 @@ describe("KinPulse", () => {
       yield* sql`UPDATE kin_connections SET removed_at = 1 WHERE org_id = ${orgId}`;
       const bare = yield* section();
       assert.strictEqual(rows(bare).get(keys[0]!)?.writeTo, "Lumen has no contact with an email");
-      assert.notProperty(bare, "mailFrom");
+      assert.strictEqual(bare?.mailFrom, "no mail account is connected");
       yield* sql`UPDATE kin_records SET fields_json = '{"email":"anita@lumen.example"}'
         WHERE org_id = ${orgId} AND record_id = 'r-K-2'`;
       assert.strictEqual((yield* section())?.mailFrom, "no mail account is connected");

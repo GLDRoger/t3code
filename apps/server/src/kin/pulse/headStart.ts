@@ -4,6 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { liveConnections } from "../connections/ConnectionRows.ts";
 import { mailProviderOf } from "../connections/mailProviders.ts";
+import { billedParty } from "../work/billTo.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 
@@ -58,8 +59,16 @@ export const headStarts = Effect.fn("KinPulse.headStarts")(function* (
   const byFact = new Map<string, HeadStart>();
   if (recordIds.length === 0) return { byFact, mail: undefined };
   const clients = new Map(
-    (yield* sql<{ recordId: string; partyId: string | null; partyTitle: string | null }>`
-      SELECT r.record_id AS "recordId", c.record_id AS "partyId", c.title AS "partyTitle"
+    (yield* sql<{
+      recordId: string;
+      partyId: string | null;
+      partyTitle: string | null;
+      registerId: string;
+      fieldsJson: string | null;
+    }>`
+      SELECT r.record_id AS "recordId", c.record_id AS "partyId", c.title AS "partyTitle",
+        r.register_id AS "registerId",
+        CASE WHEN c.record_id IS NULL AND r.register_id IN ('invoices', 'quotes') THEN r.fields_json END AS "fieldsJson"
       FROM kin_records r
       LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
       LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.register_id = 'clients'
@@ -133,13 +142,24 @@ export const headStarts = Effect.fn("KinPulse.headStarts")(function* (
     if (recordId === undefined) continue;
     const client = clients.get(recordId);
     const contact = client?.partyId == null ? undefined : contacts.get(client.partyId);
+    const billTo =
+      client?.fieldsJson == null
+        ? undefined
+        : billedParty(
+            {
+              registerId: client.registerId,
+              fieldsJson: client.fieldsJson,
+            },
+            undefined,
+          );
     const writeTo = !TO_CLIENT.has(fact.sense)
       ? undefined
-      : contact !== undefined
-        ? contact
-        : client?.partyId == null
-          ? "no client on it, so nobody to write to"
-          : `${client.partyTitle ?? "this client"} has no contact with an email`;
+      : (contact ??
+        (billTo?.email != null
+          ? { name: billTo.name, email: billTo.email }
+          : client?.partyId != null || billTo !== undefined
+            ? `${billTo?.name ?? client?.partyTitle ?? "this client"} has no contact with an email`
+            : "no client on it, so nobody to write to"));
     const document = !WITH_FILE.has(fact.sense)
       ? undefined
       : (files.get(recordId) ?? "no document made for it yet");

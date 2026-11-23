@@ -4,6 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevel } from "../people/KinAccess.ts";
 import { formatMoneyPlain } from "../work/money.ts";
+import { billedParty } from "../work/billTo.ts";
 import { fold } from "../work/nameMatch.ts";
 import { countedEntry, owedInvoices, ownerZone } from "../work/recordRows.ts";
 import { KIN_OWNER_LEVEL, type KinViewer, seenBy, viewerOfPeople } from "../work/teamView.ts";
@@ -112,11 +113,17 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
         (one) =>
           !asides.has(one.recordId) &&
           !saysName(one.number, one.title) &&
-          !names(said, one.partyTitle),
+          !names(said, one.partyTitle ?? one.billTo ?? null),
       )
       .toSorted((a, b) => b.daysOverdue - a.daysOverdue),
-    (one) =>
-      `${one.partyTitle === null ? `${entryName(one.number, one.title)} is owed ${formatMoneyPlain(one.balance)}` : `${one.partyTitle} owes ${formatMoneyPlain(one.balance)} on ${entryName(one.number, one.title)}`}, ${overdueText(one.daysOverdue)}.`,
+    (one) => {
+      const name = one.partyTitle ?? one.billTo;
+      const amount = formatMoneyPlain(one.balance);
+      const entry = entryName(one.number, one.title);
+      const owed =
+        name === undefined ? `${entry} is owed ${amount}` : `${name} owes ${amount} on ${entry}`;
+      return `${owed}, ${overdueText(one.daysOverdue)}.`;
+    },
     (count, cut) =>
       `and ${count} more overdue invoice${count === 1 ? "" : "s"}, ${total(cut.map((one) => one.balance))} in all.`,
   );
@@ -126,16 +133,18 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
     title: string;
     clientId: string | null;
     client: string | null;
+    fieldsJson: string;
     minor: number | null;
     currency: string | null;
     number: unknown;
     lastAt: number;
-  }>`SELECT r.key, r.title, r.party_id AS "clientId", c.title AS client, r.amount_minor AS minor,
+  }>`SELECT r.key, r.title, c.record_id AS "clientId", c.title AS client, r.amount_minor AS minor, r.fields_json AS "fieldsJson",
       r.currency, json_extract(r.fields_json, '$.number') AS number,
       COALESCE((SELECT MAX(ch.at) FROM kin_record_changes ch
         WHERE ch.org_id = r.org_id AND ch.record_id = r.record_id), r.updated_at) AS "lastAt"
     FROM kin_records r
-    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+    LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
+    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = COALESCE(r.party_id, p.party_id)
     WHERE r.org_id = ${orgId} AND r.register_id = 'quotes' AND r.state = 'waiting'
       AND ${countedEntry(sql)} AND ${seen}
     ORDER BY "lastAt", r.key`;
@@ -152,9 +161,12 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
           : ` for ${formatMoneyPlain({ minor: one.minor, currency: one.currency })}`;
       const quote = `quote ${entryName(one.number, one.title)}${amount}`;
       const days = daysText(elapsed(one.lastAt, now, "days"));
-      return one.client === null
+      const name =
+        one.client ??
+        billedParty({ registerId: "quotes", fieldsJson: one.fieldsJson }, undefined)?.name;
+      return name === undefined
         ? `No answer to ${quote} in ${days}.`
-        : `${one.client} hasn't answered ${quote} in ${days}.`;
+        : `${name} hasn't answered ${quote} in ${days}.`;
     },
     (count, cut) => {
       const sum = total(
