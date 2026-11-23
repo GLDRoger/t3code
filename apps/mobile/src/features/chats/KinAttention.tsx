@@ -243,14 +243,16 @@ export function KinAttentionSection(
   const read = props.read === undefined ? own : props.read;
   const handler = useKinAttentionHandle(props, props.scope);
   const now = new Date(useNowMinuteMs());
-  const { open, handled, asides } = kinAttention(read, {
+  const { open, handled, asides, more } = kinAttention(read, {
     scope: props.scope,
     names: kinAttentionNames(props.names),
     now,
   });
   if (open.length === 0 && asides.length === 0) return null;
+  // Only Money's scope carries these, and this section already sits on Money.
+  const notListed = more.map((line) => line.text).join("\n");
   return (
-    <ListSection title={KIN_ATTENTION.title}>
+    <ListSection title={KIN_ATTENTION.title} {...(notListed === "" ? {} : { footer: notListed })}>
       {open.map((row) => (
         <KinAttentionItem
           key={row.id}

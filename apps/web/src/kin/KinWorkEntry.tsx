@@ -1,4 +1,6 @@
+import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
 import { KinAsideNote } from "./KinAttention";
+import { useKinAttention } from "./useKinAttention";
 import { KinWatchLine } from "./KinWatchLine";
 import { kinPersonChoices } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { useKinOpensClients } from "./useKinOwnerLevel";
@@ -8,6 +10,7 @@ import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
 import {
   KIN_FIELD_FILES_MAX,
+  KIN_YES_NO,
   KIN_LISTS,
   kinAmountCheck,
   kinFieldCheck,
@@ -384,14 +387,26 @@ function FieldEdit(
   const [picking, setPicking] = useState(false);
   const current = typeof field.value === "string" ? field.value : null;
   switch (field.type) {
+    case "yesno":
+      return (
+        <KinEntryPick
+          label={field.label}
+          shown={field.text}
+          current={current}
+          disabled={busy}
+          choices={KIN_YES_NO}
+          onPick={(value) => void props.onSet(value)}
+        />
+      );
     case "text":
+    case "number":
     case "money": {
       const edit = (
         <KinEntryText
           label={field.label}
           shown={field.text}
           draft={field.draft}
-          numeric={field.type === "money"}
+          numeric={field.type === "money" || field.type === "number"}
           {...(field.type === "money" ? { placeholder: KIN_LISTS.entry.amountPlaceholder } : {})}
           disabled={busy}
           onSave={async (text) => {
@@ -520,6 +535,8 @@ export function KinListEntry(
     readonly directory: KinWorkDirectory;
     readonly now: Date;
     readonly links: React.ReactNode;
+    /** That its section is off, for an entry opened by its link; null while it is on. */
+    readonly offLine?: string | null;
     readonly onOpenClient: (key: KinRecordKey) => void;
     readonly onOpenProject: (key: KinRecordKey) => void;
     readonly onOpenDoc: (key: KinRecordKey) => void;
@@ -532,6 +549,7 @@ export function KinListEntry(
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
+  const said = kinEntryFacts(useKinAttention(props)).get(item.key);
   const invoice = kinIsInvoice(item)
     ? kinInvoiceView(item, def, props.now, props.directory.names)
     : null;
@@ -617,6 +635,11 @@ export function KinListEntry(
           )}
           <KinAsideNote {...props} record={item.key} names={props.directory.names} />
           <KinWatchLine environmentId={environmentId} orgId={props.orgId} recordKey={item.key} />
+          {props.offLine == null ? null : (
+            <p role="note" className="text-pretty text-sm text-muted-foreground">
+              {props.offLine}
+            </p>
+          )}
         </div>
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
@@ -677,6 +700,9 @@ export function KinListEntry(
               </span>
             ) : null}
           </div>
+          {said === undefined ? null : (
+            <p className="text-sm text-destructive-foreground">{said.join(" ")}</p>
+          )}
           {invoice !== null ? (
             <>
               <KinInvoiceCurrency {...props} item={item} rates={rates} settled={invoice.settled} />

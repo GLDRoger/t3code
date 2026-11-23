@@ -82,6 +82,7 @@ import {
   kinLoadedBefore,
   type KinSeatOptions,
   kinSessionOf,
+  KIN_KEY_PREFIX,
   kinToolVisible,
   kinTurnBlocks,
   type KinTurnFiles,
@@ -515,7 +516,9 @@ export const normalizeToolName = (name: string) => {
   const bare = name.slice(name.lastIndexOf(".") + 1);
   return isT3Name(bare)
     ? bare.slice(T3_PREFIX.length)
-    : (CODEX_NAMES[bare] ?? bare.slice(bare.lastIndexOf("_") + 1));
+    : bare.startsWith(KIN_KEY_PREFIX)
+      ? bare.slice(KIN_KEY_PREFIX.length)
+      : (CODEX_NAMES[bare] ?? bare.slice(bare.lastIndexOf("_") + 1));
 };
 export const normalizeToolInput = (name: string, input: unknown) => {
   const decode = t3InputDecoders.get(normalizeToolName(name));

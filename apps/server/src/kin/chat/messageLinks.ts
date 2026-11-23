@@ -219,8 +219,16 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   const keyed =
     keys.length === 0
       ? []
-      : yield* sql<{ key: string; title: string; register: string; state: string }>`SELECT
-          r.key, r.title, r.register_id AS register, r.state FROM kin_records r
+      : yield* sql<{
+          key: string;
+          title: string;
+          register: string;
+          state: string;
+          number: string | null;
+        }>`SELECT r.key, r.title, r.register_id AS register, r.state,
+          CASE WHEN ${listNumberSeenBy(sql, viewer)}
+            THEN json_extract(r.fields_json, '$.number') END AS number
+        FROM kin_records r
         WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(keys)} AND ${seenBy(sql, viewer)}`;
   const record = (row: { key: string; title: string; register: string; state: string }) => ({
     to: { _tag: "record" as const, key: row.key, kind: kindOf(row.register) },
@@ -261,7 +269,14 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   for (const one of names) counts.set(one.name, (counts.get(one.name) ?? 0) + 1);
   return {
     names: names.filter((one) => counts.get(one.name) === 1),
-    keys: new Map(keyed.map((row) => [row.key, record(row)])),
+    keys: new Map(
+      keyed.map((row) => {
+        const name = (typeof row.number === "string" ? row.number : row.title)
+          .replace(/\s+/g, " ")
+          .trim();
+        return [row.key, { ...record(row), ...(name === "" ? {} : { name }) }];
+      }),
+    ),
   };
 });
 
@@ -501,7 +516,7 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
   for (const one of named) {
     const link = sources.keys.get(one.key);
     if (link !== undefined && !taken.has(one.text) && !written.has(one.text))
-      written.set(one.text, { name: one.text, ...link });
+      written.set(one.text, { name: one.text, to: link.to, note: link.note });
   }
   const match = linkMatcher([...sources.names, ...written.values()], sources.keys, owner);
   const receipts = options.receipts
@@ -513,7 +528,11 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
     : new Map<string, KinTurnChanges>();
   return (yield* withdrawnSaid(orgId, reader.personId, messages, owner)).map((message) => {
     if (message.kind !== "text" || message.status === "deleted") return message;
-    const links = match(message.body);
+    // A person's own words keep their keys as typed; an agent's read as names.
+    const links: ReadonlyArray<KinMessageLink> =
+      message.author._tag === "agent"
+        ? match(message.body)
+        : match(message.body).map(({ name: _name, ...link }) => link);
     const turn = receipts.get(message.messageId);
     return {
       ...message,

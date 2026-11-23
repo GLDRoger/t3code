@@ -22,6 +22,7 @@ import type * as Statement from "effect/sql/Statement";
 import { personReads } from "../chat/sharing.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { targetless } from "../numbers/numberRows.ts";
+import { approvedDocOrigin } from "../questions/approval.ts";
 import { LISTS, TEAM_LIST_RESERVED } from "./lists.ts";
 import { listDef, sensitiveKeys } from "./registers.ts";
 import {
@@ -36,6 +37,7 @@ import {
   sensitiveNow,
   wordsOf,
 } from "./recordRows.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 /** Lists a project's lead writes in, inside that project; quotes and invoices only as drafts. */
 const LEAD_LISTS = ["work", "milestones", "docs", "quotes", "invoices"] as const;
@@ -671,6 +673,7 @@ const ownDirectAsk = Effect.fn("KinTeamView.ownDirectAsk")(function* (
     seq: number | null;
   }>`SELECT CASE e.tag WHEN 'chat.message' THEN
         (m.author_kind = 'human' AND m.author_person_id = ${personId} AND m.origin_json IS NULL
+          AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
           AND json_extract(e.json, '$.origin') IS NULL AND c.kind = 'direct'
           AND c.archived_at IS NULL AND c.direct_key = ${key})
       ELSE (json_extract(e.json, '$.origin.personId') = ${personId}
@@ -936,10 +939,12 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
           projectPartyId: string | null;
           teamList: number;
           madeByViewer: number;
+          heldByViewer: number;
         }>`SELECT
           r.record_id AS "recordId", ${teamWrites(sql, personId)} AS writes,
           ${onTeamList(sql)} AS "teamList",
           r.created_by_kind = 'person' AND r.created_by_id = ${personId} AS "madeByViewer",
+          r.owner_kind = 'person' AND r.owner_id = ${personId} AS "heldByViewer",
           ${alsoOnIt(sql, personId)} AS "onTask", r.owner_kind AS "ownerKind", r.owner_id AS "ownerId",
           r.party_id AS "partyId", r.project_id AS "projectId",
           (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id
@@ -983,10 +988,14 @@ const TEAM_LIST_EDITS: ReadonlySet<string> = new Set([
   "notes",
   "amount",
 ]);
+/** On a team list whoever holds an entry still archives it and gives it away, as a holder could before. */
 const teamListEdit = (facts: TeamFacts, write: TeamWrite) => {
-  if (write.input.state === "dropped" && facts.seen?.madeByViewer !== 1) return TEAM_LIST_REFUSED;
+  const holds = facts.seen?.heldByViewer === 1;
+  if (write.input.state === "dropped" && facts.seen?.madeByViewer !== 1 && !holds)
+    return TEAM_LIST_REFUSED;
   return Object.entries(write.input).some(
-    ([key, value]) => value !== undefined && !TEAM_LIST_EDITS.has(key),
+    ([key, value]) =>
+      value !== undefined && !TEAM_LIST_EDITS.has(key) && !(holds && key === "owner"),
   )
     ? TEAM_REFUSED
     : undefined;
@@ -1297,7 +1306,7 @@ export const teamCan = Effect.fn("KinTeamView.can")(function* (
             (facts.clients.on && facts.seen?.registerId === "work" && moves)),
         project: led !== undefined && takes({ projectId: led }),
         clearProject: takes({ projectId: null }),
-        give: open && moves && facts.seen?.teamList !== 1,
+        give: open && moves && (facts.seen?.teamList !== 1 || facts.seen.heldByViewer === 1),
         takeBack:
           open &&
           moves &&
@@ -1554,6 +1563,21 @@ export const teamDetail = Effect.fn("KinTeamView.detail")(function* (
     personId,
     detail.party === undefined ? [] : [detail.party.recordId],
   );
+  // Read whole, its link history keeps only lines whose other end they may see, as its links do.
+  const linkedTo = (change: KinRecordDetail["changes"][number]) =>
+    change.fields.flatMap((field) =>
+      field.field === "record" && typeof field.to === "string" ? [field.to] : [],
+    );
+  const historyEnds = whole
+    ? yield* teamVisible(detail.orgId, personId, detail.changes.flatMap(linkedTo))
+    : new Set<string>();
+  const historySeen = (change: KinRecordDetail["changes"][number]) =>
+    change.kind !== "linked" ||
+    change.fields.every((field) =>
+      field.field === "pull_request" || field.field === "url"
+        ? true
+        : field.field === "record" && typeof field.to === "string" && historyEnds.has(field.to),
+    );
   const sheet: KinRecordDetail = {
     ...(whole ? detail : teamRecordIn(detail, visible, clients)),
     source: { chatId: null, messageId: null },
@@ -1569,7 +1593,9 @@ export const teamDetail = Effect.fn("KinTeamView.detail")(function* (
       ),
     ),
     changes: whole
-      ? detail.changes.map((change, index) => ({ ...change, seq: detail.changes.length - index }))
+      ? detail.changes
+          .filter(historySeen)
+          .map((change, index, kept) => ({ ...change, seq: kept.length - index }))
       : teamChanges(detail.changes),
     seq,
   };
@@ -1722,9 +1748,13 @@ export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
   }
   const folded = fold(text);
   // Labelled entries they can't see, and every client's terms, by their words.
+  // A doc Kin wrote from their own approved send-up is one they asked for and were told of.
   const hidden = yield* sql<{ words: string | null }>`SELECT r.title AS words FROM kin_records r
       WHERE r.org_id = ${orgId} AND ${sensitiveNow(sql)} AND NOT ${personSees(sql, personId)}
         AND length(r.title) >= 6 AND ${known}
+        AND NOT EXISTS (SELECT 1 FROM kin_questions q WHERE q.org_id = r.org_id
+          AND q.for_person_id = ${personId}
+          AND r.origin_key = ${approvedDocOrigin("")} || q.question_id)
     UNION ALL SELECT json_extract(r.fields_json, '$.terms') FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = 'clients'
         AND length(json_extract(r.fields_json, '$.terms')) >= 10 AND ${known}

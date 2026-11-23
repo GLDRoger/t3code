@@ -19,6 +19,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
+import { kinEntryFacts } from "./kinAttention.ts";
 import { kinMayHaveGoneLine } from "./kinChoicePresentation.ts";
 import { kinRecordMove } from "./kinTaskRecord.ts";
 import {
@@ -562,17 +563,33 @@ describe("kinTasksDealFacts", () => {
     }),
     fact("task_late", "W-9", zoya),
     fact("client_quiet", "C-1", owner),
+    fact("entry_late", "BK-1", zoya, { consequence: "Was due Nov 16, 2 days ago." }),
+    fact("entry_check", "STK-2", owner, { consequence: "On hand is 3, below Reorder point (10)." }),
   );
   const keys = (rows: ReturnType<typeof kinTasksDealFacts>) => rows.map((one) => one.factKey);
 
   it("lists a person's own deal and prospect facts, and the owner's own and those that fall to him", () => {
     expect(
       keys(kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: everything })),
-    ).toEqual(["deal_no_next_step:DL-1", "deal_quiet:DL-2"]);
+    ).toEqual(["deal_no_next_step:DL-1", "deal_quiet:DL-2", "entry_late:BK-1"]);
     expect(keys(kinTasksDealFacts({ ownerLevel: true, names, now, pulse: everything }))).toEqual([
       "deal_date_passed:DL-3",
       "deal_no_next_step:C-4",
+      "entry_check:STK-2",
     ]);
+    // A list entry that is late or off its check is its holder's, as a late task is, and opens it.
+    expect(
+      kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: everything })[2],
+    ).toMatchObject({
+      detail: "Was due Nov 16, 2 days ago.",
+      open: { type: "record", key: "BK-1" },
+    });
+    expect(kinEntryFacts(everything)).toEqual(
+      new Map([
+        ["BK-1", ["Was due Nov 16, 2 days ago."]],
+        ["STK-2", ["On hand is 3, below Reorder point (10)."]],
+      ]),
+    );
     // A deal with no next step carries "What's next?"; a prospect's opens the prospect.
     const [deal] = kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: everything });
     expect(deal).toMatchObject({ whatsNext: "DL-1", open: { type: "record", key: "DL-1" } });
@@ -592,7 +609,7 @@ describe("kinTasksDealFacts", () => {
       ownerLevel: false,
       me: asZoya.me,
     }).length;
-    expect(kinNeedsYouCount({ counts, dealFacts })).toBe(5);
+    expect(kinNeedsYouCount({ counts, dealFacts })).toBe(6);
     expect(kinNeedsYouCount({ counts: null, dealFacts })).toBeNull();
   });
 
@@ -620,6 +637,7 @@ describe("kinTasksDealFacts", () => {
       "heading",
       "deal_no_next_step:DL-1 true false",
       "deal_quiet:DL-2 false false",
+      "entry_late:BK-1 false false",
       "K false true",
       "foot",
     ]);

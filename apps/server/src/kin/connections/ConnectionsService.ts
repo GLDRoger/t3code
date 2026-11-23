@@ -66,7 +66,8 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
-import { madeUnderApproval } from "../questions/approval.ts";
+import { approvedFor, madeUnderApproval, mailKeepsDraft } from "../questions/approval.ts";
+import { approvedWords } from "../lead/approvedDraft.ts";
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
@@ -3091,6 +3092,24 @@ const make = Effect.gen(function* () {
       !(yield* filesReadable(turn.orgId, row.personId, prepared).pipe(provideSql))
     )
       return yield* refuse(turn, entry, fail("not_allowed", UNREADABLE_FILE));
+    // An approved mail's Confirm card shows the mail the owner approved, as it will go.
+    if (
+      prepared._tag === "email" &&
+      MAIL_SEND_TOOL_NAMES.has(tool.name) &&
+      row.kind === "builtin"
+    ) {
+      const approval = yield* approvedFor(turn).pipe(provideSql);
+      if (
+        approval?.draft.kind === "mail" &&
+        approval.made === null &&
+        !mailKeepsDraft(prepared, approval.draft.text, tool.name === MAIL_TOOL.reply)
+      )
+        return yield* refuse(
+          turn,
+          entry,
+          fail("invalid_state", approvedWords("kin_connection_call")),
+        );
+    }
     if (prepared._tag === "call" && toJson(args).length > MAX_CARD_ARGS)
       return yield* refuse(
         turn,

@@ -16,7 +16,10 @@ import {
   kinOwnerToday,
   kinShiftMonth,
 } from "@t3tools/client-runtime/kin/kinDates";
+import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
 import {
+  KIN_LIST_DEFAULT_FILTER,
+  KIN_LIST_WATCHES_CHANGE,
   KIN_LISTS,
   kinCategoryLabel,
   kinListChips,
@@ -29,6 +32,7 @@ import {
   kinListFilterLabel,
   kinListNothing,
   kinListRow,
+  kinListWatches,
   type KinListColumn,
   type KinListFilter,
   type KinListRowView,
@@ -86,6 +90,9 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { kinTabBar, kinTabFoot, useKinTab } from "./components/KinTab";
+import { useKinAttention } from "./state/useKinAttention";
+import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 
 export type KinListParams = {
   readonly environmentId: string;
@@ -130,10 +137,16 @@ export function KinListScreen({ route }: StaticScreenProps<KinListParams>) {
   );
 }
 
+/** A list shown as a section in the phone's dock: its page, as a tab. */
+export function KinListTab(props: KinWorkTarget & { readonly list: KinListId }) {
+  return <KinListGate {...props} initial={KIN_LIST_DEFAULT_FILTER} />;
+}
+
 function KinListGate(
   props: KinWorkTarget & { readonly list: KinListId; readonly initial: KinListFilter },
 ) {
   const navigation = useNavigation();
+  const tab = useKinTab();
   const work = useKinWork(props);
   const ready = work._tag === "ready";
   const directory = useKinWorkDirectory(props, ready);
@@ -141,7 +154,8 @@ function KinListGate(
     enabled: ready,
     archived: true,
   });
-  const back = () => navigation.goBack();
+  // A tab has no Back: the dock is the way out.
+  const back = tab === null ? () => navigation.goBack() : undefined;
   if (work._tag === "refused" || lists.state._tag === "refused") {
     return (
       <KinWorkFrame title={KIN_LISTS.title} onBack={back}>
@@ -179,11 +193,13 @@ function KinListGate(
           title={found ? KIN_LISTS.listGone : KIN_LISTS.loadFailed}
           detail={found ? KIN_LISTS.goneDetail : failure.text.trim()}
           action={
-            <Button
-              tone="secondary"
-              label={retry ? KIN_RETRY : "Back"}
-              onPress={retry ? lists.refresh : back}
-            />
+            retry || back !== undefined ? (
+              <Button
+                tone="secondary"
+                label={retry ? KIN_RETRY : "Back"}
+                onPress={retry || back === undefined ? lists.refresh : back}
+              />
+            ) : undefined
           }
         />
       </KinWorkFrame>
@@ -390,8 +406,13 @@ function KinListEntries(
   },
 ) {
   const navigation = useNavigation();
+  const tab = useKinTab();
   const { def, environmentId, orgId } = props;
   const context = useKinListContext(props, props.directory);
+  const watches = kinListWatches(def);
+  const ownerLevel = useKinIsOwnerLevel(environmentId);
+  // Late, due today or off its check, in the host's own words: the pulse read Tasks shares.
+  const facts = kinEntryFacts(useKinAttention(props));
   const canEdit = useAtomValue(kinClient.workListUpdate.permissionAtom(environmentId));
   const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
   const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(environmentId));
@@ -472,7 +493,16 @@ function KinListEntries(
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
         title={def.name}
-        onBack={() => navigation.goBack()}
+        {...kinTabBar(tab, {
+          onBack: () => navigation.goBack(),
+          search: {
+            value: filter.text,
+            onChangeText: (text) => entries.setFilter({ ...filter, text }),
+            placeholder: KIN_LISTS.search,
+            closeAccessibilityLabel: "Close search",
+            clearAccessibilityLabel: "Clear search",
+          },
+        })}
         refresh={{ accessibilityLabel: "Refresh", onPress: retry }}
         menus={[
           kinListFilterMenu({
@@ -485,13 +515,6 @@ function KinListEntries(
           }),
         ]}
         {...(actions.length === 0 ? {} : { actions })}
-        search={{
-          value: filter.text,
-          onChangeText: (text) => entries.setFilter({ ...filter, text }),
-          placeholder: KIN_LISTS.search,
-          closeAccessibilityLabel: "Close search",
-          clearAccessibilityLabel: "Clear search",
-        }}
       />
       <ScreenContent surface="screen">
         <LegendList<KinListRowView>
@@ -500,8 +523,10 @@ function KinListEntries(
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
-          // The search field floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: 96 }}
+          // The search field, or the dock on a tab, floats over the foot of the list.
+          contentContainerStyle={{
+            paddingBottom: tab === null ? 96 : kinTabFoot(tab.bottomClearance),
+          }}
           data={table ? [] : rows}
           keyExtractor={(row) => row.key}
           extraData={state}
@@ -511,6 +536,20 @@ function KinListEntries(
           onEndReachedThreshold={0.5}
           ListHeaderComponent={
             <View className="gap-3 pb-1 pt-2">
+              {watches.length === 0 ? null : (
+                <View className="px-5">
+                  {watches.map((line) => (
+                    <Text key={line} textRole="footnote" className="text-foreground-muted">
+                      {line}
+                    </Text>
+                  ))}
+                  {ownerLevel ? (
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {KIN_LIST_WATCHES_CHANGE}
+                    </Text>
+                  ) : null}
+                </View>
+              )}
               {props.stale || state.stale ? (
                 <View className="px-4">
                   <KinWorkStaleNotice environmentId={environmentId} onRetry={retry} />
@@ -687,7 +726,9 @@ function KinListEntries(
               </View>
             )
           }
-          renderItem={({ item: row }) => <KinListRowLine row={row} onPress={() => open(row.key)} />}
+          renderItem={({ item: row }) => (
+            <KinListRowLine row={row} facts={facts.get(row.key)} onPress={() => open(row.key)} />
+          )}
         />
       </ScreenContent>
     </View>
@@ -697,6 +738,8 @@ function KinListEntries(
 /** One entry of any list: its name, what the list says about it, and its amount when it has one. */
 export function KinListRowLine(props: {
   readonly row: KinListRowView;
+  /** What the host says of it being late, due today or off its check. */
+  readonly facts?: ReadonlyArray<string> | undefined;
   readonly onPress: () => void;
   /** Inside a rounded section the row keeps to the section's edges. */
   readonly inset?: boolean;
@@ -728,6 +771,11 @@ export function KinListRowLine(props: {
           <Text textRole="footnote" numberOfLines={2} className="text-foreground-muted">
             {row.line}
           </Text>
+          {props.facts === undefined ? null : (
+            <Text textRole="footnote" className="text-danger-foreground">
+              {props.facts.join(" ")}
+            </Text>
+          )}
         </View>
         <View className="items-end gap-0.5 py-3 pl-3">
           {row.amount === null ? null : (

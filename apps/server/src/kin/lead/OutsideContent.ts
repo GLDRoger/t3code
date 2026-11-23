@@ -350,6 +350,14 @@ export const outsideStamp = Effect.fn("KinOutsideContent.stamp")(function* (
   return row?.source;
 });
 
+/** Whether the turn follows words a person's coding agent sent or wrote through its key. */
+export const followsCodingAgent = Effect.fn("KinOutsideContent.followsCodingAgent")(function* (
+  turn: Pick<Turn, "orgId" | "wakeupId">,
+) {
+  const stamp = yield* outsideStamp(turn);
+  return stamp !== undefined && stampReads(stamp).some((read) => read.k === "coding-agent");
+});
+
 /** Whether the turn has read outside text. */
 export const outsideRead = (turn: Pick<Turn, "orgId" | "wakeupId">) =>
   outsideStamp(turn).pipe(Effect.map((source) => source !== undefined));
@@ -503,10 +511,6 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
   /** Schedules and deferrals it runs, each with the stamp it was made under (`itemSource`). */
   readonly items?: ReadonlyArray<{ readonly itemId: string; readonly sourceEvent?: string }>;
 }) {
-  if (input.shows !== undefined) {
-    yield* markOutside(input, input.shows, input.showsReads);
-    return undefined;
-  }
   const sql = yield* SqlClient.SqlClient;
   const events =
     input.eventIds.length === 0
@@ -520,16 +524,23 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
     const stamp = yield* itemSource(input.orgId, item.itemId, item.sourceEvent);
     if (stamp !== undefined) stamps.push(stamp);
   }
+  const reads = stamps.flatMap((stamp) => stampReads(stamp));
+  // What a person's coding agent wrote is shown as such, whatever else came in beside it.
+  const fromCodingAgent = stamps.some((stamp) => stampKey(stamp).startsWith(CODING_AGENT_SOURCE));
+  if (input.shows !== undefined) {
+    // The events' own stamps ride with what the prompt shows, so a mixed wake keeps them.
+    yield* markOutside(input, input.shows, [
+      ...(input.showsReads ?? stampReads(input.shows)),
+      ...reads,
+    ]);
+    if (fromCodingAgent) yield* sensitiveShown(input);
+  }
   const first = stamps[0];
   if (first === undefined) return undefined;
   // Every event's reads, so a turn woken by two passed-on requests names both.
-  const source = outsideSource(
-    first,
-    stamps.flatMap((stamp) => stampReads(stamp)),
-  );
-  yield* stampKey(source).startsWith(CODING_AGENT_SOURCE)
-    ? codingAgentTextShown(input, source)
-    : markOutside(input, source);
+  const source = outsideSource(first, reads);
+  if (input.shows === undefined)
+    yield* fromCodingAgent ? codingAgentTextShown(input, source) : markOutside(input, source);
   yield* stampEvent(input.orgId, followsKey(input.wakeupId), source);
   return source;
 });

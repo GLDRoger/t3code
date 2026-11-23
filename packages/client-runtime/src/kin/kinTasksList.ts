@@ -17,7 +17,12 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { KIN_DEAL_SENSES, kinAttention, type KinAttentionRow } from "./kinAttention.ts";
+import {
+  KIN_DEAL_SENSES,
+  KIN_ENTRY_SENSES,
+  kinAttention,
+  type KinAttentionRow,
+} from "./kinAttention.ts";
 import { kinMayHaveGoneLine } from "./kinChoicePresentation.ts";
 import { kinLateWords } from "./kinTaskRecord.ts";
 import type { KinWorkAction, KinWorkChangesState, KinWorkNotice } from "./kinWorkChanges.ts";
@@ -577,7 +582,7 @@ export function kinTasksDealFactsOf(
   const all = (pulse?.facts ?? []).filter((fact) => fact.handled === null);
   return all.filter(
     (fact) =>
-      KIN_DEAL_SENSES.has(fact.sense) &&
+      (KIN_DEAL_SENSES.has(fact.sense) || KIN_ENTRY_SENSES.has(fact.sense)) &&
       ((fact.actor._tag === "person" && fact.actor.personId === input.me) ||
         (fact.actor._tag === "owner" && input.ownerLevel)),
   );

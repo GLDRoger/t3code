@@ -1,4 +1,5 @@
 import {
+  KIN_LIST_SECTIONS,
   KIN_SECTION_SWITCHES,
   KIN_SECTIONS_PAGE,
   KIN_SWITCHABLE_SECTIONS,
@@ -9,6 +10,11 @@ import {
   kinSectionNoun,
   kinSectionOn,
   kinSectionRenamed,
+  kinDockRoom,
+  kinListCanBeSection,
+  kinListSectionId,
+  kinListSections,
+  type KinListSection,
   type KinSectionChange,
   type KinSwitchableSection,
 } from "@t3tools/client-runtime/kin/kinShell";
@@ -19,8 +25,10 @@ import { View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
 import { ListSection } from "../../../components/ui/ListSection";
+import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { ListToggleRow } from "../../../components/ui/ListToggleRow";
 import { Notice } from "../../../components/ui/Notice";
+import { kinListsOf, useKinLists } from "../state/useKinMoney";
 import { useKinSectionCanSet, useKinSectionSet, useKinShell } from "../state/useKinShell";
 import type { KinWorkTarget } from "../state/useKinWork";
 import { KinWorkLoading, KinWorkTextField } from "./KinWorkPieces";
@@ -219,9 +227,104 @@ export function KinSectionsSettings(props: KinWorkTarget) {
           ) : null}
         </Fragment>
       ))}
+      <KinListSectionsSettings {...props} held={held} shell={shell} />
       <Text textRole="footnote" className="px-2 text-foreground-muted">
         {KIN_SECTIONS_PAGE.olderPhones}
       </Text>
     </>
+  );
+}
+
+/**
+ * The company's own lists shown as sections: each one's switch, its place in the phone's dock while
+ * there is room, and the way out of the sidebar; then the lists that can be shown as one.
+ */
+function KinListSectionsSettings(
+  props: KinWorkTarget & { readonly held: Held; readonly shell: KinShell },
+) {
+  const lists = useKinLists(props, { enabled: true });
+  const defs = kinListsOf(lists);
+  const sections = kinListSections(props.shell);
+  const shown = new Set(sections.map((section) => section.list));
+  const offered = defs.filter((def) => kinListCanBeSection(def) && !shown.has(def.list));
+  const name = (list: string) => defs.find((def) => def.list === list)?.name ?? list;
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const send = async (change: KinSectionChange) => {
+    setBusy(true);
+    setProblem(null);
+    setProblem(await props.held.change(props.shell, change));
+    setBusy(false);
+  };
+  return (
+    <>
+      {problem === null ? null : (
+        <Notice message={problem} tone="danger" onDismiss={() => setProblem(null)} />
+      )}
+      {sections.map((section, index) => (
+        <KinListSectionRows
+          key={section.id}
+          section={section}
+          name={name(section.list)}
+          shell={props.shell}
+          busy={busy}
+          {...(index === 0 ? { title: KIN_LIST_SECTIONS.title } : {})}
+          onChange={(change) => void send(change)}
+        />
+      ))}
+      {/* Nothing to choose from: the part stays away, as before lists could be sections. */}
+      {offered.length === 0 ? null : (
+        <ListSection title={KIN_LIST_SECTIONS.add}>
+          {offered.map((def) => (
+            <ListActionRow
+              key={def.list}
+              label={def.name}
+              accessibilityLabel={`${KIN_LIST_SECTIONS.add}: ${def.name}`}
+              disabled={busy}
+              onPress={() => void send({ id: kinListSectionId(def.list), on: true })}
+            />
+          ))}
+        </ListSection>
+      )}
+    </>
+  );
+}
+
+function KinListSectionRows(props: {
+  readonly section: KinListSection;
+  readonly name: string;
+  readonly shell: KinShell;
+  readonly busy: boolean;
+  readonly title?: string;
+  readonly onChange: (change: KinSectionChange) => void;
+}) {
+  const { section } = props;
+  // A docked section may always leave the dock; a new one needs a place Money or Clients left.
+  const dockFull = kinDockRoom(props.shell).full && !(section.on && section.dock);
+  return (
+    <ListSection
+      {...(props.title === undefined ? {} : { title: props.title })}
+      footer={KIN_LIST_SECTIONS.removeDetail}
+    >
+      <ListToggleRow
+        label={props.name}
+        disabled={props.busy}
+        value={section.on}
+        onValueChange={(on) => props.onChange({ id: section.id, on })}
+      />
+      <ListToggleRow
+        label={KIN_LIST_SECTIONS.dock}
+        {...(dockFull ? { description: KIN_LIST_SECTIONS.dockFull } : {})}
+        disabled={props.busy || dockFull}
+        value={section.dock}
+        onValueChange={(dock) => props.onChange({ id: section.id, dock })}
+      />
+      <ListActionRow
+        label={KIN_LIST_SECTIONS.remove}
+        tone="danger"
+        disabled={props.busy}
+        onPress={() => props.onChange({ id: section.id, remove: true })}
+      />
+    </ListSection>
   );
 }

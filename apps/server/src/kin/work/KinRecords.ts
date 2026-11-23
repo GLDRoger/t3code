@@ -47,7 +47,7 @@ import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
-import { approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
+import { approvedClient, approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
 import {
   changeStampKey,
   codingAgentSource,
@@ -142,6 +142,8 @@ import {
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
 import { directionOf, findBankList } from "./statements/bankList.ts";
+import { markedKey } from "./keyCall.ts";
+import { keyRefusal, moneyOf } from "./keyGuard.ts";
 import { cleanTags } from "./tags.ts";
 import { notAVendor } from "./vendorName.ts";
 import {
@@ -201,10 +203,7 @@ export type Writer = {
   readonly deal?: true;
   /** A member's write in Clients: a name clashes only with what this person sees there (`crmSees`). */
   readonly namesSeenBy?: KinPersonId;
-  /**
-   * The person's own coding agent, with this key: the write reaches only a Work task that person
-   * holds now, whatever their level, and its history names the key.
-   */
+  /** The person's own coding agent, with this key: the change's history names the key. */
   readonly codingAgentKey?: string;
   /** Shared with the team when made; a turn others read shares its tasks too (`ROOM_LISTS`). */
   readonly teamShared?: boolean;
@@ -216,6 +215,8 @@ export type Writer = {
   };
   /** The cards a person's tap settles itself: closing the entry leaves them to the tap. */
   readonly answering?: ReadonlyArray<string>;
+  /** An agent's write with no turn of its own, made from what one read: that turn's stamp. */
+  readonly outside?: string;
   /**
    * Putting back a default `asker` took (`defaultTaken.ts`): reopened, a task is given to nobody
    * anew, and an agent holding it other than `asker` hears it is open again.
@@ -232,23 +233,6 @@ export type Writer = {
     readonly tappedBy?: KinPersonId;
   };
 };
-/** A Work task this writer, a person, holds or is on now, and nobody dropped. */
-const heldBy = (
-  row: {
-    readonly registerId: string;
-    readonly ownerKind: string;
-    readonly ownerId: string;
-    readonly state: KinRecordState;
-    readonly fieldsJson: string;
-  },
-  writer: Writer,
-) =>
-  row.registerId === "work" &&
-  row.state !== "dropped" &&
-  writer.actor._tag === "person" &&
-  ((row.ownerKind === "person" && row.ownerId === writer.actor.personId) ||
-    fieldList(parseFields(row.fieldsJson), "alsoOn").includes(`person:${writer.actor.personId}`));
-
 /** What an agent on a task hears when it tries what only its holder, or a person's word, may do. */
 export const ALSO_ON_UNASKED =
   "Who is on a task changes only when a person asks for it in this turn. Nothing was saved: ask them.";
@@ -1004,7 +988,7 @@ const make = Effect.gen(function* () {
       wakeup_id: writer.wakeupId ?? null,
       chat_id: writer.chatId ?? null,
       asked_by_person_id: writer.actor._tag === "agent" ? (writer.askedBy ?? null) : null,
-      coding_agent_key: writer.codingAgentKey ?? null,
+      coding_agent_key: (yield* markedKey(writer)) ?? null,
     };
   });
 
@@ -1022,7 +1006,9 @@ const make = Effect.gen(function* () {
       ${sql.insert(values)} RETURNING seq`;
     const seq = change?.seq ?? 0;
     // What the agent's turn had read from outside when it wrote this, for the entry's sheet.
-    if (writer.actor._tag === "agent" && writer.wakeupId !== undefined)
+    if (writer.actor._tag === "agent" && writer.outside !== undefined)
+      yield* stampEvent(orgId, changeStampKey(row.recordId, seq), writer.outside).pipe(provideSql);
+    else if (writer.actor._tag === "agent" && writer.wakeupId !== undefined)
       yield* outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
         Effect.flatMap((source) => stampEvent(orgId, changeStampKey(row.recordId, seq), source)),
         provideSql,
@@ -1187,6 +1173,7 @@ const make = Effect.gen(function* () {
     )
       return false;
     if (assignedBy === null) return false;
+    const codingAgentKey = yield* markedKey(writer);
     const [lead] = yield* sql<{ memberId: string; ownerPersonId: string }>`
       SELECT m.member_id AS "memberId", a.owner_person_id AS "ownerPersonId"
       FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
@@ -1231,9 +1218,9 @@ const make = Effect.gen(function* () {
       .pipe(
         // Given out after an outside read, or by a coding agent: the receiving turn starts marked.
         Effect.tap(({ event }) =>
-          writer.codingAgentKey !== undefined
+          codingAgentKey !== undefined
             ? sql<{ label: string }>`SELECT label FROM kin_tasks_keys
-                WHERE org_id = ${orgId} AND session_id = ${writer.codingAgentKey}`.pipe(
+                WHERE org_id = ${orgId} AND session_id = ${codingAgentKey}`.pipe(
                 Effect.flatMap(([key]) =>
                   stampEvent(orgId, event.eventId, codingAgentSource(key?.label ?? "Coding agent")),
                 ),
@@ -1637,6 +1624,12 @@ const make = Effect.gen(function* () {
         AND ${seenBy === undefined ? sql`1 = 1` : crmSees(sql, seenBy)}
       ORDER BY +r.key LIMIT 1`;
     if (row !== undefined) {
+      // Through a coding agent's key, one it can't reach is named by nothing.
+      if (row.sensitive === 1 && (yield* markedKey({})) !== undefined)
+        return yield* new KinChatError({
+          reason: "conflict",
+          message: "Another entry already has that name.",
+        });
       const error = {
         reason: "conflict" as const,
         message: `There is already ${withArticle(LISTS[list].noun)} named ${title.slice(0, 80)}: ${row.key}.`,
@@ -1734,11 +1727,11 @@ const make = Effect.gen(function* () {
     }).pipe(provideSql);
     if (approval === undefined) return undefined;
     const { draft } = approval;
-    const keeps =
-      approval.made === null &&
-      DRAFT_LIST[draft.kind] === list &&
-      (draft.for === null || draft.for.partyId === partyId);
-    return { questionId: approval.questionId, keeps };
+    const approved = approval.made === null && DRAFT_LIST[draft.kind] === list;
+    // The approved entry is for the card's client: another, or none, is refused before it is written.
+    if (approved && draft.for !== null && draft.for.partyId !== partyId)
+      return yield* invalid(approvedClient(draft.for.title));
+    return { questionId: approval.questionId, keeps: approved };
   });
 
   type InsertOptions = {
@@ -1879,6 +1872,15 @@ const make = Effect.gen(function* () {
                 ? yield* ownerZone(orgId).pipe(provideSql)
                 : "UTC",
           }));
+    if ((yield* markedKey(writer)) !== undefined) {
+      const refused = keyRefusal({
+        list,
+        money: moneyOf(def),
+        state,
+        numbered: "number" in fields,
+      });
+      if (refused !== undefined) return yield* refused;
+    }
     const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
     const givenAway =
       !(writer.actor._tag === "agent" && samePrincipal(writer.actor, input.owner)) &&
@@ -2288,8 +2290,28 @@ const make = Effect.gen(function* () {
                 ...given,
                 fields: yield* cleanTags(orgId, row.registerId, given.fields).pipe(provideSql),
               };
-        if (writer.codingAgentKey !== undefined && !heldBy(row, writer))
-          return yield* notFound(key);
+        if ((yield* markedKey(writer)) !== undefined) {
+          const stored = parseFields(row.fieldsJson);
+          const listed = yield* listDef(orgId, row.registerId).pipe(provideSql);
+          const refused = keyRefusal({
+            list: row.registerId,
+            money:
+              listed === undefined
+                ? { paidOverTime: row.takesPayments === 1, carriesAmount: false }
+                : moneyOf(listed),
+            state: patch.state ?? row.state,
+            numbered: "number" in stored || patch.fields?.number != null,
+            before: { state: row.state, numbered: "number" in stored },
+            touches: Object.entries(patch).flatMap(([field, value]) =>
+              value === undefined
+                ? []
+                : field === "fields" && value !== null && typeof value === "object"
+                  ? Object.keys(value)
+                  : [field],
+            ),
+          });
+          if (refused !== undefined) return yield* refused;
+        }
         const write = {
           row,
           changes: true,
@@ -2628,7 +2650,7 @@ const make = Effect.gen(function* () {
           list === "work" &&
           wanted === "done" &&
           !isClosed(row.state) &&
-          (writer.actor._tag === "agent" || writer.codingAgentKey !== undefined)
+          (writer.actor._tag === "agent" || (yield* markedKey(writer)) !== undefined)
             ? yield* sql<{ personId: string }>`SELECT person_id AS "personId" FROM kin_questions
                 WHERE org_id = ${orgId} AND state = 'open'
                   AND (' ' || about || ' ') LIKE ${`% ${row.key} %`}
@@ -2663,10 +2685,22 @@ const make = Effect.gen(function* () {
           isClosed(state) &&
           !isClosed(row.state)
         ) {
-          const open = yield* sql<{ key: string }>`SELECT key FROM kin_records
-            WHERE org_id = ${orgId} AND (party_id = ${row.recordId} OR project_id = ${row.recordId})
-              AND register_id IN ('work', 'projects') AND state NOT IN ${sql.in(CLOSED)}
-            ORDER BY created_at, key`;
+          const open = yield* sql<{ key: string; withheld: number }>`SELECT r.key,
+              ${keyWithheld(sql)} AS withheld FROM kin_records r
+            WHERE r.org_id = ${orgId}
+              AND (r.party_id = ${row.recordId} OR r.project_id = ${row.recordId})
+              AND r.register_id IN ('work', 'projects') AND r.state NOT IN ${sql.in(CLOSED)}
+            ORDER BY r.created_at, r.key`;
+          // Through a coding agent's key, what it can't reach is not named or counted.
+          if (open.length > 0 && (yield* markedKey(writer)) !== undefined) {
+            const shown = open.filter((one) => one.withheld !== 1).map((one) => one.key);
+            return yield* new KinChatError({
+              reason: "invalid_state",
+              message: `${row.key} still has open entries pointing at it${
+                shown.length === 0 ? "" : `: ${shown.slice(0, OPEN_KEYS_NAMED).join(", ")}`
+              }${shown.length < open.length ? ", and open entries you cannot see here" : ""}. Close or move them first.`,
+            });
+          }
           if (open.length > 0) {
             const named = open.slice(0, OPEN_KEYS_NAMED).map((one) => one.key);
             const more = open.length - named.length;

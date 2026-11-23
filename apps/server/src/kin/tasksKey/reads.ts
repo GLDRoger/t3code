@@ -13,6 +13,7 @@ import * as Docs from "../work/ownerDocs.ts";
 import { money, moneyViewer } from "../work/ownerMoney.ts";
 import { connectionViewer, list } from "../work/ownerWork.ts";
 import { workFailure } from "../work/recordRows.ts";
+import { placesOf } from "../work/teamView.ts";
 import {
   clientRows,
   clientSheet,
@@ -364,6 +365,15 @@ const same = (a: unknown, b: unknown): boolean => {
   }
   return a === b;
 };
+
+/** Whether the person's own screens open Clients, or Docs: the owner level, or their switch. */
+const reachesPlace = (place: "clients" | "docs") =>
+  Effect.fn("KinTasksKeyReads.reachesPlace")(function* (holder: TasksKeyHolder) {
+    if (yield* ownerLevel(holder.orgId, holder.personId).pipe(workFailure)) return true;
+    return (yield* placesOf(holder.orgId, holder.personId).pipe(workFailure)).reaches[place];
+  });
+export const readsClients = reachesPlace("clients");
+export const readsDocs = reachesPlace("docs");
 
 /** Whether the person has a Memory page: the owner level, as that page checks. */
 export const readsMemory = Effect.fn("KinTasksKeyReads.readsMemory")(function* (

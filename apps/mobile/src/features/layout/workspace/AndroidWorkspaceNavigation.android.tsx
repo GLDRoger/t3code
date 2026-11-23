@@ -33,6 +33,8 @@ interface NativeNavigationProps extends ViewProps {
   readonly floating: boolean;
   readonly tabs: readonly string[];
   readonly selectedTab: string;
+  /** Titles for tabs the bar doesn't name itself, drawn with a list icon. */
+  readonly titles?: Readonly<Record<string, string>>;
   readonly dark: boolean;
   readonly textScale: number;
   readonly newEnabled: boolean;
@@ -195,6 +197,7 @@ export function AndroidTabBar<Tab extends string>(props: {
   readonly tabs: ReadonlyArray<Tab>;
   readonly selectedTab: Tab;
   readonly onSelect: (tab: Tab) => void;
+  readonly titles?: Readonly<Record<string, string>>;
 }) {
   const insets = useSafeAreaInsets();
   const toolbar = useToolbarLayout();
@@ -211,6 +214,7 @@ export function AndroidTabBar<Tab extends string>(props: {
         floating={false}
         tabs={props.tabs}
         selectedTab={props.selectedTab}
+        titles={props.titles ?? {}}
         dark={themeAppearance === "dark"}
         textScale={scale}
         newEnabled={false}

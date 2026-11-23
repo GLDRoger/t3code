@@ -10,7 +10,7 @@ import {
   type SessionGrantInput,
 } from "@t3tools/contracts";
 import { kinDestinations, type KinDestination, type KinPlacesRefused } from "./kinNavigation.ts";
-import { kinSectionOn } from "./kinShell.ts";
+import { kinSectionOn, type KinListSectionId } from "./kinShell.ts";
 import { readKinJoinLink } from "@t3tools/shared/remote";
 
 /** A join link a teammate gave the app, and the address it points at, shown before joining. */
@@ -156,7 +156,8 @@ const grants = (session: SessionGrantInput | null) => (scope: AuthEnvironmentSco
 export type KinHomeTab = "chats" | "work" | "team" | "memory" | "settings";
 
 /** The places a Kin home's dock draws. Settings is a button on Chats, Team and Memory its pages. */
-export type KinDockTab = KinDestination;
+/** A tab of the phone's dock: one of Kin's places, or a company list shown as a section. */
+export type KinDockTab = KinDestination | KinListSectionId;
 
 /** Places the host has answered it won't show this viewer, which a grant can't tell apart. */
 export type KinDockRefused = KinPlacesRefused;

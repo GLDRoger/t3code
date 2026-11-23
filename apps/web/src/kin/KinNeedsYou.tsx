@@ -24,7 +24,12 @@ import { useState } from "react";
 
 import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
-import { KinAttentionHandled, KinAttentionItem, kinAttentionNames } from "./KinAttention";
+import {
+  KinAttentionHandled,
+  KinAttentionItem,
+  kinAttentionNames,
+  KinAttentionNotListed,
+} from "./KinAttention";
 import { KinWaitsForFolds } from "./KinWaitsFor";
 import { KinWorkSection } from "./KinWorkParts";
 import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
@@ -109,6 +114,7 @@ function useKinNeedsRows(
     hidden: split.hidden,
     handled: attention.handled,
     asides: attention.asides,
+    notListed: attention.more,
     handler,
     expanded,
     setExpanded,
@@ -244,6 +250,9 @@ function KinNeedsBlock(
           ))}
           {shown.slice(lead).map(needRow)}
         </ul>
+      )}
+      {total === 0 ? null : (
+        <KinAttentionNotListed lines={props.notListed} onOpen={openAttention} />
       )}
       <KinWaitsForFolds
         groups={props.waitsFor}

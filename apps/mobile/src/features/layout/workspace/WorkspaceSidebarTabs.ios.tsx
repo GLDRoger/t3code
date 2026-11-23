@@ -17,6 +17,7 @@ const NativeSidebarTabBar = requireNativeView<
     compact?: boolean;
     showsLabels?: boolean;
     badges?: Readonly<Record<string, string>>;
+    titles?: Readonly<Record<string, string>>;
     onSelectionChange: (event: NativeSyntheticEvent<{ tab: string }>) => void;
     onCompose: () => void;
   }
@@ -64,13 +65,15 @@ export function SidebarTabBar<Tab extends string>(props: {
   readonly showsLabels?: boolean;
   /** A short count on a tab, keyed by tab. */
   readonly badges?: Partial<Readonly<Record<Tab, string>>>;
+  /** Titles for tabs the bar doesn't name itself, keyed by native name; drawn with a list icon. */
+  readonly titles?: Readonly<Record<string, string>>;
 }) {
   const nativeTab = props.nativeTab ?? ((tab: Tab) => tab);
   const tabs = props.tabs.map(nativeTab);
   const selected = props.tabs.find((tab) => tab === props.selectedTab);
   const { colors, colorScheme } = useControlTheme();
   // UIKit loses accessible names when updating nil-titled items in place.
-  const tabBarKey = `${tabs.join(":")}:${props.showsLabels ? "labels" : "icons"}`;
+  const tabBarKey = `${tabs.join(":")}:${props.showsLabels ? "labels" : "icons"}:${Object.values(props.titles ?? {}).join(":")}`;
   return (
     <NativeSidebarTabBar
       key={tabBarKey}
@@ -81,6 +84,7 @@ export function SidebarTabBar<Tab extends string>(props: {
       showsCompose={Boolean(props.onNewTask)}
       compact={props.compact}
       showsLabels={props.showsLabels}
+      titles={props.titles ?? {}}
       badges={Object.fromEntries(
         props.tabs.flatMap((tab) => {
           const badge = props.badges?.[tab];

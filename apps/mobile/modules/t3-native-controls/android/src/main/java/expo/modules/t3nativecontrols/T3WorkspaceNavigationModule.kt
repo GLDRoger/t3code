@@ -69,6 +69,9 @@ class T3WorkspaceNavigationModule : Module() {
     Name("T3WorkspaceNavigation")
     View(T3WorkspaceNavigationView::class) {
       Prop("tabs") { view: T3WorkspaceNavigationView, value: List<String> -> view.tabs = value }
+      Prop("titles") { view: T3WorkspaceNavigationView, value: Map<String, String> ->
+        view.titles = value
+      }
       Prop("selectedTab") { view: T3WorkspaceNavigationView, value: String ->
         view.selectedTab = value
       }
@@ -128,6 +131,8 @@ class T3WorkspaceNavigationView(
   private val onOverlayChange by EventDispatcher()
   var tabs by mutableStateOf(listOf("threads", "pullRequests", "issues", "usage", "settings"))
   var selectedTab by mutableStateOf("threads")
+  /** Titles for tabs this bar doesn't name itself, such as a company list shown as a section. */
+  var titles by mutableStateOf(mapOf<String, String>())
   var rail by mutableStateOf(false)
   var floating by mutableStateOf(false)
   var dark by mutableStateOf(false)
@@ -412,7 +417,7 @@ class T3WorkspaceNavigationView(
     }
   }
 
-  private fun tabTitle(tab: String) = when (tab) {
+  private fun tabTitle(tab: String) = titles[tab] ?: when (tab) {
     "threads" -> "Chats"
     "pullRequests" -> "Pulls"
     "issues" -> "Issues"
@@ -429,7 +434,7 @@ class T3WorkspaceNavigationView(
 
   @Composable
   private fun tabIconPainter(tab: String) = painterResource(
-    when (tab) {
+    if (titles.containsKey(tab)) R.drawable.t3_list else when (tab) {
       "threads" -> R.drawable.t3_chats
       "pullRequests" -> R.drawable.t3_pull_requests
       "issues" -> R.drawable.t3_issues
