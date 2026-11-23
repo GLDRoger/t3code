@@ -122,7 +122,7 @@ const readMovement = (body: string, text: string, sentAt: number) => {
   const kinds = new Set(moved.map((match) => match.slice(1).join("|").toLowerCase()));
   if (kinds.size !== 1 || references.length !== 1 || days.length !== 1) return null;
   const [, amount, verb, preposition, account] = moved[0]!;
-  const direction = verb!.toLowerCase() === "debited" ? "debit" : "credit";
+  const direction = verb!.toLowerCase() === "debited" ? ("debit" as const) : ("credit" as const);
   if ((direction === "debit") !== (preposition!.toLowerCase() === "from")) return null;
   const [day, month, year] = days[0]!.split("-");
   const upi = UPI_PARTY.exec(text);
