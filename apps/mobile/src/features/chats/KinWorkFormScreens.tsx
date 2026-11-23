@@ -97,7 +97,7 @@ import { KinCountryFirstField } from "./components/KinCountryFirst";
 import { KinDayField } from "./components/KinDayField";
 import { KinPageFold } from "./components/KinPageFold";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./state/useKinMoney.ts";
-import { useKinSectionOn, useKinSectionWords } from "./state/useKinShell";
+import { useKinSectionNamed, useKinSectionOn, useKinSectionWords } from "./state/useKinShell";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
 import { KinCameFromFields, KinTagFields, useKinMarketing } from "./KinMarketing";
@@ -299,6 +299,7 @@ const NO_PLACE = "none";
 const ABROAD = "abroad";
 
 function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
+  const named = useKinSectionNamed(props.environmentId);
   const COPY = useKinSectionWords(props.environmentId, KIN_WORK_FORM_COPY);
   const navigation = useNavigation();
   const { environmentId, orgId, editing, member } = props;
@@ -651,13 +652,13 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
                 value={amount}
                 keyboard="numbers"
                 disabled={state.saving}
-                hint={amountBad ? KIN_DEALS.notAmount : KIN_SHORT_FORMS.aboutHowMuchHint}
+                hint={amountBad ? KIN_DEALS.notAmount : named(KIN_SHORT_FORMS.aboutHowMuchHint)}
                 onChangeText={setAmount}
               />
             </ListSection>
           )}
           {fold.moreLine === null ? null : (
-            <KinPageFold title={KIN_SHORT_FORMS.more} summary={fold.moreLine}>
+            <KinPageFold title={KIN_SHORT_FORMS.more} summary={named(fold.moreLine)}>
               {fold.more.map(piece)}
             </KinPageFold>
           )}

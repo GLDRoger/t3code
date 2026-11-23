@@ -389,6 +389,7 @@ function clientsMenu(
   seesClients: boolean,
   marketing: KinMarketing,
   onExport: () => void,
+  named: (text: string) => string,
 ): AppBarMenu["items"] {
   const { clients } = showing;
   return [
@@ -399,7 +400,7 @@ function clientsMenu(
       items: [
         ...kinClientsShowChoices(seesClients).map((one) => ({
           id: `show:${one.id}`,
-          title: one.label,
+          title: named(one.label),
           selected: clients.show === one.id,
           onPress: () => onShow({ ...showing, clients: { ...clients, show: one.id } }),
         })),
@@ -460,13 +461,14 @@ function showMenu(
   seesClients: boolean,
   marketing: KinMarketing,
   onExport: () => void,
+  named: (text: string) => string,
 ): AppBarMenu {
   return {
     title: KIN_WORK_HOME.show,
     icon: "line.3.horizontal.decrease.circle",
     items:
       tab === "clients"
-        ? clientsMenu(showing, onShow, seesClients, marketing, onExport)
+        ? clientsMenu(showing, onShow, seesClients, marketing, onExport, named)
         : KIN_PROJECT_VIEWS.map((view) => ({
             id: view.id,
             title: view.label,
@@ -532,6 +534,7 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
         void exporter.run(
           kinContactListOfClients(kinClientsQuery(props.orgId, { ...clients, text: "" })),
         ),
+      named,
     );
   };
   const header = (

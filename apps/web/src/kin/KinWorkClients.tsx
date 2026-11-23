@@ -177,7 +177,7 @@ export function KinWorkClientsList(
   const someone = kinClientsLookedAfterChoices(names);
   const shown = KIN_CLIENTS_SHOW.find((one) => one.id === filter.show);
   const chip = [
-    filter.show === "open" ? null : (shown?.label ?? null),
+    filter.show === "open" || shown === undefined ? null : named(shown.label),
     filter.lookedAfter === "anyone"
       ? null
       : mine
@@ -240,7 +240,7 @@ export function KinWorkClientsList(
                   value: filter.show,
                   options: kinClientsShowChoices(seesClients).map((one) => ({
                     value: one.id,
-                    label: one.label,
+                    label: named(one.label),
                   })),
                   onChange: (value) =>
                     setFilter({
