@@ -28,6 +28,12 @@ export const KinShell = Schema.Struct({
 });
 export type KinShell = typeof KinShell.Type;
 
+/**
+ * Starts the `clientMessageId` of the message "Set up for my kind of company…" sends: the host
+ * gives that turn the Chief of staff's set-up guidance. Typed words alone never do.
+ */
+export const KIN_SET_UP_MESSAGE_PREFIX = "set-up:";
+
 export const KinShellRpcs = [
   Rpc.make("kin.shell.set", {
     payload: Schema.Struct({

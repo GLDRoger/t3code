@@ -25,6 +25,7 @@ import {
   type KinSearchState,
 } from "../kinDocs.ts";
 import { kinCaughtUp } from "../kinCaughtUp.ts";
+import { kinWhatWeSellAnswer } from "../kinSetUp.ts";
 import { type KinDocsLive, kinDocsPageFollower } from "../kinDocsStream.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinWorkFailuresOf, kinWorkRefused } from "../kinWork.ts";
@@ -53,6 +54,10 @@ const noCountsAtom: Atom.Atom<
     unknown
   >
 > = Atom.make(AsyncResult.initial());
+
+const noDocAtom: Atom.Atom<AsyncResult.AsyncResult<KinDocDetail, unknown>> = Atom.make(
+  AsyncResult.initial(),
+);
 
 const NO_WORDS = { text: "" };
 
@@ -171,6 +176,24 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
     const result = useAtomValue(refused || !enabled ? noDocsAtom : atom);
     const held = Option.getOrNull(AsyncResult.value(result));
     return held === null ? undefined : (held.docs[0] ?? null);
+  }
+
+  /**
+   * The answer a new company gave to what it sells, read from What we sell; null when it has none,
+   * undefined until read. Off, it reads nothing.
+   */
+  function useKinWhatWeSellAnswer(target: KinScreenTarget, enabled: boolean) {
+    const row = useKinWhatWeSell(target, enabled);
+    const atom =
+      row === undefined || row === null
+        ? noDocAtom
+        : kinClient.doc({
+            environmentId: target.environmentId,
+            input: { orgId: target.orgId, key: row.key },
+          });
+    const detail = Option.getOrNull(AsyncResult.value(useAtomValue(atom)));
+    if (row === null) return null;
+    return detail === null ? undefined : kinWhatWeSellAnswer(detail.body);
   }
 
   /**
@@ -303,6 +326,7 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
     useKinDocsList,
     useKinDocsUnder,
     useKinWhatWeSell,
+    useKinWhatWeSellAnswer,
     useKinDocsCounts,
     useKinWhatWeSellStart,
     useKinDoc,

@@ -50,7 +50,12 @@ import { docEmbeds } from "./docFiles.ts";
 import * as Docs from "./docs.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
 import { LISTS } from "./lists.ts";
-import { OFFERINGS_ORIGIN, startOfferings, withOfferings } from "./offerings.ts";
+import {
+  OFFERINGS_ORIGIN,
+  offeringsWithAnswer,
+  startOfferings,
+  withOfferings,
+} from "./offerings.ts";
 import { inList, millis, ownerWriter, placeRefusals, theOwner, viewerOf } from "./ownerWork.ts";
 import {
   chatLinksFor,
@@ -516,7 +521,14 @@ export const remove = Effect.fn("KinDocs.remove")(
 export const startWhatWeSell = Effect.fn("KinDocs.startWhatWeSell")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinDocStartWhatWeSellInput) {
     const person = yield* theOwner(people, input.orgId);
-    const { row } = yield* startOfferings(input.orgId, ownerWriter(person), person.personId);
+    const { row } = yield* startOfferings(
+      input.orgId,
+      ownerWriter(person),
+      person.personId,
+      input.sells === undefined
+        ? {}
+        : { body: offeringsWithAnswer(input.sells), summary: "Started from the set-up question" },
+    );
     return yield* detailOf(
       input.orgId,
       { recordId: row.recordId },

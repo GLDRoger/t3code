@@ -45,6 +45,7 @@ import {
   KIN_INTRO_PROMPTS,
   KIN_INTRO_START_HINT,
 } from "@t3tools/client-runtime/kin/kinIntro";
+import { kinIntroSetUpLine } from "@t3tools/client-runtime/kin/kinSetUp";
 import {
   kinHeldCardAgent,
   kinRetiredChatLine,
@@ -78,6 +79,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinDocs";
 import {
   KinChatId,
+  KinOrgId,
   type EnvironmentId,
   type KinAttachment,
   type KinChatMember,
@@ -169,6 +171,7 @@ import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinHostAt } from "./useKinHost";
 import { useKinCountryNeeded } from "./useKinMoney";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
+import { useKinWhatWeSellAnswer } from "./useKinDocs";
 import { kinStopNotice } from "@t3tools/client-runtime/kin/kinStop";
 import { useKinStopLine } from "./useKinStop";
 import { openKinSettings } from "./kinSettingsAddress";
@@ -401,6 +404,7 @@ export function KinChatView(props: {
                     .then((result) => result._tag === "Success")
           }
           charter={screen.charter}
+          setsUp={screen.setsUp}
           members={group?.members ?? summary?.members ?? []}
           direct={summary?.kind === "direct"}
           teamRoomId={teamRoomId}
@@ -578,6 +582,8 @@ function KinChatFeed(props: {
   readonly stopLead: ((wakeupId: string) => Promise<boolean>) | null;
   /** What the owner wrote this lead is for; the intro shows it before the first message. */
   readonly charter: string | null;
+  /** The viewer's own Chief of staff, whose intro may name the company's answer. */
+  readonly setsUp: boolean;
   readonly members: ReadonlyArray<KinChatMember>;
   /** A group's leads, which the composer offers on `@`. */
   readonly mentionable: ReadonlyArray<KinMentionCandidate>;
@@ -1015,8 +1021,10 @@ function KinChatFeed(props: {
     showIntro && props.agentName !== null ? (
       <KinIntro
         environmentId={props.environmentId}
+        orgId={props.orgId}
         agentName={props.agentName}
         charter={props.charter}
+        setsUp={props.setsUp}
         onSend={(text) => void sendText(text)}
         onStart={(text) => {
           appAtomRegistry.set(kinDraftAtom(draftKey), text);
@@ -1246,8 +1254,10 @@ function KinPresenceLine(props: {
 /** First run in the owner's chat with their lead: what it does and a few asks to start with. */
 function KinIntro(props: {
   readonly environmentId: EnvironmentId;
+  readonly orgId: string;
   readonly agentName: string;
   readonly charter: string | null;
+  readonly setsUp: boolean;
   readonly onSend: (text: string) => void;
   readonly onStart: (text: string) => void;
 }) {
@@ -1255,6 +1265,10 @@ function KinIntro(props: {
   const countryNeeded = useKinCountryNeeded(props);
   const ownerLevel = useKinOwnerLevel(props.environmentId);
   const countryFirst = countryNeeded && ownerLevel;
+  const answer = useKinWhatWeSellAnswer(
+    { environmentId: props.environmentId, orgId: KinOrgId.make(props.orgId) },
+    props.setsUp && ownerLevel,
+  );
   return (
     <Empty size="compact">
       <EmptyHeader>
@@ -1263,6 +1277,9 @@ function KinIntro(props: {
           {props.charter ??
             `Ask for what you need in plain words. ${props.agentName} replies here, and asks you when a decision is yours.`}
         </EmptyDescription>
+        {typeof answer === "string" ? (
+          <EmptyDescription>{kinIntroSetUpLine(props.agentName, answer)}</EmptyDescription>
+        ) : null}
       </EmptyHeader>
       <div className="flex flex-wrap justify-center gap-2">
         {countryFirst ? (

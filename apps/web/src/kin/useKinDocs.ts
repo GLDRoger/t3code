@@ -29,6 +29,7 @@ export const {
   useKinDocsList,
   useKinDocsUnder,
   useKinWhatWeSell,
+  useKinWhatWeSellAnswer,
   useKinWhatWeSellStart,
   useKinDoc,
   useKinDocHistory,
