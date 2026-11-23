@@ -90,7 +90,6 @@ describe("an invoice typed by hand", () => {
       _tag: "gst",
       registered: true,
     });
-    expect(kinInvoiceTax({ ...before, gstin: null })).toEqual({ _tag: "none" });
     const uk = { country: "GB", homeCurrency: "GBP", gstin: null } as const;
     const vat = kinInvoiceTax({ ...uk, tax: { name: "VAT", rate: "20", pricesInclude: false } });
     expect(kinInvoiceTaxText(vat)).toBe(

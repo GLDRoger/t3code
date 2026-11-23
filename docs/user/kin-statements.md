@@ -29,9 +29,9 @@ says the rows came from images, so check the amounts against the statement befor
 
 One review card shows the statement in three groups:
 
-- **Matched**: credits that pay an open invoice, and debits that pay an expense. When your
-  company's country in Settings is India, Kin can match a credit for the invoice amount less
-  TDS and record the deduction as a separate line. Untick any you want to leave.
+- **Matched**: credits that pay an open invoice, and debits that pay an expense. A credit for
+  the invoice less 10% or 2% shows as paid with TDS deducted, and records the TDS as its own
+  line. Untick any you want to leave.
 - **Paying a partner back**: a debit whose narration names a partner and that adds up exactly to
   their oldest expenses owed by its day, less refunds on them, shows under Matched as repaying them.
   One payment often covers several. A credit from a partner whose refunds outweigh what they paid

@@ -34,7 +34,12 @@ import {
   parseFields,
   sensitiveFields,
 } from "./lists.ts";
-import { type CompanyMoney, companyMoneyState, homeCurrency } from "./companyProfile.ts";
+import {
+  type CompanyMoney,
+  companyMoneyState,
+  countryBefore,
+  homeCurrency,
+} from "./companyProfile.ts";
 import { regionOf } from "./region.ts";
 import {
   FUNDED_BY,
@@ -277,10 +282,9 @@ const presetFor = (
   countryPending = false,
 ) => {
   const preset = PRESETS[id];
-  const region = companyRegion(money.homeCurrency);
-  const unknownOrPlaceholder =
-    countryPending || (money.country === null && region?.currency === regionOf("IN")?.currency);
-  const paidWith = (unknownOrPlaceholder ? undefined : region?.paidWith) ?? NEUTRAL_PAID_WITH;
+  // A company still waiting on its country has only the placeholder's, so it gets no country's ways.
+  const paidWith =
+    (countryPending ? undefined : companyRegion(money.homeCurrency)?.paidWith) ?? NEUTRAL_PAID_WITH;
   const filings = regionOf(money.country)?.filings ?? [];
   return {
     ...preset,
@@ -303,7 +307,7 @@ const presetFor = (
 export const presetDefinition = (
   id: PresetId,
   currency: string,
-  country: string | null = null,
+  country: string | null = countryBefore(currency),
 ) => ({
   ...presetFor(id, { homeCurrency: currency, country }),
   currency,

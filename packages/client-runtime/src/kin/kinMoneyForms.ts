@@ -169,12 +169,14 @@ export type KinInvoiceTax =
 export function kinInvoiceTax(
   profile: Pick<KinCompanyProfile, "country" | "homeCurrency" | "gstin" | "tax">,
 ): KinInvoiceTax {
-  const legacyGst =
-    profile.country === undefined &&
-    profile.homeCurrency === KIN_DEFAULT_HOME_CURRENCY &&
-    profile.gstin !== null;
-  if (profile.country === "IN" || legacyGst)
-    return { _tag: "gst", registered: profile.gstin !== null };
+  // A company stored before countries existed reads as India while it keeps rupees.
+  const country =
+    profile.country !== undefined
+      ? profile.country
+      : profile.homeCurrency === KIN_DEFAULT_HOME_CURRENCY
+        ? "IN"
+        : null;
+  if (country === "IN") return { _tag: "gst", registered: profile.gstin !== null };
   const tax = profile.tax ?? null;
   return tax === null || tax.rate === null
     ? { _tag: "none" }

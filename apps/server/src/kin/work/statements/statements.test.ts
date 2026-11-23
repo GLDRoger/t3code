@@ -52,7 +52,6 @@ import { kinHostDependencies } from "../../lead/layer.testkit.ts";
 import * as Kin from "../../layer.ts";
 import { sharedToolAllowed } from "../../lead/SharedTools.ts";
 import * as KinPersistence from "../../persistence/KinPersistence.ts";
-import { setProfile } from "../companyProfile.ts";
 import * as KinRecords from "../KinRecords.ts";
 import * as LeadStatements from "../leadStatements.ts";
 import * as LeadWork from "../leadWork.ts";
@@ -225,11 +224,10 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
       worker_projects_json, owner_chat_id)
     VALUES (${lead}, ${orgId}, 'Chief of staff', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
-  yield* setProfile(orgId, { _tag: "person", personId: ownerId }, { country: "IN" }, undefined);
   for (const id of ["invoices", "expenses"] as const)
     yield* defineList(
       orgId,
-      { _tag: "new", id, ...PRESETS[id], definition: presetDefinition(id, "INR", "IN") },
+      { _tag: "new", id, ...PRESETS[id], definition: presetDefinition(id, "INR") },
       NOW,
     );
   const client = (title: string) =>
@@ -421,18 +419,6 @@ describe("bank statements", () => {
         });
         assert.lengthOf(detail.rows, 1);
         assert.notMatch(detail.rows[0]!.reference!, /••/);
-        // A pre-country GST profile still reads as Indian for invoicing, but only an explicitly
-        // Indian company gets a TDS deduction suggested by the statement.
-        yield* sql`UPDATE kin_company_profile SET profile_json = json_remove(
-          json_set(profile_json, '$.gstin', '29ABCDE1234F1Z5'), '$.country') WHERE org_id = ${orgId}`;
-        const legacy = opened(
-          yield* LeadStatements.read(scope, {
-            sourceEventId: "event-1",
-            attachment: "statement-layout-a.pdf",
-            refresh: true,
-          }),
-        );
-        assert.isFalse(legacy.matched.some((one) => one.to.includes("TDS deducted")));
         // Nothing is recorded by reading.
         assert.lengthOf(yield* bankRows, 0);
         assert.lengthOf(yield* sql`SELECT 1 FROM kin_record_payments`, 0);

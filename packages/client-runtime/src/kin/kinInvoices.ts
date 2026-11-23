@@ -145,7 +145,8 @@ const KIN_RECEIPT_MODES = [
   { value: "other", label: "Other" },
 ] as const;
 
-const inIndia = (country: string | null | undefined) => country === "IN";
+/** India's form, UPI and a UTR, unless another country is chosen; no country was India's form before. */
+const inIndia = (country: string | null | undefined) => country == null || country === "IN";
 export const kinReceiptModes = (country: string | null | undefined) =>
   inIndia(country) ? KIN_RECEIPT_MODES : KIN_RECEIPT_MODES.filter((one) => one.value !== "upi");
 export const kinReceiptReferencePlaceholder = (country: string | null | undefined) =>

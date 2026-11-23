@@ -18,7 +18,6 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "../work/KinRecords.ts";
-import { setProfile } from "../work/companyProfile.ts";
 import { dayIn, financialYearOf } from "../work/money.ts";
 import { ownerWriter } from "../work/ownerWork.ts";
 import { presetDefinition } from "../work/registers.ts";
@@ -69,12 +68,6 @@ const freshOrg = Effect.gen(function* () {
     VALUES (${orgId}, ${ZONE}, '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')`;
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
     VALUES (${`${orgId}-owner`}, ${orgId}, 'owner', 'Owner', '2026-11-11', 'owner')`;
-  yield* setProfile(
-    orgId,
-    { _tag: "person", personId: `${orgId}-owner` },
-    { country: "IN" },
-    undefined,
-  );
   yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
       created_at, definition_json)
     VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;

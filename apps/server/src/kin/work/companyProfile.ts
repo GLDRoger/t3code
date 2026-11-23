@@ -76,13 +76,16 @@ export interface CompanyMoney {
   readonly tax: KinCompanyTax | null;
 }
 
-/** A pre-country profile with Indian GST details keeps its existing invoice regime. */
+/** The country of a profile stored before countries: India's for rupees, else none. */
+export const countryBefore = (home: string) => (home === KIN_DEFAULT_HOME_CURRENCY ? "IN" : null);
+
+/**
+ * The profile as it reads: one stored before countries is in India when it keeps rupees, else in
+ * no country; a country's row fills the year and tax the company never set.
+ */
 const moneyOf = (profile: KinCompanyProfileData): CompanyMoney => {
-  const legacyGst =
-    profile.country === undefined &&
-    profile.homeCurrency === KIN_DEFAULT_HOME_CURRENCY &&
-    (profile.gstin !== null || profile.placeOfSupply !== null || profile.sac !== null);
-  const country = legacyGst ? "IN" : (profile.country ?? null);
+  const country =
+    profile.country !== undefined ? profile.country : countryBefore(profile.homeCurrency);
   const region = regionOf(country);
   return {
     homeCurrency: profile.homeCurrency,
@@ -100,7 +103,10 @@ const moneyOf = (profile: KinCompanyProfileData): CompanyMoney => {
   };
 };
 
-/** The row a company created now starts with, before its country is chosen. */
+/**
+ * The row a company created now starts with: its country not chosen. A company with no row was
+ * made before countries and keeps reading as India (`countryBefore`).
+ */
 export const newCompanyProfileJson = encodeProfile({
   ...EMPTY,
   country: null,
@@ -267,16 +273,6 @@ export const companyMoney = Effect.fn("KinCompanyProfile.money")(function* (orgI
   return moneyOf(
     row === undefined ? EMPTY : Option.getOrElse(decodeProfile(row.json), () => EMPTY),
   );
-});
-
-export const statementMoney = Effect.fn("KinCompanyProfile.statementMoney")(function* (
-  orgId: KinOrgId,
-) {
-  const { data } = yield* storedProfile(orgId);
-  return {
-    homeCurrency: data.homeCurrency,
-    withholdsAtSource: regionOf(data.country)?.withholdsAtSource === true,
-  };
 });
 
 /** What the company keeps its books in: an amount that names no currency is in it. */

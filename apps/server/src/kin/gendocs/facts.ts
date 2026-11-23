@@ -105,16 +105,6 @@ export type Gathered = {
 };
 
 // Bank details and tax ids; a company's name, address and place of supply print on every invoice.
-const INDIA_COMPANY_FIELDS = new Set([
-  "gstin",
-  "pan",
-  "placeOfSupply",
-  "sac",
-  "lutNumber",
-  "lutDate",
-  "bank.ifsc",
-  "bank.upi",
-]);
 const SENSITIVE_COMPANY = /^(?:bank\.|gstin$|pan$)/;
 const SENSITIVE_CLIENT = new Set(["gstin", "terms"]);
 const AMOUNT_COLUMNS = new Set(["amount", "tax", "taxable"]);
@@ -199,8 +189,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
   const now = yield* Clock.currentTimeMillis;
   const profile = yield* readProfile(orgId);
   // The client keeps its number; a company not registered for the tax never prints it.
-  const countryUnset = profile.country === null;
-  const clientTaxNumber = !countryUnset && printsClientTaxNumber(profile);
+  const clientTaxNumber = printsClientTaxNumber(profile);
   const wantsLogo = recipe.inputs.some((input) => sourceOf(input.from)?._tag === "logo");
   const logoBytes = wantsLogo && profile.logo !== null ? yield* logoFile(profile.logo) : null;
   const logo =
@@ -372,9 +361,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         const tax = cellOf(own, "tax");
         return pick(input, {
           clientGstin: clientTaxNumber ? cellOf(party, "gstin") : null,
-          placeOfSupply: countryUnset
-            ? null
-            : (cellOf(own, "placeOfSupply") ?? cellOf(party, "placeOfSupply")),
+          placeOfSupply: cellOf(own, "placeOfSupply") ?? cellOf(party, "placeOfSupply"),
           // Only what the entry holds: no tax, or another currency's, leaves it blank.
           taxable:
             amount !== null && isMoney(tax) && tax.currency === amount.currency
@@ -434,10 +421,8 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       case "client":
         if (client === undefined) return undefined;
         if (source.key === "gstin" && !clientTaxNumber) return null;
-        if (source.key === "placeOfSupply" && countryUnset) return null;
         return source.key === "name" ? client.title : cellOf(clientFields, source.key);
       case "company": {
-        if (countryUnset && INDIA_COMPANY_FIELDS.has(source.key)) return null;
         const [head, tail] = source.key.split(".");
         const value: unknown =
           head === "bank" && tail !== undefined

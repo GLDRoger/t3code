@@ -240,7 +240,7 @@ export function kinMoneyView(
     });
   const receivedIn = (paid: KinListFilter["paid"]) => open(invoices, { paid });
   const thisMonth = kinMonthPeriod(summary.thisMonth);
-  const yearStart = summary.financialYearStartMonth ?? (summary.financialYear.length > 6 ? 4 : 1);
+  const yearStart = summary.financialYearStartMonth ?? 4;
   const year = kinFinancialYearPeriod(summary.financialYear, yearStart);
   const currencies = [
     ...new Set(

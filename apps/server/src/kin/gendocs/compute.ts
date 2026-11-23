@@ -373,8 +373,7 @@ export type TaxRegime =
       readonly notRegistered?: string;
     };
 export const GST_REGIME: TaxRegime = { _tag: "gst" };
-const NO_TAX: TaxRegime = { _tag: "flat", name: "Tax", rate: null, pricesInclude: false };
-let regime: TaxRegime = NO_TAX;
+let regime: TaxRegime = GST_REGIME;
 
 /**
  * One tax line at the company's rate, on the lines' value or, when their prices include it, out
@@ -808,7 +807,7 @@ const withText = (value: unknown, done: WeakMap<object, unknown>): unknown => {
 export const computeData = (
   inputs: Readonly<Record<string, Value>>,
   computed: ReadonlyArray<readonly [string, unknown]>,
-  tax: TaxRegime = NO_TAX,
+  tax: TaxRegime = GST_REGIME,
 ): { readonly data: Computed } | { readonly error: string } => {
   const scope: Record<string, unknown> = { ...inputs };
   regime = tax;
