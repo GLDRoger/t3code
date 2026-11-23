@@ -1,7 +1,9 @@
 // @effect-diagnostics globalDate:off - Fixtures build days relative to a fixed clock.
 import {
   KinOrgId,
+  KinPersonId,
   type KinCash,
+  type KinOutlook,
   type KinMoneyBudget,
   type KinRecord,
   type KinRunway,
@@ -21,6 +23,7 @@ import {
   kinQuoteRow,
   kinQuoteState,
   kinQuotesSummary,
+  kinOutlookView,
   kinRunwayText,
 } from "./kinMoneyAnswers.ts";
 
@@ -338,5 +341,55 @@ describe("kinRunwayText", () => {
     expect(
       kinRunwayText({ ...runway, runwayTenths: null, enoughHistory: false, historySince: null }),
     ).toBe("Runway needs three full months of history.");
+  });
+});
+
+describe("kinOutlookView", () => {
+  it("lists every partner balance under the figure it counts in, never one against another", () => {
+    const partner = (id: string, name: string, owed: KinOutlook["expectedOut"]) => ({
+      personId: KinPersonId.make(id),
+      name,
+      address: null,
+      owed,
+      expenses: 2,
+      oldest: "2026-10-02",
+    });
+    const view = kinOutlookView(
+      {
+        today: "2026-11-15",
+        days: 30,
+        through: "2026-12-14",
+        expectedIn: [inr(3_000)],
+        expectedOut: [inr(10_000)],
+        net: [inr(-7_000)],
+        comingIn: [],
+        moreComingIn: 0,
+        goingOut: [],
+        moreGoingOut: 0,
+        pastDueOut: [],
+        overdueIn: [],
+        owedToPartners: [
+          partner("meera", "Meera Rao", [inr(10_000)]),
+          partner("zoya", "Zoya Sheikh", [inr(-3_000)]),
+        ],
+        incomplete: [],
+        runway: [],
+      },
+      rates,
+      now,
+    );
+    expect([
+      view.goingOut,
+      view.outgoing.map((row) => [row.title, row.amount, row.key]),
+      view.comingIn,
+      view.incoming.map((row) => [row.title, row.amount, row.key]),
+      view.partners,
+    ]).toEqual([
+      ["₹100"],
+      [["Owed back to Meera Rao", "₹100", null]],
+      ["₹30"],
+      [["Refunds Zoya Sheikh holds, coming back", "₹30", null]],
+      [],
+    ]);
   });
 });

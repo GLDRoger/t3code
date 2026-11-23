@@ -217,7 +217,8 @@ export function kinMoneyView(
   summary: KinMoneySummary,
   lists: ReadonlyArray<KinListDefinition>,
 ): KinMoneyView {
-  const has = (id: string) => lists.find((def) => def.list === id && def.archivedAt === null);
+  // An archived list's entries still count, so its figures still open it, marked archived.
+  const has = (id: string) => lists.find((def) => def.list === id);
   const invoices = has(INVOICES);
   const expenses = has(EXPENSES);
   const open = (
@@ -230,11 +231,11 @@ export function kinMoneyView(
         { list: def.list, filter: { ...KIN_LIST_DEFAULT_FILTER, kept: true, ...filter } };
   // Issued and not yet paid in full: the state the host counts as owed.
   const owing = { show: "waiting" as const };
-  // Paid expenses by their own date: what the host counts as spent.
-  const spentIn = (period: KinListFilter["period"], category?: string | null) =>
+  // Money out by the day it left the accounts: exactly what the host counts as spent.
+  const spentIn = (spent: KinListFilter["spent"], category?: string | null) =>
     open(expenses, {
       show: "done",
-      period,
+      spent,
       ...(category === undefined ? {} : category === null ? { noCategory: true } : { category }),
     });
   const receivedIn = (paid: KinListFilter["paid"]) => open(invoices, { paid });

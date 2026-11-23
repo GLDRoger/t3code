@@ -2410,6 +2410,266 @@ describe("bank statement safety", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "repays a partner's oldest owed expenses from one debit, links it, and undo makes them owed",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera Rao', ${at})`;
+        const paidBy = (title: string, minor: number, day: string) =>
+          expense(title, minor, day, "Lakeview Cowork").pipe(
+            Effect.flatMap((row) =>
+              records.update(orgId, owner, row.key, {
+                state: "done",
+                fields: { fundedBy: "person:meera" },
+              }),
+            ),
+          );
+        const first = yield* paidBy("Desk deposit", 300_000, "2026-09-05");
+        const second = yield* paidBy("Monitor arm", 200_000, "2026-09-20");
+        const later = yield* paidBy("Cables", 100_000, "2026-10-01");
+        const result = opened(
+          yield* read(
+            1,
+            "repay.csv",
+            csvOf([
+              // The same amount as one of her expenses, from the company's account to the vendor.
+              ["2026-10-02", "UPI-LAKEVIEW COWORK-desk@invbank", 300_000, null],
+              ["2026-10-15", "NEFT DR-UTIB0000001-MEERA RAO-REIMB", 500_000, null],
+            ]),
+          ),
+        );
+        // The agent reads which expenses the line repays, and that Confirm marks them.
+        assert.deepStrictEqual(
+          result.matched.map((one) => one.to),
+          [`${first.key}, ${second.key} (Repays Meera Rao: 2 expenses, marked repaid on Confirm)`],
+        );
+        const card = (yield* reviewCardOf(result.statement)).card;
+        // Her expenses left her account, so the vendor line is no match for them.
+        assert.deepStrictEqual(
+          card.matched.map((one) => [one.text.slice(0, 13), one.target.key, one.target.note]),
+          [["NEFT DR-UTIB0", first.key, `Marks ${first.key}, ${second.key} repaid`]],
+        );
+        assert.notInclude(
+          JSON.stringify(card.choose.filter((one) => one.text.startsWith("UPI"))),
+          first.key,
+        );
+        const bankRows = sql<{ key: string; state: string; category: string | null }>`SELECT key,
+            state, category FROM kin_records WHERE org_id = ${orgId}
+            AND register_id = 'bank_transactions' ORDER BY key`;
+        const fieldsOf = (key: string) =>
+          records.get(orgId, key).pipe(Effect.map((row) => JSON.parse(row!.fieldsJson)));
+        const before = [yield* fieldsOf(first.key), yield* fieldsOf(second.key)];
+        const confirm = yield* confirmAll(card);
+        const refusal = (made: typeof confirm) =>
+          Effect.flip(OwnerStatements.apply(people, made)).pipe(
+            Effect.map((error) => [error.reason, error.message]),
+          );
+        // Edited since the read, the run no longer adds up to the line: Confirm applies nothing.
+        yield* records.update(orgId, owner, second.key, {
+          amount: { minor: 200_100, currency: "INR" },
+        });
+        assert.deepStrictEqual(yield* refusal(confirm), [
+          "conflict",
+          `Nothing was applied: the amount of ${second.key} changed since this card was made. Ask Kin to read the statement again.`,
+        ]);
+        // Paid by someone else now, or put back as it was: the card still showed another entry.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('dev', ${orgId}, 'dev', 'Dev Malhotra', ${at})`;
+        yield* records.update(orgId, owner, second.key, {
+          amount: { minor: 200_000, currency: "INR" },
+          fields: { fundedBy: "person:dev" },
+        });
+        assert.include((yield* refusal(confirm))[1], `someone else paid ${second.key}`);
+        yield* records.update(orgId, owner, second.key, { fields: { fundedBy: "person:meera" } });
+        assert.include((yield* refusal(confirm))[1], `${second.key} was edited`);
+        yield* OwnerStatements.reread(people, { orgId, statementId: result.statement });
+        const applied = yield* OwnerStatements.apply(
+          people,
+          yield* confirmAll((yield* reviewCardOf(result.statement)).card),
+        );
+        assert.include(applied.card.result!.join(" "), "Marked 2 partner-paid expenses repaid.");
+        // Bound to the bank line: what it cost, who is paid back and when, and whether it stands.
+        const paidBack = "This was paid back on 2026-10-15. Undo that repayment first.";
+        for (const patch of [
+          { amount: { minor: 300_100, currency: "INR" } },
+          { amount: { minor: 300_000, currency: "USD" } },
+          { fields: { fundedBy: "person:dev" } },
+          { fields: { repaidOn: "2026-10-16" } },
+          { fields: { reimbursement: "owed" } },
+          { state: "dropped" as const },
+        ])
+          assert.strictEqual(
+            (yield* Effect.flip(records.update(orgId, owner, first.key, patch))).message,
+            paidBack,
+          );
+        assert.isTrue((yield* bankRows).every((one) => one.state === "done"));
+        for (const key of [first.key, second.key])
+          assert.include(yield* fieldsOf(key), { reimbursement: "repaid", repaidOn: "2026-10-15" });
+        assert.include(yield* fieldsOf(later.key), { reimbursement: "owed" });
+        const [link] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_links
+          WHERE record_id IN (${first.recordId}, ${second.recordId}) AND kind = 'record'
+            AND relation = 'evidence'`;
+        assert.strictEqual(link!.n, 2);
+
+        yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
+        // Undo puts back every field Confirm changed, the repaid day included.
+        assert.deepStrictEqual([yield* fieldsOf(first.key), yield* fieldsOf(second.key)], before);
+        // Each bank row back as Confirm found it.
+        assert.isTrue(
+          (yield* bankRows).every((one) => one.state === "open" && one.category === null),
+        );
+        const [left] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_links
+          WHERE record_id IN (${first.recordId}, ${second.recordId}) AND kind = 'record'`;
+        assert.strictEqual(left!.n, 0);
+
+        // An entry changed by hand after Confirm is the owner's: Undo keeps that row whole.
+        const again = (yield* reviewCardOf(result.statement)).card;
+        yield* OwnerStatements.apply(people, yield* confirmAll(again));
+        yield* records.update(orgId, owner, first.key, { notes: "Deposit back in March" });
+        yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
+        assert.include(yield* fieldsOf(first.key), {
+          reimbursement: "repaid",
+          repaidOn: "2026-10-15",
+        });
+        assert.include(yield* fieldsOf(second.key), {
+          reimbursement: "repaid",
+          repaidOn: "2026-10-15",
+        });
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "settles a partner's refund-netted run, and refuses a repayment whose expenses changed since the card",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera Rao', ${at})`;
+        const paidBy = (title: string, minor: number, day: string) =>
+          expense(title, minor, day, "Invented Domains").pipe(
+            Effect.flatMap((row) =>
+              records.update(orgId, owner, row.key, {
+                state: "done",
+                fields: { fundedBy: "person:meera" },
+              }),
+            ),
+          );
+        const domain = yield* paidBy("Domain", 420_000, "2026-09-05");
+        // The registrar refunded part of it to her own card: she is owed the net.
+        const refund = yield* paidBy("Domain refund", -100_000, "2026-09-08");
+        const fieldsOf = (key: string) =>
+          records.get(orgId, key).pipe(Effect.map((row) => JSON.parse(row!.fieldsJson)));
+        const statementOf = (n: number, name: string, minor: number) =>
+          Effect.gen(function* () {
+            const result = opened(
+              yield* read(
+                n,
+                name,
+                csvOf([["2026-10-15", "NEFT DR-UTIB0000001-MEERA RAO-REIMB", minor, null]]),
+              ),
+            );
+            return { result, card: (yield* reviewCardOf(result.statement)).card };
+          });
+
+        // More than she is owed: no match, the line stays to be explained, and she stays owed.
+        const over = yield* statementOf(1, "over.csv", 400_000);
+        assert.deepStrictEqual(over.card.matched, []);
+        assert.notInclude(JSON.stringify(over.card.choose), domain.key);
+
+        const net = yield* statementOf(3, "net.csv", 320_000);
+        assert.deepStrictEqual(
+          net.card.matched.map((one) => [one.target.key, one.target.note]),
+          [[domain.key, `Marks ${domain.key}, ${refund.key} repaid`]],
+        );
+        // The refund's amount is corrected before Confirm: the run no longer adds up to the line.
+        yield* records.update(orgId, owner, refund.key, {
+          amount: { minor: -50_000, currency: "INR" },
+        });
+        const refused = yield* Effect.flip(
+          OwnerStatements.apply(people, yield* confirmAll(net.card)),
+        );
+        assert.strictEqual(refused.reason, "conflict");
+        assert.include(yield* fieldsOf(domain.key), { reimbursement: "owed" });
+        assert.include(yield* fieldsOf(refund.key), { reimbursement: "owed" });
+
+        // Repaid by hand the day before: the line is that repayment, not a new expense.
+        for (const key of [domain.key, refund.key])
+          yield* records.update(orgId, owner, key, {
+            fields: { reimbursement: "repaid", repaidOn: "2026-10-14" },
+          });
+        const marked = yield* statementOf(4, "marked.csv", 370_000);
+        assert.deepStrictEqual(
+          [marked.card.matched, marked.card.unmatched.map((one) => [one.suggestion, one.why])],
+          [
+            [],
+            [
+              [
+                "later",
+                "Looks like Meera Rao's repayment already marked on 2026-10-14, so it isn't recorded again",
+              ],
+            ],
+          ],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "settles no expense dated after its line, and Confirm refuses an ordinary match edited since",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera Rao', ${at})`;
+        // Dated two days after the line that would repay it.
+        const after = yield* expense("Courier", 45_000, "2026-10-17", "Invented Couriers").pipe(
+          Effect.flatMap((row) =>
+            records.update(orgId, owner, row.key, {
+              state: "done",
+              fields: { fundedBy: "person:meera" },
+            }),
+          ),
+        );
+        const lamp = yield* expense("Desk lamp", 52_000, "2026-10-14", "Invented Lamps");
+        const result = opened(
+          yield* read(
+            1,
+            "dated.csv",
+            csvOf([
+              ["2026-10-15", "NEFT DR-UTIB0000001-MEERA RAO-REIMB", 45_000, null],
+              ["2026-10-15", "UPI-INVENTED LAMPS-lamps@invbank", 52_000, null],
+            ]),
+          ),
+        );
+        const card = (yield* reviewCardOf(result.statement)).card;
+        assert.deepStrictEqual(
+          card.matched.map((one) => one.target.key),
+          [lamp.key],
+        );
+        assert.notInclude(JSON.stringify(card), `Marks ${after.key}`);
+        // The lamp became a partner's own spend after the card was made: it never left this account.
+        yield* records.update(orgId, owner, lamp.key, { fields: { fundedBy: "person:meera" } });
+        const refused = yield* Effect.flip(OwnerStatements.apply(people, yield* confirmAll(card)));
+        assert.deepStrictEqual(
+          [refused.reason, refused.message],
+          [
+            "conflict",
+            `Nothing was applied: ${lamp.key} is now a partner's to be paid back since this card was made. Ask Kin to read the statement again.`,
+          ],
+        );
+        yield* records.update(orgId, owner, lamp.key, { fields: { fundedBy: null } });
+        const edited = yield* Effect.flip(OwnerStatements.apply(people, yield* confirmAll(card)));
+        assert.include(edited.message, `${lamp.key} was edited`);
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("starts with nothing ticked when the rows can't be trusted, and says why", () =>
     Effect.gen(function* () {
       const keys = yield* seed;

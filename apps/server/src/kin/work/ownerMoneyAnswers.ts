@@ -10,6 +10,8 @@ import {
   type KinMoneyBudgetsInput,
   type KinOrgId,
   type KinOutlookInput,
+  type KinMatchPartnerInput,
+  KinPersonId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -30,6 +32,7 @@ import type { AlertBalance } from "./statements/bankAlerts.ts";
 import { KinRecords, requestHashOf } from "./KinRecords.ts";
 import { dueMillis, ownFiles, ownerWriter, theOwner } from "./ownerWork.ts";
 import { iso, notFound, type RecordRow, workFailure } from "./recordRows.ts";
+import { matchPartner as matchPartnerOf } from "./partnersOwed.ts";
 import { listDef, listOrPreset, presetList } from "./registers.ts";
 
 /** Money's answers as the owner's apps read them: the agent's own figures, never re-added here. */
@@ -149,6 +152,32 @@ export const outlook = Effect.fn("KinMoneyAnswers.rpc.outlook")(function* (
       money: one.money,
       repeats: false,
     })),
+    ...(view.partners.length === 0
+      ? {}
+      : {
+          owedToPartners: view.partners.map((one) => ({
+            personId: one.personId === null ? null : KinPersonId.make(one.personId),
+            name: one.name,
+            address: one.address,
+            owed: one.owed,
+            expenses: one.entries.length,
+            oldest: dayIn(one.entries[0]!.at, view.timeZone),
+            ...(one.personId === null
+              ? { entries: one.entries.map((entry) => ({ key: entry.key, rev: entry.rev })) }
+              : {}),
+          })),
+        }),
+    ...(view.unsaid.length === 0
+      ? {}
+      : {
+          partnersUnsaid: view.unsaid.map((one) => ({
+            address: one.address,
+            expenses: one.expenses,
+            total: one.total,
+            oldest: dayIn(one.at, view.timeZone),
+            entries: one.seen,
+          })),
+        }),
     incomplete: view.incomplete,
     runway: view.runway.map((one) => ({
       currency: one.currency,
@@ -417,6 +446,9 @@ export const newExpense = Effect.fn("KinMoneyAnswers.rpc.newExpense")(function* 
   const fields = {
     ...(input.vendor === undefined ? {} : { vendor: input.vendor }),
     ...(input.paidWith === undefined ? {} : { paidWith: sameWord(paidWith, input.paidWith)! }),
+    ...(input.fundedBy === undefined
+      ? {}
+      : { fundedBy: `person:${input.fundedBy}`, reimbursement: "owed" }),
     ...(input.receipt === undefined || input.receipt.length === 0
       ? {}
       : { receipt: [...input.receipt] }),
@@ -441,4 +473,29 @@ export const newExpense = Effect.fn("KinMoneyAnswers.rpc.newExpense")(function* 
     ownFiles(person, "{}", fields).pipe(Effect.andThen(create)),
   );
   return { expense: row.key };
+}, workFailure);
+
+/**
+ * The owner or a co-owner (owner level, as for `newExpense`) names the Kin person an import's
+ * partner address is. Only a current member can fund an expense; the unmatched expenses with that
+ * address take them as funder.
+ */
+export const matchPartner = Effect.fn("KinMoneyAnswers.rpc.matchPartner")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinMatchPartnerInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const sql = yield* SqlClient.SqlClient;
+  // The teammate, the rows and their totals are read and written in one transaction.
+  const matched = yield* sql.withTransaction(
+    matchPartnerOf(
+      input.orgId,
+      ownerWriter(person),
+      input.address ?? null,
+      input.personId,
+      input.settled,
+      input.seen,
+    ),
+  );
+  return { matched };
 }, workFailure);

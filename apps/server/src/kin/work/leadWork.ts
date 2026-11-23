@@ -62,7 +62,15 @@ import { campaignsNamed, partyPage, projectDetail, sourceShown } from "./crm.ts"
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { fold, matchName } from "./nameMatch.ts";
 import { lastContacts } from "./touches.ts";
-import { clientFamily, KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
+import {
+  agentMayFund,
+  clientFamily,
+  KinRecords,
+  type Patch,
+  type TotalsBy,
+  type Writer,
+} from "./KinRecords.ts";
+import { FUNDED_BY } from "./reimbursement.ts";
 import {
   GOAL_INPUTS,
   GoalInputs,
@@ -3254,10 +3262,15 @@ const keepPairedFiles = Effect.fn("KinWorkTools.keepPairedFiles")(function* (
       return more.length === 0 ? [] : [[field, [...theirs, ...more]]];
     }),
   );
+  // A receipt names a funder only where none is said yet, and only as the owner may (`agentMayFund`).
+  const mayFund =
+    shownField(stored[FUNDED_BY]) === null && (yield* agentMayFund(lead.orgId, writer));
   const how = paid.receipt
     ? Object.fromEntries(
         PAYMENT_FIELDS.flatMap((field) =>
-          given[field] === undefined || shownField(given[field]) === shownField(stored[field])
+          given[field] === undefined ||
+          shownField(given[field]) === shownField(stored[field]) ||
+          (field === FUNDED_BY && !mayFund)
             ? []
             : [[field, given[field]]],
         ),
@@ -3277,7 +3290,7 @@ const keepPairedFiles = Effect.fn("KinWorkTools.keepPairedFiles")(function* (
     : yield* records.update(lead.orgId, writer, key, patch, entry.rev);
 });
 
-const PAYMENT_FIELDS = ["paidWith", "paidBy"];
+const PAYMENT_FIELDS = ["paidWith", "paidBy", FUNDED_BY];
 
 /** What a file's name says it is; a name saying both, or neither, says nothing. */
 const documentKind = (name: string | null) => {

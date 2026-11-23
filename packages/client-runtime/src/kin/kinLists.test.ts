@@ -736,6 +736,12 @@ describe("a list by its definition", () => {
         "₹40,000.00 has already been received, so the amount can't be less. Take a payment back first.",
     });
     expect(kinAmountCheck("40000", "INR", received)).toEqual({ ok: true, value: received });
+    // A refund's amount edits below zero, as it was added; elsewhere, and zero anywhere, it can't.
+    expect([
+      kinAmountCheck("-500", "INR", null, true),
+      kinAmountCheck("-500", "INR", null).ok,
+      kinAmountCheck("0", "INR", null, true).ok,
+    ]).toEqual([{ ok: true, value: { minor: -50_000, currency: "INR" } }, false, false]);
     // The host's slip refusal is one line in a person's words; any other error is not one.
     const slip = (largest: { minor: number; currency: string } | null) =>
       new KinChatError({
