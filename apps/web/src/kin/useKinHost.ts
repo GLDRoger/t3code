@@ -158,6 +158,8 @@ export function useKinInbox(): {
   readonly host: KinHost;
   readonly state: KinInboxScreenState;
   readonly retry: () => void;
+  /** Reads the inbox again, for a row the host says has moved on. */
+  readonly reread: () => void;
 } {
   const host = useKinHost();
   const environmentId = host._tag === "host" ? host.environmentId : null;
@@ -170,5 +172,8 @@ export function useKinInbox(): {
       appAtomRegistry.refresh(kinClient.orgs({ environmentId, input: {} }));
     else appAtomRegistry.refresh(inboxAtom);
   };
-  return { host, state, retry };
+  const reread = () => {
+    if (environmentId !== null) appAtomRegistry.refresh(inboxAtom);
+  };
+  return { host, state, retry, reread };
 }

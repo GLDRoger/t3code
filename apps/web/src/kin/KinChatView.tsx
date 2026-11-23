@@ -145,6 +145,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinGroups";
 import { deliverKinOutbox, kinLocalPreviews, kinOutbox, startKinOutbox } from "./kinOutbox";
 import {
+  KIN_LAND_MARK_MS,
   kinChatFeedView,
   kinChatReads,
   kinChatScreen,
@@ -658,6 +659,8 @@ function KinChatFeed(props: {
   };
   const { landOn } = props;
   const landed = useRef<string | null>(null);
+  // The message a row opened, tinted a moment once it has loaded so the eye lands on it.
+  const [markDone, setMarkDone] = useState<string | null>(null);
 
   const { presence, stopLead } = props;
   const wakeupId = presence?.wakeupId ?? null;
@@ -775,6 +778,13 @@ function KinChatFeed(props: {
     void listRef.current?.scrollToIndex({ index: landIndex, animated: false, viewPosition: 0.3 });
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition reads only refs and the stable setFollow.
   }, [landIndex, landOn, followsEnd, listRef, landed]);
+  const marked = landOn !== null && landIndex >= 0 && markDone !== landOn;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a timer: the mark on the message a row opened lasts a moment, then goes
+  useEffect(() => {
+    if (!marked || landOn === null) return;
+    const timer = setTimeout(() => setMarkDone(landOn), KIN_LAND_MARK_MS);
+    return () => clearTimeout(timer);
+  }, [marked, landOn]);
 
   const checkEnd = () => {
     const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
@@ -1093,9 +1103,15 @@ function KinChatFeed(props: {
               ? "other"
               : row.type
         }
-        renderItem={renderItem}
+        renderItem={({ item, index }: { readonly item: KinChatRow; readonly index: number }) =>
+          marked && index === landIndex ? (
+            <div className="rounded-lg bg-primary/10">{renderItem({ item })}</div>
+          ) : (
+            renderItem({ item })
+          )
+        }
         // Both reach rows only through renderItem, which the list doesn't watch.
-        extraData={[streamed.widgets, streamed.reactions, canReact, display]}
+        extraData={[marked, streamed.widgets, streamed.reactions, canReact, display]}
         estimatedItemSize={72}
         recycleItems={false}
         alignItemsAtEnd
@@ -1180,8 +1196,8 @@ function KinChatFeed(props: {
 }
 
 /**
- * What the lead is doing, in one line under the feed. Its row keeps its height when empty, so a
- * reply landing never shifts the feed. Static text: it changes on 15 s ticks, never animates.
+ * What the lead is doing, with its pebble, in one line under the feed. Its row keeps its height
+ * when empty, so a reply landing never shifts the feed. Static text: it changes on 15 s ticks.
  */
 function KinPresenceLine(props: {
   readonly environmentId: EnvironmentId;
@@ -1196,6 +1212,9 @@ function KinPresenceLine(props: {
   const stoppable = line?.stalled === true && onStop !== null;
   return (
     <div className="mx-auto flex h-9 w-full max-w-3xl items-center gap-2 px-5 text-muted-foreground text-xs">
+      {line === null || props.presence === undefined ? null : (
+        <KinAvatar avatar={kinAgentAvatar(props.presence.agentId)} size="xs" />
+      )}
       <p role="status" aria-live="polite" className="truncate">
         {line === null ? "" : line.text}
       </p>
