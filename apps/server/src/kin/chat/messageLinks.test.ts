@@ -206,6 +206,17 @@ it.effect("links for each reader only what they may open; a hidden client leaves
         ["DL-1", "Pineglass window graphics"],
       ],
     );
+    // A person's own message keeps the key they typed.
+    const [typed] = yield* withLinks(orgId, { _tag: "person", personId: ownerId }, [
+      {
+        ...message("Check W-1 today."),
+        author: { _tag: "person", personId: ownerId, memberId: KinMemberId.make("rhea-member") },
+      },
+    ]);
+    assert.deepStrictEqual(
+      typed!.links?.map((link) => [link.text, link.name]),
+      [["W-1", undefined]],
+    );
 
     // An open task named by its exact title links as a task; a closed one stays words.
     assert.deepStrictEqual(owner.find((link) => link.text === "Set up the booking API")?.to, {

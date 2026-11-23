@@ -501,7 +501,11 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
     : new Map<string, KinTurnChanges>();
   return messages.map((message) => {
     if (message.kind !== "text" || message.status === "deleted") return message;
-    const links = match(message.body);
+    // A person's own words keep their keys as typed; an agent's read as names.
+    const links =
+      message.author._tag === "agent"
+        ? match(message.body)
+        : match(message.body).map(({ name: _name, ...link }) => link);
     const turn = receipts.get(message.messageId);
     return {
       ...message,
