@@ -359,6 +359,18 @@ const SUGGESTED_CAP = 20;
 /** Lists whose every entry is money, amount or not yet. */
 const MONEY_LISTS = ["quotes", "invoices", "expenses", "receipts", "subscriptions"];
 
+export const ownerLevelInvoicedInMonth = Effect.fn("KinMoneyViews.ownerLevelInvoicedInMonth")(
+  function* (orgId: KinOrgId, month: string, zone: string) {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql<KinMoney>`SELECT SUM(r.amount_minor) AS minor, r.currency
+    FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'invoices'
+      AND r.state IN ('waiting', 'done') AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
+      AND ${moneyDay(sql)} >= ${monthStart(month, zone)}
+      AND ${moneyDay(sql)} < ${monthStart(shiftMonth(month, 1), zone)}
+    GROUP BY r.currency ORDER BY r.currency`;
+  },
+);
+
 /** The Money tab's figures: owed and overdue by client, received and spent, dates ahead, a year. */
 export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   orgId: KinOrgId,

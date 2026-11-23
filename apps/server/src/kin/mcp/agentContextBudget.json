@@ -7,13 +7,13 @@
   },
   "kinSharedInstructionsHash": "43b28ba753963c2c5d1a006a955148e71add4887193030ca71bb2df4d50e7952",
   "kinLeadToolListJsonBytes": {
-    "engineering": 154488,
-    "engineeringBesideFinanceAndSales": 141229,
-    "finance": 134072,
+    "engineering": 156400,
+    "engineeringBesideFinanceAndSales": 143141,
+    "finance": 135984,
     "shared": 88980,
-    "social": 137145,
-    "socialBesideFinanceAndSales": 123886,
-    "support": 134072
+    "social": 139057,
+    "socialBesideFinanceAndSales": 125798,
+    "support": 135984
   },
   "kinLeadAlwaysLoadedToolBytes": 69945,
   "kinLeadToolBytes": {
@@ -36,6 +36,10 @@
     "company_profile": {
       "desc": 840,
       "schema": 993
+    },
+    "company_sections": {
+      "desc": 364,
+      "schema": 472
     },
     "dates_query": {
       "desc": 382,
@@ -236,6 +240,14 @@
     "money_summary": {
       "desc": 501,
       "schema": 46
+    },
+    "number_record": {
+      "desc": 250,
+      "schema": 314
+    },
+    "numbers_read": {
+      "desc": 192,
+      "schema": 147
     },
     "payment_record": {
       "desc": 320,

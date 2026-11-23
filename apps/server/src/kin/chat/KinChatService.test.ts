@@ -18,6 +18,8 @@ import { authorizeAttachmentRead } from "./attachmentAccess.ts";
 import { environment } from "./TaskCard.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { CommandId } from "@t3tools/contracts";
+import { bindShellChange } from "../shell/changes.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { startWakeupRun, authorityLayer, startAgentWakeup } from "./WakeupAuthority.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -3286,6 +3288,88 @@ describe("KinChatService", () => {
           .pipe(Effect.provideService(RefreshHub.KinRefreshObserver, { touch: () => Effect.void }));
         assert.strictEqual(yield* profile(), "9999999999");
         assert.strictEqual(yield* company, 1);
+      }).pipe(Effect.provide(Layer.provideMerge(LevelGate.layer, layer))),
+  );
+
+  it.effect(
+    "a sections card applies once through the real tap, for the owner and for a co-owner",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const gate = yield* LevelGate.KinLevelGate;
+        const coOwner = { ...person, personId: KinPersonId.make("probe-co-owner") };
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES (${coOwner.personId}, ${person.orgId}, 'zoya', 'Zoya', ${timestamp}, 'co_owner')`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at)
+          VALUES ('probe-co-owner-member', ${person.orgId}, ${chat.chatId}, 'person',
+            ${coOwner.personId}, 'member', ${timestamp})`;
+        const card = (changeId: string, on: boolean) =>
+          Effect.gen(function* () {
+            const shell = yield* KinShell.get(person.orgId);
+            const after = shell.sections.map((one) => (one.id === "deals" ? { ...one, on } : one));
+            return yield* gate.ask(
+              agent,
+              {
+                chatId: chat.chatId,
+                clientMessageId: `kin-shell:${changeId}`,
+                question: "Change how Kin is set up for this company?",
+                detail: on ? "Turn on Deals" : "Turn off Deals",
+                options: [
+                  { label: "Confirm", kind: "yes" as const },
+                  { label: "Cancel", kind: "no" as const },
+                ],
+              },
+              (widget) =>
+                bindShellChange({
+                  orgId: person.orgId,
+                  changeId,
+                  agentId,
+                  wakeupId: "probe",
+                  before: shell.sections,
+                  after,
+                  baseRev: shell.rev,
+                  widgetId: widget.widgetId,
+                  now: 0,
+                }).pipe(Effect.asVoid, Effect.provideService(SqlClient.SqlClient, sql)),
+            );
+          });
+        const tap = (
+          who: typeof person,
+          widget: { widgetId: KinWidgetId; revision: number },
+          id: string,
+        ) =>
+          service
+            .act(who, {
+              widgetId: widget.widgetId,
+              revision: widget.revision,
+              actionId: "choose",
+              value: "option-1",
+              clientActionId: id,
+            })
+            .pipe(
+              Effect.provideService(RefreshHub.KinRefreshObserver, { touch: () => Effect.void }),
+            );
+        // Two Confirms at once: one applies, the other finds the card answered.
+        const off = yield* card("sc_probe_off", false);
+        const taps = yield* Effect.forEach(
+          [
+            [person, "tap-a"],
+            [coOwner, "tap-b"],
+          ] as const,
+          ([who, id]) => Effect.exit(tap(who, off, id)),
+          { concurrency: "unbounded" },
+        );
+        assert.strictEqual(taps.filter(Exit.isSuccess).length, 1);
+        const once = yield* KinShell.get(person.orgId);
+        assert.strictEqual(once.rev, 1);
+        assert.isFalse(once.sections.find((one) => one.id === "deals")!.on);
+        // A co-owner's Confirm applies too.
+        yield* tap(coOwner, yield* card("sc_probe_on", true), "tap-c");
+        const back = yield* KinShell.get(person.orgId);
+        assert.strictEqual(back.rev, 2);
+        assert.isTrue(back.sections.find((one) => one.id === "deals")!.on);
       }).pipe(Effect.provide(Layer.provideMerge(LevelGate.layer, layer))),
   );
 
