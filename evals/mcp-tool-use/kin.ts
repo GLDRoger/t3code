@@ -509,10 +509,10 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   alsoOnUnasked: () => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: ALSO_ON_UNASKED },
   }),
-  // kin_hand_off to an agent this turn put on a task: nothing more is passed on.
-  alreadyOnIt: (input: { keys: ReadonlyArray<string> }) => ({
+  // kin_hand_off to an agent this turn gave a task or put on one: nothing more is passed on.
+  alreadyOnIt: (input: { agent: string; titles: ReadonlyArray<string> }) => ({
     passed: false,
-    note: alreadyOnIt(input.keys),
+    note: alreadyOnIt(input.agent, input.titles),
   }),
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),
