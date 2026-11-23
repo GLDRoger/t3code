@@ -35,6 +35,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { Scheduler } from "../../scheduling/Scheduler.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -1244,6 +1245,21 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           // Her Confirm sends it and keeps it, as hers; an open invoice stays open, unnumbered.
           yield* guess;
           const card = yield* drafted;
+          const toggle = (rev: number, id: "money" | "invoices", on: boolean) =>
+            KinShell.KinShell.use((shell) => shell.set(orgId, owner, rev, [{ id, on }])).pipe(
+              Effect.provide(KinShell.layer),
+              Effect.provideService(KinRefreshObserver, { touch: () => Effect.void }),
+            );
+          const reason =
+            "Invoices and quotes is turned off for this company, so this wasn't sent. Turn it on in Settings › Sections and confirm again.";
+          const beforeOff = fake.sent().length;
+          yield* toggle(0, "money", false);
+          assert.deepInclude(yield* Effect.flip(tap(card.widgetId, coOwner)), { message: reason });
+          yield* toggle(1, "invoices", false);
+          assert.deepInclude(yield* Effect.flip(tap(card.widgetId, coOwner)), { message: reason });
+          assert.strictEqual(fake.sent().length, beforeOff);
+          assert.strictEqual((yield* flag("rec_inv")).confirmed, 0);
+          yield* toggle(2, "invoices", true);
           assert.deepStrictEqual(yield* tap(card.widgetId, coOwner), sent);
           assert.deepStrictEqual(yield* flag("rec_inv"), { confirmed: 1, state: "open" });
           assert.strictEqual(yield* keptBy, coOwner);
@@ -1419,6 +1435,55 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           body: "x",
         }).pipe(Effect.flip);
         assert.strictEqual(shared.message, SHARED_CONNECTIONS);
+      }),
+    ),
+  );
+
+  it.effect("a picture Kin drew goes by its doc's key, as the PNG it is", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fs = yield* FileSystem.FileSystem;
+        const { attachmentsDir } = yield* ServerConfig;
+        const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        const attachmentId = "kin-00000000-0000-4000-8000-0000000000aa-png";
+        yield* fs.writeFile(`${attachmentsDir}/${attachmentId}.png`, png);
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at)
+          VALUES (${orgId}, 'rec_pic', 'docs', 'DOC-2', 'Lumen launch', 'agent', ${lead}, 'agent',
+            'picture:lead:launch', 0, 0)`;
+        const file = {
+          attachmentId,
+          name: "lumen-launch.png",
+          mimeType: "image/png",
+          bytes: png.length,
+          sha256: NodeCrypto.createHash("sha256").update(png).digest("hex"),
+          pages: null,
+          recipe: null,
+          inputsHash: "launch",
+          workerId: "pic-launch",
+          number: null,
+          draft: false,
+        };
+        yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body_kind, file_json,
+            title, kind, summary, operations_json, actor_kind, actor_id, via, origin_key, created_at)
+          VALUES (${orgId}, 'rec_pic', 1, 'file', ${JSON.stringify(file)}, 'Lumen launch', 'created',
+            'Picture, 1080×1080', '[]', 'agent', ${lead}, 'lead', 'kin-picture:launch', 0)`;
+        yield* connect(fake, "google", ACCOUNTS);
+        yield* wake({ person: owner });
+        yield* callTool(ACCOUNTS, "mail_send", {
+          to: ["ravi@lumen.example"],
+          subject: "Our launch post",
+          body: "Hi Ravi,\n\nThe launch picture is attached.\n\nArjun",
+          attachments: ["DOC-2"],
+        });
+        const card = cards.at(-1)!;
+        assert.strictEqual(card.send?.attachments[0]?.name, "lumen-launch.png");
+        assert.deepStrictEqual(yield* tap(card.widgetId, owner), { state: "sent", reason: null });
+        const sent = fake.sent()[0]!;
+        assert.deepInclude(sent, { attachments: ["lumen-launch.png"] });
+        const thread = yield* callTool(ACCOUNTS, "mail_read_thread", { threadId: sent.threadId });
+        assert.include(thread.quoted ?? "", "image/png");
       }),
     ),
   );
@@ -2580,6 +2645,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           yield* readMail(hello);
           yield* TestClock.adjust("2 minutes");
           const at = yield* Clock.currentTimeMillis;
+          yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+            VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${owner}, ${at})`;
           // Invented alerts in HDFC's shape, more of them than any one pass used to read.
           for (const n of Array.from({ length: 25 }, (_, index) => index + 10))
             for (const to of [ACCOUNTS, HELLO])
@@ -2629,6 +2696,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const source = fromConnections(connections, sql, yield* alertsOnMail(connections));
           const read = yield* source.read(orgId);
           assert.lengthOf(read.seen, 2);
+          assert.deepStrictEqual(read.lines, []);
           yield* source.seen(orgId, read.seen);
           assert.deepStrictEqual(yield* outcomes, once);
           assert.deepStrictEqual(yield* transactions, [{ count: 25 }]);

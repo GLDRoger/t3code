@@ -50,6 +50,7 @@ export const OUTSIDE_TOOLS = {
   kin_react: "allowed",
   kin_chart: "allowed",
   kin_visual: "allowed",
+  kin_picture: "allowed",
   kin_chat_read: "allowed",
   kin_leads: "allowed",
   // Outside text could move an agent onto a costlier model.

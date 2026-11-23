@@ -1,6 +1,13 @@
+import type { KinOrgId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
+import { seenBy, type KinViewer } from "../work/teamView.ts";
+
 import type { KinPulseSense } from "@t3tools/contracts";
 
 import type { SHARED_TOOLS } from "../lead/SharedTools.ts";
+import type { PresetId } from "../work/registers.ts";
 import type { ListName } from "../work/lists.ts";
 
 export const DEALS_OFF = "Deals is turned off for this company.";
@@ -43,8 +50,8 @@ export const SECTIONS = {
     kin_github_watch: null,
     records_query: null,
     record_get: null,
-    touch_log: null,
-    client_read: null,
+    touch_log: "clients",
+    client_read: "clients",
     record_create: null,
     record_update: null,
     pulse_read: null,
@@ -54,7 +61,7 @@ export const SECTIONS = {
     record_hand_back: null,
     record_comment: null,
     record_link: null,
-    project_note: null,
+    project_note: "clients",
     doc_create: null,
     doc_read: null,
     doc_edit: null,
@@ -65,21 +72,22 @@ export const SECTIONS = {
     doc_history: null,
     doc_restore: null,
     list_define: null,
-    payment_record: null,
+    payment_record: "invoices",
     deal_stages: "deals",
-    money_summary: null,
-    money_query: null,
-    budget_set: null,
+    money_summary: "money",
+    money_query: "money",
+    budget_set: "money",
     dates_query: null,
     company_profile: null,
     shell_propose: null,
-    statement_read: null,
-    statement_rows: null,
+    statement_read: "money",
+    statement_rows: "money",
     kin_document: null,
+    kin_picture: null,
     kin_recipes: null,
     kin_issue: null,
     kin_recipe_undo: null,
-    kin_receipt: null,
+    kin_receipt: "money",
     kin_connection_tools: null,
     kin_connection_call: null,
     kin_connection_offer: null,
@@ -149,23 +157,40 @@ export const SECTIONS = {
   } satisfies Record<keyof typeof SHARED_TOOLS, SectionId | null>,
   lists: {
     work: null,
-    clients: null,
-    contacts: null,
-    projects: null,
-    milestones: null,
+    clients: "clients",
+    contacts: "clients",
+    projects: "clients",
+    milestones: "clients",
     goals: null,
     deals: "deals",
     docs: null,
-  } satisfies Record<ListName, SectionId | null>,
+    expenses: "money",
+    receipts: "money",
+    dates: "money",
+    bank_transactions: "money",
+    subscriptions: "money",
+    invoices: "invoices",
+    quotes: "invoices",
+  } satisfies Record<ListName | PresetId | "bank_transactions" | "subscriptions", SectionId | null>,
   keys: {
     W: null,
-    C: null,
-    CT: null,
-    P: null,
-    M: null,
+    C: "clients",
+    CT: "clients",
+    P: "clients",
+    M: "clients",
     G: null,
     DL: "deals",
     D: null,
+    EXP: "money",
+    RCT: "money",
+    DT: "money",
+    BNK: "money",
+    BTX: "money",
+    BANK: "money",
+    BKTX: "money",
+    BK9: "money",
+    INV: "invoices",
+    QT: "invoices",
   } satisfies Record<string, SectionId | null>,
   senses: {
     task_late: null,
@@ -174,32 +199,32 @@ export const SECTIONS = {
     waiting_long: null,
     theirs_late: null,
     to_confirm: null,
-    invoice_overdue: null,
-    quote_unanswered: null,
-    retainer_due: null,
-    renewal_due: null,
-    budget_over: null,
-    budget_near: null,
+    invoice_overdue: "invoices",
+    quote_unanswered: "invoices",
+    retainer_due: "invoices",
+    renewal_due: "money",
+    budget_over: "money",
+    budget_near: "money",
     worker_failed: null,
     task_stuck: null,
     work_held: null,
-    client_quiet: null,
-    client_cold: null,
-    client_waiting_on_us: null,
+    client_quiet: "clients",
+    client_cold: "clients",
+    client_waiting_on_us: "clients",
     goal_behind: null,
     pr_open_long: null,
     pr_failing: null,
     pr_review_waiting: null,
     pr_ready: null,
-    milestone_late: null,
-    milestone_at_risk: null,
-    project_no_plan: null,
-    project_quiet: null,
+    milestone_late: "clients",
+    milestone_at_risk: "clients",
+    project_no_plan: "clients",
+    project_quiet: "clients",
     spec_changed: null,
     meeting_passed: null,
     meeting_soon: null,
     holder_removed: null,
-    statement_missing: null,
+    statement_missing: "money",
     deal_no_next_step: "deals",
     deal_quiet: "deals",
     deal_date_passed: "deals",
@@ -224,3 +249,64 @@ export const sectionOfKey = (recordKey: string) =>
       .match(/^([A-Z][A-Z0-9]{0,7})-[1-9]\d{0,8}$/)?.[1] ?? "",
   );
 export const sectionOfSense = (senseId: string) => section(SECTIONS.senses, senseId);
+
+type SectionRegister = {
+  readonly id: string;
+  readonly name: string | null;
+  readonly payments: number | null;
+};
+
+export const sectionOfRegister = ({ id, name, payments }: SectionRegister): SectionId | null => {
+  if (id === "invoices" || id === "quotes") return "invoices";
+  if (id === "payments" || payments === 1 || name?.trim().toLowerCase() === "bank transactions")
+    return "money";
+  if (id === "dates" || id === "subscriptions") return null;
+  return sectionOfList(id);
+};
+
+export const registerSectionColumns = (sql: SqlClient.SqlClient) =>
+  sql`r.register_id AS id, g.name, json_extract(g.definition_json, '$.payments') AS payments`;
+
+export const looksLikeRecordReference = (value: string, explicit = false) =>
+  value.length > 0 && value.length <= 40 && !/[\r\n]/.test(value) && (explicit || /\d/.test(value));
+
+// An unresolved reference only gets a prefix classification for Kin's reserved built-ins.
+const sectionOfBuiltInKey = (key: string) =>
+  /^(?:C|CT|P|M|DL)-/.test(key.trim().toUpperCase()) ? sectionOfKey(key) : null;
+
+const encodeReferences = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+
+// Exactly the key or the unambiguous displayed number; a row outside the viewer looks absent.
+export const resolveSections = Effect.fn("KinShell.resolveSections")(function* (
+  orgId: KinOrgId,
+  references: ReadonlySet<string>,
+  viewer: KinViewer,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  type Row = SectionRegister & {
+    readonly key: string;
+    readonly number: string | null;
+    readonly visible: number;
+  };
+  const rows =
+    references.size === 0
+      ? []
+      : yield* sql<Row>`
+    WITH wanted AS (SELECT value FROM json_each(${yield* encodeReferences([...references])}))
+    SELECT r.key, json_extract(r.fields_json, '$.number') AS number, ${registerSectionColumns(sql)},
+      ${seenBy(sql, viewer)} AS visible
+    FROM kin_records r
+    LEFT JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
+    WHERE r.org_id = ${orgId}
+      AND (r.key IN (SELECT upper(value) FROM wanted)
+        OR json_extract(r.fields_json, '$.number') IN (SELECT value FROM wanted))
+    ORDER BY r.key`;
+  const keys = new Map(rows.map((row) => [row.key, row]));
+  const numbers = new Map<string, Row | null>();
+  for (const row of rows)
+    if (row.number !== null) numbers.set(row.number, numbers.has(row.number) ? null : row);
+  return (reference: string) => {
+    const row = keys.get(reference.toUpperCase()) ?? numbers.get(reference);
+    return row?.visible === 1 ? sectionOfRegister(row) : sectionOfBuiltInKey(reference);
+  };
+});

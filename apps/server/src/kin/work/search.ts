@@ -1,4 +1,5 @@
 import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfList } from "../shell/sections.ts";
 import { KIN_MONEY_SEARCH_KINDS, type KinOrgId, type KinSearchKind } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -7,7 +8,7 @@ import { sectionsOf } from "./docBody.ts";
 import { latestOf } from "./docs.ts";
 import { listOf } from "./lists.ts";
 import { inheritedSensitive, sensitiveNow } from "./recordRows.ts";
-import { docKindWords, searchIndexed } from "./searchIndex.ts";
+import { docKindWords, searchIndexed, stepText } from "./searchIndex.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
 /**
@@ -100,8 +101,13 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const indexed = yield* searchIndexed();
   if (words.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
   const kinds = input.kinds === undefined || input.kinds.length === 0 ? KINDS : input.kinds;
-  const deals = input.deals === true && (yield* KinShell.sectionOn(orgId, "deals"));
-  const registers: ReadonlyArray<string> = deals ? [...kinds, "deals"] : kinds;
+  const shell = yield* KinShell.get(orgId);
+  const deals = input.deals === true && KinShell.sectionOn(shell, "deals");
+  const registers = (deals ? [...kinds, "deals"] : kinds).filter((kind) => {
+    const section = sectionOfList(kind);
+    return section === null || KinShell.sectionOn(shell, section);
+  });
+  if (registers.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
   const where = [
     sql`r.org_id = ${orgId}`,
     sql`r.register_id IN ${sql.in(registers)}`,
@@ -206,10 +212,10 @@ const scan = Effect.fnUntraced(function* (
     AND v.record_id = r.record_id ORDER BY v.version DESC LIMIT 1), '')`;
   // The scan reads fields only for the owner: which are sensitive is the index's job.
   const fields = viewer === "owner" ? sql`r.fields_json || ' ' ||` : sql``;
-  const text = sql`lower(r.title || ' ' || r.notes || ' ' || ${fields} ${body} || ' '
-    || ${docKindWords(sql)})`;
+  const shown = sql`r.title || ' ' || r.notes || ' ' || ${body} || ' ' || ${stepText(sql)}`;
+  const text = sql`lower(${shown} || ' ' || ${fields} ${docKindWords(sql)})`;
   const rows = yield* sql<Omit<Row, "part" | "snippet"> & { readonly text: string }>`
-    SELECT ${columns}, r.title || ' ' || r.notes || ' ' || ${body} AS text
+    SELECT ${columns}, ${shown} AS text
     FROM kin_records r
     WHERE ${sql.and([
       ...where,

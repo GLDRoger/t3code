@@ -478,6 +478,12 @@ describe("bank statements", () => {
         (yield* reviewCardOf(result.statement)).card,
         tea.map((row) => ({ _tag: "action" as const, row, action: "later" as const })),
       );
+      yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+        VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${people[0]!.personId}, 0)`;
+      const moneyOff = yield* Effect.flip(OwnerStatements.apply(people, confirmOf(later)));
+      assert.include(moneyOff.message, "Money is turned off for this company");
+      assert.lengthOf(yield* bankRows, 0);
+      yield* sql`UPDATE kin_company_shell SET shell_json = '[]', rev = 2 WHERE org_id = ${orgId}`;
       const applied = yield* OwnerStatements.apply(people, confirmOf(later));
       assert.strictEqual(applied.card.status, "applied");
       assert.include(

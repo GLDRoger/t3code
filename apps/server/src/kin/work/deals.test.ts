@@ -39,6 +39,7 @@ import * as KinRecords from "./KinRecords.ts";
 import * as Clients from "./ownerClients.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import { indexRecord } from "./searchIndex.ts";
 import { presetDefinition } from "./registers.ts";
 import { teamSeesKey } from "./teamView.ts";
 
@@ -1133,6 +1134,39 @@ it.effect("a deal is found by its key and its title by whoever sees it, and by n
     );
     yield* setShellFixture(true).pipe(Effect.provide(KinShell.layer));
     assert.deepStrictEqual(yield* found(owner, open.deal.key), [shown]);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0), (${orgId}, 'receipts', 'Receipts', 'RCT', 0)`;
+    yield* Clients.createProject([owner], {
+      orgId,
+      party: corran,
+      name: "Invented Corran project",
+      clientRequestId: "find-corran-project",
+    });
+    for (const [list, key] of [
+      ["invoices", "INV-1"],
+      ["receipts", "RCT-1"],
+    ] as const) {
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+        owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json, confirmed)
+        VALUES (${orgId}, ${key!}, ${list!}, ${key!}, 'Invented Corran payment', 'person', ${ownerId},
+          'person', ${key}, 0, 0, '{}', 1)`;
+      yield* indexRecord(orgId, key);
+    }
+    const kinds = { kinds: ["clients", "projects", "invoices", "receipts"] };
+    assert.lengthOf(yield* found(owner, "corran", kinds), 4);
+    yield* KinShell.KinShell.use((shell) =>
+      shell.set(orgId, ownerId, 2, [
+        { id: "clients", on: false },
+        { id: "money", on: false },
+        { id: "invoices", on: false },
+      ]),
+    ).pipe(Effect.provide(KinShell.layer));
+    assert.deepStrictEqual(yield* found(owner, "corran", kinds), []);
+    assert.strictEqual((yield* OwnerWork.get([owner], { orgId, key: corran })).key, corran);
+    yield* KinShell.KinShell.use((shell) => shell.set(orgId, ownerId, 3, [])).pipe(
+      Effect.provide(KinShell.layer),
+    );
     // Under a client kept private, the owner level finds it and a teammate doesn't.
     for (const text of [kept.deal.key, "confidential"]) {
       assert.deepStrictEqual(yield* found(owner, text), [
@@ -1393,6 +1427,29 @@ it.effect(
       assert.strictEqual(yield* weeklyFigures({ orgId, now }), on);
       // Off again: the next Monday is byte for byte what it was.
       yield* setWeeklyPipeline(orgId, false, now);
+      assert.strictEqual(yield* weeklyFigures({ orgId, now }), before);
+      const set = (rev: number, sections: Parameters<KinShell.KinShell["Service"]["set"]>[3]) =>
+        KinShell.KinShell.use((shell) => shell.set(orgId, ownerId, rev, sections)).pipe(
+          Effect.provide(KinShell.layer),
+        );
+      yield* set(2, [{ id: "invoices", on: false }]);
+      const noInvoices = yield* weeklyFigures({ orgId, now });
+      assert.notInclude(noInvoices, "\n\nOverdue:");
+      assert.notInclude(noInvoices, "\n\nOpen quotes:");
+      assert.include(noInvoices, "\n\nRenewals this month:");
+      yield* set(3, [{ id: "money", on: false }]);
+      const noMoney = yield* weeklyFigures({ orgId, now });
+      assert.notInclude(noMoney, "\n\nRenewals this month:");
+      assert.notInclude(noMoney, "\n\nOverdue:");
+      yield* set(4, [
+        { id: "clients", on: false },
+        { id: "invoices", on: false },
+      ]);
+      const noClients = yield* weeklyFigures({ orgId, now });
+      assert.notInclude(noClients, "\n\nCold clients:");
+      assert.notInclude(noClients, "\n\nQuiet clients:");
+      assert.notInclude(noClients, "\n\nBehind:");
+      yield* set(5, []);
       assert.strictEqual(yield* weeklyFigures({ orgId, now }), before);
       // With euros at home and a krone rate, the krone line says what it is about, and as of when.
       yield* setProfile(

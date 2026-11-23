@@ -21,6 +21,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { chatReaders, keysIn } from "../chat/messageLinks.ts";
 import { readStoredFile } from "../gendocs/brand.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { registerSectionColumns, sectionOfRegister } from "../shell/sections.ts";
 import { readProfile, type TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
@@ -284,6 +286,33 @@ export const attachmentsCurrent = Effect.fn("KinSending.current")(function* (
   return true;
 });
 
+export const subjectOff = Effect.fn("KinSending.subjectOff")(function* (
+  orgId: KinOrgId,
+  prepared: Prepared | undefined,
+) {
+  if (prepared?._tag !== "email") return null;
+  const ids = [
+    ...new Set(
+      prepared.attachments.flatMap((file) =>
+        file.entryRecordId === null ? [file.recordId] : [file.recordId, file.entryRecordId],
+      ),
+    ),
+  ];
+  if (ids.length === 0) return null;
+  const sql = yield* SqlClient.SqlClient;
+  const entries = yield* sql<Parameters<typeof sectionOfRegister>[0]>`SELECT DISTINCT
+    ${registerSectionColumns(sql)} FROM kin_records r
+    LEFT JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
+    WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(ids)} ORDER BY id`;
+  const shell = yield* KinShell.get(orgId);
+  for (const entry of entries) {
+    const section = sectionOfRegister(entry);
+    if (section !== null && !KinShell.sectionOn(shell, section))
+      return `${KinShell.sectionName(shell, section)} is turned off for this company, so this wasn't sent. Turn it on in Settings › Sections and confirm again.`;
+  }
+  return null;
+});
+
 /**
  * Why the mail may not go any more because a file it carries, or that file's entry, was closed
  * since its card: a void invoice, quote or receipt, an archived doc, a dropped entry of any list.
@@ -386,12 +415,12 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
                   : Effect.succeed({ title: read.summary, start: read.start, end: read.end });
               }),
             );
-    const calendarName =
-      calendarId === "primary"
-        ? null
-        : yield* input.provider
-            .calendarName(input.http, yield* input.token, mailbox, calendarId)
-            .pipe(Effect.orElseSucceed(() => null));
+    const calendarName = yield* input.token.pipe(
+      Effect.flatMap((token) =>
+        input.provider.calendarName(input.http, token, mailbox, calendarId),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
     return {
       _tag: "event",
       calendarId,
@@ -588,17 +617,14 @@ const whenOf = (
   return `${day(start)}, ${time(start)} to ${ending}${shownZone === null ? "" : ` (${shownZone})`}`;
 };
 const plainWhen = (...args: Parameters<typeof whenOf>) => `When: ${whenOf(...args)}`;
-/** Which calendar, when not the main one, and the event a change replaces as it stands now. */
 const eventTarget = (prepared: Extract<Prepared, { _tag: "event" }>, clock: TextClock) => {
   const current = prepared.current ?? null;
   return [
-    ...(prepared.calendarId === "primary"
-      ? []
-      : [
-          (prepared.calendarName ?? null) === null
-            ? "In your calendar"
-            : `In calendar: ${prepared.calendarName}`,
-        ]),
+    prepared.calendarName?.trim()
+      ? `In calendar: ${prepared.calendarName.trim()}`
+      : prepared.calendarId === "primary"
+        ? "In your calendar"
+        : `In calendar: ${prepared.calendarId}`,
     ...(prepared.eventId === null || current === null
       ? []
       : [
@@ -960,6 +986,7 @@ export const sentMail = Effect.fn("KinSending.sentMail")(function* (input: {
   readonly orgId: KinOrgId;
   readonly recordIds?: ReadonlyArray<string> | undefined;
   readonly addresses?: ReadonlyArray<string> | undefined;
+  readonly omitLists?: ReadonlyArray<string>;
   readonly limit?: number | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
@@ -985,6 +1012,18 @@ export const sentMail = Effect.fn("KinSending.sentMail")(function* (input: {
     LEFT JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
     WHERE k.org_id = ${input.orgId} AND k.state = 'sent' AND k.done_at IS NOT NULL
       AND k.tool_name IN ${sql.in([MAIL_TOOL.send, MAIL_TOOL.reply])}
+      ${
+        input.omitLists?.length
+          ? sql`AND NOT EXISTS (
+        SELECT 1 FROM kin_records r WHERE r.org_id = k.org_id
+          AND r.register_id IN ${sql.in(input.omitLists)}
+          AND (r.record_id = k.entry_record_id OR EXISTS (
+            SELECT 1 FROM json_each(k.payload_json, '$.attachments') a
+            WHERE r.record_id IN (json_extract(a.value, '$.recordId'), json_extract(a.value, '$.entryRecordId'))
+          ))
+      )`
+          : sql``
+      }
     ORDER BY k.done_at DESC, k.rowid DESC
     LIMIT ${SENT_SCAN}`;
   const sent: Array<SentMail> = [];

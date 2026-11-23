@@ -736,28 +736,37 @@ const make = Effect.gen(function* () {
         if (result._tag === "withheld") wake.withheld = result.reason;
         return;
       }
-      const figures = yield* weeklyFigures({
-        orgId: wake.orgId,
-        now: yield* Clock.currentTimeMillis,
-      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-      if (slot.body.length + 2 + figures.length <= KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM) {
-        const result = yield* extend(wake, slot, figures, -1);
-        if (result._tag === "posted") return;
-        if (result._tag === "withheld" && result.reason !== "not_found") {
-          wake.withheld = result.reason;
-          return;
-        }
-      }
-      for (const [index, part] of fitParts(
-        figures,
-        KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM,
-      ).entries()) {
-        const result = yield* deliver(wake, `kin-week:${wake.wakeupId}:${index}`, part, -1);
-        if (result._tag === "withheld") {
-          wake.withheld = result.reason;
-          return;
-        }
-      }
+      // The figures and the chat's owner-level readership must still agree at the write.
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const figures = yield* weeklyFigures({
+            orgId: wake.orgId,
+            chatId: wake.lane.chatId,
+            now: yield* Clock.currentTimeMillis,
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          if (
+            slot.body.length + 2 + figures.length <=
+            KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM
+          ) {
+            const result = yield* extend(wake, slot, figures, -1);
+            if (result._tag === "posted") return;
+            if (result._tag === "withheld" && result.reason !== "not_found") {
+              wake.withheld = result.reason;
+              return;
+            }
+          }
+          for (const [index, part] of fitParts(
+            figures,
+            KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM,
+          ).entries()) {
+            const result = yield* deliver(wake, `kin-week:${wake.wakeupId}:${index}`, part, -1);
+            if (result._tag === "withheld") {
+              wake.withheld = result.reason;
+              return;
+            }
+          }
+        }),
+      );
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin morning page not settled", { cause })),
   );

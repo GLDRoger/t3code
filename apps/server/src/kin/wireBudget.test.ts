@@ -570,8 +570,13 @@ const accessBytes = Effect.fn("KinWireBudget.accessBytes")(function* () {
   for (const [label, on] of [
     ["accessMe", true],
     ["accessMeDealsOff", false],
+    ["accessMeClientsRenamed", true],
   ] as const) {
     if (!on) yield* shell.set(orgId, ownerId, 0, [{ id: "deals", on }]);
+    if (label === "accessMeClientsRenamed")
+      yield* shell.set(orgId, ownerId, 1, [
+        { id: "clients", on: true, name: "Donors", noun: "donor" },
+      ]);
     for (const [name, personId] of VIEWERS) {
       const result = yield* people.accessMe(
         {

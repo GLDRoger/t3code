@@ -1,3 +1,4 @@
+import * as KinShell from "../../shell/KinShell.ts";
 import {
   KinChatError,
   KinChatId,
@@ -204,6 +205,10 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           reason: "widget_changed",
           message: "This statement was already applied.",
         });
+      if (!(yield* KinShell.sectionOnFor(input.orgId, "money")))
+        return yield* invalid(
+          "Money is turned off for this company, so nothing was applied. Turn it on in Settings › Sections and confirm again.",
+        );
       if (input.revision === undefined) return yield* outdated;
       const selection = selectionOf(stored, review);
       if (selection.revision !== input.revision)
