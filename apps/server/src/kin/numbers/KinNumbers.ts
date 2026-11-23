@@ -92,6 +92,8 @@ type Definition = {
   readonly ownerKind: string;
   readonly ownerId: string | null;
   readonly createdAt: number;
+  readonly rev: number;
+  readonly teamShared: number;
 };
 
 const definitions = Effect.fn("KinNumbers.definitions")(function* (
@@ -103,7 +105,7 @@ const definitions = Effect.fn("KinNumbers.definitions")(function* (
   if (keys?.length === 0) return [];
   return yield* sql<Definition>`SELECT r.record_id AS "recordId", r.key, r.title AS name,
       r.fields_json AS fields, NOT (${targetless(sql)}) AS "hasTarget", r.owner_kind AS "ownerKind", r.owner_id AS "ownerId",
-      r.created_at AS "createdAt"
+      r.created_at AS "createdAt", r.rev, r.team_shared AS "teamShared"
     FROM kin_records r WHERE r.org_id = ${viewer.orgId} AND r.register_id = 'goals'
       AND ${countedEntry(sql)}
       AND (${targetless(sql)} AND json_extract(r.fields_json, '$.measure') = 'manual'
@@ -297,6 +299,11 @@ export const ownerLevelNumbers = Effect.fn("KinNumbers.ownerLevelNumbers")(funct
       /** The definition's source line, which a feed's card set; a value's own may differ. */
       definedSource: fields.source,
       keeper: row.ownerKind === "agent" && row.ownerId !== null ? row.ownerId : undefined,
+      holder: { kind: row.ownerKind, id: row.ownerId },
+      rev: row.rev,
+      spec: fields.spec,
+      direction: fields.direction,
+      teamShared: row.teamShared === 1,
       section: sectionOfSpec(fields.spec),
       ...(yield* evaluate(orgId, row, fields, now, today, zone)),
     });

@@ -446,3 +446,37 @@ it.effect("a source given as a connection's id reads as that connection's name",
     assert.strictEqual((yield* watched)[0]!.definedSource, "PostHog");
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "a card is bound to what it was drawn from, and the agent that asks keeps the number",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* turn(1);
+      yield* watch(scope, dailyUsers);
+      yield* answer((yield* cards)[0]!.widgetId, ownerId);
+      // The owner took Daily users over by hand since.
+      yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${ownerId}
+      WHERE org_id = ${orgId} AND key = 'G-1'`;
+      yield* turn(2);
+      const change = yield* watch(scope, { numbers: [{ name: "Daily users", below: "900" }] });
+      assert.deepStrictEqual(change.proposed, [
+        'Change "Daily users" (G-1): speak up below 900 users (now below 1,000 users); kept by Chief of staff (was Rhea)',
+      ]);
+      // Its direction changed after the card was drawn: Confirm changes nothing.
+      yield* sql`UPDATE kin_records SET rev = rev + 1,
+        fields_json = json_set(fields_json, '$.direction', 'up')
+      WHERE org_id = ${orgId} AND key = 'G-1'`;
+      const stale = yield* Effect.flip(answer((yield* cards).at(-1)!.widgetId, ownerId));
+      assert.strictEqual(
+        stale.message,
+        "A number or feed on this card changed since it was made, so nothing was changed. Ask for it again.",
+      );
+      // Asked again and confirmed: the asking agent keeps it.
+      yield* turn(3);
+      yield* watch(scope, { numbers: [{ name: "Daily users", below: "900" }] });
+      yield* answer((yield* cards).at(-1)!.widgetId, ownerId);
+      assert.deepInclude((yield* watched)[0], { key: "G-1", below: "900", keeper: lead });
+    }).pipe(Effect.provide(layer)),
+);

@@ -7,7 +7,7 @@ import { goalFields } from "../work/goals.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { ownerWriter } from "../work/ownerWork.ts";
 import { decodeNumbersChange, NUMBERS_CHANGE } from "./numberRows.ts";
-import { baseOf } from "./watch.ts";
+import { drawCard } from "./watch.ts";
 
 /**
  * The answer on a numbers card: an owner-level Confirm makes or changes exactly the numbers it
@@ -51,10 +51,13 @@ export const answerNumbersChange = Effect.fn("KinNumbersWatch.answer")(function*
     return { title: "Not watched", text: "You said no, so nothing is watched." };
   }
   const change = yield* decodeNumbersChange(row.patch).pipe(Effect.orDie);
-  const { matched, base } = yield* baseOf(
+  const { matched, base } = yield* drawCard(
     input.orgId,
-    change.numbers.map((number) => number.name),
-    change.feed?.source,
+    row.agentId,
+    {
+      numbers: change.numbers.map(({ key: _, ...number }) => number),
+      ...(change.feed === undefined ? {} : { feed: change.feed }),
+    },
     input.now,
   );
   if (
@@ -89,10 +92,8 @@ export const answerNumbersChange = Effect.fn("KinNumbersWatch.answer")(function*
         fields,
       });
     else
-      yield* records.update(input.orgId, writer, number.key, {
-        fields,
-        ...(fed ? { owner } : {}),
-      });
+      // Whoever asks keeps what the card makes or changes; the card said so where it moves.
+      yield* records.update(input.orgId, writer, number.key, { fields, owner });
   }
   yield* sql`UPDATE kin_profile_changes SET applied_at = ${input.now},
       patch_json = json_set(patch_json, '$.by', ${input.personId})

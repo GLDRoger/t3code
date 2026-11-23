@@ -106,6 +106,7 @@ export const cardLine = (
   number: CardNumber,
   feed: CardFeed | undefined,
   existing: CardExisting | undefined,
+  extra: { readonly keptBy?: string | undefined } = {},
 ) => {
   const unit = number.unit ?? existing?.unit;
   const next = {
@@ -127,6 +128,7 @@ export const cardLine = (
   const parts = [
     before !== undefined && before !== (sides ?? "no limit") ? `${limit} (now ${before})` : limit,
     ...(origin === undefined ? [] : [origin]),
+    ...(extra.keptBy === undefined ? [] : [extra.keptBy]),
   ];
   return existing === undefined
     ? `Watch ${quoted(number.name)}: ${parts.join("; ")}`

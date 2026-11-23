@@ -30,7 +30,7 @@ import { KinToolText } from "../work/leadSchemas.ts";
 import { admitted, type Lead, leadTool, retryKey } from "../work/leadWork.ts";
 import { ownerLevelNumbers } from "./KinNumbers.ts";
 import {
-  liveFeeds,
+  feedSchedules,
   NUMBERS_CHANGE,
   NumbersChangeJson,
   NumberSpec,
@@ -74,42 +74,81 @@ export const NumbersWatchResult = Schema.Struct({
 });
 
 const nameKey = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
-/** What the card is drawn against: each named number as it stands, and the source's feed. */
-export const baseOf = Effect.fn("KinNumbersWatch.base")(function* (
+
+/** Each agent's and person's name in this company, by `kind:id`. */
+const namesOf = Effect.fn("KinNumbersWatch.names")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ id: string; name: string }>`
+    SELECT 'agent:' || agent_id AS id, display_name AS name FROM kin_agents WHERE org_id = ${orgId}
+    UNION ALL
+    SELECT 'person:' || person_id AS id, display_name AS name FROM kin_people
+      WHERE org_id = ${orgId}
+    ORDER BY id`;
+  return new Map(rows.map((row) => [row.id, row.name]));
+});
+
+/**
+ * The owner's card for a proposal as things stand now: each number's line, the numbers it names,
+ * and a base that binds the card to every fact it was drawn from and to its words, so a Confirm
+ * applies only what the card still shows.
+ */
+export const drawCard = Effect.fn("KinNumbersWatch.draw")(function* (
   orgId: KinOrgId,
-  names: ReadonlyArray<string>,
-  source: string | undefined,
+  agentId: string,
+  change: Pick<NumbersChange, "numbers" | "feed">,
   now: number,
 ) {
-  const numbers = yield* ownerLevelNumbers(orgId, now, {});
-  const matched = names.map((name) =>
-    numbers.find((number) => nameKey(number.name) === nameKey(name)),
+  const all = yield* ownerLevelNumbers(orgId, now, {});
+  const matched = change.numbers.map((number) =>
+    all.find((one) => nameKey(one.name) === nameKey(number.name)),
   );
-  const feed =
-    source === undefined
-      ? undefined
-      : (yield* liveFeeds(orgId)).find((one) => one.feed.source === source);
-  return {
-    matched,
-    base: retryKey(
-      stableStringify({
-        numbers: matched.map((number) =>
-          number === undefined
-            ? null
-            : [
-                number.recordId,
-                number.unit ?? null,
-                number.above ?? null,
-                number.below ?? null,
-                number.every ?? null,
-                number.definedSource ?? null,
-                number.keeper ?? null,
-              ],
-        ),
-        feed: feed === undefined ? null : [feed.scheduleId, feed.agentId, feed.feed],
-      }),
-    ),
-  };
+  const feed = change.feed;
+  const feeds =
+    feed === undefined
+      ? []
+      : (yield* feedSchedules(orgId)).filter((one) => one.feed.source === feed.source);
+  const names = yield* namesOf(orgId);
+  const nameOf = (kind: string, id: string | null) =>
+    id === null ? "nobody" : (names.get(`${kind}:${id}`) ?? id);
+  const asker = nameOf("agent", agentId);
+  const lines = change.numbers.map((number, index) => {
+    const existing = matched[index];
+    const keptBy =
+      existing === undefined || existing.keeper === agentId
+        ? undefined
+        : `kept by ${asker} (was ${nameOf(existing.holder.kind, existing.holder.id)})`;
+    return cardLine(number, feed, existing, { keptBy });
+  });
+  const base = retryKey(
+    stableStringify({
+      numbers: matched.map((number) =>
+        number === undefined
+          ? null
+          : {
+              recordId: number.recordId,
+              rev: number.rev,
+              unit: number.unit ?? null,
+              above: number.above ?? null,
+              below: number.below ?? null,
+              every: number.every ?? null,
+              source: number.definedSource ?? null,
+              holder: number.holder,
+              spec: number.spec ?? null,
+              direction: number.direction ?? null,
+              shared: number.teamShared,
+            },
+      ),
+      feeds: feeds.map((one) => [
+        one.scheduleId,
+        one.agentId,
+        one.feed,
+        one.effective,
+        one.running,
+      ]),
+      lines,
+    }),
+  );
+  return { matched, lines, base };
 });
 
 /** A source given as one of the company's connections' ids reads as that connection's label. */
@@ -139,12 +178,7 @@ const runWatch = Effect.fnUntraced(function* (lead: Lead, asked: typeof NumbersW
   if (input.feed !== undefined && input.numbers.every((number) => number.compute !== undefined))
     return yield* invalid("Kin works these out from its own records, so they need no feed.");
   const now = yield* Clock.currentTimeMillis;
-  const { matched, base } = yield* baseOf(
-    lead.orgId,
-    input.numbers.map((number) => number.name),
-    input.feed?.source,
-    now,
-  );
+  const { matched, lines, base } = yield* drawCard(lead.orgId, lead.agentId, input, now);
   if (
     matched.some(
       (number, index) =>
@@ -162,9 +196,6 @@ const runWatch = Effect.fnUntraced(function* (lead: Lead, asked: typeof NumbersW
     ...(input.feed === undefined ? {} : { feed: input.feed }),
     base,
   };
-  const lines = change.numbers.map((number, index) =>
-    cardLine(number, change.feed, matched[index]),
-  );
   // Asked where the turn was asked, else in the agent's own chat with the owner.
   const chatId =
     (yield* turnChat(lead))?.chatId ??
