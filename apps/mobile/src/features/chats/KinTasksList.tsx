@@ -72,7 +72,7 @@ import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinRecord, KinRecordKey } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -224,9 +224,19 @@ export function KinTasksList(
     names,
     kinTasksOnCount(listState.records, names.me),
   );
-  const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
-    kinWorkApplied(record, changed),
-  );
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  const previousClientsOn = useRef(clientsOn);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- section saves do not change task sequence numbers
+  useEffect(() => {
+    if (previousClientsOn.current !== clientsOn) list.refresh();
+    previousClientsOn.current = clientsOn;
+  }, [clientsOn, list]);
+  const records = kinWorkShown(filter, listState.records, hostEdits).map((record) => {
+    const applied = kinWorkApplied(record, changed);
+    if (clientsOn) return applied;
+    const { party: _party, project: _project, ...task } = applied;
+    return task;
+  });
   const notice = kinWorkListNotice(changed, null);
   const leftAt = useAtomValue(kinTaskLeftAtom);
   const left =
@@ -251,13 +261,15 @@ export function KinTasksList(
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
   const listed: ReadonlyArray<KinTasksItem<KinRecord>> =
-    within === undefined && kinWorkByMove(filter)
+    within === undefined &&
+    (kinWorkByMove(filter) || (!clientsOn && groupBy === "project" && !searching))
       ? kinTasksByMove({
           records,
           moves: list.moves(),
           counts,
           needsYou,
           ownerLevel,
+          clientsOn,
           names,
           facts,
           read: listState.seq !== null,
@@ -313,7 +325,6 @@ export function KinTasksList(
   // The whole company's tasks also find clients, projects and docs, and say what needs you.
   const everywhere = within === undefined;
   const { state: found, search } = useKinSearch(props, ELSEWHERE, true);
-  const clientsOn = useKinSectionOn(props.environmentId, "clients");
   const named = useKinSectionNamed(props.environmentId);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the native search box comes back empty once the page was left (a result opened, another tab), so the words it narrowed by go with it
   useEffect(() => {

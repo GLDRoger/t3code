@@ -84,8 +84,9 @@ import {
   PlusIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { useKinSectionOn } from "./useKinShell";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -247,9 +248,19 @@ export function KinWorkTaskList(
     names,
     kinTasksOnCount(listState.records, names.me),
   );
-  const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
-    kinWorkApplied(record, changed),
-  );
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  const previousClientsOn = useRef(clientsOn);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- section saves do not change task sequence numbers
+  useEffect(() => {
+    if (previousClientsOn.current !== clientsOn) list.refresh();
+    previousClientsOn.current = clientsOn;
+  }, [clientsOn, list]);
+  const records = kinWorkShown(filter, listState.records, hostEdits).map((record) => {
+    const applied = kinWorkApplied(record, changed);
+    if (clientsOn) return applied;
+    const { party: _party, project: _project, ...task } = applied;
+    return task;
+  });
   const ownerLevel = useKinOwnerLevel(environmentId);
   const pulse = useKinAttention({ environmentId, orgId }, within === undefined);
   const facts = kinTasksDealFacts({ ownerLevel, names, now, pulse });
@@ -262,13 +273,15 @@ export function KinWorkTaskList(
   const [ticked, setTicked] = useState<ReadonlyArray<KinTaskTicked<KinRecord>>>([]);
   const held = kinTasksTickedShown(ticked, changed, notice);
   const listed: ReadonlyArray<KinTasksItem<KinRecord>> =
-    within === undefined && kinWorkByMove(filter)
+    within === undefined &&
+    (kinWorkByMove(filter) || (!clientsOn && groupBy === "project" && !searching))
       ? kinTasksByMove({
           records,
           moves: list.moves(),
           counts,
           needsYou,
           ownerLevel,
+          clientsOn,
           names,
           facts,
           read: listState.seq !== null,
