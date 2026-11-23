@@ -33,7 +33,7 @@ const When = Schema.String.check(
     expected: "a real calendar day or time with its offset",
   }),
 );
-const GROUPED_AMOUNT = /^-?\d{1,15}(?:,\d{3}|(?:,\d{2,3}){2,7})(?:\.\d{1,6})?$/;
+const GROUPED_AMOUNT = /^-?\d{1,3}(?:,\d{2,3})*,\d{3}(?:\.\d{1,6})?$/;
 const ungroup = (value: string) => (GROUPED_AMOUNT.test(value) ? value.replaceAll(",", "") : value);
 const amount = (plain: RegExp) =>
   Schema.String.check(

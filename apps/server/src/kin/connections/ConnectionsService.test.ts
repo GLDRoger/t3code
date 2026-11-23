@@ -2547,6 +2547,12 @@ describe("KinConnections sending", () => {
           assert.strictEqual(JSON.stringify(cards.at(-1)), before);
           assert.deepStrictEqual([card.send?.to, card.send?.cc], [[to], [cc]]);
 
+          // A reply goes to the thread's sender: what `to` holds is never read.
+          if (tool === "mail_reply") {
+            assert.deepStrictEqual(yield* sendCall(tool, { ...draft, to: [], cc: [cc] }), list);
+            assert.lengthOf(cards, count);
+            continue;
+          }
           const emptyList = yield* sendCall(tool, { ...draft, to: [] }).pipe(Effect.flip);
           const emptyText = yield* sendCall(tool, { ...draft, to: "" }).pipe(Effect.flip);
           assert.strictEqual(emptyText.message, emptyList.message);

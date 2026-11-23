@@ -458,12 +458,6 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
   const badCc = checkAddresses(cc, "cc", MAX_RECIPIENTS);
   if (badCc !== undefined) return yield* badCc;
   const attachments = yield* attachmentsOf(input.orgId, strings(args.attachments));
-  const to = recipients(args.to);
-  if (input.tool === MAIL_TOOL.send || (input.tool === MAIL_TOOL.reply && args.to !== undefined)) {
-    if (to.length === 0) return yield* refused(`${input.tool} needs to.`);
-    const badTo = checkAddresses(to, "to", MAX_RECIPIENTS);
-    if (badTo !== undefined) return yield* badTo;
-  }
   if (input.tool === MAIL_TOOL.reply) {
     const threadId = optional(args, "threadId");
     if (threadId === null) return yield* refused(`${MAIL_TOOL.reply} needs threadId.`);
@@ -496,6 +490,10 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
   }
   if (input.tool !== MAIL_TOOL.send)
     return yield* refused(`${input.provider.name} has no tool named ${input.tool}.`);
+  const to = recipients(args.to);
+  if (to.length === 0) return yield* refused(`${MAIL_TOOL.send} needs to.`);
+  const badTo = checkAddresses(to, "to", MAX_RECIPIENTS);
+  if (badTo !== undefined) return yield* badTo;
   const subject = optional(args, "subject");
   if (subject === null) return yield* refused(`${MAIL_TOOL.send} needs subject.`);
   if (LINE_BREAK.test(subject) || subject.length > 300)
