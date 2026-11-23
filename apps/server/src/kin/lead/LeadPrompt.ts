@@ -57,6 +57,7 @@ import {
 } from "./Audience.ts";
 import { sectionsOf } from "../work/docBody.ts";
 import { budgetFlags } from "../work/budgets.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { moneySection, moneySummaryForAgent } from "../work/moneyViews.ts";
 import {
   buildWorkSection,
@@ -1701,11 +1702,21 @@ export class KinLeadPrompt extends Context.Service<
             (event) =>
               (event._tag === "routine" && event.routine === "morning_brief") ||
               isMorningCheckIn(event),
-          )
+          ) &&
+          (yield* KinShell.sectionOnFor(orgId, "money").pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orElseSucceed(() => false),
+          ))
             ? yield* Effect.all([
                 moneySummaryForAgent(orgId, now, KIN_OWNER_LEVEL),
                 budgetFlags(orgId, now),
-                setAsideOverdue({ orgId, now, viewer: KIN_OWNER_LEVEL }),
+                KinShell.sectionOnFor(orgId, "invoices").pipe(
+                  Effect.flatMap((on) =>
+                    on
+                      ? setAsideOverdue({ orgId, now, viewer: KIN_OWNER_LEVEL })
+                      : Effect.succeed([]),
+                  ),
+                ),
               ]).pipe(
                 Effect.map(([summary, budgets, setAside]) => {
                   const section = moneySection(summary, summary.timeZone, setAside);

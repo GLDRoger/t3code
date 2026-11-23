@@ -1,3 +1,5 @@
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfList } from "../shell/sections.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -719,6 +721,15 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
   const { orgId, personId } = tap;
   const draws = [plan.draw, ...also];
   const owner = yield* ownerLevel(orgId, personId);
+  const refuseOff = Effect.fnUntraced(function* (list: string) {
+    const section = sectionOfList(list);
+    if (section === null) return;
+    const shell = yield* KinShell.get(orgId);
+    if (!KinShell.sectionOn(shell, section))
+      return yield* refuse(
+        `${KinShell.sectionName(shell, section)} is turned off for this company, so nothing changed. Turn it on in Settings › Sections and confirm again.`,
+      );
+  });
   switch (plan.kind) {
     case "done":
     case "drop": {
@@ -726,6 +737,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
       const row = yield* recordRow(orgId, { recordId: plan.recordId });
       if (row === undefined) return nothingDone(`${plan.key} is gone`);
       if (!owner) yield* teamGuard(orgId, personId, { row, changes: true, input: { state } });
+      yield* refuseOff(row.registerId);
       if (row.rev !== plan.rev) return nothingDone(`${plan.key} changed since this was offered`);
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
@@ -799,6 +811,8 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
     }
     case "create_list": {
       if (!owner) return yield* notAllowed("Only an owner can create a list.");
+      const made = proposedList(plan.definition);
+      if (made !== undefined) yield* refuseOff(made);
       const why =
         (yield* drawsHold(orgId, draws)) ??
         (yield* defineProposed({
@@ -809,7 +823,6 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
           now: tap.now,
         }));
       if (why !== undefined) return nothingDone(why);
-      const made = proposedList(plan.definition);
       if (made === undefined) return { title: "List created", text: "Created." };
       const { words, ...open } = yield* listPlace(orgId, made);
       return { title: "List created", text: `Created. It's in ${words}.`, open };

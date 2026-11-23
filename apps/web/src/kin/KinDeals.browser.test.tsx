@@ -81,7 +81,8 @@ const shell = vi.hoisted(() => {
 });
 vi.mock(import("./useKinShell"), async () => {
   const { useSyncExternalStore } = await import("react");
-  const { kinSectionOn, kinShellSwitched } = await import("@t3tools/client-runtime/kin/kinShell");
+  const { kinSectionNamed, kinSectionNamedWords, kinSectionOn, kinShellChanged } =
+    await import("@t3tools/client-runtime/kin/kinShell");
   const useKinShell = () =>
     useSyncExternalStore(
       (listener) => {
@@ -93,9 +94,15 @@ vi.mock(import("./useKinShell"), async () => {
   return {
     useKinShell,
     useKinSectionOn: ((_: unknown, id: "deals") => kinSectionOn(useKinShell(), id)) as never,
+    useKinSectionNamed: (() => {
+      const held = useKinShell();
+      return (text: string) => kinSectionNamed(held, text);
+    }) as never,
+    useKinSectionWords: ((_: unknown, words: object) =>
+      kinSectionNamedWords(useKinShell(), words)) as never,
     useKinSectionCanSet: () => shell.canSet,
-    useKinSectionSet: (() => async (held: never, id: "deals", on: boolean) => {
-      const sent = kinShellSwitched(held, id, on);
+    useKinSectionSet: (() => async (held: never, change: never) => {
+      const sent = kinShellChanged(held, change);
       const answer = shell.answer?.(sent);
       if (answer !== undefined) return answer;
       const value = { rev: sent.rev + 1, sections: sent.shell.sections };
@@ -139,6 +146,7 @@ import { KinDealPage } from "./KinDealPage";
 import { KinDealsTab } from "./KinDeals";
 import { KinDealStagesSettings } from "./KinDealsSetting";
 import { KinPlaceView } from "./KinPlaceView";
+import { KinSectionsSettings } from "./settings/KinSectionSwitch";
 
 const zoya = KinPersonId.make("person-zoya");
 const target = { environmentId: EnvironmentId.make("env-1"), orgId: KinOrgId.make("org-1") };
@@ -821,5 +829,91 @@ describe("We run deals", () => {
       .element(page.getByText("This changed while you were looking at it.", { exact: false }))
       .toBeVisible();
     await expect.element(toggle).not.toBeChecked();
+  });
+});
+
+describe("Settings › Sections", () => {
+  const sections = () => (
+    <AppAtomRegistryProvider>
+      <KinSectionsSettings {...target} />
+    </AppAtomRegistryProvider>
+  );
+
+  it("switches Money off and on, and says Invoices and quotes is off because of it", async () => {
+    setup({});
+    await using _screen = await render(sections());
+    const money = page.getByRole("switch", { name: "Money", exact: true });
+    const invoices = page.getByRole("switch", { name: "Invoices and quotes" });
+    await expect.element(money).toBeChecked();
+    await userEvent.click(money);
+    await expect.element(money).not.toBeChecked();
+    // Held off by Money: it explains rather than offering a switch that would be refused.
+    await expect.element(invoices).not.toBeChecked();
+    await expect.element(invoices).toBeDisabled();
+    await expect.element(page.getByText("Off because Money is off.")).toBeVisible();
+    await userEvent.click(money);
+    await expect.element(money).toBeChecked();
+    await expect.element(invoices).toBeChecked();
+    await expect.element(invoices).toBeEnabled();
+  });
+
+  it("shows the host's refusal in place and keeps the switch as saved", async () => {
+    setup({});
+    shell.answer = () => ({
+      ok: false,
+      changed: false,
+      problem: "Turn off Invoices and quotes first: invoices need Clients.",
+    });
+    await using _screen = await render(sections());
+    const clients = page.getByRole("switch", { name: "Clients", exact: true });
+    await userEvent.click(clients);
+    await expect
+      .element(page.getByText("Turn off Invoices and quotes first: invoices need Clients."))
+      .toBeVisible();
+    await expect.element(clients).toBeChecked();
+  });
+
+  it("says the host's words when someone changed it since, and shows what they saved", async () => {
+    setup({});
+    const moneyOff: KinShell = {
+      rev: 4,
+      sections: dealsOn.sections.map((one) => (one.id === "money" ? { ...one, on: false } : one)),
+    };
+    shell.answer = () => {
+      shell.put(moneyOff);
+      return {
+        ok: false,
+        changed: true,
+        problem: "Someone changed this since you opened it. Nothing was saved; open it again.",
+      };
+    };
+    await using _screen = await render(sections());
+    await userEvent.click(page.getByRole("switch", { name: "Deals", exact: true }));
+    await expect
+      .element(page.getByText("Someone changed this since you opened it.", { exact: false }))
+      .toBeVisible();
+    await expect.element(page.getByRole("switch", { name: "Deals", exact: true })).toBeChecked();
+    await expect
+      .element(page.getByRole("switch", { name: "Money", exact: true }))
+      .not.toBeChecked();
+  });
+
+  it("calls Clients by the company's name, and goes back to Kin's", async () => {
+    setup({});
+    await using _screen = await render(sections());
+    await userEvent.click(page.getByRole("button", { name: "Rename" }));
+    await userEvent.fill(page.getByLabelText("Name"), "Patients");
+    await userEvent.fill(page.getByLabelText("One of them"), "patient");
+    await userEvent.click(page.getByRole("button", { name: "Save name" }));
+    await expect.element(page.getByRole("switch", { name: "Patients" })).toBeVisible();
+    await expect.element(page.getByText("Patients, one patient")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Use Kin's name" }));
+    await expect.element(page.getByRole("switch", { name: "Clients", exact: true })).toBeVisible();
+  });
+
+  it("offers a teammate nothing to switch", async () => {
+    setup({ canSet: false });
+    await using _screen = await render(sections());
+    expect(page.getByRole("switch").elements()).toHaveLength(0);
   });
 });

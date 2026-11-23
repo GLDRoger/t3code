@@ -8,6 +8,7 @@ import {
   CalendarCheckIcon,
   CircleUserIcon,
   FingerprintIcon,
+  LayoutListIcon,
   PlugIcon,
   TrendingUpIcon,
 } from "lucide-react";
@@ -24,6 +25,7 @@ export type KinSettingsPath =
   | "/settings/company"
   | "/settings/check-ins"
   | "/settings/deals"
+  | "/settings/sections"
   | "/settings/kin-connections"
   | "/settings/kin-profile";
 
@@ -32,6 +34,7 @@ export const KIN_SETTINGS_SECTION_LABELS: Readonly<Record<KinSettingsPath, strin
   "/settings/company": msg("Company details"),
   "/settings/check-ins": msg("Check-ins"),
   "/settings/deals": msg("Deals"),
+  "/settings/sections": msg("Sections"),
   "/settings/kin-connections": msg("Connections"),
   "/settings/kin-profile": msg("Profile"),
 };
@@ -43,6 +46,7 @@ export const KIN_SETTINGS_SECTION_ICONS: Readonly<
   "/settings/company": Building2Icon,
   "/settings/check-ins": CalendarCheckIcon,
   "/settings/deals": TrendingUpIcon,
+  "/settings/sections": LayoutListIcon,
   "/settings/kin-connections": PlugIcon,
   "/settings/kin-profile": CircleUserIcon,
 };
@@ -54,6 +58,7 @@ export const KIN_SETTINGS_CATEGORY_SCOPES: Readonly<
   "/settings/company": null,
   "/settings/check-ins": null,
   "/settings/deals": null,
+  "/settings/sections": null,
   "/settings/kin-connections": null,
   "/settings/kin-profile": null,
 };
@@ -172,6 +177,15 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
     to: "/settings/kin-profile",
     searchTerms: ["kin message alerts notifications sound desktop browser"],
     kinOnly: true,
+  },
+  {
+    id: "kin-sections",
+    kinOnly: true,
+    title: "Sections",
+    to: "/settings/sections",
+    searchTerms: [
+      "kin sections turn off on clients projects money invoices quotes deals rename call patients donors",
+    ],
   },
   {
     id: "kin-deals",

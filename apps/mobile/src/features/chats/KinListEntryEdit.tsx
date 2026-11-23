@@ -195,7 +195,7 @@ function TypedEdit(
   const save = async () => {
     const checked =
       field === null
-        ? kinAmountCheck(text, currency, amount?.received ?? null)
+        ? kinAmountCheck(text, currency, amount?.received ?? null, amount?.belowZero ?? false)
         : kinFieldCheck(field, text, currency);
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);

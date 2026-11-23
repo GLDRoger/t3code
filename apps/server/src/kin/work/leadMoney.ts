@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 import {
   KinChatError,
   KinCompanyBank,
@@ -56,6 +57,7 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
+import { partnersAnswer, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { homeCurrency, notRegisteredFact } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
@@ -510,13 +512,16 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   // In a turn others read: figures of only the money lines they all see, such as their project's.
   const team = yield* viewOf(lead);
   const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const shell = yield* KinShell.get(lead.orgId);
+  const invoices = KinShell.sectionOn(shell, "invoices");
   const summary = yield* moneySummaryForAgent(lead.orgId, now, viewer);
   const section = moneySection(
     summary,
     summary.timeZone,
-    yield* setAsideOverdue({ orgId: lead.orgId, now, viewer }),
+    invoices ? yield* setAsideOverdue({ orgId: lead.orgId, now, viewer }) : [],
   );
-  const toInvoice = team === undefined ? yield* ownerLevelStillToInvoice(lead.orgId) : [];
+  const toInvoice =
+    team === undefined && invoices ? yield* ownerLevelStillToInvoice(lead.orgId) : [];
   const taxNote =
     team === undefined ? notRegisteredFact(yield* readProfile(lead.orgId)) : undefined;
   return {
@@ -534,9 +539,9 @@ export const money = leadTool("KinWorkTools.money", runMoney);
 
 const Month = Schema.String.check(Schema.isPattern(/^\d{4}-(?:0[1-9]|1[0-2])$/));
 export const MoneyQueryInput = Schema.Struct({
-  view: Schema.Literals(["cash", "outlook", "budgets"]).annotate({
+  view: Schema.Literals(["cash", "outlook", "budgets", "partners"]).annotate({
     description:
-      "cash: balances from the bank statements Kin read. outlook: due in and out ahead, and runway. budgets: this month's spending against each limit.",
+      "cash: balances from the bank statements Kin read. outlook: due in and out ahead, and runway. budgets: this month's spending against each limit. partners: what the company owes each partner back for expenses they paid themselves.",
   }),
   days: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(366)),
@@ -563,7 +568,13 @@ const runMoneyQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof Mon
       ? cashAnswer(cash)
       : input.view === "outlook"
         ? outlookAnswer(yield* outlook(lead.orgId, now, input.days))
-        : budgetsAnswer(yield* budgetsView(lead.orgId, now, input.month));
+        : input.view === "partners"
+          ? partnersAnswer(
+              yield* partnersOwed(lead.orgId, yield* homeCurrency(lead.orgId)),
+              yield* partnersUnsaid(lead.orgId, yield* homeCurrency(lead.orgId)),
+              yield* ownerZone(lead.orgId),
+            )
+          : budgetsAnswer(yield* budgetsView(lead.orgId, now, input.month));
   const bank = bankAnswer(cash?.bank ?? (yield* bankKnown(lead.orgId)), cash !== undefined);
   return { asOf: iso(now), view: input.view, answer, bank, sensitive: true as const };
 });
@@ -695,6 +706,7 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
       from,
       to,
       lists: input.lists,
+      shell: yield* KinShell.get(lead.orgId),
       open: input.open ?? true,
       limit: input.limit ?? 30,
       viewer: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),

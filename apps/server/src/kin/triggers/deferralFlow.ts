@@ -59,6 +59,7 @@ import {
   ownerTime,
   snapshotChanges,
   deferralLead,
+  deferredSectionOff,
   startsAtLevel,
   makeDeferralCards,
   makeDeferralStarter,
@@ -572,6 +573,13 @@ const make = Effect.gen(function* () {
           return false;
         const dueAt = step.dueAt;
         const title = item?.title ?? itemId;
+        if (
+          yield* deferredSectionOff(orgId, title, item?.links).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          )
+        ) {
+          return false;
+        }
         const card = (phase: KinDeferralCard["phase"], text: string, graceEndsAt?: number) => ({
           itemId,
           title,

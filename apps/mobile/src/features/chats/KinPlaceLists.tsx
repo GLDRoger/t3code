@@ -1,3 +1,4 @@
+import { kinSectionListed, kinSectionOn } from "@t3tools/client-runtime/kin/kinShell";
 import { useNavigation } from "@react-navigation/native";
 import {
   KIN_LIST_DEFAULT_FILTER,
@@ -23,6 +24,7 @@ import {
   useKinMoneySummary,
 } from "./state/useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./state/useKinWork";
+import { useKinShell } from "./state/useKinShell";
 
 const SHOWN = 5;
 
@@ -41,10 +43,15 @@ type Shared = KinWorkTarget & {
  */
 export function KinPlaceLists(props: Shared) {
   const lists = useKinLists(props, { enabled: true });
-  const defs = kinListsOf(lists).filter((def) => !def.builtIn);
+  const shell = useKinShell(props.environmentId);
+  const defs = kinListsOf(lists).filter((def) => !def.builtIn && kinSectionListed(shell, def.list));
+  // What a client owes is invoices: it goes with Invoices and quotes.
+  const invoicesOn = kinSectionOn(shell, "invoices");
   return (
     <>
-      {"party" in props.place ? <PlaceOwed {...props} party={props.place.party} /> : null}
+      {"party" in props.place && invoicesOn ? (
+        <PlaceOwed {...props} party={props.place.party} />
+      ) : null}
       {defs.map((def) => (
         <PlaceList key={def.list} {...props} def={def} />
       ))}

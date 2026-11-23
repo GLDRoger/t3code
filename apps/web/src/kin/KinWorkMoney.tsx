@@ -66,6 +66,7 @@ import {
   type KinListsHandle,
 } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
+import { useKinSectionOn } from "./useKinShell";
 
 const OPENS =
   "rounded-md outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset";
@@ -242,7 +243,10 @@ function MoneyScreen(props: MoneyProps) {
   const goals = useKinGoals(props, { enabled: true, money: true });
   const canBudget = useAtomValue(kinClient.workSetBudget.permissionAtom(props.environmentId));
   const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(props.environmentId));
-  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(props.environmentId));
+  // Invoices and quotes off: no way to make one, and what clients owe (invoices) leaves the page.
+  const invoicesOn = useKinSectionOn(props.environmentId, "invoices");
+  const canInvoice =
+    useAtomValue(kinClient.workNewInvoice.permissionAtom(props.environmentId)) && invoicesOn;
   const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(props.environmentId));
   const [adding, setAdding] = useState<
     "goal" | "budget" | "receipt" | "invoice" | "expense" | null
@@ -304,7 +308,7 @@ function MoneyScreen(props: MoneyProps) {
                 {KIN_SUBSCRIPTIONS.add}
               </MenuItem>
             )}
-            {agent === null ? null : (
+            {agent === null || !invoicesOn ? null : (
               <MenuItem onClick={() => agent.ask(KIN_QUOTES.askMessage)}>
                 {KIN_MONEY.newQuote}
               </MenuItem>
@@ -446,57 +450,59 @@ function MoneyScreen(props: MoneyProps) {
           <KinWorkStaleLine environmentId={props.environmentId} onRetry={refresh} />
         ) : null}
         {top}
-        <section className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-            <Figure figure={view.owed} onOpen={props.onOpenList} estimates={estimates} />
-            <Figure figure={view.overdue} onOpen={props.onOpenList} estimates={estimates} />
-          </div>
-          {owedAbout === null && missing.length === 0 ? null : (
-            <div className="flex flex-wrap items-center gap-x-3 px-2">
-              {owedAbout === null ? null : (
-                <KinEstimateText text={owedAbout.text} basis={owedAbout.basis} />
-              )}
-              <KinSetRateButton {...props} currencies={missing} />
+        {!invoicesOn ? null : (
+          <section className="flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+              <Figure figure={view.owed} onOpen={props.onOpenList} estimates={estimates} />
+              <Figure figure={view.overdue} onOpen={props.onOpenList} estimates={estimates} />
             </div>
-          )}
-          <KinWorkSection title={KIN_MONEY.byClient}>
-            {view.clients.length === 0 ? (
-              <p className="px-2 text-sm text-muted-foreground">{kinNothingOwed(scope)}</p>
-            ) : (
-              <ul className="flex flex-col">
-                {clients.map((client) => {
-                  const { open } = client;
-                  return (
-                    <li key={client.key}>
-                      <AmountRow
-                        label={client.name}
-                        note={client.overdue ?? client.invoices}
-                        late={client.overdue !== null}
-                        amounts={client.owed}
-                        estimates={estimates}
-                        onOpen={open === null ? null : () => props.onOpenList(open)}
-                      />
-                    </li>
-                  );
-                })}
-                {view.clientsMore === null ? null : (
-                  <li>
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      disabled={allClients && every.state._tag === "loading"}
-                      onClick={() => setAllClients(!allClients)}
-                    >
-                      {allClients && owing !== summary.owed
-                        ? KIN_MONEY.clientsFewer
-                        : view.clientsMore}
-                    </Button>
-                  </li>
+            {owedAbout === null && missing.length === 0 ? null : (
+              <div className="flex flex-wrap items-center gap-x-3 px-2">
+                {owedAbout === null ? null : (
+                  <KinEstimateText text={owedAbout.text} basis={owedAbout.basis} />
                 )}
-              </ul>
+                <KinSetRateButton {...props} currencies={missing} />
+              </div>
             )}
-          </KinWorkSection>
-        </section>
+            <KinWorkSection title={KIN_MONEY.byClient}>
+              {view.clients.length === 0 ? (
+                <p className="px-2 text-sm text-muted-foreground">{kinNothingOwed(scope)}</p>
+              ) : (
+                <ul className="flex flex-col">
+                  {clients.map((client) => {
+                    const { open } = client;
+                    return (
+                      <li key={client.key}>
+                        <AmountRow
+                          label={client.name}
+                          note={client.overdue ?? client.invoices}
+                          late={client.overdue !== null}
+                          amounts={client.owed}
+                          estimates={estimates}
+                          onOpen={open === null ? null : () => props.onOpenList(open)}
+                        />
+                      </li>
+                    );
+                  })}
+                  {view.clientsMore === null ? null : (
+                    <li>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        disabled={allClients && every.state._tag === "loading"}
+                        onClick={() => setAllClients(!allClients)}
+                      >
+                        {allClients && owing !== summary.owed
+                          ? KIN_MONEY.clientsFewer
+                          : view.clientsMore}
+                      </Button>
+                    </li>
+                  )}
+                </ul>
+              )}
+            </KinWorkSection>
+          </section>
+        )}
         {view.suggested.length === 0 ? null : (
           <KinMoneySuggested
             {...props}
@@ -541,14 +547,16 @@ function MoneyScreen(props: MoneyProps) {
               </ul>
             )}
           </KinWorkSection>
-          <KinQuotesSection
-            {...props}
-            lists={kinListsOf(props.lists)}
-            seq={seq}
-            rates={rates}
-            onOpenKey={props.onOpenKey}
-            onOpenList={props.onOpenList}
-          />
+          {!invoicesOn ? null : (
+            <KinQuotesSection
+              {...props}
+              lists={kinListsOf(props.lists)}
+              seq={seq}
+              rates={rates}
+              onOpenKey={props.onOpenKey}
+              onOpenList={props.onOpenList}
+            />
+          )}
           <KinBudgetsSection {...props} seq={seq} rates={rates} lists={props.lists} />
           <KinSubscriptionsSection
             {...props}

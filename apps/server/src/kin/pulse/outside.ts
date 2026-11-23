@@ -13,6 +13,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeCrypto from "node:crypto";
 
 import type { KinConnectionActivity, KinConnections } from "../connections/ConnectionsService.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { addressesIn } from "../connections/MailProvider.ts";
+import { isBankAlertSender } from "../work/statements/bankAlerts.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -104,6 +107,10 @@ export const fromConnections = (
       WHERE org_id = ${orgId} AND removed_at IS NULL AND paused_at IS NULL AND state = 'active'
         AND preset IN ${sql.in(MAIL_PRESETS)}
       ORDER BY created_at, connection_id`;
+      const money = KinShell.sectionOn(
+        yield* KinShell.get(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        "money",
+      );
       const lines: Array<KinPulseOutsideLine> = [];
       const seen: Array<{ connectionId: string; until: number; cursor: string | null }> = [];
       for (const row of rows) {
@@ -119,7 +126,19 @@ export const fromConnections = (
         if (activity === undefined || activity._tag === "unsupported") continue;
         // As with a failed read: the mailbox stays where it was, and the next pass reads it again.
         if (onMail !== undefined && !(yield* onMail(orgId, activity))) continue;
-        lines.push(...linesOf(row.label, activity));
+        lines.push(
+          ...linesOf(
+            row.label,
+            money
+              ? activity
+              : {
+                  ...activity,
+                  mail: activity.mail.filter(
+                    (mail) => !isBankAlertSender(addressesIn(mail.from)[0]),
+                  ),
+                },
+          ),
+        );
         seen.push({
           connectionId: row.connectionId,
           until: activity.until,

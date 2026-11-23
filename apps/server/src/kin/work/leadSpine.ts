@@ -315,12 +315,14 @@ export const ProjectRead = Schema.Struct({
       gone: Schema.optional(Schema.Literal(true)),
     }),
   ),
-  money: Schema.Struct({
-    quoted: Schema.Array(Schema.String),
-    invoiced: Schema.Array(Schema.String),
-    received: Schema.Array(Schema.String),
-    unpaid: Schema.Array(Schema.String),
-  }),
+  money: Schema.optional(
+    Schema.Struct({
+      quoted: Schema.Array(Schema.String),
+      invoiced: Schema.Array(Schema.String),
+      received: Schema.Array(Schema.String),
+      unpaid: Schema.Array(Schema.String),
+    }),
+  ),
   /** No milestones and no tasks yet: the first plan is still to be proposed. */
   noPlan: Schema.optional(Schema.Literal(true)),
 });
@@ -332,6 +334,7 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
   now: number,
   name: ToolNamer,
   viewer: KinViewer,
+  money = true,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const page = yield* projectPage(row, now, 0, viewer);
@@ -409,12 +412,16 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
       section: one.section,
       ...(one.gone ? { gone: true as const } : {}),
     })),
-    money: {
-      quoted: shownMoney(page.money?.quoted),
-      invoiced: shownMoney(page.money?.invoiced),
-      received: shownMoney(page.money?.received),
-      unpaid: shownMoney(page.money?.unpaid),
-    },
+    ...(money
+      ? {
+          money: {
+            quoted: shownMoney(page.money?.quoted),
+            invoiced: shownMoney(page.money?.invoiced),
+            received: shownMoney(page.money?.received),
+            unpaid: shownMoney(page.money?.unpaid),
+          },
+        }
+      : {}),
     ...(milestones.length === 0 && tasksTotal === 0 ? { noPlan: true as const } : {}),
   } satisfies typeof ProjectRead.Type;
 });

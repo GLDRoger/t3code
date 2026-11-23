@@ -734,6 +734,7 @@ describe("recipe documents", () => {
           "November pack · tds-2026-11.csv",
           "November pack · expenses-2026-11.csv",
           "November pack · unpaid-expenses-2026-11.csv",
+          "November pack · owed-to-partners-2026-11.csv",
           "November pack · bank-2026-11.csv",
         ],
       );
@@ -1769,6 +1770,29 @@ describe("the accountant's pack", () => {
           ...(dateAt === undefined ? {} : { dateAt }),
           originKey: key,
         });
+      // Bought by a partner: owed at the month's end, repaid in it, repaid before it, or given.
+      for (const [key, minor, dateAt, fields] of [
+        ["owed", 20_00, day("2026-10-25"), {}],
+        ["repaid", 30_00, day("2026-10-20"), { reimbursement: "repaid", repaidOn: "2026-11-10" }],
+        ["earlier", 40_00, day("2026-10-01"), { reimbursement: "repaid", repaidOn: "2026-10-15" }],
+        ["later", 5_00, day("2026-10-02"), { reimbursement: "repaid", repaidOn: "2026-11-12" }],
+        ["given", 60_00, day("2026-10-03"), { reimbursement: "not reimbursable" }],
+        ["undated", 7_00, day("2026-11-05"), { reimbursement: "repaid" }],
+      ] as const)
+        yield* records.create(orgId, system, {
+          list: "expenses",
+          title: `Invented partner ${key}`,
+          owner,
+          state: "done",
+          amount: { minor, currency: "INR" },
+          dateAt,
+          fields: { fundedBy: `person:${ownerId}`, ...fields },
+          originKey: `partner:${key}`,
+        });
+      // A day ahead of today, stored before Kin refused one: no report counts it yet.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.repaidOn',
+          '2026-12-01') WHERE title = 'Invented partner later'`;
       // Money in on a live invoice counts; on one since voided it doesn't.
       yield* LeadWork.create(scope, {
         sourceEventId: work,
@@ -1809,8 +1833,11 @@ describe("the accountant's pack", () => {
         Date.parse("2026-11-12T06:00:00.000Z"),
         KIN_OWNER_LEVEL,
       );
-      assert.deepStrictEqual(money.spent.thisMonth.total, [{ minor: 146_75, currency: "INR" }]);
+      // Money counts partners' expenses when the company repaid them: 30.00 bought in October, and
+      // 7.00 repaid with no day recorded, so on the day it was bought. The sheet lists by purchase.
+      assert.deepStrictEqual(money.spent.thisMonth.total, [{ minor: 183_75, currency: "INR" }]);
       assert.deepStrictEqual(totals("Expenses"), [
+        ["Total", "7.00"],
         ["Total software", "51.75"],
         ["Total travel", "95.00"],
       ]);
@@ -1835,6 +1862,24 @@ describe("the accountant's pack", () => {
       assert.deepStrictEqual(totals("Receipts"), [["Total", "300.00"]]);
       // The voided invoice is listed in the sales register and left out of its total.
       assert.deepStrictEqual(totals("Sales register"), [["Total", "0.00"]]);
+      assert.deepStrictEqual(totals("Owed to partners"), [
+        ["Total owed", "25.00"],
+        ["Total repaid", "37.00"],
+      ]);
+      // A repaid day no one recorded stays blank for the accountant.
+      const partnerRows = assembled.inputs.partners as ReadonlyArray<{
+        title: string;
+        repaidOn: string | null;
+      }>;
+      assert.deepStrictEqual(
+        partnerRows
+          .filter((one) => one.title.endsWith("repaid") || one.title.endsWith("undated"))
+          .map((one) => [one.title, one.repaidOn]),
+        [
+          ["Invented partner repaid", "2026-11-10"],
+          ["Invented partner undated", null],
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 });
@@ -2016,6 +2061,13 @@ describe("receipts", () => {
         assert.match((yield* Effect.flip(call({ proposal: more.proposal }))).message, /said no/);
         // A second card for the same money, worded differently, waits beside the first.
         const twin = yield* proposed({ ...ask, towards: "the redesign's advance" });
+        // Money off leaves the same still-unanswered card for when Money is back.
+        yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+          VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${ownerId}, 0)`;
+        const off = yield* Effect.flip(answerCard(`kin-receipt:${advance.proposal}`, "yes"));
+        assert.include(off.message, "Money is turned off for this company");
+        assert.deepStrictEqual(yield* live, []);
+        yield* sql`UPDATE kin_company_shell SET shell_json = '[]', rev = 2 WHERE org_id = ${orgId}`;
         // The owner's tap records exactly what its card showed, once; the agent reads it after.
         yield* answerCard(`kin-receipt:${advance.proposal}`, "yes");
         assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);

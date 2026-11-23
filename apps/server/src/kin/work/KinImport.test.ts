@@ -28,6 +28,7 @@ import { IMPORT_BUSY } from "./importUndo.ts";
 import type { ImportEntry } from "./importFormat.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
+import { matchPartner, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
 
 // Invented org, people and amounts only.
 const orgId = KinOrgId.make("org");
@@ -472,6 +473,58 @@ describe("KinImport", () => {
       );
       const kept = (yield* recordOf("i2"))!;
       assert.deepStrictEqual([kept.state, kept.notes], ["waiting", "Agreed a discount by phone."]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps who funded an expense and whether it is owed when the file comes again", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const imports = yield* KinImport.KinImport;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('meera', ${orgId}, 'meera', 'Meera', 0)`;
+      const lists = header.lists.map((one) =>
+        one.list === "expenses"
+          ? {
+              ...one,
+              fields: [...(one.fields ?? []), { label: "Paid personally by", type: "text" }],
+            }
+          : one,
+      );
+      const paidByMeera = {
+        entry: {
+          source: "e9",
+          list: "expenses",
+          title: "Invented domain renewal",
+          state: "done",
+          date: "2026-05-20",
+          amount: "4200",
+          fields: { paidPersonallyBy: "meera@invented.example" },
+        },
+      };
+      const file = () => linesOf({ ...header, lists }, [...rows, paidByMeera]);
+      yield* imports.apply(orgId, ownerId, file());
+      // Not yet said: no one is owed until the owner says who it was and whether it is owed.
+      assert.deepStrictEqual(yield* partnersOwed(orgId, "INR"), []);
+      const [unsaid] = yield* partnersUnsaid(orgId, "INR");
+      assert.strictEqual(unsaid?.address, "meera@invented.example");
+      yield* sql.withTransaction(
+        matchPartner(orgId, owner, "meera@invented.example", "meera", "owed", {
+          entries: unsaid!.seen,
+          totals: unsaid!.total,
+        }),
+      );
+      const owed = yield* partnersOwed(orgId, "INR");
+      const again = yield* imports.apply(orgId, ownerId, file());
+      assert.deepStrictEqual(
+        again.changed.map((one) => one.source),
+        ["e9"],
+      );
+      assert.deepStrictEqual(yield* partnersOwed(orgId, "INR"), owed);
+      assert.deepStrictEqual(
+        owed.map((one) => [one.personId, one.owed]),
+        [["meera", [{ minor: 420_000, currency: "INR" }]]],
+      );
     }).pipe(Effect.provide(layer)),
   );
 

@@ -57,7 +57,7 @@ import {
   useKinWorkFiles,
 } from "./state/useKinMoney";
 import { useKinNewExpense, useKinNewInvoice } from "./state/useKinMoneyAnswers";
-import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
+import { kinWorkChoicesAtom, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -403,10 +403,12 @@ function ExpenseForm(props: KinWorkTarget) {
   const saving = useKinNewExpense(props);
   const currency = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
   const lists = useKinLists(props, { enabled: true });
+  const directory = useKinWorkDirectory(props, true);
   const choices = kinExpenseChoices(
     lists.state._tag === "ready"
       ? kinListsOf(lists).find((one) => one.list === "expenses")
       : undefined,
+    directory.names.people,
   );
   const files = useKinWorkFiles(props, "");
   const held = files.state._tag === "ready" ? files.state.files.slice(0, 20) : [];
@@ -513,6 +515,28 @@ function ExpenseForm(props: KinWorkTarget) {
               onPick={(paidWith) => set({ paidWith })}
             />
           )}
+        </ListSection>
+      )}
+      {choices.fundedByNote === null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {choices.fundedByNote}
+        </Text>
+      )}
+      {choices.fundedBy.length === 0 ? null : (
+        <ListSection>
+          <PickRow
+            label={KIN_MONEY_FORMS.expense.fundedBy}
+            value={draft.fundedBy}
+            shown={
+              choices.fundedBy.find((one) => one.value === draft.fundedBy)?.label ??
+              KIN_MONEY_FORMS.expense.company
+            }
+            options={[
+              { id: "", title: KIN_MONEY_FORMS.expense.company },
+              ...choices.fundedBy.map((one) => ({ id: one.value, title: one.label })),
+            ]}
+            onPick={(fundedBy) => set({ fundedBy })}
+          />
         </ListSection>
       )}
       {choices.receipt ? (
