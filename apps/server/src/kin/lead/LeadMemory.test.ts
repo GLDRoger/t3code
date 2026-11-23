@@ -683,11 +683,12 @@ it.live(
           first.note,
           "No question was posted. Planned for its due time: a card asking to start, move or cancel it; Kin checks then who and what still stand.",
         );
-        for (const [onDue, ask, scheduled, asks] of [
-          ["remind", undefined, "reminder", undefined],
-          ["start", undefined, "start", undefined],
-          ["chase", undefined, "chase_ping", { name: "Owner" }],
-          ["chase", "Memb", "chase_ping", { name: "Member" }],
+        // A due start asks first while LEAD-11's stop switch is unbuilt: the note says so.
+        for (const [onDue, ask, scheduled, asks, planned] of [
+          ["remind", undefined, "reminder", undefined, "a reminder"],
+          ["start", undefined, "start", undefined, "a card asking to start, move or cancel it"],
+          ["chase", undefined, "chase_ping", { name: "Owner" }, "a ping to Owner"],
+          ["chase", "Memb", "chase_ping", { name: "Member" }, "a ping to Member"],
         ] as const) {
           const set = yield* service.defer(scope, {
             ...deferred,
@@ -696,7 +697,7 @@ it.live(
             ...(ask === undefined ? {} : { ask }),
           });
           assert.strictEqual(set.scheduled, scheduled, `${onDue} ${ask}`);
-          assert.match(set.note ?? "", /^No question was posted\. Planned for its due time: a /);
+          assert.include(set.note, `No question was posted. Planned for its due time: ${planned};`);
           assert.deepStrictEqual(set.asks, asks, `${onDue} ${ask}`);
         }
         // Who to ask is named as people are found here, and kept as the item's person.

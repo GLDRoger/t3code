@@ -1510,7 +1510,8 @@ const make = Effect.gen(function* () {
           const to = person === undefined ? "" : ` ${person.name}`;
           const set = {
             reminder: "a reminder",
-            start: "a start",
+            // A due start asks first while LEAD-11's stop switch is unbuilt (`KinDeferralStopSwitch`).
+            start: "a card asking to start, move or cancel it",
             ask_follow_up: `a follow-up to ask${to}`,
             due_card: "a card asking to start, move or cancel it",
             chase_ping: `a ping${to === "" ? "" : ` to${to}`}`,
