@@ -108,7 +108,7 @@ import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as SocialCards from "../social/cards.ts";
 import { answerChange } from "../work/companyProfile.ts";
 import { answerShellChange } from "../shell/changes.ts";
-import { KinRefreshHub, KinRefreshObserver } from "./KinRefreshHub.ts";
+import { KinRefreshHub, KinRefreshObserver, KinWorkRefresh } from "./KinRefreshHub.ts";
 import { docsForViewer } from "./privateDocs.ts";
 import { previewRow } from "./chatRowPreview.ts";
 import { withLinks } from "./messageLinks.ts";
@@ -687,6 +687,7 @@ const make = Effect.gen(function* () {
   const clearedAt = (clearedSeq: number) => (clearedSeq > 0 ? { clearedSeq } : {});
   const sql = yield* SqlClient.SqlClient;
   const refresh = yield* KinRefreshObserver;
+  const refreshWork = yield* KinWorkRefresh;
   // Absent outside the server's layer: a chat list then hears no change of role while open.
   const refreshes = yield* Effect.serviceOption(KinRefreshHub);
   let onChoice: ChoiceAnswerHandler | undefined;
@@ -1487,6 +1488,7 @@ const make = Effect.gen(function* () {
             Effect.filterOrElse(Predicate.isNotUndefined, () => answerChange(asked)),
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.provideService(KinRefreshObserver, refresh),
+            Effect.provideService(KinWorkRefresh, refreshWork),
             Effect.mapError(cardTapError),
           );
     if (sealed !== undefined && onChoice === undefined)

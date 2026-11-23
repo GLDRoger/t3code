@@ -14,7 +14,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { SqlError, UnknownError } from "effect/sql/SqlError";
 
-import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KinRefreshObserver, KinWorkRefresh } from "../chat/KinRefreshHub.ts";
 import { accessSql } from "../people/KinAccess.ts";
 import type { SectionId } from "./sections.ts";
 
@@ -170,6 +170,7 @@ export const set = Effect.fn("KinShell.set")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const refresh = yield* KinRefreshObserver;
+  const refreshWork = yield* KinWorkRefresh;
   return yield* sql
     .withTransaction(
       Effect.gen(function* () {
@@ -194,6 +195,8 @@ export const set = Effect.fn("KinShell.set")(function* (
         if (refusal !== undefined) return yield* invalid(refusal);
         const sections = ordered(input).map(labelsOf);
         const next = rev + 1;
+        const before = { rev, sections: previous ?? [] };
+        const after = { rev: next, sections };
         yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
       VALUES (${orgId}, ${yield* encode(sections)}, ${next}, ${personId}, ${yield* Clock.currentTimeMillis})
       ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json, rev = excluded.rev,
@@ -206,7 +209,9 @@ export const set = Effect.fn("KinShell.set")(function* (
         yield* refresh.touch(orgId, "shell");
         // The open attention stream has its own counter, even though the sensed rows haven't moved.
         yield* refresh.touch(orgId, "pulse");
-        return { rev: next, sections };
+        if (BUILT_INS.some((id) => sectionOn(before, id) !== sectionOn(after, id)))
+          yield* refreshWork(orgId);
+        return after;
       }),
     )
     .pipe(
@@ -244,6 +249,7 @@ export class KinShell extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const refresh = yield* KinRefreshObserver;
+  const refreshWork = yield* KinWorkRefresh;
   // These wrappers supply the database and observer; the operations own the spans.
   return KinShell.of({
     get: Effect.fnUntraced(function* (orgId) {
@@ -253,6 +259,7 @@ const make = Effect.gen(function* () {
       return yield* set(orgId, personId, rev, sections).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.provideService(KinRefreshObserver, refresh),
+        Effect.provideService(KinWorkRefresh, refreshWork),
       );
     }),
     sectionOn: Effect.fnUntraced(function* (orgId, id) {
