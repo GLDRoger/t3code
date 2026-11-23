@@ -331,7 +331,7 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
 );
 
 const filedLine = (documents: ReadonlyArray<{ readonly title: string }>) =>
-  `Filed, with its card in the chat. Call it ${documents.map((doc) => JSON.stringify(doc.title)).join(" and ")} in your reply, never by its key.`;
+  `Filed, with its card in the chat, which shows what is in it. Say in one line that ${documents.map((doc) => JSON.stringify(doc.title)).join(" and ")} ${documents.length > 1 ? "are" : "is"} ready, never its key, and nothing the card shows.`;
 
 /**
  * An invoice draft from a quote, with the quote's own inputs the invoice recipe takes: its lines and
@@ -644,7 +644,7 @@ export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof Rec
           next:
             card === undefined
               ? "Nothing was recorded. Kin couldn't show the owner a card to confirm this money, so ask them to record it themselves in Money."
-              : "Nothing is recorded or numbered yet. Kin showed the owner this money on a card; ask in one short line to check it and tap Confirm. Their tap records it and makes its receipt; in a later turn, call kin_receipt with this proposal to read what was made.",
+              : "Nothing is recorded or numbered yet. Kin showed the owner this money on a card, every detail on it; ask in one short line, repeating none of them, to check it and tap Confirm. Their tap records it and makes its receipt; in a later turn, call kin_receipt with this proposal to read what was made.",
           sensitive: true as const,
         };
       }
