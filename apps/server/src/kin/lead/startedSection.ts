@@ -12,7 +12,7 @@ import { DAY_MS } from "../durations.ts";
  */
 
 export const STARTED_RULE =
-  "Where the tasks you started (task is the id task_cancel takes), the requests you passed on, the entries you gave others and anything waiting on the daily limit stand now, as Kin's records have them. Say only what this shows; when something you mention isn't here, check before you say where it stands.";
+  "Where the tasks you started (task is the id task_cancel takes), the requests you passed on, the entries you gave others and anything waiting on the daily limit stand now, as Kin's records have them. Say only what this shows; when something you mention isn't here, check before you say where it stands. completed means a task finished, not what it found: read its result with task_status before you report it.";
 const TASKS_CAP = 8;
 const HANDOFFS_CAP = 5;
 const ASSIGNED_CAP = 8;

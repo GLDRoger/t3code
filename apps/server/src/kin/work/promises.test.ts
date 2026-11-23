@@ -29,6 +29,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import * as Deals from "./deals.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as Clients from "./ownerClients.ts";
@@ -584,11 +585,68 @@ it.effect(
 );
 
 it.effect(
+  "an owner and a teammate who reconnect after Clients goes off are told to read Tasks again",
+  () =>
+    Effect.gen(function* () {
+      const { corran, deal } = yield* seed;
+      const entry = yield* OwnerWork.create([zoya], promise("Invented plan", { deal }));
+      const records = yield* KinRecords.KinRecords;
+      const shell = yield* KinShell.KinShell;
+      const start = Effect.fn("test.start")(function* (
+        who: typeof rhea,
+        after?: { readonly seq: number; readonly team?: true | undefined },
+      ) {
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const pull = yield* Stream.toPull(records.changes(orgId));
+            const session = yield* WorkStream.makeWorkStream([who], {
+              orgId,
+              acceptRows: true,
+              ...(after === undefined
+                ? {}
+                : { afterSeq: after.seq, ...(after.team === true ? { afterTeam: true } : {}) }),
+            });
+            return yield* session.start((yield* pull)[0]!.seq);
+          }),
+        );
+      });
+      const filter = { orgId, text: "Invented plan", open: true };
+      const page = yield* OwnerWork.list([rhea], filter);
+      assert.strictEqual(page.records[0]?.party?.key, corran);
+      const teammatePage = yield* OwnerWork.list([zoya], filter);
+      assert.strictEqual(teammatePage.records[0]?.key, entry.key);
+      const cursors = yield* Effect.forEach([rhea, zoya], (who) =>
+        start(who).pipe(
+          Effect.map(([opening]) => {
+            assert.strictEqual(opening?._tag, "counts");
+            return { who, opening: opening! };
+          }),
+        ),
+      );
+
+      yield* shell.set(orgId, rheaId, 0, [
+        { id: "clients", on: false },
+        { id: "invoices", on: false },
+      ]);
+      const fresh = yield* OwnerWork.list([rhea], filter);
+      assert.strictEqual(fresh.records[0]?.key, entry.key);
+      assert.isUndefined(fresh.records[0]?.party);
+      assert.isEmpty((yield* OwnerWork.list([zoya], filter)).records);
+      for (const { who, opening } of cursors) {
+        const [resumed] = yield* start(who, opening);
+        assert.strictEqual(resumed?._tag, "snapshot-required");
+        assert.isAbove(resumed!.seq, opening.seq);
+        const [again] = yield* start(who, resumed);
+        assert.strictEqual(again?._tag, "synchronized");
+      }
+    }).pipe(Effect.provide(KinShell.layer.pipe(Layer.provideMerge(layer)))),
+);
+
+it.effect(
   "a promise on a deal is hidden from members while Deals (or Clients) is off and back when it is on; one on no deal stays",
   () =>
     Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const { corran, deal } = yield* seed;
+      const { corran, orbit, deal } = yield* seed;
       const onDeal = yield* OwnerWork.create([zoya], promise("Invented plan", { deal }));
       const plain = yield* OwnerWork.create(
         [zoya],
@@ -610,25 +668,91 @@ it.effect(
       });
       const on = yield* shown();
       assert.sameMembers(on.tasks, [onDeal.key, plain.key]);
-      const turn = (id: "deals" | "clients", on: boolean, rev: number) =>
-        sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
-          VALUES (${orgId}, ${JSON.stringify([{ id, on }])}, ${rev}, ${rheaId}, ${NOW})
-          ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json, rev = excluded.rev`;
-      yield* turn("deals", false, 1);
+      const records = yield* KinRecords.KinRecords;
+      const shell = yield* KinShell.KinShell;
+      const filter = { orgId, text: "Invented plan", open: true };
+      const readPage = Effect.fn("test.readPage")(function* (who: typeof zoya, epoch: number) {
+        const read = yield* OwnerWork.list([who], filter);
+        return kinWorkHeldPage(
+          { ...read, more: read.nextCursor !== null },
+          { seq: read.seq, asOf: read.asOf ?? null, epoch },
+        );
+      });
+      const pull = yield* Stream.toPull(records.changes(orgId));
+      const start = (yield* pull)[0]!.seq;
+      const open = Effect.fn("test.open")(function* (who: typeof zoya) {
+        const session = yield* WorkStream.makeWorkStream([who], { orgId, acceptRows: true });
+        yield* session.start(start);
+        const page = yield* readPage(who, 0);
+        return { who, session, page, rows: kinWorkRowsStart(page.readSeq) };
+      });
+      const teammate = yield* open(zoya);
+      const owner = yield* open(rhea);
+      const expectPage = (visible: boolean) =>
+        assert.deepStrictEqual(
+          teammate.page.records.map((record) => record.key),
+          visible ? [onDeal.key] : [],
+          "the already-open filtered Tasks page",
+        );
+      expectPage(true);
+      assert.strictEqual(owner.page.records[0]?.party?.key, corran);
+      const orbitId = (yield* records.get(orgId, orbit))!.recordId;
+      const turn = Effect.fn("test.turn")(function* (
+        rev: number,
+        sections: Parameters<typeof KinShell.set>[3],
+      ) {
+        yield* shell.set(orgId, rheaId, rev, sections);
+        // A different client marks the end of the committed ticks without forcing this page to read.
+        yield* records.announce(orgId, [orbitId]);
+        let reached = false;
+        while (!reached) {
+          for (const tick of yield* pull) {
+            if (tick.key === orbit) {
+              reached = true;
+              break;
+            }
+            for (const screen of [teammate, owner]) {
+              for (const event of yield* screen.session.batch(screen.session.pendingOf(tick))) {
+                if (event._tag === "snapshot-required") {
+                  screen.rows = kinWorkRowsStart(event.seq, screen.rows.epoch + 1);
+                  screen.page = yield* readPage(screen.who, screen.rows.epoch);
+                } else if (event._tag === "upsert" || event._tag === "removed") {
+                  screen.rows = kinApplyWorkRow(screen.rows, event, orgId);
+                  screen.page =
+                    kinPatchWorkPage(screen.page, filter, screen.rows)?.page ??
+                    (yield* readPage(screen.who, screen.rows.epoch));
+                }
+              }
+            }
+          }
+        }
+      });
+      yield* turn(0, [{ id: "deals", on: false }]);
+      expectPage(false);
       assert.deepStrictEqual(yield* shown(), {
         tasks: [plain.key],
         client: [plain.key],
         opened: "Failure",
       });
-      yield* turn("deals", true, 2);
+      yield* turn(1, [{ id: "deals", on: true }]);
+      expectPage(true);
       assert.deepStrictEqual(yield* shown(), on);
-      yield* turn("clients", false, 3);
+      yield* turn(2, [
+        { id: "clients", on: false },
+        { id: "invoices", on: false },
+      ]);
+      expectPage(false);
+      assert.deepStrictEqual(
+        owner.page.records.map((record) => record.key),
+        [onDeal.key],
+      );
+      assert.isUndefined(owner.page.records[0]?.party);
       const tasks = yield* OwnerWork.list([zoya], { orgId, open: true });
       assert.notInclude(
         tasks.records.map((one) => one.key),
         onDeal.key,
       );
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.scoped, Effect.provide(KinShell.layer.pipe(Layer.provideMerge(layer)))),
 );
 
 it.effect(
