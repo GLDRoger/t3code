@@ -895,6 +895,39 @@ it.effect(
       expect(archived).not.toContain("Record ");
       expect(archived).toContain("Nothing is due from this feed now.");
       yield* sql`UPDATE kin_records SET state = 'open' WHERE org_id = ${orgId} AND key = 'G-1'`;
+      // An ordinary routine whose id only looks like a feed's runs as an ordinary routine.
+      const lookalike = "Summarise yesterday's signups.";
+      yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
+          project_id, workspace_strategy_json, model_selection_json, runtime_mode,
+          interaction_mode, created_by, creation_source, created_at, updated_at, last_run_status,
+          run_count)
+        VALUES ('task-lookalike', 'Signups', ${lookalike}, 1,
+          '{"type":"fixed_time","timeOfDay":"09:00","weekdays":[1]}', ${`kin:${orgId}:${agentId}`},
+          '{}', '{}', 'approval-required', 'plan', 'system', 'server', ${timestamp}, ${timestamp},
+          'never', 0)`;
+      yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+          source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+        VALUES ('task-lookalike', ${orgId}, 'feed-lookalike', ${agentId}, 'chat', 'set-event',
+          ${personId}, 'owner_only', ${yield* KinSchedules.promptSha256(lookalike)}, 'inbox', 0, 0)`;
+      const routineRun = decodeEvent({
+        _tag: "deferral.due",
+        orgId,
+        agentId,
+        eventId: "run-lookalike",
+        receivedAt: timestamp,
+        provenance: { _tag: "system" },
+        dedupeKey: null,
+        subject: { type: "scheduled_task", itemId: "feed-lookalike", runId: "run-lookalike" },
+        lateByMs: 0,
+      });
+      yield* stored("lookalike-wake", [routineRun]);
+      const routine = yield* prompt.build({
+        ...input,
+        wakeupId: KinWakeupId.make("lookalike-wake"),
+        events: [routineRun],
+      });
+      expect(routine).toContain("Do the work now");
+      expect(routine).not.toContain("Nothing is due from this feed now.");
       // A number outside its limit: the keeper's wake says what moved and what to do, in its turn.
       yield* fields("G-1", { source: "PostHog", below: "1000" });
       yield* sql`INSERT INTO kin_number_values (org_id, record_id, as_of, seq, value, agent_id,

@@ -57,7 +57,7 @@ import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { feedTurn } from "../numbers/feeds.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
-import { isFeedSchedule } from "../numbers/numberRows.ts";
+import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
 import { dismissalGone } from "../questions/dismissed.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
@@ -507,7 +507,7 @@ const make = Effect.gen(function* () {
             return true;
           // A feed with every number already recorded for the period has nothing to fetch.
           return (
-            isFeedSchedule(schedule.scheduleId) &&
+            (yield* feedOf(orgId, schedule.scheduleId)) !== undefined &&
             (yield* feedTurn(orgId, schedule.scheduleId, yield* Clock.currentTimeMillis)) ===
               undefined
           );

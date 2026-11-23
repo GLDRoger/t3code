@@ -109,7 +109,7 @@ import { buildSeat } from "./seat.ts";
 import { thisCompanyLines } from "../shell/words.ts";
 import * as KinNumbers from "../numbers/KinNumbers.ts";
 import { feedTurn } from "../numbers/feeds.ts";
-import { isFeedSchedule } from "../numbers/numberRows.ts";
+import { feedOf } from "../numbers/numberRows.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
 import {
   answeredTurnText,
@@ -564,7 +564,12 @@ export class KinLeadPrompt extends Context.Service<
                 continue;
               }
               // A feed's run is Kin's own, from the numbers and source the owner confirmed.
-              if (isFeedSchedule(event.subject.itemId)) {
+              const isFeed = yield* feedOf(orgId, event.subject.itemId).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.map((feed) => feed !== undefined),
+                Effect.orElseSucceed(() => false),
+              );
+              if (isFeed) {
                 const feed = yield* feedTurn(
                   orgId,
                   event.subject.itemId,

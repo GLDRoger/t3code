@@ -117,29 +117,48 @@ export type NumbersChange = typeof NumbersChange.Type;
 export const NumbersChangeJson = Schema.fromJsonString(NumbersChange);
 export const decodeNumbersChange = Schema.decodeUnknownEffect(NumbersChangeJson);
 
-/** Each feed whose schedule runs: who keeps it, its source and when it runs in the owner's time. */
-export const liveFeeds = Effect.fn("KinNumbers.liveFeeds")(function* (orgId: KinOrgId) {
+/**
+ * Each feed's schedule not deleted, paused ones too: known by its id, its source event naming an
+ * applied numbers card and that card's feed. Who keeps it, its source, when it runs, and whether
+ * it runs now; `effective` is what its runs do, as the schedule holds it.
+ */
+export const feedSchedules = Effect.fn("KinNumbers.feedSchedules")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
     scheduleId: string;
     agentId: string;
     chatId: string;
     patch: string;
+    running: number;
+    effective: string;
   }>`SELECT s.schedule_id AS "scheduleId", s.agent_id AS "agentId", s.chat_id AS "chatId",
-      c.patch_json AS patch
+      c.patch_json AS patch, COALESCE(s.pending_enabled, t.enabled, 1) = 1 AS running,
+      json_array(s.owner_time_json, s.content_sha256, s.loose_at, t.schedule_json, t.prompt,
+        s.pending_enabled, t.enabled) AS effective
     FROM kin_schedules s
     JOIN kin_profile_changes c ON c.org_id = s.org_id
       AND c.change_id = substr(s.source_event, ${FEED_EVENT.length + 1})
+      AND substr(c.change_id, 1, ${NUMBERS_CHANGE.length}) = ${NUMBERS_CHANGE}
+      AND c.applied_at IS NOT NULL
     LEFT JOIN scheduled_tasks t ON t.task_id = s.task_id
     WHERE s.org_id = ${orgId} AND s.deleted_at IS NULL
       AND substr(s.schedule_id, 1, ${FEED_SCHEDULE.length}) = ${FEED_SCHEDULE}
       AND substr(s.source_event, 1, ${FEED_EVENT.length}) = ${FEED_EVENT}
-      AND COALESCE(s.pending_enabled, t.enabled, 1) = 1
     ORDER BY s.schedule_id`;
   const feeds = [];
   for (const row of rows) {
     const { feed } = yield* decodeNumbersChange(row.patch).pipe(Effect.orDie);
-    if (feed !== undefined) feeds.push({ ...row, feed });
+    if (feed !== undefined) feeds.push({ ...row, running: row.running === 1, feed });
   }
   return feeds;
 });
+
+/** The feeds whose schedules run now. */
+export const liveFeeds = (orgId: KinOrgId) =>
+  feedSchedules(orgId).pipe(Effect.map((feeds) => feeds.filter((one) => one.running)));
+
+/** The feed a schedule is, when it is one; never by its id alone. */
+export const feedOf = (orgId: KinOrgId, scheduleId: string) =>
+  feedSchedules(orgId).pipe(
+    Effect.map((feeds) => feeds.find((one) => one.scheduleId === scheduleId)),
+  );
