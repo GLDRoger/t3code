@@ -1,5 +1,5 @@
 import { kinGuardedRead, makeKinClient } from "@t3tools/client-runtime/kin/kinClient";
-import type { KinDockTab } from "@t3tools/client-runtime/kin/kinJoin";
+import type { KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
 import { makeKinScreenReads } from "@t3tools/client-runtime/kin/kinScreenReads";
 import { createKinRpcCommand } from "@t3tools/client-runtime/kin/kinAccess";
 import { watchKinChatForPush } from "@t3tools/client-runtime/kin-push";
@@ -65,7 +65,10 @@ export const kinCachedDockAtom = Atom.family((environmentId: EnvironmentId) =>
 );
 
 export const saveKinDockAtom = connectionAtomRuntime.fn(
-  (input: { readonly environmentId: EnvironmentId; readonly tabs: ReadonlyArray<KinDockTab> }) =>
+  (input: {
+    readonly environmentId: EnvironmentId;
+    readonly tabs: ReadonlyArray<KinDestination>;
+  }) =>
     withKinCache(dockCache.save(input.environmentId, DOCK_CACHE_KEY, input.tabs)).pipe(
       Effect.andThen(
         Effect.sync(() => appAtomRegistry.refresh(kinCachedDockAtom(input.environmentId))),

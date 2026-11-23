@@ -1,4 +1,5 @@
 import type { KinDockTab } from "@t3tools/client-runtime/kin/kinJoin";
+import { kinIsListSection } from "@t3tools/client-runtime/kin/kinShell";
 import { View } from "react-native";
 
 import { SidebarTabBar } from "../../layout/workspace/WorkspaceSidebarTabs";
@@ -7,7 +8,7 @@ import { workspaceDockBottomClearance } from "../../layout/workspace/workspace-t
 import type { KinDockProps } from "./KinDock";
 
 /** The native dock's names for the Kin tabs; it draws the icon and label for each. */
-const KIN_DOCK_NAMES: Record<KinDockTab, string> = {
+const KIN_DOCK_NAMES: Record<Exclude<KinDockTab, `list:${string}`>, string> = {
   chats: "threads",
   tasks: "tasks",
   money: "money",
@@ -28,10 +29,12 @@ export function KinDock(props: KinDockProps) {
         reserveComposeSpace={false}
         showsLabels
         {...(props.badges === undefined ? {} : { badges: props.badges })}
+        {...(props.titles === undefined ? {} : { titles: props.titles })}
         tabs={props.tabs}
         selectedTab={props.selectedTab}
         onSelect={props.onSelect}
-        nativeTab={(tab) => KIN_DOCK_NAMES[tab]}
+        // A list section's tab keeps its id; the bar draws it with its title.
+        nativeTab={(tab) => (kinIsListSection(tab) ? tab : KIN_DOCK_NAMES[tab])}
       />
     </View>
   );

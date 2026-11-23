@@ -48,6 +48,7 @@ public final class T3NativeControlsModule: Module {
       Prop("appearance") { (view: T3SidebarTabBarView, value: String) in view.appearance = value }
       Prop("showsLabels") { (view: T3SidebarTabBarView, value: Bool) in view.showsLabels = value }
       Prop("badges") { (view: T3SidebarTabBarView, value: [String: String]) in view.badges = value }
+      Prop("titles") { (view: T3SidebarTabBarView, value: [String: String]) in view.titles = value }
     }
 
     View(T3LayoutMetricsView.self) {

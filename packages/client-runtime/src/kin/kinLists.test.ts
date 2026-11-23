@@ -15,6 +15,7 @@ import {
   KIN_LIST_DEFAULT_FILTER,
   kinFieldText,
   kinListColumns,
+  kinListWatches,
   kinListEditDraftOf,
   kinListCanOpenToTeam,
   kinListEditInput,
@@ -303,7 +304,7 @@ describe("a list by its definition", () => {
       value: { minor: 4_500_000, currency: "INR" },
       photo: ["att-1"],
       count: "42",
-      checked: "No",
+      checked: "no",
       shelf: "rec-acme",
     };
     const row = kinListRow(record({ fields }), def, context);
@@ -361,8 +362,8 @@ describe("a list by its definition", () => {
       key: "C-1",
     });
     expect(entry.fields.slice(-3)).toMatchObject([
-      { key: "count", type: "text", text: "42", link: null, opens: null },
-      { key: "checked", type: "text", text: "No", link: null, opens: null },
+      { key: "count", type: "number", text: "42", draft: "42", link: null, opens: null },
+      { key: "checked", type: "yesno", text: "No", value: "no", link: null, opens: null },
       { key: "shelf", type: "text", text: "rec-acme", link: null, opens: null },
     ]);
     expect([entry.finish?.label, entry.finish?.pays, entry.balance]).toEqual([
@@ -373,6 +374,36 @@ describe("a list by its definition", () => {
     expect(kinFieldText({ type: "link" }, "rec-gone", context)).toBe(
       "Something that isn't here any more",
     );
+  });
+
+  it("says what Kin watches on a list: its check and the day it reminds on", () => {
+    const fields = [
+      { key: "onHand", label: "On hand" as never, type: "number" as const, sensitive: false },
+      {
+        key: "reorder",
+        label: "Reorder point" as never,
+        type: "number" as const,
+        sensitive: false,
+      },
+      { key: "bookedFor", label: "Booked for" as never, type: "date" as const, sensitive: false },
+    ];
+    expect(
+      kinListWatches({
+        fields,
+        check: { field: "onHand", below: "reorder" },
+        remindOn: "bookedFor",
+      }),
+    ).toEqual(["Kin warns when On hand is below Reorder point", "Kin reminds on Booked for"]);
+    expect(
+      kinListWatches({
+        fields,
+        check: { field: "onHand", above: 500 },
+        remindOn: "date",
+        dateLabel: "Booking date" as never,
+      }),
+    ).toEqual(["Kin warns when On hand is above 500", "Kin reminds on Booking date"]);
+    // An older host sends neither: nothing is watched as far as this screen can say.
+    expect(kinListWatches({ fields })).toEqual([]);
   });
 
   it("finishes a part-paid entry by receiving exactly what is left", () => {
@@ -745,6 +776,15 @@ describe("a list by its definition", () => {
       value: { minor: 12_050, currency: "USD" },
     });
     expect(check("money", "lots").ok).toBe(false);
+    expect(check("number", " 1,200.5 ")).toEqual({ ok: true, value: "1200.5" });
+    expect(check("number", "-3")).toEqual({ ok: true, value: "-3" });
+    expect(check("number", "a dozen")).toEqual({
+      ok: false,
+      problem: "Detail takes a number, such as 12 or 3.5.",
+    });
+    expect(check("yesno", "Yes")).toEqual({ ok: true, value: "yes" });
+    expect(check("yesno", "")).toEqual({ ok: true, value: null });
+    expect(check("yesno", "maybe")).toEqual({ ok: false, problem: "Detail takes yes or no." });
     expect(check("file", ["a", "b"])).toEqual({ ok: true, value: ["a", "b"] });
     expect(check("file", [])).toEqual({ ok: true, value: null });
     expect(
