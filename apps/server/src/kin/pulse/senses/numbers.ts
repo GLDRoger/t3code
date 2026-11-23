@@ -41,14 +41,26 @@ export const numberSenses = Effect.fn("KinPulse.numberSenses")(function* (ctx: S
         WHERE org_id = ${ctx.orgId} AND cleared_at IS NULL
           AND substr(fact_key, 1, ${prefix.length}) = ${prefix}
         ORDER BY first_seen_at, fact_key LIMIT 1`;
-      const since = open?.key.slice(prefix.length) ?? number.asOf ?? today;
+      // A new episode is told apart from an earlier one on the same day: by the value that
+      // started it, or for a computed number by how many episodes came before.
+      const [{ earlier }] = (
+        open === undefined && number.seq === undefined
+          ? yield* sql<{ earlier: number }>`SELECT COUNT(*) AS earlier FROM kin_pulse_facts
+            WHERE org_id = ${ctx.orgId} AND substr(fact_key, 1, ${prefix.length}) = ${prefix}`
+          : [{ earlier: 0 }]
+      ) as [{ earlier: number }];
+      const since =
+        open?.key.slice(prefix.length) ??
+        (number.seq === undefined
+          ? `${today}#g${earlier}`
+          : `${number.asOf ?? today}#${number.seq}`);
       facts.push({
         sense: "number_off",
         family: "goals",
         key: `${prefix}${since}`,
         subject,
         scope: {},
-        since: iso(DateTime.toEpochMillis(DateTime.makeUnsafe(since))),
+        since: iso(DateTime.toEpochMillis(DateTime.makeUnsafe(since.split("#")[0]!))),
         consequence: `${plain(off.value, number.unit)} as of ${number.asOf ?? today}, ${off.side} its limit of ${plain(off.limit, number.unit)}.`,
         actor:
           number.keeper !== undefined && ctx.liveAgents.has(number.keeper)

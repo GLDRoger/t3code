@@ -2042,12 +2042,12 @@ describe("watched numbers", () => {
       title: id === "G-11" ? "Daily users" : `Invented ${id}`,
       fields: JSON.stringify({ measure: "manual", ...fields }),
     });
-  const recordValue = (id: string, day: string, value: string) =>
+  const recordValue = (id: string, day: string, value: string, seq = 1) =>
     Effect.flatMap(
       SqlClient.SqlClient,
       (sql) => sql`INSERT INTO kin_number_values (org_id, record_id, as_of, seq, value, agent_id,
           recorder_name, source, created_at)
-        VALUES (${orgId}, ${`r-${id}`}, ${day}, 1, ${value}, ${finance}, 'Finance', ${SOURCE}, 0)`,
+        VALUES (${orgId}, ${`r-${id}`}, ${day}, ${seq}, ${value}, ${finance}, 'Finance', ${SOURCE}, 0)`,
     );
   const factsOf = (sense: string) =>
     Effect.flatMap(
@@ -2085,14 +2085,14 @@ describe("watched numbers", () => {
           yield* recordValue("G-11", `2026-10-${day}`, value);
           yield* KinPulse.tick(orgId, noon(day + 1));
         }
-        const first = "number_off:G-11:below=1000:since=2026-10-29";
+        const first = "number_off:G-11:below=1000:since=2026-10-29#1";
         assert.deepStrictEqual(yield* factsOf("number_off"), [{ key: first, cleared: 0, woke: 1 }]);
         // Back inside clears it; under again is a new time, and a new wake.
         yield* recordValue("G-11", "2026-11-01", "1100");
         yield* KinPulse.tick(orgId, noon(33));
         yield* recordValue("G-11", "2026-11-02", "980");
         const again = yield* KinPulse.tick(orgId, noon(34));
-        const second = "number_off:G-11:below=1000:since=2026-11-02";
+        const second = "number_off:G-11:below=1000:since=2026-11-02#1";
         assert.includeMembers(again.woken, [second]);
         assert.deepStrictEqual(yield* factsOf("number_off"), [
           { key: first, cleared: 1, woke: 1 },
@@ -2112,6 +2112,26 @@ describe("watched numbers", () => {
           '"Daily users" (G-11) is 980 "users" as of 2026-11-02, below its limit of 1,000 "users". Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a suggested task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don\'t ask a question and don\'t assign anyone.',
         ]);
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a second crossing on the same day, after the first was handled, wakes again", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* watchedNumber("G-11", { below: "1000" });
+      yield* recordValue("G-11", "2026-10-30", "900", 1);
+      yield* KinPulse.tick(orgId, noon(30));
+      // The owner says it is not a problem.
+      yield* sql`UPDATE kin_pulse_facts SET handled_by_kind = 'person', handled_by_id = ${owner},
+          handled_at = ${noon(30)} WHERE org_id = ${orgId} AND sense = 'number_off'`;
+      yield* recordValue("G-11", "2026-10-30", "1100", 2);
+      yield* KinPulse.tick(orgId, noon(30) + HOUR);
+      yield* recordValue("G-11", "2026-10-30", "800", 3);
+      const again = yield* KinPulse.tick(orgId, noon(30) + 2 * HOUR);
+      assert.lengthOf(yield* factsOf("number_off"), 2);
+      assert.isTrue(again.woken.some((key) => key.startsWith("number_off:G-11:")));
+      assert.lengthOf(yield* offWakes, 2);
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("a feed two periods behind tells the owner once, with its source", () =>
@@ -2162,7 +2182,7 @@ describe("watched numbers", () => {
       assert.lengthOf(yield* offWakes, 0);
       // It was sensed all along, and marked told while Deals was off.
       assert.deepStrictEqual(yield* factsOf("number_off"), [
-        { key: "number_off:G-14:below=5:since=2026-10-30", cleared: 0, woke: 1 },
+        { key: "number_off:G-14:below=5:since=2026-10-30#g0", cleared: 0, woke: 1 },
       ]);
     }).pipe(Effect.provide(layer)),
   );

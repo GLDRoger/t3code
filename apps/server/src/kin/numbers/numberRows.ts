@@ -67,8 +67,12 @@ export const latestValue = Effect.fn("KinNumbers.latestValue")(function* (
   through: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ value: string; asOf: string; source: string | null }>`SELECT
-      value, as_of AS "asOf", source FROM kin_number_values
+  const [row] = yield* sql<{
+    value: string;
+    asOf: string;
+    seq: number;
+    source: string | null;
+  }>`SELECT value, as_of AS "asOf", seq, source FROM kin_number_values
     WHERE org_id = ${orgId} AND record_id = ${recordId} AND as_of <= ${through}
     ORDER BY as_of DESC, seq DESC LIMIT 1`;
   return row;

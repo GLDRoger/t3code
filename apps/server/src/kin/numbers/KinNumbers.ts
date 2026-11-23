@@ -263,6 +263,8 @@ const evaluate = Effect.fn("KinNumbers.evaluate")(function* (
   return {
     value,
     asOf,
+    /** The latest value's place among its day's corrections, for a recorded number. */
+    seq: recorded?.seq,
     off: offSide(value, fields),
     stale:
       fields.every !== undefined &&
