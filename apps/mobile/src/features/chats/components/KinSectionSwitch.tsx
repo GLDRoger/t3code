@@ -272,11 +272,9 @@ function KinListSectionsSettings(
           onChange={(change) => void send(change)}
         />
       ))}
-      {lists.state._tag !== "ready" ? null : (
-        <ListSection
-          title={KIN_LIST_SECTIONS.add}
-          {...(offered.length === 0 ? { footer: KIN_LIST_SECTIONS.addNone } : {})}
-        >
+      {/* Nothing to choose from: the part stays away, as before lists could be sections. */}
+      {offered.length === 0 ? null : (
+        <ListSection title={KIN_LIST_SECTIONS.add}>
           {offered.map((def) => (
             <ListActionRow
               key={def.list}

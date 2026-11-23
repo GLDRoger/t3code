@@ -355,7 +355,8 @@ function KinListSectionsSettings(
           ))}
         </div>
       )}
-      {lists.state._tag !== "ready" ? null : (
+      {/* Nothing to choose from: the row stays away, as before lists could be sections. */}
+      {offered.length === 0 ? null : (
         <KinListSectionAdd
           offered={offered.map((def) => ({ list: def.list, name: def.name }))}
           held={props.held}
@@ -443,47 +444,44 @@ function KinListSectionAdd(props: {
       <KinSettingsRow
         title={KIN_LIST_SECTIONS.add}
         wrap
-        {...(props.offered.length === 0 ? { detail: KIN_LIST_SECTIONS.addNone } : {})}
         control={
-          props.offered.length === 0 ? undefined : (
-            <>
-              <Select value={picked} onValueChange={(value) => setPicked(value)}>
-                <SelectTrigger
-                  size="sm"
-                  className="w-40 min-w-0"
-                  aria-label={KIN_LIST_SECTIONS.addPick}
-                >
-                  <SelectValue>{choice?.name ?? KIN_LIST_SECTIONS.addPick}</SelectValue>
-                </SelectTrigger>
-                <SelectPopup alignItemWithTrigger={false}>
-                  {props.offered.map((one) => (
-                    <SelectItem key={one.list} value={one.list}>
-                      {one.name}
-                    </SelectItem>
-                  ))}
-                </SelectPopup>
-              </Select>
-              <Button
-                size="xs"
-                disabled={busy || choice === null}
-                aria-busy={busy}
-                onClick={async () => {
-                  if (choice === null) return;
-                  setBusy(true);
-                  setProblem(null);
-                  const failed = await props.held.change(props.shell, {
-                    id: kinListSectionId(choice.list),
-                    on: true,
-                  });
-                  setBusy(false);
-                  setProblem(failed);
-                  if (failed === null) setPicked(null);
-                }}
+          <>
+            <Select value={picked} onValueChange={(value) => setPicked(value)}>
+              <SelectTrigger
+                size="sm"
+                className="w-40 min-w-0"
+                aria-label={KIN_LIST_SECTIONS.addPick}
               >
-                {KIN_LIST_SECTIONS.addSave}
-              </Button>
-            </>
-          )
+                <SelectValue>{choice?.name ?? KIN_LIST_SECTIONS.addPick}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup alignItemWithTrigger={false}>
+                {props.offered.map((one) => (
+                  <SelectItem key={one.list} value={one.list}>
+                    {one.name}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+            <Button
+              size="xs"
+              disabled={busy || choice === null}
+              aria-busy={busy}
+              onClick={async () => {
+                if (choice === null) return;
+                setBusy(true);
+                setProblem(null);
+                const failed = await props.held.change(props.shell, {
+                  id: kinListSectionId(choice.list),
+                  on: true,
+                });
+                setBusy(false);
+                setProblem(failed);
+                if (failed === null) setPicked(null);
+              }}
+            >
+              {KIN_LIST_SECTIONS.addSave}
+            </Button>
+          </>
         }
       />
     </KinSettingsSection>

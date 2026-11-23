@@ -350,7 +350,6 @@ export const KIN_LIST_SECTIONS = {
   add: "Show a list as a section",
   addPick: "Choose a list",
   addSave: "Show",
-  addNone: "None of your own lists can be shown as a section.",
 } as const;
 
 /** What `kin.shell.set` takes to switch one section: every section as held, that one changed. */
