@@ -180,7 +180,8 @@ it.effect("signs the token exchange, keeps the access token until near its end, 
     assert.strictEqual(sent?.url, send);
     assert.strictEqual(sent?.authorization, "Bearer access-1");
     assert.deepStrictEqual(JSON.parse(sent?.body ?? ""), {
-      message: { token, data: push.data, android: { priority: "HIGH" } },
+      // Never delivered after the host forgets it sent it: seven days.
+      message: { token, data: push.data, android: { priority: "HIGH", ttl: "604800s" } },
     });
 
     // Kept for the hour less five minutes, then exchanged again.

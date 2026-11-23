@@ -3,7 +3,12 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeHttp2 from "node:http2";
 
-import type { KinApsEnvironment, KinPushSendingStatus, KinPushToken } from "@t3tools/contracts";
+import {
+  KIN_PUSH_KEPT_MS,
+  type KinApsEnvironment,
+  type KinPushSendingStatus,
+  type KinPushToken,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -35,6 +40,11 @@ export type KinApnsPush = {
   readonly payload: unknown;
   /** `apns-collapse-id`: a newer push with the same id replaces the shown one. At most 64 bytes. */
   readonly collapseId?: string;
+  /**
+   * Apple's background push (`apns-push-type: background`, priority 5): `content-available` alone
+   * in `aps`, waking the app if iOS lets it, never alerting by itself.
+   */
+  readonly background?: true;
 };
 
 /**
@@ -73,13 +83,16 @@ export const apnsRequestHeaders = (
   credentials: KinApnsCredentials,
   push: KinApnsPush,
   jwt: string,
+  nowMs: number,
 ) => ({
   ":method": "POST",
   ":path": `/3/device/${push.token}`,
   authorization: `bearer ${jwt}`,
   "apns-topic": credentials.topic,
-  "apns-push-type": "alert",
-  "apns-priority": "10",
+  "apns-push-type": push.background === true ? "background" : "alert",
+  "apns-priority": push.background === true ? "5" : "10",
+  // Never delivered once the host has forgotten it sent it.
+  "apns-expiration": String(Math.floor((nowMs + KIN_PUSH_KEPT_MS) / 1000)),
   "content-type": "application/json",
   ...(push.collapseId === undefined ? {} : { "apns-collapse-id": push.collapseId }),
 });
@@ -232,7 +245,12 @@ export const makeApnsTransport = Effect.fn("KinApns.makeTransport")(function* (
 
   const attempt = Effect.fnUntraced(function* (push: KinApnsPush, body: string, token: string) {
     const session = yield* sessionFor(push.environment);
-    const result = yield* post(session, apnsRequestHeaders(credentials, push, token), body).pipe(
+    const now = yield* Clock.currentTimeMillis;
+    const result = yield* post(
+      session,
+      apnsRequestHeaders(credentials, push, token, now),
+      body,
+    ).pipe(
       Effect.timeout(REQUEST_TIMEOUT),
       Effect.tapError(() => discard(push.environment, session)),
       Effect.catch((error) =>

@@ -170,6 +170,11 @@ export const kinClient = {
     label: "kin:unregister-push",
     tag: KIN_PUSH_WS_METHODS.unregisterDevice,
   }),
+  /** Which of this host's delivered notifications are settled, and the badge. */
+  reconcilePush: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:reconcile-push",
+    tag: KIN_PUSH_WS_METHODS.reconcile,
+  }),
   /** Mounted while a chat is on screen: the host skips this device's pushes for it. */
   pushWatch: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
     label: "kin:push-watch",
