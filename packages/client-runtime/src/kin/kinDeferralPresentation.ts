@@ -404,7 +404,16 @@ export function kinStartNowRefusalNotice(
 export type KinActionOutcome =
   | { readonly status: "ignored" }
   | { readonly status: "sent" }
-  | { readonly status: "failed"; readonly notice: KinCardNotice };
+  | {
+      readonly status: "failed";
+      readonly notice: KinCardNotice;
+      /** The host says the card on screen is behind it: read it again, never leave it answerable. */
+      readonly behind?: true;
+    };
+
+/** A refusal that means the card was settled or changed since this screen drew it. */
+export const kinCardBehindHost = (cause: unknown) =>
+  isKinChatError(cause) && (cause.reason === "invalid_state" || cause.reason === "widget_changed");
 
 /**
  * Posts card taps one at a time: a tap while another is in flight is ignored, so a double
@@ -445,9 +454,11 @@ export function createKinCardActions<
       onStart?.();
       const result = await options.post(options.toInput(view, actionId, clientActionId));
       if (result.ok) return { status: "sent" };
-      return isKinChatError(result.cause)
-        ? { status: "failed", notice: failureNotice(result.cause, actionId) }
-        : transportFailure();
+      if (!isKinChatError(result.cause)) return transportFailure();
+      const notice = failureNotice(result.cause, actionId);
+      return kinCardBehindHost(result.cause)
+        ? { status: "failed", notice, behind: true }
+        : { status: "failed", notice };
     } catch {
       return transportFailure();
     } finally {
@@ -494,9 +505,9 @@ export function kinCardStatusAfter(
 }
 
 /** A status raised on an older revision no longer describes the card. */
-export function visibleKinCardStatus(
-  status: KinCardStatus | null,
+export function visibleKinCardStatus<Status extends KinCardStatus>(
+  status: Status | null,
   revision: number,
-): KinCardStatus | null {
+): Status | null {
   return status !== null && status.revision === revision ? status : null;
 }

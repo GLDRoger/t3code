@@ -332,16 +332,18 @@ describe("createKinCardActions", () => {
     expect(posted.map((input) => input.clientActionId)).toEqual(["client-1", "client-2"]);
   });
 
-  it("says the card changed when the host reports a stale revision", async () => {
+  it("says the card changed when the host reports a stale revision, and marks it behind", async () => {
     const { act } = setup(() => refused("widget_changed"));
     expect(await act(view(deferral()), "remind")).toEqual({
       status: "failed",
       notice: { kind: "stale", text: KIN_STALE_CARD_TEXT },
+      behind: true,
     });
     const late = setup(() => refused("invalid_state"));
     expect(await late.act(view(deferral()), "undo")).toEqual({
       status: "failed",
       notice: { kind: "stale", text: KIN_UNDO_TOO_LATE_TEXT },
+      behind: true,
     });
   });
 
