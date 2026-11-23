@@ -73,7 +73,6 @@ export const LeadsResult = Schema.Struct({
     }),
   ),
 });
-/** A hand-off to an agent this turn put on a task: being put on it already woke it with it. */
 /** Refused: this turn gave `agent` the task or put them on it, so its wake carries the brief. */
 export const alreadyOnIt = (agent: string, titles: ReadonlyArray<string>) =>
   `Nothing was passed on: ${agent} already has ${titles.map((title) => JSON.stringify(title)).join(" and ")}, which you gave them or put them on in this turn, and that already wakes them with it.`;
