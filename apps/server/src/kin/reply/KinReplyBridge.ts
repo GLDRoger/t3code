@@ -1407,7 +1407,13 @@ const make = Effect.gen(function* () {
                   limit: 200,
                 }),
               ).pipe(Effect.map((read) => read.facts)),
-          }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            // The reply stands; a fact left reserved is only offered a check-in late.
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin check-in ledger failed", { cause }),
+            ),
+          ),
         ),
       );
       // A failed or stopped run is retried or was the owner's choice; only a finished one is owed.
