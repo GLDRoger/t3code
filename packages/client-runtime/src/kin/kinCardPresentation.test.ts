@@ -196,15 +196,39 @@ describe("kinCardView", () => {
     expect(task(widget({ state: taskState({ status: "done" }) })).working).toBe(false);
   });
 
-  it("shows the last error whenever there is one, whatever the status", () => {
+  it("says why a failed task stopped in plain words, and shows any other error as it is", () => {
     const error = { lastError: "Tests failed\n\n  3 of 120" };
-    expect(task(widget({ state: taskState({ ...error, status: "failed" }) })).detail).toBe(
+    const lines = (overrides: Record<string, unknown>) => {
+      const view = task(widget({ state: taskState(overrides) }));
+      return [view.detail, view.detailNote];
+    };
+    expect(lines({ ...error, status: "failed" })).toEqual([
+      "The helper stopped with an error.",
       "Tests failed 3 of 120",
-    );
-    expect(task(widget({ state: taskState({ ...error, status: "cancelled" }) })).detail).toBe(
+    ]);
+    expect(lines({ ...error, status: "failed", failure: null })).toEqual([
+      "The helper stopped with an error.",
       "Tests failed 3 of 120",
-    );
-    expect(task(widget({ state: taskState({ status: "failed" }) })).detail).toBeNull();
+    ]);
+    expect(lines({ status: "failed" })).toEqual(["The helper stopped with an error.", null]);
+    expect(lines({ ...error, status: "cancelled" })).toEqual(["Tests failed 3 of 120", null]);
+    const stopped = { status: "failed", lastError: "API Error: 400 no route for invented-model" };
+    expect(lines({ ...stopped, failure: "model_not_offered" })).toEqual([
+      "This server's AI provider doesn't offer the model this task asked for. Ask the agent to start it again on its own model.",
+      null,
+    ]);
+    expect(lines({ ...stopped, failure: "signed_out" })).toEqual([
+      "This server's AI provider is signed out. Sign it in again in Settings, then ask the agent to start the task again.",
+      null,
+    ]);
+    expect(lines({ ...stopped, failure: "unreachable" })).toEqual([
+      "This server couldn't reach its AI provider. Ask the agent to start the task again in a few minutes.",
+      null,
+    ]);
+    expect(lines({ ...stopped, failure: "usage_limit" })).toEqual([
+      "The AI provider's usage limit is reached. Ask the agent to start the task again once it resets.",
+      null,
+    ]);
   });
 
   it.each([
@@ -212,7 +236,7 @@ describe("kinCardView", () => {
     [
       "an error that ends a sentence",
       { status: "failed", lastError: "Tests also fail." },
-      "Task: Fix the payments test. Failed. Tests also fail. GPT-6.1 Sol. Opens the thread.",
+      "Task: Fix the payments test. Failed. The helper stopped with an error. Tests also fail. GPT-6.1 Sol. Opens the thread.",
     ],
     [
       "a title that ends a question",

@@ -476,6 +476,10 @@ it.layer(
         expect(response.headers["etag"]).toBeUndefined();
         expect(response.headers["last-modified"]).toBeUndefined();
       }
+      // A tab from the build before asks for a chunk this build doesn't have: never the page.
+      const staleChunk = yield* request("/assets/ThreadView-0ldBu1ld.js");
+      expect(staleChunk.status).toBe(404);
+      expect(yield* staleChunk.text).not.toContain("new build");
       const head = yield* request("/", {
         method: "HEAD",
         headers: { "if-none-match": previousEtag, "accept-encoding": "identity" },

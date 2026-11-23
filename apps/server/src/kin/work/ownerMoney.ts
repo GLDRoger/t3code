@@ -53,7 +53,7 @@ import {
   toDefinition,
   unknownList,
 } from "./registers.ts";
-import { KIN_OWNER_LEVEL, placesOf, viewerOfPeople } from "./teamView.ts";
+import { KIN_OWNER_LEVEL, keyedViewer, placesOf, viewerOfPeople } from "./teamView.ts";
 
 /** What the owner's clients read and do with lists, money and the company profile. Owner only. */
 
@@ -265,15 +265,18 @@ const SCREEN_CLIENTS = 20;
 export const money = Effect.fn("KinMoney.summary")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinMoneySummaryInput,
+  /** A coding agent's key reads it: every figure and row without what a key never carries. */
+  options: { readonly keyed?: boolean } = {},
 ) {
   const team = yield* moneyReader(people, input.orgId);
   // For a client's page, a teammate without the Money switch reads none, whichever project they lead.
   const hidden =
     input.party !== undefined && team !== undefined && !(yield* placesOf(input.orgId, team)).money;
+  const base = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(hidden ? [] : [team]);
   const summary = yield* moneySummary(
     input.orgId,
     yield* Clock.currentTimeMillis,
-    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(hidden ? [] : [team]),
+    options.keyed === true ? keyedViewer(base) : base,
     { moneyDates: true },
   );
   const { byClient } = summary.owed;

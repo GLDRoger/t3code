@@ -165,6 +165,19 @@ export class KinLevelGate extends Context.Service<
       agent: AgentIdentity,
       input: VisualInput,
     ) => Effect.Effect<KinWidget | { readonly figure: string }, KinChatError>;
+    /** `kin_picture`'s image, gated like a post; `seen` is what it shows, checked like a visual's. */
+    readonly picture: (
+      agent: AgentIdentity,
+      input: Parameters<KinChatService["Service"]["picture"]>[1] & { readonly seen: string },
+    ) => Effect.Effect<
+      Effect.Success<ReturnType<KinChatService["Service"]["picture"]>>,
+      KinChatError
+    >;
+    /** Before `kin_picture` makes anything: where it goes takes it, gated like a post. */
+    readonly pictureRoom: (
+      agent: AgentIdentity,
+      input: Parameters<KinChatService["Service"]["pictureRoom"]>[1] & { readonly seen: string },
+    ) => Effect.Effect<number, KinChatError>;
     readonly settleFigures: (
       ...args: Parameters<KinChatService["Service"]["settleFigures"]>
     ) => Effect.Effect<void, KinChatError>;
@@ -676,6 +689,19 @@ const make = Effect.gen(function* () {
     visual: Effect.fn("KinLevelGate.visual")(function* (agent, input) {
       yield* everyoneSees(agent, `${input.title}\n${input.html.replace(/<[^>]*>/g, " ")}`);
       return yield* gated("gated visual", agent, input.chatId, chat.visual(agent, input));
+    }),
+    picture: Effect.fn("KinLevelGate.picture")(function* (agent, { seen, ...input }) {
+      yield* everyoneSees(agent, seen);
+      return yield* gated("gated picture", agent, input.chatId, chat.picture(agent, input));
+    }),
+    pictureRoom: Effect.fn("KinLevelGate.pictureRoom")(function* (agent, { seen, ...input }) {
+      yield* everyoneSees(agent, seen);
+      return yield* gated(
+        "gated picture room",
+        agent,
+        input.chatId,
+        chat.pictureRoom(agent, input),
+      );
     }),
     react: Effect.fn("KinLevelGate.react")((agent, input) =>
       gated("gated reaction", agent, input.chatId, chat.react(agent, { ...input, on: true })),

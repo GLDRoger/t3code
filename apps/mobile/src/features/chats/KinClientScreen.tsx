@@ -65,6 +65,7 @@ import {
   KinWorkToggleRow,
 } from "./components/KinWorkPieces";
 import { KinClientDeals } from "./KinDealsList";
+import { useKinSectionOn } from "./state/useKinShell";
 import { KinWorkNamedRow } from "./KinWorkLists";
 import { KinAvatar } from "./components/KinAvatar";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
@@ -177,6 +178,7 @@ function KinClientBody(
   const ownerLevel = useKinIsOwnerLevel(environmentId);
   const canAddTask = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
   const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
+  const dealsOn = useKinSectionOn(environmentId, "deals");
   const canChangeTasks =
     useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) &&
     kinWorkHostEdits(work._tag === "ready" ? work.live.summary : null);
@@ -552,7 +554,7 @@ function KinClientBody(
           ) : null}
         </ListSection>
       )}
-      {view.vendor ? null : (
+      {view.vendor || !dealsOn ? null : (
         <KinClientDeals
           {...target}
           party={{ key: view.key, title: view.name }}

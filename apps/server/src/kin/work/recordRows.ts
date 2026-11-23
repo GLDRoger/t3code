@@ -172,6 +172,14 @@ const promiseOn = (
 export const promiseOnDeal = (sql: SqlClient.SqlClient) => promiseOn(sql, sql`1 = 1`);
 
 /**
+ * The entry `r` was made from: a receipt's invoice, through the payment its `tie` stored
+ * (`gendocs/receipts.ts`, the only writer of `$.payment`). Null for anything else.
+ */
+const madeFrom = (sql: SqlClient.SqlClient) => sql`(CASE WHEN r.register_id = 'receipts' THEN
+    (SELECT pay.record_id FROM kin_record_payments pay WHERE pay.org_id = r.org_id
+      AND pay.payment_id = json_extract(r.fields_json, '$.payment')) END)`;
+
+/**
  * A promise on a deal kept private, or on any deal while Deals is off (`shell/KinShell.ts`): it
  * is as hidden as its deal.
  */
@@ -185,11 +193,19 @@ const promiseOnHiddenDeal = (sql: SqlClient.SqlClient, shell: boolean) =>
       : sql`d.sensitive = 1`,
   );
 
-/** Whether `r`'s client, its project or its project's client is labelled sensitive, or its deal. */
+/**
+ * Whether `r`'s client, its project or its project's client is labelled sensitive, or its deal; for
+ * an entry made from another (`madeFrom`), that entry's client, project or project's client too.
+ */
 const parentLabelled = (sql: SqlClient.SqlClient, shell = true) => sql`(EXISTS (SELECT 1
     FROM kin_records s
     WHERE s.org_id = r.org_id AND s.sensitive = 1 AND s.record_id IN (r.party_id, r.project_id,
-      (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))
+      (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id),
+      (SELECT f.party_id FROM kin_records f WHERE f.org_id = r.org_id AND f.record_id = ${madeFrom(sql)}),
+      (SELECT f.project_id FROM kin_records f WHERE f.org_id = r.org_id AND f.record_id = ${madeFrom(sql)}),
+      (SELECT fp.party_id FROM kin_records f JOIN kin_records fp
+        ON fp.org_id = f.org_id AND fp.record_id = f.project_id
+        WHERE f.org_id = r.org_id AND f.record_id = ${madeFrom(sql)})))
   OR ${promiseOnHiddenDeal(sql, shell)})`;
 
 /**
@@ -217,6 +233,25 @@ export const labelledNow = (sql: SqlClient.SqlClient) =>
  */
 export const keySensitive = (sql: SqlClient.SqlClient) =>
   sql`(r.sensitive = 1 OR ${parentLabelled(sql)})`;
+
+/**
+ * A label a person put on `alias` on purpose: one on an entry of a list with no default label, or
+ * one recorded as theirs (`marked_by_person_id`) where the list labels every entry when it is made.
+ */
+const chosenLabel = (sql: SqlClient.SqlClient, alias: string) =>
+  sql`(${sql(alias)}.sensitive = 1 AND (${sql(alias)}.marked_by_person_id IS NOT NULL
+    OR NOT EXISTS (SELECT 1 FROM kin_registers g WHERE g.org_id = ${sql(alias)}.org_id
+      AND g.register_id = ${sql(alias)}.register_id AND g.built_in = 0
+      AND json_extract(g.definition_json, '$.sensitive') = 1)))`;
+
+/**
+ * What a coding-agent key never carries, whoever holds it: a label a person chose for `r`, or for
+ * the entry it was made from, or any label on its client, project or project's client (or theirs).
+ * A list's own default label is no person's choice; Money's permission gates those lists.
+ */
+export const keyWithheld = (sql: SqlClient.SqlClient) =>
+  sql`(${chosenLabel(sql, "r")} OR ${parentLabelled(sql)} OR EXISTS (SELECT 1 FROM kin_records f
+    WHERE f.org_id = r.org_id AND f.record_id = ${madeFrom(sql)} AND ${chosenLabel(sql, "f")}))`;
 
 /**
  * Whether an entry is sensitive now: its own label, or its client's, project's or project's

@@ -77,6 +77,7 @@ export function troubleCause(failure: unknown): KinTroubleCause {
       if (cause === "space") return true;
       found ??= cause;
     }
+    if ("_tag" in value && value._tag === "MemoryCheckoutInvalid") found ??= "memory";
     if ("code" in value && NETWORK_CODES.has(value.code)) found ??= "unreachable";
     return (
       ("cause" in value && visit(value.cause)) ||
@@ -96,6 +97,7 @@ export const HELD_CAUSES: ReadonlySet<KinTroubleCause> = new Set([
   "model",
   "program",
   "usage_limit",
+  "memory",
 ]);
 
 /**

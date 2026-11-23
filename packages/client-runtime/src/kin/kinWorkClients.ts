@@ -1182,13 +1182,16 @@ const KIN_CLIENTS_TABS: ReadonlyArray<{
   { id: "projects", label: KIN_PROJECTS.title },
 ];
 
-/** The views this person has: Deals only at the owner level or with Clients on. */
-export const kinClientsTabs = (seesClients: boolean) =>
-  seesClients ? KIN_CLIENTS_TABS : KIN_CLIENTS_TABS.filter((held) => held.id !== "deals");
+/**
+ * The views this person has. `seesDeals`: the owner level or Clients on, while the company runs
+ * deals (`kinSectionOn`).
+ */
+export const kinClientsTabs = (seesDeals: boolean) =>
+  seesDeals ? KIN_CLIENTS_TABS : KIN_CLIENTS_TABS.filter((held) => held.id !== "deals");
 
 /** The view to show for an asked one: a view they lack, such as Deals, shows Clients. */
-export const kinClientsTabShown = (tab: KinClientsTab, seesClients: boolean): KinClientsTab =>
-  kinClientsTabs(seesClients).some((held) => held.id === tab) ? tab : "clients";
+export const kinClientsTabShown = (tab: KinClientsTab, seesDeals: boolean): KinClientsTab =>
+  kinClientsTabs(seesDeals).some((held) => held.id === tab) ? tab : "clients";
 
 const KIN_PROJECTS_NO_CLIENT = "Not for a client";
 

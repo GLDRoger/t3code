@@ -16,6 +16,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_PROMISES, kinDealPromises } from "@t3tools/client-runtime/kin/kinPromises";
+import { kinSectionOffLine } from "@t3tools/client-runtime/kin/kinShell";
 import {
   KIN_WORK_NEW_COPY,
   kinWorkAssignees,
@@ -66,6 +67,7 @@ import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinDealPage, useKinDealSend } from "./state/useKinDeals";
+import { useKinShell } from "./state/useKinShell";
 import { useKinInvoiceFromQuote } from "./state/useKinMoneyAnswers";
 import { useKinWorkDirectory, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinWatchLine } from "./KinWatchLine";
@@ -141,6 +143,8 @@ function KinDealBody(
   const now = new Date(useNowMinuteMs());
   const send = useKinDealSend(target);
   const ownerLevel = useKinIsOwnerLevel(environmentId);
+  // Deals switched off: the deal still opens by its link, and says so.
+  const offLine = kinSectionOffLine(useKinShell(environmentId), "deals", ownerLevel);
   const canProject = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));
   const canInvoice = useAtomValue(kinClient.workInvoiceFromQuote.permissionAtom(environmentId));
   const invoice = useKinInvoiceFromQuote(target);
@@ -210,6 +214,11 @@ function KinDealBody(
       refresh={{ accessibilityLabel: "Refresh", onPress: props.onRefresh }}
       {...(deal.can.move ? { menus: [moveMenu] } : {})}
     >
+      {offLine === null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {offLine}
+        </Text>
+      )}
       <View className="gap-1 px-2">
         <View className="flex-row items-center gap-2">
           <View className="rounded-full bg-subtle px-2 py-0.5">

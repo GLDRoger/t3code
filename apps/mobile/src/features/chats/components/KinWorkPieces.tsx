@@ -203,8 +203,8 @@ export function KinWorkPrivateMark(props: { readonly label?: string }) {
 
 const TICK_LABEL = { done: KIN_WORK_COPY.done, reopen: KIN_WORK_COPY.reopen } as const;
 
-/** An urgent task's mark: a flag, and on Android (whose set has none) the alert mark. */
-export const KIN_URGENT_SYMBOL: AppSymbolName = { ios: "flag.fill", android: "error" };
+/** An urgent task's mark: a flag, as on web. */
+export const KIN_URGENT_SYMBOL: AppSymbolName = "flag.fill";
 
 export function KinWorkTaskRow(props: {
   readonly row: KinWorkRowView;

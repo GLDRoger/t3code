@@ -28,6 +28,14 @@ export type Lane = {
   readonly quiet?: true;
 };
 
+/** The same turn-level reply/notice split, for a live reply or a recorded wake-up. */
+export const turnAsked = (sql: SqlClient.SqlClient, row: "e" | "w") =>
+  sql`EXISTS (SELECT 1 FROM kin_events h
+    WHERE h.org_id = ${sql.literal(`${row}.org_id`)}
+      AND h.agent_id = ${sql.literal(`${row}.agent_id`)}
+      AND h.wakeup_id = ${sql.literal(`${row}.wakeup_id`)}
+      AND h.tag IN ('chat.message', 'widget.action', 'chat.reaction'))`;
+
 /** The lane of a running wake-up, from its stored events; `kin_ask` posts its card there too. */
 export const laneFor = Effect.fn("KinReplyBridge.lane")(
   function* (input: {
@@ -42,9 +50,7 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
     // A worker's report answers where its work was asked for, as a notice: it owes no reply.
     const [first] = yield* sql<{ chatId: string; asked: number }>`
       SELECT json_extract(json, '$.chatId') AS "chatId",
-        EXISTS (SELECT 1 FROM kin_events h WHERE h.org_id = e.org_id AND h.agent_id = e.agent_id
-          AND h.wakeup_id = e.wakeup_id
-          AND h.tag IN ('chat.message', 'widget.action', 'chat.reaction')) AS asked
+        ${turnAsked(sql, "e")} AS asked
       FROM kin_events e
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
         AND tag IN ${sql.in(CHAT_ANSWER_TAGS)} AND json_extract(json, '$.chatId') IS NOT NULL

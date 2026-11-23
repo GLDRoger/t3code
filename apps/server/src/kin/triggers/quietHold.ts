@@ -179,6 +179,33 @@ export const personHoldNow = Effect.fn("KinQuiet.holdNow")(function* (
 });
 
 /**
+ * How long after someone asks the answer still rings in their quiet hours. Long work they started
+ * before bed is often what they stay up for; past this, it waits in their notifications.
+ */
+const ANSWER_RINGS_WITHIN_MS = 3 * 60 * MINUTE_MS;
+
+/**
+ * Whether an answer to what `personId` asked at `askedAt` rings in their quiet hours now: their
+ * switch is on (`answers_ring`, on unless set off), and they asked within these same quiet hours
+ * or less than `ANSWER_RINGS_WITHIN_MS` ago.
+ */
+export const answerRings = Effect.fn("KinQuiet.answerRings")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  askedAt: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [person] = yield* sql<{ ring: number | null }>`SELECT answers_ring AS ring FROM kin_people
+    WHERE org_id = ${orgId} AND person_id = ${personId}`;
+  if (person === undefined || person.ring === 0) return false;
+  const now = yield* Clock.currentTimeMillis;
+  if (now - askedAt < ANSWER_RINGS_WITHIN_MS) return true;
+  const { zone, quiet } = yield* personRule(orgId, personId);
+  const night = { zone, quiet };
+  return heldAt(night, askedAt) === "quiet" && freeAt(night, askedAt) === freeAt(night, now);
+});
+
+/**
  * Stores a server line for `personId` when it lands in their quiet hours or outside the hours
  * they hold to, to post when those end; `false` when it should post now. Held lines survive a
  * restart.

@@ -9,6 +9,7 @@ import {
   type KinDealRow,
   type KinDealsResult,
   type KinDealStagesResult,
+  type KinShell,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -60,6 +61,75 @@ vi.mock(import("./useKinMoney"), async (importOriginal) => ({
   ...(await importOriginal()),
   useKinRates: () => null,
   useKinHomeCurrency: () => "EUR",
+  useKinAskAgent: () => null,
+  useKinLists: (() => ({ state: { _tag: "loading" } })) as never,
+}));
+
+// The company's sections as `kin.access.me` has them; the switch's save writes them here.
+const shell = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  return {
+    held: null as unknown,
+    canSet: true,
+    answer: null as null | ((sent: unknown) => unknown),
+    listeners,
+    put(next: unknown) {
+      this.held = next;
+      for (const listener of listeners) listener();
+    },
+  };
+});
+vi.mock(import("./useKinShell"), async () => {
+  const { useSyncExternalStore } = await import("react");
+  const { kinSectionOn, kinShellSwitched } = await import("@t3tools/client-runtime/kin/kinShell");
+  const useKinShell = () =>
+    useSyncExternalStore(
+      (listener) => {
+        shell.listeners.add(listener);
+        return () => shell.listeners.delete(listener);
+      },
+      () => shell.held,
+    ) as never;
+  return {
+    useKinShell,
+    useKinSectionOn: ((_: unknown, id: "deals") => kinSectionOn(useKinShell(), id)) as never,
+    useKinSectionCanSet: () => shell.canSet,
+    useKinSectionSet: (() => async (held: never, id: "deals", on: boolean) => {
+      const sent = kinShellSwitched(held, id, on);
+      const answer = shell.answer?.(sent);
+      if (answer !== undefined) return answer;
+      const value = { rev: sent.rev + 1, sections: sent.shell.sections };
+      shell.put(value);
+      return { ok: true, value };
+    }) as never,
+  };
+});
+vi.mock(import("./useKinWork"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinWork: (() => ({
+    _tag: "ready",
+    live: { seq: 1, summary: { parties: {} } },
+    stale: false,
+  })) as never,
+  useKinWorkDirectory: (() => ({
+    names: { people: new Map(), agents: new Map(), me: null, zone: null },
+  })) as never,
+}));
+vi.mock(import("./useKinPlaces"), () => ({
+  useKinDestinations: (() => ({
+    destinations: ["chats", "tasks", "money", "clients", "docs"],
+    known: true,
+  })) as never,
+}));
+vi.mock(import("./useKinOwnerLevel"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinOwnerLevel: () => true,
+  useKinSeesClients: () => true,
+}));
+// The Clients tab's own list is its tests'; here it is only where a hidden Deals tab lands.
+vi.mock(import("./KinWorkClients"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  KinWorkClientsList: (() => <p>Every client</p>) as never,
 }));
 
 import "~/index.css";
@@ -68,6 +138,7 @@ import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { KinDealPage } from "./KinDealPage";
 import { KinDealsTab } from "./KinDeals";
 import { KinDealStagesSettings } from "./KinDealsSetting";
+import { KinPlaceView } from "./KinPlaceView";
 
 const zoya = KinPersonId.make("person-zoya");
 const target = { environmentId: EnvironmentId.make("env-1"), orgId: KinOrgId.make("org-1") };
@@ -102,6 +173,10 @@ const deal = (n: number, title: string, over: Partial<KinDealRow> = {}): KinDeal
   closedAt: null,
   ...over,
 });
+const dealsOn: KinShell = {
+  rev: 0,
+  sections: ["clients", "deals", "money", "invoices", "docs"].map((id) => ({ id, on: true })),
+};
 const step = (title: string, late: boolean) => ({
   key: KinRecordKey.make(`T-${title.length}`),
   title,
@@ -114,6 +189,9 @@ function setup(input: {
   readonly deals?: ReadonlyArray<KinDealRow>;
   readonly page?: KinDealPageValue;
   readonly stages?: KinDealStagesResult;
+  /** The company's sections; Deals on unless given. */
+  readonly shell?: KinShell | undefined;
+  readonly canSet?: boolean;
 }) {
   state.deals = {
     stages,
@@ -130,6 +208,9 @@ function setup(input: {
   state.update = vi.fn();
   state.setStages = vi.fn();
   state.setQuietDays = vi.fn();
+  shell.put(input.shell === undefined ? dealsOn : input.shell);
+  shell.canSet = input.canSet ?? true;
+  shell.answer = null;
   return {
     move: state.move,
     update: state.update,
@@ -694,5 +775,123 @@ describe("the deals figures", () => {
     await expect.element(page.getByText("No deals yet")).toBeVisible();
     await expect.element(page.getByText(/^Won in/)).not.toBeInTheDocument();
     await expect.element(page.getByText("This week in deals")).not.toBeInTheDocument();
+  });
+});
+
+describe("We run deals", () => {
+  const held: KinDealStagesResult = { stages, rev: 5, can: true, open: {}, quietDays: 14 };
+  const off: KinShell = {
+    rev: 1,
+    sections: dealsOn.sections.map((one) => (one.id === "deals" ? { ...one, on: false } : one)),
+  };
+  const place = () => (
+    <KinPlaceView
+      {...target}
+      place="clients"
+      tab="deals"
+      onTab={() => {}}
+      record={null}
+      onGo={() => {}}
+      openKey={null}
+      onOpenKey={() => {}}
+      dialog={null}
+      onDialog={() => {}}
+      docLink={() => ""}
+      onLeave={() => {}}
+    />
+  );
+
+  it("hides the Deals tab under Clients once switched off, and brings it back on", async () => {
+    setup({ stages: held, deals: [deal(1, "Clinic rollout")] });
+    await page.viewport(1440, 900);
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinDealStagesSettings {...target} />
+        {place()}
+      </AppAtomRegistryProvider>,
+      { router: "/kin/env-1/org-1/clients" },
+    );
+    const tab = page.getByRole("button", { name: "Deals", exact: true });
+    await expect.element(tab).toBeVisible();
+    await expect.element(page.getByText("Clinic rollout").first()).toBeVisible();
+    const toggle = page.getByRole("switch", { name: "We run deals" });
+    await expect.element(toggle).toBeChecked();
+
+    await userEvent.click(toggle);
+    await expect.element(toggle).not.toBeChecked();
+    await expect.element(tab).not.toBeInTheDocument();
+    await expect.element(page.getByText("Every client")).toBeVisible();
+    await expect
+      .element(
+        page.getByText("Deals is off, so these settings aren't used until you turn it back on."),
+      )
+      .toBeVisible();
+    // The stages stay there to change while off.
+    await expect.element(page.getByRole("button", { name: "Edit stage: New" })).toBeVisible();
+
+    await userEvent.click(toggle);
+    await expect.element(toggle).toBeChecked();
+    await expect.element(tab).toBeVisible();
+  });
+
+  it("says what turning it off does, that nothing is deleted, and that older phone apps keep Deals", async () => {
+    setup({ stages: held });
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinDealStagesSettings {...target} />
+      </AppAtomRegistryProvider>,
+    );
+    await expect
+      .element(
+        page.getByText(
+          "Turning this off hides Deals for everyone in the company: the Deals tab, deals on client and project pages, deals in search, and Kin's deal nudges. Nothing is deleted, and you can turn it back on at any time.",
+        ),
+      )
+      .toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          "Teammates on an older version of the phone app keep seeing Deals until they update.",
+        ),
+      )
+      .toBeVisible();
+  });
+
+  it("shows a teammate no switch, and an older host none either", async () => {
+    setup({ stages: { ...held, can: false }, canSet: false });
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinDealStagesSettings {...target} />
+      </AppAtomRegistryProvider>,
+    );
+    await expect.element(page.getByText("Deciding").or(page.getByText("Proposal"))).toBeVisible();
+    expect(page.getByRole("switch").elements()).toHaveLength(0);
+    shell.canSet = true;
+    shell.put(undefined);
+    expect(page.getByRole("switch").elements()).toHaveLength(0);
+  });
+
+  it("keeps the switch where it was when someone changed it since, and says so", async () => {
+    setup({ stages: held, shell: dealsOn });
+    shell.answer = () => {
+      shell.put(off);
+      return {
+        ok: false,
+        changed: true,
+        problem:
+          "This changed while you were looking at it. Here is the latest, so check it and try again.",
+      };
+    };
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinDealStagesSettings {...target} />
+      </AppAtomRegistryProvider>,
+    );
+    const toggle = page.getByRole("switch", { name: "We run deals" });
+    await userEvent.click(toggle);
+    await expect
+      .element(page.getByText("This changed while you were looking at it.", { exact: false }))
+      .toBeVisible();
+    await expect.element(toggle).not.toBeChecked();
   });
 });

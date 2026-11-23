@@ -20,6 +20,7 @@ import { ListSection } from "../../components/ui/ListSection";
 import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { KinSectionSwitch } from "./components/KinSectionSwitch";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { useKinDealQuietDaysSet, useKinDealStages, useKinDealStagesSet } from "./state/useKinDeals";
@@ -51,6 +52,7 @@ function DealStages(props: KinWorkTarget) {
     return <StagesEditor key={state.value.rev} {...props} held={state.value} onRefresh={refresh} />;
   return (
     <KinWorkFrame title={KIN_DEAL_STAGES.title} onBack={() => navigation.goBack()}>
+      <KinSectionSwitch {...props} id="deals" />
       {state._tag === "loading" ? (
         <KinWorkLoading label="Loading stages" />
       ) : state._tag === "failed" ? (
@@ -97,6 +99,7 @@ function StagesEditor(
         onBack={() => navigation.goBack()}
         refresh={{ accessibilityLabel: "Refresh", onPress: props.onRefresh }}
       >
+        <KinSectionSwitch {...props} id="deals" />
         <ListSection title={KIN_DEAL_STAGES.stages} footer={KIN_DEAL_STAGES.readOnly}>
           {held.stages.map((stage) => (
             <ListRowLayout key={stage.id} label={stage.name} />
@@ -186,6 +189,7 @@ function StagesEditor(
         disabled: busy || !dirty || invalid !== null,
       }}
     >
+      <KinSectionSwitch {...props} id="deals" />
       <Text textRole="footnote" className="px-2 text-foreground-muted">
         {KIN_DEAL_STAGES.detail}
       </Text>

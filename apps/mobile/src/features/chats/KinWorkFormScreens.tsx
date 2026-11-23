@@ -69,7 +69,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { useRef, useState } from "react";
-import { View } from "react-native";
+import { Alert, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -98,6 +98,7 @@ import { KinCountryFirstField } from "./components/KinCountryFirst";
 import { KinDayField } from "./components/KinDayField";
 import { KinPageFold } from "./components/KinPageFold";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./state/useKinMoney.ts";
+import { useKinSectionOn } from "./state/useKinShell";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
 import { KinCameFromFields, KinTagFields, useKinMarketing } from "./KinMarketing";
@@ -331,6 +332,7 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
                   orgId,
                   ...kinClientCreateInput(change.draft),
                   deal: kinPartyFirstDeal(change.draft.name, dealt.current),
+                  acceptDealLeftOut: true,
                   clientRequestId: requestId,
                 },
               })
@@ -368,13 +370,14 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
   };
   const newProspect = editing === null && draft.kind === "prospect";
   const keepsContacts = props.can?.contacts ?? props.can?.edit ?? !member;
+  const dealsOn = useKinSectionOn(environmentId, "deals");
   const india = kinIndiaFields(useKinCompanyCountry(props));
   const gstinNote = kinClientGstinNote(draft);
   const placeId = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
   const placeLabel = draft.abroad
     ? COPY.party.placeAbroad
     : draft.placeOfSupply || COPY.party.placeNone;
-  const takesDeal = editing === null && draft.kind !== "vendor";
+  const takesDeal = editing === null && draft.kind !== "vendor" && dealsOn;
   const amountBad = takesDeal && amount.trim() !== "" && money === null;
   const openClient = (to: KinRecordKey) => {
     leave();
@@ -392,9 +395,9 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
       return navigation.goBack();
     }
     const made = outcome.value;
-    const added = made === null ? undefined : "deal" in made ? made.party.key : made.key;
-    if (added === undefined) navigation.goBack();
-    else openClient(added);
+    if (made === null) return navigation.goBack();
+    openClient("party" in made ? made.party.key : made.key);
+    if ("dealLeftOut" in made) Alert.alert("Client saved", `Deal left out: ${made.dealLeftOut}`);
   };
   const sourceField = (
     <KinCameFromFields

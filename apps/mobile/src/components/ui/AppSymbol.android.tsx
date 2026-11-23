@@ -68,6 +68,8 @@ import IconFileText from "@tabler/icons-react-native/IconFileText";
 import IconFileDiff from "@tabler/icons-react-native/IconFileDiff";
 import IconFilter from "@tabler/icons-react-native/IconFilter";
 import IconFilterFilled from "@tabler/icons-react-native/IconFilterFilled";
+import IconFlag from "@tabler/icons-react-native/IconFlag";
+import IconFlagFilled from "@tabler/icons-react-native/IconFlagFilled";
 import IconFlask from "@tabler/icons-react-native/IconFlask";
 import IconFolder from "@tabler/icons-react-native/IconFolder";
 import IconFolderOpen from "@tabler/icons-react-native/IconFolderOpen";
@@ -225,6 +227,8 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   "exclamationmark.circle": IconAlertCircle,
   eye: IconEye,
   "eye.slash": IconEyeOff,
+  flag: IconFlag,
+  "flag.fill": IconFlagFilled,
   flask: IconFlask,
   folder: IconFolder,
   "folder.badge.plus": IconFolderPlus,

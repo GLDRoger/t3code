@@ -9,6 +9,13 @@ import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { assert, it } from "@effect/vitest";
 
+import {
+  OrchestratorMcpCapabilitiesResult,
+  OrchestratorMcpDelegateTaskResult,
+  type ServerProvider,
+  ServerSettings,
+} from "@t3tools/contracts";
+import { helperModelRefusal } from "../../apps/server/src/kin/lead/leadModels.ts";
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
 import { EVENING_RULE, MORNING_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import {
@@ -736,3 +743,63 @@ it.effect("gives a Kin rubric's judge each call whole up to its bound, and says 
     assert.notInclude(t3, "[cut:");
   }),
 );
+
+const decodeCapabilities = Schema.decodeUnknownSync(OrchestratorMcpCapabilitiesResult);
+const decodeStarted = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
+const defaultSettings = Schema.decodeSync(ServerSettings)({});
+
+it("answers the helper-model cases as T3's tools and Kin's gate really do", () => {
+  const lines = NodeFS.readFileSync(new URL("cases/kin-owed.ndjson", import.meta.url), "utf8")
+    .split("\n")
+    .filter((line) => line.includes('"kin/helper-models"'));
+  const cases = lines.map(
+    (line) =>
+      JSON.parse(line) as {
+        setup: {
+          mocks: Record<string, unknown>;
+          priorTurns?: ReadonlyArray<{
+            toolCalls?: ReadonlyArray<{
+              tool: string;
+              input: { target?: unknown };
+              result: unknown;
+            }>;
+          }>;
+        };
+      },
+  );
+  assert.lengthOf(cases, 3);
+  const strict = { onExcessProperty: "error" } as const;
+  for (const { setup } of cases) {
+    const offered = decodeCapabilities(setup.mocks.orchestrator_capabilities, strict);
+    const started = setup.mocks.delegate_task as {
+      $when: ReadonlyArray<{ result: unknown }>;
+      $else: unknown;
+    };
+    for (const answer of [...started.$when.map((rule) => rule.result), started.$else])
+      decodeStarted(answer, strict);
+    // The host the mock describes, as Kin's gate would read it.
+    const providers = offered.providers.map((provider) => ({
+      instanceId: provider.providerInstanceId,
+      driver: provider.driverKind,
+      enabled: true,
+      installed: true,
+      models: provider.models.map((model) => ({
+        slug: model.id,
+        name: model.label ?? model.id,
+        isCustom: false,
+      })),
+    })) as unknown as ReadonlyArray<ServerProvider>;
+    for (const call of (setup.priorTurns ?? []).flatMap((turn) => turn.toolCalls ?? []))
+      if (call.tool === "delegate_task")
+        assert.strictEqual(
+          call.result,
+          helperModelRefusal({
+            settings: defaultSettings,
+            providers,
+            devServer: false,
+            callerInstanceId: offered.inheritedProviderInstanceId ?? undefined,
+            target: call.input.target as never,
+          }),
+        );
+  }
+});

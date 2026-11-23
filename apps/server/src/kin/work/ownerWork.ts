@@ -426,6 +426,8 @@ export const list = Effect.fn("KinWork.list")(function* (
     owner: { _tag: "person", personId: connection.personId },
     open: true,
     ...(input.limit === undefined ? {} : { limit: input.limit }),
+    ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+    ...(input.project === undefined ? {} : { project: input.project }),
   };
   return yield* throughConnection(people, connection, input.orgId, (viewer) =>
     listAs(viewer, held, { order: "dueFirst", withoutSensitive: true, orAlsoOn: true }),

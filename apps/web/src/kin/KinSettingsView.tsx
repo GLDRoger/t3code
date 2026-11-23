@@ -64,6 +64,7 @@ import {
 import { kinSettingsPageHolding } from "./kinSettingsSearch";
 import { KinTeamView } from "./KinTeamView";
 import { useKinHost } from "./useKinHost";
+import { useKinSectionOn } from "./useKinShell";
 import { useKinOwnerLevel, useKinPlaceReach, useKinSeesClients } from "./useKinOwnerLevel";
 import { KinAgentsPage } from "./settings/KinAgentsPage";
 import { KinAppearancePage } from "./settings/KinAppearancePage";
@@ -114,7 +115,10 @@ const THIS_COMPUTER = [
 
 function useKinSettingsGroups(environmentId: EnvironmentId): ReadonlyArray<KinSettingsGroup> {
   const ownerLevel = useKinOwnerLevel(environmentId);
-  const deals = useKinSeesClients(environmentId);
+  // A teammate's Deals page goes with Deals; the owner level keeps it, for its switch.
+  const seesClients = useKinSeesClients(environmentId);
+  const dealsOn = useKinSectionOn(environmentId, "deals");
+  const deals = seesClients && dealsOn;
   // The owner alone, as the host gates `kin.recommendations.*`: a co-owner sees none of it.
   const recommendations = useAtomValue(
     kinClient.recommendationAskAgain.permissionAtom(environmentId),
@@ -344,7 +348,7 @@ function KinSettingsPageBody(props: {
     case "profile":
       return <KinProfilePage {...target} />;
     case "notifications":
-      return <KinSettingsNotifications />;
+      return <KinSettingsNotifications {...target} />;
     case "appearance":
       return <KinAppearancePage />;
     case "team":

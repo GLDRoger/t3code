@@ -131,6 +131,9 @@ const nameIn = (name: string, narration: string) => {
   return found.length / wanted.length;
 };
 
+const hasNumber = (text: string, number: string) =>
+  squashed(number).length >= 4 && squashed(text).includes(squashed(number));
+
 const dayNumber = (day: string) =>
   Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10))) / DAY_MS;
 const daysBetween = (from: string, to: string) => dayNumber(to) - dayNumber(from);
@@ -182,12 +185,8 @@ const invoiceCandidate = (
   }
   const number = invoice.number ?? invoice.key;
   const numbered =
-    [invoice.number, invoice.key]
-      .filter((one): one is string => one !== null && squashed(one).length >= 4)
-      .some((one) => squashed(row.description).includes(squashed(one))) ||
-    (row.reference !== null &&
-      squashed(number).length >= 4 &&
-      squashed(row.reference).includes(squashed(number)));
+    [invoice.number, invoice.key].some((one) => one !== null && hasNumber(row.description, one)) ||
+    (row.reference !== null && hasNumber(row.reference, number));
   if (numbered) {
     score += 35;
     why.push("invoice number in the narration");
@@ -259,6 +258,7 @@ const expenseCandidate = (
   row: StatementRow,
   expense: ExpenseCandidate,
   currency: string,
+  transfer = false,
 ): Candidate | undefined => {
   const sign = row.direction === "credit" ? -1 : 1;
   const foreign =
@@ -279,6 +279,15 @@ const expenseCandidate = (
     score += Math.round(30 * named);
     why.push("vendor named");
   }
+  const refund = row.direction === "credit";
+  const numbered =
+    refund &&
+    (hasNumber(row.description, expense.key) ||
+      (row.reference !== null && hasNumber(row.reference, expense.key)));
+  if (numbered) {
+    score += 35;
+    why.push("expense reference in the narration");
+  }
   if (day !== null && Math.abs(daysBetween(day, row.date)) <= 3) {
     score += 10;
     why.push("same days");
@@ -298,7 +307,7 @@ const expenseCandidate = (
     key: expense.key,
     title: expense.title,
     fit: foreign ? "foreign" : "exact",
-    score,
+    score: refund && (transfer || (named < 0.5 && !numbered)) ? PROPOSED : score,
     why,
   };
 };
@@ -511,6 +520,7 @@ export const matchRows = (
 ): ReadonlyArray<RowMatch> => {
   const taken = new Set<string>();
   const results = rows.map((row) => {
+    const suggestion = suggest(row, input);
     const candidates = (
       row.direction === "credit"
         ? [
@@ -520,7 +530,9 @@ export const matchRows = (
             ...(input.payments ?? []).map((payment) =>
               paymentCandidate(row, payment, input.currency),
             ),
-            ...input.expenses.map((expense) => expenseCandidate(row, expense, input.currency)),
+            ...input.expenses.map((expense) =>
+              expenseCandidate(row, expense, input.currency, suggestion.action === "transfer"),
+            ),
           ]
         : input.expenses.map((expense) => expenseCandidate(row, expense, input.currency))
     )
@@ -528,7 +540,7 @@ export const matchRows = (
       .toSorted((left, right) => right.score - left.score || left.key.localeCompare(right.key))
       .slice(0, 5);
     return {
-      row,
+      suggestion,
       candidates: candidates.length > 0 ? candidates : openInvoices(row, input),
     };
   });
@@ -540,7 +552,7 @@ export const matchRows = (
     .toSorted((left, right) => right.score - left.score || left.index - right.index);
   const settled = new Map<number, RowMatch>();
   for (const { index } of order) {
-    const { row, candidates } = results[index]!;
+    const { suggestion, candidates } = results[index]!;
     const open = candidates.filter((one) => !taken.has(one.recordId));
     const [best, next] = open;
     const clear =
@@ -551,11 +563,11 @@ export const matchRows = (
     settled.set(index, {
       group: clear ? "matched" : open.length > 0 ? "choose" : "unmatched",
       candidates: clear ? [best] : open,
-      suggestion: suggest(row, input),
+      suggestion,
     });
   }
   return results.map(
-    ({ row }, index) =>
-      settled.get(index) ?? { group: "unmatched", candidates: [], suggestion: suggest(row, input) },
+    ({ suggestion }, index) =>
+      settled.get(index) ?? { group: "unmatched", candidates: [], suggestion },
   );
 };

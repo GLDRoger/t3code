@@ -104,6 +104,8 @@ export interface KinMemoryOriginView {
   readonly line: string;
   /** The person's exact words, when the owner can still open the message. */
   readonly quote: string | null;
+  /** The chat and message the line opens, only while the owner can open that message now. */
+  readonly opens: NonNullable<NonNullable<KinMemoryListItem["provenance"]>["message"]> | null;
 }
 
 const dayFormat = kinWhenFormat("date");
@@ -133,6 +135,7 @@ function originOf(
   const from = item.provenance;
   if (from === undefined) return null;
   const quote = from.quote?.trim() || null;
+  const opens = from.message ?? null;
   const said = quote === null || from.saidAt === null ? null : dayOf(from.saidAt, now);
   const saved = dayOf(from.recordedAt, now);
   if (from.trust === "agent") {
@@ -144,11 +147,12 @@ function originOf(
       kind: "worked_out",
       line: `Worked out by ${agent}${day === null ? "" : `, ${day}`}`,
       quote,
+      opens,
     };
   }
   const savedOn = saved === null ? "" : `, saved ${saved}`;
   if (from.trust === "external")
-    return { kind: "outside", line: `From outside your chats${savedOn}`, quote };
+    return { kind: "outside", line: `From outside your chats${savedOn}`, quote, opens };
   const place = item.from === null ? "" : ` in ${item.from.chatName}`;
   const who =
     from.trust === "owner"
@@ -172,6 +176,7 @@ function originOf(
         ? `From ${who ?? "you"}${place}${savedOn}`
         : `${who === null ? "You" : capitalised(who)} said${place}${said === null ? "" : `, ${said}`}`,
     quote,
+    opens,
   };
 }
 const capitalised = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);

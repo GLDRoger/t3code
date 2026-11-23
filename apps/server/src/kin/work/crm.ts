@@ -51,6 +51,7 @@ import {
   crmSeenBy,
   crmSeesAs,
   KIN_OWNER_LEVEL,
+  keyedAs,
   personSees,
   personSeesAs,
   seenBy,
@@ -505,9 +506,12 @@ export const parties = Effect.fn("KinCrm.parties")(function* (
 
 /** What of a client's contacts this viewer reads in Clients, over `ct`. */
 const contactSeen = (sql: Sql, viewer: KinViewer) =>
-  viewer._tag === "ownerLevel"
-    ? sql`1 = 1`
-    : sql.and(viewer.people.map((person) => crmSeesAs(sql, person, "ct")));
+  sql.and([
+    ...(viewer._tag === "ownerLevel"
+      ? []
+      : viewer.people.map((person) => crmSeesAs(sql, person, "ct"))),
+    keyedAs(sql, viewer, "ct"),
+  ]);
 
 /** The Clients filter as SQL over `c`, for the list and for the contacts at what it shows. */
 export const partiesWhere = Effect.fn("KinCrm.partiesWhere")(function* (
@@ -530,6 +534,7 @@ export const partiesWhere = Effect.fn("KinCrm.partiesWhere")(function* (
     ...(viewer._tag === "ownerLevel"
       ? []
       : viewer.people.map((person) => crmSeesAs(sql, person, "c"))),
+    keyedAs(sql, viewer, "c"),
     input.active === false ? sql`c.state != 'open'` : sql`c.state = 'open'`,
     ...(input.kind === undefined ? [] : [sql`c.category = ${input.kind}`]),
     ...(input.prospect === true ? [sql`c.category = 'prospect'`] : []),
@@ -588,6 +593,7 @@ export const projects = Effect.fn("KinCrm.projects")(function* (
     ...(viewer._tag === "ownerLevel"
       ? []
       : viewer.people.map((person) => personSeesAs(sql, person, "p"))),
+    keyedAs(sql, viewer, "p"),
     sql`p.state = ${input.state ?? "open"}`,
     ...(input.partyId === undefined ? [] : [sql`p.party_id = ${input.partyId}`]),
     ...(input.campaign === true ? [sql`p.category = 'campaign'`] : []),
@@ -895,6 +901,7 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
       ...(viewer._tag === "ownerLevel"
         ? []
         : viewer.people.map((person) => crmSeesAs(sql, person, "p"))),
+      keyedAs(sql, viewer, "p"),
     ],
     "target",
     KIN_RECORDS_PAGE_CAP,
