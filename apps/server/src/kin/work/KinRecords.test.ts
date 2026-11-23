@@ -5009,7 +5009,7 @@ it.effect("a teammate's prompt withholds a team list entry's sensitive number", 
       owner: { _tag: "agent", agentId: lead },
     });
     const chatId = KinChatId.make("lead-chat");
-    const event = {
+    const event = decodeEvent({
       _tag: "record.changed",
       orgId,
       agentId: lead,
@@ -5027,7 +5027,8 @@ it.effect("a teammate's prompt withholds a team list entry's sensitive number", 
         personId: arjun.personId,
         memberId: KinMemberId.make("lead-chat-mate"),
       },
-    } satisfies Parameters<typeof workEventText>[0]["event"];
+    });
+    if (event._tag !== "record.changed") return assert.fail(event._tag);
     const text = (ownerOnly: boolean) =>
       workEventText({ orgId, event, ownerOnly, wakeupId: "wake" });
     const shared = (yield* text(false)) ?? "";
