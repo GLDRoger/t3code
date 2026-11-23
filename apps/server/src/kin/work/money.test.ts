@@ -8,9 +8,12 @@ import * as KinShell from "../shell/KinShell.ts";
 import {
   EnvironmentId,
   KinAgentId,
+  KinListDefinition,
+  KinListField,
   KinOrgId,
   KinPersonId,
   KinRecordKey,
+  KinWritableListFieldType,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -19,6 +22,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -2763,6 +2767,20 @@ describe("the owner's taps", () => {
         legacy?.fields.map(({ type }) => type),
         ["text", "text", "link", "date"],
       );
+      // A client built before number and yes/no reads the definition, each value as text.
+      const previous = Schema.decodeUnknownEffect(
+        Schema.Struct({
+          ...KinListDefinition.fields,
+          fields: Schema.Array(
+            Schema.Struct({
+              ...KinListField.fields,
+              type: KinWritableListFieldType,
+              link: Schema.optional(Schema.Literals(["clients", "projects"])),
+            }),
+          ),
+        }),
+      );
+      yield* previous(legacy);
       assert.strictEqual(legacy?.fields.find(({ key }) => key === "client")?.link, "clients");
       assert.notProperty(legacy, "remindOn");
       assert.notProperty(legacy, "check");
@@ -2774,6 +2792,7 @@ describe("the owner's taps", () => {
       );
 
       const current = yield* read(["number", "yesno", "list", "remindOn", "check"]);
+      assert.include(yield* Effect.flip(previous(current)), { _tag: "SchemaError" });
       assert.deepStrictEqual(
         current?.fields.map(({ type }) => type),
         ["number", "yesno", "link", "link", "date"],
