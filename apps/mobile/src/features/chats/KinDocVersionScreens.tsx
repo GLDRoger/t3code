@@ -7,6 +7,7 @@ import {
   KIN_DOCS,
   KIN_SEARCH,
   kinDocDiffSummary,
+  kinDocSameWords,
   kinSearchHint,
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
@@ -157,7 +158,7 @@ function KinDocChanges(
         <Notice tone="danger" message={restore.problem} onDismiss={restore.dismiss} />
       )}
       {diff.patch.trim() === "" ? (
-        <EmptyState variant="plain" {...KIN_DOCS.noChanges} />
+        <EmptyState variant="plain" {...kinDocSameWords(diff)} />
       ) : !source && fromVersion !== null && before.state._tag === "loading" ? (
         <KinWorkLoading label="Loading changes" />
       ) : !source && before.state._tag === "ready" ? (
