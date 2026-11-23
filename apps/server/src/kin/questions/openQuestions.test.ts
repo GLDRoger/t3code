@@ -428,7 +428,7 @@ it.effect("a question is asked once, and its default is taken once at its day", 
           clientActionId: "late",
         })
         .pipe(Effect.flip);
-      assert.include(late, { reason: "invalid_state" });
+      assert.include(late, { reason: "widget_changed" });
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "default_taken");
       // The turn Kin starts tells Finance to do it, and that Kin tells Rhea.
       const due = yield* Questions.dueTurnText(KinOrgId.make(orgId), questionId, TUE_1930);
@@ -4088,7 +4088,7 @@ it.effect(
               }),
             ),
           ),
-          "invalid_state",
+          "widget_changed",
         );
         assert.strictEqual(yield* settle(orgId, TUE_1930 + 60_000), 0);
         assert.strictEqual((yield* questionRow(sql, questionId)).state, "dismissed");
@@ -4355,7 +4355,7 @@ for (const [build, sparse] of [
                 yield* Effect.flip(
                   chats.act(owner, tap(yield* widget(original.widgetId), "old-revision")),
                 ),
-                { reason: "invalid_state" },
+                { reason: "widget_changed" },
               );
             }
             assert.strictEqual(
@@ -4383,4 +4383,83 @@ for (const [build, sparse] of [
             );
           }).pipe(Effect.provide(layer)),
         ),
+    );
+
+for (const state of [
+  "answered",
+  "withdrawn",
+  "default_taken",
+  "dismissed",
+  "missing",
+  "expired",
+] as const)
+  for (const actionId of ["choose", "dismiss"] as const)
+    it.effect(`settles an open-looking ${state} question card on ${actionId}`, () =>
+      Effect.andThen(
+        TestClock.setTime(PAYMENT_TEST_START),
+        Effect.gen(function* () {
+          const { sql, chats, owner, orgId, chatOf, wake, services } = yield* ambermill;
+          const repo = Context.get(services, KinChatRepository);
+          yield* wake("chief");
+          const asked = yield* callAs("chief", "kin_ask", paymentAsk);
+          assert.isTrue(asked.ok, JSON.stringify(asked.value));
+          const questionId = String(asked.value.question);
+          const widgetId = KinWidgetId.make(String(asked.value.widgetId));
+          const card = { orgId, widgetId };
+          const present = yield* Clock.currentTimeMillis;
+          if (state === "missing")
+            yield* sql`DELETE FROM kin_questions WHERE org_id = ${orgId} AND question_id = ${questionId}`;
+          else if (state === "expired")
+            yield* sql`UPDATE kin_widgets SET state_json = json_remove(state_json, '$.untilAnswered'),
+              updated_at = ${new Date(present - 86_400_000).toISOString()}
+              WHERE org_id = ${orgId} AND widget_id = ${widgetId}`;
+          else
+            yield* sql`UPDATE kin_questions SET state = ${state}, closed_at = ${present}
+              WHERE org_id = ${orgId} AND question_id = ${questionId}`;
+          const stale = Option.getOrThrow(yield* repo.getWidget(card));
+          const request = {
+            widgetId,
+            revision: stale.revision,
+            actionId,
+            ...(actionId === "choose" ? { value: "option-1" } : {}),
+            clientActionId: "terminal-tap",
+          };
+          const tap = chats.act(owner, request);
+          if (actionId === "dismiss") {
+            const anchor = yield* tap;
+            assert.strictEqual(anchor.messageId, stale.messageId);
+            assert.deepStrictEqual(yield* tap, anchor);
+          } else assert.include(yield* Effect.flip(tap), { reason: "widget_changed" });
+
+          const closed = Option.getOrThrow(yield* repo.getWidget(card));
+          assert.isNotNull(closed.closedAt);
+          assert.strictEqual(closed.revision, stale.revision + 1);
+          assert.deepStrictEqual(closed.awaiting, []);
+          assert.deepInclude(closed.state, {
+            answer: null,
+            outcome: {
+              title: state === "expired" ? "Question expired" : "Question closed",
+              text:
+                state === "expired"
+                  ? "This question expired without an answer."
+                  : state === "missing"
+                    ? "This question is no longer available."
+                    : "This question was already settled.",
+            },
+          });
+          assert.notInclude(
+            (yield* repo.listOpenWaiting(owner)).map((item) => item.widgetId),
+            widgetId,
+          );
+          assert.lengthOf(
+            yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId}
+              AND chat_id = ${chatOf("chief")} AND kind = 'widget_action'`,
+            0,
+          );
+          assert.lengthOf(
+            yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'question-dismissed:%'`,
+            0,
+          );
+        }).pipe(Effect.provide(layer)),
+      ),
     );

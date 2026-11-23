@@ -1010,24 +1010,46 @@ const make = Effect.gen(function* () {
     if (!(yield* readable(member, widget.messageId))) return yield* notFound;
     return { widget, member };
   });
-  const restoreChoiceForTap = Effect.fn("KinChatService.restoreChoiceForTap")(function* (
-    widget: KinWidget,
-  ) {
+  const choiceForTap = Effect.fn("KinChatService.choiceForTap")(function* (widget: KinWidget) {
     const { state } = widget;
-    if (
-      widget.type !== "choice" ||
-      !Predicate.hasProperty(state, "untilAnswered") ||
-      state.untilAnswered !== true ||
-      (Predicate.hasProperty(state, "question") && Predicate.hasProperty(state, "detail"))
-    )
-      return widget;
     const row = yield* questionForCard(widget).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.mapError(cardTapError),
     );
-    if (row === undefined) return widget;
-    const question = row.raised === 1 ? `${STILL_OPEN}${row.question}`.slice(0, 240) : row.question;
-    return { ...widget, state: { question, detail: null, ...state } };
+    const expired = ChoiceCard.choiceExpired(widget, yield* Clock.currentTimeMillis);
+    const timed = Predicate.hasProperty(state, "untilAnswered") && state.untilAnswered === true;
+    // Long-lived Undo and leaver cards use untilAnswered too, with their own posting keys.
+    const orphan =
+      row === undefined &&
+      timed &&
+      (yield* repo.getMessage(widget)).pipe(
+        Option.exists((message) =>
+          ["kin-ask:", "kin-ask-for:", "kin-asked-held:", "kin-question-raise:"].some((prefix) =>
+            message.clientMessageId?.startsWith(prefix),
+          ),
+        ),
+      );
+    const outcome: KinChoiceOutcome | undefined = expired
+      ? { title: "Question expired", text: "This question expired without an answer." }
+      : orphan
+        ? { title: "Question closed", text: "This question is no longer available." }
+        : row !== undefined && row.state !== "open"
+          ? { title: "Question closed", text: "This question was already settled." }
+          : undefined;
+    if (
+      timed &&
+      (row !== undefined || orphan) &&
+      (!Predicate.hasProperty(state, "question") || !Predicate.hasProperty(state, "detail"))
+    ) {
+      const question =
+        row === undefined
+          ? "Question"
+          : row.raised === 1
+            ? `${STILL_OPEN}${row.question}`.slice(0, 240)
+            : row.question;
+      return { widget: { ...widget, state: { question, detail: null, ...state } }, outcome };
+    }
+    return { widget, outcome };
   });
   /** `readable`, and for a shared turn nothing below the chat's history floor, as `read` gives it. */
   const callerReads = Effect.fn("KinChatService.callerReads")(function* (
@@ -1051,6 +1073,26 @@ const make = Effect.gen(function* () {
       return updated;
     }
     return item;
+  });
+  const closeTerminalChoice = Effect.fn("KinChatService.closeTerminalChoice")(function* (
+    widget: KinWidget,
+    outcome: KinChoiceOutcome,
+  ) {
+    const card = yield* decodeChoiceCard(widget.state).pipe(Effect.mapError(cardTapError));
+    const at = yield* now;
+    const closed = yield* repo.updateWidget({
+      ...widget,
+      audience: "chat",
+      state: { ...card, outcome },
+      awaiting: [],
+      expectedRevision: widget.revision,
+      closedAt: at,
+      updatedAt: at,
+    });
+    for (const item of yield* repo.waitingForWidget(closed)) yield* resolve(item, "closed");
+    yield* sql.afterCommit(
+      hub.publish({ type: "widget.updated", orgId: widget.orgId, widget: closed }),
+    );
   });
   const add = Effect.fn("KinChatService.add")(function* (identity: Identity, input: WaitingInput) {
     const member = yield* memberFor(identity, input.chatId);
@@ -1211,12 +1253,18 @@ const make = Effect.gen(function* () {
       Effect.ignore,
     );
   };
-  /** `act`'s transaction; a refused tap's card answers then run after its rollback. */
-  const refusedAfter = <A, E, R>(
-    effect: Effect.Effect<A, E, R>,
+  /** A tap can refuse after rolling back, or after committing the closure of a settled card. */
+  const refusedAfter = <E, R>(
+    effect: Effect.Effect<KinMessage | KinChatError, E, R>,
     caller: PersonCaller,
     input: KinWidgetsActInput,
-  ) => transaction(effect).pipe(Effect.tapError((error) => refusedTap(caller, input, error)));
+  ) =>
+    transaction(effect).pipe(
+      Effect.tapError((error) => refusedTap(caller, input, error)),
+      Effect.flatMap((result) =>
+        isKinChatError(result) ? Effect.fail(result) : Effect.succeed(result),
+      ),
+    );
   // A tap, or an owner's yes/no reaction mapped to its option: the same checks and compare-and-set.
   const actOn = Effect.fn("KinChatService.actOn")(function* (
     identity: PersonIdentity,
@@ -1307,7 +1355,14 @@ const make = Effect.gen(function* () {
         reason: "widget_changed",
         message: "This card changed or was answered. Look at it again.",
       });
-    if (widget.closedAt !== null && choice?.card.answer == null) return yield* invalidState;
+    if (widget.closedAt !== null) {
+      if (choice !== null)
+        return yield* new KinChatError({
+          reason: "widget_changed",
+          message: "This question was already settled.",
+        });
+      return yield* invalidState;
+    }
     if (widget.type === "deferral" && request.actionId === "undo") {
       const card = yield* decodeDeferralCard(widget.state).pipe(
         Effect.mapError(() => invalidState),
@@ -1531,7 +1586,15 @@ const make = Effect.gen(function* () {
     const message = () =>
       requireRecord(repo.getMessage({ orgId: identity.orgId, messageId: widget.messageId }));
     // A repeat from another device or a retry finds it already as asked: nothing more happens.
-    if (undo ? card.dismissed === undefined && widget.closedAt === null : mine)
+    if (
+      undo
+        ? card.dismissed === undefined && widget.closedAt === null
+        : mine ||
+          (widget.closedAt !== null &&
+            card.answer === null &&
+            card.send === undefined &&
+            card.outcome !== undefined)
+    )
       return yield* message();
     if (widget.revision !== request.revision)
       return yield* new KinChatError({
@@ -1550,7 +1613,6 @@ const make = Effect.gen(function* () {
           message: "This question was already settled.",
         });
       if (!widget.awaiting.includes(identity.personId)) return yield* notAllowed;
-      if (ChoiceCard.choiceExpired(widget, nowMs)) return yield* invalid("This question expired.");
       const at = DateTime.formatIso(DateTime.makeUnsafe(nowMs));
       yield* onDismiss({
         orgId: identity.orgId,
@@ -3600,9 +3662,28 @@ const make = Effect.gen(function* () {
     act: Effect.fn("KinChatService.act")(function* (identity, input) {
       identity = yield* personFor(identity, input);
       const request = yield* decodeAct(input).pipe(Effect.mapError(() => invalidState));
-      const target = yield* tapTarget(identity, request.widgetId);
-      const { member } = target;
-      const widget = yield* restoreChoiceForTap(target.widget);
+      const { widget: stored, member } = yield* tapTarget(identity, request.widgetId);
+      let widget = stored;
+      if (
+        widget.type === "choice" &&
+        widget.closedAt === null &&
+        widget.awaiting.includes(identity.personId) &&
+        (request.actionId === KIN_CHOICE_CARD_ACTION ||
+          request.actionId === KIN_CHOICE_DISMISS_ACTION)
+      ) {
+        const choice = yield* choiceForTap(widget);
+        widget = choice.widget;
+        const dismiss = request.actionId === KIN_CHOICE_DISMISS_ACTION;
+        if (
+          choice.outcome !== undefined &&
+          (!dismiss || !Predicate.hasProperty(widget.state, "send"))
+        ) {
+          yield* closeTerminalChoice(widget, choice.outcome);
+          if (dismiss) return yield* requireRecord(repo.getMessage(widget));
+          // The refusal is sent after commit so the card closes even though the tap did not answer it.
+          return new KinChatError({ reason: "widget_changed", message: choice.outcome.text });
+        }
+      }
       if (
         widget.type === "choice" &&
         (request.actionId === KIN_CHOICE_DISMISS_ACTION ||
@@ -3636,7 +3717,10 @@ const make = Effect.gen(function* () {
           Effect.provideService(SqlClient.SqlClient, sql),
         ))
       )
-        return yield* new KinChatError({ reason: "not_allowed", message: KIN_ASKER_ONLY_REFUSAL });
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: KIN_ASKER_ONLY_REFUSAL,
+        });
       // Reminders and scheduled tasks act for the owner, so only the owner taps them, except a
       // reminder in someone's own direct chat: theirs to finish or snooze.
       if (
