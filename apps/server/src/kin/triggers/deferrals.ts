@@ -3,6 +3,7 @@ import {
   type KinAuthor,
   KinChatId,
   KinDeferralCard,
+  type KinDeferralCardAction,
   KinEvent,
   KinEventId,
   KinMemoryItemId,
@@ -18,18 +19,14 @@ import {
 } from "@t3tools/contracts";
 import * as KinShell from "../shell/KinShell.ts";
 import { looksLikeRecordReference, resolveSections } from "../shell/sections.ts";
-import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import { stringify } from "yaml";
 
 import { KinChatHub } from "../chat/KinChatHub.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
 import type { TextClock } from "../work/companyProfile.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -37,13 +34,8 @@ import * as KinLevels from "../lead/KinLevels.ts";
 import { cardAudience } from "../lead/LeadDelivery.ts";
 import { type DeferralSource, firingOrigin } from "./deferralOrigin.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
-import * as Memory from "../memory/Memory.ts";
-import * as MemoryCache from "../memory/MemoryCache.ts";
-import * as MemoryWriter from "../memory/MemoryWriter.ts";
 import { memoryDateMillis } from "../memory/frontMatter.ts";
-import { deferralCardActions } from "../widgets/deferralCard.ts";
 import { GithubLinkState, githubRef } from "./deferralGithub.ts";
-import { verifyOwnerTap } from "./ownerCheck.ts";
 
 export const HEADS_UP_MS = 30 * 60_000;
 export const GRACE_MS = 30 * 60_000;
@@ -99,6 +91,12 @@ export const DeferralSnapshot = Schema.Struct({
   graceEndsAt: Schema.optional(Schema.Number),
   /** The re-armed due fire's instant while a reminder is `snoozed`. */
   snoozedUntil: Schema.optional(Schema.Number),
+  /** The item's chat and source event, kept when its decision card is posted, for [Start now]. */
+  source: Schema.optional(
+    Schema.Struct({ chat: Schema.optional(KinChatId), sourceEvent: Schema.optional(KinEventId) }),
+  ),
+  /** The due time memory still holds after a [Monday] tap moved the run. */
+  movedFrom: Schema.optional(Schema.Number),
 });
 export type DeferralSnapshot = typeof DeferralSnapshot.Type;
 export const deferralSnapshot = (
@@ -153,8 +151,9 @@ export function snapshotChanges(
   return changes;
 }
 
+// Starts ask first until LEAD-11's stop switch exists (`KinDeferralStopSwitch`).
 const then: Record<OnDue, string> = {
-  start: "I'll start then.",
+  start: "I'll ask you to start it then.",
   remind: "I'll remind you then.",
   ask: "I'll ask you then.",
   chase: "I'll chase it then.",
@@ -180,7 +179,7 @@ export const lateNote = (dueAt: number, now: number, clock: TextClock) =>
   now - dueAt > LATE_NOTE_MS ? ` This was due at ${ownerTime(dueAt, now, clock)}.` : "";
 
 /** Next Monday 09:00 owner time, strictly after today, as a front-matter date-time. */
-function nextMondayDue(now: number, timeZone: string): string {
+export function nextMondayDue(now: number, timeZone: string): string {
   const today = DateTime.makeZonedUnsafe(now, { timeZone });
   const weekDay = DateTime.toParts(today).weekDay;
   const ahead = (8 - weekDay) % 7 || 7;
@@ -194,7 +193,7 @@ function nextMondayDue(now: number, timeZone: string): string {
 }
 
 // LEAD-11's stop switch isn't built; until it is every org reads as stopped, so
-// silence never starts work.
+// silence never starts work. A person's own [Start now] is not silence: it doesn't read this.
 export const KinDeferralStopSwitch = Context.Reference<{
   readonly isStopped: (orgId: KinOrgId) => Effect.Effect<boolean>;
 }>("t3/kin/triggers/deferrals/KinDeferralStopSwitch", {
@@ -431,7 +430,7 @@ export const makeDeferralStarter = Effect.gen(function* () {
     yield* cards.write({
       orgId,
       itemId,
-      state: { ...input.card, text: `Started ${input.card.title}.`, phase: "started" },
+      state: { ...input.card, text: `Started ${input.card.title}.`, phase: "started", actions: [] },
       chatId: null,
       now,
     });
@@ -439,143 +438,6 @@ export const makeDeferralStarter = Effect.gen(function* () {
   });
 });
 
-export class DeferralError extends Schema.TaggedError<DeferralError>()("DeferralError", {
-  orgId: KinOrgId,
-  cause: Schema.Defect(),
-}) {}
-
-const decodeCard = Schema.decodeUnknownEffect(KinDeferralCard);
-const decodeAction = Schema.decodeUnknownEffect(
-  Schema.Struct({ actionId: Schema.Literals(deferralCardActions), value: KinMemoryItemId }),
-);
-type DeferralAction = (typeof deferralCardActions)[number];
-// [Undo] never reaches the dispatcher: `KinChatService.act` applies it in the tap's transaction.
-const actionsFor = (phase: KinDeferralCard["phase"]): ReadonlyArray<DeferralAction> =>
-  phase === undefined
-    ? ["change", "remind"]
-    : phase === "started"
-      ? []
-      : ["start_now", "monday", "cancel"];
-
-export class Deferrals extends Context.Service<
-  Deferrals,
-  {
-    /**
-     * Applies a verified owner tap on a deferral card. [Change] hands the item to the lead;
-     * [Just remind me], [Monday] and [Cancel] stage memory writes; [Start now] starts.
-     */
-    readonly act: (
-      orgId: KinOrgId,
-      wakeupId: string,
-      eventId: KinEventId,
-    ) => Effect.Effect<
-      {
-        readonly chatId: KinChatId;
-        readonly itemId: KinMemoryItemId;
-        readonly action: DeferralAction;
-        readonly due?: string;
-      },
-      DeferralError,
-      MemoryWriter.MemoryWriter
-    >;
-  }
->()("t3/kin/triggers/deferrals") {}
-
-const make = Effect.gen(function* () {
-  const memory = yield* Memory.Memory;
-  const cache = yield* MemoryCache.MemoryCache;
-  const sql = yield* SqlClient.SqlClient;
-  const repo = yield* Repository.KinChatRepository;
-  const start = yield* makeDeferralStarter;
-  return Deferrals.of({
-    act: Effect.fn("Deferrals.act")((orgId, wakeupId, eventId) =>
-      Effect.gen(function* () {
-        const writer = yield* MemoryWriter.MemoryWriter;
-        const tap = yield* verifyOwnerTap(orgId, wakeupId, eventId, "deferral").pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.provideService(Repository.KinChatRepository, repo),
-        );
-        const action = yield* decodeAction(tap.action);
-        const card = yield* decodeCard(tap.widget.state);
-        if (
-          card.itemId !== action.value ||
-          tap.widget.widgetId !== deferralWidgetId(orgId, card.itemId)
-        )
-          return yield* Effect.fail("unknown_item" as const);
-        if (!actionsFor(card.phase).includes(action.actionId))
-          return yield* Effect.fail("stale_card" as const);
-        const result = { chatId: tap.chatId, itemId: card.itemId, action: action.actionId };
-        if (action.actionId === "change") return result;
-        const item = yield* memory.readItemQuietly(orgId, card.itemId, "triggers");
-        if (item.head.kind !== "deferral" || item.head.status !== "open")
-          return yield* Effect.fail("not_open" as const);
-        const { orgId: _org, path, ...frontMatter } = item.head;
-        const stage = (fields: Partial<typeof frontMatter>) =>
-          writer.stage(orgId, wakeupId, {
-            path,
-            content: `---\n${stringify({ ...frontMatter, ...fields })}---\n${item.body}`,
-            sourceEventId: eventId,
-          });
-        switch (action.actionId) {
-          case "undo":
-            return yield* Effect.fail("stale_card" as const);
-          case "remind":
-            if (item.head.on_due !== "remind") yield* stage({ on_due: "remind" });
-            return result;
-          case "cancel":
-            yield* stage({ status: "cancelled" });
-            return result;
-          case "monday": {
-            const due = nextMondayDue(
-              yield* Clock.currentTimeMillis,
-              yield* cache.ownerTimeZone(orgId),
-            );
-            yield* stage({ due });
-            return { ...result, due };
-          }
-          case "start_now": {
-            const dueAt = Date.parse(card.dueAt);
-            if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
-              return yield* Effect.fail("stopped" as const);
-            const lead = yield* deferralLead(sql, orgId, item.head);
-            if (
-              lead === undefined ||
-              !(
-                startsAtLevel(lead.level) ||
-                (yield* ownerLevel(orgId, tap.provenance.personId).pipe(
-                  Effect.provideService(SqlClient.SqlClient, sql),
-                ))
-              )
-            )
-              return yield* Effect.fail("below_l2" as const);
-            const now = yield* Clock.currentTimeMillis;
-            const started = yield* sql.withTransaction(
-              Effect.gen(function* () {
-                const [run] = yield* sql<{ state: string }>`SELECT state FROM kin_deferral_runs
-                  WHERE org_id = ${orgId} AND item_id = ${card.itemId} AND due_at = ${dueAt}
-                  ORDER BY item_id`;
-                if (run === undefined || !["heads_up", "asked", "grace"].includes(run.state))
-                  return false;
-                return yield* start({
-                  orgId,
-                  itemId: card.itemId,
-                  dueAt,
-                  card,
-                  provenance: tap.provenance,
-                  at: now,
-                  now,
-                  from: run.state,
-                  item: item.head,
-                });
-              }),
-            );
-            if (!started) return yield* Effect.fail("not_pending" as const);
-            return result;
-          }
-        }
-      }).pipe(Effect.mapError((cause) => new DeferralError({ orgId, cause }))),
-    ),
-  });
-});
-
-export const layer = Layer.effect(Deferrals, make).pipe(Layer.provide(MemoryCache.layer));
+/** What a decision card offers: [Start now] only when the tap has what a start needs. */
+export const decisionActions = (startable: boolean): ReadonlyArray<KinDeferralCardAction> =>
+  startable ? ["start_now", "monday", "cancel"] : ["monday", "cancel"];

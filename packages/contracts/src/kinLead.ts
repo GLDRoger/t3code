@@ -549,11 +549,15 @@ export const KinDeferralCard = Schema.Struct({
   dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
   text: Schema.String,
-  // Absent on the confirm card ([Undo] [Change] [Just remind me]); heads_up and asked offer
-  // [Start now] [Monday] [Cancel]; started offers nothing.
+  // Absent on the confirm card; heads_up and asked are decisions; started is done.
   phase: Schema.optional(Schema.Literals(["heads_up", "asked", "started"])),
   graceEndsAt: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
   askedBy: Schema.optional(KinCardAsker),
+  /**
+   * The taps the host takes on this card now (`KIN_DEFERRAL_CARD_ACTIONS` ids), for whoever may
+   * act on it. Plain strings, so a later action never fails an older client's decode.
+   */
+  actions: Schema.optional(Schema.Array(Schema.String)),
 });
 export type KinDeferralCard = typeof KinDeferralCard.Type;
 

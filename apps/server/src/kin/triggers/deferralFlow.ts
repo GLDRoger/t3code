@@ -59,6 +59,7 @@ import {
   ownerDateTime,
   ownerTime,
   snapshotChanges,
+  decisionActions,
   deferralLead,
   deferredSectionOff,
   startsAtLevel,
@@ -529,7 +530,7 @@ const make = Effect.gen(function* () {
       const github = yield* readGithubLinks(orgId, item?.links ?? snapshot.links);
       gates.push(...snapshotChanges(snapshot, item, github));
       if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
-        gates.push("the stop switch is on");
+        gates.push("Kin asks before every start for now");
     }
     // A reminder is the lead's to write when a wake-up can run; budget is read outside the writer.
     const chatOwn = onDue === "remind" ? yield* sharedChatOf(sql, orgId, item) : undefined;
@@ -581,6 +582,20 @@ const make = Effect.gen(function* () {
         ) {
           return "section_off" as const;
         }
+        // A reminder never asks, so it needs no lead here.
+        const lead = onDue === "remind" ? undefined : yield* deferralLead(sql, orgId, item);
+        // A tap's start needs the item's chat and source event, which the run keeps from here on.
+        const startable = item !== undefined && lead !== undefined;
+        const kept: DeferralSnapshot =
+          item === undefined
+            ? snapshot
+            : {
+                ...snapshot,
+                source: {
+                  ...(item.chat === undefined ? {} : { chat: item.chat }),
+                  ...(item.source_event === undefined ? {} : { sourceEvent: item.source_event }),
+                },
+              };
         const card = (phase: KinDeferralCard["phase"], text: string, graceEndsAt?: number) => ({
           itemId,
           title,
@@ -589,28 +604,37 @@ const make = Effect.gen(function* () {
           text,
           phase,
           ...(graceEndsAt === undefined ? {} : { graceEndsAt: iso(graceEndsAt) }),
+          actions: phase === "started" ? [] : decisionActions(startable),
         });
-        const setState = (state: string) =>
-          sql`UPDATE kin_deferral_runs SET state = ${state}, updated_at = ${now}
+        const setState = Effect.fn("KinDeferralFlow.setState")(function* (
+          state: string,
+          next: DeferralSnapshot = kept,
+        ) {
+          const json = yield* encodeSnapshot(next);
+          yield* sql`UPDATE kin_deferral_runs SET state = ${state}, snapshot_json = ${json},
+              updated_at = ${now}
             WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
               AND state = ${run.state}`;
+        });
         const post = Effect.fn("KinDeferralFlow.post")(function* (state: KinDeferralCard) {
           const chatId = yield* cardChat(orgId, item);
           yield* cards.write({ orgId, itemId, state, chatId, now });
         });
         const ask = Effect.fn("KinDeferralFlow.ask")(function* (why: ReadonlyArray<string>) {
           const reason = why.length === 0 ? "" : ` I won't start it on my own: ${why.join("; ")}.`;
+          const taps = startable
+            ? "Tap Start now to start it, Monday to move it, or Cancel."
+            : "Tap Monday to move it, or Cancel.";
           yield* post(
             card(
               "asked",
-              `${title} is due at ${ownerTime(dueAt, now, clock)}. Start it, move it to Monday, or cancel it?${reason}${lateNote(dueAt, now, clock)}`,
+              `${title} is due at ${ownerTime(dueAt, now, clock)}. ${taps}${reason}${lateNote(dueAt, now, clock)}`,
             ),
           );
           yield* setState("asked");
         });
 
         if (onDue === "start") {
-          const lead = yield* deferralLead(sql, orgId, item);
           if (lead === undefined) reasons.push("there is no active agent");
           else if (!startsAtLevel(lead.level)) reasons.push("starting work isn't open to me here");
         }
@@ -640,11 +664,7 @@ const make = Effect.gen(function* () {
               updated_at = max(updated_at, ${now})
               WHERE org_id = ${orgId} AND trigger_id = ${deferralTriggerId(itemId, "due")}
                 AND enabled = 1`;
-            const graced = yield* encodeSnapshot({ ...snapshot, graceEndsAt: graceEnd });
-            yield* sql`UPDATE kin_deferral_runs SET snapshot_json = ${graced}
-              WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
-                AND state = ${run.state}`;
-            yield* setState("grace");
+            yield* setState("grace", { ...kept, graceEndsAt: graceEnd });
           } else {
             const started = yield* start({
               orgId,

@@ -76,7 +76,12 @@ interface StoredTrigger {
   readonly nextRunAt: number | null;
 }
 interface Stored {
-  readonly run: { readonly state: string; readonly dueAt: number | null; readonly onDue: string };
+  readonly run: {
+    readonly state: string;
+    readonly dueAt: number | null;
+    readonly onDue: string;
+    readonly movedFrom: number | null;
+  };
   readonly triggers: Map<DeferralPhase, StoredTrigger>;
 }
 
@@ -86,10 +91,14 @@ const triggerCurrent = (runAt: number | undefined, row: StoredTrigger | undefine
     ? row === undefined || (!row.enabled && row.nextRunAt === null)
     : row?.enabled === true && row.runAt === runAt;
 
+// A [Monday] tap moves the run, not memory: it holds while memory keeps the due it moved from.
+const sameDue = (plan: DeferralPlan, stored: Stored) =>
+  stored.run.dueAt === plan.dueAt || stored.run.movedFrom === plan.dueAt;
+
 // An Undo or a lead's cancel holds while the item is open at that due time; once memory
 // records the cancel, the run disarms and its card closes.
 const isUndone = (plan: DeferralPlan, stored: Stored | undefined) =>
-  stored?.run.state === "undone" && plan.armed && stored.run.dueAt === plan.dueAt;
+  stored?.run.state === "undone" && plan.armed && sameDue(plan, stored);
 
 const isCurrent = (plan: DeferralPlan, stored: Stored | undefined) =>
   isUndone(plan, stored) ||
@@ -102,7 +111,7 @@ const isCurrent = (plan: DeferralPlan, stored: Stored | undefined) =>
     (plan.armed
       ? stored !== undefined &&
         stored.run.state !== "disarmed" &&
-        stored.run.dueAt === plan.dueAt &&
+        sameDue(plan, stored) &&
         stored.run.onDue === plan.onDue
       : stored === undefined || stored.run.state === "disarmed"));
 
@@ -140,13 +149,14 @@ const make = Effect.gen(function* () {
       state: string;
       dueAt: number | null;
       onDue: string;
+      movedFrom: number | null;
       triggerId: string | null;
       schedule: string | null;
       enabled: number | null;
       nextRunAt: number | null;
     }>`
       SELECT r.item_id AS "itemId", r.state, r.due_at AS "dueAt", r.on_due AS "onDue",
-        t.trigger_id AS "triggerId", t.schedule_json AS schedule,
+        json_extract(r.snapshot_json, '$.movedFrom') AS "movedFrom", t.trigger_id AS "triggerId", t.schedule_json AS schedule,
         t.enabled, t.next_run_at AS "nextRunAt"
       FROM kin_deferral_runs r
       LEFT JOIN kin_triggers t ON t.org_id = r.org_id
@@ -159,7 +169,7 @@ const make = Effect.gen(function* () {
       let entry = stored.get(row.itemId);
       if (entry === undefined) {
         entry = {
-          run: { state: row.state, dueAt: row.dueAt, onDue: row.onDue },
+          run: { state: row.state, dueAt: row.dueAt, onDue: row.onDue, movedFrom: row.movedFrom },
           triggers: new Map(),
         };
         stored.set(row.itemId, entry);
@@ -248,6 +258,7 @@ const make = Effect.gen(function* () {
         zone: timeZone,
         locale: yield* textLocale(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       }),
+      actions: ["undo"],
     };
     // Only kin_defer items name a chat; other deferrals arm without a card. A remind or ask for
     // one person needs none: the lead's own reply already said when. A shared chat's has one.

@@ -96,7 +96,8 @@ import * as SqlError from "effect/sql/SqlError";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { validateState } from "../widgets/registry.ts";
-import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferralCard.ts";
+import * as DeferralCard from "../widgets/deferralCard.ts";
+import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import * as ChartCard from "../widgets/chartCard.ts";
 import * as VisualCard from "../widgets/visualCard.ts";
 import * as CardPlans from "../widgets/cardPlans.ts";
@@ -683,6 +684,8 @@ const make = Effect.gen(function* () {
   // Absent where no attachments directory exists; a send with files is then refused.
   const attachmentStore = yield* Effect.serviceOption(KinAttachmentStore);
   const stop = yield* Effect.serviceOption(KinStop);
+  // A deferral card's [Start now] hands its work to the lead's queue in the tap's transaction.
+  const queue = yield* Effect.serviceOption(KinEventQueue);
   /** For a stream event; left out of a chat that was never cleared. */
   const clearedAt = (clearedSeq: number) => (clearedSeq > 0 ? { clearedSeq } : {});
   const sql = yield* SqlClient.SqlClient;
@@ -1316,7 +1319,11 @@ const make = Effect.gen(function* () {
       widget.type === KIN_SOCIAL_PACK_CARD
         ? yield* SocialCards.describePackTap(widget, request.actionId)
         : null;
-    const tap = choice ?? reminder ?? scheduled ?? socialTap ?? packTap;
+    const deferral =
+      widget.type === "deferral" && request.actionId !== "undo"
+        ? yield* DeferralCard.describeDeferralTap(widget, request.actionId, request.value)
+        : null;
+    const tap = choice ?? reminder ?? scheduled ?? socialTap ?? packTap ?? deferral;
     // An option that runs a fixed action runs it for a tap only, never for a reaction.
     const sealed =
       choice === null
@@ -1347,7 +1354,9 @@ const make = Effect.gen(function* () {
       ...(request.value === undefined ? {} : { value: request.value }),
       ...(tap === null ? {} : { text: tap.text }),
       // The server finished this tap itself, so it doesn't wake the lead.
-      ...((reminder ?? scheduled ?? socialTap ?? packTap)?.wake === false || runs
+      ...((reminder ?? scheduled ?? socialTap ?? packTap)?.wake === false ||
+      runs ||
+      deferral !== null
         ? { handled: true }
         : {}),
     }).pipe(Effect.mapError(() => invalidState));
@@ -1414,6 +1423,29 @@ const make = Effect.gen(function* () {
       });
       yield* sql.afterCommit(
         hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
+      );
+    }
+    if (deferral !== null) {
+      if (Option.isNone(queue))
+        return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+      yield* DeferralCard.applyDeferralTap(
+        widget,
+        deferral,
+        {
+          personId: identity.personId,
+          memberId: member.memberId,
+          // By company access, not chat role: an agent's owner who is a teammate starts nothing.
+          owner: yield* ownerLevel(identity.orgId, identity.personId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ),
+        },
+        yield* Clock.currentTimeMillis,
+      ).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(Repository.KinChatRepository, repo),
+        Effect.provideService(Hub.KinChatHub, hub),
+        Effect.provideService(KinEventQueue, queue.value),
+        Effect.mapError(dismissError),
       );
     }
     const ownerCard = socialTap !== null || packTap !== null;
@@ -3759,13 +3791,16 @@ const make = Effect.gen(function* () {
         !(widget.type === "reminder" && (yield* ownDirectChat(identity, widget.chatId)))
       )
         return yield* notAllowed;
-      // Any writing member of the card's chat may undo; the other taps wait on the dispatcher.
+      // Any writing member of the card's chat may undo; its other taps are its asker's (checked
+      // above), the owner's or a co-owner's.
       if (
         widget.type === "deferral" &&
         request.actionId !== "undo" &&
-        (!owning ||
-          !deferralCardActionsReady ||
-          !deferralCardActions.some((action) => action === request.actionId))
+        asker === undefined &&
+        !owning &&
+        !(yield* ownerLevel(identity.orgId, identity.personId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ))
       )
         return yield* notAllowed;
       return yield* actOn(identity, member, widget, request, null);
