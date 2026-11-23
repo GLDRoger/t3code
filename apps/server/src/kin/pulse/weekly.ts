@@ -209,8 +209,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
       }>`SELECT r.key, c.title AS client, r.fields_json AS "fieldsJson", r.amount_minor AS minor, r.currency, r.state,
       json_extract(r.fields_json, '$.number') AS number
     FROM kin_records r
-    LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
-    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = COALESCE(r.party_id, p.party_id)
+    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
     WHERE r.org_id = ${orgId} AND r.register_id = 'quotes' AND r.state IN ('open', 'waiting')
       AND ${countedEntry(sql)}
     ORDER BY r.created_at, r.key

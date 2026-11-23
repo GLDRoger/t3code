@@ -1648,7 +1648,19 @@ describe("KinPulse", () => {
         new Map(
           (shown?.byProject ?? []).flatMap((group) => group.facts).map((one) => [one.key, one]),
         );
-      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/001',
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/001')
+        WHERE org_id = ${orgId} AND record_id = 'r-INV-1'`;
+      const unnamed = yield* section();
+      assert.strictEqual(
+        rows(unnamed).get(keys[1]!)?.writeTo,
+        "no client on it, so nobody to write to",
+      );
+      yield* sql`UPDATE kin_records SET fields_json = '{}' WHERE org_id = ${orgId} AND record_id = 'r-K-2'`;
+      const nobody = yield* section();
+      assert.notProperty(nobody, "mailFrom");
+      yield* sql`UPDATE kin_records SET fields_json = '{"email":"anita@lumen.example"}'
+        WHERE org_id = ${orgId} AND record_id = 'r-K-2'`;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json,
         '$.billToName', 'Asha Rao', '$.billToEmail', 'asha@example.com')
         WHERE org_id = ${orgId} AND record_id = 'r-INV-1'`;
       const first = yield* section();
@@ -1672,6 +1684,24 @@ describe("KinPulse", () => {
         { connection: KinConnectionId.make("g-1"), account: "accounts@studio.example" },
       ]);
       assert.notInclude(JSON.stringify(first), "leak");
+      yield* insert({ id: "P-81", list: "projects", partyId: "r-C-1" });
+      yield* sql`UPDATE kin_records SET project_id = 'r-P-81' WHERE org_id = ${orgId} AND record_id = 'r-INV-1'`;
+      const afterProject = yield* section();
+      assert.deepStrictEqual(
+        rows(afterProject).get(keys[1]!)?.writeTo,
+        rows(first).get(keys[1]!)?.writeTo,
+      );
+      assert.strictEqual(rows(afterProject).get(keys[1]!)?.rule, rows(first).get(keys[1]!)?.rule);
+      yield* KinShell.set(orgId, owner, 0, [{ id: "clients", on: false }]);
+      const off = yield* section();
+      assert.deepStrictEqual(rows(off).get(keys[0]!)?.writeTo, {
+        name: "Anita",
+        email: "anita@lumen.example",
+      });
+      const offFacts = (yield* read(at)).facts;
+      const oldClient = keyed(offFacts, "invoice_overdue", "INV-5")[0]!;
+      assert.strictEqual(oldClient.scope.clientTitle, "Lumen");
+      assert.notProperty(oldClient.scope, "clientKey");
 
       // No address on file and no mail connected: each fact says so, once, in plain words.
       yield* sql`UPDATE kin_records SET fields_json = '{}' WHERE org_id = ${orgId} AND record_id = 'r-K-2'`;

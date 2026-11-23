@@ -50,7 +50,7 @@ export const invoiceFromQuote = Effect.fn("KinQuotes.invoiceFrom")(function* (
   const owner = principal(quote.ownerKind, quote.ownerId);
   if (owner === null) return yield* invalid(`${quote.key} has no owner. Nothing was made.`);
   const amount = amountOf(quote);
-  const partyId = yield* billingClientId(orgId, quote);
+  const partyId = billingClientId(quote);
   const billTo = partyId === null ? billedParty(quote, undefined) : undefined;
   const { row } = yield* records.create(orgId, writer, {
     list: "invoices",
@@ -59,7 +59,7 @@ export const invoiceFromQuote = Effect.fn("KinQuotes.invoiceFrom")(function* (
     title: quote.title,
     owner,
     state: "open",
-    ...(quote.partyId === null ? {} : { partyId: quote.partyId }),
+    ...(partyId === null && billTo === undefined ? {} : { partyId }),
     ...(billTo === undefined
       ? {}
       : {

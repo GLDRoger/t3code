@@ -4,7 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { liveConnections } from "../connections/ConnectionRows.ts";
 import { mailProviderOf } from "../connections/mailProviders.ts";
-import { billedParty } from "../work/billTo.ts";
+import { billedParty, billingClientFromProject } from "../work/billTo.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 
@@ -73,7 +73,7 @@ export const headStarts = Effect.fn("KinPulse.headStarts")(function* (
       LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
       LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.register_id = 'clients'
         AND c.record_id = CASE WHEN r.register_id = 'clients' THEN r.record_id
-          ELSE COALESCE(r.party_id, p.party_id) END
+          ELSE ${billingClientFromProject(sql, sql`p.party_id`)} END
       WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(recordIds)}
       ORDER BY r.record_id`).map((row) => [row.recordId, row]),
   );

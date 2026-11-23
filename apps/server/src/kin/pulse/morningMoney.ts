@@ -138,13 +138,12 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
     currency: string | null;
     number: unknown;
     lastAt: number;
-  }>`SELECT r.key, r.title, c.record_id AS "clientId", c.title AS client, r.amount_minor AS minor, r.fields_json AS "fieldsJson",
+  }>`SELECT r.key, r.title, r.party_id AS "clientId", c.title AS client, r.amount_minor AS minor, r.fields_json AS "fieldsJson",
       r.currency, json_extract(r.fields_json, '$.number') AS number,
       COALESCE((SELECT MAX(ch.at) FROM kin_record_changes ch
         WHERE ch.org_id = r.org_id AND ch.record_id = r.record_id), r.updated_at) AS "lastAt"
     FROM kin_records r
-    LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
-    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = COALESCE(r.party_id, p.party_id)
+    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
     WHERE r.org_id = ${orgId} AND r.register_id = 'quotes' AND r.state = 'waiting'
       AND ${countedEntry(sql)} AND ${seen}
     ORDER BY "lastAt", r.key`;

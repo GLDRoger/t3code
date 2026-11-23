@@ -38,7 +38,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
 import { ownerLevelSql } from "../people/KinAccess.ts";
-import { billedParty } from "./billTo.ts";
+import { billedParty, billingClientFromProject } from "./billTo.ts";
 import { fieldList, listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
@@ -342,8 +342,10 @@ export const invoiceDue = (sql: SqlClient.SqlClient) => sql`COALESCE(r.due_at,
   r.date_at + ${DAY_MS} * ${termsDaysSql(
     sql,
     sql`(SELECT json_extract(c.fields_json, '$.terms') FROM kin_records c
-      WHERE c.org_id = r.org_id AND c.register_id = 'clients' AND c.record_id = COALESCE(r.party_id,
-        (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))`,
+      WHERE c.org_id = r.org_id AND c.register_id = 'clients' AND c.record_id = ${billingClientFromProject(
+        sql,
+        sql`(SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)`,
+      )})`,
   )})`;
 
 /** `owedInvoices`' overdue in SQL, for an invoice `r`: counted, issued, a balance left, past due. */
@@ -380,18 +382,17 @@ export const owedInvoices = Effect.fn("KinRecordRows.owedInvoices")(function* (i
     paid: number;
     dueAt: number | null;
     number: unknown;
-  }>`SELECT r.record_id AS "recordId", r.key, r.title, pa.record_id AS "partyId",
+  }>`SELECT r.record_id AS "recordId", r.key, r.title, r.party_id AS "partyId",
       CASE WHEN pa.record_id IS NULL THEN r.fields_json END AS "fieldsJson",
       pa.key AS "partyKey", pa.title AS "partyTitle", r.amount_minor AS minor, r.currency,
       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
       ${invoiceDue(sql)} AS "dueAt", json_extract(r.fields_json, '$.number') AS number
     FROM kin_records r
-    LEFT JOIN kin_records pj ON pj.org_id = r.org_id AND pj.record_id = r.project_id
-    LEFT JOIN kin_records pa ON pa.org_id = r.org_id AND pa.record_id = COALESCE(r.party_id, pj.party_id)
+    LEFT JOIN kin_records pa ON pa.org_id = r.org_id AND pa.record_id = r.party_id
     WHERE r.org_id = ${input.orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
       AND r.state = 'waiting' AND r.amount_minor IS NOT NULL
-      ${input.partyId === undefined ? sql`` : sql`AND pa.record_id = ${input.partyId}`}
+      ${input.partyId === undefined ? sql`` : sql`AND r.party_id = ${input.partyId}`}
       ${input.seen === undefined ? sql`` : sql`AND ${input.seen}`}
     ORDER BY r.due_at, r.key`;
   const zone = yield* ownerZone(input.orgId);

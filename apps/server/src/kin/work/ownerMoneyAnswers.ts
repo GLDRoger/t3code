@@ -394,7 +394,7 @@ export const newInvoice = Effect.fn("KinMoneyAnswers.rpc.newInvoice")(function* 
       "There is no invoice template yet, so Kin can't keep the lines. Nothing was saved. Ask an agent to set one up.",
     );
   const partyId =
-    input.client === undefined ? null : yield* recordOf(input.orgId, input.client, "clients");
+    input.client === undefined ? undefined : yield* recordOf(input.orgId, input.client, "clients");
   const fields =
     input.billTo === undefined
       ? undefined
@@ -423,7 +423,7 @@ export const newInvoice = Effect.fn("KinMoneyAnswers.rpc.newInvoice")(function* 
     title: input.title,
     owner: { _tag: "person", personId: person.personId },
     state: "open",
-    partyId,
+    ...(partyId === undefined ? {} : { partyId }),
     ...(fields === undefined ? {} : { fields }),
     ...(projectId === undefined ? {} : { projectId }),
     dueAt,

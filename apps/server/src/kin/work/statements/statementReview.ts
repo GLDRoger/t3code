@@ -25,6 +25,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlStatement from "effect/sql/Statement";
 
 import { resolveAttachmentPathById } from "../../../attachmentStore.ts";
+import { billedParty } from "../billTo.ts";
 import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../../config.ts";
 import { KinChatHub } from "../../chat/KinChatHub.ts";
@@ -275,8 +276,9 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     paidOn: string;
     note: string;
     client: string | null;
+    fieldsJson: string;
   }>`SELECT p.payment_id AS "paymentId", r.record_id AS "recordId", r.key, r.title, p.currency,
-      p.amount_minor AS "amountMinor", p.paid_on AS "paidOn", p.note, c.title AS client
+      p.amount_minor AS "amountMinor", p.paid_on AS "paidOn", p.note, c.title AS client, r.fields_json AS "fieldsJson"
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
@@ -313,6 +315,8 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
   const payees = yield* partnerPayees(orgId);
   const accounts = yield* sql<{ account: string }>`SELECT DISTINCT account FROM kin_bank_statements
     WHERE org_id = ${orgId} AND account IS NOT NULL ORDER BY account`;
+  const clientName = ({ client, fieldsJson }: { client: string | null; fieldsJson: string }) =>
+    client ?? billedParty({ registerId: "invoices", fieldsJson }, undefined)?.name ?? null;
   return {
     currency: statement.currency,
     withholdsAtSource: regionOf(country)?.withholdsAtSource === true,
@@ -333,11 +337,14 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
             ? tax.minor
             : null,
         issued: day(row.dateAt),
-        client: row.client,
+        client: clientName(row),
         number: fieldText(fields, "number"),
       };
     }),
-    payments,
+    payments: payments.map(({ fieldsJson, ...row }) => ({
+      ...row,
+      client: clientName({ ...row, fieldsJson }),
+    })),
     partners,
     payees,
     // A partner's expense left their own account, never this one; it is repaid instead.

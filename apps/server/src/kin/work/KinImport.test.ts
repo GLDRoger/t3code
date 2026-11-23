@@ -1278,7 +1278,7 @@ describe("KinImport", () => {
       const fields = {
         billToName: "Asha Rao",
         billToAddress: "9 Invented Road",
-        billToTaxNumber: "12345",
+        billToTaxNumber: "29ABCDE1234F1Z5",
         billToPlace: "Invented place",
         billToEmail: "asha@example.com",
       };

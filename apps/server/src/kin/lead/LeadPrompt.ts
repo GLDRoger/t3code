@@ -1915,16 +1915,18 @@ export class KinLeadPrompt extends Context.Service<
             ? yield* Effect.all([
                 moneySummaryForAgent(orgId, now, KIN_OWNER_LEVEL),
                 budgetFlags(orgId, now),
-                KinShell.sectionOnFor(orgId, "invoices").pipe(
-                  Effect.flatMap((on) =>
-                    on
-                      ? setAsideOverdue({ orgId, now, viewer: KIN_OWNER_LEVEL })
-                      : Effect.succeed([]),
-                  ),
+                KinShell.get(orgId).pipe(
+                  Effect.flatMap((shell) => {
+                    const clientsOn = KinShell.sectionOn(shell, "clients");
+                    const setAside = KinShell.sectionOn(shell, "invoices")
+                      ? setAsideOverdue({ orgId, now, viewer: KIN_OWNER_LEVEL, clientsOn })
+                      : Effect.succeed([]);
+                    return Effect.map(setAside, (rows) => ({ clientsOn, rows }));
+                  }),
                 ),
               ]).pipe(
-                Effect.map(([summary, budgets, setAside]) => {
-                  const section = moneySection(summary, summary.timeZone, setAside);
+                Effect.map(([summary, budgets, { clientsOn, rows }]) => {
+                  const section = moneySection(summary, summary.timeZone, rows, clientsOn);
                   return budgets === undefined
                     ? section
                     : { ...section, budgetsOverOrNear: budgets };

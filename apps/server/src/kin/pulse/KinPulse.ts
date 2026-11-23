@@ -261,7 +261,15 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
   const current = shell ?? (yield* KinShell.get(orgId));
   const onDeals = yield* promisesOnDeals(orgId, current);
   const facts = sensed.filter((fact) => !quiet(fact, current, onDeals));
-  if (viewer._tag === "owner") return facts;
+  if (viewer._tag === "owner")
+    return KinShell.sectionOn(current, "clients")
+      ? facts
+      : facts.map((fact): SensedFact => {
+          if (sectionOfSense(fact.sense) !== "invoices" || fact.scope.clientKey === undefined)
+            return fact;
+          const { clientKey: _clientKey, ...scope } = fact.scope;
+          return { ...fact, scope };
+        });
   const deals = yield* dealsHeardBy(orgId, viewer, facts);
   // Who holds a task after their access went is the owner's to settle, not a teammate's.
   const candidates = facts.filter(

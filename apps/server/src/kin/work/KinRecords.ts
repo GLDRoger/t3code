@@ -77,7 +77,14 @@ import {
   shownField,
   TEAM_LIST_RESERVED,
 } from "./lists.ts";
-import { BILL_TO_FIELDS, billToRefusal, billingClientId, hasBillTo } from "./billTo.ts";
+import {
+  BILL_TO_FIELDS,
+  billToNameOf,
+  clearedBillTo,
+  clearsBillTo,
+  hasBillTo,
+  validateBillTo,
+} from "./billTo.ts";
 import {
   addUp,
   askSlip,
@@ -1821,10 +1828,9 @@ const make = Effect.gen(function* () {
       hasBillTo(list) &&
       Object.keys(fields).some((field) => Object.hasOwn(BILL_TO_FIELDS, field))
     ) {
-      const client =
-        party ?? (inherited === null ? undefined : yield* target(orgId, inherited, "clients"));
-      const refusal = billToRefusal(undefined, client, fields, fields, false);
-      if (refusal !== undefined) return yield* invalid(refusal);
+      yield* validateBillTo(undefined, party, fields, fields.billToName, false);
+      if (party === undefined && billToNameOf(fields) === null)
+        for (const field of Object.keys(clearedBillTo)) delete fields[field];
     }
     yield* sameName(orgId, list, input.title, partyId, null, input.category, writer.namesSeenBy);
     if (batch === undefined) yield* ownerExists(orgId, input.owner);
@@ -2422,9 +2428,11 @@ const make = Effect.gen(function* () {
               : row.partyId;
         const invalidRefs = checkRefs(def, partyId, projectId);
         if (invalidRefs !== undefined) return yield* invalidRefs;
-        if (partyId !== row.partyId) {
-          const party = partyId === null ? null : yield* target(orgId, partyId, "clients");
-          changes.push({ field: "party", from: row.partyKey, to: party?.key ?? null });
+        const partyChanged = partyId !== row.partyId;
+        const newParty =
+          partyChanged && partyId !== null ? yield* target(orgId, partyId, "clients") : undefined;
+        if (partyChanged) {
+          changes.push({ field: "party", from: row.partyKey, to: newParty?.key ?? null });
           set("party_id", partyId);
         }
         if (projectId !== row.projectId) {
@@ -2464,10 +2472,28 @@ const make = Effect.gen(function* () {
             : undefined;
         if (alsoOn !== undefined)
           yield* helperGuard(orgId, writer, row, before.owner, patch, alsoOn);
+        const billToPatch =
+          hasBillTo(list) &&
+          (partyChanged ||
+            Object.keys(patch.fields ?? {}).some((field) => Object.hasOwn(BILL_TO_FIELDS, field)))
+            ? (patch.fields ?? {})
+            : undefined;
+        const name =
+          patch.fields?.billToName === undefined ? stored.billToName : patch.fields.billToName;
+        if (billToPatch !== undefined) {
+          const client =
+            newParty ?? (partyId === null ? undefined : yield* target(orgId, partyId, "clients"));
+          yield* validateBillTo(row.key, client, billToPatch, name, partyChanged);
+        }
+        const clearBilling =
+          hasBillTo(list) &&
+          ((billToPatch !== undefined && clearsBillTo(billToPatch)) ||
+            (partyId === null && billToNameOf({ billToName: name ?? null }) === null));
         const merged: Record<string, FieldValue> = { ...stored };
         let fieldsChanged = false;
         for (const [field, value] of Object.entries({
           ...patch.fields,
+          ...(clearBilling ? clearedBillTo : {}),
           ...(alsoOn === undefined ? {} : { alsoOn: alsoOn.length === 0 ? null : alsoOn }),
         })) {
           const from = shownField(stored[field]);
@@ -2478,20 +2504,6 @@ const make = Effect.gen(function* () {
           fieldsChanged = true;
           if (value === null) delete merged[field];
           else merged[field] = value;
-        }
-        const relinked = partyId !== row.partyId || projectId !== row.projectId;
-        if (
-          hasBillTo(list) &&
-          (relinked ||
-            Object.keys(patch.fields ?? {}).some((field) => Object.hasOwn(BILL_TO_FIELDS, field)))
-        ) {
-          const effectiveClient = yield* billingClientId(orgId, { partyId, projectId }).pipe(
-            provideSql,
-          );
-          const client =
-            effectiveClient === null ? undefined : yield* target(orgId, effectiveClient, "clients");
-          const refusal = billToRefusal(row.key, client, patch.fields ?? {}, merged, relinked);
-          if (refusal !== undefined) return yield* invalid(refusal);
         }
         // Why it was given no longer holds once it moves on with no new why; its history keeps the old.
         const movedOn =

@@ -470,7 +470,7 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
   if (
     receipt.partyId === null &&
     (invoice.registerId !== "invoices" ||
-      (yield* billingClientId(orgId, invoice)) !== null ||
+      billingClientId(invoice) !== null ||
       billedParty(invoice, undefined) === undefined)
   )
     return yield* invalid(

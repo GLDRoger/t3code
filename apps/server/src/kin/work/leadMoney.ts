@@ -588,11 +588,13 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
   const shell = yield* KinShell.get(lead.orgId);
   const invoices = KinShell.sectionOn(shell, "invoices");
+  const clientsOn = KinShell.sectionOn(shell, "clients");
   const summary = yield* moneySummaryForAgent(lead.orgId, now, viewer);
   const section = moneySection(
     summary,
     summary.timeZone,
-    invoices ? yield* setAsideOverdue({ orgId: lead.orgId, now, viewer }) : [],
+    invoices ? yield* setAsideOverdue({ orgId: lead.orgId, now, viewer, clientsOn }) : [],
+    clientsOn,
   );
   const toInvoice =
     team === undefined && invoices ? yield* ownerLevelStillToInvoice(lead.orgId) : [];
