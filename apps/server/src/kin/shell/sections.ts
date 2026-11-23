@@ -2,7 +2,7 @@ import type { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import { seenBy, type KinViewer } from "../work/teamView.ts";
+import { listNumberSeenBy, seenBy, type KinViewer } from "../work/teamView.ts";
 
 import type { KinPulseSense } from "@t3tools/contracts";
 
@@ -297,7 +297,8 @@ export const resolveSections = Effect.fn("KinShell.resolveSections")(function* (
       ? []
       : yield* sql<Row>`
     WITH wanted AS (SELECT value FROM json_each(${yield* encodeReferences([...references])}))
-    SELECT r.key, json_extract(r.fields_json, '$.number') AS number, ${registerSectionColumns(sql)},
+    SELECT r.key, CASE WHEN ${listNumberSeenBy(sql, viewer)}
+        THEN json_extract(r.fields_json, '$.number') END AS number, ${registerSectionColumns(sql)},
       ${seenBy(sql, viewer)} AS visible
     FROM kin_records r
     LEFT JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id

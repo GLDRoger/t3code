@@ -19,7 +19,7 @@ import type * as Statement from "effect/sql/Statement";
 
 import type { Patch } from "../work/KinRecords.ts";
 import { isClosed, parseChanges } from "../work/recordRows.ts";
-import { type KinViewer, seenBy } from "../work/teamView.ts";
+import { type KinViewer, listMoneySeenBy, privateListField, seenBy } from "../work/teamView.ts";
 
 /** How many of an agent's changes its page lists. */
 const AGENT_CHANGES_SHOWN = 20;
@@ -195,9 +195,17 @@ export const changeSql = (sql: SqlClient.SqlClient, viewer: KinViewer) => {
       WHERE json_extract(lf.value, '$.field') = json_extract(cf.value, '$.field')
         AND json_extract(cf.value, '$.field') NOT IN ${sql.in([...ALONG])})))`;
   const linked = sql`json_extract(c.fields_json, '$[0].to')`;
+  const fields =
+    viewer._tag === "ownerLevel"
+      ? sql`c.fields_json`
+      : sql`CASE WHEN ${listMoneySeenBy(sql, viewer)} THEN c.fields_json ELSE (
+      SELECT json_group_array(json(f.value)) FROM json_each(c.fields_json) f
+      WHERE json_extract(f.value, '$.field') NOT IN ('amount', 'payment', 'payments')
+        AND NOT ${privateListField(sql, sql`json_extract(f.value, '$.field')`)}
+    ) END`;
   return {
     columns: sql`c.seq, c.record_id AS "recordId", c.at, r.key, r.title, r.register_id AS "registerId",
-        r.state, c.kind, c.fields_json AS "fieldsJson", c.wakeup_id AS "wakeupId",
+        r.state, c.kind, ${fields} AS "fieldsJson", c.wakeup_id AS "wakeupId",
         c.kind <> 'linked' AND EXISTS (SELECT 1 ${later(inTheWay)}) AS since,
         EXISTS (SELECT 1 ${later(sql`l.kind <> 'linked'`)}) AS "sinceOther",
         (SELECT l.fields_json ${later(inTheWay)} ORDER BY l.seq LIMIT 1) AS "nextJson",

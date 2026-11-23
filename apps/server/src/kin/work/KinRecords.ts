@@ -75,6 +75,7 @@ import {
   type ListName,
   parseFields,
   shownField,
+  TEAM_LIST_RESERVED,
 } from "./lists.ts";
 import {
   addUp,
@@ -166,6 +167,9 @@ import {
   crmSees,
   teamPairs,
   personSees,
+  legacySeenBy,
+  listMoneySeenBy,
+  viewerOfPeople,
   ROOM_LISTS,
   teamSeesField,
   teamSeq,
@@ -533,6 +537,7 @@ type Sums = {
   readonly net?: ReadonlyArray<KinMoney>;
 };
 export type Totals = Sums & {
+  readonly withheld?: true;
   readonly counted: number;
   readonly groups?: ReadonlyArray<Sums & { readonly group: string | null; readonly count: number }>;
 };
@@ -1907,7 +1912,7 @@ const make = Effect.gen(function* () {
       request_hash: input.requestHash ?? null,
       team_shared:
         input.team === true ||
-        writer.teammate === true ||
+        (writer.teammate === true && def.team !== true) ||
         writer.teamShared === true ||
         (writer.view !== undefined && (ROOM_LISTS as ReadonlyArray<string>).includes(list))
           ? 1
@@ -3438,6 +3443,13 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const queryViewer = (input: QueryInput) =>
+    input.team !== undefined
+      ? viewerOfPeople([input.team])
+      : input.view === undefined
+        ? undefined
+        : viewerOfPeople(input.view);
+
   const totals = Effect.fn("KinRecords.totals")(function* (
     orgId: KinOrgId,
     input: QueryInput,
@@ -3454,9 +3466,16 @@ const make = Effect.gen(function* () {
             : sql.and([filterOf(orgId, input, now), sql`r.amount_minor IS NOT NULL`]);
         // A void entry's amount is no money: a total leaves it out unless the filter names it.
         const asked = input.states ?? (input.open === false ? ["done", "dropped"] : undefined);
-        const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records r
-          WHERE ${filter} AND ${countedEntry(sql, asked)}`;
+        const viewer = queryViewer(input);
+        const checkAccess =
+          viewer !== undefined && !TEAM_LIST_RESERVED.includes(input.list ?? "work");
+        const hidden = checkAccess
+          ? sql`, MAX(CASE WHEN ${legacySeenBy(sql, viewer)} THEN 0 ELSE 1 END) AS hidden`
+          : sql``;
+        const [count] = yield* sql<{ n: number; hidden?: number }>`SELECT COUNT(*) AS n${hidden}
+          FROM kin_records r WHERE ${filter} AND ${countedEntry(sql, asked)}`;
         const counted = count?.n ?? 0;
+        if (count?.hidden === 1) return { total: [], counted, withheld: true } satisfies Totals;
         if (counted > TOTALS_CAP)
           return yield* invalid(
             `${counted} entries match; narrow it to under ${TOTALS_CAP} by dates or category to total them.`,
@@ -3477,6 +3496,7 @@ const make = Effect.gen(function* () {
           paid: number;
           received: number;
           fields: string;
+          legacy?: number;
         }>`SELECT r.amount_minor AS minor, r.currency, r.category, r.party_id AS party,
             r.project_id AS project, r.side, r.state, r.owner_kind || ':' || r.owner_id AS owner,
             ${moneyDay(sql)} AS at,
@@ -3484,9 +3504,11 @@ const make = Effect.gen(function* () {
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live} AND p.withheld = 0
               AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
               AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received,
-            r.fields_json AS fields
+            r.fields_json AS fields${checkAccess ? sql`, ${legacySeenBy(sql, viewer)} AS legacy` : sql``}
           FROM kin_records r WHERE ${filter} AND ${countedEntry(sql, asked)}
           ORDER BY r.record_id`;
+        if (checkAccess && rows.some((row) => row.legacy !== 1))
+          return { total: [], counted, withheld: true } satisfies Totals;
         const listDef = yield* resolveList(orgId, input.list ?? "work");
         const paidOverTime = listDef.payments === true;
         const directed = (yield* findBankList(orgId).pipe(provideSql))?.id === listDef.id;
@@ -3640,11 +3662,14 @@ const make = Effect.gen(function* () {
           THEN ${partnerRepaidDay(sql)} BETWEEN ${input.spent.from} AND ${input.spent.to}
           ELSE ${moneyDay(sql)} >= ${input.spent.fromAt} AND ${moneyDay(sql)} < ${input.spent.toAt}
         END)`);
-    if (input.paidFrom !== undefined || input.paidTo !== undefined)
+    if (input.paidFrom !== undefined || input.paidTo !== undefined) {
+      const viewer = queryViewer(input);
+      if (viewer !== undefined) where.push(listMoneySeenBy(sql, viewer));
       where.push(sql`EXISTS (SELECT 1 FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL
           AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
           AND p.paid_on <= ${input.paidTo ?? "9999-12-31"})`);
+    }
     if (input.kept === true) where.push(countedEntry(sql, input.states));
     else if (input.kept === false) where.push(sql`NOT ${keptEntry(sql)} AND r.state <> 'dropped'`);
     if (input.side !== undefined) where.push(sql`r.side = ${input.side}`);
@@ -3683,7 +3708,12 @@ const make = Effect.gen(function* () {
                 ? sql`r.state IN ('done', 'dropped'), lower(r.title), r.key`
                 : sql`r.state IN ('done', 'dropped'), r.due_at IS NULL, r.due_at,
                   ${moneyDay(sql)} DESC, r.created_at DESC, r.key`;
-        const rows = yield* sql<RecordRow>`${selectRecords(sql)} WHERE ${filter}
+        const viewer = queryViewer(input);
+        const extra =
+          viewer === undefined || TEAM_LIST_RESERVED.includes(list)
+            ? sql``
+            : sql`, ${listMoneySeenBy(sql, viewer)} AS "listMoneyVisible"`;
+        const rows = yield* sql<RecordRow>`${selectRecords(sql, extra)} WHERE ${filter}
           ORDER BY ${order}
           LIMIT ${limit} OFFSET ${Math.max(input.offset ?? 0, 0)}`;
         return { rows, total: count?.total ?? 0, seq };
