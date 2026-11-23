@@ -111,6 +111,7 @@ import * as KinNumbers from "../numbers/KinNumbers.ts";
 import { feedTurn } from "../numbers/feeds.ts";
 import { feedOf } from "../numbers/numberRows.ts";
 import { offTurnTexts } from "../pulse/senses/numbers.ts";
+import { HEAD_START_GONE, isPrepareWake, prepareWakeText } from "../pulse/prepareWake.ts";
 import {
   answeredTurnText,
   askedForSection,
@@ -910,6 +911,25 @@ export class KinLeadPrompt extends Context.Service<
             if (lines.length > 0) replyDue = true;
             events.push(
               [quote(QUOTE_LABELS.eventData, eventFacts(event), true), ...lines].join("\n\n"),
+            );
+            continue;
+          }
+          // A fact Kin woke this agent to make a head start on, checked again as it starts.
+          if (ownerOnly && isPrepareWake(event)) {
+            fromOwner = false;
+            const text = yield* prepareWakeText(
+              orgId,
+              event.factKeys,
+              yield* Clock.currentTimeMillis,
+            ).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin head start unreadable", cause).pipe(Effect.as(undefined)),
+              ),
+            );
+            if (text !== undefined) replyDue = true;
+            events.push(
+              `${quote(QUOTE_LABELS.eventData, eventFacts(event), true)}\n\n${text ?? HEAD_START_GONE}`,
             );
             continue;
           }

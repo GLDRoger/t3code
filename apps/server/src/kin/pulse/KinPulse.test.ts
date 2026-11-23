@@ -39,6 +39,7 @@ import { buildPulseSection } from "./prompt.ts";
 import { screenFacts } from "./people.ts";
 import { factSig, markTold, untold } from "./told.ts";
 import { offTurnTexts } from "./senses/numbers.ts";
+import { standingFacts } from "./prepareWake.ts";
 import { morningMoneyLines } from "./morningMoney.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { projectLastMoved } from "./senses/projects.ts";
@@ -640,6 +641,55 @@ describe("KinPulse", () => {
           AND dedupe_key NOT LIKE 'holders:%'`;
       assert.lengthOf(wakes, first.woken.length + overdue.length);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "an unanswered quote, a renewal from its draft day and a client waiting on us wake once",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const PREPARED = ["quote_unanswered", "renewal_due", "client_waiting_on_us"];
+        const wakes = Effect.map(
+          sql<{ agent: string; key: string; at: number | null }>`SELECT agent_id AS agent,
+              json_extract(json, '$.factKeys[0]') AS key, not_before AS at
+            FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+              AND dedupe_key NOT LIKE 'holders:%' ORDER BY key`,
+          (rows) => rows.filter((row) => PREPARED.includes(row.key.split(":")[0]!)),
+        );
+        // The owner sleeps 22:00 to 07:00 UTC: the quote waits for the morning; a client
+        // waiting on us is urgent, so its agent starts now.
+        yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"22:00","to":"07:00"}'
+          WHERE person_id = ${owner}`;
+        const night = B + 6 * DAY + MINUTE;
+        yield* KinPulse.tick(orgId, night);
+        const quote = `quote_unanswered:QT-1:last=${B}`;
+        const [waiting] = (yield* wakes).filter((wake) => wake.key !== quote);
+        assert.deepStrictEqual(yield* wakes, [
+          { agent: chief, key: waiting!.key, at: null },
+          { agent: finance, key: quote, at: B + 6 * DAY + 7 * HOUR },
+        ]);
+        assert.match(waiting!.key, /^client_waiting_on_us:/);
+        // Once per fact: later passes add nothing.
+        yield* KinPulse.tick(orgId, night + HOUR);
+        yield* KinPulse.tick(orgId, B + 7 * DAY);
+        assert.lengthOf(yield* wakes, 2);
+        // A renewal is only mentioned at its heads-up, and wakes its agent from its draft day
+        // (midnight: after the owner's quiet hours).
+        yield* KinPulse.tick(orgId, B + 33 * DAY - MINUTE);
+        assert.lengthOf(yield* wakes, 2);
+        yield* KinPulse.tick(orgId, B + 33 * DAY);
+        assert.deepInclude(yield* wakes, {
+          agent: finance,
+          key: `renewal_due:DT-1:due=${B + 40 * DAY}`,
+          at: B + 33 * DAY + 7 * HOUR,
+        });
+        // As its turn starts it checks again: answered meanwhile, the quote's wake has nothing.
+        assert.deepStrictEqual(yield* standingFacts(orgId, [quote], B + 33 * DAY), [quote]);
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-QT-1'`;
+        yield* KinPulse.tick(orgId, B + 33 * DAY + MINUTE);
+        assert.deepStrictEqual(yield* standingFacts(orgId, [quote], B + 33 * DAY + MINUTE), []);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect(

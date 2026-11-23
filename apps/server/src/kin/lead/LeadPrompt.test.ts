@@ -30,6 +30,7 @@ import { salesRules } from "../sales/instructions.ts";
 import { instructions } from "./instructions.ts";
 import { kinInstructions } from "./turn/session.ts";
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../pulse/prompt.ts";
+import { HEAD_START_GONE, HEAD_START_WAKE } from "../pulse/prepareWake.ts";
 import { WEEKLY_RULE } from "../pulse/weekly.ts";
 import { MONEY_RULE, WITHDRAWN_WORK } from "../work/workPrompt.ts";
 import {
@@ -970,6 +971,41 @@ it.effect(
       expect(shared).not.toContain(PROMPT_HEADINGS.thisCompany);
       expect(shared).not.toContain("numbers_read");
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a head-start wake says to prepare its fact, and nothing once the fact is gone", () =>
+  Effect.gen(function* () {
+    yield* leadWithOwner;
+    const sql = yield* SqlClient.SqlClient;
+    const prompt = yield* KinLeadPrompt;
+    const key = "quote_unanswered:QT-1:last=0";
+    yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense, scope_json, first_seen_at,
+        last_seen_at)
+      VALUES (${orgId}, ${key}, 'quote_unanswered', '{}', 0, 0)`;
+    const wake = decodeEvent({
+      _tag: "pulse",
+      orgId,
+      agentId,
+      eventId: "pulse-quote",
+      receivedAt: timestamp,
+      provenance: { _tag: "system" },
+      dedupeKey: null,
+      factKeys: [key],
+    });
+    yield* stored("quote-wake", [wake]);
+    const events = (built: string) => built.split(`${PROMPT_HEADINGS.events}\n\n`)[1] ?? "";
+    const build = prompt.build({
+      ...input,
+      wakeupId: KinWakeupId.make("quote-wake"),
+      events: [wake],
+    });
+    expect(events(yield* build)).toContain(`\n\n${HEAD_START_WAKE}`);
+    // Answered before the turn starts: the wake starts nothing.
+    yield* sql`UPDATE kin_pulse_facts SET cleared_at = 1 WHERE fact_key = ${key}`;
+    const gone = events(yield* build);
+    expect(gone).toContain(HEAD_START_GONE);
+    expect(gone).not.toContain(HEAD_START_WAKE);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("an owner turn names who is talking and states what the lead started as Kin has it", () =>

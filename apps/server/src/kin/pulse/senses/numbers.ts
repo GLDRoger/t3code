@@ -7,6 +7,7 @@ import { ownerLevelNumbers } from "../../numbers/KinNumbers.ts";
 import { sectionOnFor } from "../../shell/KinShell.ts";
 import { liveFeeds } from "../../numbers/numberRows.ts";
 import { figure, offTurnText } from "../../numbers/words.ts";
+import { standingFacts } from "../prepareWake.ts";
 import { agentOrOwner, dayOf, iso, type SenseContext, type SensedFact } from "./shared.ts";
 
 const plain = (decimal: string, unit: string | undefined) =>
@@ -115,12 +116,7 @@ export const offTurnTexts = Effect.fn("KinPulse.numberOffTexts")(function* (
 ) {
   const asked = factKeys.filter((key) => key.startsWith("number_off:"));
   if (asked.length === 0) return [];
-  const sql = yield* SqlClient.SqlClient;
-  const open = yield* sql<{ key: string }>`SELECT fact_key AS key FROM kin_pulse_facts
-    WHERE org_id = ${orgId} AND fact_key IN ${sql.in(asked)} AND cleared_at IS NULL
-      AND (handled_at IS NULL OR (handled_until IS NOT NULL AND handled_until <= ${now}))
-    ORDER BY fact_key`;
-  const wanted = open.map((row) => row.key);
+  const wanted = yield* standingFacts(orgId, asked, now);
   if (wanted.length === 0) return [];
   const numbers = yield* ownerLevelNumbers(orgId, now);
   const shown = [];
