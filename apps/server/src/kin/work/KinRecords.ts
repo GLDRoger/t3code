@@ -174,6 +174,7 @@ import {
   viewReadsWhole,
   viewSees,
 } from "./teamView.ts";
+import { holderFor, theirsHeldBy, theirsHolder } from "./promises.ts";
 
 /** A follow-up's title: the leftover's first line, this long at most; the rest goes in its notes. */
 const LEFTOVER_TITLE = 160;
@@ -3126,6 +3127,33 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /** `update`; a client handed to someone else takes with it what it owes us (`promises.ts`). */
+  const updateFollowing = Effect.fn("KinRecords.updateFollowing")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    key: string,
+    asked: Patch,
+    expectedRev?: number,
+    also: ReadonlyArray<FieldChange> = [],
+  ) {
+    if (asked.owner === undefined)
+      return yield* update(orgId, writer, key, asked, expectedRev, also);
+    return yield* transaction(
+      Effect.gen(function* () {
+        const row = yield* byKey(orgId, key).pipe(provideSql);
+        const updated = yield* update(orgId, writer, key, asked, expectedRev, also);
+        if (row === undefined || row.registerId !== "clients") return updated;
+        const was = yield* holderFor(orgId, row.ownerKind, row.ownerId).pipe(provideSql);
+        const holder = yield* theirsHolder(orgId, row.recordId).pipe(provideSql);
+        if (was === undefined || holder === undefined || samePrincipal(was, holder)) return updated;
+        const moving: Writer = { actor: writer.actor, via: writer.via };
+        for (const owed of yield* theirsHeldBy(orgId, row.recordId, was).pipe(provideSql))
+          yield* update(orgId, moving, owed, { owner: holder });
+        return updated;
+      }),
+    );
+  });
+
   const handBack = Effect.fn("KinRecords.handBack")(function* (
     orgId: KinOrgId,
     writer: Writer,
@@ -3720,7 +3748,7 @@ const make = Effect.gen(function* () {
   return KinRecords.of({
     create,
     createImportChunk,
-    update,
+    update: updateFollowing,
     principalExists: Effect.fn("KinRecords.principalExists")(function* (orgId, who, role) {
       return yield* failed(ownerExists(orgId, who, role));
     }),

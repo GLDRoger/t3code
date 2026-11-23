@@ -1939,6 +1939,10 @@ export interface KinWorkDraft {
   readonly side: KinRecordSide | null;
   /** How it comes back once closed; null when it doesn't. */
   readonly repeat: KinRepeatRule | null;
+  /** The deal a promise sits on, when made from the deal's page. */
+  readonly deal?: KinWorkRef | null;
+  /** Where a promise was made, in the person's own words; empty for unsaid. */
+  readonly from?: string;
   /** Who else is on it besides its holder; absent or empty for nobody. */
   readonly alsoOn?: ReadonlyArray<KinWorkPrincipal>;
 }
@@ -1972,9 +1976,9 @@ export const KIN_WORK_NO_DRAFT: KinWorkDraft = {
   repeat: null,
 };
 
-/** A form opened from a client or a project starts out about it. */
+/** A form opened from a client, a deal or a project starts out about it. */
 export const kinWorkDraftFor = (
-  about: Partial<Pick<KinWorkDraft, "party" | "project" | "side">>,
+  about: Partial<Pick<KinWorkDraft, "party" | "project" | "side" | "deal">>,
 ): KinWorkDraft => ({ ...KIN_WORK_NO_DRAFT, ...about });
 
 /** The form's name and its first field, which say whose move it is when a client is set. */
@@ -2015,6 +2019,9 @@ export const KIN_WORK_NEW_COPY = {
   sideTheirs: "They owe it",
   /** Neither side: a plain task about the client, not something owed. */
   sideNone: "Nobody, it's a task",
+  dealLabel: "Deal",
+  fromLabel: "Where it was promised",
+  fromPlaceholder: "At the site visit",
   noMatch: "Nothing by that name.",
   /** A task moved to another project keeps a client that is neither project's. */
   clientStays: (name: string) => `Client stays ${name}`,
@@ -2024,6 +2031,8 @@ export const KIN_WORK_NEW_COPY = {
 
 /** What happens next, said before the owner commits to it. */
 export function kinWorkDraftHint(draft: KinWorkDraft, names: KinWorkNames): string | null {
+  if (draft.owner === null && draft.side === "theirs" && draft.party !== null)
+    return `Whoever looks after ${draft.party.title} chases it.`;
   return draft.owner?._tag === "agent"
     ? `${kinWorkName(draft.owner, names)} starts on it right away. Its progress shows here.`
     : null;
@@ -2080,6 +2089,13 @@ export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
     return { ok: false, problem: "That date doesn't look right." };
   if (draft.repeat !== null && draft.due === null)
     return { ok: false, problem: KIN_WORK_REPEAT.needsDue };
+  const promise = draft.side !== null && draft.party !== null;
+  const from = promise ? (draft.from ?? "").trim() : "";
+  if (from.length > KIN_WORK_FROM_MAX)
+    return {
+      ok: false,
+      problem: `Say where it was promised in under ${KIN_WORK_FROM_MAX} characters.`,
+    };
   return {
     ok: true,
     input: {
@@ -2097,10 +2113,13 @@ export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
             ...(draft.side === "theirs" ? { side: "theirs" as const } : {}),
           }),
       ...(draft.repeat === null ? {} : { repeat: draft.repeat }),
+      ...(draft.deal === null || draft.deal === undefined ? {} : { deal: draft.deal.key }),
+      ...(from === "" ? {} : { from }),
       ...(draft.alsoOn === undefined || draft.alsoOn.length === 0 ? {} : { alsoOn: draft.alsoOn }),
     },
   };
 }
+const KIN_WORK_FROM_MAX = 280;
 
 // The owner's changes
 

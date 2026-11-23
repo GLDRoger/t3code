@@ -73,6 +73,7 @@ import {
   KinGateView,
   KinWorkAboveKeyboard,
   KinWorkFieldBox,
+  KinWorkTextField,
   useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { useKinGate } from "./state/useKinHost";
@@ -116,6 +117,7 @@ export function KinWorkNewScreen({ route }: StaticScreenProps<KinWorkParams>) {
         project: kinWorkRefParam(route.params.project, route.params.projectName),
         side:
           route.params.side === "theirs" ? "theirs" : route.params.side === "ours" ? "ours" : null,
+        deal: kinWorkRefParam(route.params.deal, route.params.dealName),
       })}
     />
   );
@@ -372,13 +374,29 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                 held={draft.party}
                 choices={choices.clients}
                 disabled={saving}
-                onPick={(party) => setDraft((held) => ({ ...held, party }))}
+                // A deal belongs to its client: another client leaves it.
+                onPick={(party) => setDraft((held) => ({ ...held, party, deal: null }))}
               />
               {draft.party === null ? null : (
                 <KinWorkSideRow
                   side={draft.side}
                   disabled={saving}
                   onPick={(side) => setDraft((held) => ({ ...held, side }))}
+                />
+              )}
+              {draft.party === null || draft.side === null || draft.deal == null ? null : (
+                <Text className="px-4 py-3 text-sm text-foreground-muted">
+                  {`${KIN_WORK_NEW_COPY.dealLabel}: ${draft.deal.title}`}
+                </Text>
+              )}
+              {draft.party === null || draft.side === null ? null : (
+                <KinWorkTextField
+                  label={KIN_WORK_NEW_COPY.fromLabel}
+                  value={draft.from ?? ""}
+                  disabled={saving}
+                  maxLength={280}
+                  onChangeText={(from) => setDraft((held) => ({ ...held, from }))}
+                  placeholder={KIN_WORK_NEW_COPY.fromPlaceholder}
                 />
               )}
             </ListSection>

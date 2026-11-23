@@ -1,3 +1,4 @@
+import { KIN_PROMISES } from "@t3tools/client-runtime/kin/kinPromises";
 import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
@@ -1251,6 +1252,17 @@ function ProjectForm(
             onPick={(renewsOn) => form.edit({ renewsOn })}
           />
         ) : null}
+        {draft.renewsOn === null ? null : (
+          <KinWorkTextField
+            label={KIN_PROMISES.noticeDays}
+            value={draft.noticeDays}
+            keyboard="numbers"
+            disabled={state.saving}
+            maxLength={3}
+            placeholder={KIN_PROMISES.noticeDaysHint}
+            onChangeText={(noticeDays) => form.edit({ noticeDays })}
+          />
+        )}
       </ListSection>
       <ListSection footer={draft.campaign ? KIN_MARKETING.audienceHint : undefined}>
         <KinWorkToggleRow

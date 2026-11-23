@@ -167,11 +167,12 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
   sql`(CASE WHEN ${isPicture(sql)} THEN ${pictureReader(sql, personId)}
   WHEN r.register_id = 'goals' AND ${targetless(sql)}
     THEN json_type(r.fields_json, '$.spec') IS NULL AND ${teamListRow(sql, personId)}
-  ELSE ((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
+  ELSE ((r.register_id = 'work' AND NOT ${inheritedSensitive(sql)}
+      AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
       OR ${attends(sql, personId)} OR ${alsoOnIt(sql, personId)} OR r.marked_by_person_id = ${personId}
       OR (r.sensitive = 0 AND ((r.created_by_kind = 'person' AND r.created_by_id = ${personId})
         OR r.assigned_by_person_id = ${personId}))))
-  OR (r.register_id IN ('work', 'milestones') AND r.sensitive = 0
+  OR (r.register_id IN ('work', 'milestones') AND NOT ${sensitiveNow(sql)}
     AND (r.team_shared = 1 OR ${onProject(sql, personId)}))
   OR (${ownLabelOff(sql)} AND r.register_id <> 'bank_transactions'
     AND ${inLedProject(sql, personId)})
@@ -1018,7 +1019,10 @@ export const teamGuard = Effect.fn("KinTeamView.guard")(function* (
     if (write.leaveBy === personId && facts.seen.onTask === 1) return;
     if (options?.room === true && !withOnly(facts)) return;
   }
-  const refused = teamRule(facts, write);
+  const refused = teamRule(facts, {
+    ...write,
+    input: yield* promiseParts(orgId, personId, write),
+  });
   if (refused === WITH_REFUSED && facts.seen != null) {
     const sql = yield* SqlClient.SqlClient;
     const { ownerKind, ownerId } = facts.seen;
@@ -1035,6 +1039,42 @@ export const teamGuard = Effect.fn("KinTeamView.guard")(function* (
     });
   }
   if (refused !== undefined) return yield* refused;
+});
+
+/**
+ * A new task on a client this teammate sees in Clients may say where it was promised
+ * (`fields.from`) and sit on one of that client's deals they see (`promises.ts`); those parts
+ * are theirs to set, and the rest of the write is decided as any other.
+ */
+const promiseParts = Effect.fn("KinTeamView.promiseParts")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  write: TeamWrite,
+) {
+  const { input } = write;
+  const { fields, links, list, ...rest } = input;
+  if (write.row !== undefined || typeof input.partyId !== "string") return input;
+  if ((typeof list === "string" ? list : "work") !== "work") return input;
+  if (fields === undefined && links === undefined) return input;
+  const fromOnly =
+    fields === undefined ||
+    (typeof fields === "object" &&
+      fields !== null &&
+      Object.keys(fields).every((key) => key === "from"));
+  const deals = Array.isArray(links) ? (links as ReadonlyArray<Record<string, unknown>>) : [];
+  if (!fromOnly || (links !== undefined && !Array.isArray(links))) return input;
+  if (deals.some((link) => link.kind !== "record" || link.relation !== "relates")) return input;
+  const targets = deals.map((link) => String(link.target));
+  if (targets.length > 0) {
+    const sql = yield* SqlClient.SqlClient;
+    const onIt = yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId"
+      FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'deals'
+        AND r.party_id = ${input.partyId} AND r.record_id IN ${sql.in(targets)}
+        AND ${crmSees(sql, personId)}
+      ORDER BY r.record_id`;
+    if (onIt.length !== new Set(targets).size) return input;
+  }
+  return rest;
 });
 
 type CanRow = {

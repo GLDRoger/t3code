@@ -354,6 +354,16 @@ describe("kinDealEditRequest", () => {
     expect(kinDealEditRequest(noted, { ...withNotes, notes: "" }, names, "EUR")).toMatchObject({
       input: { notes: "" },
     });
+    // Keep private goes only when switched, both ways.
+    expect(kinDealEditRequest(held, { ...draft, private: true }, names, "EUR")).toEqual({
+      ok: true,
+      input: { key: held.key, rev: 1, sensitive: true },
+    });
+    const kept = { ...held, sensitive: true };
+    expect(kinDealEditDraft(kept, names).private).toBe(true);
+    expect(
+      kinDealEditRequest(kept, { ...kinDealEditDraft(kept, names), private: false }, names, "EUR"),
+    ).toMatchObject({ input: { sensitive: false } });
   });
 
   it("refuses an empty title and an amount it can't read", () => {

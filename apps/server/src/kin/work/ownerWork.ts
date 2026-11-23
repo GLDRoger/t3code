@@ -57,6 +57,7 @@ import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { milestoneLinks, principalText } from "./projectSpine.ts";
 import { keyNamedFor, personSeesRecord, sheetExtras } from "./recordComments.ts";
 import { movePage, nudge as nudgeHolder } from "./workMoves.ts";
+import { checkedFrom, dealFor, dealLink, theirsHolder } from "./promises.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import { type AssignNotice, movedNotices, tellOnTasks, toldWhenBack } from "./assignNotices.ts";
 import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
@@ -932,8 +933,31 @@ export const create = Effect.fn("KinWork.create")(function* (
   const records = yield* KinRecords;
   const dueAt =
     input.dueAt === undefined ? null : yield* dueMillis(input.orgId, input.dueAt, input.dueAllDay);
-  const owner: KinWorkPrincipal = input.owner ?? { _tag: "person", personId: person.personId };
-  const partyId = yield* refId(viewer, input.orgId, input.party, "clients");
+  const named = yield* refId(viewer, input.orgId, input.party, "clients");
+  const deal =
+    input.deal === undefined
+      ? undefined
+      : yield* dealFor(
+          input.orgId,
+          input.deal,
+          named,
+          viewer.teammate ? [viewer.person.personId] : [],
+        ).pipe(workFailure);
+  const partyId = named ?? deal?.partyId ?? undefined;
+  // What a client owes us is chased by whoever looks after them (`theirsHolder`).
+  const holder =
+    input.owner === undefined &&
+    input.side === "theirs" &&
+    input.category === "obligation" &&
+    typeof partyId === "string"
+      ? yield* theirsHolder(input.orgId, partyId, deal).pipe(workFailure)
+      : undefined;
+  const owner: KinWorkPrincipal = input.owner ??
+    holder ?? { _tag: "person", personId: person.personId };
+  const from =
+    input.from === undefined
+      ? undefined
+      : yield* checkedFrom(input.orgId, partyId, input.from).pipe(workFailure);
   const projectId = yield* refId(viewer, input.orgId, input.project, "projects");
   const milestone = input.list === "milestones";
   if (milestone && (projectId === undefined || projectId === null))
@@ -966,9 +990,15 @@ export const create = Effect.fn("KinWork.create")(function* (
         ? {}
         : { steps: input.steps.map((title) => ({ title, done: false })) }),
       ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
-      ...(input.alsoOn === undefined
+      ...((from === undefined || milestone) && input.alsoOn === undefined
         ? {}
-        : { fields: { alsoOn: input.alsoOn.map(principalText) } }),
+        : {
+            fields: {
+              ...(from === undefined || milestone ? {} : { from }),
+              ...(input.alsoOn === undefined ? {} : { alsoOn: input.alsoOn.map(principalText) }),
+            },
+          }),
+      ...(deal === undefined || milestone ? {} : { links: [dealLink(deal)] }),
     });
     return {
       row,

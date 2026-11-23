@@ -41,7 +41,9 @@ import * as ServerConfig from "../../config.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as People from "../people/KinPeople.ts";
+import * as Deals from "../work/deals.ts";
 import * as Records from "../work/KinRecords.ts";
+import { dealLink } from "../work/promises.ts";
 import * as Work from "../work/ownerWork.ts";
 import { TasksKeyAudience } from "./audience.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
@@ -381,9 +383,34 @@ it.effect(
       const underProject = yield* make("file the audit", { projectId: audit.recordId });
       const underClient = yield* make("send the quote", { partyId: client.recordId });
       const underTheirs = yield* make("book the hall", { projectId: theirs.recordId });
+      // A promise sits on its deal (`promises.ts`): kept private, the deal takes it with it.
+      const owner = [{ _tag: "person" as const, orgId, personId: rhea.personId }];
+      const deal = yield* Deals.create(owner, {
+        orgId,
+        party: client.key,
+        title: "Invented kiln order",
+        clientRequestId: "kiln-order",
+      });
+      const promised = yield* make("send the kiln plan", {
+        partyId: client.recordId,
+        category: "obligation",
+        links: [dealLink({ recordId: deal.deal.recordId, key: deal.deal.key })],
+      });
       const key = yield* admitted((yield* TasksKeys.issue(zoya.app, { orgId })).secret);
       const listed = Effect.map(listMine(key), ({ tasks }) => tasks.map((one) => one.key));
-      assert.includeMembers(yield* listed, [plain.key, underProject.key, underClient.key]);
+      assert.includeMembers(yield* listed, [
+        plain.key,
+        underProject.key,
+        underClient.key,
+        promised.key,
+      ]);
+      yield* Deals.update(owner, {
+        orgId,
+        key: deal.deal.key,
+        rev: deal.deal.rev,
+        sensitive: true,
+      });
+      assert.notInclude(yield* listed, promised.key);
 
       // Labelled after the key was made, the project and the client take their tasks with them.
       yield* label(audit.key);
@@ -401,7 +428,7 @@ it.effect(
         more: false,
         material: MATERIAL,
       });
-      for (const hidden of [secret, underProject, underClient, underTheirs]) {
+      for (const hidden of [secret, underProject, underClient, underTheirs, promised]) {
         assert.strictEqual(yield* reason(getMine(key, hidden.key)), "not_found");
         assert.strictEqual(
           yield* reason(setStateMine(key, { key: hidden.key, state: "done" })),

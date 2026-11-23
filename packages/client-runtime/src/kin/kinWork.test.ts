@@ -1279,6 +1279,39 @@ describe("kinWorkDraftCheck", () => {
       ok: true,
       input: { title: "Sign" },
     });
+    // From a deal's page: the deal it sits on, and where it was promised, said only of a promise.
+    const deal = { key: "DL-4" as const, title: "Invented second clinic" };
+    expect(
+      kinWorkDraftCheck({
+        ...KIN_WORK_NO_DRAFT,
+        title: "Plan",
+        party,
+        side: "ours",
+        deal,
+        from: " At the site visit ",
+      }),
+    ).toEqual({
+      ok: true,
+      input: {
+        title: "Plan",
+        party: "C-1",
+        category: "obligation",
+        deal: "DL-4",
+        from: "At the site visit",
+      },
+    });
+    expect(
+      kinWorkDraftCheck({ ...KIN_WORK_NO_DRAFT, title: "Plan", party, from: "Ignored" }),
+    ).toEqual({ ok: true, input: { title: "Plan", party: "C-1" } });
+    expect(
+      kinWorkDraftCheck({
+        ...KIN_WORK_NO_DRAFT,
+        title: "Plan",
+        party,
+        side: "ours",
+        from: "x".repeat(281),
+      }).ok,
+    ).toBe(false);
   });
 });
 

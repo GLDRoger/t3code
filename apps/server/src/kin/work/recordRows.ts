@@ -160,6 +160,17 @@ export const actorOf = (kind: string, id: string | null): Actor =>
 /** Lists whose entries are private only by their own label: a task never inherits one. */
 export const OWN_LABEL_LISTS = ["work", "milestones"] as const;
 
+/** `r` is a promise (`promises.ts`): an obligation sitting on a deal, `d`. */
+const promiseOn = (
+  sql: SqlClient.SqlClient,
+  deal: Statement.Fragment,
+) => sql`(r.register_id = 'work'
+  AND r.category = 'obligation' AND EXISTS (SELECT 1 FROM kin_record_links dl
+    JOIN kin_records d ON d.org_id = dl.org_id AND d.record_id = dl.target
+    WHERE dl.org_id = r.org_id AND dl.record_id = r.record_id AND dl.kind = 'record'
+      AND d.register_id = 'deals' AND ${deal}))`;
+export const promiseOnDeal = (sql: SqlClient.SqlClient) => promiseOn(sql, sql`1 = 1`);
+
 /**
  * The entry `r` was made from: a receipt's invoice, through the payment its `tie` stored
  * (`gendocs/receipts.ts`, the only writer of `$.payment`). Null for anything else.
@@ -169,28 +180,52 @@ const madeFrom = (sql: SqlClient.SqlClient) => sql`(CASE WHEN r.register_id = 'r
       AND pay.payment_id = json_extract(r.fields_json, '$.payment')) END)`;
 
 /**
- * Whether `r`'s client, its project or its project's client is labelled sensitive; for an entry
- * made from another (`madeFrom`), that entry's client, project or project's client too.
+ * A promise on a deal kept private, or on any deal while Deals (or Clients, which holds it) is off
+ * (`KinShell.sectionOn`): it is as hidden as its deal.
  */
-const parentLabelled = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1 FROM kin_records s
+const promiseOnHiddenDeal = (sql: SqlClient.SqlClient, shell: boolean) =>
+  promiseOn(
+    sql,
+    shell
+      ? sql`(d.sensitive = 1 OR EXISTS (SELECT 1 FROM kin_company_shell sh, json_each(sh.shell_json) j
+      WHERE sh.org_id = r.org_id AND json_extract(j.value, '$.id') IN ('deals', 'clients')
+        AND json_extract(j.value, '$.on') = 0))`
+      : sql`d.sensitive = 1`,
+  );
+
+/**
+ * Whether `r`'s client, its project or its project's client is labelled sensitive, or its deal; for
+ * an entry made from another (`madeFrom`), that entry's client, project or project's client too.
+ */
+const parentLabelled = (sql: SqlClient.SqlClient, shell = true) => sql`(EXISTS (SELECT 1
+    FROM kin_records s
     WHERE s.org_id = r.org_id AND s.sensitive = 1 AND s.record_id IN (r.party_id, r.project_id,
       (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id),
       (SELECT f.party_id FROM kin_records f WHERE f.org_id = r.org_id AND f.record_id = ${madeFrom(sql)}),
       (SELECT f.project_id FROM kin_records f WHERE f.org_id = r.org_id AND f.record_id = ${madeFrom(sql)}),
       (SELECT fp.party_id FROM kin_records f JOIN kin_records fp
         ON fp.org_id = f.org_id AND fp.record_id = f.project_id
-        WHERE f.org_id = r.org_id AND f.record_id = ${madeFrom(sql)})))`;
+        WHERE f.org_id = r.org_id AND f.record_id = ${madeFrom(sql)})))
+  OR ${promiseOnHiddenDeal(sql, shell)})`;
 
 /**
- * Whether `r` inherits a label from its client or project (design 4.9).
- * Tasks and milestones are private only when marked so themselves.
+ * Whether `r` inherits a label from its client or project (design 4.9), or a promise from its deal.
+ * Other tasks and milestones are private only when marked so themselves.
  */
-export const inheritedSensitive = (sql: SqlClient.SqlClient) =>
-  sql`(r.register_id NOT IN ${sql.in(OWN_LABEL_LISTS)} AND ${parentLabelled(sql)})`;
+export const inheritedSensitive = (sql: SqlClient.SqlClient, shell = true) =>
+  sql`((r.register_id NOT IN ${sql.in(OWN_LABEL_LISTS)} AND ${parentLabelled(sql, shell)})
+    OR ${promiseOnHiddenDeal(sql, shell)})`;
 
 /** `r`'s own label or one it inherits: the one check every screen and Kin agent uses. */
 export const sensitiveNow = (sql: SqlClient.SqlClient) =>
   sql`(r.sensitive = 1 OR ${inheritedSensitive(sql)})`;
+
+/**
+ * `sensitiveNow` by labels alone, for the pulse: it hears Deals being off through KinShell's quiet,
+ * which keeps its facts when the shell can't be read.
+ */
+export const labelledNow = (sql: SqlClient.SqlClient) =>
+  sql`(r.sensitive = 1 OR ${inheritedSensitive(sql, false)})`;
 
 /**
  * What a coding-agent key never reaches: `r`'s own label, or its client's, project's or project's
@@ -382,7 +417,8 @@ export const moneyDay = (sql: SqlClient.SqlClient) => sql`COALESCE(r.date_at, r.
  * The columns every read selects, with the derived ones: an old worker run, the last PR, the client
  * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
  */
-export const selectRecords = (sql: SqlClient.SqlClient) => sql`
+/** `shell` false reads labels alone, as `labelledNow` does for the pulse. */
+export const selectRecords = (sql: SqlClient.SqlClient, shell = true) => sql`
   SELECT r.org_id AS "orgId", r.record_id AS "recordId", r.register_id AS "registerId", r.key,
     r.title, r.state,
     r.waiting_on_kind AS "waitingOnKind", r.waiting_on_id AS "waitingOnId",
@@ -410,7 +446,7 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     pa.key AS "partyKey", pa.title AS "partyTitle", pa.category AS "partyCategory",
     pj.key AS "projectKey",
     pj.title AS "projectTitle",
-    ${inheritedSensitive(sql)} AS "inheritedSensitive",
+    ${inheritedSensitive(sql, shell)} AS "inheritedSensitive",
     EXISTS (SELECT 1 FROM kin_record_links l JOIN kin_workers k
         ON k.org_id = l.org_id AND k.worker_id = l.target
       WHERE l.org_id = r.org_id AND l.record_id = r.record_id AND l.kind = 'worker'

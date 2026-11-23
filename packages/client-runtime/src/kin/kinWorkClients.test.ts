@@ -405,6 +405,54 @@ describe("kinClientPageView", () => {
     expect(kinClientPageView(page({ kind: "vendor" }), names, now, true).nextStep).toBeNull();
   });
 
+  it("marks a promise row with where it was made, and reads the contract's dates", () => {
+    const record = (key: string, category: string, from?: object) => ({
+      recordId: `r-${key}`,
+      orgId: "org",
+      key,
+      title: `Invented ${key}`,
+      state: "open",
+      waitingOn: null,
+      owner: { _tag: "person", personId: zoya },
+      category,
+      side: "ours",
+      dueAt: null,
+      dueAllDay: false,
+      late: false,
+      confirmed: true,
+      sensitive: false,
+      working: false,
+      pullRequest: null,
+      rev: 1,
+      createdAt: "2026-11-01T10:00:00.000Z",
+      updatedAt: "2026-11-01T10:00:00.000Z",
+      closedAt: null,
+      ...(from === undefined ? {} : { from }),
+    });
+    const view = kinClientPageView(
+      {
+        ...page({}),
+        weOwe: {
+          records: [
+            record("W-1", "obligation", { kind: "note", note: "At the site visit" }),
+            record("W-2", "task"),
+          ],
+          total: 2,
+        },
+        contract: { project: "P-1", renewsOn: "2027-03-01", noticeBy: "2026-12-31" },
+      } as unknown as KinPartyPage,
+      names,
+      now,
+      true,
+    );
+    expect(view.weOwe.rows.map((row) => row.promise)).toEqual([
+      { from: "At the site visit", open: null },
+      null,
+    ]);
+    expect(view.contract).toEqual({ text: "Renews 1 Mar · notice by 31 Dec", soon: false });
+    expect(kinClientPageView(page({}), names, now, true).contract).toBeNull();
+  });
+
   it("says who adds its contacts to a reader who can't", () => {
     const reader = (can: KinPartyPage["can"], party: Partial<KinPartyPage["party"]> = {}) =>
       kinClientPageView(page(party, can), names, now, false).contactsWho;

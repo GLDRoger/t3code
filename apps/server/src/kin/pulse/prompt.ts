@@ -19,10 +19,10 @@ import { covers, endedHolds } from "./holds.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { teamHoursNow } from "./nudge.ts";
-import { DEAL_SENSES } from "./senses/deals.ts";
+import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
 
 export const PULSE_RULE =
-  "What needs attention, as Kin computed it from its own records just now. Nobody asked for these facts, so each one you raise arrives one tap from done: do what you may do alone and say it in a line; draft what leaves the company (mail to its writeTo, its document attached, from an account in mailFrom) so its card waits on him; or put one kin_ask with the real options and a default. When the head start can't be made, say once what is missing, such as no contact with an email; never ask whether to start. Leave a fact that needs nothing or is already in hand. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
+  "What needs attention, as Kin computed it from its own records just now. Nobody asked for these facts, so each one you raise arrives one tap from done: do what you may do alone and say it in a line; draft what leaves the company (a mail_send to its writeTo by kin_connection_call, its document attached, from an account in mailFrom) so its card waits on him; or put one kin_ask with the real options and a default. When the head start can't be made, say once what is missing, such as no contact with an email; never ask whether to start. Leave a fact that needs nothing or is already in hand. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
 export const CHECK_IN_PULSE_RULE =
   "Tell him each fact below once. When a fact's setAsideEnded says it had been set aside, first say so in a few words, with whose word it was, then what is open about it. What he was told and hasn't changed is left out: don't recall it.";
 /** The morning check-in, which took over the morning brief's sections; the app greets above it. */
@@ -112,7 +112,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     consequence: fact.consequence,
     // A renewal's heads-up only mentions it; who drafts it acts from the draft day.
     ...(fact.stage === "heads_up" ? {} : { acts: who(fact.actor) }),
-    ...(DEAL_SENSES.has(fact.sense) ? { heading: "Clients" } : {}),
+    ...(LOOKED_AFTER_SENSES.has(fact.sense) ? { heading: "Clients" } : {}),
     ...(fact.measure?.from._tag === "playbook"
       ? { playbook: `${fact.measure.from.title} (${fact.measure.from.key})` }
       : {}),

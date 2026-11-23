@@ -210,7 +210,7 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
   }
 
   // spec_changed: an open task written from a doc section that reads differently now.
-  const anchored = yield* sql<RecordRow>`${selectRecords(sql)}
+  const anchored = yield* sql<RecordRow>`${selectRecords(sql, false)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state IN ${sql.in(OPEN)}
       AND json_extract(r.fields_json, '$.fromDoc') IS NOT NULL AND r.updated_at <= ${at}
     ORDER BY r.key LIMIT ${SENSE_CAP}`;

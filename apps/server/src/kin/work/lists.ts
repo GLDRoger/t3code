@@ -51,7 +51,8 @@ export const LISTS: Record<ListName, List> = {
     categories: ["task", "issue", "obligation", "meeting"],
     // The project spine: a milestone's key, S/M/L, why its holder was picked, the doc section it
     // came from with that section's hash then, a meeting's people and place, the holder not
-    // told yet that it is theirs, and who is on it besides its holder (`person:<id>`, `agent:<id>`).
+    // told yet that it is theirs, who is on it besides its holder (`person:<id>`, `agent:<id>`),
+    // and where a promise was made (`promises.ts`).
     fields: [
       "milestone",
       "size",
@@ -62,6 +63,7 @@ export const LISTS: Record<ListName, List> = {
       "fromHash",
       "attendees",
       "where",
+      "from",
       "alsoOn",
     ],
   },
@@ -92,8 +94,18 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "done", "dropped"],
     // None is an ordinary project; a campaign's `audience` is a tag (`tags.ts`).
     categories: ["campaign"],
-    // `members` holds `person:<id>` and `agent:<id>`; days are `YYYY-MM-DD`.
-    fields: ["repos", "billing", "value", "startsOn", "renewsOn", "members", "audience"],
+    // `members` holds `person:<id>` and `agent:<id>`; days are `YYYY-MM-DD`; `noticeDays` a whole
+    // number as text.
+    fields: [
+      "repos",
+      "billing",
+      "value",
+      "startsOn",
+      "renewsOn",
+      "noticeDays",
+      "members",
+      "audience",
+    ],
   },
   milestones: {
     name: "Milestones",

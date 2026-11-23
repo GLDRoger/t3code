@@ -13,6 +13,8 @@ import { KinRecordId, KinRecordKey } from "./kinWork.ts";
  * fact and its consequence; the agent woken by it decides what, if anything, to do.
  */
 
+/** The senses the promises feature adds: a contract's notice day (`notice_due`). */
+export const KIN_PROMISE_SENSES = ["notice_due"] as const;
 const KIN_PULSE_SENSES = [
   "task_late",
   "task_due_soon",
@@ -54,6 +56,7 @@ const KIN_PULSE_SENSES = [
   "number_stale",
   "entry_late",
   "entry_check",
+  ...KIN_PROMISE_SENSES,
 ] as const;
 /**
  * Senses newer than the first phones: a screen read sends them only to a client that lists them
@@ -69,6 +72,7 @@ export const KIN_PULSE_LATER_SENSES = [
   "number_stale",
   "entry_late",
   "entry_check",
+  ...KIN_PROMISE_SENSES,
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;
