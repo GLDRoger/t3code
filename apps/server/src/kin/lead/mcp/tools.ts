@@ -207,7 +207,7 @@ export const KinLeadToolkit = Toolkit.make(
     ...chat,
     dependencies: [...chat.dependencies, KinServer],
     description:
-      "Withdraw a message of yours that no one has read yet.",
+      'Take back a message of yours that no one in its chat has read yet, once it no longer matters: a chase a payment answered, a reminder of a meeting that happened. Never one that is still true. messageId: as listed under your unread messages. why: what changed, in a few words people read in the chat as "<you> withdrew a message: <why>". Its notification goes too, and a question on its card is withdrawn with it. Refused once anyone there has read it: then say what changed in a new message. Never a message with a Confirm card.',
     parameters: Schema.Struct({
       messageId: KinMessageId,
       why: TrimmedNonEmptyString.check(Schema.isMaxLength(KIN_WITHDRAW_WHY_MAX)),
@@ -218,7 +218,7 @@ export const KinLeadToolkit = Toolkit.make(
     ...chat,
     dependencies: [...chat.dependencies, KinServer],
     description:
-      "Replace a message of yours that no one has read yet.",
+      "Put the current version in place of a message of yours that no one in its chat has read yet, when it is still about the same thing but no longer right: a new figure, a moved date. messageId: as listed under your unread messages. body: the whole new message. It shows where the old one was, marked updated, and its notification shows the new words. Refused once anyone there has read it: then say what changed in a new message. Never a message with a Confirm card.",
     parameters: Schema.Struct({ messageId: KinMessageId, body: KinAgentMessageBody }),
     success: Schema.Struct({ messageId: KinMessageId, replaced: Schema.Literal(true) }),
   }).annotate(McpSchema.EnabledWhen, enabled),

@@ -152,7 +152,7 @@ export const PROMPT_HEADINGS = {
 } as const;
 /** The one rule under `PROMPT_HEADINGS.unread`. */
 export const UNREAD_RULE =
-  "Keep these true: leave, withdraw or replace each.";
+  "Before you say anything new, keep these true: leave each one that still stands, even if your reply repeats it, and any you cannot check; take back one that no longer matters with message_withdraw; put the current version in place of one that is now wrong with message_replace.";
 /** Each fixed label a lead's prompt puts on a quote; Kin's evals check a case's labels against these. */
 export const QUOTE_LABELS = {
   docReference: "doc reference (data)",
