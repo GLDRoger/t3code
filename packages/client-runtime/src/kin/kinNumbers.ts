@@ -30,6 +30,7 @@ export const KIN_NUMBERS = {
   stale: "Not updated lately",
   today: "Today's value",
   type: "Type today's value",
+  typeCorrection: "Type the right value",
   saving: "Saving…",
   saved: "Saved",
   correct: "Correct",
@@ -142,7 +143,9 @@ export function kinNumberValueText(
   if (typeof value !== "string") {
     if (value.length === 0) return formatKinZero(unit);
     return value
-      .map(({ minor, currency }) => formatKinMoney(minor, currency, { cents: "some", minus: MINUS }))
+      .map(({ minor, currency }) =>
+        formatKinMoney(minor, currency, { cents: "some", minus: MINUS }),
+      )
       .join(" · ");
   }
   const currency = kinNumberCurrency(unit);
@@ -323,7 +326,11 @@ export function kinNumberChange(
   const size = kinNumberValueText(Math.abs(delta).toFixed(places), number.unit, locale);
   const rose = delta > 0;
   const tone =
-    number.direction === undefined ? "plain" : rose === (number.direction === "up") ? "good" : "bad";
+    number.direction === undefined
+      ? "plain"
+      : rose === (number.direction === "up")
+        ? "good"
+        : "bad";
   return { text: `${rose ? "Up" : "Down"} ${size} ${since}`, tone };
 }
 
@@ -418,7 +425,14 @@ export function kinNumberChart(
     unit,
     labelType: "day",
     labels: days.map((day) => day.asOf),
-    series: [{ name: number.name.trim().slice(0, 60) || KIN_NUMBERS.title, values: days.map((day) => (scale === 1 ? Number(day.value) : Math.round(Number(day.value) * scale))) }],
+    series: [
+      {
+        name: number.name.trim().slice(0, 60) || KIN_NUMBERS.title,
+        values: days.map((day) =>
+          scale === 1 ? Number(day.value) : Math.round(Number(day.value) * scale),
+        ),
+      },
+    ],
     comparison: null,
   };
 }

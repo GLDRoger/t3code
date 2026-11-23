@@ -91,6 +91,7 @@ export function KinNumbersEntry(props: KinWorkTarget) {
 /** Today's value typed on a row: Done saves; a refusal stays under the field with what was typed. */
 function KinNumberTypeField(props: {
   readonly label: string;
+  readonly placeholder?: string;
   readonly onSave: (typed: string) => Promise<KinListOutcome<unknown>>;
   readonly onSaved?: () => void;
 }) {
@@ -118,7 +119,7 @@ function KinNumberTypeField(props: {
         returnKeyType="done"
         submitBehavior="blurAndSubmit"
         autoCorrect={false}
-        placeholder={saving ? KIN_NUMBERS.saving : KIN_NUMBERS.type}
+        placeholder={saving ? KIN_NUMBERS.saving : (props.placeholder ?? KIN_NUMBERS.type)}
         placeholderTextColorClassName="accent-placeholder"
         onChangeText={(text) => {
           setTyped(text);
@@ -251,14 +252,7 @@ function KinNumbersPlace(props: KinWorkTarget) {
           summary={`${archived.length} ${KIN_NUMBERS.archived.toLowerCase()}`}
         >
           {archived.map((definition) => (
-            <ListActionRow
-              key={definition.key}
-              label={`${KIN_NUMBERS.restore} ${definition.name}`}
-              icon="arrow.uturn.backward"
-              onPress={() =>
-                navigation.navigate("KinNumberForm", { ...paramsOf(props), number: definition.key })
-              }
-            />
+            <KinArchivedNumberRow key={definition.key} target={props} definition={definition} />
           ))}
         </KinFoldSection>
       ) : null}
@@ -519,6 +513,7 @@ function KinNumberBody(
                   {correcting === entry.id ? (
                     <KinNumberTypeField
                       label={KIN_NUMBERS.correctOf(entry.day)}
+                      placeholder={KIN_NUMBERS.typeCorrection}
                       onSave={(typed) => save(typed, entry.asOf)}
                       onSaved={() => setCorrecting(null)}
                     />
@@ -709,5 +704,47 @@ function KinNumberForm(props: {
         </ListSection>
       )}
     </FormShell>
+  );
+}
+
+/** An archived number in the fold: Restore brings it back as it was, in one press. */
+function KinArchivedNumberRow(props: {
+  readonly target: KinWorkTarget;
+  readonly definition: KinNumberDefinition;
+}) {
+  const save = useKinNumberSave(props.target);
+  const locale = useKinNumberLocale();
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const restore = async () => {
+    if (saving) return;
+    setSaving(true);
+    setProblem(null);
+    const outcome = await save({
+      definition: props.definition,
+      draft: kinNumberDraft(props.definition, locale),
+      clientRequestId: newNumberRequestId(),
+      archived: false,
+    });
+    setSaving(false);
+    if (!outcome.ok) setProblem(outcome.problem);
+  };
+  return (
+    <View>
+      <ListActionRow
+        label={`${KIN_NUMBERS.restore} ${props.definition.name}`}
+        icon="arrow.uturn.backward"
+        onPress={() => void restore()}
+      />
+      {problem === null ? null : (
+        <Text
+          textRole="footnote"
+          className="px-4 pb-2 text-danger-foreground"
+          accessibilityLiveRegion="polite"
+        >
+          {problem}
+        </Text>
+      )}
+    </View>
   );
 }

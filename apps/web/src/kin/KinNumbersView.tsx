@@ -4,6 +4,7 @@ import {
   kinNumberChange,
   kinNumberChart,
   kinNumberDay,
+  kinNumberDraft,
   kinNumberHistory,
   kinNumberLimitsText,
   kinNumberRow,
@@ -36,6 +37,7 @@ import {
   useKinNumberDefinitions,
   useKinNumberLocale,
   useKinNumberRecord,
+  useKinNumberSave,
   useKinNumberToday,
   useKinNumberValues,
   useKinNumbers,
@@ -158,17 +160,7 @@ export function KinNumbersView(props: {
             >
               <ul className="flex flex-col gap-1">
                 {archived.map((definition) => (
-                  <li
-                    key={definition.key}
-                    className="flex items-center justify-between gap-3 px-2 py-1.5"
-                  >
-                    <span className="min-w-0 truncate text-sm text-muted-foreground">
-                      {definition.name}
-                    </span>
-                    <Button size="xs" variant="outline" onClick={() => setEditing(definition)}>
-                      {KIN_NUMBERS.restore}
-                    </Button>
-                  </li>
+                  <KinArchivedNumberRow key={definition.key} {...target} definition={definition} />
                 ))}
               </ul>
             </KinWorkSection>
@@ -409,6 +401,7 @@ function KinNumberPage(
                         <KinNumberTypeField
                           name={number.name}
                           label={KIN_NUMBERS.correctOf(entry.day)}
+                          placeholder={KIN_NUMBERS.typeCorrection}
                           onSave={(typed) => save(typed, entry.asOf)}
                           onSaved={() => setCorrecting(null)}
                         />
@@ -422,5 +415,48 @@ function KinNumberPage(
         </>
       )}
     </div>
+  );
+}
+
+/** An archived number in the fold: Restore brings it back as it was, in one press. */
+function KinArchivedNumberRow(props: KinWorkTarget & { readonly definition: KinNumberDefinition }) {
+  const save = useKinNumberSave(props);
+  const locale = useKinNumberLocale();
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const restore = async () => {
+    setSaving(true);
+    setProblem(null);
+    const outcome = await save({
+      definition: props.definition,
+      draft: kinNumberDraft(props.definition, locale),
+      clientRequestId: newNumberRequestId(),
+      archived: false,
+    });
+    setSaving(false);
+    if (!outcome.ok) setProblem(outcome.problem);
+  };
+  return (
+    <li className="flex flex-col gap-1 px-2 py-1.5">
+      <div className="flex items-center justify-between gap-3">
+        <span className="min-w-0 truncate text-sm text-muted-foreground">
+          {props.definition.name}
+        </span>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={saving}
+          aria-label={`${KIN_NUMBERS.restore} ${props.definition.name}`}
+          onClick={() => void restore()}
+        >
+          {KIN_NUMBERS.restore}
+        </Button>
+      </div>
+      {problem === null ? null : (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {problem}
+        </p>
+      )}
+    </li>
   );
 }

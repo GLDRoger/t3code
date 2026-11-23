@@ -11,6 +11,7 @@ import { Input } from "../components/ui/input";
 export function KinNumberTypeField(props: {
   readonly name: string;
   readonly label?: string;
+  readonly placeholder?: string;
   readonly onSave: (typed: string) => Promise<KinListOutcome<unknown>>;
   readonly onSaved?: () => void;
 }) {
@@ -37,7 +38,7 @@ export function KinNumberTypeField(props: {
         inputMode="decimal"
         enterKeyHint="done"
         autoComplete="off"
-        placeholder={saving ? KIN_NUMBERS.saving : KIN_NUMBERS.type}
+        placeholder={saving ? KIN_NUMBERS.saving : (props.placeholder ?? KIN_NUMBERS.type)}
         aria-label={props.label ?? `${KIN_NUMBERS.today}: ${props.name}`}
         aria-invalid={problem !== null || undefined}
         aria-describedby={problem === null ? undefined : problemId}
