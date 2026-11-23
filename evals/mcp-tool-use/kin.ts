@@ -89,6 +89,8 @@ import {
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { HEAD_START_WAKE } from "../../apps/server/src/kin/pulse/prepareWake.ts";
 import { DRAFT_DOCUMENT } from "../../apps/server/src/kin/pulse/draftWake.ts";
+import { KIN_OWN_REFUSAL } from "../../apps/server/src/kin/people/KinAccess.ts";
+import { HEAD_START_ONE_DOC } from "../../apps/server/src/kin/work/teamView.ts";
 import {
   feedTurnText,
   offTurnText,
@@ -567,6 +569,18 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       ...(project === undefined ? {} : { project }),
     };
   },
+  // A turn no person started, refused a number, a payment or a review (`refuseKinOwn`).
+  kinOwnRefusal: (input: { sink: keyof typeof KIN_OWN_REFUSAL }) => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: KIN_OWN_REFUSAL[input.sink] },
+  }),
+  // A teammate's doc head start, refused a second doc in the same turn.
+  headStartOneDoc: () => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: HEAD_START_ONE_DOC.reason,
+      message: HEAD_START_ONE_DOC.message,
+    },
+  }),
   // doc_create's and doc_edit's answer from the body written, as writeResult builds it.
   docWritten: (input: {
     key: string;
