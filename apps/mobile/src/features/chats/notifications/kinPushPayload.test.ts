@@ -10,6 +10,7 @@ import {
   kinClearedChat,
   kinDeliveredTopics,
   kinIsSilentPush,
+  kinIncomingSettled,
   kinReconcileRemovals,
   kinSettledNotificationIds,
   kinWithdrawal,
@@ -599,5 +600,60 @@ describe("kinReconcileRemovals", () => {
         now,
       ),
     ).toEqual(["settled", "forgotten-old"]);
+  });
+});
+
+describe("kinIncomingSettled", () => {
+  const arriving = (topic: string | undefined, version = 2) => ({
+    date: Date.parse("2026-11-23T12:00:00Z"),
+    request: {
+      identifier: "kin:t:abc",
+      content: {
+        data: {
+          kin: 1,
+          orgId: "kin-default",
+          deepLink: "/kin/env-1/kin-default/work",
+          ...(topic === undefined ? {} : { topic, version }),
+        },
+      },
+    },
+  });
+  const env = EnvironmentId.make("env-1");
+  it("asks the host about the push that just arrived, and hides it only if it is settled", async () => {
+    const asked: Array<unknown> = [];
+    const answer =
+      (remove: Array<{ topic: KinPushTopic; version: number }>) => (input: unknown) => {
+        asked.push(input);
+        return Promise.resolve({ remove, unknown: [] });
+      };
+    // Settled while it was on its way: not shown.
+    expect(
+      await kinIncomingSettled(
+        arriving("q:q-1"),
+        env,
+        answer([{ topic: "q:q-1" as KinPushTopic, version: 2 }]),
+      ),
+    ).toBe(true);
+    expect(asked).toEqual([{ orgId: "kin-default", topics: ["q:q-1"] }]);
+    // An older version settled; this newer one still stands.
+    expect(
+      await kinIncomingSettled(
+        arriving("q:q-1", 3),
+        env,
+        answer([{ topic: "q:q-1" as KinPushTopic, version: 2 }]),
+      ),
+    ).toBe(false);
+    expect(await kinIncomingSettled(arriving("q:q-1"), env, answer([]))).toBe(false);
+    // No answer in time: shown.
+    expect(await kinIncomingSettled(arriving("q:q-1"), env, () => Promise.resolve(null))).toBe(
+      false,
+    );
+    // Nothing to ask about another host's, or a push with no topic.
+    asked.length = 0;
+    expect(await kinIncomingSettled(arriving(undefined), env, answer([]))).toBe(false);
+    expect(
+      await kinIncomingSettled(arriving("q:q-1"), EnvironmentId.make("env-2"), answer([])),
+    ).toBe(false);
+    expect(asked).toEqual([]);
   });
 });

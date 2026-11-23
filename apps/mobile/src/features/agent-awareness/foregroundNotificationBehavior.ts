@@ -20,8 +20,9 @@ const SUPPRESS: NotificationBehavior = {
 export function foregroundNotificationBehavior(
   notification: Notification,
   deepLinkOnScreen: string | null,
+  kinSettled = false,
 ): NotificationBehavior {
-  if (kinIsSilentPush(notification)) return SUPPRESS;
+  if (kinSettled || kinIsSilentPush(notification)) return SUPPRESS;
   const target = extractAgentNotificationDeepLink({ notification });
   if (target !== null && target === deepLinkOnScreen) {
     return SUPPRESS;

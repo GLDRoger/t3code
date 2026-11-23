@@ -328,6 +328,27 @@ export function kinReconcileRemovals(
 }
 
 /**
+ * Whether a push that just arrived is already settled, so it should not be shown: the host is
+ * asked about its own topic (`ask`, the reconcile call; null when it didn't answer in time, which
+ * shows it). Another host's push, or one with no topic, is never asked about.
+ */
+export async function kinIncomingSettled(
+  notification: unknown,
+  environmentId: EnvironmentId,
+  ask: (input: {
+    readonly orgId: KinOrgId;
+    readonly topics: ReadonlyArray<KinPushTopic>;
+  }) => Promise<Pick<KinPushReconcileResult, "remove" | "unknown"> | null>,
+): Promise<boolean> {
+  const [one] = kinDeliveredTopics([notification], environmentId);
+  if (one === undefined) return false;
+  const answer = await ask({ orgId: one.orgId, topics: [one.topic] });
+  if (answer === null) return false;
+  const where = { environmentId, orgId: one.orgId };
+  return kinReconcileRemovals([notification], where, answer, one.date ?? 0).length > 0;
+}
+
+/**
  * What a host's silent push withdraws, from a background push's task payload (`data.dataString`
  * is the push's `body`): its host and company, and the settled topics with their versions. Null
  * for anything else.
