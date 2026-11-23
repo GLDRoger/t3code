@@ -20,6 +20,7 @@ import { ownerLevelSql } from "../people/KinAccess.ts";
 import { dayIn } from "../work/money.ts";
 import type { ToolNamer } from "../work/toolNames.ts";
 import { iso } from "./senses/shared.ts";
+import { keyEventSql, keySentSql } from "../chat/keySent.ts";
 
 /**
  * A record set aside (`kin_holds`): one live hold per record for the company, and one per teammate
@@ -190,12 +191,15 @@ export const wordOf = Effect.fn("KinHolds.wordOf")(function* (input: {
     passedOn: number;
     ownerLevel: number;
   }>`WITH woke AS (SELECT e.event_id AS id, e.tag,
-        json_extract(e.json, '$.origin') IS NOT NULL AS origin,
+        -- What a coding agent's key sent or wrote is passed on, never anyone's own word.
+        (json_extract(e.json, '$.origin') IS NOT NULL
+          OR ${sql.literal(keyEventSql("e"))}) AS origin,
         CASE WHEN json_extract(e.json, '$.provenance._tag') = 'human'
           THEN json_extract(e.json, '$.provenance.personId') END AS by,
         CASE WHEN e.tag IN ('chat.message', 'widget.action')
             AND json_extract(e.json, '$.origin') IS NULL AND m.origin_json IS NULL
             AND m.author_kind = 'human' AND m.chat_id = json_extract(e.json, '$.chatId')
+            AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
           THEN m.author_person_id END AS person,
         COALESCE(${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))}, 0) AS "ownerLevel"
       FROM kin_events e

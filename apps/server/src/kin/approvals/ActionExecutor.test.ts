@@ -1582,8 +1582,20 @@ describe("KinActionExecutor", () => {
     // `messageable` only reads the caller's own list of agents they may message: one SELECT,
     // scoped to their person row, that writes nothing and opens no chat.
     const messageable = /export const messageable = [\s\S]*?\n\}\);/.exec(
-      source("kin/lead/KinLeadProvision.ts"),
+      source("kin/lead/messageable.ts"),
     )?.[0];
+    // Its own module, so a person's coding agent key lists who it may message without reaching
+    // the provisioning module: that one read is all the module holds, and it is all the key takes.
+    assert.deepStrictEqual(importers("kin/lead/messageable.ts"), [
+      "kin/lead/KinLeadProvision.ts",
+      "kin/tasksKey/people.ts",
+    ]);
+    assert.strictEqual(
+      source("kin/lead/messageable.ts")
+        .match(/^export const \w+/gm)
+        ?.join(),
+      "export const messageable",
+    );
     assert.isDefined(messageable);
     assert.match(messageable!, /me\.person_id = \$\{person\.personId\}/);
     assert.match(messageable!, /WHERE l\.org_id = \$\{person\.orgId\}/);

@@ -60,6 +60,7 @@ import {
 } from "./companyProfile.ts";
 import { campaignsNamed, partyPage, projectDetail, sourceShown } from "./crm.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
+import { keyEventSql, keySentSql } from "../chat/keySent.ts";
 import { fold, matchName } from "./nameMatch.ts";
 import { lastContacts } from "./touches.ts";
 import {
@@ -837,6 +838,8 @@ export const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) 
   const rows = yield* sql<{ person: string | null; owner: string }>`
     SELECT CASE
         WHEN json_extract(e.json, '$.origin.personId') IS NOT NULL THEN NULL
+        -- What a coding agent's key sent or wrote is nobody's own ask.
+        WHEN ${sql.literal(keyEventSql("e"))} THEN NULL
         WHEN e.tag IN ('chat.message', 'widget.action') AND m.author_kind = 'human'
           AND m.chat_id = json_extract(e.json, '$.chatId') THEN m.author_person_id
         WHEN e.tag IN ('chat.reaction', 'record.changed')
@@ -3669,7 +3672,7 @@ const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
       AND m.chat_id = json_extract(e.json, '$.chatId')
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId}
       AND e.wakeup_id = ${lead.wakeupId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
-      AND m.origin_json IS NULL
+      AND m.origin_json IS NULL AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       AND m.author_person_id IN ${sql.in(owners.length === 0 ? [""] : owners)}
     LIMIT 1`;
   if (said.length > 0) return;

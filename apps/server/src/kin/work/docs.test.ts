@@ -1171,7 +1171,7 @@ it.effect(
         (yield* OwnerDocs.get([owner], { orgId, key: appDoc.key })).deleted?.by,
         { _tag: "person", personId: ids.dev },
       );
-      // A coding agent's key reaches no doc, and an agent's character and What we sell aren't deleted.
+      // A coding agent's key deletes no doc, and an agent's character and What we sell aren't deleted.
       assert.strictEqual(
         reasonOf(
           yield* Effect.flip(
@@ -1187,7 +1187,7 @@ it.effect(
             ),
           ),
         ),
-        "not_found",
+        "not_allowed",
       );
       const offerings = yield* newDoc(plan, { title: "What we sell", originKey: OFFERINGS_ORIGIN });
       yield* seedCharacters(orgId);

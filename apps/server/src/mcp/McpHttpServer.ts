@@ -1417,10 +1417,14 @@ export const toolCallAround = <E extends McpSchema.McpErrorBase, R>(
     { global: true },
   );
 
-export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE, RR>) =>
+export const layerMcpTransport = <RA, RE, RR>(
+  registrations: Layer.Layer<RA, RE, RR>,
+  options: { readonly instructions?: string } = {},
+) =>
   McpServer.layerHttp({
     name: "T3 Code",
     version: packageJson.version,
+    ...options,
     path: MCP_HTTP_PATH,
     protocols: mcpProtocols,
     allowSessionTermination: true,

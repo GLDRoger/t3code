@@ -17,7 +17,7 @@ import {
   OPEN_QUESTION_HEADINGS,
   openQuestionsHeading,
 } from "../../apps/server/src/kin/questions/openQuestions.ts";
-import { fillKinMock, isKinCase, isKinTool, KIN_TOOLKITS } from "./kin.ts";
+import { fillKinMock, isKinCase, isKinTool, KIN_KEY_TOOLKIT, KIN_TOOLKITS } from "./kin.ts";
 import type { McpToolUseCase } from "./run.ts";
 
 type KinTool = {
@@ -26,6 +26,10 @@ type KinTool = {
 };
 const KIN_TOOLS: ReadonlyMap<string, KinTool> = new Map(
   KIN_TOOLKITS.flatMap((toolkit) => Object.entries(toolkit.tools as Record<string, KinTool>)),
+);
+// A person's key has tools of its own, some named as an agent's are (`money_summary`).
+const KIN_KEY_TOOLS: ReadonlyMap<string, KinTool> = new Map(
+  Object.entries(KIN_KEY_TOOLKIT.tools as Record<string, KinTool>),
 );
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -104,7 +108,7 @@ export const kinMockProblems = (
   world?: Parameters<typeof fillKinMock>[2],
 ): ReadonlyArray<string> =>
   Object.entries(mocks ?? {}).flatMap(([name, mock]) => {
-    const tool = KIN_TOOLS.get(name);
+    const tool = (world?.kinKey === true ? KIN_KEY_TOOLS : KIN_TOOLS).get(name);
     if (tool === undefined)
       return known.has(name) ? [] : [`mocks ${name}, which no Kin toolkit or catalog has`];
     return answers(mock, name).flatMap(({ at, answer: raw }) => {
