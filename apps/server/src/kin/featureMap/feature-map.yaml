@@ -673,6 +673,38 @@ features:
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof: [.agents/skills/verify-kin/scripts/owner-money-forms.sh]
 
+  - id: numbers
+    name: Numbers, each watched number's latest value with today's typed on its row
+    tab: chats
+    web: [numbers]
+    phone: [tab:chats, KinNumbers]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A place of its own, off the phone dock: the sidebar after the work places, and a row on the
+      phone's Chats. Anyone below the owner level has it only while a number is shared with them
+      (Money on), and types only a typed number shared with them.
+    proof:
+      - packages/client-runtime/src/kin/kinNumbers.test.ts
+      - apps/web/src/kin/KinNumberTypeField.browser.test.tsx
+      - apps/server/src/kin/numbers/KinNumbers.test.ts
+
+  - id: number-page
+    name: A number's page, its line, limits and history, with Correct
+    tab: chats
+    web: [numbers, section:History]
+    phone: [tab:chats, KinNumbers, KinNumber]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    proof: [packages/client-runtime/src/kin/kinNumbers.test.ts]
+
+  - id: number-watch
+    name: Watch a number, change, share, archive and restore it
+    tab: chats
+    web: [numbers, dialog:Watch a number]
+    phone: [tab:chats, KinNumbers, KinNumberForm]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [apps/server/src/kin/numbers/KinNumbers.test.ts]
+
   - id: subscriptions
     name: Subscriptions
     tab: money
@@ -1667,9 +1699,6 @@ features:
       - apps/server/src/kin/numbers/KinNumbers.test.ts
 
 unlisted:
-  "rpc:kin.numbers.list": Served; Numbers screens land separately.
-  "rpc:kin.numbers.values": Served; Numbers screens land separately.
-  "rpc:kin.numbers.record": Served; Numbers screens land separately.
   "web:team": Old address; opens the Settings modal on Team.
   "web:memory": Old address; opens the Settings modal on Memory.
   "web:settings/approvals": The app's old address; opens Kin's Settings → Approvals.
