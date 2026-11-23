@@ -10,6 +10,7 @@ import {
   kinClearedChat,
   kinDeliveredTopics,
   kinIsSilentPush,
+  kinReconcileRemovals,
   kinSettledNotificationIds,
   kinWithdrawal,
   kinWithdrawnIds,
@@ -547,5 +548,49 @@ describe("kinIsSilentPush", () => {
     ],
   ] as const)("%s", (_name, content, silent) => {
     expect(kinIsSilentPush(delivered(content))).toBe(silent);
+  });
+});
+
+describe("kinReconcileRemovals", () => {
+  it("removes what the host settled, and what it forgot once older than a week", () => {
+    const now = Date.parse("2026-11-23T12:00:00Z");
+    const day = 24 * 60 * 60 * 1000;
+    const note = (identifier: string, topic: string, daysOld: number) => ({
+      date: now - daysOld * day,
+      request: {
+        identifier,
+        content: {
+          data: {
+            kin: 1,
+            orgId: "kin-default",
+            deepLink: "/kin/env-1/kin-default/work",
+            topic,
+            version: 1,
+          },
+        },
+      },
+    });
+    const presented = [
+      note("settled", "w:card-1", 1),
+      note("forgotten-old", "a:act-1", 8),
+      // The host may simply not be the one that sent it: younger than a week, it stays.
+      note("forgotten-young", "a:act-2", 3),
+      note("standing", "q:q-1", 9),
+    ];
+    const here = {
+      environmentId: EnvironmentId.make("env-1"),
+      orgId: KinOrgId.make("kin-default"),
+    };
+    expect(
+      kinReconcileRemovals(
+        presented,
+        here,
+        {
+          remove: [{ topic: "w:card-1" as KinPushTopic, version: 1 }],
+          unknown: ["a:act-1", "a:act-2"] as Array<KinPushTopic>,
+        },
+        now,
+      ),
+    ).toEqual(["settled", "forgotten-old"]);
   });
 });

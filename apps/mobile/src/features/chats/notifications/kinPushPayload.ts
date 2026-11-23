@@ -1,11 +1,13 @@
 import {
   EnvironmentId,
+  KIN_PUSH_KEPT_MS,
   KinPushCategory,
   KinPushData,
   kinDeferralItemIdFromWidgetId,
   type KinChatId,
   type KinOrgId,
   type KinPushTopic,
+  type KinPushReconcileResult,
   type KinPushWithdrawn,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
@@ -259,14 +261,25 @@ export function kinDeliveredTopics(
   readonly topic: KinPushTopic;
   /** 0 when the push named none: any withdrawal of its topic covers it. */
   readonly version: number;
+  /** When it was delivered, if the OS says. */
+  readonly date: number | undefined;
 }> {
   return presented.flatMap((notification) => {
     const request = field(notification, "request");
     const identifier = field(request, "identifier");
     const data = pushData(field(field(request, "content"), "data"))?.data;
     if (typeof identifier !== "string" || data?.topic === undefined) return [];
+    const date = field(notification, "date");
     return linkTarget(data)?.environmentId === environmentId
-      ? [{ identifier, orgId: data.orgId, topic: data.topic, version: data.version ?? 0 }]
+      ? [
+          {
+            identifier,
+            orgId: data.orgId,
+            topic: data.topic,
+            version: data.version ?? 0,
+            date: typeof date === "number" ? date : undefined,
+          },
+        ]
       : [];
   });
 }
@@ -285,6 +298,32 @@ export function kinWithdrawnIds(
   for (const one of settled) upTo.set(one.topic, Math.max(one.version, upTo.get(one.topic) ?? 0));
   return kinDeliveredTopics(presented, where.environmentId).flatMap((one) =>
     one.orgId === where.orgId && one.version <= (upTo.get(one.topic) ?? -1) ? [one.identifier] : [],
+  );
+}
+
+/**
+ * What the host's reconcile answer takes off the phone: what it settled, by version, and what it
+ * keeps no record of once delivered longer ago than it remembers (`KIN_PUSH_KEPT_MS`). One it
+ * doesn't know that is younger may be another host's sending, so it stays.
+ */
+export function kinReconcileRemovals(
+  presented: ReadonlyArray<unknown>,
+  where: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId },
+  answer: Pick<KinPushReconcileResult, "remove" | "unknown">,
+  now: number,
+): ReadonlyArray<string> {
+  const settled = new Set(kinWithdrawnIds(presented, where, answer.remove));
+  const forgotten = new Set<string>(answer.unknown);
+  for (const one of kinDeliveredTopics(presented, where.environmentId))
+    if (
+      one.orgId === where.orgId &&
+      forgotten.has(one.topic) &&
+      one.date !== undefined &&
+      now - one.date > KIN_PUSH_KEPT_MS
+    )
+      settled.add(one.identifier);
+  return kinDeliveredTopics(presented, where.environmentId).flatMap((one) =>
+    settled.has(one.identifier) ? [one.identifier] : [],
   );
 }
 

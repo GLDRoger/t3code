@@ -111,6 +111,12 @@ export const KinPushTopic = Schema.String.check(
 );
 export type KinPushTopic = typeof KinPushTopic.Type;
 
+/**
+ * How long a host remembers a push it sent (`kin_push_sent`), and so how long a push may wait for
+ * a phone: one delivered later could never be withdrawn. Seven days.
+ */
+export const KIN_PUSH_KEPT_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** At most this many topics in one withdrawal or one reconcile. */
 export const KIN_PUSH_TOPICS_MAX = 200;
 
@@ -201,9 +207,13 @@ export const KinPushReconcileInput = Schema.Struct({
 });
 export type KinPushReconcileInput = typeof KinPushReconcileInput.Type;
 
-/** Of those, the ones sent to the caller that are settled, and the caller's badge now. */
+/**
+ * Of those, the ones sent to the caller that are settled, the ones the host keeps no record of
+ * (never sent to them, or forgotten after `KIN_PUSH_KEPT_MS`), and the caller's badge now.
+ */
 export const KinPushReconcileResult = Schema.Struct({
   remove: Schema.Array(KinPushWithdrawn),
+  unknown: Schema.Array(KinPushTopic),
   badge: NonNegativeInt,
 });
 export type KinPushReconcileResult = typeof KinPushReconcileResult.Type;

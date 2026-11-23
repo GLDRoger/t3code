@@ -17,7 +17,11 @@ import { AppState, Platform } from "react-native";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { kinClient } from "../state/kinClient";
 import { kinHostAtom } from "../state/useKinHost";
-import { kinDeliveredTopics, kinSettledNotificationIds, kinWithdrawnIds } from "./kinPushPayload";
+import {
+  kinDeliveredTopics,
+  kinReconcileRemovals,
+  kinSettledNotificationIds,
+} from "./kinPushPayload";
 
 const warn = (what: string) => (cause: unknown) => console.warn(what, cause);
 
@@ -52,8 +56,8 @@ async function reconcileWithHost(environmentId: EnvironmentId): Promise<void> {
     );
     if (result._tag !== "Success") continue;
     await Promise.all(
-      kinWithdrawnIds(presented, { environmentId, orgId }, result.value.remove).map((identifier) =>
-        Notifications.dismissNotificationAsync(identifier),
+      kinReconcileRemovals(presented, { environmentId, orgId }, result.value, Date.now()).map(
+        (identifier) => Notifications.dismissNotificationAsync(identifier),
       ),
     );
     if (Platform.OS === "ios") await Notifications.setBadgeCountAsync(result.value.badge);

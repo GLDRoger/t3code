@@ -2,6 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
+  KIN_PUSH_KEPT_MS,
   KinActionId,
   KinChatId,
   type KinMemberId,
@@ -14,7 +15,6 @@ import {
   type KinWidgetId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -28,9 +28,6 @@ import { memberReads } from "../chat/sharing.ts";
 import { factsStand } from "../pulse/factState.ts";
 import { aboutOf, noteAbout } from "./pushAbout.ts";
 import { canHearRecord } from "../work/recordComments.ts";
-
-/** How long the host remembers a push it sent. */
-const KIN_PUSH_SENT_KEPT = Duration.days(7);
 
 export const chatTopic = (chatId: KinChatId) => `c:${chatId}` as KinPushTopic;
 export const cardTopic = (widgetId: KinWidgetId) => `w:${widgetId}` as KinPushTopic;
@@ -367,15 +364,17 @@ export const makeKinPushTopics = Effect.gen(function* () {
     personId: KinPersonId,
     topics: ReadonlyArray<KinPushTopic>,
   ) {
-    if (topics.length === 0) return [];
+    const asked = [...new Set(topics)];
+    if (asked.length === 0) return { remove: [], unknown: [] };
     const rows = yield* sql<KinPushSentRow>`SELECT ${sql.literal(ROW)} FROM kin_push_sent
-      WHERE org_id = ${orgId} AND person_id = ${personId} AND topic IN ${sql.in([...new Set(topics)])}
+      WHERE org_id = ${orgId} AND person_id = ${personId} AND topic IN ${sql.in(asked)}
       ORDER BY topic`;
     const remove: Array<KinPushWithdrawn> = [];
     for (const row of rows)
       if (row.withdrawnAt !== null || !(yield* stands(orgId, row)))
         remove.push({ topic: row.topic, version: row.version });
-    return remove;
+    const known = new Set(rows.map((row) => row.topic));
+    return { remove, unknown: asked.filter((topic) => !known.has(topic)) };
   });
 
   /** Live rows after `after`, oldest first, across orgs: the recovery pass's next page. */
@@ -414,10 +413,10 @@ const awaits = (awaitingJson: string, personId: KinPersonId) =>
     onSome: (ids) => ids.includes(personId),
   });
 
-/** Rows older than `KIN_PUSH_SENT_KEPT` go, a bounded batch at a time (`KinRetention`). */
+/** Rows older than `KIN_PUSH_KEPT_MS` go, a bounded batch at a time (`KinRetention`). */
 export const prunePushSent = Effect.fn("KinPushTopics.prune")(function* (now: number) {
   const sql = yield* SqlClient.SqlClient;
-  const before = now - Duration.toMillis(KIN_PUSH_SENT_KEPT);
+  const before = now - KIN_PUSH_KEPT_MS;
   for (let batch = 0; batch < PRUNE_BATCHES; batch++) {
     // Every org: a sweep by age, bounded by the batch size.
     const gone = yield* sql`DELETE FROM kin_push_sent WHERE rowid IN (

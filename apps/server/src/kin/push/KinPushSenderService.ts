@@ -48,7 +48,11 @@ export class KinPushSender extends Context.Service<
       personId: KinPersonId,
       topics: ReadonlyArray<KinPushTopic>,
     ) => Effect.Effect<
-      { readonly remove: ReadonlyArray<KinPushWithdrawn>; readonly badge: number },
+      {
+        readonly remove: ReadonlyArray<KinPushWithdrawn>;
+        readonly unknown: ReadonlyArray<KinPushTopic>;
+        readonly badge: number;
+      },
       KinPushError
     >;
   }

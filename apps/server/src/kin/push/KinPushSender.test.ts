@@ -3516,8 +3516,10 @@ describe("KinPushSender withdrawals", () => {
       const card = yield* postWidget(sql, "deferral", { phase: "confirmed" }, [owner]);
       yield* notify({ _tag: "widget", orgId, widgetId: card });
       const shown = ["c:chat_pair", `w:${card}`, "c:chat_dm", "u:device-1"] as Array<KinPushTopic>;
+      // Topics it never sent her it doesn't know: the phone decides on those by their age.
       assert.deepStrictEqual(yield* sender.reconcile(orgId, owner, shown), {
         remove: [],
+        unknown: ["c:chat_dm", "u:device-1"],
         badge: 2,
       });
       // Someone else's phone asking about her topics learns nothing of them.
@@ -3531,11 +3533,13 @@ describe("KinPushSender withdrawals", () => {
           { topic: "c:chat_pair", version: 1 },
           { topic: `w:${card}`, version: 1 },
         ],
+        unknown: ["c:chat_dm", "u:device-1"],
         badge: 0,
       });
-      // Forgotten after a week: the store keeps no row to answer from.
+      // Forgotten after a week: the store keeps no row to answer from, and says so.
       yield* prunePushSent(NOW + 8 * 24 * 60 * 60_000);
       assert.deepStrictEqual(yield* sentRows(sql), []);
+      assert.deepStrictEqual((yield* sender.reconcile(orgId, owner, shown)).unknown, shown);
     }).pipe(Effect.provide(build(apns)));
   });
 });

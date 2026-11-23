@@ -86,7 +86,12 @@ it.effect("loads the .p8 only when fully configured, and signs a token APNs can 
     );
     const token = "a".repeat(64) as KinPushToken;
     assert.deepStrictEqual(
-      apnsRequestHeaders(loaded.success, { token, environment: "development", payload: {} }, jwt),
+      apnsRequestHeaders(
+        loaded.success,
+        { token, environment: "development", payload: {} },
+        jwt,
+        1_794_096_000_000,
+      ),
       {
         ":method": "POST",
         ":path": `/3/device/${token}`,
@@ -94,6 +99,8 @@ it.effect("loads the .p8 only when fully configured, and signs a token APNs can 
         "apns-topic": "codes.kin.app",
         "apns-push-type": "alert",
         "apns-priority": "10",
+        // Never delivered after the host forgets it sent it: seven days.
+        "apns-expiration": "1794700800",
         "content-type": "application/json",
       },
     );
@@ -102,6 +109,7 @@ it.effect("loads the .p8 only when fully configured, and signs a token APNs can 
         loaded.success,
         { token, environment: "development", payload: {}, collapseId: "kin:abc" },
         jwt,
+        1_794_096_000_000,
       ),
       { "apns-collapse-id": "kin:abc" },
     );

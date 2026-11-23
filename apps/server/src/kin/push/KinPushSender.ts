@@ -1476,8 +1476,8 @@ const make = Effect.gen(function* () {
 
   const reconcile = Effect.fn("KinPushSender.reconcile")(
     function* (orgId: KinOrgId, personId: KinPersonId, asked: ReadonlyArray<KinPushTopic>) {
-      const remove = yield* topics.settledOf(orgId, personId, asked);
-      return { remove, badge: yield* badgeFor(orgId, personId) };
+      const { remove, unknown } = yield* topics.settledOf(orgId, personId, asked);
+      return { remove, unknown, badge: yield* badgeFor(orgId, personId) };
     },
     Effect.catch((error) =>
       Effect.logWarning("Kin push reconcile failed.", { error: error._tag }).pipe(
