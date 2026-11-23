@@ -1506,8 +1506,8 @@ describe("KinPushSender", () => {
         yield* notify({ _tag: "message", orgId, messageId });
         assert.deepStrictEqual(sound(), ["default", "default"], messageId);
       }
-      // A group's own reminder is for everyone there, and rings as something timed does: at any
-      // hour, the owner's quiet hours too.
+      // A group's own reminder is for everyone there, each on their own quiet hours: the owner's
+      // hold it now; Priya's, in Kolkata, are over.
       yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata' WHERE person_id = ${member}`;
       yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
           received_at, queued_at, state, wakeup_id)
@@ -1535,8 +1535,8 @@ describe("KinPushSender", () => {
           .toSorted(),
         [
           [memberPhone, "default"],
-          [ownerPhone, "default"],
-          [ownerTablet, "default"],
+          [ownerPhone, null],
+          [ownerTablet, null],
         ].toSorted(),
       );
       // Once that wake-up ends, the lead's next line is quiet again.
