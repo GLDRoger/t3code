@@ -2943,11 +2943,14 @@ const make = Effect.gen(function* () {
             Stream.mapEffect(({ viewer, event }) =>
               Effect.gen(function* (): Effect.fn.Return<KinChatListEvent, ServiceError> {
                 // Reactions, draft deltas and a message read anew don't change a chat's row; one
-                // its agent took back leaves the unread count.
+                // taken back leaves the unread count, one put right may be its preview (`changed`
+                // sends a row only when it differs).
                 if (
                   event.type === "reaction.updated" ||
                   event.type === "draft.updated" ||
-                  (event.type === "message.changed" && event.message.withdrawn === undefined)
+                  (event.type === "message.changed" &&
+                    event.message.withdrawn === undefined &&
+                    event.message.editedAt === null)
                 )
                   return yield* notFound;
                 if (event.type === "waiting.updated")

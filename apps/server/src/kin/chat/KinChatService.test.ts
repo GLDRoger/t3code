@@ -2780,6 +2780,46 @@ describe("KinChatService", () => {
       assert.deepStrictEqual(yield* mine, { person: undefined, agent: undefined });
     }).pipe(Effect.provide(presenceLayer)),
   );
+  it.effect("puts an agent's replaced latest message in a connected list as its preview", () =>
+    Effect.gen(function* () {
+      const { repo, service, person, agent, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const hub = yield* Hub.KinChatHub;
+      const sent = yield* service.send(agent, {
+        chatId: chat.chatId,
+        body: "Invoice unpaid",
+        intent: "evidence",
+        clientMessageId: "unpaid",
+      });
+      const updates = yield* Stream.toQueue(service.subscribeChats([person], {}), {
+        capacity: "unbounded",
+      });
+      assert.strictEqual((yield* Queue.take(updates))._tag, "snapshot");
+      // As `replaceOwn` does: the body in place, marked edited, told after commit.
+      const amend = Effect.fn("test.amend")(function* (body: string) {
+        yield* sql`UPDATE kin_messages SET body = ${body}, edited_at = ${timestamp}
+          WHERE message_id = ${sent.messageId}`;
+        const message = Option.getOrThrow(
+          yield* repo.getMessage({ orgId: person.orgId, messageId: sent.messageId }),
+        );
+        yield* hub.publish({ type: "message.changed", orgId: person.orgId, message });
+      });
+      yield* amend("Invoice paid");
+      const next = yield* Queue.take(updates);
+      assert.strictEqual(
+        next._tag === "chat" ? next.chat.lastMessage?.body : next._tag,
+        "Invoice paid",
+      );
+      // The same row again sends nothing: the next event is the one after it.
+      yield* amend("Invoice paid");
+      yield* amend("Invoice paid on Friday");
+      const after = yield* Queue.take(updates);
+      assert.strictEqual(
+        after._tag === "chat" ? after.chat.lastMessage?.body : after._tag,
+        "Invoice paid on Friday",
+      );
+    }).pipe(Effect.provide(presenceLayer)),
+  );
   it.effect("marks a chat working in the list while its agent's run is live", () =>
     Effect.gen(function* () {
       const { service, person, chat } = yield* seed();
