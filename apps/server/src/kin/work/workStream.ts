@@ -11,11 +11,13 @@ import {
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { bufferLatestLiveStream } from "../../orchestration-v2/LiveStreamBudget.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
 import { shownRecords, summaryOf, type Viewer, viewerOf } from "./ownerWork.ts";
 import { workFailure } from "./recordRows.ts";
@@ -33,6 +35,7 @@ const BATCH = 512;
 const BATCH_WINDOW = Duration.millis(50);
 /** As T3's thread resume (`ThreadStream.ts`): a longer gap gets `snapshot-required`. */
 const REPLAY_LIMIT = 128;
+const encodeSequences = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.Number)));
 
 /** One viewer's pending change, keyed for `bufferLatestLiveStream`: the latest per entry wins. */
 type Pending = {
@@ -81,6 +84,13 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
   const records = yield* KinRecords;
   const sql = yield* SqlClient.SqlClient;
   let viewer = yield* viewerOf(people, orgId);
+  const allocated = sql<{ seq: number }>`SELECT seq FROM sqlite_sequence
+    WHERE name = 'kin_record_changes'`.pipe(
+    Effect.map(([row]) => row?.seq ?? 0),
+    workFailure,
+  );
+  // A fresh view starts with the reservations already made before its subscription.
+  const opening = !viewer.teammate && input.afterSeq === undefined ? yield* allocated : 0;
   let level = 0;
   const shared = lastCounted.get(records) ?? new Map<KinOrgId, Counted>();
   lastCounted.set(records, shared);
@@ -96,6 +106,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
    * the later number, then cut off, would resume past the earlier change and never hear it.
    */
   let heard = 0;
+  let blockedAt: number | null = null;
   /** Numbers heard past `heard`, waiting on one before them. */
   const early = new Set<number>();
   const hear = (n: number) => {
@@ -106,19 +117,31 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
   const heardFrom = (n: number) => {
     heard = n;
     early.clear();
+    blockedAt = null;
   };
   /**
    * Where a burst may close. A teammate's own numbers run one by one, so a gap is a tick still on
-   * its way. The org's numbers are shared with every org: a gap is late only if this org's log has
-   * a change there that hasn't arrived.
+   * its way. Owner-level numbers also skip other orgs' logged changes and reserve numbers for
+   * announcements. A missing number could be an announcement that has yet to reach its burst.
    */
   const resumable = Effect.fn("KinWorkStream.resumable")(function* (top: number) {
-    if (!viewer.teammate && early.size > 0) {
-      const last = Math.max(...early);
-      const logged = yield* sql<{ seq: number }>`SELECT seq FROM kin_record_changes
-        WHERE org_id = ${orgId} AND seq > ${heard} AND seq <= ${last} ORDER BY seq`;
-      const late = logged.find((one) => !early.has(one.seq));
-      heard = late === undefined ? last : late.seq - 1;
+    if (!viewer.teammate && top > heard && early.size > 0) {
+      const from = heard;
+      const received = [...early];
+      const last = Math.max(...received);
+      const encoded = yield* encodeSequences(received);
+      const [unheard] = yield* sql<{ logged: number; late: number | null }>`SELECT
+        COUNT(*) AS logged, MIN(CASE WHEN org_id = ${orgId} THEN seq END) AS late
+        FROM kin_record_changes WHERE seq > ${from} AND seq <= ${last}
+          AND seq NOT IN (SELECT value FROM json_each(${encoded}))`;
+      if ((unheard?.logged ?? 0) !== last - from - received.length) {
+        // Give a late announcement its own burst. A gap from another org may never send one here.
+        if (blockedAt === from) return null;
+        blockedAt = from;
+        return Math.min(top, heard);
+      }
+      blockedAt = null;
+      heard = Math.max(heard, unheard?.late == null ? last : unheard.late - 1);
       for (const n of early) if (n <= heard) early.delete(n);
     }
     return Math.min(top, heard);
@@ -157,6 +180,8 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     seen = viewer.teammate ? yield* teamKeyLists(orgId, own(viewer)).pipe(workFailure) : new Map();
     held = null;
     const seq = Math.max(yield* numberNow(viewer), viewer.teammate ? 0 : gap);
+    // A restart can follow a committed switch before its cache invalidation callback runs.
+    yield* KinShell.invalidate(orgId);
     heardFrom(seq);
     const whole = yield* counts(seq);
     return [
@@ -220,11 +245,9 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     let seq = viewer.teammate ? yield* numberNow(viewer) : now;
     if (!viewer.teammate && after !== undefined) {
       // Announcements reserve numbers without change rows. Replay must check through the allocator.
-      const [allocated] = yield* sql<{ seq: number }>`SELECT seq FROM sqlite_sequence
-        WHERE name = 'kin_record_changes'`.pipe(workFailure);
-      seq = Math.max(seq, allocated?.seq ?? 0);
+      seq = Math.max(seq, yield* allocated);
     }
-    heardFrom(seq);
+    heardFrom(Math.max(seq, opening));
     if (after === undefined) {
       const whole = yield* counts(seq);
       return whole === null ? [] : [whole];
@@ -248,8 +271,8 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     const base = { list: tick.registerId ?? null, created: tick.created === true, level };
     const mine = tick.people?.includes(viewer.person.personId) === true;
     if (!viewer.teammate) {
-      // A people tick reuses the latest change's number; it isn't that change arriving.
-      if (tick.people === undefined) hear(tick.seq);
+      // A people tick reuses a number, and a whole-view tick needs its snapshot sent first.
+      if (tick.people === undefined && tick.key !== undefined) hear(tick.seq);
       // Someone else's places don't move what an owner-level viewer sees; their own level may.
       if (tick.people !== undefined)
         return mine ? [{ ...base, sequence: tick.seq, key: RESCAN }] : [];
@@ -295,6 +318,8 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     if (gaps.length > 0) return yield* restart(Math.max(...gaps.map((one) => one.sequence)));
     if (viewer.teammate && items.some((one) => one.key === PLACES)) return yield* restart();
     const top = Math.max(...items.map((one) => one.sequence));
+    const close = yield* resumable(top).pipe(workFailure);
+    if (close === null) return yield* restart(top);
     const keyed = new Map(items.filter((one) => one.key !== RESCAN).map((one) => [one.key, one]));
     const at = { sequence: top, created: false, level };
     const add = (key: string, list: string) => {
@@ -322,7 +347,6 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
         }
     }
     const rows = yield* rowsNow([...keyed.values()]);
-    const close = yield* resumable(top).pipe(workFailure);
     const moved = yield* counts(close, newest);
     if (rows.length === 0) return moved === null ? [] : [moved];
     return [...rows, moved ?? ({ _tag: "synchronized", seq: close, ...team() } satisfies Out)];
