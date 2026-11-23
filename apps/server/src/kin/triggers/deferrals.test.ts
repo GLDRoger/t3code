@@ -416,6 +416,37 @@ it.effect.each([
   }).pipe(Effect.provide(layerFor([deferral]))),
 );
 
+// A lost answer's retry: the same tap again gets the first answer; a second tap is refused.
+it.effect.each(["start_now", "monday", "cancel"] as const)(
+  "an exact repeat of a committed %s answers as the first did; a double tap is refused",
+  (action) =>
+    Effect.gen(function* () {
+      yield* setup();
+      yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
+      yield* tick(headsUpAt);
+      const chat = yield* Chat.KinChatService;
+      const drawn = yield* cardOf("def-1");
+      const send = (clientActionId: string) =>
+        chat
+          .act(
+            { _tag: "person", orgId, personId: KinPersonId.make(`owner-${orgId}`) },
+            { widgetId, revision: drawn.revision, actionId: action, value: "def-1", clientActionId },
+          )
+          .pipe(Effect.result);
+      const first = yield* send("tap-1");
+      assert.equal(outcome(first), "ok");
+      const after = { run: yield* runOf("def-1"), card: yield* cardOf("def-1") };
+      const again = yield* send("tap-1");
+      assert.equal(
+        again._tag === "Success" && again.success.messageId,
+        first._tag === "Success" && first.success.messageId,
+      );
+      assert.equal(outcome(yield* send("tap-2")), "widget_changed");
+      assert.deepStrictEqual({ run: yield* runOf("def-1"), card: yield* cardOf("def-1") }, after);
+      assert.lengthOf(yield* starts(), action === "start_now" ? 1 : 0);
+    }).pipe(Effect.provide(layerFor([deferral]))),
+);
+
 it.effect(
   "[Monday] moves the run until memory moves it and asks again then; [Cancel] holds the same way",
   () => {

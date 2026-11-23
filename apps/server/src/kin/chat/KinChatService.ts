@@ -577,6 +577,16 @@ const chatOwnAsker = (widget: KinWidget) =>
 /** Matches the choice card's window and the wake-up catch-up: older messages are not worth a wake. */
 const SOFT_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const encodeAction = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeTapBody = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      widgetId: Schema.String,
+      revision: Schema.Number,
+      actionId: Schema.String,
+      value: Schema.optional(Schema.Unknown),
+    }),
+  ),
+);
 const invalidState = new KinChatError({ reason: "invalid_state", message: "Invalid chat input." });
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 /** How a dismissed card's waiting rows read as resolved. */
@@ -1298,6 +1308,27 @@ const make = Effect.gen(function* () {
     reaction: { readonly emoji: KinReactionEmoji } | null,
   ) {
     if (widget.type === "chart" || widget.type === KIN_VISUAL_CARD_TYPE) return yield* invalidState;
+    // A deferral tap that committed answers its exact repeat as it did, whatever the card shows now.
+    if (widget.type === "deferral") {
+      const repeat = yield* repo.findClientMessage({
+        ...member,
+        kind: "act",
+        clientId: request.clientActionId,
+      });
+      const sent = Option.flatMap(repeat, (message) => decodeTapBody(message.body));
+      if (
+        Option.isSome(repeat) &&
+        Option.isSome(sent) &&
+        repeat.value.author._tag === "human" &&
+        repeat.value.author.personId === identity.personId &&
+        repeat.value.widgetId === request.widgetId &&
+        sent.value.widgetId === request.widgetId &&
+        sent.value.revision === request.revision &&
+        sent.value.actionId === request.actionId &&
+        sent.value.value === request.value
+      )
+        return repeat.value;
+    }
     const choice = widget.type === "choice" ? yield* ChoiceCard.readChoice(widget, request) : null;
     const reminder =
       widget.type === "reminder"
