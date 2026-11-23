@@ -6,6 +6,7 @@ import {
   type KinChatId,
   type KinOrgId,
   type KinPushTopic,
+  type KinPushWithdrawn,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
 import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
@@ -251,6 +252,8 @@ export function kinDeliveredTopics(
   readonly identifier: string;
   readonly orgId: KinOrgId;
   readonly topic: KinPushTopic;
+  /** 0 when the push named none: any withdrawal of its topic covers it. */
+  readonly version: number;
 }> {
   return presented.flatMap((notification) => {
     const request = field(notification, "request");
@@ -258,36 +261,37 @@ export function kinDeliveredTopics(
     const data = pushData(field(field(request, "content"), "data"))?.data;
     if (typeof identifier !== "string" || data?.topic === undefined) return [];
     return linkTarget(data)?.environmentId === environmentId
-      ? [{ identifier, orgId: data.orgId, topic: data.topic }]
+      ? [{ identifier, orgId: data.orgId, topic: data.topic, version: data.version ?? 0 }]
       : [];
   });
 }
 
 /**
- * Of this host's delivered notifications for `where.orgId`, the ids of those whose topic the host
- * settled: a topic is one company's on one host, so another's is never touched.
+ * Of this host's delivered notifications for `where.orgId`, the ids of those the host settled: its
+ * topic at the version shown or a later one. A newer push that overtook the withdrawal stays, and
+ * a topic is one company's on one host, so another's is never touched.
  */
 export function kinWithdrawnIds(
   presented: ReadonlyArray<unknown>,
   where: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId },
-  settled: ReadonlyArray<string>,
+  settled: ReadonlyArray<KinPushWithdrawn>,
 ): ReadonlyArray<string> {
-  const remove = new Set(settled);
+  const upTo = new Map<string, number>();
+  for (const one of settled) upTo.set(one.topic, Math.max(one.version, upTo.get(one.topic) ?? 0));
   return kinDeliveredTopics(presented, where.environmentId).flatMap((one) =>
-    one.orgId === where.orgId && remove.has(one.topic) ? [one.identifier] : [],
+    one.orgId === where.orgId && one.version <= (upTo.get(one.topic) ?? -1) ? [one.identifier] : [],
   );
 }
 
 /**
  * What a host's silent push withdraws, from a background push's task payload (`data.dataString`
- * is the push's `body`): its host and the settled topics. Null for anything else.
+ * is the push's `body`): its host and company, and the settled topics with their versions. Null
+ * for anything else.
  */
-export function kinWithdrawal(
-  payload: unknown,
-): {
+export function kinWithdrawal(payload: unknown): {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
-  readonly topics: ReadonlyArray<KinPushTopic>;
+  readonly withdraw: ReadonlyArray<KinPushWithdrawn>;
 } | null {
   const data = pushData(field(field(payload, "data"), "dataString"))?.data;
   if (data?.withdraw === undefined || data.withdraw.length === 0) return null;
@@ -297,7 +301,7 @@ export function kinWithdrawal(
     : {
         environmentId: EnvironmentId.make(target.environmentId),
         orgId: data.orgId,
-        topics: data.withdraw,
+        withdraw: data.withdraw,
       };
 }
 

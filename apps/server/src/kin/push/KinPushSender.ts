@@ -14,6 +14,7 @@ import type {
   KinPushSubject,
   KinPushToken,
   KinPushTopic,
+  KinPushWithdrawn,
   KinRecordKey,
   KinWidgetId,
 } from "@t3tools/contracts";
@@ -412,7 +413,7 @@ export class KinPushSender extends Context.Service<
       personId: KinPersonId,
       topics: ReadonlyArray<KinPushTopic>,
     ) => Effect.Effect<
-      { readonly remove: ReadonlyArray<KinPushTopic>; readonly badge: number },
+      { readonly remove: ReadonlyArray<KinPushWithdrawn>; readonly badge: number },
       KinPushError
     >;
   }
@@ -1097,6 +1098,8 @@ const make = Effect.gen(function* () {
       readonly subject: KinPushSubject | undefined;
       /** Their unread in the push's chat, for a chat topic's count. */
       readonly unread: number;
+      /** Their next version of the push's topic, taken once, by the first phone that shows it. */
+      readonly version: Effect.Effect<number | undefined> | undefined;
     },
   ) {
     if (push.chatId !== undefined && (yield* presence.isWatching(device.sessionId, push.chatId)))
@@ -1112,10 +1115,15 @@ const make = Effect.gen(function* () {
     // A build that matches by topic: the push replaces the last about the same thing, and says
     // how many are unread in a chat it stands for.
     const topical = device.withdraws;
+    const version =
+      topical && recipient.delivery !== "badge" && recipient.version !== undefined
+        ? yield* recipient.version
+        : undefined;
     const data = {
       ...push.data,
       ...(recipient.subject === undefined ? {} : { subject: recipient.subject }),
       ...(topical ? { topic: push.topic } : {}),
+      ...(version === undefined ? {} : { version }),
     };
     const collapseId = topical
       ? kinTopicCollapseId(environmentId, orgId, push.topic)
@@ -1228,6 +1236,7 @@ const make = Effect.gen(function* () {
         badge: number;
         subject: KinPushSubject | undefined;
         unread: number;
+        version: Effect.Effect<number | undefined> | undefined;
       }
     >();
     // A chat's own topic says how many are unread there, to a build that replaces by topic.
@@ -1259,6 +1268,26 @@ const make = Effect.gen(function* () {
         subject: recipient.subject,
         unread:
           counted === undefined ? 0 : yield* topics.unreadIn(orgId, recipient.personId, counted),
+        // Taken only when a phone that matches by topic shows it. A unique topic has none.
+        version: push.topic.startsWith("u:")
+          ? undefined
+          : yield* Effect.cached(
+              topics
+                .reserve({
+                  orgId,
+                  personId: recipient.personId,
+                  topic: push.topic,
+                  chatId: push.chatId,
+                  messageId: push.source,
+                })
+                .pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("Kin couldn't note a push it sends.", {
+                      error: error._tag,
+                    }).pipe(Effect.as(undefined)),
+                  ),
+                ),
+            ),
       });
     }
     // Bounded, so one slow device doesn't hold up the rest and a big org doesn't flood APNs.
@@ -1272,27 +1301,6 @@ const make = Effect.gen(function* () {
       },
       { concurrency: SEND_CONCURRENCY },
     );
-    // Who now has it on a phone, so it can be withdrawn once settled. A unique topic never is.
-    if (!push.topic.startsWith("u:")) {
-      const shown = new Set(
-        targets.flatMap((device, index) => (results[index] === "sent" ? [device.personId] : [])),
-      );
-      for (const personId of shown)
-        if (recipients.get(personId)?.delivery !== "badge")
-          yield* topics
-            .noteSent({
-              orgId,
-              personId,
-              topic: push.topic,
-              chatId: push.chatId,
-              messageId: push.source,
-            })
-            .pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("Kin couldn't note a push it sent.", { error: error._tag }),
-              ),
-            );
-    }
     const count = (outcome: (typeof results)[number]) =>
       results.filter((result) => result === outcome).length;
     return { sent: count("sent"), suppressed: count("suppressed"), failed: count("failed") };
@@ -1309,7 +1317,10 @@ const make = Effect.gen(function* () {
     }
   >();
 
-  const withdrawalData = (orgId: KinOrgId, withdraw: ReadonlyArray<KinPushTopic>): KinPushData => ({
+  const withdrawalData = (
+    orgId: KinOrgId,
+    withdraw: ReadonlyArray<KinPushWithdrawn>,
+  ): KinPushData => ({
     kin: 1,
     orgId,
     deepLink: `/kin/${host}/${segment(orgId)}/work`,
@@ -1317,9 +1328,9 @@ const make = Effect.gen(function* () {
   });
 
   /** Topics in lists that each fit one silent push on either platform. */
-  const fitted = (orgId: KinOrgId, withdraw: ReadonlyArray<KinPushTopic>) => {
-    const lists: Array<Array<KinPushTopic>> = [];
-    let list: Array<KinPushTopic> = [];
+  const fitted = (orgId: KinOrgId, withdraw: ReadonlyArray<KinPushWithdrawn>) => {
+    const lists: Array<Array<KinPushWithdrawn>> = [];
+    let list: Array<KinPushWithdrawn> = [];
     for (const topic of withdraw) {
       if (
         list.length > 0 &&
@@ -1341,7 +1352,7 @@ const make = Effect.gen(function* () {
   const sendWithdrawal = Effect.fn("KinPushSender.sendWithdrawal")(function* (
     orgId: KinOrgId,
     device: KinPushDevice,
-    withdraw: ReadonlyArray<KinPushTopic>,
+    withdraw: ReadonlyArray<KinPushWithdrawn>,
     badge: number,
   ) {
     if (device.platform === "android") {
@@ -1374,10 +1385,10 @@ const make = Effect.gen(function* () {
     waiting.delete(key);
     if (batch === undefined) return;
     const { orgId, personId } = batch;
-    const withdrawn: Array<KinPushTopic> = [];
+    const withdrawn: Array<KinPushWithdrawn> = [];
     for (const row of batch.rows.values())
       if (!(yield* topics.stands(orgId, row)) && (yield* topics.withdraw(orgId, row)))
-        withdrawn.push(row.topic);
+        withdrawn.push({ topic: row.topic, version: row.version });
     // Withdrawals are silent, so quiet hours never hold one.
     const targets = (yield* devices.forPeople(orgId, [personId])).filter(
       (device) => device.withdraws && statusFor(device.platform) === "ready",
@@ -1386,7 +1397,7 @@ const make = Effect.gen(function* () {
       yield* Effect.logInfo("Kin push withdraws settled notifications", {
         orgId,
         personId,
-        topics: withdrawn,
+        topics: withdrawn.map((one) => `${one.topic}@${one.version}`),
         devices: targets.length,
       });
     if (targets.length === 0) return;

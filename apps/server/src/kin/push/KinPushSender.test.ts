@@ -2976,10 +2976,15 @@ describe("KinPushSender withdrawals", () => {
       const phone = apns.sent.filter((push) => push.token === ownerPhone);
       // The newer replaces the older, and says how many are unread.
       assert.deepStrictEqual(
-        phone.map((push) => [push.collapseId, payloadOf(push).body.topic, titleOf(push)]),
+        phone.map((push) => [
+          push.collapseId,
+          payloadOf(push).body.topic,
+          payloadOf(push).body.version,
+          titleOf(push),
+        ]),
         [
-          [collapseId, "c:chat_pair", "priya"],
-          [collapseId, "c:chat_pair", "priya · 2 new"],
+          [collapseId, "c:chat_pair", 1, "priya"],
+          [collapseId, "c:chat_pair", 2, "priya · 2 new"],
         ],
       );
       // A build that doesn't match by topic keeps a banner per message, as before.
@@ -3018,7 +3023,12 @@ describe("KinPushSender withdrawals", () => {
             undefined,
             {
               aps: { badge: 0, "content-available": 1 },
-              body: { kin: 1, orgId, deepLink: work, withdraw: ["c:chat_pair"] },
+              body: {
+                kin: 1,
+                orgId,
+                deepLink: work,
+                withdraw: [{ topic: "c:chat_pair", version: 2 }],
+              },
             },
           ],
         ],
@@ -3033,6 +3043,67 @@ describe("KinPushSender withdrawals", () => {
       assert.deepStrictEqual(apns.sent, []);
     }).pipe(Effect.provide(build(apns)));
   });
+
+  it.effect(
+    "a withdrawal names the version it settles, so it never takes a newer push down",
+    () => {
+      const apns = makeApns();
+      return Effect.gen(function* () {
+        const { notify, sql, sender } = yield* seedTopical;
+        yield* pairChat(sql);
+        const from = { personId: member, memberId: "m_priya_pair" };
+        const phoneData = () =>
+          apns.sent.filter((push) => push.token === ownerPhone).map((push) => payloadOf(push).body);
+        const a = yield* postMessage(sql, from, "posted", { chatId: "chat_pair", body: "A" });
+        yield* notify({ _tag: "message", orgId, messageId: a });
+        // Read A on the web; its withdrawal goes, naming version 1.
+        yield* sql`INSERT INTO kin_read_state (org_id, chat_id, member_id, last_read_seq, updated_at)
+        SELECT 'org_01', 'chat_pair', 'm_owner_pair', MAX(seq), ${T} FROM kin_messages
+        WHERE chat_id = 'chat_pair'`;
+        yield* notify({
+          _tag: "read",
+          orgId,
+          chatId: KinChatId.make("chat_pair"),
+          memberId: KinMemberId.make("m_owner_pair"),
+        });
+        yield* afterBatch(sender);
+        // B replaces it on the lock screen as version 2: a late withdrawal of 1 can't remove it.
+        const b = yield* postMessage(sql, from, "posted", { chatId: "chat_pair", body: "B" });
+        yield* notify({ _tag: "message", orgId, messageId: b });
+        assert.deepStrictEqual(
+          phoneData().map((data) => [data.topic, data.version, data.withdraw]),
+          [
+            ["c:chat_pair", 1, undefined],
+            [undefined, undefined, [{ topic: "c:chat_pair", version: 1 }]],
+            ["c:chat_pair", 2, undefined],
+          ],
+        );
+
+        // A card dismissed, then reopened by undo before the dismissal's withdrawal lands.
+        apns.sent.length = 0;
+        const card = yield* postWidget(sql, "deferral", { phase: "confirmed" }, [owner]);
+        yield* notify({ _tag: "widget", orgId, widgetId: card });
+        yield* sql`UPDATE kin_widgets SET closed_at = ${T} WHERE widget_id = ${card}`;
+        yield* sender.settle(orgId, { topics: [`w:${card}` as KinPushTopic] });
+        yield* afterBatch(sender);
+        yield* sql`UPDATE kin_widgets SET closed_at = NULL WHERE widget_id = ${card}`;
+        yield* notify({ _tag: "widget", orgId, widgetId: card });
+        assert.deepStrictEqual(
+          phoneData().map((data) => [data.topic, data.version, data.withdraw]),
+          [
+            [`w:${card}`, 1, undefined],
+            [undefined, undefined, [{ topic: `w:${card}`, version: 1 }]],
+            [`w:${card}`, 2, undefined],
+          ],
+        );
+        // The host now answers for version 2: it stands.
+        assert.deepStrictEqual(
+          (yield* sender.reconcile(orgId, owner, [`w:${card}` as KinPushTopic])).remove,
+          [],
+        );
+      }).pipe(Effect.provide(build(apns)));
+    },
+  );
 
   it.effect(
     "cards settling together are one silent push per phone, in quiet hours too, to who heard",
@@ -3074,11 +3145,25 @@ describe("KinPushSender withdrawals", () => {
         yield* afterBatch(sender);
         assert.deepStrictEqual(
           apns.sent.map((push) => [push.token, payloadOf(push).body.withdraw]),
-          [[ownerPhone, [`w:${both}`, `w:${hers}`]]],
+          [
+            [
+              ownerPhone,
+              [
+                { topic: `w:${both}`, version: 1 },
+                { topic: `w:${hers}`, version: 1 },
+              ],
+            ],
+          ],
         );
         assert.deepStrictEqual(
           fcm.sent.map((push) => [push.token, push.priority, JSON.parse(push.data.body ?? "")]),
-          [[memberAndroid, "NORMAL", { kin: 1, orgId, deepLink: work, withdraw: [`w:${both}`] }]],
+          [
+            [
+              memberAndroid,
+              "NORMAL",
+              { kin: 1, orgId, deepLink: work, withdraw: [{ topic: `w:${both}`, version: 1 }] },
+            ],
+          ],
         );
         // Nothing to draw: no title or message, so the phone shows nothing for it.
         assert.deepStrictEqual(Object.keys(fcm.sent[0]!.data), ["body"]);
@@ -3150,13 +3235,13 @@ describe("KinPushSender withdrawals", () => {
       // W-2 is still hers: the notice naming both stays.
       assert.deepStrictEqual(
         apns.sent.map((push) => [push.token, payloadOf(push).body.withdraw]),
-        [[memberPhone, ["r:W-1"]]],
+        [[memberPhone, [{ topic: "r:W-1", version: 1 }]]],
       );
       apns.sent.length = 0;
       yield* doneWith("W-2");
       assert.deepStrictEqual(
         apns.sent.map((push) => [push.token, payloadOf(push).body.withdraw]),
-        [[memberPhone, ["f:kin-holder-two"]]],
+        [[memberPhone, [{ topic: "f:kin-holder-two", version: 1 }]]],
       );
     }).pipe(Effect.provide(build(apns)));
   });
@@ -3189,7 +3274,10 @@ describe("KinPushSender withdrawals", () => {
         VALUES ('org_01', 'chat_pair', 'm_owner_pair', ${Number.MAX_SAFE_INTEGER}, ${T})`;
       yield* sql`UPDATE kin_chat_members SET left_at = ${T} WHERE member_id = 'm_owner'`;
       assert.deepStrictEqual(yield* sender.reconcile(orgId, owner, shown), {
-        remove: [`w:${card}`, "c:chat_pair"].toSorted() as Array<KinPushTopic>,
+        remove: [
+          { topic: "c:chat_pair", version: 1 },
+          { topic: `w:${card}`, version: 1 },
+        ],
         badge: 0,
       });
       // Forgotten after a week: the store keeps no row to answer from.

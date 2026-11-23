@@ -26,8 +26,8 @@ export function defineKinBackgroundClear(): void {
       if (withdrawal !== null) {
         const presented = await Notifications.getPresentedNotificationsAsync();
         await Promise.all(
-          kinWithdrawnIds(presented, withdrawal, withdrawal.topics).map(
-            (identifier) => Notifications.dismissNotificationAsync(identifier),
+          kinWithdrawnIds(presented, withdrawal, withdrawal.withdraw).map((identifier) =>
+            Notifications.dismissNotificationAsync(identifier),
           ),
         );
         return Notifications.BackgroundNotificationTaskResult.NewData;

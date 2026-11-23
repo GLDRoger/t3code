@@ -115,6 +115,14 @@ export type KinPushTopic = typeof KinPushTopic.Type;
 export const KIN_PUSH_TOPICS_MAX = 200;
 
 /**
+ * A topic as far as `version`: each push about a topic is its person's next version of it, so a
+ * withdrawal or a reconcile answer removes what shows that version or older, never a newer push
+ * that overtook it on the way.
+ */
+export const KinPushWithdrawn = Schema.Struct({ topic: KinPushTopic, version: NonNegativeInt });
+export type KinPushWithdrawn = typeof KinPushWithdrawn.Type;
+
+/**
  * What a Kin push carries besides `aps`, under the payload's `body` key, which is what
  * expo-notifications exposes as `content.data` for a remote push. Ids and a `/kin/` link only.
  */
@@ -136,9 +144,11 @@ export const KinPushData = Schema.Struct({
   subject: Schema.optional(KinPushSubject),
   /** What it is about, to a build that registered `withdraws`. */
   topic: Schema.optional(KinPushTopic),
+  /** With `topic`: which push about it this is, for this person (`KinPushWithdrawn`). */
+  version: Schema.optional(NonNegativeInt),
   /** On a silent push: these topics' notifications are settled, so the phone removes them. */
   withdraw: Schema.optional(
-    Schema.Array(KinPushTopic).check(Schema.isMaxLength(KIN_PUSH_TOPICS_MAX)),
+    Schema.Array(KinPushWithdrawn).check(Schema.isMaxLength(KIN_PUSH_TOPICS_MAX)),
   ),
   deepLink: Schema.String.check(
     Schema.makeFilter((value: string) => /^\/kin\/[A-Za-z0-9._~%/-]+$/.test(value), {
@@ -193,7 +203,7 @@ export type KinPushReconcileInput = typeof KinPushReconcileInput.Type;
 
 /** Of those, the ones sent to the caller that are settled, and the caller's badge now. */
 export const KinPushReconcileResult = Schema.Struct({
-  remove: Schema.Array(KinPushTopic),
+  remove: Schema.Array(KinPushWithdrawn),
   badge: NonNegativeInt,
 });
 export type KinPushReconcileResult = typeof KinPushReconcileResult.Type;

@@ -12,6 +12,8 @@ export default Effect.gen(function* () {
     org_id TEXT NOT NULL,
     person_id TEXT NOT NULL,
     topic TEXT NOT NULL,
+    -- Which push about the topic this person was sent last: 1, 2, ... (KinPushWithdrawn).
+    version INTEGER NOT NULL DEFAULT 1,
     -- The chat message the last push came from, when it came from one.
     chat_id TEXT,
     message_id TEXT,

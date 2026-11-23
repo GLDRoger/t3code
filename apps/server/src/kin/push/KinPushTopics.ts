@@ -9,6 +9,7 @@ import {
   type KinOrgId,
   type KinPersonId,
   type KinPushTopic,
+  type KinPushWithdrawn,
   type KinRecordKey,
   type KinWidgetId,
 } from "@t3tools/contracts";
@@ -52,6 +53,8 @@ export const kinTopicCollapseId = (environmentId: string, orgId: KinOrgId, topic
 export type KinPushSentRow = {
   readonly personId: KinPersonId;
   readonly topic: KinPushTopic;
+  /** The last push's version of the topic for this person. */
+  readonly version: number;
   readonly chatId: KinChatId | null;
   readonly messageId: KinMessageId | null;
   readonly sentAt: number;
@@ -70,7 +73,7 @@ export type KinPushSettled = {
   readonly personId?: KinPersonId;
 };
 
-const ROW = `person_id AS "personId", topic, chat_id AS "chatId", message_id AS "messageId",
+const ROW = `person_id AS "personId", topic, version, chat_id AS "chatId", message_id AS "messageId",
   sent_at AS "sentAt", withdrawn_at AS "withdrawnAt"`;
 const PRUNE_BATCH = 5_000;
 const PRUNE_BATCHES = 20;
@@ -84,8 +87,11 @@ export const makeKinPushTopics = Effect.gen(function* () {
   const provide = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
     Effect.provideService(effect, SqlClient.SqlClient, sql);
 
-  /** `personId` was sent a push about `topic` now: it stands again until settled. */
-  const noteSent = Effect.fn("KinPushTopics.noteSent")(function* (input: {
+  /**
+   * `personId` is about to be sent a push about `topic`: its next version, which stands until
+   * settled. Taken before the send, so the push can carry it.
+   */
+  const reserve = Effect.fn("KinPushTopics.reserve")(function* (input: {
     readonly orgId: KinOrgId;
     readonly personId: KinPersonId;
     readonly topic: KinPushTopic;
@@ -93,11 +99,15 @@ export const makeKinPushTopics = Effect.gen(function* () {
     readonly messageId: KinMessageId | undefined;
   }) {
     const now = yield* Clock.currentTimeMillis;
-    yield* sql`INSERT INTO kin_push_sent (org_id, person_id, topic, chat_id, message_id, sent_at)
-      VALUES (${input.orgId}, ${input.personId}, ${input.topic}, ${input.chatId ?? null},
+    const [row] = yield* sql<{ version: number }>`INSERT INTO kin_push_sent (org_id, person_id,
+        topic, version, chat_id, message_id, sent_at)
+      VALUES (${input.orgId}, ${input.personId}, ${input.topic}, 1, ${input.chatId ?? null},
         ${input.messageId ?? null}, ${now})
-      ON CONFLICT (org_id, person_id, topic) DO UPDATE SET sent_at = excluded.sent_at,
-        chat_id = excluded.chat_id, message_id = excluded.message_id, withdrawn_at = NULL`;
+      ON CONFLICT (org_id, person_id, topic) DO UPDATE SET version = kin_push_sent.version + 1,
+        sent_at = excluded.sent_at, chat_id = excluded.chat_id, message_id = excluded.message_id,
+        withdrawn_at = NULL
+      RETURNING version`;
+    return row?.version ?? 1;
   });
 
   const memberOf = (orgId: KinOrgId, personId: KinPersonId, chatId: KinChatId) =>
@@ -264,7 +274,7 @@ export const makeKinPushTopics = Effect.gen(function* () {
       ORDER BY sent_at, person_id, topic`;
   });
 
-  /** Marks the topic withdrawn for them, once: true when this call did. */
+  /** Marks the topic withdrawn for them at `row`'s version, once: true when this call did. */
   const withdraw = Effect.fn("KinPushTopics.withdraw")(function* (
     orgId: KinOrgId,
     row: KinPushSentRow,
@@ -272,7 +282,7 @@ export const makeKinPushTopics = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const moved = yield* sql`UPDATE kin_push_sent SET withdrawn_at = ${now}
       WHERE org_id = ${orgId} AND person_id = ${row.personId} AND topic = ${row.topic}
-        AND sent_at = ${row.sentAt} AND withdrawn_at IS NULL
+        AND version = ${row.version} AND withdrawn_at IS NULL
       RETURNING topic`;
     return moved.length > 0;
   });
@@ -290,9 +300,10 @@ export const makeKinPushTopics = Effect.gen(function* () {
     const rows = yield* sql<KinPushSentRow>`SELECT ${sql.literal(ROW)} FROM kin_push_sent
       WHERE org_id = ${orgId} AND person_id = ${personId} AND topic IN ${sql.in([...new Set(topics)])}
       ORDER BY topic`;
-    const remove: Array<KinPushTopic> = [];
+    const remove: Array<KinPushWithdrawn> = [];
     for (const row of rows)
-      if (row.withdrawnAt !== null || !(yield* stands(orgId, row))) remove.push(row.topic);
+      if (row.withdrawnAt !== null || !(yield* stands(orgId, row)))
+        remove.push({ topic: row.topic, version: row.version });
     return remove;
   });
 
@@ -306,7 +317,7 @@ export const makeKinPushTopics = Effect.gen(function* () {
     return memberId === undefined ? 0 : yield* chats.unreadCount({ orgId, chatId, memberId });
   });
 
-  return { noteSent, stands, live, withdraw, settledOf, unreadIn };
+  return { reserve, stands, live, withdraw, settledOf, unreadIn };
 });
 
 const decodeIds = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.String)));

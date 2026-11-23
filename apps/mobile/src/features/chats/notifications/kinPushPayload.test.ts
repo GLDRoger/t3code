@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
-import { EnvironmentId, KinOrgId, KinWidgetId } from "@t3tools/contracts";
+import { EnvironmentId, KinOrgId, KinWidgetId, type KinPushTopic } from "@t3tools/contracts";
 
 import {
   KIN_DEFAULT_ACTION_IDENTIFIER,
@@ -437,18 +437,22 @@ describe("kinWithdrawal", () => {
     kin: 1,
     orgId: "kin-default",
     deepLink: "/kin/env-1/kin-default/work",
-    withdraw: ["c:chat-1", "w:card-7"],
+    withdraw: [
+      { topic: "c:chat-1", version: 3 },
+      { topic: "w:card-7", version: 1 },
+    ],
   };
   it.each([
-    ["a host's withdrawal", silent, ["c:chat-1", "w:card-7"]],
+    ["a host's withdrawal", silent, silent.withdraw],
     ["a read's badge, from a host before topics", { ...silent, withdraw: undefined }, null],
     ["nothing to withdraw", { ...silent, withdraw: [] }, null],
-    ["a topic that isn't one", { ...silent, withdraw: ["chat 1"] }, null],
+    ["a topic that isn't one", { ...silent, withdraw: [{ topic: "chat 1", version: 1 }] }, null],
+    ["a topic with no version", { ...silent, withdraw: ["c:chat-1"] }, null],
     ["a link that is no Kin path", { ...silent, deepLink: "/threads/1" }, null],
-  ] as const)("%s", (_name, body, topics) => {
+  ] as const)("%s", (_name, body, withdraw) => {
     const ios = kinWithdrawal({ data: { dataString: JSON.stringify(body) }, aps: {} });
-    expect(ios?.topics ?? null).toEqual(topics);
-    if (topics !== null) expect(ios?.environmentId).toBe("env-1");
+    expect(ios?.withdraw ?? null).toEqual(withdraw);
+    if (withdraw !== null) expect(ios?.environmentId).toBe("env-1");
     const android = kinWithdrawal({
       messageId: "0:1794096000%fcm",
       data: { body: JSON.stringify(body), dataString: JSON.stringify(body) },
@@ -463,17 +467,24 @@ describe("kinWithdrawnIds", () => {
     const note = (identifier: string, data: unknown) => ({
       request: { identifier, content: { data } },
     });
-    const about = (topic: string | undefined, environmentId = "env-1", orgId = "kin-default") => ({
+    const about = (
+      topic: string | undefined,
+      environmentId = "env-1",
+      orgId = "kin-default",
+      version = 1,
+    ) => ({
       kin: 1,
       orgId,
       chatId: "chat-1",
       deepLink: `/kin/${environmentId}/${orgId}/chats/chat-1`,
-      ...(topic === undefined ? {} : { topic }),
+      ...(topic === undefined ? {} : { topic, version }),
     });
     const presented = [
       note("chat", about("c:chat-1")),
-      note("card", JSON.stringify(about("w:card-7"))),
+      note("card", JSON.stringify(about("w:card-7", "env-1", "kin-default", 2))),
       note("question", about("q:q-1")),
+      // Shown after the withdrawal below was sent: a newer push about the same thing.
+      note("approval-v4", about("a:act-1", "env-1", "kin-default", 4)),
       // Sent before this build matched by topic, from another host, and upstream's own.
       note("older", about(undefined)),
       note("other-host", about("c:chat-1", "env-2")),
@@ -483,18 +494,30 @@ describe("kinWithdrawnIds", () => {
     const env = EnvironmentId.make("env-1");
     const here = { environmentId: env, orgId: KinOrgId.make("kin-default") };
     // What the phone asks about: only this host's topics.
-    expect(kinDeliveredTopics(presented, env).map((one) => one.topic)).toEqual([
-      "c:chat-1",
-      "w:card-7",
-      "q:q-1",
-      "c:chat-1",
+    expect(kinDeliveredTopics(presented, env).map((one) => [one.topic, one.version])).toEqual([
+      ["c:chat-1", 1],
+      ["w:card-7", 2],
+      ["q:q-1", 1],
+      ["a:act-1", 4],
+      ["c:chat-1", 1],
     ]);
-    // The host's answer: the chat was read and the card answered; the question still waits. The
-    // same chat id in another company on this host is not touched.
-    expect(kinWithdrawnIds(presented, here, ["c:chat-1", "w:card-7", "a:never-shown"])).toEqual([
-      "chat",
-      "card",
-    ]);
+    // The host's answer: the chat was read and the card answered, at or after what is shown; the
+    // question still waits; the approval was withdrawn at version 3, before version 4 was sent.
+    // The same chat id in another company on this host is not touched.
+    const withdrawn = (topic: string, version: number) => ({
+      topic: topic as KinPushTopic,
+      version,
+    });
+    expect(
+      kinWithdrawnIds(presented, here, [
+        withdrawn("c:chat-1", 1),
+        withdrawn("w:card-7", 5),
+        withdrawn("a:act-1", 3),
+        withdrawn("a:never-shown", 1),
+      ]),
+    ).toEqual(["chat", "card"]);
+    // Withdrawn at an older version than the one shown: kept.
+    expect(kinWithdrawnIds(presented, here, [withdrawn("w:card-7", 1)])).toEqual([]);
     expect(kinWithdrawnIds(presented, here, [])).toEqual([]);
   });
 });
@@ -505,7 +528,7 @@ describe("kinIsSilentPush", () => {
   it.each([
     [
       "a withdrawal, drawn by nothing",
-      { title: null, body: null, data: { ...data, withdraw: ["c:chat-1"] } },
+      { title: null, body: null, data: { ...data, withdraw: [{ topic: "c:chat-1", version: 1 }] } },
       true,
     ],
     [
