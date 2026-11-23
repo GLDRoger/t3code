@@ -3791,13 +3791,11 @@ const make = Effect.gen(function* () {
         !(widget.type === "reminder" && (yield* ownDirectChat(identity, widget.chatId)))
       )
         return yield* notAllowed;
-      // Any writing member of the card's chat may undo; its other taps are its asker's (checked
-      // above), the owner's or a co-owner's.
+      // A deferral is the company's: its taps are a live owner's or co-owner's, by company access,
+      // never by owning the chat. Its asker may only Undo their own shared-chat reminder.
       if (
         widget.type === "deferral" &&
-        request.actionId !== "undo" &&
-        asker === undefined &&
-        !owning &&
+        !(request.actionId === "undo" && asker?.personId === identity.personId) &&
         !(yield* ownerLevel(identity.orgId, identity.personId).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
         ))

@@ -521,8 +521,8 @@ it.effect("the owner's Start now starts at L1", () =>
   }).pipe(openGates(new Map()), Effect.provide(layerFor([deferral]))),
 );
 
-// The agent's owner in its chat, but a teammate in the company: their tap is no level grant.
-it.effect("a teammate's Start now at L1 is still refused", () =>
+// The agent's owner in its chat, but a teammate in the company: owning the chat grants nothing.
+it.effect("a teammate who owns the chat can't Start now, Monday or Cancel", () =>
   Effect.gen(function* () {
     yield* setup("L1");
     const sql = yield* SqlClient.SqlClient;
@@ -530,10 +530,26 @@ it.effect("a teammate's Start now at L1 is still refused", () =>
       AND person_id = ${`owner-${orgId}`}`;
     yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
     yield* tick(headsUpAt);
-    assert.equal(outcome(yield* tap("start_now")), "not_allowed");
-    assert.equal((yield* runOf("def-1"))?.state, "asked");
+    const before = { run: yield* runOf("def-1"), triggers: yield* triggersOf() };
+    for (const action of ["start_now", "monday", "cancel"])
+      assert.equal(outcome(yield* tap(action)), "not_allowed", action);
+    assert.deepStrictEqual({ run: yield* runOf("def-1"), triggers: yield* triggersOf() }, before);
+    assert.equal(before.run?.state, "asked");
     assert.lengthOf(yield* starts(), 0);
   }).pipe(openGates(new Map()), Effect.provide(layerFor([deferral]))),
+);
+
+it.effect("a co-owner demoted to member can't Undo the card they set", () =>
+  Effect.gen(function* () {
+    yield* setup();
+    yield* joinChat("co-a", "co_owner");
+    yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_people SET access = 'member' WHERE org_id = ${orgId}
+      AND person_id = 'co-a'`;
+    assert.equal(outcome(yield* tap("undo", "co-a")), "not_allowed");
+    assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt });
+  }).pipe(Effect.provide(layerFor([deferral]))),
 );
 
 it.effect(
@@ -1036,6 +1052,15 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     said_by: "teammate",
     for_chat: true,
   });
+  // Its asker undoes this one themselves.
+  const theirs = makeDeferral("def-t", {
+    on_due: "remind",
+    due: "2026-11-13T11:30+05:30",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-event"),
+    said_by: "teammate",
+    for_chat: true,
+  });
   // Due after someone joined who couldn't read where it was set; and one asked by Bystander, who
   // has no chat with the agent.
   const late = makeDeferral("def-w", {
@@ -1130,6 +1155,7 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     yield* triggers.syncItem(here);
     yield* triggers.syncItem(gone);
     yield* triggers.syncItem(partners);
+    yield* triggers.syncItem(theirs);
     yield* triggers.syncItem(late);
     yield* triggers.syncItem(unreached);
 
@@ -1156,6 +1182,23 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     assert.deepInclude(refused, { reason: "not_allowed", message: KIN_ASKER_ONLY_REFUSAL });
     yield* undo("partner", "def-c");
     assert.strictEqual((yield* runOf("def-c"))?.state, "undone");
+    // The asker may Undo their own; any other tap from them is the company's, so refused.
+    const forged = yield* chat
+      .act(
+        { _tag: "person", orgId, personId: KinPersonId.make("teammate") },
+        {
+          widgetId: widgetFor("def-t"),
+          revision: 1,
+          actionId: "monday",
+          value: "def-t",
+          clientActionId: "forged-monday",
+        },
+      )
+      .pipe(Effect.flip);
+    assert.deepInclude(forged, { reason: "not_allowed" });
+    assert.strictEqual((yield* runOf("def-t"))?.state, "armed");
+    yield* undo("teammate", "def-t");
+    assert.strictEqual((yield* runOf("def-t"))?.state, "undone");
 
     yield* tick(dueAt);
     const eventId = yield* reminderEvent();
@@ -1219,7 +1262,7 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
       unreachedLines[0]!.body,
       /^A reminder Bystander set on .* for Plans is due, but it couldn't reach them or that chat\.$/,
     );
-  }).pipe(Effect.provide(layerFor([here, gone, partners, late, unreached])));
+  }).pipe(Effect.provide(layerFor([here, gone, partners, theirs, late, unreached])));
 });
 
 it.effect("a teammate's own reminder comes to them in their chat, never the owner's", () => {
