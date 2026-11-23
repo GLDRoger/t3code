@@ -302,8 +302,8 @@ const forwardedTools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
 const sectionAdmitted = McpToolPolicy.toolCallRefusal(
   Effect.succeed((name: string, args: unknown) => {
     if (!Object.hasOwn(SECTIONS.tools, name) || forwardedTools.has(name)) return Effect.undefined;
-    // Its name and noun are labels a company chose, never record references.
-    if (name === "company_sections") return Effect.undefined;
+    // Names, nouns and sources are words a company chose, never record references.
+    if (name === "company_sections" || name === "numbers_watch") return Effect.undefined;
     const foreign = name === "kin_connection_call";
     const references = new Set<string>();
     const sections = sectionsOfArguments(

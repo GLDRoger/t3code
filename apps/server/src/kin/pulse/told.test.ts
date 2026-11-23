@@ -15,7 +15,10 @@ import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
 import { fixture, orgId, seed } from "../triggers/routines.testkit.ts";
 import { queueCheckIn } from "./checkIn.ts";
 import * as KinPulse from "./KinPulse.ts";
+import { morningMoneyLines } from "./morningMoney.ts";
+import { UNREADABLE_BANK_ALERTS_KEY } from "./senses/bank.ts";
 import { factSig, settleCheckInTold, toldBy } from "./told.ts";
+import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 
 // Invented facts only.
 const HOUR = 3_600_000;
@@ -45,7 +48,8 @@ it.effect.each([
   { body: "AMBERMILL STUDIO needs a decision.", client: "Ambermill Studio", kept: ["W-62"] },
   { body: "One decision is ready.", handle: true, kept: ["W-62"] },
   { body: undefined, handle: true, kept: [] },
-])("records only what a check-in names or handles ($body, handle $handle)", (row) =>
+  { body: undefined, bank: true, kept: [] },
+])("records what a check-in tells or handles ($body, handle $handle, bank $bank)", (row) =>
   Effect.gen(function* () {
     yield* seed();
     yield* TestClock.setTime(MONDAY);
@@ -70,6 +74,11 @@ it.effect.each([
           ${index === 0 && row.client !== undefined ? "client" : null},
           ${MONDAY - DAY}, '{}', 'person', ${key}, 0, 0)`;
     }
+    if (row.bank)
+      yield* sql`INSERT INTO kin_bank_alerts
+        (org_id, alert_id, connection_id, thread_id, sent_at, seen_at, outcome)
+        VALUES (${orgId}, 'invented-alert', 'invented-mail', 'invented-thread',
+          ${MONDAY}, ${MONDAY}, 'unparsed')`;
     const queue = (at: number) =>
       queueCheckIn({
         orgId,
@@ -83,17 +92,29 @@ it.effect.each([
         zone: "UTC",
         outside: { lines: [], seen: [] },
       });
-    assert.include(yield* queue(MONDAY), { _tag: "queued", facts: 2 });
+    assert.include(yield* queue(MONDAY), { _tag: "queued", facts: row.bank ? 3 : 2 });
     const [event] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
       WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY queued_at`;
     const eventId = event!.eventId;
     const wakeupId = KinWakeupId.make(`wakeup-${eventId}`);
+    const factKeys = yield* toldBy(orgId, [eventId]);
+    const body = row.bank
+      ? (yield* morningMoneyLines({
+          orgId,
+          now: MONDAY,
+          viewer: KIN_OWNER_LEVEL,
+          offeredFacts: factKeys,
+        }))[0]
+      : row.body;
     const messageId = yield* leadWakeup({
       orgId,
       eventId,
       chatId,
-      ...(row.body === undefined ? {} : { body: row.body }),
+      ...(body === undefined ? {} : { body }),
     });
+    if (row.bank)
+      yield* sql`UPDATE kin_messages SET client_message_id = ${`kin-money:${wakeupId}`}
+        WHERE org_id = ${orgId} AND message_id = ${messageId}`;
     yield* sql`UPDATE kin_wakeups SET thread_id = 'thread-fixture'
       WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`;
     if (row.card !== undefined) {
@@ -102,7 +123,6 @@ it.effect.each([
         VALUES (${orgId}, ${chatId}, 'choice', ${messageId}, 'native', 'choice', 1,
           json_object('question', ${row.card}), '[]', '2026-11-16T09:00:01.000Z')`;
     }
-    const factKeys = yield* toldBy(orgId, [eventId]);
     const keyOf = (key: string) => [...factKeys].find((factKey) => factKey.split(":")[1] === key)!;
     if (row.handle === true) {
       yield* sql`UPDATE kin_wakeups SET status = 'running', ended_at = NULL
@@ -135,7 +155,9 @@ it.effect.each([
     });
     yield* sql`UPDATE kin_events SET state = 'done'
       WHERE org_id = ${orgId} AND event_id = ${eventId}`;
-    assert.deepStrictEqual(yield* toldBy(orgId, [eventId]), new Set(row.kept.map(keyOf)));
+    const kept = new Set(row.kept.map(keyOf));
+    if (row.bank) kept.add(UNREADABLE_BANK_ALERTS_KEY);
+    assert.deepStrictEqual(yield* toldBy(orgId, [eventId]), kept);
     assert.include(yield* queue(MONDAY + DAY), { _tag: "queued" });
     const next = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
       WHERE org_id = ${orgId} AND tag = 'pulse' AND event_id <> ${eventId} ORDER BY queued_at`;
@@ -144,6 +166,7 @@ it.effect.each([
       next.map((one) => one.eventId),
     );
     assert.isTrue(offered.has(keyOf("W-7")));
+    assert.isFalse(offered.has(UNREADABLE_BANK_ALERTS_KEY));
     assert.strictEqual(
       offered.has(keyOf("W-62")),
       row.handle !== true && !row.kept.some((key) => key === "W-62"),

@@ -88,7 +88,7 @@ import { KinPresence, syncQueued } from "./KinPresence.ts";
 import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
 import { morningMoneyFor } from "../pulse/morningMoney.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
-import { settleCheckInTold } from "../pulse/told.ts";
+import { settleCheckInTold, toldBy } from "../pulse/told.ts";
 import { weeklyFigures } from "../pulse/weekly.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -615,7 +615,7 @@ const make = Effect.gen(function* () {
   });
   // The seeded brief this wake-up runs alone (`pulse/checkInSeeds.ts`), not a turn someone asked.
   const briefIn = (wake: Wake, scheduleIds: ReadonlyArray<string>) =>
-    sql<{ figures: number | null }>`SELECT CASE
+    sql<{ eventId: string; figures: number | null }>`SELECT e.event_id AS "eventId", CASE
         WHEN json_extract(e.json, '$.checkIn.scheduleId') = 'checkin-weekly' THEN 1
         ELSE json_extract(e.json, '$.checkIn.figures') END AS figures
       FROM kin_events e WHERE e.org_id = ${wake.orgId}
@@ -718,6 +718,9 @@ const make = Effect.gen(function* () {
           orgId: wake.orgId,
           chatId: wake.lane.chatId,
           now: yield* Clock.currentTimeMillis,
+          offeredFacts: yield* toldBy(wake.orgId, [brief.eventId]).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ),
           said: kinPageSections(slot.body)
             .filter(({ title }) => title !== null && KIN_MONEY_SECTION.match.test(title.trim()))
             .map(({ markdown }) => markdown)

@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { dayIn } from "../work/money.ts";
+import { UNREADABLE_BANK_ALERTS_KEY } from "./senses/bank.ts";
 import { HOUR_MS, DAY_MS } from "./thresholds.ts";
 
 /** Facts about something coming due: their measure counts down to it. */
@@ -88,8 +89,11 @@ export const untold = Effect.fn("KinPulse.untold")(function* (input: {
       WHERE t.org_id = ${input.orgId} AND t.person_id = ${input.personId}
         AND t.fact_key IN ${sql.in(keys.slice(start, start + 500))}
         AND ${counted}
-      ORDER BY t.fact_key, t.told_at`)
+      ORDER BY t.fact_key, t.told_at DESC, t.rowid DESC`) {
+      // The unreadable count can go down and back up while the same fact stays open.
+      if (row.key === UNREADABLE_BANK_ALERTS_KEY && told.has(row.key)) continue;
       told.set(row.key, (told.get(row.key) ?? new Set()).add(row.sig));
+    }
   return input.facts.filter(
     (fact) => told.get(fact.key)?.has(factSig(fact, input.at, input.zone)) !== true,
   );
@@ -163,8 +167,10 @@ export const settleCheckInTold = Effect.fn("KinPulse.settleCheckInTold")(functio
       AND json_extract(e.json, '$.checkIn') IS NOT NULL
     ORDER BY t.fact_key`;
   if (offered.length === 0) return;
-  const texts = yield* sql<{ text: string }>`WITH posts AS (
-      SELECT m.message_id, m.widget_id, m.body
+  const texts = yield* sql<{ text: string; automated: number }>`WITH posts AS (
+      SELECT m.message_id, m.widget_id, m.body,
+        (COALESCE(m.client_message_id, '') GLOB '*kin-page:' || w.wakeup_id
+          OR COALESCE(m.client_message_id, '') GLOB '*kin-money:' || w.wakeup_id) AS automated
       FROM kin_wakeups w JOIN kin_messages m ON m.org_id = w.org_id AND m.author_agent_id = w.agent_id
       WHERE w.org_id = ${orgId} AND w.wakeup_id = ${wakeupId}
         AND m.chat_id = ${chatId} AND m.author_kind = 'agent' AND m.status = 'posted'
@@ -173,25 +179,24 @@ export const settleCheckInTold = Effect.fn("KinPulse.settleCheckInTold")(functio
             AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch')
             AND (w.ended_at IS NULL OR
               m.created_at <= strftime('%Y-%m-%dT%H:%M:%fZ', w.ended_at / 1000.0, 'unixepoch'))))
-        AND COALESCE(m.client_message_id, '') NOT GLOB '*kin-page:' || w.wakeup_id
-        AND COALESCE(m.client_message_id, '') NOT GLOB '*kin-money:' || w.wakeup_id
         AND COALESCE(m.client_message_id, '') NOT GLOB '*kin-week:' || w.wakeup_id || ':*'
-      ) SELECT body AS text FROM posts WHERE trim(body) <> ''
+      ) SELECT body AS text, automated FROM posts WHERE trim(body) <> ''
       UNION ALL
-      SELECT part.value AS text FROM posts p JOIN kin_widgets g
+      SELECT part.value AS text, p.automated FROM posts p JOIN kin_widgets g
         ON g.org_id = ${orgId} AND g.chat_id = ${chatId}
         AND (g.message_id = p.message_id OR g.widget_id = p.widget_id)
       CROSS JOIN json_tree(g.state_json) part WHERE part.type = 'text' AND trim(part.value) <> ''
       UNION ALL
-      SELECT json_extract(name.value, '$.key') AS text FROM posts p JOIN kin_message_names n
+      SELECT json_extract(name.value, '$.key') AS text, p.automated FROM posts p JOIN kin_message_names n
         ON n.org_id = ${orgId} AND n.message_id = p.message_id
       CROSS JOIN json_each(n.names_json) name
       ORDER BY text`;
-  if (texts.length === 0 && !input.completed) return;
+  const said = texts.filter((post) => !post.automated);
+  if (said.length === 0 && !input.completed) return;
   const keys = new Set(offered.map((row) => row.key));
   const named = new Set<string>();
   if (texts.length > 0) {
-    const spoken = texts.map(({ text }) => text.toLowerCase()).join("\n");
+    const spoken = said.map(({ text }) => text.toLowerCase()).join("\n");
     for (const fact of yield* input.readFacts(keys)) {
       const key = RegExp.escape(fact.subject.key.toLowerCase());
       const mentioned = new RegExp(`(?<![\\p{L}\\p{N}_])${key}(?![\\p{L}\\p{N}_])`, "u");
@@ -200,13 +205,18 @@ export const settleCheckInTold = Effect.fn("KinPulse.settleCheckInTold")(functio
       if (
         mentioned.test(spoken) ||
         (title.length >= 4 && spoken.includes(title)) ||
-        (client && spoken.includes(client))
+        (client && spoken.includes(client)) ||
+        (fact.key === UNREADABLE_BANK_ALERTS_KEY &&
+          texts.some(
+            ({ automated, text }) =>
+              automated && text.includes(`${fact.subject.title}. ${fact.consequence}`),
+          ))
       )
         named.add(fact.key);
     }
   }
   const handled =
-    texts.length > 0
+    said.length > 0
       ? offered.filter((row) => row.handled === 1 && !named.has(row.key)).map((row) => row.key)
       : [];
   const kept = new Set([...named, ...handled]);
