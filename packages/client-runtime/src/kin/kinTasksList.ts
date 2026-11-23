@@ -55,6 +55,7 @@ export const KIN_TASKS = {
   clearDetail:
     "No drafts to approve, no questions waiting, nothing late. New ones will show here first.",
   teammateFoot: "You see tasks you hold, tasks you asked for, and tasks on your projects.",
+  teammateFootWithoutClients: "You see tasks you hold and tasks you asked for.",
   groupBy: "Group by",
   showOnly: "Show only",
   order: "Inside each group: late first, then soonest due, then tasks with no date.",
@@ -617,6 +618,7 @@ export function kinTasksByMove<R extends KinRecord>(input: {
   /** The Needs you number the badge shows too (`kinNeedsYouCount`). */
   readonly needsYou: number | null;
   readonly ownerLevel: boolean;
+  readonly clientsOn?: boolean;
   readonly names: KinWorkNames;
   /** Deal and prospect facts (`kinTasksDealFacts`), first under Needs you. */
   readonly facts?: ReadonlyArray<KinAttentionRow>;
@@ -644,7 +646,7 @@ export function kinTasksByMove<R extends KinRecord>(input: {
       ? KIN_TASKS.noDateGroup
       : place === "comingUp"
         ? KIN_TASKS.comingUp
-        : place === "rest" && !ownerLevel
+        : place === "rest" && !ownerLevel && input.clientsOn !== false
           ? KIN_TASKS.yourProjects
           : KIN_TASKS.groups[place];
   const items: Array<KinTasksItem<R>> = [];
@@ -682,7 +684,13 @@ export function kinTasksByMove<R extends KinRecord>(input: {
   }
   if (counts !== null && counts.doneRecently > 0)
     items.push({ type: "done", key: "done", count: counts.doneRecently });
-  if (!ownerLevel) items.push({ type: "foot", key: "foot", text: KIN_TASKS.teammateFoot });
+  if (!ownerLevel)
+    items.push({
+      type: "foot",
+      key: "foot",
+      text:
+        input.clientsOn === false ? KIN_TASKS.teammateFootWithoutClients : KIN_TASKS.teammateFoot,
+    });
   return items;
 }
 

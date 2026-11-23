@@ -5,6 +5,7 @@ import * as NodeZlib from "node:zlib";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ServerConfig } from "../../config.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import {
   EnvironmentId,
   KinAgentId,
@@ -198,7 +199,7 @@ const documents = Layer.mergeAll(
   Layer.mock(KinDocRenderer)({ drawable: () => Effect.undefined }),
   Layer.mock(KinWorkspace)({}),
 );
-const layer = Layer.mergeAll(KinRecords.layer, identity, gate, documents).pipe(
+const layer = Layer.mergeAll(KinRecords.layer, identity, gate, documents, KinShell.layer).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
@@ -6076,6 +6077,21 @@ describe("money answers", () => {
             runwayMonths: "6.0",
           },
         ]);
+        const now = yield* Clock.currentTimeMillis;
+        const enabled = yield* outlook(orgId, now);
+        const shell = yield* KinShell.KinShell;
+        const disabled = yield* shell.set(orgId, ownerId, (yield* shell.get(orgId)).rev, [
+          { id: "invoices", on: false },
+        ]);
+        const hidden = yield* outlook(orgId, now);
+        assert.deepStrictEqual(hidden.overdueIn, []);
+        assert.deepStrictEqual(hidden.incoming, []);
+        assert.isTrue(hidden.windows.every((window) => window.expectedIn.length === 0));
+        assert.deepStrictEqual(hidden.runway, enabled.runway);
+        assert.deepStrictEqual(hidden.dueOut, enabled.dueOut);
+        assert.deepStrictEqual(hidden.overdueOut, enabled.overdueOut);
+        yield* shell.set(orgId, ownerId, disabled.rev, [{ id: "invoices", on: true }]);
+        assert.deepStrictEqual(yield* outlook(orgId, now), enabled);
         // One chosen window instead of three.
         const week = (yield* LeadMoney.moneyQuery(scope, { view: "outlook", days: 7 }))
           .answer as ReturnType<typeof outlookAnswer>;

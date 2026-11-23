@@ -2,20 +2,20 @@
   "mcpToolListJsonBytes": 60364,
   "kinToolListJsonBytes": 3044,
   "kinInstructionsBytes": {
-    "owner": 39039,
-    "confined": 38987
+    "owner": 39133,
+    "confined": 39081
   },
-  "kinSharedInstructionsHash": "bf43f44913b7509a38510423e2a30b97a3048db9866144b085052f59d9c2de5f",
+  "kinSharedInstructionsHash": "43b28ba753963c2c5d1a006a955148e71add4887193030ca71bb2df4d50e7952",
   "kinLeadToolListJsonBytes": {
-    "engineering": 154227,
-    "engineeringBesideFinanceAndSales": 140968,
-    "finance": 133811,
-    "shared": 86713,
-    "social": 136884,
-    "socialBesideFinanceAndSales": 123625,
-    "support": 133811
+    "engineering": 156400,
+    "engineeringBesideFinanceAndSales": 143141,
+    "finance": 135984,
+    "shared": 88980,
+    "social": 139057,
+    "socialBesideFinanceAndSales": 125798,
+    "support": 135984
   },
-  "kinLeadAlwaysLoadedToolBytes": 69684,
+  "kinLeadAlwaysLoadedToolBytes": 69945,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -36,6 +36,10 @@
     "company_profile": {
       "desc": 840,
       "schema": 993
+    },
+    "company_sections": {
+      "desc": 364,
+      "schema": 472
     },
     "dates_query": {
       "desc": 382,
@@ -114,7 +118,7 @@
       "schema": 46
     },
     "kin_connection_call": {
-      "desc": 741,
+      "desc": 822,
       "schema": 226
     },
     "kin_connection_note": {
@@ -126,7 +130,7 @@
       "schema": 98
     },
     "kin_connection_tools": {
-      "desc": 792,
+      "desc": 972,
       "schema": 120
     },
     "kin_defer": {
@@ -236,6 +240,14 @@
     "money_summary": {
       "desc": 501,
       "schema": 46
+    },
+    "number_record": {
+      "desc": 250,
+      "schema": 314
+    },
+    "numbers_read": {
+      "desc": 192,
+      "schema": 147
     },
     "payment_record": {
       "desc": 320,

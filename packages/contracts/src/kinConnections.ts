@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChatError, KinOrgId, KinSendTry } from "./kinChat.ts";
+import { KinChatError, KinOrgId, KinPersonId, KinSendTry } from "./kinChat.ts";
 
 /**
  * Connections: an owner's sign-in to an outside service, reached by Kin's server as an MCP client.
@@ -176,14 +176,50 @@ export type KinConnectionCall = typeof KinConnectionCall.Type;
 
 export const KinConnectionsInput = Schema.Struct({ orgId: KinOrgId });
 export type KinConnectionsInput = typeof KinConnectionsInput.Type;
+/**
+ * A person's own mailbox as the owner level sees it: whose, and which address. Never what is in
+ * it; the owner level may disconnect it, never read or send from it.
+ */
+export const KinPersonMailbox = Schema.Struct({
+  personId: KinPersonId,
+  connectionId: KinConnectionId,
+  account: Schema.NullOr(Schema.String),
+  state: KinConnectionState,
+});
+export type KinPersonMailbox = typeof KinPersonMailbox.Type;
+
 export const KinConnectionsView = Schema.Struct({
   orgId: KinOrgId,
   connections: Schema.Array(KinConnection),
   services: Schema.Array(KinConnectionService),
   /** Where a service sends the browser back after sign-in; pasted into Google's client setup. */
   signInAddress: Schema.String,
+  /** Each person's own mailbox; absent from servers before own mailboxes. */
+  mailboxes: Schema.optional(Schema.Array(KinPersonMailbox)),
 });
 export type KinConnectionsView = typeof KinConnectionsView.Type;
+
+/**
+ * Settings › Connections › Your mailbox, for anyone: their own mailbox, if connected, and the mail
+ * services they may sign in with (only those the owner has set up).
+ */
+export const KinMyMailbox = Schema.Struct({
+  orgId: KinOrgId,
+  mailbox: Schema.NullOr(
+    Schema.Struct({
+      connectionId: KinConnectionId,
+      preset: Schema.NullOr(KinConnectionPreset),
+      account: Schema.NullOr(Schema.String),
+      state: KinConnectionState,
+    }),
+  ),
+  services: Schema.Array(
+    Schema.Struct({ service: KinConnectionPreset, label: Schema.String, ready: Schema.Boolean }),
+  ),
+  /** Where a service sends the browser back after sign-in. */
+  signInAddress: Schema.String,
+});
+export type KinMyMailbox = typeof KinMyMailbox.Type;
 
 export const KinConnectionRef = Schema.Struct({ orgId: KinOrgId, connectionId: KinConnectionId });
 export type KinConnectionRef = typeof KinConnectionRef.Type;
@@ -330,6 +366,13 @@ export const KinConnectionSignInStartInput = Schema.Struct({
   returnTo: KinConnectionSignInReturn,
 });
 export type KinConnectionSignInStartInput = typeof KinConnectionSignInStartInput.Type;
+/** Signs in to the caller's own mailbox: a mail service only, one per person. */
+export const KinMyMailboxSignInStartInput = Schema.Struct({
+  orgId: KinOrgId,
+  service: KinConnectionPreset,
+  returnTo: KinConnectionSignInReturn,
+});
+export type KinMyMailboxSignInStartInput = typeof KinMyMailboxSignInStartInput.Type;
 export const KinConnectionSignInStart = Schema.Struct({
   signInId: Schema.String,
   /** The service's sign-in page, opened in the device's browser. */
@@ -823,6 +866,26 @@ export const KinConnectionRpcs = [
     success: KinConnectionSaveEdited,
     error: KinError,
   }),
+  Rpc.make("kin.connections.mine", {
+    payload: KinConnectionsInput,
+    success: KinMyMailbox,
+    error: KinError,
+  }),
+  Rpc.make("kin.connections.mineSignInStart", {
+    payload: KinMyMailboxSignInStartInput,
+    success: KinConnectionSignInStart,
+    error: KinError,
+  }),
+  Rpc.make("kin.connections.mineSignInFinish", {
+    payload: KinConnectionSignInFinishInput,
+    success: KinMyMailbox,
+    error: KinError,
+  }),
+  Rpc.make("kin.connections.mineRemove", {
+    payload: KinConnectionsInput,
+    success: KinMyMailbox,
+    error: KinError,
+  }),
   Rpc.make("kin.github.connect.status", {
     payload: KinGitHubInput,
     success: KinGitHubStatus,
@@ -904,6 +967,10 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.connections.setSendFrom": AuthKinChatScope,
   "kin.connections.sendEdited": AuthKinChatScope,
   "kin.connections.saveEdited": AuthKinChatScope,
+  "kin.connections.mine": AuthKinChatScope,
+  "kin.connections.mineSignInStart": AuthKinChatScope,
+  "kin.connections.mineSignInFinish": AuthKinChatScope,
+  "kin.connections.mineRemove": AuthKinChatScope,
   "kin.github.connect.status": AuthKinChatScope,
   "kin.github.connect.start": AuthKinChatScope,
   "kin.github.connect.cancel": AuthKinChatScope,

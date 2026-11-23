@@ -53,9 +53,11 @@ export const sectionName = (shell: Shell, id: SectionId) =>
     docs: "Docs",
   }[id];
 
-const hasControl = (label: string) => /\p{Cc}/u.test(label);
-const cleanLabel = (label: string | undefined) =>
-  label === undefined || hasControl(label) ? undefined : label.trim();
+// One line of plain text: no line breaks, controls, or direction and other format marks.
+const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+const hasControl = (label: string) => label.search(UNSAFE) >= 0;
+/** An older stored label is shown with what a label may not hold removed. */
+const cleanLabel = (label: string | undefined) => label?.replace(UNSAFE, "").trim() || undefined;
 
 const labelsOf = ({ id, on, name, noun, dock }: KinShellSection): KinShellSection => {
   const plural = cleanLabel(name);
@@ -130,9 +132,37 @@ export const sectionOnFor = Effect.fn("KinShell.sectionOn")(function* (
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const conflict = new KinChatError({
   reason: "conflict",
-  message: "Someone changed this since you opened it. Nothing was saved; open it again.",
+  message:
+    "Someone else changed the sections just now, so nothing was saved. Check them and save again.",
 });
-const set = Effect.fn("KinShell.set")(function* (
+/**
+ * Why the setter refuses `input` over the stored `before`, in its own words; undefined when it
+ * may be saved. The setter runs it at the write; an agent's proposal runs it before its card.
+ */
+export const shellRefusal = (
+  before: readonly KinShellSection[],
+  input: readonly KinShellSection[],
+): string | undefined => {
+  for (const { id, on, name, noun } of ordered(input)) {
+    if (input.filter((section) => section.id === id).length > 1)
+      return "A section can only be set once.";
+    if (id === "docs" && !on) return "Docs can't be turned off.";
+    for (const label of [name, noun]) {
+      if (label === undefined) continue;
+      if (hasControl(label)) return "A name is one line of plain text.";
+      if (label.trim().length > 40) return "A name can be at most 40 characters.";
+    }
+  }
+  const proposed = { rev: 0, sections: ordered(input).map(labelsOf) };
+  if (storedOn(proposed, "clients") || !storedOn(proposed, "invoices")) return undefined;
+  const was = { rev: 0, sections: before.map(labelsOf) };
+  const name = sectionName(was, "clients");
+  return !storedOn(was, "clients")
+    ? `Turn on ${name} first: invoices need it.`
+    : `Turn off Invoices and quotes first: invoices need ${name}.`;
+};
+
+export const set = Effect.fn("KinShell.set")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   rev: number,
@@ -156,33 +186,13 @@ const set = Effect.fn("KinShell.set")(function* (
           shellJson: string;
         }>`SELECT rev, shell_json AS "shellJson" FROM kin_company_shell WHERE org_id = ${orgId}`;
         if (rev !== (stored?.rev ?? 0)) return yield* conflict;
-        const requested = ordered(input);
-        for (const { id, on, name, noun } of requested) {
-          if (input.filter((section) => section.id === id).length > 1)
-            return yield* invalid("A section can only be set once.");
-          if (id === "docs" && !on) return yield* invalid("Docs can't be turned off.");
-          for (const label of [name, noun]) {
-            if (label === undefined) continue;
-            if (hasControl(label)) return yield* invalid("A name is one line of plain text.");
-            if (label.trim().length > 40)
-              return yield* invalid("A name can be at most 40 characters.");
-          }
-        }
-        const sections = requested.map(labelsOf);
-        const proposed = { rev, sections };
-        if (!storedOn(proposed, "clients") && storedOn(proposed, "invoices")) {
-          const previous =
-            stored === undefined
-              ? undefined
-              : Option.getOrUndefined(yield* Effect.option(decode(stored.shellJson)));
-          const before = { rev, sections: (previous ?? []).map(labelsOf) };
-          const name = sectionName(before, "clients");
-          return yield* invalid(
-            !storedOn(before, "clients")
-              ? `Turn on ${name} first: invoices need it.`
-              : `Turn off Invoices and quotes first: invoices need ${name}.`,
-          );
-        }
+        const previous =
+          stored === undefined
+            ? undefined
+            : Option.getOrUndefined(yield* Effect.option(decode(stored.shellJson)));
+        const refusal = shellRefusal(previous ?? [], input);
+        if (refusal !== undefined) return yield* invalid(refusal);
+        const sections = ordered(input).map(labelsOf);
         const next = rev + 1;
         yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
       VALUES (${orgId}, ${yield* encode(sections)}, ${next}, ${personId}, ${yield* Clock.currentTimeMillis})

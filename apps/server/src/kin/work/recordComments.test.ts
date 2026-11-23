@@ -39,6 +39,7 @@ import {
   stampKey,
 } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { commentMine, setStateMine } from "../tasksKey/tasks.ts";
 import { heldGivenBody, movedNotices, taskNewsBanner, tellHolding } from "./assignNotices.ts";
 import * as KinRecords from "./KinRecords.ts";
@@ -91,7 +92,7 @@ const identity = Layer.mock(KinIdentity)({
 const gate = Layer.mock(KinLevelGate)({
   ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
 });
-const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
+const layer = Layer.mergeAll(KinRecords.layer, identity, gate, KinShell.layer).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
@@ -790,6 +791,52 @@ it.effect(
         comingUp: 0,
       });
       assert.deepStrictEqual(arjuns.moves, []);
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE org_id = ${orgId} AND person_id = ${zoyaId}`;
+      const client = yield* OwnerClients.createParty([rhea], {
+        orgId,
+        name: "Invented Juniper",
+        clientRequestId: "juniper",
+      });
+      const project = yield* OwnerClients.createProject([rhea], {
+        orgId,
+        name: "Invented launch",
+        clientRequestId: "launch",
+        party: client.key,
+        members: [toZoya.owner],
+      });
+      const linked = yield* task("prepare labels", {
+        ...toZoya,
+        party: client.key,
+        project: project.key,
+      });
+      const readLinked = Effect.forEach([rhea, zoya], (who) =>
+        OwnerWork.list([who], { orgId, byMove: true }),
+      );
+      const shown = yield* readLinked;
+      for (const page of shown) {
+        const row = page.records.find(({ key }) => key === linked.key);
+        assert.equal(row?.party?.key, client.key);
+        assert.equal(row?.project?.key, project.key);
+      }
+      const shell = yield* KinShell.KinShell;
+      const off = yield* shell.set(orgId, rheaId, (yield* shell.get(orgId)).rev, [
+        { id: "clients", on: false },
+        { id: "invoices", on: false },
+      ]);
+      const hidden = yield* readLinked;
+      for (const [index, page] of hidden.entries()) {
+        const row = page.records.find(({ key }) => key === linked.key);
+        assert.isDefined(row);
+        assert.notProperty(row, "party");
+        assert.notProperty(row, "project");
+        assert.deepStrictEqual(page.moves, shown[index]?.moves);
+        assert.equal(
+          (yield* OwnerWork.get([[rhea, zoya][index]!], { orgId, key: linked.key })).key,
+          linked.key,
+        );
+      }
+      yield* shell.set(orgId, rheaId, off.rev, []);
+      assert.deepStrictEqual(yield* readLinked, shown);
     }).pipe(Effect.provide(layer)),
 );
 

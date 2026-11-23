@@ -385,3 +385,26 @@ it.effect("bounds rule executions for random runs, word lines and multi-file inp
     }
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect("skips token rules for ordinary path inventories", () =>
+  Effect.gen(function* () {
+    const scanner = yield* Scan.KinSecretScan;
+    let executions = 0;
+    const exec = RegExp.prototype.exec;
+    using _spy = vi.spyOn(RegExp.prototype, "exec").mockImplementation(function (
+      this: RegExp,
+      value: string,
+    ) {
+      if (this.source.startsWith("(?<![")) executions++;
+      return exec.call(this, value);
+    });
+    for (const offset of [0, 1000]) {
+      const files = Array.from({ length: 1000 }, (_, i) => ({
+        path: `claims/entry-${i + offset}.md`,
+        content: Buffer.from("title: Inventory\nstate: open\nnext: Review options"),
+      }));
+      expect(yield* scanner.scan({ orgId, files })).toEqual([]);
+    }
+    expect(executions).toBe(0);
+  }).pipe(Effect.provide(layer)),
+);

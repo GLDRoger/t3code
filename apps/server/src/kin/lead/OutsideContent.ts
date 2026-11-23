@@ -118,8 +118,13 @@ export const OUTSIDE_TOOLS = {
   money_summary: "allowed",
   money_query: "allowed",
   budget_set: "allowed",
+  // Appends a sourced value for an existing number the lead keeps, without changing the definition.
+  number_record: "allowed",
+  numbers_read: "allowed",
   dates_query: "allowed",
   company_profile: "allowed",
+  // Only a card: the owner's Confirm applies it, in their own tap.
+  company_sections: "allowed",
   statement_read: "allowed",
   statement_rows: "allowed",
   kin_document: recipeOnly,
@@ -155,8 +160,11 @@ const READS_MAX = 8;
 const PART_MAX = 120;
 const RENDERED_MAX = 300;
 
-/** One outside read: its kind, the connection (`id`) or account it came through, and its parts. */
-export type OutsideReadItem = { readonly id?: string } & (
+/**
+ * One outside read: its kind, the connection (`id`) or account it came through, and its parts.
+ * `own`: read from that person's own mailbox, whose detail is theirs alone (`renderSource`).
+ */
+export type OutsideReadItem = { readonly id?: string; readonly own?: string } & (
   | {
       readonly k: "mail" | "check-in";
       readonly account?: string;
@@ -207,7 +215,7 @@ const cleanRead = (value: unknown): OutsideReadItem | undefined => {
   const raw = value as Record<string, unknown>;
   if (typeof raw.k !== "string" || !KINDS.has(raw.k)) return undefined;
   const fields = Object.fromEntries(
-    ["id", "account", "from", "subject", "label", "tool", "host", "handle", "name"].flatMap(
+    ["id", "own", "account", "from", "subject", "label", "tool", "host", "handle", "name"].flatMap(
       (name) => {
         const text = part(raw[name]);
         return text === undefined ? [] : [[name, text]];
@@ -308,10 +316,19 @@ const neutralOf = (read: OutsideReadItem): string => {
 
 /**
  * What a reader reads for a stamp. `detailed` only for an owner-level person or a turn only the
- * owner side reads: connections are theirs alone, so anyone else gets each read's kind.
+ * owner side reads: connections are theirs alone, so anyone else gets each read's kind. A read
+ * from a person's own mailbox is detailed only for `reader` that person, the owner included.
  */
-export const renderSource = (stamp: string, detailed: boolean) => {
-  const text = [...new Set(stampReads(stamp).map(detailed ? detailOf : neutralOf))].join("; ");
+export const renderSource = (stamp: string, detailed: boolean, reader?: string) => {
+  const text = [
+    ...new Set(
+      stampReads(stamp).map((read) =>
+        (read.own === undefined ? detailed : read.own === reader)
+          ? detailOf(read)
+          : neutralOf(read),
+      ),
+    ),
+  ].join("; ");
   return text.length <= RENDERED_MAX ? text : `${text.slice(0, RENDERED_MAX - 1)}…`;
 };
 

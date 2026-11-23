@@ -51,8 +51,12 @@ export const toolCallGate = <R>(
  * As `toolCallGate`, for a refusal that depends on the call: `undefined` lets it through. `make`
  * runs once, when the server is built.
  */
-export const toolCallRefusal = <R>(
-  make: Effect.Effect<(name: string, args: unknown) => Effect.Effect<string | undefined>, never, R>,
+export const toolCallRefusal = <R, CallR>(
+  make: Effect.Effect<
+    (name: string, args: unknown) => Effect.Effect<string | undefined, never, CallR>,
+    never,
+    R
+  >,
 ) => McpServer.middleware()(Effect.map(make, toolCallGateFn), { global: true });
 
 type ProvidersOffered = (

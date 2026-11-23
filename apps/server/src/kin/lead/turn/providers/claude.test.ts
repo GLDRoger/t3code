@@ -645,6 +645,12 @@ it.effect(
             'running', '', '{}')`;
       yield* link("task-owner", "kin:tech", "run-owner", "child-owner");
       yield* link("task-grand", "child-owner", "run-child", "grandchild-owner");
+      let parent = "grandchild-owner";
+      for (let depth = 3; depth <= 9; depth++) {
+        const child = `nested-owner-${depth}`;
+        yield* link(child, parent, "run-child", child);
+        parent = child;
+      }
       yield* link("task-mate", "kin:tech", "run-mate", "child-mate");
       yield* link("task-mate-grand", "child-mate", "run-mate-child", "grandchild-mate");
       const services = Context.make(
@@ -677,14 +683,14 @@ it.effect(
         }),
       );
       const task = optionsAt(scratch, { PATH: "/usr/bin", HOME: "/home/kin" });
-      const open = (threadId: string) =>
+      const open = (threadId: string, options = task) =>
         Effect.gen(function* () {
           const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
           yield* runner
             .open({
               threadId: ThreadId.make(threadId),
               providerSessionId: ProviderSessionId.make("session"),
-              options: task,
+              options,
             })
             .pipe(Effect.exit);
           return opened.at(-1);
@@ -722,7 +728,14 @@ it.effect(
         child?.env?.PATH,
         `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
       );
-      assert.strictEqual(grandchild?.env?.KIN_AGENT_NAME, "Lead");
+      const own = yield* open("kin:tech", optionsAt(`${stateDir}/kin/memory-read`, task.env));
+      assert.strictEqual(own?.env?.KIN_AGENT_NAME, "Lead");
+      for (const worker of [child, grandchild, yield* open(parent)]) {
+        assert.deepStrictEqual(
+          { name: worker?.env?.KIN_AGENT_NAME, path: worker?.env?.PATH },
+          { name: own?.env?.KIN_AGENT_NAME, path: own?.env?.PATH },
+        );
+      }
       assert.strictEqual(
         typeof child?.settings === "object" && child.settings.includeCoAuthoredBy,
         false,

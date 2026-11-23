@@ -74,6 +74,7 @@ import * as McpGateway from "./connections/McpGateway.ts";
 import * as DevFakeSocial from "./social/DevFakeSocial.ts";
 import * as DevFakeImages from "./pictures/DevFakeImages.ts";
 
+import * as KinNumbers from "./numbers/KinNumbers.ts";
 import * as KinShell from "./shell/KinShell.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
@@ -228,6 +229,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         ),
       ).pipe(
         Layer.merge(KinShell.layer),
+        Layer.merge(KinNumbers.layer),
         Layer.provideMerge(KinChat.layer),
         // Social's posting service sits on top: it reads cards, chats and the document renderer.
         (core) =>
