@@ -42,7 +42,7 @@ export const KIN_COMPANY = {
   changed:
     "These changed while you were editing. What you typed is still here. Check what's new, then save again.",
   onlyOwner: {
-    title: "Not available",
+    title: "Company details aren't open to you",
     detail: "Company details are kept by whoever runs this Kin.",
   },
   noKin: {
