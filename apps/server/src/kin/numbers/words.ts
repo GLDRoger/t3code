@@ -106,7 +106,11 @@ export const cardLine = (
   number: CardNumber,
   feed: CardFeed | undefined,
   existing: CardExisting | undefined,
-  extra: { readonly keptBy?: string | undefined; readonly computed?: string | undefined } = {},
+  extra: {
+    readonly keptBy?: string | undefined;
+    readonly computed?: string | undefined;
+    readonly shared?: string | undefined;
+  } = {},
 ) => {
   const unit = number.unit ?? existing?.unit;
   const next = {
@@ -130,9 +134,11 @@ export const cardLine = (
     ...(origin === undefined ? [] : [origin]),
     ...(extra.keptBy === undefined ? [] : [extra.keptBy]),
   ];
-  return existing === undefined
-    ? `Watch ${quoted(number.name)}: ${parts.join("; ")}`
-    : `Change ${quoted(existing.name)} (${existing.key}): ${parts.join("; ")}`;
+  const line =
+    existing === undefined
+      ? `Watch ${quoted(number.name)}: ${parts.join("; ")}`
+      : `Change ${quoted(existing.name)} (${existing.key}): ${parts.join("; ")}`;
+  return extra.shared === undefined ? line : `${line}. ${extra.shared}`;
 };
 
 const MEASURES = {
@@ -163,6 +169,10 @@ export const computedText = (
     ? what
     : `${what}, ${direction === "up" ? "higher" : "lower"} is better`;
 };
+
+/** What a line on a number the team already sees adds, so the owner sees who will. */
+export const SHARED_FEED = "The team sees this number, so they will see what is fetched.";
+export const SHARED_LIMIT = "The team sees this number and its limit.";
 
 /** The card's own line for how a feed is read, in the agent's words, whole. */
 export const howLine = (how: string) => `How: ${how}`;

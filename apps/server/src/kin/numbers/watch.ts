@@ -38,7 +38,7 @@ import {
 } from "./numberRows.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { BUILT_IN_SECTIONS } from "../shell/words.ts";
-import { cardLine, computedText, howLine, WATCH_NEXT } from "./words.ts";
+import { cardLine, computedText, howLine, SHARED_FEED, SHARED_LIMIT, WATCH_NEXT } from "./words.ts";
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const encodeChange = Schema.encodeEffect(NumbersChangeJson);
@@ -136,7 +136,18 @@ export const drawCard = Effect.fn("KinNumbersWatch.draw")(function* (
       number.compute === undefined
         ? undefined
         : computedText(number.compute, (id) => lists.get(id) ?? id, direction);
-    return cardLine(number, feed, existing, { keptBy, computed });
+    const limitChanged =
+      (number.above !== undefined && number.above !== existing?.above) ||
+      (number.below !== undefined && number.below !== existing?.below);
+    const shared =
+      existing?.teamShared !== true
+        ? undefined
+        : feed !== undefined && number.compute === undefined
+          ? SHARED_FEED
+          : limitChanged
+            ? SHARED_LIMIT
+            : undefined;
+    return cardLine(number, feed, existing, { keptBy, computed, shared });
   });
   if (feed?.how !== undefined) lines.push(howLine(feed.how));
   const base = retryKey(

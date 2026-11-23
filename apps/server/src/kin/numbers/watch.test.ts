@@ -522,3 +522,28 @@ it.effect(
       ]);
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect("a number the team sees says so on the card when it gains a feed or a limit", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* turn(1);
+    yield* watch(scope, { numbers: [{ name: "Stock on hand" }] });
+    yield* answer((yield* cards)[0]!.widgetId, ownerId);
+    // The owner shared it with the team for typing it in.
+    yield* sql`UPDATE kin_records SET team_shared = 1 WHERE org_id = ${orgId} AND key = 'G-1'`;
+    yield* turn(2);
+    const fed = yield* watch(scope, {
+      numbers: [{ name: "Stock on hand" }],
+      feed: { source: "Invented warehouse sheet", every: "day", at: "07:00" },
+    });
+    assert.deepStrictEqual(fed.proposed, [
+      'Change "Stock on hand" (G-1): no limit; from "Invented warehouse sheet", fetched every day at 07:00. The team sees this number, so they will see what is fetched.',
+    ]);
+    yield* turn(3);
+    const limited = yield* watch(scope, { numbers: [{ name: "Stock on hand", below: "20" }] });
+    assert.deepStrictEqual(limited.proposed, [
+      'Change "Stock on hand" (G-1): speak up below 20 (now no limit). The team sees this number and its limit.',
+    ]);
+  }).pipe(Effect.provide(layer)),
+);
