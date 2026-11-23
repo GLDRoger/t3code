@@ -11,8 +11,9 @@ export const rules: Record<string, string> = {
     "A task always has exactly one holder, who can always see it, whatever its alert, privacy or project.",
   NoPingPong:
     "The agent never gives a task back to someone who handed it back, unless something on it changed since or you said so.",
+  HelperSees: "A teammate also on a task can see it and is distinct from its holder.",
   PrivateStaysPrivate:
-    "A private task is seen by you, your co-owners and whoever holds it, and no other teammate.",
+    "A task you mark private can be seen by you, your co-owners, whoever holds it and anyone also on it.",
   DoneReversible: "A task marked done can always be reopened.",
   OneNoticePerHandOff:
     "Every hand-off tells whoever receives it exactly once, unless they moved it themselves.",
@@ -23,6 +24,11 @@ export const rules: Record<string, string> = {
 };
 
 export const variants = [
+  {
+    name: "helper-cannot-see",
+    breaks: "HelperSees",
+    what: "someone also on the task cannot see it",
+  },
   {
     name: "hold-hides",
     breaks: "HolderSees",
@@ -98,6 +104,12 @@ export const step = (action: string, from: Vars, to: Vars) => {
     }
     case "HandBack":
       return `${names[String(from["holder"])] ?? "Its holder"} hands it back with a note`;
+    case "ChangeHelper":
+      return to["helper"] === "none"
+        ? "The teammate comes off the task"
+        : `${names[String(to["helper"])] ?? "A teammate"} is put on the task`;
+    case "MakePrivate":
+      return "You mark it private";
     case "Start":
       return "Its holder starts it";
     case "MarkDone":

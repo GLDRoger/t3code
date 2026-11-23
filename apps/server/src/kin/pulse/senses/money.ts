@@ -21,7 +21,7 @@ import {
   startOfDay,
 } from "../../work/recordRows.ts";
 import { DAY_MS, thresholds, toMs } from "../thresholds.ts";
-import { statementSenses } from "./bank.ts";
+import { statementSenses, unreadableBankAlerts } from "./bank.ts";
 import {
   agentOrOwner,
   dayOf,
@@ -332,5 +332,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     });
   });
   facts.push(...(yield* statementSenses(ctx)));
+  const unreadable = yield* unreadableBankAlerts(ctx, ctx.finance);
+  if (unreadable !== undefined) facts.push(unreadable);
   return facts;
 });

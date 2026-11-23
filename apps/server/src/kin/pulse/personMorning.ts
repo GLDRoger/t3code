@@ -243,7 +243,10 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
     const facts = yield* untold({
       orgId,
       personId,
-      facts: seen.map(({ yours: _yours, ...fact }): KinPulseFact => ({ ...fact, handled: null })),
+      facts: seen.map(({ yours: _yours, section: _section, ...fact }): KinPulseFact => ({
+        ...fact,
+        handled: null,
+      })),
       at,
       zone: ctx.zone,
       anyState: true,

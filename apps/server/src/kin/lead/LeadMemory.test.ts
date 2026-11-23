@@ -992,6 +992,37 @@ it.live(
           "Only the owner's own message can set up a scheduled task",
         );
         yield* copied(null);
+        // A feed of watched numbers changes only through numbers_watch, and its ids are its own.
+        yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id,
+            patch_json, base_rev, widget_id, proposed_at, applied_at)
+          VALUES (${orgId}, 'nw_feed', 'chief', 'earlier', ${JSON.stringify({
+            numbers: [],
+            feed: { source: "Invented analytics", every: "day", at: "08:00" },
+            base: "invented",
+          })}, 0, NULL, 0, 0)`;
+        yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+            source_event, said_by, audience, content_sha256, inbox_thread_id, created_at,
+            updated_at)
+          VALUES ('task-feed', ${orgId}, 'feed-invented', 'chief', 'first-chat',
+            'kin-numbers:nw_feed', 'fixture-member', 'owner_only', 'hash', 'inbox', 0, 0)`;
+        assert.strictEqual(
+          (yield* Effect.flip(
+            service.schedule(scope, {
+              ...scheduleInput,
+              replaces: KinMemoryItemId.make("feed-invented"),
+            }),
+          )).message,
+          "That schedule fetches watched numbers. Change it with numbers_watch, or archive the number to stop it.",
+        );
+        assert.include(
+          (yield* Effect.flip(
+            service.schedule(scope, {
+              ...scheduleInput,
+              itemId: KinMemoryItemId.make("feed-mine"),
+            }),
+          )).message,
+          "That id is a feed's.",
+        );
         const scheduled = yield* service.schedule(scope, scheduleInput);
         yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
             project_id, workspace_strategy_json, model_selection_json, runtime_mode,

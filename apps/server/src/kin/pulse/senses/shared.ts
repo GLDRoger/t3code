@@ -12,6 +12,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import type * as SqlClient from "effect/sql/SqlClient";
 
+import type { SectionId } from "../../shell/sections.ts";
 import { dayIn } from "../../work/money.ts";
 import { issuedNumber, labelledNow } from "../../work/recordRows.ts";
 import { DAY_MS, HOUR_MS, type Threshold } from "../thresholds.ts";
@@ -38,6 +39,8 @@ export interface SenseContext {
 export type SensedFact = Omit<KinPulseFact, "handled"> & {
   readonly yours?: (personId: string) => string | undefined;
   readonly quietForMs?: number;
+  /** The section whose switch silences it, when its sense alone doesn't say. */
+  readonly section?: SectionId;
 };
 
 /** An entry with its project and client, as every record sense selects it (`r`, `p`, `c`). */

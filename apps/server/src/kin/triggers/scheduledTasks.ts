@@ -64,6 +64,7 @@ import {
 import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinSchedules from "./kinSchedules.ts";
+import { makeFeeds } from "../numbers/feeds.ts";
 import { pauseTriggers } from "./KinTriggerStore.ts";
 import { MINUTE_MS } from "../durations.ts";
 
@@ -903,6 +904,11 @@ const make = Effect.gen(function* () {
 
   const drain = Effect.fn("KinScheduledTasks.drain")(
     function* (orgId: KinOrgId) {
+      // A feed the owner confirmed on a numbers card gets its schedule here, once.
+      yield* makeFeeds(orgId, schedules).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.catch((cause) => Effect.logWarning("Kin numbers feeds not made", { orgId, cause })),
+      );
       // Card taps reach the native tasks first, so a Run now fires in this same pass.
       yield* schedules
         .applyTaps(orgId)
