@@ -936,10 +936,12 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
           projectPartyId: string | null;
           teamList: number;
           madeByViewer: number;
+          heldByViewer: number;
         }>`SELECT
           r.record_id AS "recordId", ${teamWrites(sql, personId)} AS writes,
           ${onTeamList(sql)} AS "teamList",
           r.created_by_kind = 'person' AND r.created_by_id = ${personId} AS "madeByViewer",
+          r.owner_kind = 'person' AND r.owner_id = ${personId} AS "heldByViewer",
           ${alsoOnIt(sql, personId)} AS "onTask", r.owner_kind AS "ownerKind", r.owner_id AS "ownerId",
           r.party_id AS "partyId", r.project_id AS "projectId",
           (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id
@@ -983,10 +985,14 @@ const TEAM_LIST_EDITS: ReadonlySet<string> = new Set([
   "notes",
   "amount",
 ]);
+/** On a team list whoever holds an entry still archives it and gives it away, as a holder could before. */
 const teamListEdit = (facts: TeamFacts, write: TeamWrite) => {
-  if (write.input.state === "dropped" && facts.seen?.madeByViewer !== 1) return TEAM_LIST_REFUSED;
+  const holds = facts.seen?.heldByViewer === 1;
+  if (write.input.state === "dropped" && facts.seen?.madeByViewer !== 1 && !holds)
+    return TEAM_LIST_REFUSED;
   return Object.entries(write.input).some(
-    ([key, value]) => value !== undefined && !TEAM_LIST_EDITS.has(key),
+    ([key, value]) =>
+      value !== undefined && !TEAM_LIST_EDITS.has(key) && !(holds && key === "owner"),
   )
     ? TEAM_REFUSED
     : undefined;
@@ -1297,7 +1303,7 @@ export const teamCan = Effect.fn("KinTeamView.can")(function* (
             (facts.clients.on && facts.seen?.registerId === "work" && moves)),
         project: led !== undefined && takes({ projectId: led }),
         clearProject: takes({ projectId: null }),
-        give: open && moves && facts.seen?.teamList !== 1,
+        give: open && moves && (facts.seen?.teamList !== 1 || facts.seen.heldByViewer === 1),
         takeBack:
           open &&
           moves &&
