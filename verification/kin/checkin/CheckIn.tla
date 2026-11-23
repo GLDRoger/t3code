@@ -38,7 +38,7 @@ VARIABLES
   upInWindow,\* per day: Kin was up at some tick of that day's window
   fact,      \* the pulse fact: "none", "open", "held", "cleared"
   heldBy,    \* who holds it: "", "owner", "member"
-  told,      \* per day: the check-in that day carried the fact
+  told,      \* per day: the offered signature and whether the turn omitted it
   toldAs,    \* kin_pulse_told: the fact's state when last told ("" never), its told-once key
   tells,     \* times the fact was told since it last changed
   skipped,   \* per day: the slot ran with the fact open but queued nothing ("nothing new")
@@ -73,7 +73,7 @@ Init ==
   /\ dueAt = [d \in DayRange |-> 0] /\ ran = [d \in DayRange |-> FALSE]
   /\ upInWindow = [d \in DayRange |-> FALSE]
   /\ fact = "open" /\ heldBy = ""
-  /\ told = [d \in DayRange |-> FALSE] /\ skipped = [d \in DayRange |-> FALSE]
+  /\ told = [d \in DayRange |-> <<"", FALSE>>] /\ skipped = [d \in DayRange |-> FALSE]
   /\ taskShown = TRUE /\ jumps = 0 /\ outages = 0
   /\ toldAs = "" /\ tells = 0
   /\ posted = FALSE /\ to = "" /\ held = FALSE /\ deliverAt = 0 /\ delivered = 0
@@ -138,27 +138,26 @@ ComesUp == ~up /\ up' = TRUE
                  skipped, taskShown, jumps, outages, told2, quiet>>
 
 (* runNative → checkIn.ts queueCheckIn for day d, from a run that started at `clock`. told.ts
-   untold gates it: a fact open or in hand is told unless it was told as it stands now
+   untold gates it: a fact open or in hand is offered unless reserved or already told as it stands now
    (kin_pulse_told); with nothing untold no event is queued and no model runs. The minute is the
    window's start plus the day's offset, or at once when that has passed; the dedupe key is the
    day (KinEventQueue.enqueue ON CONFLICT DO NOTHING). *)
 Tellable == fact = "open" \/ (fact = "held" /\ Broken # "held-left-out")
+Reserved == \E d \in DayRange : queued[d] # 0 /\ queued[d] <= Horizon + 1 /\ told[d][1] = fact
 Fire(d, due) ==
   /\ ran' = [ran EXCEPT ![d] = TRUE]
-  /\ IF Tellable /\ (fact # toldAs \/ Broken = "tell-again")
-       THEN /\ IF queued[d] # 0 /\ Broken # "no-dedupe" THEN UNCHANGED <<queued, queuedAt, dueAt, told2, told>>
+  /\ IF Tellable /\ ((fact # toldAs /\ ~Reserved) \/ Broken = "tell-again")
+       THEN /\ IF queued[d] # 0 /\ Broken # "no-dedupe" THEN UNCHANGED <<queued, queuedAt, dueAt, told>>
                ELSE /\ queued' = [queued EXCEPT ![d] =
                          (IF Broken \in {"late-offset", "fire-early"} THEN clock + offset[d]
                           ELSE IF Opens(d) + offset[d] >= clock THEN Opens(d) + offset[d] ELSE clock) + 1]
                     /\ queuedAt' = [queuedAt EXCEPT ![d] = clock]
                     /\ dueAt' = [dueAt EXCEPT ![d] = due]
-                    /\ told' = [told EXCEPT ![d] = TRUE]
-                    /\ tells' = IF fact = toldAs THEN tells + 1 ELSE 1
-                    /\ toldAs' = fact
+                    /\ told' = [told EXCEPT ![d] = <<fact, FALSE>>]
             /\ UNCHANGED skipped
        ELSE /\ skipped' = [skipped EXCEPT ![d] =
-                skipped[d] \/ (fact \in {"open", "held"} /\ fact # toldAs /\ queued[d] = 0)]
-            /\ UNCHANGED <<queued, queuedAt, told, dueAt, told2>>
+                skipped[d] \/ (fact \in {"open", "held"} /\ fact # toldAs /\ ~Reserved /\ queued[d] = 0)]
+            /\ UNCHANGED <<queued, queuedAt, told, dueAt>>
 
 (* ScheduledTaskService.runDueTasks: a run more than ten minutes late is rescheduled unseen;
    otherwise KinTriggerSink → scheduledTasks.ts runNative with dueAt = the run's start.
@@ -168,10 +167,10 @@ SlotRuns ==
   /\ up /\ nextRun <= clock + (IF Broken = "fire-early" THEN 1 ELSE 0) /\ DayOf(clock) \in DayRange
   /\ nextRun' = NextAfter(slot, clock)
   /\ IF clock - nextRun > Grace
-       THEN UNCHANGED <<queued, queuedAt, told, skipped, dueAt, ran, told2>>
+       THEN UNCHANGED <<queued, queuedAt, told, skipped, dueAt, ran>>
        ELSE Fire(DayOf(clock), nextRun)
   /\ UNCHANGED <<clock, up, slot, moved, offset, woke, wokeAt, upInWindow, fact, heldBy, taskShown,
-                 jumps, outages, quiet>>
+                 jumps, outages, told2, quiet>>
 
 (* scheduledTasks.ts tick (at start-up and every tick) → checkInCatchUp.ts missedCheckIns: the
    fire the slot would have made, `ns:<task>:<window start>:scheduled`, put once and run now. *)
@@ -179,16 +178,23 @@ CatchUp ==
   /\ up /\ Missed
   /\ Fire(DayOf(clock), Opens(DayOf(clock)))
   /\ UNCHANGED <<clock, up, slot, moved, nextRun, offset, woke, wokeAt, upInWindow, fact, heldBy,
-                 taskShown, jumps, outages, quiet>>
+                 taskShown, jumps, outages, told2, quiet>>
 
 (* KinEventQueue readiness: the event wakes the agent from notBefore on (stored +1 so 0 = none). *)
-AgentWakes(d) ==
+(* The successful turn and its ledger settlement are one step here. settleCheckInTold releases
+   an offered fact omitted from the turn's posts. It keeps one named or handled in that turn. *)
+AgentWakes(d, kept) ==
   /\ up /\ queued[d] # 0 /\ clock >= queued[d] - 1
+  /\ told' = IF kept THEN told ELSE [told EXCEPT ![d] = <<told[d][1], TRUE>>]
+  /\ IF kept \/ Broken = "keep-omission"
+       THEN /\ tells' = IF told[d][1] = toldAs THEN tells + 1 ELSE 1
+            /\ toldAs' = told[d][1]
+       ELSE UNCHANGED told2
   /\ woke' = [woke EXCEPT ![d] = woke[d] + 1]
   /\ wokeAt' = IF woke[d] = 0 THEN [wokeAt EXCEPT ![d] = clock] ELSE wokeAt
   /\ queued' = IF Broken = "no-dedupe" THEN [queued EXCEPT ![d] = 0] ELSE [queued EXCEPT ![d] = Horizon + 99]
-  /\ UNCHANGED <<clock, up, slot, moved, nextRun, queuedAt, offset, dueAt, ran, upInWindow, fact, heldBy, told, skipped,
-                 taskShown, jumps, outages, told2, quiet>>
+  /\ UNCHANGED <<clock, up, slot, moved, nextRun, queuedAt, offset, dueAt, ran, upInWindow, fact, heldBy, skipped,
+                 taskShown, jumps, outages, quiet>>
 
 \* A moved slot's day is measured against its new window: being up in the old one no longer counts.
 Remeasured(s) ==
@@ -253,7 +259,7 @@ Deliver ==
 
 Next ==
   \/ Tick \/ ClockJumps \/ GoesDown \/ ComesUp \/ SlotRuns \/ CatchUp \/ OwnerMoves \/ SeedFollows
-  \/ \E d \in DayRange : AgentWakes(d)
+  \/ \E d \in DayRange, kept \in BOOLEAN : AgentWakes(d, kept)
   \/ FactAppears \/ FactClears \/ \E p \in {"owner", "member"} : FactHeld(p)
   \/ \E p \in {"owner", "member"} : QuietPost(p)
   \/ Deliver
@@ -274,6 +280,9 @@ FiresWhenUp == \A d \in DayRange : (clock > Closes(d) /\ upInWindow[d]) => ran[d
 FactNeverAbsent == \A d \in DayRange : ~skipped[d]
 HandleKeepsTask == taskShown
 ToldOnce == tells <= 1
+OmissionsReleased ==
+  (\E d \in DayRange : told[d] = <<toldAs, TRUE>>) =>
+    \E d \in DayRange : woke[d] > 0 /\ told[d] = <<toldAs, FALSE>>
 HeldDeliveredOnce == delivered <= 1
 HeldNeverLost == posted => (held \/ delivered >= 1)
 QuietIsQuiet == ~inQuiet

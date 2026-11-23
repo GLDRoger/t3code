@@ -227,6 +227,7 @@ export const SECTIONS = {
     meeting_soon: null,
     holder_removed: null,
     statement_missing: "money",
+    bank_alerts_unreadable: "money",
     deal_no_next_step: "deals",
     deal_quiet: "deals",
     deal_date_passed: "deals",

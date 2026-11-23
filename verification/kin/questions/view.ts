@@ -16,6 +16,8 @@ export const chartConstants = { MaxOutages: "0" };
 export const rules: Record<string, string> = {
   OnceWhileOpen:
     "While a question is open, no agent asks you the same thing again: Kin refuses the second ask.",
+  DismissalStands:
+    "For seven days after you dismiss a question, Kin refuses a repeat unless you bring it up again yourself.",
   NeverBeforeItsDay: "An agent never takes its default before the day it named.",
   TakenOnce: "A default is taken at most once, and done at most once, however often Kin restarts.",
   AnsweredOrTaken:
@@ -26,7 +28,7 @@ export const rules: Record<string, string> = {
     "While a question is open, its card takes your tap, however long ago it was asked.",
   RaisedOnce: "A question with no safe default is raised once more, never twice.",
   AlwaysEnds:
-    "Every question ends: you answer it, the default is taken and done, or it is withdrawn; one with no safe default is raised once and then waits in Waiting on you. One held for your quiet hours reaches you first. A restart loses none.",
+    "Every question ends: you answer it, the default is taken and done, or it is withdrawn or dismissed; one with no safe default is raised once and then waits in Waiting on you. One held for your quiet hours reaches you first. A restart loses none.",
   NoDefaultForOther:
     "A question asked for someone else's chat has no default: nobody answers it for you, and it waits for you.",
   OneWake:
@@ -40,6 +42,11 @@ export const variants = [
     name: "no-repeat-check",
     breaks: "OnceWhileOpen",
     what: "Kin lets a second agent ask the same thing while the first question is open",
+  },
+  {
+    name: "forget-dismissal",
+    breaks: "DismissalStands",
+    what: "an agent asks the same question again right after you dismissed it",
   },
   {
     name: "early",
@@ -99,6 +106,7 @@ const WORDS: Record<string, string> = {
   answered: "answered",
   default_taken: "default taken",
   withdrawn: "withdrawn",
+  dismissed: "dismissed",
 };
 
 const one = (vars: Vars, q: number) => {
@@ -125,14 +133,18 @@ export const state = (vars: Vars) => {
   }`;
 };
 
-export const step = (action: string) => {
+export const step = (action: string, from: Vars, to: Vars) => {
   switch (action) {
     case "Ask":
       return "An agent asks you, with its default and day";
     case "Tap":
       return "You tap an answer";
     case "Close":
-      return "An agent marks it answered, or withdraws it";
+      return [1, 2].some(
+        (q) => ofQ(from["st"], q) !== "dismissed" && ofQ(to["st"], q) === "dismissed",
+      )
+        ? "You dismiss the question"
+        : "An agent marks it answered or withdraws it";
     case "Expire":
       return "A day passes on the card";
     case "Tick":
