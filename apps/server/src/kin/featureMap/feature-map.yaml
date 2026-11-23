@@ -41,7 +41,7 @@ features:
       - apps/server/src/kin/lead/ChatWake.test.ts
 
   - id: chat-kept-true
-    name: An agent takes back or puts right its message nobody has read yet; the owner side can show what it said
+    name: An agent takes back or puts right its plain message nobody has read yet; the owner side can show what it said, the last version only
     tab: chats
     web: [home, chat, button:Show what it said]
     phone: [tab:chats, KinChat, button:Show what it said]
