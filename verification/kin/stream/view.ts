@@ -11,6 +11,8 @@ export const rules: Record<string, string> = {
     "Once everything sent has arrived, what her screen holds is exactly what reading her own view fresh would show, whatever order the changes reached her in and however often her socket dropped.",
   ClientLabelEqualsRead:
     "If the section switches while her socket is down, her promise shows its client as a fresh read would once she catches up.",
+  SectionSwitchBeforeCursor:
+    "Her resume number stays below a section switch until the host tells her to read the view again.",
   NoHiddenNamed:
     "She is never told of a task she can't see: a task leaving her view is named to her only if she was told of it before.",
   LevelStartsOver:
@@ -18,6 +20,11 @@ export const rules: Record<string, string> = {
 };
 
 export const variants = [
+  {
+    name: "skip-live-reserved",
+    breaks: "SectionSwitchBeforeCursor",
+    what: "a later task update advances a co-owner's resume number past a section switch she hasn't been told about",
+  },
   {
     name: "skip-reserved-on-resume",
     breaks: "ClientLabelEqualsRead",

@@ -16,7 +16,9 @@ import {
   type KinPartyPage,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -640,6 +642,103 @@ it.effect(
         assert.strictEqual(again?._tag, "synchronized");
       }
     }).pipe(Effect.provide(KinShell.layer.pipe(Layer.provideMerge(layer)))),
+);
+
+it.effect(
+  "an owner and a teammate resume safely when a task change overtakes the Clients switch",
+  () =>
+    Effect.gen(function* () {
+      const { corran, deal } = yield* seed;
+      const entry = yield* OwnerWork.create([zoya], promise("Invented plan", { deal }));
+      const later = yield* OwnerWork.create([zoya], {
+        orgId,
+        title: "Invented task",
+        clientRequestId: "later",
+      });
+      const records = yield* KinRecords.KinRecords;
+      const shell = yield* KinShell.KinShell;
+      const sql = yield* SqlClient.SqlClient;
+      const scope = yield* Effect.scope;
+      const committed = yield* Deferred.make<void>();
+      const publish = yield* Deferred.make<void>();
+      const filter = { orgId, text: "Invented plan", open: true };
+      assert.strictEqual((yield* OwnerWork.list([rhea], filter)).records[0]?.party?.key, corran);
+      assert.strictEqual((yield* OwnerWork.list([zoya], filter)).records[0]?.key, entry.key);
+
+      const open = Effect.fn("test.open")(function* (
+        who: typeof rhea,
+        after?: { readonly seq: number; readonly team?: true | undefined },
+      ) {
+        const pull = yield* Stream.toPull(records.changes(orgId));
+        const session = yield* WorkStream.makeWorkStream([who], {
+          orgId,
+          acceptRows: true,
+          ...(after === undefined
+            ? {}
+            : { afterSeq: after.seq, ...(after.team === true ? { afterTeam: true } : {}) }),
+        });
+        const [opening] = yield* session.start((yield* pull)[0]!.seq);
+        return { pull, session, opening };
+      });
+
+      const overtake = Effect.fn("test.overtake")(function* () {
+        const screens = yield* Effect.forEach([rhea, zoya], (who) =>
+          open(who).pipe(Effect.map((screen) => ({ who, ...screen }))),
+        );
+        for (const { opening } of screens) assert.strictEqual(opening?._tag, "counts");
+
+        const switching = yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              // Callbacks run after SQLite releases the writer, in registration order.
+              yield* sql.afterCommit(
+                Deferred.succeed(committed, undefined).pipe(
+                  Effect.andThen(Deferred.await(publish)),
+                ),
+              );
+              yield* shell.set(orgId, rheaId, 0, [
+                { id: "clients", on: false },
+                { id: "invoices", on: false },
+              ]);
+            }),
+          )
+          .pipe(Effect.forkIn(scope));
+        yield* Deferred.await(committed);
+        const [reserved] = yield* sql<{ seq: number }>`SELECT seq FROM sqlite_sequence
+            WHERE name = 'kin_record_changes'`;
+        yield* OwnerWork.update([zoya], {
+          orgId,
+          key: later.key,
+          title: "Invented revised task",
+        });
+        const cursors = yield* Effect.forEach(screens, ({ who, pull, session }) =>
+          Effect.gen(function* () {
+            const [tick] = yield* pull;
+            assert.strictEqual(tick!.key, later.key);
+            assert.isAbove(tick!.seq, reserved!.seq);
+            const [row, cursor] = yield* session.batch(session.pendingOf(tick!));
+            assert.strictEqual(row?._tag, "upsert");
+            assert.oneOf(cursor?._tag, ["counts", "synchronized"]);
+            return { who, cursor: cursor!, rowSeq: row!.seq };
+          }),
+        );
+        return { switching, cursors };
+      }, Effect.scoped);
+      const switching = yield* Effect.gen(function* () {
+        const { switching, cursors } = yield* overtake();
+        for (const { who, cursor, rowSeq } of cursors) {
+          const { opening } = yield* Effect.scoped(open(who, cursor));
+          assert.strictEqual(opening?._tag, "snapshot-required", who.personId);
+          assert.isBelow(cursor.seq, rowSeq, who.personId);
+        }
+        const fresh = yield* OwnerWork.list([rhea], filter);
+        assert.strictEqual(fresh.records[0]?.key, entry.key);
+        assert.isUndefined(fresh.records[0]?.party);
+        assert.isEmpty((yield* OwnerWork.list([zoya], filter)).records);
+        return switching;
+      }).pipe(Effect.ensuring(Deferred.succeed(publish, undefined)));
+      yield* Fiber.join(switching);
+    }).pipe(Effect.scoped, Effect.provide(KinShell.layer.pipe(Layer.provideMerge(layer)))),
 );
 
 it.effect(

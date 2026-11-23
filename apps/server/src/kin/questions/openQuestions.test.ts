@@ -1748,6 +1748,19 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
         ],
       );
 
+      for (const emoji of ["👍", "👎"] as const) {
+        const reaction = yield* Effect.result(
+          chats.react(owner, { messageId: drawn.messageId, emoji, on: true }),
+        );
+        assert.include(reaction._tag === "Failure" ? reaction.failure : {}, {
+          reason: "not_allowed",
+          message: "Tap Approve or Changes first on the card.",
+        });
+        assert.strictEqual((yield* questionRow(sql, zoya.questionId)).state, "open");
+        assert.isNull(yield* approvedAt(zoya.questionId));
+        assert.deepStrictEqual(yield* draftWakes, []);
+      }
+
       // Meera, a co-owner, isn't in Rhea's chat: she can't answer it for Rhea.
       assert.isTrue(
         Exit.isFailure(
@@ -2243,7 +2256,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       );
       assert.strictEqual(
         posts[0]!.note,
-        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it; say in one line it is filed as ${posts[0]!.key}; Rhea Rao hasn't seen it, and it reaches Rhea Rao only when the person in this chat presses Send to Rhea Rao. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
+        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it or name ${posts[0]!.key}; say in one line what it is; Rhea Rao hasn't seen it, and it reaches Rhea Rao only when the person in this chat presses Send to Rhea Rao. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
       );
       // A blank draft, or one whose Approve card would be too long to carry, files nothing.
       const docCount = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
@@ -2508,7 +2521,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       }).pipe(Effect.provideService(KinIdentity, identity));
       assert.strictEqual(
         mine.note,
-        `This draft is its own card in the chat, with Copy text: don't repeat it; say in one line it is filed as ${mine.key}. No LinkedIn account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
+        `This draft is its own card in the chat, with Copy text: don't repeat it or name ${mine.key}; say in one line what it is. No LinkedIn account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
       );
       const [ownCard] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
         WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;
