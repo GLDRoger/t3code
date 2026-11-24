@@ -16,6 +16,7 @@ const host = vi.hoisted(() => ({
 vi.mock(import("./kinClient"), async (importOriginal) => {
   const real = await importOriginal();
   const { Atom: A, AsyncResult: R } = await import("effect/reactivity");
+  const { sync } = await import("effect/Effect");
   const { appAtomRegistry: registry } = await import("../rpc/atomRegistry");
   const read = A.make(() => R.success({ zone: "Pacific/Auckland", briefs: host.briefs })).pipe(
     A.keepAlive,
@@ -29,27 +30,30 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
       briefs: () => read,
       briefSave: {
         ...real.kinClient.briefSave,
-        run: async (_registry: unknown, { input }: { readonly input: KinBriefSaveInput }) => {
-          const { orgId: _orgId, ...change } = input;
-          host.saves.push(change);
-          host.briefs = host.briefs.map((brief) =>
-            brief.kind === input.kind
-              ? { ...brief, at: input.at, days: input.days, on: input.on }
-              : brief,
-          );
-          return R.success({ zone: "Pacific/Auckland", briefs: host.briefs });
-        },
+        run: (_registry: unknown, { input }: { readonly input: KinBriefSaveInput }) =>
+          sync(() => {
+            const { orgId: _orgId, ...change } = input;
+            host.saves.push(change);
+            host.briefs = host.briefs.map((brief) =>
+              brief.kind === input.kind
+                ? { ...brief, at: input.at, days: input.days, on: input.on }
+                : brief,
+            );
+            return { zone: "Pacific/Auckland", briefs: host.briefs };
+          }),
       },
     },
   };
 });
 
-vi.mock("../state/use-atom-command", () => ({
-  useAtomCommand:
-    (command: { run: (registry: unknown, input: unknown) => Promise<unknown> }) =>
-    (input: unknown) =>
-      command.run(null, input),
-}));
+vi.mock("../state/use-atom-command", async () => {
+  const { runAtomCommand } = await import("@t3tools/client-runtime/state/runtime");
+  const { appAtomRegistry } = await import("../rpc/atomRegistry");
+  return {
+    useAtomCommand: (command: Parameters<typeof runAtomCommand>[1]) => (input: unknown) =>
+      runAtomCommand(appAtomRegistry, command, input),
+  };
+});
 
 const weekdays = [1, 2, 3, 4, 5];
 

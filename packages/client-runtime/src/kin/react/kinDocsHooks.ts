@@ -14,6 +14,7 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
 
+import { runKinCommand } from "../kinRunCommand.ts";
 import {
   KIN_DOCS_DEFAULT_FILTER,
   KIN_SEARCH_INITIAL,
@@ -125,7 +126,7 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
           read: async (filter, page) =>
             mapPage(
               await follow.read(page, () =>
-                kinClient.docsList.run(registry, {
+                runKinCommand(registry, kinClient.docsList, {
                   environmentId,
                   input: { ...kinDocsQuery(orgId, filter), ...page },
                 }),
@@ -293,7 +294,7 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
           schedule: kinSchedule,
           read: async (_filter, page) =>
             mapPage(
-              await kinClient.docHistory.run(registry, {
+              await runKinCommand(registry, kinClient.docHistory, {
                 environmentId,
                 input: { orgId, key, ...page },
               }),
@@ -316,7 +317,7 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
         onChange: setState,
         schedule: kinSchedule,
         read: ({ text, closed }) =>
-          kinClient.search.run(registry, {
+          runKinCommand(registry, kinClient.search, {
             environmentId,
             input: {
               orgId,

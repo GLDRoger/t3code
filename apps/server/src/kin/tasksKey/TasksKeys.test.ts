@@ -1592,6 +1592,8 @@ it.effect("a key is no credential anywhere but its endpoint: every route and cre
     }
     // T3's own MCP clients, a ticket minted for the key's session, and signed file URLs.
     assert.strictEqual(yield* refused(auth.authenticateMcpClient(request(secret))), "Failure");
+    // OAuth's public revoke route ends only an MCP client's own token; a key is none.
+    assert.isFalse(yield* auth.revokeMcpClientToken(secret));
     const ticket = yield* sessions.issueWebSocketToken(key.sessionId);
     assert.strictEqual(
       yield* refused(
@@ -1629,8 +1631,11 @@ it.effect("a key is no credential anywhere but its endpoint: every route and cre
       "mcpOAuth POST /oauth/mcp/approval",
       "mcpOAuth POST /oauth/mcp/decision",
       "mcpOAuth POST /oauth/mcp/register",
+      "mcpOAuth POST /oauth/mcp/revoke",
       "mcpOAuth POST /oauth/mcp/token",
       "metadata GET /.well-known/t3/environment",
+      // Authenticates only through authenticateMcpClient, which refuses a key (above).
+      "peerLink POST /api/peer-link/client-pairing",
       "webhooks GET /api/hooks/:hookId/:token",
       "webhooks PATCH /api/hooks/:hookId/:token",
       "webhooks POST /api/hooks/:hookId/:token",

@@ -85,6 +85,7 @@ import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 type MoneyActions = ReturnType<typeof useKinMoneyActions>;
 
@@ -970,25 +971,23 @@ function ApplyReceipt(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the client's open invoices from the host when the sheet opens or Try again is pressed
   useEffect(() => {
     let current = true;
-    void kinClient.workList
-      .run(appAtomRegistry, {
-        environmentId,
-        input: {
-          orgId,
-          list: INVOICES,
-          states: ["waiting"],
-          ...(payer === null ? {} : { party: payer }),
-          limit: 50,
-        },
-      })
-      .then((result) => {
-        if (current)
-          setHeld({
-            attempt,
-            invoices: AsyncResult.isSuccess(result) ? result.value.records : null,
-            cause: result,
-          });
-      });
+    void runKinCommand(appAtomRegistry, kinClient.workList, {
+      environmentId,
+      input: {
+        orgId,
+        list: INVOICES,
+        states: ["waiting"],
+        ...(payer === null ? {} : { party: payer }),
+        limit: 50,
+      },
+    }).then((result) => {
+      if (current)
+        setHeld({
+          attempt,
+          invoices: AsyncResult.isSuccess(result) ? result.value.records : null,
+          cause: result,
+        });
+    });
     return () => {
       current = false;
     };
