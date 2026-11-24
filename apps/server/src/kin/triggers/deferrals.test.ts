@@ -1437,6 +1437,61 @@ it.effect("a reminder set privately in a group later shared fires into the owner
   }).pipe(Effect.provide(layerFor([remind])));
 });
 
+it.effect("a due reminder wakes the agent that promised it, else the chief of staff", () => {
+  const made = (id: string, by: string) =>
+    makeDeferral(id, {
+      on_due: "remind",
+      chat: KinChatId.make("group-a"),
+      source_event: KinEventId.make(`set-${by}`),
+    });
+  const promised = made("def-p", "finance");
+  const orphaned = made("def-q", "gone");
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    for (const [agent, domain] of [
+      ["finance", "finance"],
+      ["chief", "chief-of-staff"],
+      ["gone", "growth"],
+    ] as const)
+      yield* addLead(orgId, agent, domain, "2026-11-07T00:00:00.000Z");
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+      VALUES ('group-a', ${orgId}, 'team_group', 'Plans', 0, '1970-01-01T00:00:00.000Z')`;
+    // The first lead joined the group first: the floor's pick, never the promise's maker here.
+    for (const [index, agent] of [`lead-${orgId}`, "finance", "gone"].entries())
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id,
+          role, joined_at)
+        VALUES (${`group-${agent}`}, ${orgId}, 'group-a', 'agent', ${agent}, 'member',
+          ${`1970-01-0${index + 1}T00:00:00.000Z`})`;
+    for (const agent of ["finance", "gone"])
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state)
+        VALUES (${`set-${agent}`}, ${orgId}, ${agent}, 'chat.message', 'P0', ${JSON.stringify({
+          _tag: "chat.message",
+          orgId,
+          agentId: agent,
+          eventId: `set-${agent}`,
+          receivedAt: "1970-01-01T00:00:00.000Z",
+          dedupeKey: null,
+          provenance: { _tag: "human", personId: `owner-${orgId}`, memberId: "group-owner" },
+          chatId: "group-a",
+          messageId: `said-${agent}`,
+        })}, 0, 0, 'done')`;
+    yield* sql`UPDATE kin_agents SET retired_at = 1 WHERE agent_id = 'gone'`;
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(promised);
+    yield* service.syncItem(orphaned);
+    yield* tick(dueAt);
+    const woke = yield* sql<{ itemId: string; agentId: string }>`SELECT
+        json_extract(json, '$.subject.itemId') AS "itemId", agent_id AS "agentId"
+      FROM kin_events WHERE org_id = ${orgId} AND tag = 'deferral.due' ORDER BY "itemId"`;
+    assert.deepStrictEqual(woke, [
+      { itemId: "def-p", agentId: "finance" },
+      { itemId: "def-q", agentId: "chief" },
+    ]);
+  }).pipe(Effect.provide(layerFor([promised, orphaned])));
+});
+
 it.effect("a group's own reminder fires into the group as its agent, else to whoever asked", () => {
   const here = makeDeferral("def-s", {
     on_due: "remind",
