@@ -82,7 +82,7 @@ export const DRAFT_OPTIONS = [
 export const CHANGES_FIRST = DRAFT_OPTIONS[1].label;
 
 /** What a long draft's card says under its opening, in older clients too. */
-export const openingNote = (key: string) =>
+const openingNote = (key: string) =>
   `This is only the opening. Open ${key} to read the whole draft before you approve.`;
 
 /** A sent-up draft's card text from its stored payload: who asks, the draft, then Kin's line. */
