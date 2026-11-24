@@ -316,6 +316,21 @@ export function kinDockRoom(shell: KinShell | null | undefined): {
 }
 
 /**
+ * Whether a list section has its place in the phone's dock now: on, marked for it, and among the
+ * ones the dock has room for. One marked but left out reads as not in the dock.
+ */
+export function kinListSectionDocked(
+  shell: KinShell | null | undefined,
+  id: KinListSectionId,
+): boolean {
+  const { room } = kinDockRoom(shell);
+  return kinListSections(shell)
+    .filter((section) => section.on && section.dock)
+    .slice(0, room)
+    .some((section) => section.id === id);
+}
+
+/**
  * Whether a list can be shown as a section, as the host decides it: a company's own list that is
  * live, not one of Kin's own (they have their place already) and not paid over time.
  */

@@ -16,6 +16,7 @@ import {
   kinDockWithLists,
   kinListCanBeSection,
   kinListSections,
+  kinListSectionDocked,
   kinShellChanged,
   kinShellSwitched,
 } from "./kinShell.ts";
@@ -357,6 +358,16 @@ describe("a company's own lists as sections", () => {
       full: false,
     });
     expect(kinDockRoom(clientsOff({ id: "list:stock", on: true, dock: true })).full).toBe(true);
+    // Marked for the dock but past its room: not in the dock, as the phone draws it.
+    const two = clientsOff(
+      { id: "list:stock", on: true, dock: true },
+      { id: "list:bookings", on: true, dock: true },
+    );
+    expect(kinListSectionDocked(two, "list:stock")).toBe(true);
+    expect(kinListSectionDocked(two, "list:bookings")).toBe(false);
+    expect(
+      kinListSectionDocked(withLists({ id: "list:stock", on: true, dock: true }), "list:stock"),
+    ).toBe(false);
   });
 
   it("switches, docks, adds and removes a list section with every other section as held", () => {
