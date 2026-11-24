@@ -31,13 +31,9 @@ const openCredits = Effect.fn("KinStatements.openCredits")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
-  const narrowed =
-    only === undefined
-      ? sql`1 = 1`
-      : "recordId" in only
-        ? sql`r.record_id = ${only.recordId}`
-        : sql`COALESCE(r.currency, ${def.currency}) = ${only.currency}
-          AND r.amount_minor <= ${only.maxMinor}`;
+  const currency = only !== undefined && "currency" in only ? only.currency : null;
+  const maxMinor = only !== undefined && "maxMinor" in only ? only.maxMinor : null;
+  const recordId = only !== undefined && "recordId" in only ? only.recordId : null;
   const rows = yield* sql<{
     recordId: string;
     key: string;
@@ -52,7 +48,10 @@ const openCredits = Effect.fn("KinStatements.openCredits")(function* (
       r.fields_json AS "fieldsJson"
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = ${def.id} AND r.state = ${bankStates(def).open}
-      AND r.amount_minor > 0 AND r.date_at IS NOT NULL AND ${narrowed}
+      AND r.amount_minor > 0 AND r.date_at IS NOT NULL
+      AND (${currency} IS NULL OR COALESCE(r.currency, ${def.currency}) = ${currency})
+      AND (${maxMinor} IS NULL OR r.amount_minor <= ${maxMinor})
+      AND (${recordId} IS NULL OR r.record_id = ${recordId})
       AND ${countedEntry(sql)}
     ORDER BY r.date_at DESC, r.record_id DESC
     LIMIT ${LOOKED_AT}`;

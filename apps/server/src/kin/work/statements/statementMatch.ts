@@ -296,13 +296,6 @@ export const invoiceOffer = (
   return { candidate: offered, reason: offerReason(row, invoice, currency, offered) };
 };
 
-export const invoiceOffered = (
-  row: StatementRow,
-  invoice: InvoiceCandidate,
-  currency: string,
-  withholdsAtSource: boolean,
-): string | undefined => invoiceOffer(row, invoice, currency, withholdsAtSource)?.reason;
-
 const offerReason = (
   row: StatementRow,
   invoice: InvoiceCandidate,
