@@ -467,6 +467,8 @@ it.effect(
       assert.deepStrictEqual(yield* answer(card!.widgetId, ownerId, true), {
         title: "Saved",
         text: "Saved. Invoices and quotes made from now on print it.",
+        // Settled, the card says only this: never "Now: none" or "only after you tap Use it".
+        alone: true,
       });
       const after = (yield* stored("C-1")).row;
       assert.strictEqual(billedParty(undefined, after)?.taxNumber, NEW);
@@ -490,6 +492,8 @@ it.effect(
       assert.deepStrictEqual(yield* answer(dropped!.widgetId, ownerId, false), {
         title: "Not used",
         text: "You said no, so the client's details stay as they were.",
+        // Settled, the card says only this: never "Now: none" or "only after you tap Use it".
+        alone: true,
       });
       const kept = yield* LeadWork.get(scope, { key: "C-2" });
       assert.strictEqual(kept.address, "Invented 1 Quay Road");

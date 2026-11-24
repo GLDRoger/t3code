@@ -80,7 +80,15 @@ const CHECK_IT = {
   ahead: "The date is after today: check it.",
   old: "The date is more than ten years back: check it.",
 } as const;
-const READ_CLEAN: ReadonlySet<string> = new Set(Object.values(CHECK_IT));
+const READ_CLEAN: ReadonlyMap<string, "amount" | "date"> = new Map([
+  [CHECK_IT.farAbove, "amount"],
+  [CHECK_IT.ahead, "date"],
+  [CHECK_IT.old, "date"],
+]);
+const checkOf = (problem: string | null) => {
+  const check = READ_CLEAN.get(problem ?? "");
+  return check === undefined ? {} : { readClean: true, check };
+};
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
@@ -263,7 +271,12 @@ const cardText = (card: Omit<KinBillBatchCard, "text">) => {
     card.counts.duplicate > 0
       ? `${card.counts.duplicate} ${card.counts.duplicate === 1 ? "looks like a duplicate" : "look like duplicates"}`
       : undefined,
-    card.counts.unreadable > 0 ? `${card.counts.unreadable} couldn't be read` : undefined,
+    card.counts.unreadable > (card.counts.check ?? 0)
+      ? `${card.counts.unreadable - (card.counts.check ?? 0)} couldn't be read`
+      : undefined,
+    (card.counts.check ?? 0) > 0
+      ? `${card.counts.check} ${card.counts.check === 1 ? "needs" : "need"} a check`
+      : undefined,
     card.counts.already > 0
       ? `${card.counts.already} ${card.counts.already === 1 ? "was" : "were"} already added`
       : undefined,
@@ -478,6 +491,8 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
     read: rows.filter((row) => row.state === "read").length,
     duplicate: rows.filter((row) => row.state === "duplicate").length,
     unreadable: rows.filter((row) => row.state === "unreadable").length,
+    check: rows.filter((row) => row.state === "unreadable" && READ_CLEAN.has(row.problem ?? ""))
+      .length,
     already: stored.counts.already,
   };
   const total = rows.length + counts.already;
@@ -523,6 +538,7 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
     stored.counts.read === card.counts.read &&
     stored.counts.duplicate === card.counts.duplicate &&
     stored.counts.unreadable === card.counts.unreadable &&
+    stored.counts.check === card.counts.check &&
     found.value.awaiting.length === awaiting.length &&
     (found.value.closedAt !== null) === closed
   )
@@ -538,6 +554,14 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
     updatedAt: at,
   });
   yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
+  if (stored.text === card.text) return;
+  // A chat list's line is the card message's body: it says what the card says now.
+  const messageId = KinMessageId.make(`bills:${batchId}`);
+  yield* sql`UPDATE kin_messages SET body = ${card.text}
+    WHERE org_id = ${orgId} AND message_id = ${messageId}`;
+  const message = yield* repo.getMessage({ orgId, messageId });
+  if (Option.isSome(message))
+    yield* sql.afterCommit(hub.publish({ type: "message.changed", orgId, message: message.value }));
 });
 
 /** A time on the company's clock, as the card's words say it. */
@@ -725,7 +749,7 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
     status: "reading" as const,
     total: fresh.length + already.length,
     done: already.length,
-    counts: { read: 0, duplicate: 0, unreadable: 0, already: already.length },
+    counts: { read: 0, duplicate: 0, unreadable: 0, check: 0, already: already.length },
     ...(input.prepared.refused.length === 0 ? {} : { refused: input.prepared.refused.length }),
     addedBy: KinPersonId.make(input.addedBy),
   };
@@ -1268,7 +1292,8 @@ const rowView = (row: Row, records: ReadonlyMap<string, RecordBrief>): KinBillRo
     state: shownState(row, record),
     read: read as KinBillRead,
     ...(row.problem === null ? {} : { problem: row.problem }),
-    ...(row.state === "unreadable" && READ_CLEAN.has(row.problem ?? "") ? { readClean: true } : {}),
+    ...(row.state === "unreadable" ? checkOf(row.problem) : {}),
+    ...(row.state === "unreadable" && row.problem === UNSHOWN_PHOTO ? { wrongKind: true } : {}),
     ...(record === undefined
       ? {}
       : { expense: { key: record.key, rev: record.rev, title: record.title } }),
@@ -1350,6 +1375,11 @@ export const list = Effect.fn("KinBills.list")(function* (
           dropped: count("dropped"),
           duplicate: count("duplicate"),
           unreadable: count("unreadable"),
+          check: mine.filter(
+            (row) =>
+              shownState(row, records.get(row.recordId ?? "")) === "unreadable" &&
+              READ_CLEAN.has(row.problem ?? ""),
+          ).length,
         },
       };
     }),
@@ -1399,6 +1429,7 @@ export const keepRead = Effect.fn("KinBills.keepRead")(function* (
       for (const row of rows) {
         const record = row.recordId === null ? undefined : records.get(row.recordId);
         const shown = shownState(row, record);
+        if (shown === "kept" || shown === "dropped") continue;
         const why =
           row.state !== "read" || record === undefined
             ? shown === "reading"
@@ -1406,19 +1437,20 @@ export const keepRead = Effect.fn("KinBills.keepRead")(function* (
               : shown === "duplicate"
                 ? "It looks like an expense already recorded."
                 : shown === "unreadable"
-                  ? "It wasn't read cleanly."
+                  ? READ_CLEAN.get(row.problem ?? "") === "amount"
+                    ? "Its amount needs a check."
+                    : READ_CLEAN.has(row.problem ?? "")
+                      ? "Its date needs a check."
+                      : "It wasn't read cleanly."
                   : "It has no expense of its own."
-            : record.confirmed === 1
-              ? "Already kept."
-              : record.state === "dropped"
-                ? "Dropped."
-                : record.state !== "done"
-                  ? "Its state was changed."
-                  : undefined;
+            : record.state !== "done"
+              ? "Its state was changed."
+              : undefined;
         if (why !== undefined || record === undefined) {
           skipped.push({
             sha256: row.sha256,
             ...(record === undefined ? {} : { key: record.key }),
+            ...(shown === "unreadable" && READ_CLEAN.has(row.problem ?? "") ? { check: true } : {}),
             why: why ?? "It has no expense of its own.",
           });
           continue;

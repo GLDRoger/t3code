@@ -600,7 +600,7 @@ const BillRow = memo(function BillRow(props: {
         <View className="gap-0.5">
           {view.fields.map((field) => (
             <View key={field.key} className="min-h-4 flex-row gap-3">
-              <Text textRole="footnote" className="w-24 text-foreground-muted">
+              <Text textRole="footnote" className="w-28 text-foreground-muted">
                 {field.label}
               </Text>
               <Text textRole="footnote" numberOfLines={1} className="flex-1 text-foreground">

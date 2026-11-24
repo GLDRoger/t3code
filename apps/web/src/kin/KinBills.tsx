@@ -237,8 +237,10 @@ export function KinAddBillsDialog(
                       <span className="min-w-0 flex-1 truncate text-foreground">{file.name}</span>
                       <span
                         className={cn(
-                          "shrink-0 text-xs",
-                          wrong ? "text-destructive-foreground" : "text-muted-foreground",
+                          "text-xs",
+                          wrong
+                            ? "min-w-0 max-w-[60%] text-right text-destructive-foreground"
+                            : "shrink-0 text-muted-foreground",
                         )}
                       >
                         {kinBillUploadText(file.upload)}
@@ -303,14 +305,16 @@ export function KinAddBillsDialog(
               {KIN_BILLS.review}
             </Button>
           )}
-          <Button
-            type="button"
-            disabled={button.disabled}
-            aria-busy={busy}
-            onClick={() => void send()}
-          >
-            {button.label}
-          </Button>
+          {outcome !== null && button.count === 0 ? null : (
+            <Button
+              type="button"
+              disabled={button.disabled}
+              aria-busy={busy}
+              onClick={() => void send()}
+            >
+              {button.label}
+            </Button>
+          )}
         </DialogFooter>
       </DialogPopup>
     </Dialog>

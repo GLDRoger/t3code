@@ -318,18 +318,12 @@ export const redo = Effect.fn("KinQuestions.redo")(function* (
   );
 });
 
-/**
- * In the owner's turn on her words, the one teammate's draft waiting on her redraft that this is
- * (same kind and client, any client if none given, or an edit of its doc); else the one whose card
- * still waits on her, closed as her Changes first in words. `seen`: records the teammate must see.
- */
-export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
-  turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: KinWakeupId },
-  redraft:
-    | { readonly kind: StoredDraft["kind"]; readonly partyId?: string | null }
-    | { readonly docKey: string },
-  seen: ReadonlyArray<string> = [],
-) {
+/** The owner's own chat when this turn answers her words there, where her redrafts go up. */
+const redoChat = Effect.fn("KinQuestions.redoChat")(function* (turn: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly wakeupId: KinWakeupId;
+}) {
   const sql = yield* SqlClient.SqlClient;
   if ((yield* effectiveAudience(turn)) !== "owner_only") return undefined;
   if ((yield* approvalOf(turn))._tag !== "none") return undefined;
@@ -343,17 +337,49 @@ export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
     (yield* ownMessages(turn, lane.value.chatId, agent.owner)).length === 0
   )
     return undefined;
-  const chatId = lane.value.chatId;
+  return lane.value.chatId;
+});
+
+/** Whether a teammate's draft in this turn's chat still waits on the owner's redraft or tap. */
+export const redraftWaits = Effect.fn("KinQuestions.redraftWaits")(function* (turn: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly wakeupId: KinWakeupId;
+}) {
+  const chatId = yield* redoChat(turn);
+  if (chatId === undefined) return false;
+  return (yield* waitingRedrafts(turn, chatId)).length > 0;
+});
+
+/**
+ * In the owner's turn on her words, the one teammate's draft waiting on her redraft that this is
+ * (same kind and client, or either names none, or an edit of its doc); else the one whose card
+ * still waits on her, closed as her Changes first in words. `seen`: records the teammate must see.
+ */
+export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
+  turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: KinWakeupId },
+  redraft:
+    | { readonly kind: StoredDraft["kind"]; readonly partyId?: string | null }
+    | { readonly docKey: string },
+  seen: ReadonlyArray<string> = [],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const chatId = yield* redoChat(turn);
+  if (chatId === undefined) return undefined;
   type Row = {
     readonly about: ReadonlyArray<string>;
     readonly forPersonId: KinPersonId;
     readonly draft: StoredDraft;
   };
-  const isIt = (row: Row) =>
-    "docKey" in redraft
-      ? row.about.includes(redraft.docKey)
-      : row.draft.kind === redraft.kind &&
-        (redraft.partyId === undefined || (row.draft.for?.partyId ?? null) === redraft.partyId);
+  // A draft or a redraft naming no client is either client's; two naming two are two drafts.
+  const isIt = (row: Row) => {
+    if ("docKey" in redraft) return row.about.includes(redraft.docKey);
+    const its = row.draft.for?.partyId ?? null;
+    return (
+      row.draft.kind === redraft.kind &&
+      (redraft.partyId == null || its === null || its === redraft.partyId)
+    );
+  };
   const matching = <A extends Row>(rows: ReadonlyArray<A>) =>
     Effect.filter(rows.filter(isIt), (row) =>
       Effect.forEach(seen, (id) => viewVisible(turn.orgId, [row.forPersonId], id)).pipe(

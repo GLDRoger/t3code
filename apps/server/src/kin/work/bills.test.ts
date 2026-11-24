@@ -487,6 +487,10 @@ describe("bills in bulk", () => {
 
         const done = yield* card(added.batchId);
         assert.strictEqual(done.text, "3 bills: 1 read, 2 couldn't be read.");
+        // Its message says what the card says, so a chat list's line never reads "Reading…".
+        const [message] = yield* (yield* SqlClient.SqlClient)<{ body: string }>`SELECT body
+          FROM kin_messages WHERE org_id = ${orgId} AND message_id = ${`bills:${added.batchId}`}`;
+        assert.strictEqual(message?.body, done.text);
         assert.deepStrictEqual(done.awaiting, [rhea]);
         // After its turn, nothing answers: the turn is over.
         assert.include(yield* read({ bill: "B3" }).pipe(Effect.flip), { reason: "not_allowed" });
@@ -509,6 +513,16 @@ describe("bills in bulk", () => {
             clientRequestId: "keep",
           }),
           kept,
+        );
+        // A bill already kept (or dropped) is no longer one to keep, so it isn't "skipped".
+        const again = yield* Bills.keepRead(as(meera), {
+          orgId,
+          batchId: added.batchId,
+          clientRequestId: "keep-again",
+        });
+        assert.deepStrictEqual(
+          [again.kept, again.skipped.map((one) => one.why)],
+          [[], ["It wasn't read cleanly.", "It wasn't read cleanly."]],
         );
       }).pipe(Effect.provide(layer)),
   );
@@ -645,13 +659,28 @@ describe("bills in bulk", () => {
           ],
         );
         // What was read stays for the owner's own form, and reading it again would read the same.
+        // Each says which figure is hers to check, and none is counted as not read.
         assert.include(JSON.parse((yield* billRows)[0]!.readJson!), { amount: "1180000000" });
         assert.deepStrictEqual(
-          (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills.map(
-            (one) => one.readClean,
-          ),
-          [true, true, true, undefined, undefined],
+          (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills.map((one) => [
+            one.readClean,
+            one.check,
+          ]),
+          [
+            [true, "amount"],
+            [true, "date"],
+            [true, "date"],
+            [undefined, undefined],
+            [undefined, undefined],
+          ],
         );
+        const checked = yield* card(added.batchId);
+        assert.strictEqual(checked.text, "5 bills: 2 read, 3 need a check.");
+        assert.deepInclude(checked.counts, { unreadable: 3, check: 3 });
+        assert.deepInclude((yield* Bills.list(as(rhea), { orgId })).batches[0]!.states, {
+          unreadable: 3,
+          check: 3,
+        });
         const sql = yield* SqlClient.SqlClient;
         const suggested = sql<{ title: string; confirmed: number }>`SELECT title, confirmed
           FROM kin_records WHERE origin_key LIKE 'bill:%' ORDER BY title, record_id`;
@@ -689,8 +718,12 @@ describe("bills in bulk", () => {
           { title: "Tidewater Freight, old account", confirmed: 1 },
         ]);
         assert.deepStrictEqual(
-          kept.skipped.map((one) => one.why),
-          Array.from({ length: 3 }, () => "It wasn't read cleanly."),
+          kept.skipped.map((one) => [one.why, one.check]),
+          [
+            ["Its amount needs a check.", true],
+            ["Its date needs a check.", true],
+            ["Its date needs a check.", true],
+          ],
         );
       }).pipe(Effect.provide(layer)),
   );
@@ -893,6 +926,8 @@ describe("bills in bulk", () => {
       // Not a read in question: reading it again is still offered.
       const [heic] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
       assert.isUndefined(heic!.readClean);
+      // Reading it again would read the same: the row offers no Read again.
+      assert.isTrue(heic!.wrongKind);
       const { events } = yield* claimTurn(1);
       const event = events[0]!;
       if (event._tag !== "bills.read") return assert.fail("no bills turn");
