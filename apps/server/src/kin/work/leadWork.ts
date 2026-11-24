@@ -48,7 +48,7 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import { codingAgentSource, codingAgentTextShown } from "../lead/OutsideContent.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { heldUntil } from "../triggers/quietHold.ts";
-import { ownerLevel, ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
+import { ownerLevel, ownerLevelAsked } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
 import {
   countryFirst,
@@ -60,7 +60,7 @@ import {
 } from "./companyProfile.ts";
 import { campaignsNamed, partyPage, projectDetail, sourceShown } from "./crm.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
-import { keyEventSql, keySentSql } from "../chat/keySent.ts";
+import { keyEventSql } from "../chat/keySent.ts";
 import { fold, matchName } from "./nameMatch.ts";
 import { lastContacts } from "./touches.ts";
 import {
@@ -125,12 +125,12 @@ import {
   byNumber,
   iso,
   isSuggestion,
+  notBouncedBack,
   notFound,
   overdueFor,
   owedInvoices,
   isClosed,
   ownerZone,
-  principalId,
   recordName,
   type RecordRow,
   sensitiveNow,
@@ -3645,44 +3645,6 @@ const explainedHonestly = Effect.fn("KinWorkTools.explainedHonestly")(function* 
       `${before.key} stays unexplained: no invoice payment or expense records its money yet. Record that first (payment_record, or an expense with record_create), or ask the owner to confirm it on the statement's card; a transfer, bank charges or interest may be marked so with its category. Don't say it is explained.`,
     );
 });
-/** What a hand-off itself writes: none of it addresses why the task was handed back. */
-const HAND_OFF_FIELDS = new Set(["owner", "handedBack", "reason", "state"]);
-/**
- * G13: a task handed back goes to the same holder again only once something on it changed since,
- * or the owner says so in this turn; otherwise ask the owner or give it to someone else. Other
- * hand-offs since, to anyone, are no change.
- */
-const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
-  lead: Lead,
-  before: RecordRow,
-  to: KinWorkPrincipal,
-) {
-  const who = `${to._tag}:${principalId(to)}`;
-  let back: { readonly to: string | null } | undefined;
-  for (const change of (yield* (yield* KinRecords).detail(before, 50)).changes) {
-    back = change.fields.find((field) => field.field === "handedBack" && field.from === who);
-    if (back !== undefined) break;
-    if (change.fields.some((field) => !HAND_OFF_FIELDS.has(field.field))) return;
-  }
-  if (back === undefined) return;
-  const sql = yield* SqlClient.SqlClient;
-  const owners = [...(yield* ownerLevelPeople(lead.orgId))];
-  const said = yield* sql`SELECT 1 FROM kin_events e
-    JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
-      AND m.chat_id = json_extract(e.json, '$.chatId')
-    WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId}
-      AND e.wakeup_id = ${lead.wakeupId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
-      AND m.origin_json IS NULL AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
-      AND m.author_person_id IN ${sql.in(owners.length === 0 ? [""] : owners)}
-    LIMIT 1`;
-  if (said.length > 0) return;
-  const name = yield* namer(lead);
-  return yield* new KinChatError({
-    reason: "not_allowed",
-    message: `${name(to) ?? "They"} handed ${before.key} back${back.to === null ? "" : `: "${back.to}"`}. Nothing on it has changed since, so don't give it straight back. Fix what blocks it first, ask the owner, or give it to someone else.`,
-  });
-});
-
 /** `record_update`'s answer when the notes it gave would have replaced a person's. */
 export const NOTES_KEPT =
   "Its notes are a person's, so they stay as they are; your text went on its activity as a note.";
@@ -3803,7 +3765,16 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
     ...(input.leftover === undefined ? {} : { leftover: input.leftover }),
   };
-  if (patch.owner !== undefined) yield* notBouncedBack(lead, before, patch.owner);
+  if (patch.owner !== undefined) {
+    const back = yield* notBouncedBack(lead.orgId, before, patch.owner, lead);
+    if (back !== undefined) {
+      const name = yield* namer(lead);
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: `${name(patch.owner) ?? "They"} handed ${before.key} back${back.to === null ? "" : `: "${back.to}"`}. Nothing on it has changed since, so don't give it straight back. Fix what blocks it first, ask the owner, or give it to someone else.`,
+      });
+    }
+  }
   // tell false holds the new holder's notice on the task; giving it to them again tells them.
   const heldFor = beforeFields.untold;
   const giving =
