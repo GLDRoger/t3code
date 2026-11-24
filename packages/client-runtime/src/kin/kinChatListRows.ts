@@ -174,6 +174,7 @@ export function kinChatListFold(
     .map(({ row }) => row);
   const comesUp = (row: KinChatListRow) =>
     row.view.unread > 0 ||
+    row.quietNew ||
     row.needsYou ||
     row.working ||
     options.keptUp?.has(row.chat.chatId) === true;
