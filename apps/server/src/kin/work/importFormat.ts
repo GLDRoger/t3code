@@ -193,6 +193,8 @@ const ImportEntryMatch = Schema.Struct({
   match: Key,
   fields: Schema.optional(Fields),
   notes: Schema.optional(Notes),
+  /** Voids it after any fills, as the owner's Void tap does and with its rules. */
+  void: Schema.optional(Schema.Literal(true)),
 });
 export type ImportEntryMatch = typeof ImportEntryMatch.Type;
 

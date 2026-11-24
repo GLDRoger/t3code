@@ -83,6 +83,7 @@ const KinReadState = Schema.Struct({
   chatId: KinChatId,
   memberId: KinMemberId,
   lastReadSeq: NonNegativeInt,
+  answeredSeq: NonNegativeInt,
   updatedAt: IsoDateTime,
 });
 type KinReadState = typeof KinReadState.Type;
@@ -439,7 +440,7 @@ const ActiveAgentThreadRow = Schema.Struct({
 });
 const agentThreadColumns = `org_id AS "orgId", thread_id AS "threadId", agent_id AS "agentId", started_at AS "startedAt", ended_at AS "endedAt"`;
 const ReadStateRow = KinReadState;
-const readStateColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "memberId", last_read_seq AS "lastReadSeq", updated_at AS "updatedAt"`;
+const readStateColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "memberId", last_read_seq AS "lastReadSeq", answered_seq AS "answeredSeq", updated_at AS "updatedAt"`;
 
 export const activeMemberStatement = (
   sql: SqlClient.SqlClient,
@@ -690,10 +691,12 @@ export class KinChatRepository extends Context.Service<
     readonly getReadState: (
       input: MemberScope,
     ) => Effect.Effect<Option.Option<KinReadState>, RepositoryError>;
+    /** Seen up to `seq`; with `answered`, answered up to there too. Neither mark moves back. */
     readonly markRead: (
       input: MemberScope & {
         readonly seq: typeof NonNegativeInt.Type;
         readonly updatedAt: IsoDateTime;
+        readonly answered?: boolean;
       },
     ) => Effect.Effect<void, RepositoryError>;
     readonly unreadCount: (input: MemberScope) => Effect.Effect<number, RepositoryError>;
@@ -2506,10 +2509,15 @@ const make = Effect.gen(function* () {
         const member = yield* requireRecord(memberOne(input));
         if (member.chatId !== input.chatId)
           return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
-        yield* sql`INSERT INTO kin_read_state (org_id, chat_id, member_id, last_read_seq, updated_at)
- VALUES (${input.orgId}, ${input.chatId}, ${input.memberId}, MIN(${seq}, (SELECT last_seq FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId})), ${input.updatedAt})
- ON CONFLICT (chat_id, member_id) DO UPDATE SET last_read_seq = excluded.last_read_seq, updated_at = excluded.updated_at
- WHERE kin_read_state.org_id = excluded.org_id AND excluded.last_read_seq > kin_read_state.last_read_seq`;
+        const capped = sql`MIN(${seq}, (SELECT last_seq FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}))`;
+        yield* sql`INSERT INTO kin_read_state (org_id, chat_id, member_id, last_read_seq, answered_seq, updated_at)
+ VALUES (${input.orgId}, ${input.chatId}, ${input.memberId}, ${capped}, ${input.answered === true ? capped : 0}, ${input.updatedAt})
+ ON CONFLICT (chat_id, member_id) DO UPDATE SET
+   last_read_seq = MAX(kin_read_state.last_read_seq, excluded.last_read_seq),
+   answered_seq = MAX(kin_read_state.answered_seq, excluded.answered_seq),
+   updated_at = excluded.updated_at
+ WHERE kin_read_state.org_id = excluded.org_id AND (excluded.last_read_seq > kin_read_state.last_read_seq
+   OR excluded.answered_seq > kin_read_state.answered_seq)`;
       },
       (effect) => sql.withTransaction(effect),
       Effect.mapError(toRepositoryError("KinChatRepository.markRead")),

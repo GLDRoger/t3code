@@ -138,6 +138,7 @@ import MessageWithdrawn from "./migrations/K214_MessageWithdrawn.ts";
 import OfflineCatchUp from "./migrations/K215_OfflineCatchUp.ts";
 import OfflineSkips from "./migrations/K216_OfflineSkips.ts";
 import BillReads from "./migrations/K217_BillReads.ts";
+import AnsweredSeq from "./migrations/K218_AnsweredSeq.ts";
 import SeveralOwnMailboxes from "./migrations/K219_SeveralOwnMailboxes.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -357,6 +358,7 @@ const migrations = {
   "215_OfflineCatchUp": OfflineCatchUp,
   "216_OfflineSkips": OfflineSkips,
   "217_BillReads": BillReads,
+  "218_AnsweredSeq": AnsweredSeq,
   "219_SeveralOwnMailboxes": SeveralOwnMailboxes,
 };
 const loader = Migrator.fromRecord(migrations);

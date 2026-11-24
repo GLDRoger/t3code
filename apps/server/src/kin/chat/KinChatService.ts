@@ -837,14 +837,14 @@ const make = Effect.gen(function* () {
     }
     return member;
   });
-  /** A person answered here (a send, a reaction, a card answer): their read mark reaches `seq`. */
-  const markAnswered = Effect.fn("KinChatService.markAnswered")(function* (
+  /** Seen up to `seq` (and answered, with `answered`); open screens and pushes hear when seen moved. */
+  const moveMarks = Effect.fn("KinChatService.moveMarks")(function* (
     member: KinChatMember,
     seq: number,
+    answered: boolean,
   ) {
-    if (member.principal._tag !== "person") return;
     const previous = yield* repo.getReadState(member);
-    yield* repo.markRead({ ...member, seq, updatedAt: yield* now });
+    yield* repo.markRead({ ...member, seq, updatedAt: yield* now, answered });
     const updated = yield* requireRecord(repo.getReadState(member));
     if (Option.isSome(previous) && updated.lastReadSeq === previous.value.lastReadSeq) return;
     yield* hub.publish({
@@ -854,6 +854,14 @@ const make = Effect.gen(function* () {
       memberId: member.memberId,
       seq: updated.lastReadSeq,
     });
+  });
+  /** A person answered here (a send, a reaction, a card answer): answered, and seen, up to `seq`. */
+  const markAnswered = Effect.fn("KinChatService.markAnswered")(function* (
+    member: KinChatMember,
+    seq: number,
+  ) {
+    if (member.principal._tag !== "person") return;
+    yield* moveMarks(member, seq, true);
   });
   /**
    * Another person's direct chat with a lead: the lead reads it only on a turn that person's
@@ -3516,17 +3524,10 @@ const make = Effect.gen(function* () {
       },
       (effect) => transaction(effect).pipe(NodeSqliteClient.readOnly),
     ),
-    // Opening a chat is seeing it, not reading it: only its banners go (`markAnswered` reads).
     markRead: Effect.fn("KinChatService.markRead")(function* (identity, input) {
       identity = yield* identityFor(identity, input);
       const member = yield* memberFor(identity, input.chatId);
-      yield* hub.publish({
-        type: "chat.seen",
-        orgId: identity.orgId,
-        chatId: input.chatId,
-        memberId: member.memberId,
-        seq: input.seq,
-      });
+      yield* moveMarks(member, input.seq, false);
     }, transaction),
     createTaskCard: Effect.fn("KinChatService.createTaskCard")(function* (input) {
       if (input.orgId !== "kin-default") return yield* notFound;

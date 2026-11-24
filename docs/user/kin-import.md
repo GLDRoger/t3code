@@ -95,6 +95,9 @@ In a person field, use a current teammate's person id or `"owner"` for yourself.
 which entries matched and which fields it would fill. Applying the file again leaves
 those fills as they are.
 
+Add `"void":true` to a `match` row to void that entry after any fills, with the same rules as in
+Kin: Void on a numbered entry such as an invoice, or the list's Void state, as on an expense.
+
 ## Plan first, then apply
 
 On the host, run a plan. It changes nothing. It reports what it would make, what was imported
@@ -134,9 +137,10 @@ doesn't go back, so no number is ever issued twice. You can apply the same file 
 Entry keys such as `C-4` don't go back either, so what an agent remembers about a removed entry
 never passes to a new one; only a list the undo removed starts its keys again if it is made again.
 
-A matched entry is not removed. Undo empties only the fields and notes the batch filled. If
-the entry changed since, Kin leaves it as it is and lists it; add `--include-changed` to empty
-those same fields anyway, even if someone has edited them.
+A matched entry is not removed. Undo empties only the fields and notes the batch filled, and takes
+back a void it made. If the entry changed since, Kin leaves it as it is and lists it; add
+`--include-changed` to empty those same fields, and take back the void, even if someone has edited
+it.
 
 ## What an import doesn't do
 
