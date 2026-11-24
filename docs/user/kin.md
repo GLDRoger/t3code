@@ -619,8 +619,8 @@ until the hour is up.
 Kin watches every repo yours or your organizations' unless you say "leave acme/site alone" in chat.
 **Settings → Connections → GitHub** shows how many repos it watches, when it last checked and how
 much it handled today; **Show repos** lists them with a switch each, and **Watch every repo** undoes
-the switches. Forks of other people's repos start off. If a check fails, the row says why and how to
-fix it.
+the switches. Forks are watched too, for their own pull requests and issues. If a check fails, the
+row says why and how to fix it.
 
 To try pull requests in a browser on Ubuntu 23.10 or later, run `t3 browser setup` once as root.
 
