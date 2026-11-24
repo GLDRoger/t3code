@@ -105,6 +105,8 @@ export function KinMyMailbox(props: Target) {
     const done = await remove({ environmentId, input: { orgId, connectionId } });
     setBusy(false);
     if (!AsyncResult.isSuccess(done)) setProblem(kinFailureText(done, "disconnect your mailbox"));
+    // A member's screen hears no "connections" refresh, so it reads its own list again.
+    else reload();
   };
   const giveToCompany = async (connectionId: KinConnectionId) => {
     setBusy(true);
@@ -232,6 +234,7 @@ export function KinMyMailbox(props: Target) {
               const done = await finish({ environmentId, input: { orgId, response } });
               if (!AsyncResult.isSuccess(done)) return kinFailureText(done, "finish the sign-in");
               setWaiting(null);
+              reload();
               return null;
             }}
           />
