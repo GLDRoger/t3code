@@ -124,7 +124,13 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   // A cancelled mail's Tasks row stops offering it.
   if (asked?._tag === "declined") yield* sql.afterCommit(tasksReread(input.orgId));
   // An agent's question the owner level answered is a decision; Kin's own cards record elsewhere.
-  if (asked === undefined && made === undefined && currency === undefined)
+  // An Approve that found its long draft changed decided nothing.
+  if (
+    asked === undefined &&
+    made === undefined &&
+    currency === undefined &&
+    !(sentBack !== undefined && "refused" in sentBack)
+  )
     yield* followOn("Kin couldn't prepare the card decision", saveDecision(input, scope));
   if (made?._tag === "made")
     yield* sql.afterCommit(
