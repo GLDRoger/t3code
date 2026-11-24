@@ -441,7 +441,7 @@ function InvoiceForm(
         <KinWorkTextField
           label={KIN_MONEY_FORMS.invoice.gstRate}
           value={draft.gstRate}
-          keyboard="numbers"
+          keyboard="decimal"
           hint={KIN_MONEY_FORMS.invoice.gstHint}
           disabled={locked}
           onChangeText={(gstRate) => set({ gstRate })}
