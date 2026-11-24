@@ -358,7 +358,7 @@ const make = Effect.gen(function* () {
         const changed =
           inserted.length > 0
             ? inserted
-            : yield* sql`UPDATE kin_org_state SET paused = 1, paused_at = ${now},
+            : yield* sql`UPDATE kin_org_state SET stop_managed = 1, paused = 1, paused_at = ${now},
                 paused_by = ${person.personId}, reason = ${reason}
               WHERE org_id = ${input.orgId} AND paused = 0 RETURNING org_id`;
         if (changed.length > 0) yield* (yield* KinRefreshObserver).touch(input.orgId, "stop");
@@ -541,7 +541,7 @@ const make = Effect.gen(function* () {
       const orgs = yield* sql<{
         orgId: KinOrgId;
         // Startup scan across orgs on purpose; each org is then handled under its own lock.
-      }>`SELECT org_id AS "orgId" FROM kin_org_state ORDER BY org_id`.pipe(
+      }>`SELECT org_id AS "orgId" FROM kin_org_state WHERE stop_managed = 1 ORDER BY org_id`.pipe(
         Effect.catchCause((cause) =>
           Effect.logError("Kin stop catch-up unavailable", { cause }).pipe(Effect.as([])),
         ),
