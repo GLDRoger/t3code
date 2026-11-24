@@ -6,6 +6,7 @@ import {
   KinEventId,
   KinHostTroubleCard,
   KinOrgId,
+  KinPersonId,
   KinWakeupId,
   type KinTroubleCause,
 } from "@t3tools/contracts";
@@ -197,12 +198,40 @@ it.effect.each(["retired", "none"] as const)(
         yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
           VALUES ('chief', ${orgId}, 'Chief of staff', 0, '{}', '[]', 'rhea-chief')`;
       yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE org_id = ${orgId} AND agent_id = 'chief'`;
+      const rhea = { _tag: "person" as const, orgId, personId: KinPersonId.make("rhea") };
+      const list = yield* Stream.toQueue(
+        (yield* Chat.KinChatService).subscribeChats([rhea], {}),
+        { capacity: "unbounded" },
+      );
+      const first = yield* Queue.take(list);
+      const unreadIn = (chats: ReadonlyArray<{ chatId: string; unread: number }>) =>
+        chats.find((chat) => chat.chatId === "rhea-chief")?.unread;
+      // Yesterday's notice was settled by today's; only today's still counts.
+      if (scenario === "retired")
+        assert.strictEqual(first._tag === "snapshot" ? unreadIn(first.chats) : null, 1);
       yield* TestClock.adjust("1 day");
+      // A good backup, so the check posts nothing new and the row changes only by the notice.
+      yield* (yield* FileSystem.FileSystem).writeFileString(
+        (yield* Path.Path).join(
+          (yield* ServerConfig.ServerConfig).stateDir,
+          HostBackup.BACKUP_STATUS_FILE,
+        ),
+        status({ ok: true, lastGoodAt: DAY_START + 2 * 24 * HOUR }),
+      );
       yield* HostBackupCheck.check();
       const resolved = yield* messages;
       assert.lengthOf(resolved, 2);
       assert.isTrue(resolved.every((message) => message.resolvedAt !== null));
-    }).pipe(Effect.provide(services)),
+      // Settled, the notices leave the row's unread count (and the badge) while the list is open.
+      if (scenario === "retired") {
+        let unread: number | undefined;
+        while (unread !== 0) {
+          const event = yield* Queue.take(list);
+          if (event._tag === "chat" && event.chat.chatId === "rhea-chief")
+            unread = event.chat.unread;
+        }
+      }
+    }).pipe(Effect.scoped, Effect.provide(services)),
 );
 
 const decodeCard = Schema.decodeUnknownSync(Schema.fromJsonString(KinHostTroubleCard));

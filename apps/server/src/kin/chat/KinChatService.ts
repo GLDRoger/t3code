@@ -3191,12 +3191,12 @@ const make = Effect.gen(function* () {
                   const { item } = event;
                   if (!heardWaiting(item)) return [];
                   const viewer = viewers.find((identity) => identity.orgId === item.orgId);
-                  // A row already sent short is read again once an item waits on its message.
+                  // A row already sent short is read again once an item waits on its message, and
+                  // any row once one resolves: a settled notice leaves its unread count.
                   if (
                     viewer === undefined ||
-                    item.resolvedAt !== null ||
                     item.messageId === null ||
-                    short.get(keyOf(item)) !== item.messageId
+                    (item.resolvedAt === null && short.get(keyOf(item)) !== item.messageId)
                   )
                     return [event];
                   const again = yield* summary(viewer, item.chatId).pipe(
