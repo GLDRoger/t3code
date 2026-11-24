@@ -67,6 +67,7 @@ import {
   chatLinksFor,
   endOfDay,
   isClosed,
+  isSuggestion,
   keyWithheld,
   iso,
   notFound,
@@ -1207,7 +1208,7 @@ export const handBack = Effect.fn("KinWork.handBack")(function* (
   );
   const to = toRecord(row, yield* Clock.currentTimeMillis).owner;
   // An agent it goes back to is woken by the write; a person sees it on Tasks.
-  if (to._tag === "person")
+  if (to._tag === "person" && !isSuggestion(row))
     yield* tellOnScreen(viewer.person, `${row.recordId}:${row.rev}`, [
       { personId: to.personId, kind: "returned", row, why: input.note ?? null },
     ]);

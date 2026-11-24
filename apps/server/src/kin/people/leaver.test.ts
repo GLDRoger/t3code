@@ -377,10 +377,27 @@ it.effect(
             "Failure",
         );
 
+        const followUp = (yield* ctx.records.get(ctx.orgId, ctx.keys[3]!))!;
+        const { row: proposal } = yield* ctx.records.create(
+          ctx.orgId,
+          { actor: { _tag: "agent", agentId: chief }, via: "lead" },
+          {
+            title: "Invented: prepare a Brightwater checklist",
+            originKey: "proposed-follow-up",
+            owner: { _tag: "person", personId: zoyaId },
+            partyId: followUp.partyId!,
+            confirmed: false,
+          },
+        );
+        const allMoved = HELD.replace("1 follow-up", "2 follow-ups");
         const refresh = (yield* KinRefreshHub).changes(ctx.orgId).pipe(Stream.runHead);
         const before = Option.getOrThrow(yield* refresh);
         yield* tap(ctx, meeraId, meeras, "Give them to Arjun");
         assert.strictEqual(Option.getOrThrow(yield* refresh).watches, before.watches + 1);
+        assert.include(yield* ctx.records.get(ctx.orgId, proposal.key), {
+          ownerId: arjunId,
+          confirmed: 0,
+        });
         assert.deepInclude(yield* watch(ctx, "open-watch"), {
           for_person_id: arjunId,
           set_by_id: openBefore.set_by_id,
@@ -409,13 +426,13 @@ it.effect(
         const settled = yield* cards(ctx);
         assert.deepStrictEqual(settled.find((card) => card.widgetId === meeras.widgetId)?.outcome, {
           title: "Given to Arjun",
-          text: `Arjun now looks after ${HELD} that Zoya looked after, and was told. ${after}`,
+          text: `Arjun now looks after ${allMoved} that Zoya looked after, and was told. ${after}`,
         });
         const closed = settled.find((card) => card.widgetId === rheas.widgetId)!;
         assert.isTrue(closed.closed);
         assert.deepStrictEqual(closed.outcome, {
           title: "Given to Arjun",
-          text: `Meera gave Arjun ${HELD} that Zoya looked after. ${after}`,
+          text: `Meera gave Arjun ${allMoved} that Zoya looked after. ${after}`,
         });
         // Answered once for all: Rhea's copy takes no tap.
         assert.isTrue(
