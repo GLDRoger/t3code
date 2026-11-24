@@ -70,14 +70,17 @@ const ListPlan = Schema.Struct({
   draw: CardDraw,
 });
 /**
- * A Bank transactions credit recorded as an invoice's payment, as the statement matcher offered
- * the pair when drawn: the credit at its revision, the invoice at what it owed then (`seen`).
+ * A Bank transactions credit recorded as an invoice's payment, as the statement matcher ranked the
+ * pair when drawn: the credit at its revision, the invoice at what it owed then (`seen`), and what
+ * the card said from the records: the invoice's printed number, its client and what stays owed.
  */
 const PaymentPlan = Schema.Struct({
   kind: Schema.Literal("record_payment"),
   recordId: Schema.String,
   key: Schema.String,
   title: Schema.String,
+  number: Schema.String,
+  client: Schema.NullOr(Schema.String),
   seen: Schema.String,
   bankRecordId: Schema.String,
   bankKey: Schema.String,
@@ -87,6 +90,8 @@ const PaymentPlan = Schema.Struct({
   day: Schema.String,
   /** Tax the client withheld, when the matcher read the credit as the amount less it. */
   withheldMinor: Schema.NullOr(Schema.Number),
+  /** What the invoice still owes once this is recorded: zero settles it. */
+  owedAfterMinor: Schema.Number,
   draw: CardDraw,
 });
 export type PaymentPlan = typeof PaymentPlan.Type;

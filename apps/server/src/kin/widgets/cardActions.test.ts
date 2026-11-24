@@ -79,6 +79,7 @@ import * as CardActions from "./cardActions.ts";
 import { plansOf, takesAsDefault } from "./cardPlans.ts";
 import { FEWER_THAN_TWO, NOTHING_TIMED } from "./choiceCard.ts";
 import { ensureBankList } from "../work/statements/bankList.ts";
+import { buildReview } from "../work/statements/statementReview.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const at = "2026-10-01T00:00:00.000Z";
@@ -2782,14 +2783,16 @@ it.effect("a receipt Confirm's own writes are the tap's, not newer than it", () 
 );
 
 // Kin's bank matching took a credit for an invoice's payment: the agent's card records it on the
-// owner's tap, in server code, and the credit is explained; a card drawn before that does nothing.
-it.effect("a tap records a bank credit as the invoice's payment the matcher offered", () =>
+// owner's tap, in server code, from Kin's records only, and every way back and around holds.
+it.effect("a tap records a bank credit as the invoice's payment the matcher ranks first", () =>
   Effect.andThen(
     TestClock.setTime(MON),
     Effect.gen(function* () {
       const kin = yield* ambermill;
       const { owner, orgId, sql, records } = kin;
       const chatId = kin.chatOf("finance");
+      const withKin = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(Effect.provide(kin.services));
       yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
           created_at, definition_json)
         VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
@@ -2798,43 +2801,65 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher offe
         via: "owner" as const,
         askedBy: owner.personId,
       };
+      const agentWrites = {
+        actor: { _tag: "agent" as const, agentId: KinAgentId.make("finance") },
+        via: "lead" as const,
+      };
+      const kinWrites = { actor: { _tag: "system" as const }, via: "import" as const };
       const client = yield* records.create(orgId, ownerWrites, {
         list: "clients",
         title: "Harbourline Logistics",
         owner: { _tag: "person", personId: owner.personId },
         originKey: "harbourline",
       });
-      const invoice = (yield* records.create(orgId, ownerWrites, {
-        list: "invoices",
-        title: "October retainer",
-        owner: { _tag: "person", personId: owner.personId },
-        partyId: client.row.recordId,
-        amount: { minor: 95_000_00, currency: "INR" },
-        originKey: "october",
-      })).row;
-      yield* sql`UPDATE kin_records SET state = 'waiting', date_at = ${MON - 10 * DAY_MS}
-        WHERE org_id = ${orgId} AND record_id = ${invoice.recordId}`;
+      const invoiceOf = Effect.fn("test.invoiceOf")(function* (title: string, number: string) {
+        const { row } = yield* records.create(orgId, ownerWrites, {
+          list: "invoices",
+          title,
+          owner: { _tag: "person", personId: owner.personId },
+          partyId: client.row.recordId,
+          amount: { minor: 95_000_00, currency: "INR" },
+          originKey: title,
+        });
+        yield* sql`UPDATE kin_records SET state = 'waiting', date_at = ${MON - 10 * DAY_MS},
+            fields_json = json_set(fields_json, '$.number', ${number})
+          WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+        return row;
+      });
+      const invoice = yield* invoiceOf("October retainer", "AM/26-27/001");
+      const second = yield* invoiceOf("November retainer", "AM/26-27/002");
       const bankList = yield* ensureBankList(orgId, MON);
-      const credit = (title: string, rupees: number) =>
+      const credit = (
+        title: string,
+        rupees: number,
+        reference: string,
+        writer: Parameters<typeof records.create>[1] = kinWrites,
+      ) =>
         records
-          .create(orgId, ownerWrites, {
+          .create(orgId, writer, {
             list: bankList.id,
             title,
             owner: { _tag: "person", personId: owner.personId },
             amount: { minor: rupees * 100, currency: "INR" },
             dateAt: MON - DAY_MS,
-            fields: { direction: "credit" },
-            originKey: title,
+            fields: { direction: "credit", reference, account: "Invented Bank ••4821" },
+            originKey: reference,
           })
           .pipe(Effect.map(({ row }) => row));
-      const bank = yield* credit(`NEFT CR-HARBOURLINE LOGISTICS-${invoice.key}`, 95_000);
-      const other = yield* credit("UPI CR-INVENTED STRANGER", 1_234);
+      const cites = "NEFT CR-HARBOURLINE LOGISTICS-AM/26-27/001";
+      const bank = yield* credit(cites, 95_000, "INVTN0000000042");
+      // Written by an agent, or changed by one since: never the bank's word for money in.
+      const typed = yield* credit(cites, 95_000, "INVTN0000000043", agentWrites);
+      const touched = yield* credit(cites, 95_000, "INVTN0000000044");
+      yield* records.update(orgId, agentWrites, touched.key, { notes: "Matched by Finance." });
+      // A person's edit leaves it the bank's.
+      yield* records.update(orgId, ownerWrites, bank.key, { notes: "Checked with the bank." });
       const seen = KinPulse.read({ orgId, at: MON, viewer: { _tag: "owner" } }).pipe(
         Effect.map((pulse) =>
           pulse.facts.filter((fact) => fact.sense === "payment_seen").map((fact) => fact.key),
         ),
       );
-      assert.deepStrictEqual(yield* seen, [`payment_seen:${bank.key}>${invoice.key}`]);
+      assert.deepStrictEqual(yield* seen, [`payment_seen:${bank.key}`]);
 
       yield* kin.turn("finance", chatId, "Anything in the bank?");
       const ask = (target: string, question: string) =>
@@ -2846,33 +2871,86 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher offe
           ],
           default: "none",
         });
-      // Only a pair the matching offers, named as two keys.
-      for (const target of [`${other.key} ${invoice.key}`, bank.key, `${invoice.key} ${bank.key}`])
-        assert.isFalse((yield* ask(target, `Record ${target}?`)).ok, target);
-      // A card whose credit changed after it was drawn records nothing, and says so.
-      const stale = yield* ask(`${bank.key} ${invoice.key}`, "Record it as October's payment?");
-      assert.isTrue(stale.ok, JSON.stringify(stale.value));
-      yield* records.update(orgId, ownerWrites, bank.key, { notes: "Checked with the bank." });
-      yield* kin.tap(owner, stale.value.widgetId, "option-1", "record-stale");
-      assert.deepStrictEqual(card(yield* kin.widget(stale.value.widgetId)).outcome, {
+      const refusal = (target: string) =>
+        ask(target, `Record ${target}?`).pipe(
+          Effect.map((asked) => {
+            assert.isFalse(asked.ok, target);
+            return String(asked.value.message);
+          }),
+        );
+      for (const target of [typed.key, touched.key])
+        assert.match(
+          yield* refusal(target),
+          /was written or changed by an agent, so Kin can't take it/,
+        );
+      assert.match(
+        yield* refusal(`${bank.key} ${invoice.key} more`),
+        /^record_payment's target is/,
+      );
+      // Ranked below the invoice the credit cites: refused, naming the one ranked first.
+      assert.strictEqual(
+        yield* refusal(`${bank.key} ${second.key}`),
+        `Kin ranks AM/26-27/001 (${invoice.key}) first for ${bank.key}, not ${second.key}. Offer "${bank.key} ${invoice.key}" instead.`,
+      );
+      // Two invoices level for one credit: the credit alone is refused, each pair is drawable.
+      const level = yield* credit("NEFT CR-HARBOURLINE LOGISTICS", 95_000, "INVTN0000000045");
+      assert.strictEqual(
+        yield* refusal(level.key),
+        `${level.key} fits AM/26-27/001 (${invoice.key}) and AM/26-27/002 (${second.key}) equally, so Kin can't pick one. Offer one option per invoice, with targets "${level.key} ${invoice.key}" and "${level.key} ${second.key}".`,
+      );
+      const levelCard = yield* ask(`${level.key} ${second.key}`, "Which invoice is it?");
+      assert.isTrue(levelCard.ok, JSON.stringify(levelCard.value));
+
+      // The credit alone, or with the invoice by key or printed number, draws the same card.
+      const line = `Record ₹95,000.00 received 15 Nov (${bank.key}) as the payment of AM/26-27/001 from Harbourline Logistics; it settles the invoice in full`;
+      const drawn: Array<string> = [];
+      for (const target of [bank.key, `${bank.key} ${invoice.key}`, `${bank.key} AM/26-27/001`]) {
+        const asked = yield* ask(target, `Is ${target} October's payment?`);
+        assert.isTrue(asked.ok, JSON.stringify(asked.value));
+        assert.deepStrictEqual(card(yield* kin.widget(asked.value.widgetId)).options[0], {
+          optionId: "option-1",
+          label: "Record ₹95,000.00 for AM/26-27/001",
+          action: { line },
+        });
+        drawn.push(String(asked.value.widgetId));
+      }
+      const [stale, asked, again] = drawn;
+      // Nothing is recorded until the owner taps it.
+      assert.strictEqual((yield* records.get(orgId, invoice.key))!.paid, 0);
+
+      // Finance was told; a card whose credit changed since records nothing, and the fact is told
+      // again on the next pass while it still holds.
+      const factKey = `payment_seen:${bank.key}`;
+      assert.include((yield* withKin(KinPulse.tick(orgId, MON))).woken, factKey);
+      // Finance's turn on it ran.
+      yield* sql`UPDATE kin_events SET state = 'done'
+        WHERE org_id = ${orgId} AND dedupe_key LIKE 'payment_seen:%'`;
+      yield* records.update(orgId, ownerWrites, bank.key, { notes: "Checked twice." });
+      yield* kin.tap(owner, stale, "option-1", "record-stale");
+      assert.deepStrictEqual(card(yield* kin.widget(stale)).outcome, {
         title: "Nothing was done",
         text: `${bank.key} or ${invoice.key} changed since this was offered, so nothing was done.`,
       });
       assert.strictEqual((yield* records.get(orgId, invoice.key))!.paid, 0);
+      assert.include((yield* withKin(KinPulse.tick(orgId, MON + 60_000))).woken, factKey);
+      // One that no longer fits is not told again.
+      yield* records.update(orgId, ownerWrites, level.key, { state: "dropped" });
+      yield* kin.tap(owner, levelCard.value.widgetId, "option-1", "record-level");
+      assert.strictEqual(
+        card(yield* kin.widget(levelCard.value.widgetId)).outcome?.title,
+        "Nothing was done",
+      );
+      assert.notInclude(
+        (yield* withKin(KinPulse.tick(orgId, MON + 120_000))).woken,
+        `payment_seen:${level.key}`,
+      );
 
-      const asked = yield* ask(`${bank.key} ${invoice.key}`, "Is this October's payment?");
-      assert.isTrue(asked.ok, JSON.stringify(asked.value));
-      const again = yield* ask(`${bank.key} ${invoice.key}`, "Is this the October payment?");
-      const line = `Record ₹95,000.00 received 15 Nov (${bank.key}) as ${invoice.key} “October retainer”'s payment`;
-      assert.deepStrictEqual(card(yield* kin.widget(asked.value.widgetId)).options[0], {
-        optionId: "option-1",
-        label: `Record ${bank.key} as ${invoice.key}'s payment`,
-        action: { line },
-      });
-      // Nothing is recorded until the owner taps it.
-      assert.strictEqual((yield* records.get(orgId, invoice.key))!.paid, 0);
-
-      const tapped = yield* kin.tap(owner, asked.value.widgetId, "option-1", "record-1");
+      // Cards drawn before the note above are stale too; a fresh one records it.
+      for (const widgetId of [asked, again])
+        yield* kin.tap(owner, widgetId!, "option-1", `r-${widgetId}`);
+      const fresh = yield* ask(bank.key, "Is this October's payment, then?");
+      const later = yield* ask(bank.key, "Is this the October payment?");
+      const tapped = yield* kin.tap(owner, fresh.value.widgetId, "option-1", "record-1");
       assert.deepInclude(JSON.parse(tapped.body), { handled: true });
       const paid = (yield* records.get(orgId, invoice.key))!;
       assert.deepStrictEqual([paid.paid, paid.state], [95_000_00, "done"]);
@@ -2888,18 +2966,102 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher offe
           { from: bank.recordId, to: invoice.recordId },
         ],
       );
-      assert.deepStrictEqual(card(yield* kin.widget(asked.value.widgetId)).outcome, {
+      assert.deepStrictEqual(card(yield* kin.widget(fresh.value.widgetId)).outcome, {
         title: "Payment recorded",
-        text: `Recorded ₹95,000.00 received 15 Nov (${bank.key}) as ${invoice.key} “October retainer”'s payment. ${bank.key} is explained in Bank transactions.`,
+        text: `Recorded ₹95,000.00 received 15 Nov (${bank.key}) as the payment of AM/26-27/001 from Harbourline Logistics; the invoice is paid in full. ${bank.key} is explained in Bank transactions.`,
       });
-      assert.isEmpty(yield* seen);
+      assert.notInclude(yield* seen, factKey);
       // Another open card for it closes with the invoice paid, and its tap is refused.
-      assert.isNotNull((yield* kin.widget(again.value.widgetId)).closedAt);
+      assert.isNotNull((yield* kin.widget(later.value.widgetId)).closedAt);
       const late = yield* kin
-        .tap(owner, again.value.widgetId, "option-1", "record-2")
+        .tap(owner, later.value.widgetId, "option-1", "record-2")
         .pipe(Effect.flip);
       assert.include(late, { reason: "widget_changed" });
       assert.strictEqual((yield* records.get(orgId, invoice.key))!.paid, 95_000_00);
+
+      // A statement with the same credit finds it explained, and offers the card's payment for
+      // no other row of that amount.
+      const row = (index: number, reference: string) => ({
+        index,
+        date: "2026-11-15",
+        description: index === 0 ? cites : "NEFT CR-INVENTED STRANGER",
+        reference,
+        amountMinor: 95_000_00,
+        direction: "credit" as const,
+        balanceMinor: null,
+        foreign: null,
+      });
+      const review = yield* withKin(
+        buildReview(
+          orgId,
+          {
+            kind: "account",
+            bank: "Invented Bank",
+            account: "4821",
+            currency: "INR",
+            from: "2026-11-15",
+            to: "2026-11-15",
+            openingMinor: null,
+            closingMinor: null,
+            rows: [row(0, "INVTN0000000042"), row(1, "INVTN0000000099")],
+            check: { status: "adds_up", line: "" },
+          },
+          null,
+          "file",
+          "st-invented",
+        ),
+      );
+      assert.strictEqual(review.known.get(0)?.recordId, bank.recordId);
+      assert.isFalse(review.matches.has(0));
+      assert.isFalse(
+        (review.matches.get(1)?.candidates ?? []).some((one) => one.fit === "recorded"),
+      );
+
+      // Taken back on the invoice, the credit is Unexplained again, written as Kin's, and is never
+      // offered for that invoice again: only for the other one it fits.
+      const [payment] = yield* sql<{ paymentId: string }>`SELECT payment_id AS "paymentId"
+        FROM kin_record_payments WHERE org_id = ${orgId} AND record_id = ${invoice.recordId}
+          AND voided_at IS NULL`;
+      yield* records.voidPayment(orgId, ownerWrites, invoice.key, payment!.paymentId);
+      assert.strictEqual((yield* records.get(orgId, bank.key))!.state, "open");
+      const reopened = (yield* KinPulse.read({
+        orgId,
+        at: MON,
+        viewer: { _tag: "owner" },
+      })).facts.find((fact) => fact.key === factKey);
+      assert.strictEqual(reopened?.subject.key, second.key);
+      assert.match(
+        String((yield* ask(`${bank.key} ${invoice.key}`, "October after all?")).value.message),
+        /^Kin ranks AM\/26-27\/002/,
+      );
+
+      // A part payment says what stays owed.
+      const part = yield* credit(
+        "NEFT CR-HARBOURLINE LOGISTICS-AM/26-27/002",
+        45_000,
+        "INVTN0000000046",
+      );
+      const partCard = yield* ask(`${part.key} AM/26-27/002`, "Is this part of November's?");
+      assert.isTrue(partCard.ok, JSON.stringify(partCard.value));
+      assert.deepStrictEqual(card(yield* kin.widget(partCard.value.widgetId)).options[0], {
+        optionId: "option-1",
+        label: "Record ₹45,000.00 for AM/26-27/002",
+        action: {
+          line: `Record ₹45,000.00 received 15 Nov (${part.key}) as the payment of AM/26-27/002 from Harbourline Logistics; ₹50,000.00 stays owed on it`,
+        },
+      });
+      yield* kin.tap(owner, partCard.value.widgetId, "option-1", "record-part");
+      assert.deepStrictEqual(card(yield* kin.widget(partCard.value.widgetId)).outcome, {
+        title: "Payment recorded",
+        text: `Recorded ₹45,000.00 received 15 Nov (${part.key}) as the payment of AM/26-27/002 from Harbourline Logistics; ₹50,000.00 is still owed on it. ${part.key} is explained in Bank transactions.`,
+      });
+      assert.deepStrictEqual(
+        [
+          (yield* records.get(orgId, second.key))!.paid,
+          (yield* records.get(orgId, second.key))!.state,
+        ],
+        [45_000_00, "waiting"],
+      );
     }).pipe(Effect.provide(layer)),
   ),
 );

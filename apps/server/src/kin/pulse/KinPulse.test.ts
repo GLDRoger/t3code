@@ -2378,6 +2378,13 @@ describe("KinPulse", () => {
           read(when, viewer).pipe(
             Effect.map((pulse) => pulse.facts.filter((fact) => fact.sense === "payment_seen")),
           );
+        const factOf = (bank: string, when = at) =>
+          seen(undefined, when).pipe(
+            Effect.map((facts) => facts.find((fact) => fact.key === `payment_seen:${bank}`)),
+          );
+        const wakes = sql<{ agent: string; json: string }>`SELECT agent_id AS agent, json
+          FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+            AND dedupe_key LIKE 'payment_seen:%' ORDER BY event_id`;
         // Both credits came in before the invoice was issued, so nothing is told of them yet.
         yield* credit("BNK-1", 95_000, 0, "NEFT CR-HARBOURLINE LOGISTICS-INV/26-27/020");
         yield* credit("BNK-2", 95_000, 8, "NEFT CR-HARBOURLINE LOGISTICS-INV/26-27/020");
@@ -2388,7 +2395,7 @@ describe("KinPulse", () => {
         const [fact, ...others] = yield* seen();
         assert.isEmpty(others);
         assert.deepInclude(fact!, {
-          key: "payment_seen:BNK-2>INV-20",
+          key: "payment_seen:BNK-2",
           family: "money",
           subject: {
             kind: "record",
@@ -2413,86 +2420,99 @@ describe("KinPulse", () => {
         // Finance wakes once for it, on the pass that finds it; a later pass leaves it be.
         const first = yield* KinPulse.tick(orgId, at);
         assert.include(first.woken, fact!.key);
-        const wakes = sql<{ agent: string; json: string }>`SELECT agent_id AS agent, json
-        FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
-          AND dedupe_key LIKE 'payment_seen:%' ORDER BY event_id`;
         const [woke] = yield* wakes;
         assert.strictEqual(woke!.agent, finance);
         assert.deepInclude(JSON.parse(woke!.json), { factKeys: [fact!.key] });
         assert.notInclude((yield* KinPulse.tick(orgId, at + MINUTE)).woken, fact!.key);
-        assert.lengthOf(yield* wakes, 1);
 
-        // A second invoice it fits as well, and as closely: both are named, nothing is chosen,
-        // and the new pair is told once more.
+        // A second invoice it fits as closely: both are named, about the credit itself with no
+        // client, so a client set aside hides neither; and it is the same credit, so no new wake.
         yield* invoice("INV-21", 95_000, B + DAY, "INV/26-27/021");
         yield* sql`UPDATE kin_records SET title = 'NEFT CR-HARBOURLINE LOGISTICS'
-        WHERE record_id = 'r-BNK-2'`;
-        const [both] = yield* seen();
+          WHERE record_id = 'r-BNK-2'`;
+        const both = yield* factOf("BNK-2");
         assert.deepInclude(both!, {
-          key: "payment_seen:BNK-2>INV-20,BNK-2>INV-21",
+          subject: {
+            kind: "record",
+            key: "BNK-2",
+            title: "Bank credit",
+            recordId: KinRecordId.make("r-BNK-2"),
+          },
+          scope: {},
           consequence:
-            "More than one fits, and Kin can't tell which: BNK-2 (₹95,000, 9 Nov) for INV-20: same amount from Harbourline Logistics; BNK-2 (₹95,000, 9 Nov) for INV-21: same amount from Harbourline Logistics. Nothing is recorded until the owner says which.",
+            "BNK-2, ₹95,000 received 9 Nov, fits 2 open invoices equally, and Kin can't tell which: INV/26-27/020 (INV-20): same amount from Harbourline Logistics; INV/26-27/021 (INV-21): same amount from Harbourline Logistics. Nothing is recorded until the owner says which.",
         });
-        assert.include((yield* KinPulse.tick(orgId, at + 2 * MINUTE)).woken, both!.key);
-        // Two credits that fit one invoice, neither ahead: both named, as one fact.
-        yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'r-INV-21'`;
-        yield* credit("BNK-3", 95_000, 9, "NEFT CR-HARBOURLINE LOGISTICS");
-        const [two] = yield* seen();
-        assert.deepInclude(two!, {
-          key: "payment_seen:BNK-3>INV-20,BNK-2>INV-20",
-          consequence:
-            "More than one fits, and Kin can't tell which: BNK-3 (₹95,000, 10 Nov) for INV-20: same amount from Harbourline Logistics; BNK-2 (₹95,000, 9 Nov) for INV-20: same amount from Harbourline Logistics. Nothing is recorded until the owner says which.",
-        });
-        // One that cites the invoice is ahead of one that only matches its amount: it is the
-        // answer, and the other is named as less likely.
-        yield* sql`UPDATE kin_records SET title = 'NEFT CR-HARBOURLINE LOGISTICS-INV/26-27/020'
-        WHERE record_id = 'r-BNK-3'`;
-        const [ranked] = yield* seen();
-        assert.deepInclude(ranked!, {
-          key: "payment_seen:BNK-3>INV-20,BNK-2>INV-20",
-          consequence:
-            "BNK-3, ₹95,000 received 10 Nov, looks like this invoice's payment: cites INV/26-27/020. It also fits, less closely: BNK-2 (₹95,000, 9 Nov) for INV-20: same amount from Harbourline Logistics. It isn't recorded as paid until the owner confirms.",
-        });
+        assert.notInclude((yield* KinPulse.tick(orgId, at + 2 * MINUTE)).woken, both!.key);
+        assert.lengthOf(yield* wakes, 1);
+        const asideClient = (action: "set" | "lift") =>
+          KinPulse.aside({
+            orgId,
+            at,
+            viewer: { _tag: "owner" },
+            by: { _tag: "person", personId: owner },
+            recordKey: "C-9",
+            action,
+            until: null,
+            note: null,
+            holding: { _tag: "may", forPersonId: null, onWordOf: null },
+          });
+        yield* asideClient("set");
+        assert.isUndefined((yield* factOf("BNK-2"))!.aside);
+        yield* asideClient("lift");
 
-        // The owner says it isn't: told no more, and no wake.
+        // Two credits that fit one invoice: one fact each, each naming the other.
+        yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'r-INV-21'`;
+        yield* credit("BNK-3", 95_000, 9, "NEFT CR-HARBOURLINE LOGISTICS-INV/26-27/020");
+        assert.strictEqual(
+          (yield* factOf("BNK-2"))!.consequence,
+          "BNK-2, ₹95,000 received 9 Nov, looks like this invoice's payment: same amount from Harbourline Logistics. BNK-3 (₹95,000, 10 Nov) fits this invoice as well. It isn't recorded as paid until the owner confirms.",
+        );
+        const third = yield* factOf("BNK-3");
+        assert.strictEqual(
+          third!.consequence,
+          "BNK-3, ₹95,000 received 10 Nov, looks like this invoice's payment: cites INV/26-27/020. BNK-2 (₹95,000, 9 Nov) fits this invoice as well. It isn't recorded as paid until the owner confirms.",
+        );
+
+        // The owner says it isn't: told no more, and no wake, whatever invoices come later.
         yield* KinPulse.handle({
           orgId,
           at,
           viewer: { _tag: "owner" },
           by: { _tag: "person", personId: owner },
-          factKey: ranked!.key,
+          factKey: third!.key,
           action: "not_a_problem",
         });
-        assert.notInclude((yield* KinPulse.tick(orgId, at + 3 * MINUTE)).woken, ranked!.key);
-        assert.isNotNull((yield* seen(undefined, at + 30 * DAY))[0]!.handled);
-        assert.isEmpty(
-          (yield* KinPulse.read({
-            orgId,
-            at: at + 30 * DAY,
-            viewer: { _tag: "owner" },
-          })).facts.filter((one) => one.sense === "payment_seen"),
-        );
-        yield* KinPulse.handle({
-          orgId,
-          at,
-          viewer: { _tag: "owner" },
-          by: { _tag: "person", personId: owner },
-          factKey: ranked!.key,
-          action: "undo",
-        });
+        assert.notInclude((yield* KinPulse.tick(orgId, at + 3 * MINUTE)).woken, third!.key);
+        yield* invoice("INV-22", 95_000, B + 2 * DAY, "INV/26-27/022");
+        assert.isNotNull((yield* factOf("BNK-3", at + 30 * DAY))!.handled);
+        assert.notInclude((yield* KinPulse.tick(orgId, at + 4 * MINUTE)).woken, third!.key);
+        yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'r-INV-22'`;
+
         // Explained, voided or paid, it is no longer told.
         yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id IN ('r-BNK-2', 'r-BNK-3')`;
         assert.isEmpty(yield* seen());
         yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id IN ('r-BNK-2', 'r-BNK-3')`;
-        assert.lengthOf(yield* seen(), 1);
+        assert.lengthOf(yield* seen(), 2);
         yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'r-INV-20'`;
         assert.isEmpty(yield* seen());
         yield* sql`UPDATE kin_records SET state = 'waiting' WHERE record_id = 'r-INV-20'`;
         yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
-          currency, paid_on, origin_key, created_at, created_by_kind)
-        VALUES (${orgId}, 'pay-20', 'r-INV-20', 95_000_00, 'INR', '2026-11-09', 'pay-20', 0,
-          'person')`;
+            currency, paid_on, origin_key, created_at, created_by_kind)
+          VALUES (${orgId}, 'pay-20', 'r-INV-20', 95_000_00, 'INR', '2026-11-09', 'pay-20', 0,
+            'person')`;
         assert.isEmpty(yield* seen());
+
+        // Two ₹50,000 invoices, one credit: once one of them is marked paid by hand, the credit
+        // may be that money, so it is not called the other's payment.
+        yield* invoice("INV-30", 50_000, B + DAY, "INV/26-27/030");
+        yield* invoice("INV-31", 50_000, B + DAY, "INV/26-27/031");
+        yield* credit("BNK-9", 50_000, 9, "NEFT CR-HARBOURLINE LOGISTICS");
+        assert.match((yield* factOf("BNK-9"))!.consequence, /fits 2 open invoices equally/);
+        yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
+            currency, paid_on, origin_key, created_at, created_by_kind)
+          VALUES (${orgId}, 'pay-30', 'r-INV-30', 50_000_00, 'INR', '2026-11-10', 'pay-30', 0,
+            'person')`;
+        assert.isUndefined(yield* factOf("BNK-9"));
       }).pipe(Effect.provide(layer)),
   );
 

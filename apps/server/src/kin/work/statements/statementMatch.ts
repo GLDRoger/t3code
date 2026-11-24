@@ -276,9 +276,18 @@ const invoiceCandidate = (
   };
 };
 
-/** The best candidate is the answer on its own, as a statement's review groups it "matched". */
-export const clearlyFirst = (best: number, next: number | undefined) =>
-  best >= CONFIDENT && (next === undefined || best - next >= MARGIN);
+/**
+ * The candidates a statement's review keeps level with the best: within the margin that decides
+ * whether one is the answer on its own. Scores best first.
+ */
+export const levelWithBest = <A>(ranked: ReadonlyArray<A>, score: (one: A) => number) =>
+  ranked.filter((one) => score(ranked[0]!) - score(one) < MARGIN);
+
+/** Whether the matcher takes a credit for money already recorded on an invoice, as a review does. */
+export const paymentOffer = (row: StatementRow, payment: PaymentCandidate, currency: string) => {
+  const offered = paymentCandidate(row, payment, currency);
+  return offered === undefined || offered.score < PROPOSED ? undefined : offered;
+};
 
 /**
  * Whether the matcher would offer `invoice` for one bank row, as it does on a statement's review:

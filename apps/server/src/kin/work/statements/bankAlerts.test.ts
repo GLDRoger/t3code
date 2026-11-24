@@ -544,10 +544,11 @@ it.layer(layer)((it) => {
       const groups = yield* creditMatches(org);
       assert.deepStrictEqual(
         groups.map((group) => ({
-          clear: group.clear,
-          pairs: group.pairs.map((pair) => [pair.credit.key, pair.invoice.key, pair.reason]),
+          credit: group.credit.key,
+          first: group.first.map((pair) => [pair.invoice.key, pair.reason]),
+          recorded: group.recorded,
         })),
-        [{ clear: true, pairs: [["BNK-1", "INV-4", "cites 26-27/004"]] }],
+        [{ credit: "BNK-1", first: [["INV-4", "cites 26-27/004"]], recorded: undefined }],
       );
     }),
   );

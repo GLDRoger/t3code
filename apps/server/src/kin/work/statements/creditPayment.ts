@@ -2,96 +2,146 @@ import { KinChatError, type KinChoiceOutcome, type KinOrgId } from "@t3tools/con
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { retell } from "../../pulse/KinPulse.ts";
 import type { CardDraw, PaymentPlan } from "../../widgets/cardPlans.ts";
 import type { KinRecords, Writer } from "../KinRecords.ts";
 import { formatMoney } from "../money.ts";
-import { bankStates, findBankList } from "./bankList.ts";
+import { byNumber, recordName } from "../recordRows.ts";
+import { BANK_CREDIT_ORIGIN, bankStates, findBankList } from "./bankList.ts";
 import { shortDay } from "./bankKnown.ts";
-import { creditOffer } from "./invoiceCredits.ts";
+import { agentWrote, creditMatch, type CreditPair } from "./invoiceCredits.ts";
 
 /**
  * A `kin_ask` option that records a Bank transactions credit as an invoice's payment: drawn only
- * for a pair the statement matcher offers, run only by an owner-level tap while the credit and the
- * invoice are as drawn, with the same writes a statement's Confirm makes for one row.
+ * for the invoice the statement matcher ranks first for that credit, run only by an owner-level
+ * tap while the credit and the invoice are as drawn, with the writes a statement's Confirm makes
+ * for one row. Every word the card shows is Kin's, from the records.
  */
 
 const refuse = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const NOTHING_ASKED = "Nothing was asked; tell the owner what you see instead.";
 
 const keyRow = Effect.fn("KinCreditPayment.keyRow")(function* (orgId: KinOrgId, key: string) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ recordId: string; registerId: string; key: string; title: string }>`
-    SELECT record_id AS "recordId", register_id AS "registerId", key, title FROM kin_records
+  const [row] = yield* sql<{ recordId: string; registerId: string; key: string }>`
+    SELECT record_id AS "recordId", register_id AS "registerId", key FROM kin_records
     WHERE org_id = ${orgId} AND key = ${key.toUpperCase()}`;
   return row;
 });
+
+const targetOf = (bankKey: string, pair: CreditPair) => `"${bankKey} ${pair.invoice.key}"`;
+const names = (pairs: ReadonlyArray<CreditPair>) =>
+  pairs.map((pair) => recordName(pair.invoice.key, pair.invoice.number)).join(" and ");
 
 export const drawPayment = Effect.fn("KinCreditPayment.draw")(function* (
   orgId: KinOrgId,
   target: string,
   draw: CardDraw,
 ) {
-  const [bankKey, invoiceKey, ...extra] = target.trim().split(/\s+/);
-  if (bankKey === undefined || invoiceKey === undefined || extra.length > 0)
+  const [bankKey, invoiceWord, ...extra] = target.trim().split(/\s+/);
+  if (bankKey === undefined || bankKey === "" || extra.length > 0)
     return yield* refuse(
-      "record_payment's target is a Bank transactions credit's key, a space, then an invoice's key, such as BNK-1 INV-1.",
+      "record_payment's target is a Bank transactions credit's key, alone or followed by a space and an invoice's key or number, such as BNK-1 or BNK-1 INV-1.",
     );
   const def = yield* findBankList(orgId);
   const bank = yield* keyRow(orgId, bankKey);
-  const invoice = yield* keyRow(orgId, invoiceKey);
   if (bank === undefined || def === undefined || bank.registerId !== def.id)
     return yield* new KinChatError({
       reason: "not_found",
       message: `No Bank transactions entry ${bankKey.slice(0, 40)}.`,
     });
-  if (invoice === undefined || invoice.registerId !== "invoices")
-    return yield* new KinChatError({
-      reason: "not_found",
-      message: `No invoice ${invoiceKey.slice(0, 40)}.`,
-    });
-  const pair = yield* creditOffer(orgId, bank.recordId, invoice.recordId);
-  if (pair === undefined)
+  if (yield* agentWrote(orgId, bank.recordId))
     return yield* refuse(
-      `Kin doesn't offer ${bank.key} as ${invoice.key}'s payment: a card records only an unexplained credit that Kin's bank matching takes for an issued invoice's payment. Nothing was asked; tell the owner what you see instead.`,
+      `${bank.key} was written or changed by an agent, so Kin can't take it as the bank's word that money came in. ${NOTHING_ASKED} A person can record the payment on the invoice.`,
     );
+  const match = yield* creditMatch(orgId, bank.recordId);
+  if (match === undefined)
+    return yield* refuse(
+      `${bank.key} isn't an unexplained credit that Kin's bank matching takes for an open invoice's payment. ${NOTHING_ASKED}`,
+    );
+  if (match.recorded !== undefined)
+    return yield* refuse(
+      `${bank.key} may be the payment already recorded on ${match.recorded.key} on ${match.recorded.paidOn}, so Kin offers no card for it. ${NOTHING_ASKED}`,
+    );
+  const { first } = match;
+  let pair: CreditPair | undefined;
+  if (invoiceWord === undefined) {
+    if (first.length > 1)
+      return yield* refuse(
+        `${bank.key} fits ${names(first)} equally, so Kin can't pick one. Offer one option per invoice, with targets ${first.map((one) => targetOf(bank.key, one)).join(" and ")}.`,
+      );
+    pair = first[0];
+  } else {
+    const named = yield* keyRow(orgId, invoiceWord);
+    const invoice =
+      named?.registerId === "invoices"
+        ? named
+        : yield* Effect.map(byNumber(orgId, invoiceWord), (row) =>
+            row?.registerId === "invoices" ? row : undefined,
+          );
+    if (invoice === undefined)
+      return yield* new KinChatError({
+        reason: "not_found",
+        message: `No invoice ${invoiceWord.slice(0, 40)}.`,
+      });
+    pair = first.find((one) => one.invoice.recordId === invoice.recordId);
+    if (pair === undefined)
+      return yield* refuse(
+        `Kin ranks ${names(first)} first for ${bank.key}, not ${invoice.key}. Offer ${first.map((one) => targetOf(bank.key, one)).join(" and ")} instead.`,
+      );
+  }
+  const chosen = pair!;
+  const withheldMinor =
+    chosen.candidate.fit === "tds" && chosen.candidate.tdsMinor !== undefined
+      ? chosen.candidate.tdsMinor
+      : null;
   return {
     kind: "record_payment",
-    recordId: invoice.recordId,
-    key: invoice.key,
-    title: invoice.title,
-    seen: pair.invoice.seen,
+    recordId: chosen.invoice.recordId,
+    key: chosen.invoice.key,
+    title: chosen.invoice.title,
+    number: chosen.invoice.number ?? chosen.invoice.key,
+    client: chosen.invoice.client,
+    seen: chosen.invoice.seen,
     bankRecordId: bank.recordId,
     bankKey: bank.key,
-    rev: pair.credit.rev,
-    amountMinor: pair.credit.amountMinor,
-    currency: pair.credit.currency,
-    day: pair.credit.date,
-    withheldMinor:
-      pair.candidate.fit === "tds" && pair.candidate.tdsMinor !== undefined
-        ? pair.candidate.tdsMinor
-        : null,
+    rev: chosen.credit.rev,
+    amountMinor: chosen.credit.amountMinor,
+    currency: chosen.credit.currency,
+    day: chosen.credit.date,
+    withheldMinor,
+    owedAfterMinor:
+      chosen.invoice.amountMinor -
+      chosen.invoice.paidMinor -
+      chosen.credit.amountMinor -
+      (withheldMinor ?? 0),
     draw,
   } satisfies PaymentPlan;
 });
 
-const quoted = (text: string) => {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return `“${flat.length <= 80 ? flat : `${flat.slice(0, 79)}…`}”`;
-};
-const received = (plan: PaymentPlan) =>
-  `${formatMoney({ minor: plan.amountMinor, currency: plan.currency })} received ${shortDay(plan.day)} (${plan.bankKey})`;
-const withheld = (plan: PaymentPlan) =>
-  plan.withheldMinor === null
-    ? ""
-    : `, with ${formatMoney({ minor: plan.withheldMinor, currency: plan.currency })} of tax the client withheld`;
+const money = (plan: PaymentPlan, minor: number) => formatMoney({ minor, currency: plan.currency });
+const what = (plan: PaymentPlan) =>
+  `${money(plan, plan.amountMinor)} received ${shortDay(plan.day)} (${plan.bankKey}) as the payment of ${plan.number}${
+    plan.client === null ? "" : ` from ${plan.client}`
+  }${
+    plan.withheldMinor === null
+      ? ""
+      : `, with ${money(plan, plan.withheldMinor)} of tax the client withheld`
+  }`;
 
 export const paymentLabel = (plan: PaymentPlan) =>
-  `Record ${plan.bankKey} as ${plan.key}'s payment`;
+  `Record ${money(plan, plan.amountMinor)} for ${plan.number}`;
 export const paymentLine = (plan: PaymentPlan) =>
-  `Record ${received(plan)} as ${plan.key} ${quoted(plan.title)}'s payment${withheld(plan)}`;
+  `Record ${what(plan)}; ${
+    plan.owedAfterMinor <= 0
+      ? "it settles the invoice in full"
+      : `${money(plan, plan.owedAfterMinor)} stays owed on it`
+  }`;
 
 /**
  * The tap's writes, as `person`: the payment (and the tax withheld) on the invoice, the credit
- * explained, each linked to the other. A changed credit or invoice since the draw does nothing.
+ * explained, each linked to the other. A credit or invoice changed since the draw records nothing,
+ * and its fact is told again on the next pass if it still holds.
  */
 export const recordPayment = Effect.fn("KinCreditPayment.record")(function* (
   orgId: KinOrgId,
@@ -100,17 +150,22 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(function* (
   widgetId: string,
   records: KinRecords["Service"],
 ) {
-  const pair = yield* creditOffer(orgId, plan.bankRecordId, plan.recordId);
+  const match = yield* creditMatch(orgId, plan.bankRecordId);
+  const pair = match?.first.find((one) => one.invoice.recordId === plan.recordId);
   const def = yield* findBankList(orgId);
   if (
+    match === undefined ||
+    match.recorded !== undefined ||
     pair === undefined ||
     def === undefined ||
     pair.credit.rev !== plan.rev ||
     pair.invoice.seen !== plan.seen ||
     (pair.candidate.fit === "tds" ? (pair.candidate.tdsMinor ?? null) : null) !== plan.withheldMinor
-  )
+  ) {
+    yield* retell(orgId, `payment_seen:${plan.bankKey}`);
     return undefined;
-  const origin = `card:${widgetId}:${plan.bankRecordId}`;
+  }
+  const origin = `${BANK_CREDIT_ORIGIN}${plan.bankRecordId}:${widgetId}`;
   yield* records.pay(orgId, writer, plan.key, {
     amount: { minor: plan.amountMinor, currency: plan.currency },
     paidOn: plan.day,
@@ -149,6 +204,10 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(function* (
   });
   return {
     title: "Payment recorded",
-    text: `Recorded ${received(plan)} as ${plan.key} ${quoted(plan.title)}'s payment${withheld(plan)}. ${plan.bankKey} is explained in Bank transactions.`,
+    text: `Recorded ${what(plan)}; ${
+      plan.owedAfterMinor <= 0
+        ? "the invoice is paid in full"
+        : `${money(plan, plan.owedAfterMinor)} is still owed on it`
+    }. ${plan.bankKey} is explained in Bank transactions.`,
   } satisfies KinChoiceOutcome;
 });

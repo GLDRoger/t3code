@@ -1,12 +1,17 @@
-import { formatKinWhen, KIN_TEXT_LOCALE } from "@t3tools/contracts";
+import { formatKinWhen, KIN_TEXT_LOCALE, KinRecordId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { dayIn, formatMoneyPlain, monthOf, shiftMonth } from "../../work/money.ts";
-import { endOfDay, owedInvoices, startOfDay } from "../../work/recordRows.ts";
+import { endOfDay, owedInvoices, recordName, startOfDay } from "../../work/recordRows.ts";
 import { bankKnown, shortDay } from "../../work/statements/bankKnown.ts";
-import { type CreditPair, creditMatches } from "../../work/statements/invoiceCredits.ts";
+import {
+  type CreditMatch,
+  type CreditPair,
+  creditMatches,
+  pairReason,
+} from "../../work/statements/invoiceCredits.ts";
 import { DAY_MS, threshold } from "../thresholds.ts";
 import {
   agentOrOwner,
@@ -120,78 +125,110 @@ export const statementSenses = Effect.fn("KinPulse.statementSenses")(function* (
 });
 
 const CONSEQUENCE_MAX = 500;
-const KEY_MAX = 300;
-const creditText = (pair: CreditPair) =>
-  `${pair.credit.key}, ${formatMoneyPlain({ minor: pair.credit.amountMinor, currency: pair.credit.currency })} received ${shortDay(pair.credit.date)}`;
-const pairText = (pair: CreditPair) =>
-  `${pair.credit.key} (${formatMoneyPlain({ minor: pair.credit.amountMinor, currency: pair.credit.currency })}, ${shortDay(pair.credit.date)}) for ${pair.invoice.key}: ${pair.reason}`;
+const plain = (minor: number, currency: string) => formatMoneyPlain({ minor, currency });
+const creditText = (credit: CreditMatch["credit"]) =>
+  `${credit.key}, ${plain(credit.amountMinor, credit.currency)} received ${shortDay(credit.date)}`;
+const invoiceText = (pair: CreditPair) =>
+  `${recordName(pair.invoice.key, pair.invoice.number)}: ${pairReason(pair)}`;
 
-/** The most pairs that fit in a consequence, the rest counted. */
-const fitted = (lead: string, pairs: ReadonlyArray<CreditPair>, tail: string) => {
-  for (let shown = pairs.length; shown > 0; shown--) {
-    const more = pairs.length - shown;
-    const text = `${lead}${pairs
-      .slice(0, shown)
-      .map(pairText)
-      .join("; ")}${more === 0 ? "" : `; and ${more} more`}.${tail}`;
+/** The most items that fit in a consequence, the rest counted. */
+const fitted = (build: (shown: number) => string, count: number) => {
+  for (let shown = count; shown > 0; shown--) {
+    const text = build(shown);
     if (text.length <= CONSEQUENCE_MAX) return text;
   }
-  return `${lead}${pairs.length} pairs.${tail}`;
+  return build(0);
 };
+const listed = (items: ReadonlyArray<string>, shown: number) =>
+  `${items.slice(0, shown).join("; ")}${items.length > shown ? `${shown > 0 ? "; " : ""}and ${items.length - shown} more` : ""}`;
 
 /**
- * payment_seen: an unexplained credit in Bank transactions that the statement matcher offers as an
- * open invoice's payment, about that invoice. Credits and invoices that fit each other are one
- * fact, keyed by every pair, so a new pair is told again with all of them; Kin records nothing.
+ * payment_seen: an unexplained credit in Bank transactions, no agent's entry, that the statement
+ * matcher offers as an open invoice's payment. One fact per credit, so a mark on it holds whatever
+ * invoices come and go. About the invoice ranked first alone; when several rank level, about the
+ * credit itself, with no client. Kin records nothing, and a credit that may be money already
+ * recorded on an invoice is not raised.
  */
 export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(function* (
   ctx: SenseContext,
 ) {
-  const groups = yield* creditMatches(ctx.orgId);
-  if (groups.length === 0) return [];
+  const matches = (yield* creditMatches(ctx.orgId)).filter((one) => one.recorded === undefined);
+  if (matches.length === 0) return [];
   const sql = yield* SqlClient.SqlClient;
-  const ids = [...new Set(groups.map((group) => group.pairs[0]!.invoice.recordId))];
+  const ids = [
+    ...new Set(
+      matches.flatMap((one) => (one.first.length === 1 ? [one.first[0]!.invoice.recordId] : [])),
+    ),
+  ];
   const rows = new Map(
-    (yield* sql<EntryRow>`SELECT ${entryColumns(sql)} FROM ${entryJoins(sql)}
-      WHERE r.org_id = ${ctx.orgId} AND r.record_id IN ${sql.in(ids)}
-      ORDER BY r.key`).map((row) => [row.recordId, row]),
+    ids.length === 0
+      ? []
+      : (yield* sql<EntryRow>`SELECT ${entryColumns(sql)} FROM ${entryJoins(sql)}
+          WHERE r.org_id = ${ctx.orgId} AND r.record_id IN ${sql.in(ids)}
+          ORDER BY r.key`).map((row) => [row.recordId, row]),
   );
-  return groups.flatMap(({ pairs, clear }): Array<SensedFact> => {
-    const [first, ...rest] = pairs;
-    const row = rows.get(first!.invoice.recordId);
+  return matches.flatMap(({ credit, ranked, first }): Array<SensedFact> => {
+    const shared = {
+      sense: "payment_seen" as const,
+      family: "money" as const,
+      key: `payment_seen:${credit.key}`,
+      since: iso(Math.min(credit.dateAt, ctx.at)),
+      actor: agentOrOwner(ctx.finance),
+      sensitive: true,
+      wake: "now" as const,
+      // Bank transactions lives in Money: with Money off, nothing about it is told.
+      extraSection: "money" as const,
+    };
+    if (first.length > 1)
+      return [
+        {
+          ...shared,
+          subject: {
+            kind: "record",
+            key: credit.key,
+            title: "Bank credit",
+            recordId: KinRecordId.make(credit.recordId),
+          },
+          scope: {},
+          consequence: fitted(
+            (shown) =>
+              `${creditText(credit)}, fits ${first.length} open invoices equally, and Kin can't tell which: ${listed(first.map(invoiceText), shown)}. Nothing is recorded until the owner says which.`,
+            first.length,
+          ),
+        },
+      ];
+    const best = first[0]!;
+    const row = rows.get(best.invoice.recordId);
     if (row === undefined) return [];
-    const tail = clear
-      ? " It isn't recorded as paid until the owner confirms."
-      : " Nothing is recorded until the owner says which.";
-    const consequence = clear
-      ? rest.length === 0
-        ? `${creditText(first!)}, looks like this invoice's payment: ${first!.reason}.${tail}`
-        : fitted(
-            `${creditText(first!)}, looks like this invoice's payment: ${first!.reason}. It also fits, less closely: `,
-            rest,
-            tail,
-          )
-      : fitted("More than one fits, and Kin can't tell which: ", pairs, tail);
-    let key = "payment_seen:";
-    for (const pair of pairs) {
-      const next = `${key === "payment_seen:" ? "" : ","}${pair.credit.key}>${pair.invoice.key}`;
-      if (key.length + next.length > KEY_MAX) break;
-      key += next;
-    }
+    const others = ranked.slice(1).map(invoiceText);
+    const alongside = matches
+      .filter(
+        (one) =>
+          one.credit.recordId !== credit.recordId &&
+          one.first.some((pair) => pair.invoice.recordId === best.invoice.recordId),
+      )
+      .map(
+        (one) =>
+          `${one.credit.key} (${plain(one.credit.amountMinor, one.credit.currency)}, ${shortDay(one.credit.date)})`,
+      );
     return [
       {
-        sense: "payment_seen",
-        family: "money",
-        key,
+        ...shared,
         subject: entrySubject(row),
         scope: entryScope(row),
-        since: iso(Math.min(first!.credit.dateAt, ctx.at)),
-        consequence,
-        actor: agentOrOwner(ctx.finance),
-        sensitive: true,
-        wake: "now",
-        // Bank transactions lives in Money: with Money off, nothing about it is told.
-        extraSection: "money",
+        consequence: fitted(
+          (shown) =>
+            `${creditText(credit)}, looks like this invoice's payment: ${pairReason(best)}.${
+              others.length === 0
+                ? ""
+                : ` It also fits, less closely: ${listed(others, Math.min(shown, others.length))}.`
+            }${
+              alongside.length === 0
+                ? ""
+                : ` ${listed(alongside, Math.min(shown, alongside.length))} ${alongside.length === 1 ? "fits" : "fit"} this invoice as well.`
+            } It isn't recorded as paid until the owner confirms.`,
+          Math.max(others.length, alongside.length),
+        ),
       },
     ];
   });
