@@ -216,7 +216,7 @@ export const ASK_CLOSED = {
 export const OFFERED = "The owner will see a card to connect it.";
 /** A shared turn's refusal when the one person it is for has no mailbox of their own connected. */
 export const NO_OWN_MAILBOX =
-  "No mailbox of theirs is connected, so nothing can be read or sent from one here. They can connect their own in Settings › Connections › Your mailbox; until then, write the mail as a doc under the client with draft kind mail.";
+  "No mailbox of theirs is connected, so nothing can be read or sent from one here. They can connect their own in Settings › Connections › Your mailboxes; until then, write the mail as a doc under the client with draft kind mail.";
 /** A card from a person's own mailbox: theirs alone to Confirm. */
 export const ASKED_OWN =
   "Nothing was sent. They see a card with exactly this, from their own mailbox; their tap on Confirm sends it. Tell them in one short line to check the card. A typed yes doesn't send it.";
