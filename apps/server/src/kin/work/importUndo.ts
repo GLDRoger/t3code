@@ -1,4 +1,4 @@
-import { KinChatError, type KinOrgId, type KinPersonId } from "@t3tools/contracts";
+import { KinChatError, type KinOrgId, type KinPersonId, KinRecordState } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -31,6 +31,8 @@ const Fill = Schema.Struct({
       notes: Schema.Boolean,
       changed: Schema.optional(Schema.Boolean),
       voided: Schema.optional(Schema.Boolean),
+      /** The state a list without numbering had before the void, which undo puts back. */
+      from: Schema.optional(KinRecordState),
     }),
   ),
 });
@@ -265,6 +267,9 @@ const decide = Effect.fn("KinImport.undoPlan")(function* (
                 notes: before.entry.notes || entry.notes,
                 changed: before.entry.changed === true || fill.rev !== before.rev + 1,
                 ...(before.entry.voided === true || entry.voided === true ? { voided: true } : {}),
+                ...((before.entry.from ?? entry.from) === undefined
+                  ? {}
+                  : { from: before.entry.from ?? entry.from }),
               },
             },
       );
@@ -404,9 +409,22 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
             },
             fill.rev,
           );
-        // The owner's Undo void tap's own method: back to owed, or paid, with its number.
+        // Undo void's own method for a numbered list; else the state picker's write, back as it was.
+        const from = fill.entry?.from;
         if (fill.entry?.voided === true)
-          yield* unvoidEntry(orgId, writer, fill.key).pipe(
+          yield* (
+            from === undefined
+              ? unvoidEntry(orgId, writer, fill.key)
+              : records
+                  .get(orgId, fill.key)
+                  .pipe(
+                    Effect.flatMap((now) =>
+                      now?.state === "dropped"
+                        ? records.update(orgId, writer, fill.key, { state: from })
+                        : Effect.void,
+                    ),
+                  )
+          ).pipe(
             Effect.catchTags({
               KinChatError: (error) =>
                 Effect.sync(() => {

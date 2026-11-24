@@ -95,8 +95,8 @@ In a person field, use a current teammate's person id or `"owner"` for yourself.
 which entries matched and which fields it would fill. Applying the file again leaves
 those fills as they are.
 
-Add `"void":true` to a `match` row to void that entry after any fills, as Void does in Kin, with
-the same rules.
+Add `"void":true` to a `match` row to void that entry after any fills, with the same rules as in
+Kin: Void on a numbered entry such as an invoice, or the list's Void state, as on an expense.
 
 ## Plan first, then apply
 

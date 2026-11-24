@@ -942,9 +942,16 @@ const make = Effect.gen(function* () {
             labels = [...filled.map(({ label }) => label), ...(filledNotes ? ["Notes"] : [])];
           }
           if (spec.void !== true) return { key: had.key, fields: labels };
-          // The owner's Void tap's own method, so its rules and refusals are the row's.
-          yield* voidEntry(orgId, writer, had.key).pipe(Effect.provideService(KinRecords, records));
-          if (had.state === "dropped" || (!keep && plannedVoids.has(had.key)))
+          const from = (yield* records.get(orgId, had.key))?.state ?? had.state;
+          // A numbered list's Void tap, else the state picker's own write: their rules are the row's.
+          const numbered = numberingOf(def) !== undefined;
+          if (numbered)
+            yield* voidEntry(orgId, writer, had.key).pipe(
+              Effect.provideService(KinRecords, records),
+            );
+          else if (from !== "dropped")
+            yield* records.update(orgId, writer, had.key, { state: "dropped" });
+          if (from === "dropped" || (!keep && plannedVoids.has(had.key)))
             return { key: had.key, fields: labels, void: "already" as const };
           const now = yield* records.get(orgId, had.key);
           if (now === undefined) return yield* invalid(`There is no entry ${spec.match}.`);
@@ -953,7 +960,7 @@ const make = Effect.gen(function* () {
             key: now.key,
             rev: now.rev,
             fields: [],
-            entry: { notes: false, voided: true },
+            entry: { notes: false, voided: true, ...(numbered ? {} : { from }) },
           });
           if (!keep) plannedVoids.add(had.key);
           return { key: had.key, fields: labels, void: "voids" as const };
