@@ -1260,6 +1260,19 @@ const make = Effect.gen(function* () {
           : { shared_from: from }),
       ...(sensitive || stored?.shared_by === undefined ? {} : { shared_by: stored.shared_by }),
     };
+    // Another lead's reminder changes only through kin_cancel, under its gate (`ownersOther`).
+    if (current._tag === "Some" && current.value.head.kind === "deferral") {
+      const [maker] =
+        current.value.head.source_event === undefined
+          ? []
+          : yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_events
+              WHERE org_id = ${ctx.orgId} AND event_id = ${current.value.head.source_event}
+              ORDER BY event_id`;
+      if (maker !== undefined && maker.agentId !== ctx.agentId)
+        return yield* invalid(
+          "Only the agent that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.",
+        );
+    }
     if (fields.kind === "deferral") {
       if (current._tag === "None" || current.value.head.kind !== "deferral")
         return yield* invalid(`${fields.id} is not a deferral. Use kin_defer to make one.`);

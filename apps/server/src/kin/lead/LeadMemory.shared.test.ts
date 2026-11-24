@@ -753,6 +753,7 @@ it.effect(
         }),
         body,
       });
+      const { source_event: _none, ...orphan } = reminder("def-orphan").head;
       state.items = [
         reminder("def-drop"),
         reminder("def-move"),
@@ -767,6 +768,12 @@ it.effect(
         reminder("def-strangers", {
           chat: KinChatId.make("stranger-chat"),
           source_event: KinEventId.make("set-by-lead-x"),
+        }),
+        reminder("def-routine", { every: { at: "09:00", days: [1] } }),
+        { head: orphan, body },
+        reminder("def-mine", {
+          chat: KinChatId.make("owner-chat"),
+          source_event: KinEventId.make(`event-${leads.o}`),
         }),
       ];
       yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
@@ -787,6 +794,21 @@ it.effect(
       WHERE org_id = ${orgId} AND chat_id = 'fin-chat' ORDER BY seq`;
       const notMine =
         "Only the agent that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.";
+      const rewrite = (itemId: string, change: Partial<MemoryItemHead>, op = "update") => {
+        const item = state.items.find((entry) => entry.head.id === itemId)!;
+        const {
+          orgId: _org,
+          path: _path,
+          source_event: _event,
+          sensitive: _s,
+          ...fields
+        } = item.head;
+        return decodeWrite({
+          op,
+          sourceEventId: "owner-said",
+          item: { ...fields, ...change, body: item.body, sensitive: true },
+        }).pipe(Effect.flatMap((input) => service.write(scopeOf(leads.o), input)));
+      };
 
       // The owner's search in his own turn names whose each reminder is.
       const found = yield* service.search(scopeOf(leads.o), { kind: "deferral" });
@@ -812,11 +834,26 @@ it.effect(
           (yield* Effect.flip(cancel(lead, "def-drop", `event-${lead}`))).message,
           SHARED_REFUSAL,
         );
-      // Not someone else's: a co-owner's own, a teammate's, a group's, another owner's agent's.
-      for (const itemId of ["def-coowners", "def-teammates", "def-group", "def-strangers"]) {
+      // Not someone else's (a co-owner's own, a teammate's, a group's, another owner's agent's), a
+      // routine, or one with no maker.
+      for (const itemId of [
+        "def-coowners",
+        "def-teammates",
+        "def-group",
+        "def-strangers",
+        "def-routine",
+        "def-orphan",
+      ]) {
         assert.strictEqual((yield* Effect.flip(cancel(leads.o, itemId))).message, notMine, itemId);
         assert.strictEqual((yield* Effect.flip(move(itemId))).message, notMine, itemId);
       }
+      // Nor through memory_write, on his word or not: marked cancelled or done, or invalidated.
+      for (const [change, op] of [
+        [{ status: "cancelled" }, "update"],
+        [{ status: "done" }, "update"],
+        [{ invalid_at: "2026-11-10T00:00:00+00:00" }, "invalidate"],
+      ] as const)
+        assert.strictEqual((yield* Effect.flip(rewrite("def-drop", change, op))).message, notMine);
       assert.lengthOf(staged, 0);
       assert.lengthOf(yield* told, 0);
 
@@ -834,6 +871,9 @@ it.effect(
           `${leads.o} replaced the reminder "Invented def-move" on Owner's word.`,
         ],
       );
+      // memory_write still changes a lead's own reminder, and one with no maker, as before.
+      yield* rewrite("def-mine", { status: "done" });
+      yield* rewrite("def-orphan", { status: "done" });
     }).pipe(Effect.provide(layer)),
 );
 
