@@ -67,6 +67,8 @@ export const KIN_BILLS = {
     kept: "Kept",
     dropped: "Dropped",
     unreadable: "Couldn't read this one",
+    /** Read cleanly, but its amount or date is the owner's to check. */
+    check: "Check this one",
     duplicate: (key: string, title: string) => `Looks like ${key} ${title}`.trim(),
   } as const,
   field: {
@@ -256,8 +258,10 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
 }
 
 function kinBillStateLabel(row: KinBillRow) {
-  return row.state === "duplicate"
-    ? KIN_BILLS.state.duplicate(row.duplicateOf?.key ?? "", row.duplicateOf?.title ?? "")
+  if (row.state === "duplicate")
+    return KIN_BILLS.state.duplicate(row.duplicateOf?.key ?? "", row.duplicateOf?.title ?? "");
+  return row.state === "unreadable" && row.readClean === true
+    ? KIN_BILLS.state.check
     : KIN_BILLS.state[row.state];
 }
 

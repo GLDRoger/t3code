@@ -96,7 +96,12 @@ describe("a bill on the review list", () => {
           ...(readClean ? { readClean } : {}),
         }),
       );
-      expect([view.problem, view.actions]).toEqual([problem, actions]);
+      // A clean read waiting on a check says so; only a bill not read says it couldn't be.
+      expect([view.label, view.problem, view.actions]).toEqual([
+        readClean ? "Check this one" : "Couldn't read this one",
+        problem,
+        actions,
+      ]);
     }
     expect(kinBillRowView(row({ state: "unreadable", problem: "It is for 0" })).problem).toBe(
       "It is for 0",
