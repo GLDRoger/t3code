@@ -231,7 +231,7 @@ export const OWN_CONFIRM_ONLY =
 export const MAILBOX_GONE = "The mailbox it would go from was disconnected, so nothing was sent.";
 /** Why a card closed when its mailbox moved (`moveMailbox`), to someone's own or the company's. */
 export const MAILBOX_MOVED = {
-  own: "The mailbox it would go from is now someone's own mailbox, so nothing was sent from it.",
+  own: "The mailbox it would go from is no longer the company's, so nothing was sent from it.",
   company: "The mailbox it would go from is now the company's, so nothing was sent from it.",
 } as const;
 const MOVE_MAIL_ONLY = "Only a Google or Microsoft mailbox can move. Nothing changed.";
@@ -239,7 +239,7 @@ export const MOVE_ADDRESS_TWICE = (address: string) =>
   `${address} is connected twice in Kin. Disconnect the other one first. Nothing changed.`;
 /** Kin keeps no record of who signed a company mailbox in, so only the owner takes one. */
 export const MOVE_OWNER_ONLY =
-  "Only the owner makes a company mailbox their own. If this is your personal account, disconnect it here and connect it again under Your mailboxes. Nothing changed.";
+  "Only the owner makes a company mailbox their own. If this is your personal account, remove it here and connect it again under Your mailboxes. Nothing changed.";
 export const MOVE_PAUSED =
   "This mailbox is paused. Resume it first, then make it your own. Nothing changed.";
 export const MONEY_CONFIRM =
