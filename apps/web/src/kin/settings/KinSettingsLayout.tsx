@@ -95,24 +95,28 @@ export function KinSettingsRow(props: {
   readonly openLabel?: string;
   /** Lets a long main text wrap instead of cutting it: a sentence, not a name. */
   readonly wrap?: boolean;
+  /** Several wide controls: they drop below the text when both don't fit, and the text breaks anywhere. */
+  readonly stack?: boolean;
   /** `useSearchableSetting(...).id`, so a settings search lands on this row. */
   readonly searchId?: string;
 }) {
-  const text = props.wrap === true ? "text-pretty" : "truncate";
+  const stack = props.stack === true;
+  const text =
+    props.wrap === true ? "text-pretty" : stack ? "[overflow-wrap:anywhere]" : "truncate";
   return (
     <div
       data-slot="kin-settings-row"
       id={props.searchId}
       tabIndex={props.searchId === undefined ? undefined : -1}
       // A found row rings inside the card, so the ring never covers the rows beside it.
-      className="relative flex min-h-12 items-center gap-3 px-4 py-2.5 outline-none first:rounded-t-xl last:rounded-b-xl has-[[data-kin-row-open]:hover]:bg-accent/50 data-[kin-setting-found]:ring-inset! data-[kin-setting-found]:ring-offset-0!"
+      className={`relative flex min-h-12 items-center gap-3 px-4 py-2.5 outline-none first:rounded-t-xl last:rounded-b-xl has-[[data-kin-row-open]:hover]:bg-accent/50 data-[kin-setting-found]:ring-inset! data-[kin-setting-found]:ring-offset-0!${stack ? " flex-wrap" : ""}`}
     >
       {props.leading === undefined ? null : (
         <span className="flex size-6 shrink-0 items-center justify-center text-muted-foreground">
           {props.leading}
         </span>
       )}
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+      <div className={`flex min-w-0 flex-1 flex-col gap-0.5${stack ? " basis-48" : ""}`}>
         {props.onOpen === undefined ? (
           <span className={`${text} text-sm font-medium text-foreground`}>{props.title}</span>
         ) : (
@@ -134,7 +138,9 @@ export function KinSettingsRow(props: {
         <span className="shrink-0">{props.status}</span>
       )}
       {props.control === undefined || props.control === null ? null : (
-        <div className="relative z-10 flex shrink-0 items-center gap-2">{props.control}</div>
+        <div className={`relative z-10 flex shrink-0 items-center gap-2${stack ? " ml-auto" : ""}`}>
+          {props.control}
+        </div>
       )}
       {props.onOpen === undefined ? null : (
         <ChevronRightIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />

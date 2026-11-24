@@ -13,11 +13,8 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
   const real = await importOriginal();
   const { AsyncResult, Atom } = await import("effect/reactivity");
   const allowed = Atom.make(true);
-  let asks = 0;
-  const view = Atom.make(0).pipe(Atom.keepAlive);
-  const mine = Atom.make((get) => {
-    get(view);
-    return AsyncResult.success({
+  const mine = Atom.make(() =>
+    AsyncResult.success({
       orgId: "org-1",
       mailbox:
         host.mailbox === null
@@ -28,18 +25,14 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
         { service: "microsoft", label: "Microsoft", ready: false },
       ],
       signInAddress: "https://kin.invented/oauth/return",
-    });
-  });
-  const bump = (registry: { readonly set: (atom: unknown, value: unknown) => void }) =>
-    registry.set(view, ++asks);
+    }),
+  );
+  // A member's host sends no "connections" refresh: the screen must read its list again itself.
   const command = <I,>(label: string, run: (input: I) => unknown) => ({
     label,
     permissionAtom: () => allowed,
-    run: async (registry: never, { input }: { readonly input: I }) => {
-      const value = run(input);
-      bump(registry);
-      return AsyncResult.success(value);
-    },
+    run: async (_registry: never, { input }: { readonly input: I }) =>
+      AsyncResult.success(run(input)),
   });
   return {
     ...real,

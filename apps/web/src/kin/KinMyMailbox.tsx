@@ -24,6 +24,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
 import { kinClient } from "./kinClient";
+import { useKinMe } from "./KinProfileSheet";
 import {
   KinSettingsLoadFailed,
   KinSettingsLoading,
@@ -105,6 +106,8 @@ export function KinMyMailbox(props: Target) {
     const done = await remove({ environmentId, input: { orgId, connectionId } });
     setBusy(false);
     if (!AsyncResult.isSuccess(done)) setProblem(kinFailureText(done, "disconnect your mailbox"));
+    // A member's screen hears no "connections" refresh, so it reads its own list again.
+    else reload();
   };
   const giveToCompany = async (connectionId: KinConnectionId) => {
     setBusy(true);
@@ -164,6 +167,7 @@ export function KinMyMailbox(props: Target) {
             return (
               <KinSettingsRow
                 key={mailbox.connectionId}
+                stack
                 title={mailbox.account ?? COPY.title}
                 detail={COPY.yours}
                 status={
@@ -232,6 +236,7 @@ export function KinMyMailbox(props: Target) {
               const done = await finish({ environmentId, input: { orgId, response } });
               if (!AsyncResult.isSuccess(done)) return kinFailureText(done, "finish the sign-in");
               setWaiting(null);
+              reload();
               return null;
             }}
           />
@@ -258,14 +263,17 @@ export function KinPeopleMailboxes(
   );
   const remove = useAtomCommand(kinClient.connectionRemove, { reportFailure: false });
   const [problem, setProblem] = useState<string | null>(null);
-  if (props.mailboxes.length === 0) return null;
+  const me = useKinMe(environmentId, orgId);
+  // The viewer's own are under Your mailboxes already.
+  const teammates = props.mailboxes.filter((mailbox) => mailbox.personId !== me);
+  if (teammates.length === 0) return null;
   return (
     <KinSettingsSection
       title={COPY.teammatesTitle}
       description={COPY.teammatesFooter}
       problem={problem}
     >
-      {props.mailboxes.map((mailbox) => (
+      {teammates.map((mailbox) => (
         <KinSettingsRow
           key={mailbox.connectionId}
           title={names.get(mailbox.personId) ?? mailbox.account ?? COPY.title}
