@@ -296,7 +296,8 @@ function InvoiceForm(
   const choices = clientsOn ? held : null;
   const clients = (choices?.clients ?? []).filter((one) => one.kind !== "vendor");
   const projects = choices?.projects ?? [];
-  const offered = kinBillToOffered(kinListsOf(useKinLists(props, { enabled: true })));
+  const listsRead = useKinLists(props, { enabled: true }).state;
+  const offered = listsRead._tag === "ready" && kinBillToOffered(listsRead.value);
   const india = kinIndiaFields(useKinCompanyCountry(props));
   const project = projects.find((one) => one.key === draft.project) ?? null;
   const projectClient = project?.party?.key ?? null;

@@ -304,7 +304,7 @@ const inRunningTurn = (body: string, tap = false) =>
 const askedAgain = (body: string) => Effect.andThen(TestClock.adjust(1_000), inRunningTurn(body));
 
 /** The owner's lead in India's zone, an invoices list, a client in another state, one invoice. */
-const seed = Effect.gen(function* () {
+const company = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   rendered.length = 0;
   shownCards.length = 0;
@@ -327,6 +327,10 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
       worker_projects_json, owner_chat_id)
     VALUES (${lead}, ${orgId}, 'Lead lead', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
+});
+
+const seed = Effect.gen(function* () {
+  yield* company;
   const asked = yield* turn(1, "Track invoices");
   yield* LeadMoney.define(scope, { sourceEventId: asked, template: "invoices" });
   yield* turn(2, "Yes");
@@ -1528,6 +1532,61 @@ describe("recipe documents", () => {
         again.preview?.map((one) => one.name),
         ["invoice.pdf"],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("bill a typed name on a company's first invoice and quote", () =>
+    Effect.gen(function* () {
+      yield* company;
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: 0,
+        legalName: "Sample Studio Private Limited",
+        gstin: "29AAAAA1111A1Z5",
+        placeOfSupply: "Karnataka",
+      });
+      const before = yield* OwnerMoney.lists(people, { orgId });
+      assert.deepStrictEqual(
+        [before.billToByName, before.lists.some((one) => one.list === "invoices")],
+        [true, false],
+      );
+      const made = yield* OwnerMoneyAnswers.newInvoice(
+        people,
+        yield* decodeInvoiceForm({
+          orgId,
+          title: "Saturday workshop",
+          lines: [{ description: "Workshop", sac: null, quantity: "1", rate: "₹10,000.00" }],
+          billTo: { name: "Asha Rao", address: "9 Invented Road", place: "29" },
+          clientRequestId: "first-invoice",
+        }),
+      );
+      assert.deepStrictEqual([made.invoice, made.problems], ["INV-1", []]);
+      const records = yield* KinRecords.KinRecords;
+      assert.include(JSON.parse((yield* records.get(orgId, "INV-1"))!.fieldsJson), {
+        billToName: "Asha Rao",
+        billToAddress: "9 Invented Road",
+      });
+      const quoted = yield* LeadWork.create(scope, {
+        sourceEventId: yield* turn(1, "Quote Meera Iyer for the workshop"),
+        records: [
+          {
+            list: "quotes",
+            title: "Workshop quote",
+            amount: "₹8,000",
+            fields: { billToName: "Meera Iyer", billToEmail: "meera@example.com" },
+          },
+        ],
+      });
+      const quote = (yield* records.get(orgId, quoted.records[0]!.key))!;
+      assert.isNull(quote.partyId);
+      assert.include(JSON.parse(quote.fieldsJson), { billToName: "Meera Iyer" });
+      const after = yield* OwnerMoney.lists(people, { orgId });
+      for (const list of ["invoices", "quotes"])
+        assert.includeMembers(
+          after.lists.find((one) => one.list === list)!.fields.map((field) => field.key),
+          ["billToName", "billToAddress", "billToTaxNumber", "billToPlace", "billToEmail"],
+          list,
+        );
     }).pipe(Effect.provide(layer)),
   );
 
