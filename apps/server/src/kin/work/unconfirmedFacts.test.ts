@@ -499,6 +499,29 @@ it.effect(
       const moved = yield* Effect.flip(answer(terms!.widgetId, ownerId, true));
       assert.isTrue(isChatError(moved) && moved.reason === "conflict");
       assert.strictEqual((yield* stored("C-2")).field("terms"), "Net 30, 15% late fee");
+      // A value the card can't show whole gets no card and no Use it: it waits on the record, cut,
+      // while the rest of the same call goes on the card as before.
+      const tail = " A late fee of 24% a month applies from the first day.";
+      const long = `Net 30. ${"Payment by bank transfer only. ".repeat(20)}`.slice(0, 600) + tail;
+      const fresh = "29BBBBB1111B1Z5";
+      const mixed = yield* LeadWork.update(scope, {
+        key: "C-1",
+        sourceEventId: yield* turn(null),
+        terms: long,
+        gstin: fresh,
+      });
+      assert.include(mixed.unconfirmed, "too long to confirm on a card");
+      const harbourline = (yield* stored("C-1")).row.recordId;
+      const [only, ...none] = (yield* cards).filter((one) => one.recordId === harbourline);
+      assert.lengthOf(none, 0);
+      assert.notInclude(only?.detail, "Terms");
+      assert.strictEqual((yield* answer(only!.widgetId, ownerId, true))?.title, "Saved");
+      assert.strictEqual((yield* stored("C-1")).gstin, fresh);
+      assert.isNull((yield* stored("C-1")).field("terms"));
+      const [waits, ...more2] = (yield* LeadWork.get(scope, { key: "C-1" })).unconfirmed ?? [];
+      assert.lengthOf(more2, 0);
+      assert.include(waits, `Unconfirmed Terms: "Net 30. Payment`);
+      assert.include(waits, `… (${tail.length} more characters)"`);
     }).pipe(Effect.provide(layer)),
 );
 

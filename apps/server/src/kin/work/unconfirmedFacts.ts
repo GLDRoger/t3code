@@ -4,6 +4,7 @@ import {
   type KinOrgId,
   KinPersonId,
   KinWakeupId,
+  type KinWidgetId,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
@@ -215,10 +216,31 @@ const awaits = Effect.fn("KinUnconfirmed.awaits")(function* (
   return rows.length > 0;
 });
 
+const fits = (item: Pick<UnconfirmedItem, "value">) =>
+  item.value === null || item.value.length <= SHOWN_MAX;
+
+/** A new row's id: a retry's own card-less row, else one this client's rows haven't used. */
+const rowId = Effect.fn("KinUnconfirmed.rowId")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  base: string,
+  retry: string | undefined,
+) {
+  if (retry !== undefined) return retry;
+  const sql = yield* SqlClient.SqlClient;
+  const [made] = yield* sql<{ taken: number; count: number }>`
+    SELECT COALESCE(SUM(change_id = ${base}), 0) AS taken, COUNT(*) AS count
+    FROM kin_profile_changes
+    WHERE org_id = ${orgId} AND substr(change_id, 1, 3) = ${UNCONFIRMED_CHANGE}
+      AND json_extract(patch_json, '$.recordId') = ${recordId}`;
+  return !made?.taken ? base : hashed(`${base}|${made.count}`);
+});
+
 /**
- * Keeps an agent's held-back values on the record as one unconfirmed proposal, and asks the person
- * who confirms on one card in their own chat with the agent. A newer proposal for the client takes
- * in the older one's other fields and replaces its card; the same values again ask nothing.
+ * Keeps an agent's held-back values on the record as unconfirmed, and asks the person who
+ * confirms on one card in their own chat with the agent. A newer proposal for the client takes in
+ * the older card's other fields and replaces it once its own card is shown; the same values again
+ * ask nothing. A value too long for the card to show whole waits on the record with no card.
  * Returns the line the agent's tool answer carries.
  */
 export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
@@ -237,54 +259,125 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
   const label = yield* labeller(orgId);
   const who = yield* confirmer(orgId, record);
   const name = who?.name ?? "the owner";
-  const what = held
-    .map((one) =>
-      one.value === null
-        ? `removing its ${label(one.field)}`
-        : `${label(one.field)} "${shown(one.value)}"`,
-    )
-    .join(" and ");
   const older = yield* pendingRows(orgId, record.recordId);
-  const latest = older.at(-1);
   // An item whose field changed since it was proposed is no longer asked.
   const live = (item: UnconfirmedItem) => same(holding(record, item.field), item.before);
-  if (
-    latest !== undefined &&
-    (yield* awaits(orgId, latest.widgetId, who?.personId)) &&
-    held.every((one) => latest.proposal.items.some((item) => live(item) && sameItem(item, one)))
-  )
-    return waitingLine(record.title, what, name, true);
   const stamp = yield* outsideStamp(lead);
   const from =
     heardFrom?.trim() ||
     (stamp === undefined ? null : renderSource(stamp, false, who?.personId)) ||
     null;
-  const items: ReadonlyArray<UnconfirmedItem> = [
-    ...(latest?.proposal.items ?? []).filter(
-      (item) => live(item) && !held.some((one) => one.field === item.field),
+  const store = (changeId: string, items: ReadonlyArray<UnconfirmedItem>) =>
+    Effect.gen(function* () {
+      const patch = yield* encodeProposal({ recordId: record.recordId, items });
+      yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id,
+          patch_json, base_rev, proposed_at)
+        VALUES (${orgId}, ${changeId}, ${lead.agentId}, ${lead.wakeupId}, ${patch}, 0, ${now})
+        ON CONFLICT (org_id, change_id) DO NOTHING`;
+    }).pipe(Effect.orDie);
+  const decline = (rows: ReadonlyArray<{ readonly changeId: string }>) =>
+    rows.length === 0
+      ? Effect.void
+      : sql`UPDATE kin_profile_changes SET declined_at = ${now}
+          WHERE org_id = ${orgId} AND change_id IN ${sql.in(rows.map((row) => row.changeId))}`.pipe(
+          Effect.asVoid,
+        );
+  const wake = `${orgId}|${lead.agentId}|${lead.wakeupId}|${record.recordId}`;
+  const heldField = (item: UnconfirmedItem) => held.some((one) => one.field === item.field);
+
+  // A value the card can't show whole waits on the record alone, one row each, and no tap writes it.
+  const long = held.filter((one) => !fits(one));
+  const stored: Array<string> = [];
+  for (const one of long) {
+    const items = [{ ...one, from, at: now }];
+    const key = itemsKey(items);
+    const retry = older.find((row) => itemsKey(row.proposal.items) === key)?.changeId;
+    const changeId = yield* rowId(orgId, record.recordId, hashed(`${wake}|long|${key}`), retry);
+    yield* store(changeId, items);
+    stored.push(changeId);
+  }
+  yield* decline(
+    older.filter(
+      (row) =>
+        !row.proposal.items.every(fits) &&
+        !stored.includes(row.changeId) &&
+        row.proposal.items.some(heldField),
     ),
-    ...held.map((one) => ({ ...one, from, at: now })),
+  );
+  const short = held.filter(fits);
+  const say = (carded: boolean) =>
+    [
+      ...(short.length === 0
+        ? []
+        : [
+            waitingLine(
+              record.title,
+              short
+                .map((one) =>
+                  one.value === null
+                    ? `removing its ${label(one.field)}`
+                    : `${label(one.field)} "${one.value}"`,
+                )
+                .join(" and "),
+              name,
+              carded,
+            ),
+          ]),
+      ...(long.length === 0
+        ? []
+        : [
+            tooLongLine(
+              record.title,
+              long.map((one) => label(one.field)),
+              name,
+            ),
+          ]),
+    ].join(" ");
+
+  const carded = older.filter((row) => row.proposal.items.every(fits));
+  const latest = carded.at(-1);
+  const asked = (latest?.proposal.items ?? []).filter(live);
+  const items: ReadonlyArray<UnconfirmedItem> = [
+    ...asked.filter((item) => !heldField(item)),
+    ...short.map((one) => ({ ...one, from, at: now })),
   ];
-  const patch = yield* encodeProposal({ recordId: record.recordId, items }).pipe(Effect.orDie);
+  const unchanged =
+    asked.length === items.length &&
+    short.every((one) => asked.some((item) => sameItem(item, one)));
+  if (
+    unchanged &&
+    (short.length === 0 ||
+      (latest !== undefined && (yield* awaits(orgId, latest.widgetId, who?.personId))))
+  )
+    return say(true);
+  const gate = Option.getOrUndefined(yield* Effect.serviceOption(KinLevelGate));
+  const closeAll = (by: KinWidgetId | undefined) =>
+    Effect.gen(function* () {
+      const replaced = carded.filter((row) => !stored.includes(row.changeId));
+      yield* decline(replaced);
+      const widgets = replaced.flatMap((row) => (row.widgetId === null ? [] : [row.widgetId]));
+      if (widgets.length > 0 && gate !== undefined)
+        yield* gate
+          .closeReplaced(lead, widgets, by)
+          .pipe(Effect.catchTags({ KinChatError: () => Effect.void }));
+    });
+  // Only values too long for a card, over every field the older card asked: it asks nothing now.
+  if (items.length === 0) {
+    yield* closeAll(undefined);
+    return say(true);
+  }
   const key = itemsKey(items);
-  const base = hashed(`${orgId}|${lead.agentId}|${lead.wakeupId}|${record.recordId}|${key}`);
-  const [made] = yield* sql<{ taken: number; count: number }>`
-    SELECT COALESCE(SUM(change_id = ${base}), 0) AS taken, COUNT(*) AS count
-    FROM kin_profile_changes
-    WHERE org_id = ${orgId} AND substr(change_id, 1, 3) = ${UNCONFIRMED_CHANGE}
-      AND json_extract(patch_json, '$.recordId') = ${record.recordId}`;
-  // A retry reuses its card-less row; the same items after a dead or answered card are a new one.
-  const changeId =
-    older.find((row) => row.widgetId === null && itemsKey(row.proposal.items) === key)?.changeId ??
-    (!made?.taken ? base : hashed(`${base}|${made.count}`));
-  yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id, patch_json,
-      base_rev, proposed_at)
-    VALUES (${orgId}, ${changeId}, ${lead.agentId}, ${lead.wakeupId}, ${patch}, 0, ${now})
-    ON CONFLICT (org_id, change_id) DO NOTHING`;
+  const changeId = yield* rowId(
+    orgId,
+    record.recordId,
+    hashed(`${wake}|${key}`),
+    carded.find((row) => row.widgetId === null && itemsKey(row.proposal.items) === key)?.changeId,
+  );
+  yield* store(changeId, items);
+  stored.push(changeId);
   const chatId =
     who === undefined ? undefined : yield* directChatWith(sql, orgId, who.personId, lead.agentId);
   // Tools without Kin's chat (an import, a test of the write alone) keep the value and ask in words.
-  const gate = Option.getOrUndefined(yield* Effect.serviceOption(KinLevelGate));
   const posted =
     who === undefined || chatId === undefined || gate === undefined
       ? undefined
@@ -313,19 +406,10 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
           )
           // The value is kept either way; a card that can't be shown now is asked for in words.
           .pipe(Effect.catchTags({ KinChatError: () => Effect.undefined }));
-  if (posted === undefined || "_tag" in posted || gate === undefined)
-    return waitingLine(record.title, what, name, false);
+  if (posted === undefined || "_tag" in posted) return say(false);
   // Only a card now shown replaces the older ones; until then the person keeps theirs.
-  const replaced = older.filter((row) => row.changeId !== changeId);
-  if (replaced.length > 0)
-    yield* sql`UPDATE kin_profile_changes SET declined_at = ${now}
-      WHERE org_id = ${orgId} AND change_id IN ${sql.in(replaced.map((row) => row.changeId))}`;
-  const widgets = replaced.flatMap((row) => (row.widgetId === null ? [] : [row.widgetId]));
-  if (widgets.length > 0)
-    yield* gate
-      .closeReplaced(lead, widgets, posted.widgetId)
-      .pipe(Effect.catchTags({ KinChatError: () => Effect.void }));
-  return waitingLine(record.title, what, name, true);
+  yield* closeAll(posted.widgetId);
+  return say(true);
 });
 
 const cardDetail = (
@@ -343,6 +427,9 @@ const cardDetail = (
     "Invoices and quotes print it only after you tap Use it.",
   ].join("\n\n");
 
+export const tooLongLine = (client: string, labels: ReadonlyArray<string>, name: string) =>
+  `Kept unconfirmed, not saved: the ${labels.join(" and ")} you gave ${labels.length === 1 ? "is" : "are"} too long to confirm on a card, so ${name} sets it on ${client}'s page. Until then ${client}'s invoices and quotes print what they had. Tell ${name} so in one line, and never give it as ${client}'s.`;
+
 export const waitingLine = (client: string, what: string, name: string, carded: boolean) =>
   carded
     ? `Kept unconfirmed, not saved: no one here typed ${what}, so ${name} confirms it on a card Kin showed them. Until they tap Use it, ${client}'s invoices and quotes print what they had. Say in one line it needs ${name}'s confirmation, and never give it as ${client}'s.`
@@ -356,8 +443,10 @@ export const unconfirmedLines = Effect.fn("KinUnconfirmed.lines")(function* (
   orgId: KinOrgId,
   record: Pick<RecordRow, "recordId" | "ownerKind" | "ownerId" | "title" | "fieldsJson">,
 ) {
-  const latest = (yield* pendingRows(orgId, record.recordId)).at(-1);
-  const waiting = (latest?.proposal.items ?? []).filter((item) =>
+  const newest = new Map<PrintedField, UnconfirmedItem>();
+  for (const row of yield* pendingRows(orgId, record.recordId))
+    for (const item of row.proposal.items) newest.set(item.field, item);
+  const waiting = [...newest.values()].filter((item) =>
     same(holding(record, item.field), item.before),
   );
   if (waiting.length === 0) return [];
