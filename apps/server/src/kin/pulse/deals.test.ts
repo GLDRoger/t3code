@@ -1118,29 +1118,47 @@ describe("the morning page's Money lines", () => {
     }).pipe(Effect.provide(chatLayer)),
   );
 
-  it.effect("shows eight of each, longest overdue first, then how many more and how much", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      yield* lists;
-      for (let n = 1; n <= 10; n++)
-        yield* money({
-          id: `INV-${n}`,
-          list: "invoices",
-          minor: n * 100_000,
-          currency: "COP",
-          dueAt: NOW - n * DAY,
-          sentAt: B,
-          number: `CT/${n}`,
-        });
-      const told = yield* lines();
-      assert.lengthOf(told, 9);
-      assert.match(
-        told[0] ?? "",
-        /^Corran Tiles owes COP\s1,000,000 on CT\/10, 10 days overdue\.$/,
-      );
-      // What is cut is the least overdue, and the cut says what it holds.
-      assert.match(told[8] ?? "", /^and 2 more overdue invoices, COP\s300,000 in all\.$/);
-    }).pipe(Effect.provide(chatLayer)),
+  it.effect(
+    "lists ten of each in full; past ten, eight, longest overdue first, then the rest",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* lists;
+        const sql = yield* SqlClient.SqlClient;
+        for (const count of [9, 10, 11]) {
+          yield* sql`DELETE FROM kin_records WHERE register_id IN ('invoices', 'quotes')`;
+          for (let n = 1; n <= count; n++) {
+            yield* money({
+              id: `INV-${n}`,
+              list: "invoices",
+              minor: n * 100_000,
+              currency: "COP",
+              dueAt: NOW - n * DAY,
+              sentAt: B,
+              number: `CT/${n}`,
+            });
+            yield* money({
+              id: `QT-${n}`,
+              list: "quotes",
+              minor: n * 1_000,
+              currency: "COP",
+              sentAt: NOW - (6 + n) * DAY,
+              number: `CQ/${n}`,
+            });
+          }
+          const told = yield* lines();
+          const invoices = told.filter((line) => line.includes("overdue"));
+          const quotes = told.filter((line) => line.includes("answered quote"));
+          assert.lengthOf(invoices, count > 10 ? 9 : count);
+          assert.lengthOf(quotes, count > 10 ? 9 : count);
+          assert.match(invoices[0] ?? "", new RegExp(`on CT/${count}, ${count} days overdue\\.$`));
+          if (count > 10) {
+            // What is cut is the least overdue and the most recently sent, and the cut says what it holds.
+            assert.match(invoices[8] ?? "", /^and 3 more overdue invoices, COP\s600,000 in all\.$/);
+            assert.match(quotes[8] ?? "", /^and 3 more unanswered quotes, COP\s6,000 in all\.$/);
+          } else assert.isFalse(told.some((line) => line.startsWith("and ")));
+        }
+      }).pipe(Effect.provide(chatLayer)),
   );
 
   it.effect("leaves out what is set aside until its day, and what the agent already said", () =>

@@ -17,6 +17,8 @@ import { thresholds, toMs } from "./thresholds.ts";
 import * as KinShell from "../shell/KinShell.ts";
 
 const MONEY_SHOWN = 8;
+/** A rest line that would stand for one or two entries saves nothing: they are listed instead. */
+const MONEY_SLACK = 2;
 /** Past its due date "today", else for how many calendar days. */
 const overdueText = (days: number) =>
   days === 0 ? "overdue since today" : `${daysText(days)} overdue`;
@@ -98,7 +100,7 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
     line: (entry: T) => string,
     rest: (count: number, cut: ReadonlyArray<T>) => string,
   ) =>
-    entries.length <= MONEY_SHOWN
+    entries.length <= MONEY_SHOWN + MONEY_SLACK
       ? entries.map(line)
       : [
           ...entries.slice(0, MONEY_SHOWN).map(line),
