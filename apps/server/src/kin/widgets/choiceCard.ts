@@ -115,6 +115,14 @@ export const readAs = (label: string) =>
     .toLowerCase();
 
 export const DETAIL_MAX = 2000;
+/** What is left of `detail` for the agent's words once Kin adds its action options' lines. */
+export const detailRoom = (options: ReadonlyArray<KinChoiceOption>) => {
+  const note = kinChoiceActionNote(options);
+  return note === "" ? DETAIL_MAX : DETAIL_MAX - note.length - 2;
+};
+/** Why `kin_ask` made no card: its detail would have to be cut. */
+export const detailTooLong = (length: number, room: number) =>
+  `detail is ${length.toLocaleString("en-US")} characters, and with the lines Kin adds for options with an action this card holds ${room.toLocaleString("en-US")} of it: shorten detail and ask again.`;
 /**
  * An option that runs an action shows the server's button and line and has no yes/no kind, so no
  * reaction can pick it. The lines are in `detail` too, for clients that don't read `action`.
@@ -131,7 +139,7 @@ export const choiceCardState = (input: AskInput): KinChoiceCardState => {
   });
   const note = kinChoiceActionNote(options);
   const own = input.detail === undefined || input.detail.trim() === "" ? null : input.detail;
-  const room = DETAIL_MAX - note.length - 2;
+  const room = detailRoom(options);
   const detail =
     note === ""
       ? own

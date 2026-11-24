@@ -2,7 +2,6 @@ import {
   type KinAgentId,
   KinChatError,
   type KinChatId,
-  KinChoiceCardState,
   KinChoiceOption,
   KinMessageId,
   type KinOrgId,
@@ -45,7 +44,8 @@ import { heldUntil } from "../triggers/quietHold.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { choiceCardState, DETAIL_MAX } from "../widgets/choiceCard.ts";
-import { draftOpening, OPENING_MAX } from "../work/draftOpening.ts";
+import { DOC_BODY_MAX } from "../work/docBody.ts";
+import { DRAFT_TEXT_MAX, draftOpening, OPENING_MAX } from "../work/draftOpening.ts";
 import { personSees, unreadableBy, viewVisible } from "../work/teamView.ts";
 import { declinedAsked } from "../work/unconfirmedFacts.ts";
 import {
@@ -88,7 +88,8 @@ export const AskPersonInput = Schema.Struct({
       Schema.Struct({ label: KinChoiceOption.fields.label, kind: KinChoiceOption.fields.kind }),
     ).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
   ),
-  detail: Schema.optional(KinText.check(Schema.isMaxLength(1800))),
+  // Longer than its card holds is refused in words with the way on (`tooLongForCard`).
+  detail: Schema.optional(KinText.check(Schema.isMaxLength(DOC_BODY_MAX))),
   by: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(10))),
   about: Schema.optional(
     Schema.Array(KinTrimmedText.check(Schema.isMaxLength(20))).check(Schema.isMaxLength(8)),
@@ -134,7 +135,18 @@ const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).dige
 /** Draft kinds a teammate files as her own card, which she sends up herself. */
 const CARD_KINDS: ReadonlyArray<StoredDraft["kind"]> = ["mail", "post"];
 const flat = (text: string) => text.replace(/\s+/g, " ").trim();
-const cardHolds = Schema.is(KinChoiceCardState.fields.detail);
+const count = (n: number) => n.toLocaleString("en-US");
+/**
+ * Why a card can't carry the agent's words whole beside `header` characters of Kin's own, and the
+ * way on, or `undefined` when it can: they are never cut. A draft's `owner` is who it goes up to.
+ */
+export const tooLongForCard = (length: number, header: number, owner: string | undefined) => {
+  const room = Math.min(DRAFT_TEXT_MAX, DETAIL_MAX - header);
+  if (length <= room) return undefined;
+  return owner === undefined
+    ? `detail is ${count(length)} characters, and this card holds at most ${count(room)} of it: shorten detail and ask again.`
+    : `This draft is ${count(length)} characters, and its card holds at most ${count(room)} of it: file it with doc_create and draft instead, which keeps it whole and puts it to ${owner} from there.`;
+};
 
 /** The same thing asked of the same person: one intent, and a record in common unless one names none. */
 const askedAgain = (
@@ -589,6 +601,21 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
       }
       if (sentUp === undefined && input.options === undefined)
         return yield* refuse("Give it 2 to 4 options.");
+      const by = askedBy(askerName, self.name);
+      // Asked after an outside read: the card says so, as much as its reader may see of it.
+      const read = turn === null ? undefined : yield* outsideStamp(turn);
+      const afterLine =
+        read === undefined ? "" : `\n\nAsked after reading: ${renderSource(read, targetOwnerSide)}`;
+      const plainDetail = `${by}${afterLine}${
+        input.detail === undefined || input.detail.trim() === "" ? "" : `\n\n${input.detail}`
+      }`;
+      // A long draft's opening is sized to its card below; anything else is the agent's whole words.
+      if (bound === undefined) {
+        const whole = sentUp === undefined ? plainDetail : `${draftDetail(by, sentUp)}${afterLine}`;
+        const own = (sentUp?.text ?? input.detail ?? "").length;
+        const why = tooLongForCard(own, whole.length - own, sentUp?.names.owner);
+        if (why !== undefined) return yield* refuse(why);
+      }
       // Their own direct chat with this agent: opening it is their own reach check (`Reach`).
       const unreached = new KinChatError({
         reason: "not_allowed",
@@ -731,11 +758,6 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         input.by === undefined ? undefined : namedDue(input.by, now, clock.zone, clock.work);
       if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
       const dueAt = named?.at ?? defaultDue(now, clock.zone, clock.work);
-      const by = askedBy(askerName, self.name);
-      // Asked after an outside read: the card says so, as much as its reader may see of it.
-      const read = turn === null ? undefined : yield* outsideStamp(turn);
-      const afterLine =
-        read === undefined ? "" : `\n\nAsked after reading: ${renderSource(read, targetOwnerSide)}`;
       // A long draft goes up as its opening, bound to its version (`isLongDraft`, by the caller);
       // how much of it the card has room for sets only the opening's length.
       if (sentUp !== undefined && bound !== undefined) {
@@ -754,21 +776,8 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         };
         draft = yield* encodeStoredDraft(sentUp);
       }
-      if (
-        redone !== null &&
-        sentUp !== undefined &&
-        !cardHolds(`${draftDetail(by, sentUp)}${afterLine}`)
-      )
-        return yield* refuse(
-          "With who asks and who it is for, this draft is too long for its card.",
-        );
       // A sent-up draft's card is Kin's from its stored payload: its line and its two buttons.
-      const detail =
-        sentUp !== undefined
-          ? `${draftDetail(by, sentUp)}${afterLine}`
-          : `${by}${afterLine}${
-              input.detail === undefined || input.detail.trim() === "" ? "" : `\n\n${input.detail}`
-            }`;
+      const detail = sentUp !== undefined ? `${draftDetail(by, sentUp)}${afterLine}` : plainDetail;
       const card = {
         question: flat(input.question),
         detail,
