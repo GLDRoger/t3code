@@ -269,7 +269,9 @@ describe("kinChatFeedView", () => {
     const shown = keys(feed());
     // After the mark at 2: message 3 is the owner's own, 4 is the lead's.
     const at = shown.findIndex((key) => key.includes("fixture-4"));
-    const view = feed({ newLine: { chatId: KIN_FIXTURE_CHAT_ID, mark: 2, upTo: 4 } });
+    const view = feed({
+      newLine: { chatId: KIN_FIXTURE_CHAT_ID, mark: 2, upTo: 4, opening: true },
+    });
     expect(keys(view)).toEqual([...shown.slice(0, at), "new-line", ...shown.slice(at)]);
     expect(view.rows[at]).toMatchObject({ type: "day", label: "New" });
     expect(view.newLineIndex).toBe(at);
