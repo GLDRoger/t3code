@@ -2102,8 +2102,8 @@ export class KinLeadPrompt extends Context.Service<
                   ),
                 ),
               );
-        // What this agent said here that no one has read yet; a check-in also looks at its other
-        // chats with the owner's side.
+        // What this agent said here that no one has answered or reacted to yet; a check-in also
+        // looks at its other chats with the owner's side.
         const unread =
           input.lane === undefined
             ? undefined
