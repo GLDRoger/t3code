@@ -1446,6 +1446,11 @@ it.effect("a due reminder wakes the agent that promised it, else the chief of st
     });
   const promised = made("def-p", "finance");
   const orphaned = made("def-q", "gone");
+  const started = makeDeferral("def-c", {
+    due: "2026-11-20T09:00+05:30",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-finance"),
+  });
   return Effect.gen(function* () {
     yield* setup();
     const sql = yield* SqlClient.SqlClient;
@@ -1489,7 +1494,13 @@ it.effect("a due reminder wakes the agent that promised it, else the chief of st
       { itemId: "def-p", agentId: "finance" },
       { itemId: "def-q", agentId: "chief" },
     ]);
-  }).pipe(Effect.provide(layerFor([promised, orphaned])));
+    // Armed once its chat was shared, a start's card goes to its maker's owner chat.
+    yield* sql`UPDATE kin_chats SET shared_at = 1 WHERE chat_id = 'group-a'`;
+    yield* service.syncItem(started);
+    const card = yield* sql<{ chatId: string }>`SELECT chat_id AS "chatId" FROM kin_messages
+      WHERE message_id = ${widgetFor("def-c")}`;
+    assert.deepStrictEqual(card, [{ chatId: "chat-finance" }]);
+  }).pipe(Effect.provide(layerFor([promised, orphaned, started])));
 });
 
 it.effect("a group's own reminder fires into the group as its agent, else to whoever asked", () => {
