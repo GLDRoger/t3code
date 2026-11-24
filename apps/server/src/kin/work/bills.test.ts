@@ -655,12 +655,27 @@ describe("bills in bulk", () => {
           ],
         );
         // What was read stays for the owner's own form, and reading it again would read the same.
+        // Each says which figure is hers to check, and none is counted as not read.
         assert.include(JSON.parse((yield* billRows)[0]!.readJson!), { amount: "1180000000" });
         assert.deepStrictEqual(
-          (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills.map(
-            (one) => one.readClean,
-          ),
-          [true, true, true, undefined, undefined],
+          (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills.map((one) => [
+            one.readClean,
+            one.check,
+          ]),
+          [
+            [true, "amount"],
+            [true, "date"],
+            [true, "date"],
+            [undefined, undefined],
+            [undefined, undefined],
+          ],
+        );
+        const checked = yield* card(added.batchId);
+        assert.strictEqual(checked.text, "5 bills: 2 read, 3 need a check.");
+        assert.deepInclude(checked.counts, { unreadable: 3, check: 3 });
+        assert.deepInclude(
+          (yield* Bills.list(as(rhea), { orgId })).batches[0]!.states,
+          { unreadable: 3, check: 3 },
         );
         const sql = yield* SqlClient.SqlClient;
         const suggested = sql<{ title: string; confirmed: number }>`SELECT title, confirmed
@@ -699,8 +714,12 @@ describe("bills in bulk", () => {
           { title: "Tidewater Freight, old account", confirmed: 1 },
         ]);
         assert.deepStrictEqual(
-          kept.skipped.map((one) => one.why),
-          Array.from({ length: 3 }, () => "It wasn't read cleanly."),
+          kept.skipped.map((one) => [one.why, one.check]),
+          [
+            ["Its amount needs a check.", true],
+            ["Its date needs a check.", true],
+            ["Its date needs a check.", true],
+          ],
         );
       }).pipe(Effect.provide(layer)),
   );

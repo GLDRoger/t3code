@@ -67,6 +67,8 @@ const BatchCounts = Schema.Struct({
   read: NonNegativeInt,
   duplicate: NonNegativeInt,
   unreadable: NonNegativeInt,
+  /** Of `unreadable`: read cleanly, with an amount or date the owner is to check. */
+  check: Schema.optional(NonNegativeInt),
   /** Files whose bytes were already added before, in this company. */
   already: NonNegativeInt,
 });
@@ -157,6 +159,8 @@ export const KinBillBatchSummary = Schema.Struct({
     dropped: NonNegativeInt,
     duplicate: NonNegativeInt,
     unreadable: NonNegativeInt,
+    /** Of `unreadable`: read cleanly, with an amount or date the owner is to check. */
+    check: Schema.optional(NonNegativeInt),
   }),
 });
 export type KinBillBatchSummary = typeof KinBillBatchSummary.Type;
@@ -175,6 +179,8 @@ export const KinBillRow = Schema.Struct({
    * again reads the same.
    */
   readClean: Schema.optional(Schema.Boolean),
+  /** With `readClean`: the figure the owner is to check. */
+  check: Schema.optional(Schema.Literals(["amount", "date"])),
   /** The suggested expense made for it, as it stands now. */
   expense: Schema.optional(
     Schema.Struct({ key: KinRecordKey, rev: NonNegativeInt, title: Schema.String }),
@@ -201,7 +207,13 @@ export type KinBillsKeepReadInput = typeof KinBillsKeepReadInput.Type;
 export const KinBillsKeepReadResult = Schema.Struct({
   kept: Schema.Array(KinRecordKey),
   skipped: Schema.Array(
-    Schema.Struct({ sha256: KinBillSha256, key: Schema.optional(KinRecordKey), why: Text }),
+    Schema.Struct({
+      sha256: KinBillSha256,
+      key: Schema.optional(KinRecordKey),
+      why: Text,
+      /** Read cleanly, left for the owner to check its amount or date. */
+      check: Schema.optional(Schema.Boolean),
+    }),
   ),
 });
 export type KinBillsKeepReadResult = typeof KinBillsKeepReadResult.Type;
