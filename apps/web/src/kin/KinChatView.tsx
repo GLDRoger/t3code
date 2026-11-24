@@ -107,7 +107,6 @@ import {
   type KeyboardEvent,
 } from "react";
 
-import { ComposerAttachButton } from "../components/chat/ComposerAttachmentStrip";
 import { shouldHandleComposerAttachmentPaste } from "../components/chat/composerAttachmentFiles";
 import { ExpandedImageDialogHost } from "../components/chat/ExpandedImageDialog";
 import { ComposerPrimaryActions } from "../components/chat/ComposerPrimaryActions";
@@ -132,6 +131,7 @@ import {
   KinComposerAttachmentStrip,
   kinPreviewKey,
   useKinComposerAttachments,
+  KinAttachButton,
 } from "./KinComposerAttachments";
 import { KinRestoreAgent, type KinAgentTarget } from "./KinAgentRetire";
 import { kinClient } from "./kinClient";
@@ -178,6 +178,7 @@ import { openKinSettings } from "./kinSettingsAddress";
 import { useKinProfiles } from "./kinPictures";
 import { kinDraftAtom, kinDraftKey, restoreDraft } from "./kinDraft";
 import { Skeleton } from "../components/ui/skeleton";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
 type InboxResult = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;
@@ -396,12 +397,10 @@ export function KinChatView(props: {
             screen.retired !== null
               ? null
               : (wakeupId) =>
-                  kinClient.leadInterrupt
-                    .run(appAtomRegistry, {
-                      environmentId: state.environmentId,
-                      input: { orgId: summary.orgId, wakeupId: wakeupId as KinWakeupId },
-                    })
-                    .then((result) => result._tag === "Success")
+                  runKinCommand(appAtomRegistry, kinClient.leadInterrupt, {
+                    environmentId: state.environmentId,
+                    input: { orgId: summary.orgId, wakeupId: wakeupId as KinWakeupId },
+                  }).then((result) => result._tag === "Success")
           }
           charter={screen.charter}
           setsUp={screen.setsUp}
@@ -692,12 +691,10 @@ function KinChatFeed(props: {
   const { connected, unread } = props;
   const focused = typeof document === "undefined" || document.visibilityState === "visible";
   const markRead = (seq: number) =>
-    kinClient.markRead
-      .run(appAtomRegistry, {
-        environmentId: props.environmentId,
-        input: { chatId: props.chatId, seq },
-      })
-      .then((result) => result._tag === "Success");
+    runKinCommand(appAtomRegistry, kinClient.markRead, {
+      environmentId: props.environmentId,
+      input: { chatId: props.chatId, seq },
+    }).then((result) => result._tag === "Success");
   const seesEnd = followsEnd && focused && connected && props.chat.live;
   const reading = useRef({ markRead, seesEnd, latestSeq, unread, connected, focused });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the host what the reader has seen, one call in flight at a time
@@ -1558,7 +1555,7 @@ function KinComposer(props: {
               <div className="flex items-center justify-between px-2 pb-2">
                 <div className="flex items-center">
                   {files.canAttach ? (
-                    <ComposerAttachButton
+                    <KinAttachButton
                       addComposerAttachments={(picked) => files.add(picked)}
                       focusComposer={() => textareaRef.current?.focus()}
                     />
