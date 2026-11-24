@@ -331,7 +331,7 @@ features:
     phone: [tab:chats, KinChat, card:Bills added]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [bills_add, bill_read]
-    note: The batch's card counts while Kin reads, and its Review opens the batch's list.
+    note: The batch's card counts while Kin reads, says when the reader's daily limit pauses it, and its Review opens the batch's list.
     proof:
       - apps/server/src/kin/work/bills.test.ts
       - packages/client-runtime/src/kin/kinBills.test.ts
@@ -673,7 +673,7 @@ features:
     phone: [tab:money, menu:Add, KinBillsAdd]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    note: On the phone from the photo library, Files or the camera. Each bill Kin reads becomes a suggested expense with its file.
+    note: On the phone from the photo library, Files or the camera. Each bill Kin reads becomes a suggested expense with its file. A file added before says so, with a link to its expense when that was dropped; a dismissed one is read again.
     proof:
       - packages/client-runtime/src/kin/kinBills.test.ts
       - apps/web/src/kin/KinBills.browser.test.tsx

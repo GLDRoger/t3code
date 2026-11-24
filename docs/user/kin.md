@@ -440,11 +440,12 @@ hosting", "the GST filing is due on the 20th". It records the entry and answers 
   reads each one in the background, and a card in your chat with the agent reading them (Finance,
   where the company has one) counts as it goes. A bill read cleanly becomes a _suggested_ expense
   with the photo or PDF as its receipt: it counts in no Money figure until you keep it. One that
-  looks like an expense already recorded, or that Kin couldn't read, is not added; it waits for you
-  on the batch's list, from the card's **Review** or **Bills added** on Expenses. There you keep,
-  edit or drop each one, or keep all that read cleanly at once; add a look-alike anyway; and type
-  one Kin couldn't read by hand, with its file already attached. A field Kin couldn't read stays
-  empty rather than guessed.
+  looks like an expense already recorded, that Kin couldn't read, or whose amount or date needs a
+  check, is not added; it waits for you on the batch's list, from the card's **Review** or **Bills
+  added** on Expenses. There you keep, edit or drop each one, or keep all that read cleanly at
+  once; add a look-alike anyway; and type one Kin couldn't read by hand, with its file already
+  attached. A field Kin couldn't read stays empty rather than guessed. A bill you dismissed is read
+  again if you add it again.
 - **Paid by a partner.** When a partner pays a company expense from their own money, set **Funded
   by** on the expense to that partner, in **Add → Expense** or on the expense itself. Leave it as
   **The company** when the company paid. Its **Reimbursement** reads **owed** until the company
