@@ -516,6 +516,10 @@ const make = Effect.gen(function* () {
         changes: checked.changes,
         merges: checked.dream?.merges ?? [],
         labels,
+        cited: checked.dream?.changes ?? [],
+        privateRefs: new Set(
+          material.entries.flatMap((entry) => (entry.sensitive === true ? [entry.ref] : [])),
+        ),
       });
       const findings = yield* scanner.scan({
         orgId,
