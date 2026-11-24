@@ -76,6 +76,7 @@ import {
   MORNING_RULE,
   checkInIndex,
   LEFT_RULE,
+  outsideText,
   PULSE_RULE,
 } from "../pulse/prompt.ts";
 import { leftGiven } from "../pulse/leftForCheckIn.ts";
@@ -1087,7 +1088,7 @@ export class KinLeadPrompt extends Context.Service<
                     }),
                   }),
                   true,
-                )}${startedAfterOutside ? `\n\n${DEFERRAL_AFTER_OUTSIDE}` : ""}`,
+                )}${startedAfterOutside ? `\n\n${DEFERRAL_AFTER_OUTSIDE}` : ""}${outsideText(event)}`,
               );
               continue;
             }
@@ -1095,7 +1096,9 @@ export class KinLeadPrompt extends Context.Service<
             const ids = memoryIds(event);
             const known = new Set<string>();
             for (const id of ids) if (Option.isSome(yield* admitted(id))) known.add(id);
-            events.push(quote(QUOTE_LABELS.eventData, sharedEventFacts(event, known), true));
+            events.push(
+              `${quote(QUOTE_LABELS.eventData, sharedEventFacts(event, known), true)}${outsideText(event)}`,
+            );
             continue;
           }
           const stored = yield* chat

@@ -24,7 +24,14 @@ import * as KinPulse from "./KinPulse.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
 import { holdIfQuiet } from "../triggers/quietHold.ts";
 import { inHoursAt, nudge } from "./nudge.ts";
-import { matchLines, type OutsideRead, type OutsideSource, poll } from "./outside.ts";
+import {
+  mailLine,
+  matchLines,
+  type OutsideRead,
+  type OutsideSource,
+  outsideKey,
+  poll,
+} from "./outside.ts";
 
 // Invented company, people, mail and calendar only; nothing here reads a real database or service.
 const orgId = KinOrgId.make("org");
@@ -798,6 +805,80 @@ describe("pulse check-ins", () => {
           ["t1:a", null],
         ],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it("a mail line carries its thread as the mail tools take it, under the key it always had", () => {
+    const line = mailLine("Google", "hello@tidewater.example", {
+      receivedBy: null,
+      threadId: "ft6",
+      date: "2026-11-16T09:01:00.000Z",
+      from: "Accounts <accounts@tidewater.example>",
+      subject: "Quote request",
+    });
+    assert.strictEqual(line.thread, "ft6");
+    assert.strictEqual(line.id, "ft6:2026-11-16T09:01:00.000Z");
+    // A deploy must not wake old mail again: the key stays what it was before `thread`.
+    assert.strictEqual(outsideKey(line), "outside:03618093cf4ec14b06257416aa53c24d");
+  });
+
+  it.effect("a check-in past its cap counts the mail it leaves out, its held slots' too", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* record({ key: "C-1", list: "clients", title: "Tidewater Freight" });
+      yield* record({
+        key: "CT-1",
+        list: "contacts",
+        title: "Arjun",
+        partyId: "r-C-1",
+        fields: '{"email":"arjun@tidewater.example"}',
+      });
+      const many = (prefix: string, count: number) =>
+        Array.from({ length: count }, (_, n) =>
+          mail(`${prefix}${n}:a`, `Migration <noreply-${n}@tidewater.example>`, "Synced"),
+        );
+      const matched = ["q1:a", "q2:a", "q3:a"].map((id) =>
+        mail(id, "Arjun <arjun@tidewater.example>", "Urgent quote"),
+      );
+      const listed = Effect.fn("test.listed")(function* (day: string) {
+        const events = yield* pulseEvents;
+        const parsed = JSON.parse(events.find((event) => event.key.endsWith(day))!.json);
+        return {
+          ids: (parsed.outside ?? []).map((line: KinPulseOutsideLine) => line.id),
+          notListed: parsed.outsideNotListed,
+        };
+      });
+      assert.include(yield* checkIn(SLOT, { lines: [...many("a", 67), ...matched], seen: [] }), {
+        _tag: "queued",
+        outside: 60,
+      });
+      const first = yield* listed("afternoon:2026-11-16");
+      assert.strictEqual(first.notListed, 10);
+      assert.includeMembers(first.ids, ["q1:a", "q2:a", "q3:a"]);
+      assert.include(yield* checkIn(SLOT + DAY, { lines: many("b", 60), seen: [] }), {
+        outside: 60,
+      });
+      assert.isUndefined((yield* listed("afternoon:2026-11-17")).notListed);
+      // Away until Friday: Wednesday's brief carries Tuesday's lines and what Tuesday's left out.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-20' WHERE person_id = ${owner}`;
+      const morning = (day: number, lines: ReadonlyArray<KinPulseOutsideLine>) =>
+        queueCheckIn({
+          orgId,
+          agentId: chief,
+          scheduleId: KinMemoryItemId.make("checkin-morning"),
+          title: "Morning brief",
+          what: "Check-in.",
+          dueAt: MONDAY + day * DAY + 9 * HOUR,
+          looseAt: null,
+          zone: "UTC",
+          at: MONDAY + day * DAY + 9 * HOUR,
+          outside: { lines, seen: [] },
+        });
+      yield* morning(1, many("c", 70));
+      assert.strictEqual((yield* listed("morning:2026-11-17")).notListed, 10);
+      yield* morning(2, many("d", 5));
+      assert.strictEqual((yield* listed("morning:2026-11-18")).notListed, 15);
     }).pipe(Effect.provide(layer)),
   );
 
