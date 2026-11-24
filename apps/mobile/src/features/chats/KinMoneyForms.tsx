@@ -166,6 +166,8 @@ function BillToFields(props: {
   readonly disabled: boolean;
   /** India's tax number and state, as the client form asks them. */
   readonly india: boolean;
+  /** The way back to the client picker, beside the name. */
+  readonly choice: React.ReactNode;
   readonly onChange: (patch: Partial<KinBillToDraft>) => void;
 }) {
   const [more, setMore] = useState(false);
@@ -181,6 +183,7 @@ function BillToFields(props: {
         disabled={disabled}
         onChangeText={(name) => props.onChange({ name })}
       />
+      {props.choice}
       {more ? (
         <>
           <KinWorkTextField
@@ -327,6 +330,7 @@ function InvoiceForm(
       gst: gst && tax.registered,
       clientRequestId: requestId,
       byName,
+      india,
     });
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);
@@ -336,6 +340,19 @@ function InvoiceForm(
       return setMade({ key: result.invoice, problems: result.problems });
     guard.leave(props, result.invoice);
   };
+  const choice = !clientsOn ? null : project?.party != null ? (
+    <Text textRole="footnote" className="px-2 text-foreground-muted">
+      {KIN_BILL_TO.projectBills(project.party.title)}
+    </Text>
+  ) : offered ? (
+    <Button
+      tone="secondary"
+      fullWidth
+      label={draft.byName ? KIN_BILL_TO.pickClient : KIN_BILL_TO.byName}
+      disabled={locked}
+      onPress={() => set({ byName: !draft.byName })}
+    />
+  ) : null;
   const shown = problem ?? saving.problem;
   return (
     <KinWorkFrame
@@ -374,6 +391,7 @@ function InvoiceForm(
           value={draft.billTo}
           disabled={locked}
           india={india}
+          choice={choice}
           onChange={(patch) => set({ billTo: { ...draft.billTo, ...patch } })}
         />
       ) : (
@@ -395,19 +413,7 @@ function InvoiceForm(
           )}
         </ListSection>
       )}
-      {!clientsOn ? null : project?.party != null ? (
-        <Text textRole="footnote" className="px-2 text-foreground-muted">
-          {KIN_BILL_TO.projectBills(project.party.title)}
-        </Text>
-      ) : offered ? (
-        <Button
-          tone="secondary"
-          fullWidth
-          label={draft.byName ? KIN_BILL_TO.pickClient : KIN_BILL_TO.byName}
-          disabled={locked}
-          onPress={() => set({ byName: !draft.byName })}
-        />
-      ) : null}
+      {byName ? null : choice}
       <KinWorkTextField
         label={KIN_MONEY_FORMS.invoice.what}
         value={draft.title}

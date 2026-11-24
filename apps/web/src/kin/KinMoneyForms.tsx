@@ -178,6 +178,8 @@ function BillToFields(props: {
   readonly disabled: boolean;
   /** India's tax number and state, as the client form asks them. */
   readonly india: boolean;
+  /** The way back to the client picker, beside the name. */
+  readonly choice: React.ReactNode;
   readonly onChange: (patch: Partial<KinBillToDraft>) => void;
 }) {
   const [more, setMore] = useState(false);
@@ -198,6 +200,7 @@ function BillToFields(props: {
           onChange={(event) => props.onChange({ name: event.target.value })}
         />
       </div>
+      {props.choice}
       <div>
         <Button
           type="button"
@@ -342,6 +345,7 @@ export function KinNewInvoiceDialog(
       gst: gst && tax.registered,
       clientRequestId: requestId,
       byName,
+      india,
     });
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);
@@ -354,6 +358,23 @@ export function KinNewInvoiceDialog(
   };
   const locked = saving.busy || made !== null;
   const about = kinInvoiceAmountAbout(draft.lines);
+  const choice = !clientsOn ? null : projectClient !== null ? (
+    projectBills === null ? null : (
+      <p className="text-sm text-muted-foreground">{KIN_BILL_TO.projectBills(projectBills)}</p>
+    )
+  ) : offered ? (
+    <div>
+      <Button
+        type="button"
+        size="xs"
+        variant="ghost"
+        disabled={locked}
+        onClick={() => set({ byName: !draft.byName })}
+      >
+        {draft.byName ? KIN_BILL_TO.pickClient : KIN_BILL_TO.byName}
+      </Button>
+    </div>
+  ) : null;
   const slip = saving.slip(about);
   return (
     <FormDialog
@@ -377,38 +398,25 @@ export function KinNewInvoiceDialog(
           value={draft.billTo}
           disabled={locked}
           india={india}
+          choice={choice}
           onChange={(patch) => set({ billTo: { ...draft.billTo, ...patch } })}
         />
       ) : (
-        <KinPlaceCombobox
-          target={props}
-          noun="client"
-          label={KIN_MONEY_FORMS.invoice.party}
-          placeholder={KIN_MONEY_FORMS.invoice.pickClient}
-          value={clientRef}
-          choices={clients}
-          onChange={(client) => {
-            if (!locked) set({ party: client?.key ?? null });
-          }}
-        />
+        <>
+          <KinPlaceCombobox
+            target={props}
+            noun="client"
+            label={KIN_MONEY_FORMS.invoice.party}
+            placeholder={KIN_MONEY_FORMS.invoice.pickClient}
+            value={clientRef}
+            choices={clients}
+            onChange={(client) => {
+              if (!locked) set({ party: client?.key ?? null });
+            }}
+          />
+          {choice}
+        </>
       )}
-      {!clientsOn ? null : projectClient !== null ? (
-        projectBills === null ? null : (
-          <p className="text-sm text-muted-foreground">{KIN_BILL_TO.projectBills(projectBills)}</p>
-        )
-      ) : offered ? (
-        <div>
-          <Button
-            type="button"
-            size="xs"
-            variant="ghost"
-            disabled={locked}
-            onClick={() => set({ byName: !draft.byName })}
-          >
-            {draft.byName ? KIN_BILL_TO.pickClient : KIN_BILL_TO.byName}
-          </Button>
-        </div>
-      ) : null}
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={ids.what}>{KIN_MONEY_FORMS.invoice.what}</Label>
         <Input

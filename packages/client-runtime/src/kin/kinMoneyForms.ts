@@ -14,6 +14,7 @@ import {
 
 import { KIN_RETRY } from "./kinAnswers.ts";
 import { KIN_BILL_TO } from "./kinBillTo.ts";
+import { KIN_GSTIN_WRONG, kinGstinTyped } from "./kinWorkForms.ts";
 import { kinCategoryLabel, kinMoneyText, kinParseMoney } from "./kinLists.ts";
 import { KIN_EMPTY_LINE, kinLinesInput, type KinLineDraft } from "./kinMoneyAnswers.ts";
 import { kinWorkDueLabel } from "./kinWork.ts";
@@ -270,10 +271,12 @@ export const kinInvoiceBillsByName = (
   },
 ) => !context.clientsOn || (context.projectClient === null && context.offered && draft.byName);
 
-const billToInput = (billTo: KinBillToDraft) => {
+const billToInput = (billTo: KinBillToDraft, india: boolean) => {
   const text = (value: string, max: number) => value.trim().slice(0, max);
   const address = text(billTo.address, 500);
-  const taxNumber = text(billTo.taxNumber, 100);
+  const typed = text(billTo.taxNumber, 100);
+  // In India the tax number is a GSTIN, checked as the client form checks one.
+  const taxNumber = india && typed !== "" ? (kinGstinTyped(typed) ?? typed) : typed;
   const place = text(billTo.place, 100);
   const email = text(billTo.email, 100);
   return {
@@ -297,10 +300,15 @@ export function kinInvoiceInput(
     readonly gst: boolean;
     readonly clientRequestId: string;
     readonly byName?: boolean;
+    /** The company is in India, where the tax number is a GSTIN. */
+    readonly india?: boolean;
   },
 ): KinMoneyFormCheck<KinNewInvoiceInput> {
-  const billTo = options.byName === true ? billToInput(draft.billTo) : null;
+  const india = options.india === true;
+  const billTo = options.byName === true ? billToInput(draft.billTo, india) : null;
   if (billTo !== null && billTo.name === "") return { ok: false, problem: KIN_BILL_TO.noName };
+  if (india && billTo?.taxNumber !== undefined && kinGstinTyped(billTo.taxNumber) === null)
+    return { ok: false, problem: KIN_GSTIN_WRONG };
   if (billTo === null && draft.party === null)
     return { ok: false, problem: KIN_MONEY_FORMS.problem.client };
   const title = oneLine(draft.title).slice(0, 280);

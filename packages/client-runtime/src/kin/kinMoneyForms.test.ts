@@ -19,6 +19,7 @@ import {
   kinInvoiceTyped,
 } from "./kinMoneyForms.ts";
 import { KIN_BILL_TO } from "./kinBillTo.ts";
+import { KIN_GSTIN_WRONG } from "./kinWorkForms.ts";
 
 const orgId = KinOrgId.make("org");
 const acme = KinRecordKey.make("CL-1");
@@ -115,6 +116,18 @@ describe("an invoice typed by hand", () => {
         email: "asha@example.com",
       },
     });
+    // In India the tax number is a GSTIN: spaced or lower case it goes as one, else the form asks.
+    const india = (taxNumber: string) =>
+      kinInvoiceInput(
+        orgId,
+        { ...detailed, billTo: { ...detailed.billTo, taxNumber } },
+        { ...options, byName: true, india: true },
+      );
+    expect(india(" 27abcde1234f1z5 ")).toMatchObject({
+      ok: true,
+      input: { billTo: { taxNumber: "27ABCDE1234F1Z5" } },
+    });
+    expect(india("GSTIN 27ABCDE1234F1Z5")).toEqual({ ok: false, problem: KIN_GSTIN_WRONG });
     // Nobody named: the form says so before sending, client picked or not.
     expect(shape({ ...detailed, billTo: { ...detailed.billTo, name: " " } }, true)).toBe(
       KIN_BILL_TO.noName,
