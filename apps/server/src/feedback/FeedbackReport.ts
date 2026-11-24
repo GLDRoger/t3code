@@ -1,3 +1,4 @@
+import { KIN_CLI_COMMANDS } from "../kin/cli/feedbackSubjects.ts";
 import { AgentFeedbackKind, AgentFeedbackTrace } from "@t3tools/contracts";
 import { resolveT3McpToolId } from "@t3tools/shared/t3McpToolPresentation";
 import * as Effect from "effect/Effect";
@@ -143,6 +144,7 @@ export const T3_CLI_COMMANDS: ReadonlyArray<string> = [
   "t3 auth session issue",
   "t3 auth session list",
   "t3 auth session revoke",
+  ...KIN_CLI_COMMANDS,
   "t3 environment",
   "t3 environment link",
   "t3 environment list",
