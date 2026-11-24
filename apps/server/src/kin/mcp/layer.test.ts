@@ -45,7 +45,12 @@ import {
   POST_FIRST,
   WRITTEN_ITSELF,
 } from "../lead/approvedDraft.ts";
-import { approvalDedupeKey, approvalEventId, mailKeepsDraft } from "../questions/approval.ts";
+import {
+  approvalDedupeKey,
+  approvalEventId,
+  mailKeepsDraft,
+  plainMail,
+} from "../questions/approval.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import { kinInstructions } from "../lead/turn/session.ts";
 import { instructions } from "../lead/instructions.ts";
@@ -1757,6 +1762,13 @@ it.effect.each([true, false])(
         // Filed as a doc, a mail opens with its section's title: the heading is below it.
         const filed = `## Mail\n\n${headed}`;
         const filedNoHeading = `## Mail\n\n${noHeading}`;
+        // A mail goes as plain text: the draft's words, its marks gone, lists and links readable.
+        const marked =
+          "## Week 1\n\n**Who we are**: an invented studio.\n\n- Shoot on Friday\n- Edit on Monday\n\n1. Book the room\n2. Send the invite\n\nSee [the plan](https://invented.example/plan).";
+        const plainText =
+          "Week 1\n\nWho we are: an invented studio.\n\n- Shoot on Friday\n- Edit on Monday\n\n1. Book the room\n2. Send the invite\n\nSee the plan (https://invented.example/plan).";
+        assert.strictEqual(plainMail(marked), plainText);
+        const headedMarked = `To: Kabir <kabir@invented.example>\nSubject: Shoot moves\n\n${marked}`;
         const prepared = (subject: string, body: string, to = ["kabir@invented.example"]) => ({
           to,
           cc: [],
@@ -1782,6 +1794,12 @@ it.effect.each([true, false])(
           [filed, prepared("moves", "Hi Kabir,\nFriday now."), false, false],
           [filed, prepared("Shoot moves", "## Mail\n\nHi Kabir,\nFriday now."), false, false],
           [filedNoHeading, prepared("Anything", noHeading), false, true],
+          [marked, prepared("Anything", plainText), false, true],
+          [marked, prepared("Anything", marked), false, true],
+          [marked, prepared("Anything", plainText.replace("Friday", "Thursday")), false, false],
+          [marked, prepared("Anything", `${plainText}\n\nMore soon.`), false, false],
+          [headedMarked, prepared("Shoot moves", plainText), false, true],
+          [headedMarked, prepared("Shoot moves", plainText.replace("plan", "plans")), false, false],
         ] as const)
           assert.strictEqual(
             mailKeepsDraft(mailed, draft, reply),

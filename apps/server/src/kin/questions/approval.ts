@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { kinDocCopyText } from "@t3tools/shared/kinDocCopyText";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 
@@ -157,6 +158,16 @@ const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) =>
 const TITLE = /^#{1,6}[ \t]+[^\n]*\n[ \t]*\n/;
 const untitled = (draft: string) => asWords(draft).replace(TITLE, "");
 
+/** A mail as it is sent: the draft's text without its markdown marks, as Copy text gives it. */
+export const plainMail = (text: string) => kinDocCopyText(text, { listMarks: true });
+const wordsOf = (text: string) => plainMail(text).split(/\s+/).filter((word) => word !== "");
+/** Whether a mail's body has its draft's words, none added, dropped or changed: only marks go. */
+const keepsWords = (body: string, draft: string) => {
+  const sent = wordsOf(body);
+  const approved = wordsOf(draft);
+  return sent.length === approved.length && sent.every((word, at) => word === approved[at]);
+};
+
 /**
  * A mail draft's own heading: consecutive `Subject:`, `To:` or `Cc:` lines at its very start,
  * ended by its first blank line, and the rest below it. Undefined when it opens with none.
@@ -206,7 +217,8 @@ export const destinationRefusal = (kind: DraftKind, text: string, on?: string) =
 };
 
 /**
- * Whether a prepared mail is its approved draft. With no heading, the body is the whole draft and
+ * Whether a prepared mail is its approved draft, its words compared without their marks
+ * (`plainMail`). With no heading, the body is the whole draft and
  * the subject is free. With one, the body is the rest; a send's subject is its `Subject:` value;
  * a `To:` or `Cc:` naming addresses names the mail's own. A reply's subject is its thread's.
  */
@@ -222,8 +234,8 @@ export const mailKeepsDraft = (
 ) => {
   const heading = headingOf(draft);
   if (heading === undefined)
-    return keepsDraft(mail.body, draft) || keepsDraft(mail.body, untitled(draft));
-  if (!keepsDraft(mail.body, heading.rest) && !(reply && keepsDraft(mail.body, draft)))
+    return keepsWords(mail.body, draft) || keepsWords(mail.body, untitled(draft));
+  if (!keepsWords(mail.body, heading.rest) && !(reply && keepsWords(mail.body, draft)))
     return false;
   if (!reply && heading.subject.some((subject) => subject !== mail.subject.trim())) return false;
   const named = (said: ReadonlyArray<string>, sent: ReadonlyArray<string>) => {
