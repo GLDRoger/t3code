@@ -937,7 +937,7 @@ function KinWorkItemBody(props: ItemTarget) {
         {!hostClients ? null : act === null || !view.can.party ? (
           view.party === null ? null : opensClients ? (
             <ListRow
-              icon="person.2"
+              icon="person.crop.circle"
               label={KIN_WORK_NEW_COPY.clientLabel}
               detail={view.party.title}
               detailEllipsizeMode="tail"
@@ -946,7 +946,7 @@ function KinWorkItemBody(props: ItemTarget) {
             />
           ) : (
             <ListRowLayout
-              icon="person.2"
+              icon="person.crop.circle"
               label={KIN_WORK_NEW_COPY.clientLabel}
               detail={view.party.title}
               detailEllipsizeMode="tail"
@@ -957,7 +957,7 @@ function KinWorkItemBody(props: ItemTarget) {
           <KinWorkPlacePicker
             target={props}
             noun="client"
-            icon="person.2"
+            icon="person.crop.circle"
             label={KIN_WORK_NEW_COPY.clientLabel}
             held={view.party}
             choices={choices.clients}
