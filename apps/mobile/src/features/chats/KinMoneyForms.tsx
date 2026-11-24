@@ -65,6 +65,7 @@ import {
   useKinLists,
   useKinWorkFiles,
 } from "./state/useKinMoney";
+import { kinExpenseStartOf, type KinExpenseNewParams } from "./state/kinBillsPick";
 import { useKinNewExpense, useKinNewInvoice } from "./state/useKinMoneyAnswers";
 import { kinWorkChoicesAtom, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
@@ -514,8 +515,6 @@ function InvoiceForm(
   );
 }
 
-export type KinExpenseNewParams = { readonly environmentId: string; readonly orgId: string };
-
 /** A new expense typed by hand; the first one starts the company's Expenses list. */
 export function KinExpenseNewScreen({ route }: StaticScreenProps<KinExpenseNewParams>) {
   const navigation = useNavigation();
@@ -526,13 +525,15 @@ export function KinExpenseNewScreen({ route }: StaticScreenProps<KinExpenseNewPa
         <EmptyState variant="plain" {...KIN_LISTS.entry.gone} />
       </KinWorkFrame>
     );
-  return <ExpenseForm {...target} />;
+  return <ExpenseForm {...target} start={kinExpenseStartOf(route.params)} />;
 }
 
-function ExpenseForm(props: KinWorkTarget) {
+function ExpenseForm(
+  props: KinWorkTarget & { readonly start: ReturnType<typeof kinExpenseStartOf> },
+) {
   const now = new Date(useNowMinuteMs());
   const today = kinWorkDayOf(now);
-  const [opened] = useState(() => kinExpenseDraft(today));
+  const [opened] = useState(() => ({ ...kinExpenseDraft(today), ...props.start.draft }));
   const [draft, setDraft] = useState<KinExpenseDraft>(opened);
   const [problem, setProblem] = useState<string | null>(null);
   const [requestId] = useState(uuidv4);
@@ -547,7 +548,13 @@ function ExpenseForm(props: KinWorkTarget) {
     directory.names.people,
   );
   const files = useKinWorkFiles(props, "");
-  const held = files.state._tag === "ready" ? files.state.files.slice(0, 20) : [];
+  const chatFiles = files.state._tag === "ready" ? files.state.files.slice(0, 20) : [];
+  // A bill's file may be in a chat this person isn't in; it is offered all the same.
+  const start = props.start.receipt;
+  const held =
+    start === null || chatFiles.some((file) => file.attachmentId === start.attachmentId)
+      ? chatFiles
+      : [start, ...chatFiles];
   const guard = useFormGuard(
     kinExpenseTyped(draft, opened),
     saving.busy,

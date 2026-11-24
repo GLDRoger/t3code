@@ -23,6 +23,7 @@ import { KIN_GOALS } from "@t3tools/client-runtime/kin/kinAttention";
 import { KIN_BUDGETS, KIN_QUOTES } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { KIN_RECEIPTS } from "@t3tools/client-runtime/kin/kinInvoices";
 import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
+import { KIN_BILLS } from "@t3tools/client-runtime/kin/kinBills";
 import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions";
 import { ArrowLeftRightIcon, MessageSquareIcon, PlusIcon, BotIcon } from "lucide-react";
 import { KIN_CHIEF_OF_STAFF } from "@t3tools/client-runtime/kin/kinLeadPresentation";
@@ -31,6 +32,7 @@ import { useState } from "react";
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
+import { KinAddBillsDialog } from "./KinBills";
 import { KinChart } from "./KinChart";
 import { KinCountryFirst } from "./KinCountryFirst";
 import { KinEstimateText, KinRatesDialog, KinSetRateButton } from "./KinMoneyEstimate";
@@ -178,6 +180,8 @@ type MoneyProps = KinWorkTarget & {
   readonly onDates: () => void;
   readonly onSubscriptions: () => void;
   readonly onOpenDoc: (key: KinRecordKey) => void;
+  /** Bills added in bulk: one batch's list, or every batch for null. */
+  readonly onBills: (batchId: string | null) => void;
 };
 
 /**
@@ -248,8 +252,9 @@ function MoneyScreen(props: MoneyProps) {
   const canInvoice =
     useAtomValue(kinClient.workNewInvoice.permissionAtom(props.environmentId)) && invoicesOn;
   const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(props.environmentId));
+  const canBills = useAtomValue(kinClient.billsAdd.permissionAtom(props.environmentId));
   const [adding, setAdding] = useState<
-    "goal" | "budget" | "receipt" | "invoice" | "expense" | null
+    "goal" | "budget" | "receipt" | "invoice" | "expense" | "bills" | null
   >(null);
   const scope = useKinViewerScope(props.environmentId);
   const scopeNote = kinScopeNote("money", scope);
@@ -277,6 +282,7 @@ function MoneyScreen(props: MoneyProps) {
       !canReceipt &&
       !canInvoice &&
       !canExpense &&
+      !canBills &&
       agent === null ? null : (
         <Menu>
           <MenuTrigger render={<Button size="sm" variant="ghost" />}>
@@ -293,6 +299,9 @@ function MoneyScreen(props: MoneyProps) {
               <MenuItem onClick={() => setAdding("expense")}>
                 {KIN_MONEY_FORMS.expense.add}
               </MenuItem>
+            ) : null}
+            {canBills ? (
+              <MenuItem onClick={() => setAdding("bills")}>{KIN_BILLS.add}</MenuItem>
             ) : null}
             {goals.canSave ? (
               <MenuItem onClick={() => setAdding("goal")}>{KIN_GOALS.add}</MenuItem>
@@ -354,6 +363,19 @@ function MoneyScreen(props: MoneyProps) {
         <KinNewInvoiceDialog {...props} onClose={() => setAdding(null)} />
       ) : adding === "expense" ? (
         <KinNewExpenseDialog {...props} onClose={() => setAdding(null)} />
+      ) : adding === "bills" ? (
+        <KinAddBillsDialog
+          {...props}
+          onReview={(batchId) => {
+            setAdding(null);
+            props.onBills(batchId);
+          }}
+          onOpenKey={(key) => {
+            setAdding(null);
+            props.onOpenKey(key);
+          }}
+          onClose={() => setAdding(null)}
+        />
       ) : null}
       {ratesOpen ? <KinRatesDialog {...props} onClose={() => setRatesOpen(false)} /> : null}
     </>

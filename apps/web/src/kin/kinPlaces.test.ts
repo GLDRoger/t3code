@@ -1,4 +1,4 @@
-import { KinAgentId, KinListId, KinRecordKey } from "@t3tools/contracts";
+import { KinAgentId, KinBillBatchId, KinListId, KinRecordKey } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -137,6 +137,8 @@ describe("place addresses", () => {
       { list: KinListId.make("renewals") },
       { dates: true },
       { subscriptions: true },
+      { bills: null },
+      { bills: KinBillBatchId.make("b-3f9a") },
       { doc: party, version: 2, section: "s", changes: { to: 3, from: 1 }, history: true },
     ] as const;
     for (const record of records)
@@ -197,6 +199,7 @@ describe("place addresses", () => {
         history: "1",
         open: "sheet",
         tab: "clients",
+        bills: "",
       }),
     ).toEqual({});
   });

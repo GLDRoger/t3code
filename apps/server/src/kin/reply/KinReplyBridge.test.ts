@@ -75,6 +75,7 @@ import {
 import { claudeThinkingItemId } from "./claudeThinkingItem.ts";
 import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
+import { laneFor } from "./replyLane.ts";
 import { WEEK_FIGURES_TITLE } from "../pulse/weekly.ts";
 
 const threadId = ThreadId.make("lead-thread");
@@ -2301,6 +2302,8 @@ type WakeCase = {
   readonly reaction?: "👍";
   /** Someone waits on words: silence gets one rescue, then a plain line. */
   readonly owed: boolean;
+  /** Nothing the model writes reaches a chat. */
+  readonly quiet?: true;
 };
 const human = (owner: PersonIdentity, memberId: KinMemberId) =>
   ({ _tag: "human", personId: owner.personId, memberId }) as const;
@@ -2442,6 +2445,20 @@ const WAKE_KINDS: Record<KinEvent["_tag"] | "hand-over", WakeCase> = {
         outcome: "executed",
       })),
   },
+  // Bills read in the background: a quiet turn, owed nothing; the batch's card tells the rest.
+  "bills.read": {
+    owed: false,
+    quiet: true,
+    event: ({ direct }) =>
+      Effect.succeed((base) => ({
+        ...base,
+        _tag: "bills.read",
+        provenance: { _tag: "system" },
+        chatId: direct,
+        batchId: "b-1",
+        bills: ["a".repeat(64)],
+      })),
+  },
   resume: {
     owed: false,
     event: () =>
@@ -2564,10 +2581,28 @@ it.effect.each(
         AND message_id NOT LIKE 'kin-handoff:%' ORDER BY seq`;
       assert.deepStrictEqual(
         said.map((row) => `${row.authorKind}:${row.body}`),
-        replied ? [`agent:${reply}`] : wake.owed ? ["system:Ada didn't reply."] : [],
+        replied && wake.quiet !== true
+          ? [`agent:${reply}`]
+          : wake.owed
+            ? ["system:Ada didn't reply."]
+            : [],
       );
       assert.deepStrictEqual(fake.prompts, !replied && wake.owed ? [RESCUE_PROMPT] : []);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a bills turn that fails posts nothing: the batch's card tells what wasn't read", () =>
+  Effect.gen(function* () {
+    const { bridge, owner, wakeupId, posted } = yield* setup({
+      event: WAKE_KINDS["bills.read"].event!,
+    });
+    const lane = Option.getOrThrow(
+      yield* laneFor({ orgId: owner.orgId, agentId, wakeupId: KinWakeupId.make(wakeupId) }),
+    );
+    for (const outcome of ["partway", "gave_up", "retrying", "signin"] as const)
+      yield* bridge.failed({ orgId: owner.orgId, wakeupId, lane, outcome, cause: "unreachable" });
+    assert.deepStrictEqual(yield* posted, []);
+  }).pipe(Effect.provide(layer)),
 );
 
 // Review 48: ten notices this hour refused a hand-over or task reply, and it counted as answered.

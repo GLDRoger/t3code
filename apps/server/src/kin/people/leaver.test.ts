@@ -722,6 +722,49 @@ it.effect(
     ),
 );
 
+it.effect(
+  "a bill keeps who added it after they leave; its retired reader's queued read ends, the bill stays to be read",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const { sql, orgId } = ctx;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, wakeup_id)
+          VALUES ('bills-zoya', ${orgId}, ${chief}, 'bills.read', 'P3',
+            ${JSON.stringify({ chatId: "zoya-chief", batchId: "b-1", bills: ["a".repeat(64)] })},
+            0, 0, 'queued', NULL)`;
+        yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
+            name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
+            widget_id, added_by_person_id, added_at, state, event_id, reads)
+          VALUES (${orgId}, ${"a".repeat(64)}, 'kin-chat-bill', 'zoya-chief', 'bills:b-1',
+            'IMG_0001.png', 'image', 'image/png', 8, 'b-1', 0, ${chief}, 'zoya-chief', 'bills:b-1',
+            ${zoyaId}, 0, 'reading', 'bills-zoya', 1)`;
+        yield* sql`INSERT INTO kin_bill_requests (org_id, person_id, kind, request_id, input_hash,
+            result_json, created_at) VALUES (${orgId}, ${zoyaId}, 'add', 'add-1', 'h', '{}', 0)`;
+        yield* ctx.people.removeAccess(ownerSession, { orgId, personId: zoyaId });
+        yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId} AND agent_id = ${chief}`;
+        yield* Retirement.retire({ orgId, agentId: chief, retiredAt: at, now: 1 }, ctx.chats);
+        // Who added it is the bill's history; its read waits for the sweep to give it to the
+        // company's reader now (`bills.ts` `queueWaiting`, tested in `bills.test.ts`).
+        assert.deepStrictEqual(
+          yield* sql`SELECT b.added_by_person_id AS "addedBy", b.agent_id AS "agentId", b.state,
+              e.state AS "eventState", q.person_id AS asked
+            FROM kin_bill_reads b JOIN kin_events e ON e.event_id = b.event_id
+              JOIN kin_bill_requests q ON q.org_id = b.org_id WHERE b.org_id = ${orgId}`,
+          [
+            {
+              addedBy: zoyaId,
+              agentId: chief,
+              state: "reading",
+              eventState: "expired",
+              asked: zoyaId,
+            },
+          ],
+        );
+      }),
+    ),
+);
+
 // Every column that holds a person or an agent, as last reviewed. A new one fails here until
 // someone decides what removing the person (`KinPeople.removeAccess`) and retiring the agent
 // (`lead/Retirement.ts`) do to it, tests that, and lists it.
@@ -730,6 +773,9 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_agents: "agent_id owner_person_id retired_by_person_id",
   kin_arrivals: "agent_id",
   kin_bank_statements: "agent_id applied_by",
+  // Who added a bill stays its record; a retired reader's bills go to the next reader (`bills.ts`).
+  kin_bill_reads: "added_by_person_id agent_id",
+  kin_bill_requests: "person_id",
   kin_chat_levels: "agent_id",
   kin_chat_members: "agent_id member_id person_id",
   kin_chats: "lead_agent_id",
