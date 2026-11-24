@@ -247,6 +247,9 @@ export const rowTitle = (row: StatementRow) => {
     : cleaned;
 };
 
+/** A card's payment from a Bank transactions credit: `bank-credit:<credit id>:<card>:<part>`. */
+export const BANK_CREDIT_ORIGIN = "bank-credit:";
+
 /** An entry Kin made from a bank alert mail (`bankAlerts.ts`). */
 const isAlertEntry = (entry: { readonly originKey: string }) =>
   entry.originKey.startsWith("alert:");
