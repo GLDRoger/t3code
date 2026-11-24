@@ -26,6 +26,7 @@ import {
   type RecordRow,
   stillSuggestion,
 } from "../work/recordRows.ts";
+import { billedParty, billingClientId } from "../work/billTo.ts";
 import { parseFields } from "../work/lists.ts";
 import { defineList, listCurrency, listDef, PRESETS } from "../work/registers.ts";
 import { makeDocument, type Requester } from "./make.ts";
@@ -468,7 +469,12 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
   // Neither side counts as money yet: setting one against the other would make it count.
   const suggested = [receipt, invoice].find(isSuggestion);
   if (suggested !== undefined) return yield* invalid(stillSuggestion(suggested.key));
-  if (receipt.partyId === null)
+  if (
+    receipt.partyId === null &&
+    (invoice.registerId !== "invoices" ||
+      billingClientId(invoice) !== null ||
+      billedParty(invoice, undefined) === undefined)
+  )
     return yield* invalid(
       `${receipt.key} names no client, so it can't be set against an invoice. Nothing changed.`,
     );

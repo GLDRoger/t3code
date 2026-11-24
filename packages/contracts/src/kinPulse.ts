@@ -177,6 +177,7 @@ export const KinPulseFact = Schema.Struct({
     projectTitle: Schema.optional(Schema.String),
     clientKey: Schema.optional(Schema.String),
     clientTitle: Schema.optional(Schema.String),
+    billTo: Schema.optional(Schema.String),
   }),
   /** When it became true. */
   since: CanonicalUtcTimestamp,

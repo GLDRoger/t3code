@@ -363,20 +363,14 @@ it.effect(
       // A switch says which section it writes, with the company's word after Kin's title.
       const off = yield* propose(scope, { sections: [{ id: "clients", on: false }] });
       assert.deepStrictEqual(off.proposed, ['Turn off Clients (called "Patients" here)']);
-      // What the setter would refuse is refused before any card, in the setter's own words.
       yield* KinShell.set(orgId, ownerId, 1, [
         { id: "clients", on: true, name: "Patients" },
         { id: "invoices", on: true },
       ]);
       yield* turn(2);
+      const allowed = yield* propose(scope, { sections: [{ id: "clients", on: false }] });
+      assert.deepStrictEqual(allowed.proposed, ['Turn off Clients (called "Patients" here)']);
       const before = (yield* cards).length;
-      const needed = yield* Effect.flip(
-        propose(scope, { sections: [{ id: "clients", on: false }] }),
-      );
-      assert.strictEqual(
-        needed.message,
-        "Turn off Invoices and quotes first: invoices need Patients.",
-      );
       // A name is one line of plain text, at the tool and at the setter: one check for both.
       for (const name of ["Patients\nTurn off Money", "Patients\u202e", "Pat\u2028ients"]) {
         const refused = yield* Effect.flip(propose(scope, { sections: [{ id: "clients", name }] }));

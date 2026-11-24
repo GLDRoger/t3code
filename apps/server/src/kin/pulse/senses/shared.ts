@@ -10,6 +10,7 @@ import {
   KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { billingClientFromProject } from "../../work/billTo.ts";
 import type * as SqlClient from "effect/sql/SqlClient";
 
 import type { Overflow } from "./capped.ts";
@@ -77,7 +78,7 @@ export const entryColumns = (sql: SqlClient.SqlClient) => sql`r.record_id AS "re
 
 export const entryJoins = (sql: SqlClient.SqlClient) => sql`kin_records r
   LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
-  LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = COALESCE(r.party_id, p.party_id)`;
+  LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = ${billingClientFromProject(sql, sql`p.party_id`)}`;
 
 export const entrySubject = (row: EntryRow) => ({
   kind: "record" as const,

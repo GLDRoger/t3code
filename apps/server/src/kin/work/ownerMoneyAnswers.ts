@@ -383,13 +383,28 @@ export const newInvoice = Effect.fn("KinMoneyAnswers.rpc.newInvoice")(function* 
   input: KinNewInvoiceInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
+  if ((input.client === undefined) === (input.billTo === undefined))
+    return yield* invalid(
+      "Say who the invoice is for: a client, or a name to bill. Nothing was saved.",
+    );
   yield* countryFirst(input.orgId);
   const recipe = yield* invoiceTemplate(input.orgId);
   if (recipe === undefined)
     return yield* invalid(
       "There is no invoice template yet, so Kin can't keep the lines. Nothing was saved. Ask an agent to set one up.",
     );
-  const partyId = yield* recordOf(input.orgId, input.client, "clients");
+  const partyId =
+    input.client === undefined ? undefined : yield* recordOf(input.orgId, input.client, "clients");
+  const fields =
+    input.billTo === undefined
+      ? undefined
+      : {
+          billToName: input.billTo.name,
+          billToAddress: input.billTo.address ?? null,
+          billToTaxNumber: input.billTo.taxNumber ?? null,
+          billToPlace: input.billTo.place ?? null,
+          billToEmail: input.billTo.email ?? null,
+        };
   const projectId =
     input.project === undefined
       ? undefined
@@ -408,7 +423,8 @@ export const newInvoice = Effect.fn("KinMoneyAnswers.rpc.newInvoice")(function* 
     title: input.title,
     owner: { _tag: "person", personId: person.personId },
     state: "open",
-    partyId,
+    ...(partyId === undefined ? {} : { partyId }),
+    ...(fields === undefined ? {} : { fields }),
     ...(projectId === undefined ? {} : { projectId }),
     dueAt,
     dueAllDay: dueAt !== null,

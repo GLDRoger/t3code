@@ -62,7 +62,7 @@ export const DocumentInput = Schema.Struct({
   }),
   from: Schema.optional(KinRecordKey).annotate({
     description:
-      "A quote, such as QT-3, to invoice: with the invoice recipe and no entry, Kin makes a draft invoice for its client with exactly the quote's lines, then its document. Give no lines or billing details beside it.",
+      "A quote, such as QT-3, to invoice: with the invoice recipe and no entry, Kin makes a draft invoice for the same client or bill-to name with exactly the quote's lines, then its document. Give no lines or billing details beside it.",
   }),
   doc: Schema.optional(KinRecordKey).annotate({
     description:
