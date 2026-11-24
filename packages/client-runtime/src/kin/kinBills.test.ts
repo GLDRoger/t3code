@@ -13,6 +13,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   KIN_BILLS,
   kinBillBatchCardView,
+  kinBillBatchSentence,
   kinBillExpenseStart,
   kinBillFileRefusal,
   kinBillRowView,
@@ -71,34 +72,38 @@ describe("a bill on the review list", () => {
       expect(view.actions).toEqual(actions);
     }
     // The host's own sentence, as it wrote it; Read again only where reading again can change it.
-    const unread: ReadonlyArray<[string, boolean, ReadonlyArray<string>]> = [
+    const unread: ReadonlyArray<[string, "amount" | "date" | null, ReadonlyArray<string>]> = [
       [
         "Kin can't read this kind of photo: add it as a JPEG or PNG.",
-        false,
+        null,
         ["byHand", "readAgain", "dismiss"],
       ],
       [
         "Couldn't read: currency. Finance: No currency printed.",
-        false,
+        null,
         ["byHand", "readAgain", "dismiss"],
       ],
-      ["Finance: The photo is blurred.", false, ["byHand", "readAgain", "dismiss"]],
-      ["The amount is far above the rest of Expenses: check it.", true, ["byHand", "dismiss"]],
-      ["The date is after today: check it.", true, ["byHand", "dismiss"]],
-      ["The date is more than ten years back: check it.", true, ["byHand", "dismiss"]],
+      ["Finance: The photo is blurred.", null, ["byHand", "readAgain", "dismiss"]],
+      ["The amount is far above the rest of Expenses: check it.", "amount", ["byHand", "dismiss"]],
+      ["The date is after today: check it.", "date", ["byHand", "dismiss"]],
+      ["The date is more than ten years back: check it.", "date", ["byHand", "dismiss"]],
     ];
-    for (const [problem, readClean, actions] of unread) {
+    const LABEL = {
+      amount: "Check the amount",
+      date: "Check the date",
+    } as const;
+    for (const [problem, check, actions] of unread) {
       const view = kinBillRowView(
         row({
           state: "unreadable",
           expense: undefined,
           problem,
-          ...(readClean ? { readClean } : {}),
+          ...(check === null ? {} : { readClean: true, check }),
         }),
       );
-      // A clean read waiting on a check says so; only a bill not read says it couldn't be.
+      // A clean read waiting on a check says which figure; only a bill not read says it couldn't be.
       expect([view.label, view.problem, view.actions]).toEqual([
-        readClean ? "Check this one" : "Couldn't read this one",
+        check === null ? "Couldn't read this one" : LABEL[check],
         problem,
         actions,
       ]);
@@ -383,6 +388,13 @@ describe("a batch", () => {
       label: expect.stringMatching(/^Bills added on (24 Nov|Nov 24)$/),
       detail: "4 bills: 2 to keep, 1 looks like a duplicate, 1 kept.",
     });
+    // A clean read waiting on a check is not one that couldn't be read.
+    expect(
+      kinBillBatchSentence(
+        { reading: 0, read: 1, kept: 0, dropped: 0, duplicate: 0, unreadable: 3, check: 2 },
+        4,
+      ),
+    ).toBe("4 bills: 1 to keep, 1 couldn't be read, 2 need a check.");
     const older = summary("b-0", "2025-03-02T09:00:00", { read: 1, unreadable: 3 });
     expect(kinBillsEntry([one, older], now)).toEqual({
       batchId: null,
@@ -400,6 +412,15 @@ describe("a batch", () => {
       skipped: [{ sha256: SHA(5), key: "EXP-9", why: "Already kept." }],
     });
     expect(some.said).toBe("Kept 1 expense. 1 wasn't: why is on each.");
+    // Bills left for a check are counted as that, apart from the rest.
+    const checks = kinBillsKeptAll({
+      kept: ["EXP-1"],
+      skipped: [
+        { sha256: SHA(6), why: "Its amount needs a check.", check: true },
+        { sha256: SHA(7), why: "Still being read." },
+      ],
+    });
+    expect(checks.said).toBe("Kept 1 expense. 1 needs a check and 1 other wasn't: why is on each.");
     expect(some.skipped.get(SHA(5))).toBe("Already kept.");
   });
 
