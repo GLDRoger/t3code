@@ -223,7 +223,7 @@ export const OWN_CONFIRM_ONLY =
   "Only the person whose mailbox this is confirms what Kin sends from it, so nothing was sent.";
 /** Why a card from a person's own mailbox closed when the mailbox went. */
 export const MAILBOX_GONE = "The mailbox it would go from was disconnected, so nothing was sent.";
-export const MOVE_MAIL_ONLY = "Only a Google or Microsoft mailbox can move. Nothing changed.";
+const MOVE_MAIL_ONLY = "Only a Google or Microsoft mailbox can move. Nothing changed.";
 export const MOVE_PAUSED =
   "This mailbox is paused. Resume it first, then make it your own. Nothing changed.";
 export const MOVE_HAS_OWN =
