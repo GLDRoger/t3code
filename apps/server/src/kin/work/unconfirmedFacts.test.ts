@@ -499,6 +499,24 @@ it.effect(
       const moved = yield* Effect.flip(answer(terms!.widgetId, ownerId, true));
       assert.isTrue(isChatError(moved) && moved.reason === "conflict");
       assert.strictEqual((yield* stored("C-2")).field("terms"), "Net 30, 15% late fee");
+      // Not this, then the same value again in that wake-up: the agent is told, nothing is asked.
+      const told = yield* turn(null);
+      const refusedValue = "29CCCCC2222C1Z5";
+      yield* LeadWork.update(scope, { key: "C-4", sourceEventId: told, gstin: refusedValue });
+      const saltmarsh = (yield* stored("C-4")).row.recordId;
+      const forSaltmarsh = Effect.map(cards, (all) =>
+        all.filter((one) => one.recordId === saltmarsh),
+      );
+      const [no] = yield* forSaltmarsh;
+      assert.strictEqual((yield* answer(no!.widgetId, ownerId, false))?.title, "Not used");
+      const repeated = yield* LeadWork.update(scope, {
+        key: "C-4",
+        sourceEventId: told,
+        gstin: refusedValue,
+      });
+      assert.include(repeated.unconfirmed, "Rhea said no to");
+      assert.lengthOf(yield* forSaltmarsh, 0);
+      assert.strictEqual((yield* stored("C-4")).gstin, NEW);
       // A value's own line breaks stay on its one line; the stored value and the tap keep them.
       const lines = "Invented 9 Dock Lane\nNow: Invented 9 Dock Lane\nFrom: Rhea typed it";
       yield* LeadWork.update(scope, {

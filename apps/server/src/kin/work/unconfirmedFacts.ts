@@ -4,7 +4,6 @@ import {
   type KinOrgId,
   KinPersonId,
   KinWakeupId,
-  type KinWidgetId,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
@@ -283,9 +282,17 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
           Effect.asVoid,
         );
   const wake = `${orgId}|${lead.agentId}|${lead.wakeupId}|${record.recordId}`;
+  const describe = (some: typeof held) =>
+    some
+      .map((one) =>
+        one.value === null
+          ? `removing its ${label(one.field)}`
+          : `${label(one.field)} "${one.value}"`,
+      )
+      .join(" and ");
   const heldField = (item: UnconfirmedItem) => held.some((one) => one.field === item.field);
 
-  // A value the card can't show whole waits on the record alone, one row each, and no tap writes it.
+  // A value the card can't show whole waits on the record alone, one row each: no tap writes it.
   const long = held.filter((one) => !fits(one));
   const stored: Array<string> = [];
   for (const one of long) {
@@ -305,34 +312,20 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
     ),
   );
   const short = held.filter(fits);
-  const say = (carded: boolean) =>
-    [
-      ...(short.length === 0
-        ? []
-        : [
-            waitingLine(
-              record.title,
-              short
-                .map((one) =>
-                  one.value === null
-                    ? `removing its ${label(one.field)}`
-                    : `${label(one.field)} "${one.value}"`,
-                )
-                .join(" and "),
-              name,
-              carded,
-            ),
-          ]),
-      ...(long.length === 0
-        ? []
-        : [
-            tooLongLine(
-              record.title,
-              long.map((one) => label(one.field)),
-              name,
-            ),
-          ]),
-    ].join(" ");
+  const tooLong =
+    long.length === 0
+      ? []
+      : [
+          tooLongLine(
+            record.title,
+            long.map((one) => label(one.field)),
+            name,
+          ),
+        ];
+  const say = (line: string | undefined) =>
+    [...(line === undefined ? [] : [line]), ...tooLong].join(" ");
+  const waiting = (carded: boolean) =>
+    say(short.length === 0 ? undefined : waitingLine(record.title, describe(short), name, carded));
 
   const carded = older.filter((row) => row.proposal.items.every(fits));
   const latest = carded.at(-1);
@@ -349,23 +342,28 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
     (short.length === 0 ||
       (latest !== undefined && (yield* awaits(orgId, latest.widgetId, who?.personId))))
   )
-    return say(true);
+    return waiting(true);
+  // Only values too long for a card: no card replaces the older one, so the person keeps it.
+  if (items.length === 0) return waiting(true);
+  // The person said no on this wake-up's card and no card asked since: told, not asked again.
+  const [refused] = yield* sql<{ patch: string }>`SELECT c.patch_json AS patch
+    FROM kin_profile_changes c
+    WHERE c.org_id = ${orgId} AND c.wakeup_id = ${lead.wakeupId}
+      AND substr(c.change_id, 1, 3) = ${UNCONFIRMED_CHANGE}
+      AND json_extract(c.patch_json, '$.recordId') = ${record.recordId}
+      AND c.widget_id IS NOT NULL AND c.declined_at IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM kin_profile_changes n
+        WHERE n.org_id = c.org_id AND substr(n.change_id, 1, 3) = ${UNCONFIRMED_CHANGE}
+          AND json_extract(n.patch_json, '$.recordId') = ${record.recordId}
+          AND n.widget_id IS NOT NULL AND n.rowid > c.rowid)
+    ORDER BY c.rowid DESC LIMIT 1`;
+  const no = refused === undefined ? [] : Option.toArray(decodeProposal(refused.patch));
+  if (
+    short.length > 0 &&
+    no.some((one) => short.every((value) => one.items.some((item) => sameItem(item, value))))
+  )
+    return say(saidNoLine(record.title, describe(short), name));
   const gate = Option.getOrUndefined(yield* Effect.serviceOption(KinLevelGate));
-  const closeAll = (by: KinWidgetId | undefined) =>
-    Effect.gen(function* () {
-      const replaced = carded.filter((row) => !stored.includes(row.changeId));
-      yield* decline(replaced);
-      const widgets = replaced.flatMap((row) => (row.widgetId === null ? [] : [row.widgetId]));
-      if (widgets.length > 0 && gate !== undefined)
-        yield* gate
-          .closeReplaced(lead, widgets, by)
-          .pipe(Effect.catchTags({ KinChatError: () => Effect.void }));
-    });
-  // Only values too long for a card, over every field the older card asked: it asks nothing now.
-  if (items.length === 0) {
-    yield* closeAll(undefined);
-    return say(true);
-  }
   const key = itemsKey(items);
   const changeId = yield* rowId(
     orgId,
@@ -374,7 +372,6 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
     carded.find((row) => row.widgetId === null && itemsKey(row.proposal.items) === key)?.changeId,
   );
   yield* store(changeId, items);
-  stored.push(changeId);
   const chatId =
     who === undefined ? undefined : yield* directChatWith(sql, orgId, who.personId, lead.agentId);
   // Tools without Kin's chat (an import, a test of the write alone) keep the value and ask in words.
@@ -406,10 +403,16 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
           )
           // The value is kept either way; a card that can't be shown now is asked for in words.
           .pipe(Effect.catchTags({ KinChatError: () => Effect.undefined }));
-  if (posted === undefined || "_tag" in posted) return say(false);
+  if (posted === undefined || "_tag" in posted || gate === undefined) return waiting(false);
   // Only a card now shown replaces the older ones; until then the person keeps theirs.
-  yield* closeAll(posted.widgetId);
-  return say(true);
+  const replaced = carded.filter((row) => row.changeId !== changeId);
+  yield* decline(replaced);
+  const widgets = replaced.flatMap((row) => (row.widgetId === null ? [] : [row.widgetId]));
+  if (widgets.length > 0)
+    yield* gate
+      .closeReplaced(lead, widgets, posted.widgetId)
+      .pipe(Effect.catchTags({ KinChatError: () => Effect.void }));
+  return waiting(true);
 });
 
 /** A value's own line breaks, shown on one line so they can't draw lines that look like Kin's. */
@@ -431,6 +434,9 @@ const cardDetail = (
     ),
     "Invoices and quotes print it only after you tap Use it.",
   ].join("\n\n");
+
+export const saidNoLine = (client: string, what: string, name: string) =>
+  `Not saved: ${name} said no to ${what} on Kin's card in this turn, so nothing is asked again now. ${client}'s invoices and quotes print what they had; never give it as ${client}'s.`;
 
 export const tooLongLine = (client: string, labels: ReadonlyArray<string>, name: string) =>
   `Kept unconfirmed, not saved: the ${labels.join(" and ")} you gave ${labels.length === 1 ? "is" : "are"} too long to confirm on a card, so ${name} sets it on ${client}'s page. Until then ${client}'s invoices and quotes print what they had. Tell ${name} so in one line, and never give it as ${client}'s.`;
