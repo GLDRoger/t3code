@@ -331,6 +331,7 @@ function InvoiceForm(
       clientRequestId: requestId,
       byName,
       india,
+      projectClient,
     });
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);

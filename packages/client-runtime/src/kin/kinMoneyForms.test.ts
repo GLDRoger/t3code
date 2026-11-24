@@ -66,6 +66,13 @@ describe("an invoice typed by hand", () => {
         clientRequestId: "form-1",
       },
     });
+    // A project with a client bills that client when none was picked, as the form says.
+    const retainer = KinRecordKey.make("P-2");
+    const forProject = { ...filled, party: null, project: retainer, gstRate: "5" };
+    expect(kinInvoiceInput(orgId, forProject, { ...options, projectClient: acme })).toMatchObject({
+      ok: true,
+      input: { client: acme, project: retainer },
+    });
     // Elsewhere the company's own tax applies, so no rate is sent however it reads.
     const abroad = kinInvoiceInput(
       orgId,

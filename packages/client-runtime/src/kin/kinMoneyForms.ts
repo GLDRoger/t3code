@@ -302,14 +302,17 @@ export function kinInvoiceInput(
     readonly byName?: boolean;
     /** The company is in India, where the tax number is a GSTIN. */
     readonly india?: boolean;
+    /** The chosen project's client, which it bills when no client was picked. */
+    readonly projectClient?: KinRecordKey | null;
   },
 ): KinMoneyFormCheck<KinNewInvoiceInput> {
   const india = options.india === true;
+  const party = draft.party ?? options.projectClient ?? null;
   const billTo = options.byName === true ? billToInput(draft.billTo, india) : null;
   if (billTo !== null && billTo.name === "") return { ok: false, problem: KIN_BILL_TO.noName };
   if (india && billTo?.taxNumber !== undefined && kinGstinTyped(billTo.taxNumber) === null)
     return { ok: false, problem: KIN_GSTIN_WRONG };
-  if (billTo === null && draft.party === null)
+  if (billTo === null && party === null)
     return { ok: false, problem: KIN_MONEY_FORMS.problem.client };
   const title = oneLine(draft.title).slice(0, 280);
   if (title === "") return { ok: false, problem: KIN_MONEY_FORMS.problem.what };
@@ -324,7 +327,7 @@ export function kinInvoiceInput(
     ok: true,
     input: {
       orgId,
-      ...(billTo !== null ? { billTo } : draft.party === null ? {} : { client: draft.party }),
+      ...(billTo !== null ? { billTo } : party === null ? {} : { client: party }),
       title,
       lines: lines.lines.slice(0, 50),
       ...(options.gst ? { gstRate } : {}),
