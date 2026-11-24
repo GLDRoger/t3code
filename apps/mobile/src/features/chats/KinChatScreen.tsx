@@ -1232,28 +1232,6 @@ function KinChatFeed(props: {
     void listRef.current?.scrollToIndex({ index: landIndex, animated: false, viewPosition: 0.3 });
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition reads only refs and the stable setFollow.
   }, [landIndex, landOn, followsEnd, listRef, landed]);
-  const { newLineIndex } = feed;
-  const opensOnLine = landOn === null && newLine?.opening === true && newLineIndex >= 0;
-  const linedOn = useRef<string | null>(null);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, so a chat opens with its "New" line near the top, once per open
-  useEffect(() => {
-    if (!opensOnLine || linedOn.current === props.chatId) return;
-    const list = listRef.current?.getState();
-    if (list === undefined || list.scrollLength === 0) return;
-    // Already in view at the end: stay there, following what arrives.
-    if (list.positionAtIndex(newLineIndex) >= list.scroll) {
-      linedOn.current = props.chatId;
-      return;
-    }
-    if (followsEnd) return transition({ type: "land" });
-    linedOn.current = props.chatId;
-    void listRef.current?.scrollToIndex({
-      index: newLineIndex,
-      animated: false,
-      viewPosition: 0.1,
-    });
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition reads only refs and the stable setFollow.
-  }, [opensOnLine, newLineIndex, followsEnd, listRef, props.chatId]);
   const marked = landOn !== null && landIndex >= 0 && markDone !== landOn;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a timer: the mark on the message a row opened lasts a moment, then goes
   useEffect(() => {
