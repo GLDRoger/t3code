@@ -32,6 +32,7 @@ import {
   KinMessagesSendInput,
   KinWidgetsActInput,
   KinChoiceCardState,
+  type KinDocCardDraft,
   KinDocCardState,
   type KinChoiceOutcome,
   type KinSendCard,
@@ -135,6 +136,7 @@ import { memberReads } from "./sharing.ts";
 
 const decodeChoiceCard = Schema.decodeUnknownEffect(KinChoiceCardState);
 const decodeDocCard = Schema.decodeUnknownEffect(KinDocCardState);
+const withoutWhole = ({ whole: _whole, ...draft }: KinDocCardDraft) => draft;
 type Identity = PersonIdentity | AgentIdentity;
 type Viewers = ReadonlyArray<PersonIdentity>;
 type Caller = Identity | Viewers;
@@ -392,14 +394,22 @@ export class KinChatService extends Context.Service<
       readonly widgetId: KinWidgetId;
       readonly changesFirst: NonNullable<NonNullable<KinDocCardState["draft"]>["changesFirst"]>;
     }) => Effect.Effect<KinWidget, ServiceError>;
+    /** Server-only: what a draft's card sent up changed before it was approved; it is sendable again. */
+    readonly setDocCardChanged: (input: {
+      readonly orgId: KinOrgId;
+      readonly widgetId: KinWidgetId;
+      readonly changed: NonNullable<NonNullable<KinDocCardState["draft"]>["changed"]>;
+    }) => Effect.Effect<KinWidget, ServiceError>;
     /**
-     * Server-only, in the doc write's transaction: its draft cards take the doc's new text, and
-     * open chats read each card again, as its viewer may see it now (`docsForViewer`).
+     * Server-only, in the doc write's transaction: its draft cards take the doc's new text (a long
+     * one's opening, with `whole`), and open chats read each card again, as its viewer may see it
+     * now (`docsForViewer`).
      */
     readonly refreshDocCards: (input: {
       readonly orgId: KinOrgId;
       readonly recordId: string;
       readonly text?: string;
+      readonly whole?: NonNullable<KinDocCardState["draft"]>["whole"];
     }) => Effect.Effect<void, ServiceError>;
     /** Server-only: refused unless this person may post a message in this chat now (`send`'s check). */
     readonly mayPost: (
@@ -3680,6 +3690,24 @@ const make = Effect.gen(function* () {
       yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       return widget;
     }, transaction),
+    setDocCardChanged: Effect.fn("KinChatService.setDocCardChanged")(function* (input) {
+      const existing = yield* requireRecord(
+        repo.getWidget({ orgId: input.orgId, widgetId: input.widgetId }),
+      );
+      if (existing.type !== KIN_DOC_CARD) return yield* notFound;
+      const card = yield* decodeDocCard(existing.state).pipe(Effect.mapError(() => invalidState));
+      if (card.draft?.sent === undefined) return existing;
+      const { sent: _sent, ...draft } = card.draft;
+      const widget = yield* repo.updateWidget({
+        ...existing,
+        audience: "chat",
+        state: { ...card, draft: { ...draft, changed: input.changed } },
+        expectedRevision: existing.revision,
+        updatedAt: yield* now,
+      });
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      return widget;
+    }, transaction),
     refreshDocCards: Effect.fn("KinChatService.refreshDocCards")(function* (input) {
       const rows = yield* sql<{ widgetId: KinWidgetId }>`SELECT widget_id AS "widgetId"
         FROM kin_widgets WHERE org_id = ${input.orgId} AND type = ${KIN_DOC_CARD}
@@ -3696,7 +3724,14 @@ const make = Effect.gen(function* () {
           state:
             input.text === undefined
               ? card
-              : { ...card, draft: { ...card.draft, text: input.text } },
+              : {
+                  ...card,
+                  draft: {
+                    ...withoutWhole(card.draft),
+                    text: input.text,
+                    ...(input.whole === undefined ? {} : { whole: input.whole }),
+                  },
+                },
           expectedRevision: existing.revision,
           updatedAt: yield* now,
         });

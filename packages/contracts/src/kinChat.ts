@@ -551,6 +551,13 @@ export const KinChoiceCardState = Schema.Struct({
    * `detail` carries the same words for older clients.
    */
   draft: Schema.optionalKey(KinText.check(Schema.isMaxLength(2000))),
+  /**
+   * Set when `draft` is only the opening of a longer one: the doc and the version that went up,
+   * which is the one an Approve approves. `detail` says so for older clients.
+   */
+  draftDoc: Schema.optionalKey(
+    Schema.Struct({ recordId: KinTrimmedText, key: KinRefKey, version: PositiveInt }),
+  ),
   // An agent's kin_ask offers at most four; Kin's own cards, such as a statement's currency, up to eight.
   options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
   /** A picture of what is asked about, such as a new logo: a file in this card's chat. */

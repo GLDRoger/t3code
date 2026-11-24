@@ -54,6 +54,18 @@ const StoredDraftJson = Schema.fromJsonString(
     on: Schema.optional(Schema.String),
     /** The owner's redraft (`redo`): on her card only, never held to the teammate. */
     redo: Schema.optional(Schema.Literal(true)),
+    /**
+     * A long draft: `text` is its opening, and the draft is this version of this doc, which an
+     * Approve approves only while the doc is still at it (`draftMoved`).
+     */
+    doc: Schema.optional(
+      Schema.Struct({
+        recordId: Schema.String,
+        key: Schema.String,
+        version: Schema.Number,
+        chars: Schema.Number,
+      }),
+    ),
     names: Schema.Struct({ owner: Schema.String, asker: Schema.String, agent: Schema.String }),
   }),
 );
@@ -69,9 +81,53 @@ export const DRAFT_OPTIONS = [
 /** The answer a sent-up draft's "no" stores. */
 export const CHANGES_FIRST = DRAFT_OPTIONS[1].label;
 
+/** What a long draft's card says under its opening, in older clients too. */
+export const openingNote = (key: string) =>
+  `This is only the opening. Open ${key} to read the whole draft before you approve.`;
+
 /** A sent-up draft's card text from its stored payload: who asks, the draft, then Kin's line. */
-export const draftDetail = (head: string, draft: Pick<StoredDraft, "text" | "line">) =>
-  `${head}\n\n${draft.text}\n\n${draft.line}`;
+export const draftDetail = (head: string, draft: Pick<StoredDraft, "text" | "line" | "doc">) =>
+  `${head}\n\n${draft.text}\n\n${draft.doc === undefined ? "" : `${openingNote(draft.doc.key)}\n\n`}${draft.line}`;
+
+/** The card's own fields for a long draft's doc and version; none for a short one. */
+export const draftDocOf = (draft: Pick<StoredDraft, "doc">) =>
+  draft.doc === undefined
+    ? {}
+    : {
+        draftDoc: {
+          recordId: draft.doc.recordId,
+          key: draft.doc.key,
+          version: draft.doc.version,
+        },
+      };
+
+/** Why an Approve on a long draft finds its doc no longer as it went up: gone, deleted, or moved on. */
+export const draftMoved = Effect.fn("KinApproval.draftMoved")(function* (
+  orgId: string,
+  draft: Pick<StoredDraft, "doc">,
+) {
+  if (draft.doc === undefined) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const [doc] = yield* sql<{ state: string; version: number | null }>`SELECT r.state,
+      (SELECT MAX(v.version) FROM kin_doc_versions v
+        WHERE v.org_id = r.org_id AND v.record_id = r.record_id) AS version
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.record_id = ${draft.doc.recordId} AND r.register_id = 'docs'`;
+  return doc === undefined || doc.state === "dropped" || doc.version !== draft.doc.version;
+});
+
+/** The draft with its whole text: a long one's from its doc at the version that went up. */
+export const wholeDraft = Effect.fn("KinApproval.wholeDraft")(function* (
+  orgId: string,
+  draft: StoredDraft,
+) {
+  if (draft.doc === undefined) return draft;
+  const sql = yield* SqlClient.SqlClient;
+  const [version] = yield* sql<{ body: string }>`SELECT body FROM kin_doc_versions
+    WHERE org_id = ${orgId} AND record_id = ${draft.doc.recordId}
+      AND version = ${draft.doc.version} AND body_kind = 'markdown'`;
+  return version === undefined ? undefined : { ...draft, text: version.body };
+});
 
 /** The card's last line: what it is, where a post goes, and for whom. */
 export const draftLine = (kind: DraftKind, on: string | undefined, party: string | undefined) => {
@@ -243,7 +299,9 @@ export const approvalOf = Effect.fn("KinApproval.of")(function* (turn: Turn) {
       AND q.draft_json IS NOT NULL AND q.for_person_id IS NOT NULL AND q.for_chat_id IS NOT NULL
       AND q.person_id = a.owner_person_id
       AND ${sql.literal(ownerLevelSql("q.org_id", "q.person_id"))}`;
-  const draft = row === undefined ? undefined : Option.getOrUndefined(decodeStoredDraft(row.draft));
+  const stored =
+    row === undefined ? undefined : Option.getOrUndefined(decodeStoredDraft(row.draft));
+  const draft = stored === undefined ? undefined : yield* wholeDraft(turn.orgId, stored);
   if (row === undefined || draft === undefined) return invalid;
   return {
     _tag: "approved",

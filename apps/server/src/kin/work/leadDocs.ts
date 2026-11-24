@@ -28,7 +28,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
-import { redo, redoOf, redoRaised, redoRefused } from "../questions/askPerson.ts";
+import { type Redraft, redo, redoOf, redoRaised, redoRefused } from "../questions/askPerson.ts";
 import { effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { docHeadStart } from "../pulse/draftWake.ts";
@@ -54,7 +54,8 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { iso, type RecordRow, unavailable } from "./recordRows.ts";
-import { DRAFT_TEXT_MAX, docCardId, draftCardOf } from "./draftCards.ts";
+import { docCardId, draftCardOf } from "./draftCards.ts";
+import { DRAFT_TEXT_MAX } from "./draftOpening.ts";
 import { search } from "./search.ts";
 import {
   DRAFT_OWN_CHAT_ONLY,
@@ -604,13 +605,28 @@ const draftNote = (draft: KinDocCardDraft, key: string, placed: boolean) =>
           `No ${draft.noAccount.service} account is connected, so Kin can't post it; ${draft.noAccount.by.name} can connect one in Settings on a computer. Say so.`,
         ]),
   ].join(" ");
-const draftTooLong = (length: number) =>
-  invalid(
-    `A draft holds at most ${DRAFT_TEXT_MAX} characters so it can go up on a card; this is ${length}. File it without draft, or shorten it. Nothing was written.`,
-  );
 const DRAFT_BLANK = "A draft needs its text. Nothing was written.";
-const DRAFT_CARD_FULL =
-  "With who asks and who it is for, this draft is too long for the card it goes up on. Shorten it, or file it without draft. Nothing was written.";
+/** The summary of the version a long redraft writes on its draft's doc. */
+const REDRAFT_SUMMARY = "Redrafted after Changes first";
+
+/**
+ * The doc a draft waiting on a redraft went up from, at the version that went up: a long one's
+ * own, else the one doc it is about whose version holds the text that went up.
+ */
+const sentDoc = Effect.fn("KinDocTools.sentDoc")(function* (lead: Lead, of: Redraft) {
+  if (of.draft.doc !== undefined) return { key: of.draft.doc.key, version: of.draft.doc.version };
+  if (of.about.length === 0) return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ key: string; version: number }>`SELECT r.key,
+      MAX(v.version) AS version
+    FROM kin_records r JOIN kin_doc_versions v ON v.org_id = r.org_id
+      AND v.record_id = r.record_id
+    WHERE r.org_id = ${lead.orgId} AND r.register_id = 'docs' AND r.key IN ${sql.in(of.about)}
+      AND v.body_kind = 'markdown'
+      AND trim(v.body, ' ' || char(9) || char(10) || char(13)) = ${of.draft.text.trim()}
+    GROUP BY r.key ORDER BY r.key`;
+  return rows.length === 1 ? rows[0] : undefined;
+});
 
 /**
  * The owner's redraft of the one teammate's draft she answered Changes first on goes back to her
@@ -622,6 +638,15 @@ const putBack = Effect.fn("KinDocTools.putBack")(function* (
   text: string,
   on?: KinSocialPlatform,
   edited?: Pick<RecordRow, "recordId" | "partyId">,
+  /** The version it is, when written already; else how to write a long one on its draft's doc. */
+  version?:
+    | { readonly _tag: "written"; readonly written: Docs.Written }
+    | {
+        readonly _tag: "write";
+        readonly writer: Parameters<typeof Docs.rewrite>[1];
+        readonly provenance: Docs.Provenance;
+        readonly originKey: string;
+      },
 ) {
   const turn = {
     orgId: lead.orgId,
@@ -639,23 +664,66 @@ const putBack = Effect.fn("KinDocTools.putBack")(function* (
     on === undefined
       ? found
       : { ...found, draft: { ...found.draft, on: KIN_SOCIAL_PLATFORM_LABELS[on] } };
-  return yield* redo({ ...lead, wakeupId: turn.wakeupId }, of, text, {
-    chat: chat.value,
-    gate: yield* KinLevelGate,
-  }).pipe(
-    Effect.map((asked) => ({ _tag: "raised" as const, note: redoRaised(of, asked.state) })),
-    Effect.catchTags({
-      KinChatError: (error) =>
-        Effect.succeed({ _tag: "refused" as const, note: redoRefused(of, error) }),
-    }),
+  const deps = { chat: chat.value, gate: yield* KinLevelGate };
+  const raise = (written?: Docs.Written) =>
+    redo(
+      { ...lead, wakeupId: turn.wakeupId },
+      of,
+      written?.version.body ?? text,
+      deps,
+      written === undefined
+        ? undefined
+        : {
+            recordId: written.row.recordId,
+            key: written.row.key,
+            version: written.version.version,
+            text: written.version.body,
+          },
+    ).pipe(
+      Effect.map((asked) => ({
+        _tag: "raised" as const,
+        note: redoRaised(of, asked.state),
+        written,
+      })),
+    );
+  const refused = (error: KinChatError) =>
+    Effect.succeed({ _tag: "refused" as const, note: redoRefused(of, error) });
+  // Too long to go up whole, it is a new version of the doc that went up, and goes up bound to it;
+  // that doc's own version rules decide whether it may be written.
+  const sent =
+    version?._tag === "write" && text.length > DRAFT_TEXT_MAX
+      ? yield* sentDoc(lead, of)
+      : undefined;
+  if (version?._tag === "write" && sent !== undefined) {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql
+      .withTransaction(
+        Effect.flatMap(
+          Docs.rewrite(
+            lead.orgId,
+            version.writer,
+            version.provenance,
+            { key: sent.key },
+            {
+              body: text,
+              baseVersion: sent.version,
+              summary: REDRAFT_SUMMARY,
+              originKey: version.originKey,
+            },
+          ),
+          raise,
+        ),
+      )
+      .pipe(Effect.catchTags({ KinChatError: refused }));
+  }
+  return yield* raise(version?._tag === "written" ? version.written : undefined).pipe(
+    Effect.catchTags({ KinChatError: refused }),
   );
 });
 
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   if (input.whatWeSell === true) return yield* runStartOfferings(lead, input);
   if (input.draft !== undefined && input.body.trim() === "") return yield* invalid(DRAFT_BLANK);
-  if (input.draft !== undefined && input.body.length > DRAFT_TEXT_MAX)
-    return yield* draftTooLong(input.body.length);
   const context = yield* writeContext(lead, "doc_create", input);
   // A doc head start's one doc is filed for its task's holder, linked to that task.
   const headStart = yield* docHeadStart(lead.orgId, lead.agentId, lead.wakeupId);
@@ -684,7 +752,19 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
           { kind: input.draft.kind, partyId: partyId ?? null },
           input.body,
           input.draft.kind === "post" ? input.draft.on : undefined,
+          undefined,
+          {
+            _tag: "write",
+            writer: context.writer,
+            provenance: context.provenance,
+            originKey: context.originKey,
+          },
         );
+  if (back?._tag === "raised" && back.written !== undefined)
+    return {
+      ...writeResult(back.written, back.written.created),
+      note: `This is ${back.note}`,
+    };
   if (back?._tag === "raised") {
     const putUp: typeof WriteResult.Type = {
       key: "",
@@ -724,20 +804,19 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       (error) => Effect.flatMap(draftUp(lead, error), Effect.fail),
     ),
   );
-  // Its Approve card must carry it whole, worked out on the doc as filed: else nothing is. Its
-  // links go in with it, so a refused link leaves no doc behind.
+  // Its links go in with it, so a refused link leaves no doc behind.
   const { written, draft } = yield* sql.withTransaction(
     Effect.gen(function* () {
       const written = yield* filed;
       if (links.length > 0)
         yield* Docs.link(lead.orgId, writer, { key: written.row.key }, links, "relates");
       if (input.draft === undefined) return { written, draft: undefined };
-      const drawn = yield* draftCardOf(lead, input.draft, {
+      const card = yield* draftCardOf(lead, input.draft, {
         text: written.version.body,
         partyId: written.row.partyId,
+        version: written.version.version,
       });
-      if (!drawn.fits) return yield* invalid(DRAFT_CARD_FULL);
-      return { written, draft: drawn.card };
+      return { written, draft: card };
     }),
   );
   const placed = yield* shown(
@@ -857,6 +936,7 @@ const putBackOrShow = Effect.fnUntraced(function* (
           written.version.body,
           undefined,
           written.row,
+          { _tag: "written", written },
         )
       : undefined;
   if (back?._tag !== "raised") yield* shown(lead, written, card);

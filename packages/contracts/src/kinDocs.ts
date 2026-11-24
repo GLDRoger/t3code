@@ -623,6 +623,13 @@ export const KinDocCardDraft = Schema.Struct({
   changesFirst: Schema.optional(Schema.Struct({ name: KinTrimmedText, at: IsoDateTime })),
   /** Kin can't post it: no account on this service is connected, and who can connect one. */
   noAccount: Schema.optional(Schema.Struct({ service: KinTrimmedText, by: KinNamedPerson })),
+  /**
+   * Set when `text` is only the draft's opening: the whole is this version of the doc, this many
+   * characters long. Copy text fetches that version; older clients copy the opening.
+   */
+  whole: Schema.optional(Schema.Struct({ version: PositiveInt, chars: PositiveInt })),
+  /** What went up changed before its owner approved it, so nothing was: it may go up again. */
+  changed: Schema.optional(Schema.Struct({ at: IsoDateTime })),
 });
 export type KinDocCardDraft = typeof KinDocCardDraft.Type;
 

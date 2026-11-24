@@ -86,6 +86,7 @@ import * as DraftCards from "../work/draftCards.ts";
 import * as LeadDocs from "../work/leadDocs.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
+import { sectionsOf } from "../work/docBody.ts";
 import { DRAFT_OWN_CHAT_ONLY } from "../work/teamView.ts";
 import * as Questions from "./openQuestions.ts";
 import * as Dismissed from "./dismissed.ts";
@@ -94,6 +95,7 @@ import {
   approvalEventId,
   approvalOf,
   approvedClient,
+  approvedDocOrigin,
   type DraftKind,
   madeUnderApproval,
 } from "./approval.ts";
@@ -2456,7 +2458,6 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
         VALUES (${orgId}, 'clients', 'Clients', 'C', 1, 0) ON CONFLICT DO NOTHING`;
       for (const [id, key, title, origin] of [
         ["rec_harbourline", "C-7", "Harbourline Hotels", "harbourline"],
-        ["rec_long", "C-8", "Long ".repeat(60).trim(), "long"],
       ] as const)
         yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
             owner_id, created_by_kind, origin_key, created_at, updated_at)
@@ -2507,7 +2508,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
         posts[0]!.note,
         `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it or name ${posts[0]!.key}; say in one line what it is; Rhea Rao hasn't seen it, and it reaches Rhea Rao only when the person in this chat presses Send to Rhea Rao. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
       );
-      // A blank draft, or one whose Approve card would be too long to carry, files nothing.
+      // A blank draft files nothing.
       const docCount = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
         WHERE org_id = ${orgId} AND register_id = 'docs'
           AND json_extract(fields_json, '$.draftFor') = 'zoya'`.pipe(
@@ -2515,10 +2516,6 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       );
       const reasonOf = (error: object) => ("reason" in error ? error.reason : undefined);
       assert.strictEqual(reasonOf(yield* Effect.flip(file("Blank", "  \n "))), "invalid_state");
-      assert.strictEqual(
-        reasonOf(yield* Effect.flip(file("Long one", "x".repeat(1800), "C-8"))),
-        "invalid_state",
-      );
       assert.strictEqual(yield* docCount, 4);
       const cards = yield* sql<{ widgetId: string; state: string }>`SELECT widget_id AS "widgetId",
           state_json AS state FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${zoyaChat}
@@ -2953,6 +2950,269 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
         (yield* Effect.flip(press("zoya", mailCards[1]!.widgetId))).message,
         "This draft couldn't go to Rhea Rao from here. Ask in this chat instead.",
       );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// A draft too long to ride on its cards is filed whole, goes up as its opening bound to its doc's
+// version, and is approved only while the doc is still at that version; what an Approve makes or
+// tells the agent is that version whole, never the opening.
+it.effect("a long draft goes up as its opening and is approved only at the version sent", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, orgId, owner, person, chatOf, chiefChat, wakeOn, tap, services } = team;
+      const identity = Context.get(services, KinIdentity);
+      const chief = KinAgentId.make("chief");
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'clients', 'Clients', 'C', 1, 0) ON CONFLICT DO NOTHING`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES (${orgId}, 'rec_harbourline', 'clients', 'C-7', 'Harbourline Hotels', 'person',
+          ${owner.personId}, 'person', 'harbourline', 0, 0)`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = 'zoya'`;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-zoya', ${orgId}, 'zoya', 0)`;
+      const zoyaChat = yield* chiefChat("zoya");
+      const turnIn = Effect.fn("test.turnIn")(function* (body: string) {
+        yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'`;
+        yield* TestClock.adjust("1 minute");
+        const wakeupId = yield* wakeOn("chief", "zoya", zoyaChat, body);
+        const [event] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+          FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} ORDER BY rowid`;
+        return { wakeupId, eventId: event!.eventId };
+      });
+      let asked = yield* turnIn("Draft the Harbourline proposal in full, and the mail.");
+      const file = (title: string, body: string, kind: "proposal" | "mail" = "proposal") =>
+        LeadDocs.create(scopeOf("chief"), {
+          sourceEventId: asked.eventId,
+          title,
+          body,
+          client: "C-7",
+          draft: { kind },
+        }).pipe(Effect.provideService(KinIdentity, identity));
+      /** Invented words, exactly `chars` long, from phase `from` on. */
+      const long = (chars: number, from = 1) => {
+        let text = "";
+        for (let phase = from; text.length < chars; phase += 1)
+          text += `Phase ${phase} of the Harbourline refit is priced as agreed. `;
+        return `${text.slice(0, chars - 1)}x`;
+      };
+      const cardOf = (key: string) =>
+        sql<{ widgetId: string; state: string }>`SELECT widget_id AS "widgetId",
+            state_json AS state FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${zoyaChat}
+            AND type = 'doc' AND json_extract(state_json, '$.key') = ${key}
+          ORDER BY rowid LIMIT 1`.pipe(
+          Effect.map(([row]) => {
+            if (row === undefined) throw new Error(`no card for ${key}`);
+            return { widgetId: row.widgetId, state: JSON.parse(row.state) };
+          }),
+        );
+
+      // Up to 1,800 characters a draft's card is today's, its text whole; longer, it is filed and
+      // its card carries an opening that ends where a word does, and the version it is of.
+      const edge = yield* file("Edge", long(1800));
+      const edgeDraft = (yield* cardOf(edge.key)).state.draft;
+      assert.strictEqual(edgeDraft.text.trim(), long(1800));
+      assert.notProperty(edgeDraft, "whole");
+      for (const chars of [1801, 20_000]) {
+        const filed = yield* file(`Long ${chars}`, long(chars));
+        const { draft } = (yield* cardOf(filed.key)).state;
+        assert.deepStrictEqual(draft.whole, { version: 1, chars });
+        assert.isAtMost(draft.text.length, 1000);
+        assert.isTrue(long(chars).startsWith(draft.text));
+        assert.match(long(chars).charAt(draft.text.length), /\s/);
+        assert.strictEqual(filed.note, edge.note!.replaceAll(edge.key, filed.key));
+      }
+
+      // Zoya presses Send to: one Approve card for Rhea with the opening, the doc and its
+      // version, saying it is the opening; never the whole text.
+      const press = (widgetId: string, who = "zoya") =>
+        DraftCards.sendUp([person(who)], {
+          orgId,
+          chatId: zoyaChat,
+          widgetId: KinWidgetId.make(widgetId),
+        });
+      const upFor = (key: string) =>
+        sql<{ questionId: string; state: string; draft: string; approvedAt: number | null }>`
+          SELECT question_id AS "questionId", state, draft_json AS draft,
+            approved_at AS "approvedAt" FROM kin_questions
+          WHERE org_id = ${orgId} AND about = ${key} AND draft_json IS NOT NULL
+          ORDER BY asked_at, question_id`;
+      const ownersCard = Effect.fn("test.ownersCard")(function* (questionId: string) {
+        const widget = yield* team.widgetOf((yield* team.cardOf(questionId)).widgetId!);
+        return widget.state as {
+          readonly draft: string;
+          readonly detail: string;
+          readonly draftDoc?: object;
+          readonly outcome?: { readonly title: string; readonly text: string };
+        };
+      });
+      const made = (questionId: string) =>
+        sql<{ body: string }>`SELECT v.body FROM kin_records r
+          JOIN kin_doc_versions v ON v.org_id = r.org_id AND v.record_id = r.record_id
+          WHERE r.org_id = ${orgId} AND r.origin_key = ${approvedDocOrigin(questionId)}
+          ORDER BY v.version`;
+      const approvedEvents = (questionId: string) =>
+        sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
+          AND dedupe_key = ${`question-approved:${questionId}`}`;
+      // Every draft of this test is filed in her one turn.
+      const WHOLE = long(6000);
+      const proposal = yield* file("Harbourline proposal", WHOLE);
+      const short = yield* file("Short note", "Phase one starts on Monday.");
+      const MAIL = long(5000, 200);
+      const mail = yield* file("Harbourline mail", MAIL, "mail");
+      const terms = yield* file("Harbourline terms", long(4000, 400));
+      const gone = yield* file("Harbourline schedule", long(3000, 600));
+      // A turn shows only so many cards: the rest in her next.
+      asked = yield* turnIn("Now the budget and the phases.");
+      const hidden = yield* file("Harbourline budget", long(2500, 700));
+      const redrafted = yield* file("Harbourline phases", long(3500, 800));
+      assert.deepStrictEqual(yield* press((yield* cardOf(proposal.key)).widgetId), {
+        to: "Rhea Rao",
+        held: false,
+      });
+      const [up] = yield* upFor(proposal.key);
+      const stored = JSON.parse(up!.draft);
+      assert.deepInclude(stored.doc, { key: proposal.key, version: 1, chars: 6000 });
+      const card = yield* ownersCard(up!.questionId);
+      assert.strictEqual(card.draft, stored.text);
+      assert.isTrue(WHOLE.startsWith(card.draft));
+      assert.isAtMost(card.draft.length, 1000);
+      assert.deepInclude(card.draftDoc, { key: proposal.key, version: 1 });
+      assert.include(
+        card.detail,
+        `This is only the opening. Open ${proposal.key} to read the whole draft before you approve.`,
+      );
+      assert.isBelow(JSON.stringify(card).length, 2600);
+
+      // A co-owner's tap on it does what it does on a short draft's card.
+      yield* press((yield* cardOf(short.key)).widgetId);
+      const [shortUp] = yield* upFor(short.key);
+      const meera = (questionId: string) =>
+        Effect.match(tap(person("meera"), questionId, "option-1", `meera:${questionId}`), {
+          onSuccess: () => "taken",
+          onFailure: (error) => ("message" in error ? error.message : String(error)),
+        });
+      assert.strictEqual(yield* meera(up!.questionId), yield* meera(shortUp!.questionId));
+      assert.deepInclude((yield* upFor(proposal.key))[0], { state: "open", approvedAt: null });
+
+      // Rhea approves at the version she was shown: Kin writes that version whole, once.
+      yield* tap(owner, up!.questionId, "option-1", "rhea-approve");
+      assert.deepInclude((yield* ownersCard(up!.questionId)).outcome, { title: "Approved" });
+      const written = yield* made(up!.questionId);
+      assert.lengthOf(written, 1);
+      assert.strictEqual(written[0]!.body.trim(), WHOLE);
+      yield* Effect.exit(tap(owner, up!.questionId, "option-1", "rhea-approve-again"));
+      assert.lengthOf(yield* made(up!.questionId), 1);
+
+      // A long mail approved: the agent's own turn is told its whole text, not the opening.
+      yield* press((yield* cardOf(mail.key)).widgetId);
+      const [mailUp] = yield* upFor(mail.key);
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'`;
+      yield* tap(owner, mailUp!.questionId, "option-1", "rhea-approve-mail");
+      const approvedWake = yield* startAgentWakeup({
+        orgId,
+        agentId: chief,
+        threadId: ThreadId.make("chief-thread"),
+        queued: true,
+      });
+      const told = yield* approvedTurnText({ orgId, agentId: chief, wakeupId: approvedWake });
+      assert.strictEqual(told!.data.draft.trim(), MAIL);
+
+      // A new version between Send to and Approve, by a person and then by the agent, and a
+      // deleted doc: nothing is approved, made or told, the card says why, and her card may
+      // send it up again.
+      const handEdit = Effect.fn("test.handEdit")(function* (key: string, text: string) {
+        const doc = yield* OwnerDocs.get([owner], { orgId, key: KinRecordKey.make(key) });
+        const top = sectionsOf(doc.body).find((one) => one.id === "top")!;
+        yield* OwnerDocs.editSection([owner], {
+          orgId,
+          key: KinRecordKey.make(key),
+          section: top.id,
+          hash: top.hash,
+          text,
+          clientRequestId: `hand:${key}:${text.length}`,
+        });
+      });
+      const NOT_APPROVED = {
+        title: "Not approved",
+        text: "The draft changed after it was sent, so nothing was approved. Ask Zoya Sheikh to send it again.",
+      };
+      const refusedOn = Effect.fn("test.refusedOn")(function* (key: string, questionId: string) {
+        yield* tap(owner, questionId, "option-1", `rhea-stale:${questionId}`);
+        assert.deepInclude((yield* ownersCard(questionId)).outcome, NOT_APPROVED);
+        const [after] = (yield* upFor(key)).filter((one) => one.questionId === questionId);
+        assert.deepInclude(after, { state: "withdrawn", approvedAt: null });
+        assert.lengthOf(yield* made(questionId), 0);
+        assert.lengthOf(yield* approvedEvents(questionId), 0);
+      });
+      const termsCard = (yield* cardOf(terms.key)).widgetId;
+      yield* press(termsCard);
+      const [first] = yield* upFor(terms.key);
+      yield* handEdit(terms.key, long(4100, 400));
+      yield* refusedOn(terms.key, first!.questionId);
+      const sendable = (yield* cardOf(terms.key)).state.draft;
+      assert.notProperty(sendable, "sent");
+      assert.property(sendable, "changed");
+      assert.deepInclude(sendable.whole, { version: 2 });
+      // Sent again, it goes up bound to the version the doc is at now.
+      yield* press(termsCard);
+      const second = (yield* upFor(terms.key)).find((one) => one.state === "open");
+      assert.deepInclude(JSON.parse(second!.draft).doc, { version: 2 });
+      // The agent's edit in her next turn moves it on before Rhea's tap.
+      const next = yield* turnIn("Call it stage 400, not phase 400.");
+      yield* LeadDocs.edit(scopeOf("chief"), {
+        key: terms.key,
+        sourceEventId: next.eventId,
+        summary: "Stage",
+        operations: [{ op: "replace_phrase", find: "Phase 400 of", replace: "Stage 400 of" }],
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      yield* refusedOn(terms.key, second!.questionId);
+      // Deleted after it went up.
+      yield* press((yield* cardOf(gone.key)).widgetId);
+      const [goneUp] = yield* upFor(gone.key);
+      yield* sql`UPDATE kin_records SET state = 'dropped' WHERE org_id = ${orgId}
+        AND key = ${gone.key}`;
+      yield* refusedOn(gone.key, goneUp!.questionId);
+
+      // A doc she may no longer see does not go up from her card.
+      yield* sql`UPDATE kin_records SET sensitive = 1 WHERE org_id = ${orgId}
+        AND key = ${hidden.key}`;
+      assert.strictEqual(
+        (yield* Effect.flip(press((yield* cardOf(hidden.key)).widgetId))).reason,
+        "not_found",
+      );
+      assert.lengthOf(yield* upFor(hidden.key), 0);
+
+      // Changes first on a long draft: Rhea's long redraft is a new version of the same doc,
+      // and goes back up bound to it.
+      yield* press((yield* cardOf(redrafted.key)).widgetId);
+      const [toRedo] = yield* upFor(redrafted.key);
+      yield* tap(owner, toRedo!.questionId, "option-2", "rhea-changes");
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'`;
+      yield* TestClock.adjust("1 minute");
+      const herWords = yield* wakeOn("chief", "rhea", chatOf("chief"), "Make it four phases.");
+      const [herEvent] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${herWords} ORDER BY rowid`;
+      const REDRAFT = long(5000, 900);
+      const back = yield* LeadDocs.create(scopeOf("chief"), {
+        sourceEventId: herEvent!.eventId,
+        title: "Harbourline phases",
+        body: REDRAFT,
+        client: "C-7",
+        draft: { kind: "proposal" },
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.deepInclude(back, { key: redrafted.key, version: 2 });
+      assert.include(back.note ?? "", "back from Rhea Rao's Changes first");
+      const redone = (yield* upFor(redrafted.key)).find((one) => one.state === "open");
+      const redoneDraft = JSON.parse(redone!.draft);
+      assert.deepInclude(redoneDraft.doc, { key: redrafted.key, version: 2, chars: 5000 });
+      assert.isTrue(REDRAFT.startsWith(redoneDraft.text));
+      assert.deepInclude(yield* ownersCard(redone!.questionId), { draft: redoneDraft.text });
+      yield* tap(owner, redone!.questionId, "option-1", "rhea-approve-redraft");
+      assert.strictEqual((yield* made(redone!.questionId))[0]!.body.trim(), REDRAFT);
     }).pipe(Effect.provide(layer)),
   ),
 );
