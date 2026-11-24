@@ -318,7 +318,8 @@ export function KinNewInvoiceDialog(
   const { clients, projects, projectClients } = useKinWorkChoices(props, true);
   const clientsOn = useKinSectionOn(props.environmentId, "clients");
   const named = useKinSectionNamed(props.environmentId);
-  const offered = kinBillToOffered(kinListsOf(useKinLists(props, { enabled: true })));
+  const listsRead = useKinLists(props, { enabled: true }).state;
+  const offered = listsRead._tag === "ready" && kinBillToOffered(listsRead.value);
   const india = kinIndiaFields(useKinCompanyCountry(props));
   const projectClient = draft.project === null ? null : (projectClients.get(draft.project) ?? null);
   const byName = kinInvoiceBillsByName(draft, { clientsOn, offered, projectClient });
