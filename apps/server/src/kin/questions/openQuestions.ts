@@ -1966,8 +1966,7 @@ const dayOf = (at: number, zone: string) =>
 const shortQuote = (text: string) => `“${oneLine(text, 80)}”`;
 
 /** What a lapsed question's card says to a client that doesn't read `lapsed`. */
-const lapsedCardText = (who: string, day: string) =>
-  `Lapsed on ${day}: ${who} didn't answer.`;
+const lapsedCardText = (who: string, day: string) => `Lapsed on ${day}: ${who} didn't answer.`;
 
 /**
  * Kin's one line in the chat a question was asked for, once it lapsed: who, what and since when.
