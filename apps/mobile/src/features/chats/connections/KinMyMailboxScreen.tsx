@@ -82,8 +82,10 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
     const done =
       response === null ? null : await finish({ environmentId, input: { orgId, response } });
     setBusy(false);
-    if (done !== null && !AsyncResult.isSuccess(done))
-      setProblem(kinFailureText(done, "finish the sign-in"));
+    if (done === null) return;
+    if (!AsyncResult.isSuccess(done)) setProblem(kinFailureText(done, "finish the sign-in"));
+    // A member's screen hears no "connections" refresh, so it reads its own list again.
+    else reload();
   };
   const disconnect = async (connectionId: KinConnectionId) => {
     setBusy(true);
@@ -91,6 +93,7 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
     const done = await remove({ environmentId, input: { orgId, connectionId } });
     setBusy(false);
     if (!AsyncResult.isSuccess(done)) setProblem(kinFailureText(done, "disconnect your mailbox"));
+    else reload();
   };
 
   const line = view === null ? null : kinMyMailboxLine(view);
