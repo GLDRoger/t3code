@@ -372,7 +372,7 @@ const make = Effect.gen(function* () {
       let codingAgent: MemoryUndo["codingAgent"];
       if (checkKey !== undefined) {
         const reachableItem = Effect.fn("KinMemoryChanges.undoReachable")(function* (
-          locked?: MemoryItem,
+          locked: MemoryItem | undefined,
         ) {
           const snapshot = (yield* port?.snapshot?.(input.orgId) ?? Effect.undefined) ?? [];
           const now = yield* Clock.currentTimeMillis;
@@ -389,7 +389,7 @@ const make = Effect.gen(function* () {
           )
             return yield* notFound;
         }, failed);
-        yield* reachableItem();
+        yield* reachableItem(undefined);
         codingAgent = {
           personId: person.personId,
           admit: Effect.fn("KinMemoryChanges.admitUndo")(
