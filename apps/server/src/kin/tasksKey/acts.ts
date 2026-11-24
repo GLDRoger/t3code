@@ -36,6 +36,7 @@ import * as Watches from "../watches/KinWatches.ts";
 import { watchReader } from "../watches/readRpcs.ts";
 import * as Work from "../work/ownerWork.ts";
 import * as Comments from "../work/workComments.ts";
+import { projectNoteRevision } from "../work/recordComments.ts";
 import { notFound, workFailure } from "../work/recordRows.ts";
 import { companyList, moneyOf } from "../work/keyGuard.ts";
 import { listDef } from "../work/registers.ts";
@@ -498,10 +499,11 @@ export const setProjectNote = Effect.fn("KinTasksKeyActs.setProjectNote")(functi
   return yield* keyed(holder, (people) =>
     Effect.gen(function* () {
       yield* reachKey(holder, input.key, notFound);
+      const revision = yield* projectNoteRevision(holder.orgId, input.key);
       const { note } = yield* Comments.projectNote(people, {
         orgId: holder.orgId,
         ...input,
-        clientRequestId: requestIdOf(holder, "project-note", input),
+        clientRequestId: requestIdOf(holder, "project-note", { ...input, ...revision }),
       });
       return { key: input.key, note: note?.body ?? null, material: MATERIAL };
     }),

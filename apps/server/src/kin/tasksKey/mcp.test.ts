@@ -756,18 +756,28 @@ it.effect(
 
       const project = yield* make("Invented shared project", { list: "projects" });
       const hidden = yield* make("Invented private project", { list: "projects", sensitive: true });
-      const note = { key: project.key, body: "Check the glazing first." };
-      const noteRequest = { orgId, ...note, clientRequestId: "app-note" };
+      const note = { key: project.key, body: "A" };
+      const noteRequest = {
+        orgId,
+        ...note,
+        body: "Check the glazing first.",
+        clientRequestId: "app-note",
+      };
       const noNote = yield* projectNote(arjun.app, noteRequest).pipe(Effect.flip);
       refusedLike(yield* arjun.use("set_project_note", note), noNote.message);
-      const appNote = yield* projectNote(meera.app, noteRequest);
-      for (let i = 0; i < 2; i++)
-        hasResult(yield* meera.use("set_project_note", note), { note: appNote.note?.body });
-      const notes = yield* sql<{
-        id: string;
-      }>`SELECT coding_agent_key AS id FROM kin_record_comments
-      WHERE org_id = ${orgId} AND record_id = ${project.recordId} AND coding_agent_key IS NOT NULL`;
-      assert.deepStrictEqual(notes, [{ id: meera.sessionId }]);
+      yield* projectNote(meera.app, noteRequest);
+      const notes = sql<{ id: string }>`SELECT coding_agent_key AS id FROM kin_record_comments
+        WHERE org_id = ${orgId} AND record_id = ${project.recordId} AND coding_agent_key IS NOT NULL
+        ORDER BY seq`;
+      const setNote = (body: string) => meera.use("set_project_note", { key: project.key, body });
+      for (const body of ["A", "B", "A", "A"]) hasResult(yield* setNote(body), { note: body });
+      assert.deepStrictEqual(
+        yield* notes,
+        Array.from({ length: 3 }, () => ({ id: meera.sessionId })),
+      );
+      for (const body of ["", "X", "", ""]) hasResult(yield* setNote(body), { note: body || null });
+      assert.lengthOf(yield* notes, 6);
+      hasResult(yield* setNote("X"), { note: "X" });
       assert.deepInclude(
         (yield* rhea.use("set_project_note", { ...note, key: hidden.key })).structuredContent,
         {

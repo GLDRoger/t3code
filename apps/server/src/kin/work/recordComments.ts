@@ -346,8 +346,7 @@ const aboutKeys = (about: string) => new Set(about.split(/\s+/).filter((word) =>
 // A project's note for every task is a comment on the project whose id starts so.
 const NOTE_ID = "pnote_";
 
-/** The note a project leaves on every task: its newest standing note comment, if any. */
-export const projectNoteOf = Effect.fn("KinRecordComments.projectNote")(function* (
+const standingProjectNote = Effect.fn("KinRecordComments.standingProjectNote")(function* (
   orgId: KinOrgId,
   projectId: string,
 ) {
@@ -356,6 +355,34 @@ export const projectNoteOf = Effect.fn("KinRecordComments.projectNote")(function
     WHERE org_id = ${orgId} AND record_id = ${projectId} AND removed_at IS NULL
       AND substr(comment_id, 1, ${NOTE_ID.length}) = ${NOTE_ID}
     ORDER BY seq DESC LIMIT 1`;
+  return row;
+});
+
+export const projectNoteRevision = Effect.fn("KinRecordComments.projectNoteRevision")(function* (
+  orgId: KinOrgId,
+  key: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [last] = yield* sql<{ id: string; standing: number }>`SELECT c.comment_id AS id,
+      c.removed_at IS NULL AS standing
+    FROM kin_records r JOIN kin_record_comments c
+      ON c.org_id = r.org_id AND c.record_id = r.record_id
+    WHERE r.org_id = ${orgId} AND r.key = ${key} AND r.register_id = 'projects'
+      AND substr(c.comment_id, 1, ${NOTE_ID.length}) = ${NOTE_ID}
+    ORDER BY standing DESC, c.seq DESC LIMIT 1`;
+  return {
+    noteId: last?.standing === 1 ? last.id : null,
+    ...(last?.standing === 0 ? { clearedAfter: last.id } : {}),
+  };
+});
+
+/** The note a project leaves on every task: its newest standing note comment, if any. */
+export const projectNoteOf = Effect.fn("KinRecordComments.projectNote")(function* (
+  orgId: KinOrgId,
+  projectId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const row = yield* standingProjectNote(orgId, projectId);
   if (row === undefined) return undefined;
   const [project] = yield* sql<{ key: string; title: string }>`SELECT key, title FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${projectId} AND register_id = 'projects'`;
@@ -390,6 +417,11 @@ export const writeProjectNote = Effect.fn("KinRecordComments.writeProjectNote")(
 }) {
   const sql = yield* SqlClient.SqlClient;
   const body = input.body.trim();
+  const codingAgentKey = (yield* markedKey({})) ?? null;
+  if (codingAgentKey !== null) {
+    const standing = yield* standingProjectNote(input.orgId, input.projectId);
+    if ((standing?.body ?? "") === body) return;
+  }
   const requestHash = requestHashOf(body, []);
   const by = input.by._tag === "person" ? input.by.personId : input.by.agentId;
   const commentId = `${NOTE_ID}${hash([input.orgId, input.projectId, by, input.requestId]).slice(0, 24)}`;
@@ -406,7 +438,6 @@ export const writeProjectNote = Effect.fn("KinRecordComments.writeProjectNote")(
     SET removed_at = ${input.now}, removed_by_kind = ${input.by._tag}, removed_by_id = ${by}
     WHERE org_id = ${input.orgId} AND record_id = ${input.projectId} AND removed_at IS NULL
       AND substr(comment_id, 1, ${NOTE_ID.length}) = ${NOTE_ID}`;
-  const codingAgentKey = (yield* markedKey({})) ?? null;
   if (body === "" && codingAgentKey === null) return;
   yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
       author_id, body, files_json, request_hash, created_at, coding_agent_key, removed_at,
