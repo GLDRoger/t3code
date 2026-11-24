@@ -192,8 +192,33 @@ const personIn = (name: string, narration: string) => {
   return found.length / wanted.length;
 };
 
-const hasNumber = (text: string, number: string) =>
-  squashed(number).length >= 4 && squashed(text).includes(squashed(number));
+const runsIn = (text: string) =>
+  Array.from(text.toLowerCase().matchAll(/[\p{L}\p{M}]+|\p{N}+/gu), (found) => ({
+    run: found[0],
+    start: found.index,
+    end: found.index + found[0].length,
+  }));
+
+/**
+ * The whole number is in the text: its runs of letters and of digits in order, apart or touching,
+ * with no letter or digit touching either end. "INV2" names INV-2; "INV26", "INV-2A" do not.
+ */
+const hasNumber = (text: string, number: string) => {
+  const wanted = runsIn(number).map(({ run }) => run);
+  if (wanted.join("").length < 4) return false;
+  const runs = runsIn(text);
+  return runs.some((first, at) => {
+    const last = runs[at + wanted.length - 1];
+    const before = runs[at - 1];
+    const after = runs[at + wanted.length];
+    return (
+      last !== undefined &&
+      wanted.every((run, step) => runs[at + step]!.run === run) &&
+      (before === undefined || before.end < first.start) &&
+      (after === undefined || last.end < after.start)
+    );
+  });
+};
 
 const dayNumber = (day: string) =>
   Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10))) / DAY_MS;
