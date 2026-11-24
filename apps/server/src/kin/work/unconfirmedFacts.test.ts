@@ -234,7 +234,9 @@ it.effect("an agent's printed client detail goes straight in only as a person ty
     const cases: ReadonlyArray<{
       readonly key: string;
       readonly said: string | null;
-      readonly set: Readonly<Record<"title" | "gstin" | "terms" | "address", string>>;
+      readonly set: Partial<
+        Record<"title" | "gstin" | "terms" | "address" | "placeOfSupply", string>
+      >;
       readonly straight: boolean;
     }> = [
       {
@@ -261,6 +263,31 @@ it.effect("an agent's printed client detail goes straight in only as a person ty
         said: "Their terms are Net 30, 1.5% late fee",
         set: { terms: "Net 30, 15% late fee" },
         straight: false,
+      },
+      // Typed means whole words of the message: "look at" is not "KA", "the 29th" is not "29".
+      {
+        key: "C-1",
+        said: "Please take a look at their mail and fix the place of supply",
+        set: { placeOfSupply: "KA" },
+        straight: false,
+      },
+      {
+        key: "C-2",
+        said: "Invoice them on the 29th, thanks",
+        set: { placeOfSupply: "29" },
+        straight: false,
+      },
+      {
+        key: "C-1",
+        said: "Their place of supply is KA.",
+        set: { placeOfSupply: "KA" },
+        straight: true,
+      },
+      {
+        key: "C-3",
+        said: "Tidewater's number is (29 abcde-1234f1z5)",
+        set: { gstin: NEW },
+        straight: true,
       },
     ];
     for (const one of cases) {

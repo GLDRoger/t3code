@@ -55,6 +55,27 @@ const gentle = (text: string) =>
     .toLowerCase()
     .replace(/(?<!\p{N})[.,]|[.,](?!\p{N})/gu, "")
     .replace(/[\s\p{Pd}/]/gu, "");
+const EDGES =
+  /^[\p{Ps}\p{Pe}\p{Pi}\p{Pf}"'.,;:!?…।॥。、¡¿]+|[\p{Ps}\p{Pe}\p{Pi}\p{Pf}"'.,;:!?…।॥。、¡¿]+$/gu;
+/** A text's words, folded, without the quotes, brackets and sentence marks around each. */
+const words = (text: string) =>
+  text
+    .split(/\s+/u)
+    .map((word) => gentle(word.replace(EDGES, "")))
+    .filter((word) => word !== "");
+/** Whether a run of whole words of one message folds to the value. */
+const typedIn = (said: string, messages: ReadonlyArray<ReadonlyArray<string>>) =>
+  messages.some((message) =>
+    message.some((_, start) => {
+      let run = "";
+      for (const word of message.slice(start)) {
+        run += word;
+        if (run === said) return true;
+        if (!said.startsWith(run)) return false;
+      }
+      return false;
+    }),
+  );
 /** What a client's printed field holds now. */
 const holding = (record: Pick<RecordRow, "title" | "fieldsJson">, field: PrintedField) =>
   field === "title" ? record.title : fieldText(parseFields(record.fieldsJson), field);
@@ -88,7 +109,7 @@ const ownWords = Effect.fn("KinUnconfirmed.ownWords")(function* (turn: Turn) {
       AND COALESCE(m.client_message_id, '') NOT LIKE 'send:private:%'
       AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     ORDER BY e.event_id`;
-  return rows.map((row) => gentle(row.body));
+  return rows.map((row) => words(row.body));
 });
 
 /**
@@ -106,15 +127,15 @@ export const heldBack = Effect.fn("KinUnconfirmed.heldBack")(function* (
 ) {
   const changing = asked.filter((one) => !same(one.value, one.before));
   if (changing.length === 0) return [];
-  const words = yield* ownWords(turn);
+  const said = yield* ownWords(turn);
   const clears =
-    words.length > 0 &&
+    said.length > 0 &&
     !(yield* outsideRead(turn)) &&
     !(yield* followsOutsideRead(turn.orgId, turn.wakeupId));
   return changing.filter((one) => {
     if (one.value === null) return !clears;
-    const said = gentle(one.value);
-    return said === "" || !words.some((text) => text.includes(said));
+    const value = words(one.value).join("");
+    return value === "" || !typedIn(value, said);
   });
 });
 
