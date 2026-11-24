@@ -448,6 +448,18 @@ describe("kinDocCopyText", () => {
         "Read the invented thread or https://example.com/faq.",
       ].join("\n"),
     );
+    // What a mail keeps besides (`listMarks`) leaves Copy text as it was.
+    const extras = [
+      "Write to [billing](mailto:billing@invented.example), call [the desk](tel:+10000000000), or",
+      "<billing@invented.example>; see [the terms][terms].[^1] Quote your <PO number>, <b>please</b>.",
+      "",
+      "[terms]: https://invented.example/terms",
+      "",
+      "[^1]: Prices hold for 30 days.",
+    ].join("\n");
+    expect(kinDocCopyText(extras)).toBe(
+      "Write to billing, call the desk, or\nbilling@invented.example; see . Quote your , please.",
+    );
   });
 
   // A draft's card copies the same clean text, and offers Send to only to the teammate it's for.

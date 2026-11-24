@@ -1768,6 +1768,19 @@ it.effect.each([true, false])(
         const plainText =
           "Week 1\n\nWho we are: an invented studio.\n\n- Shoot on Friday\n- Edit on Monday\n\n1. Book the room\n2. Send the invite\n\nSee the plan (https://invented.example/plan).";
         assert.strictEqual(plainMail(marked), plainText);
+        // Nothing a reader would miss is lost: every link's target, text in angle brackets that is
+        // no tag, a footnote; real tags still go.
+        const extras = [
+          "Write to [billing](mailto:billing@invented.example), call [the desk](tel:+10000000000), or",
+          "<billing@invented.example>; see [the terms][terms].[^1] Quote your <PO number>, <b>please</b>.",
+          "",
+          "[terms]: https://invented.example/terms",
+          "",
+          "[^1]: Prices hold for 30 days.",
+        ].join("\n");
+        const extrasText =
+          "Write to billing (mailto:billing@invented.example), call the desk (tel:+10000000000), or\nbilling@invented.example; see the terms (https://invented.example/terms).[1] Quote your <PO number>, please.\n\n[1] Prices hold for 30 days.";
+        assert.strictEqual(plainMail(extras), extrasText);
         const headedMarked = `To: Kabir <kabir@invented.example>\nSubject: Shoot moves\n\n${marked}`;
         const prepared = (subject: string, body: string, to = ["kabir@invented.example"]) => ({
           to,
@@ -1800,6 +1813,10 @@ it.effect.each([true, false])(
           [marked, prepared("Anything", `${plainText}\n\nMore soon.`), false, false],
           [headedMarked, prepared("Shoot moves", plainText), false, true],
           [headedMarked, prepared("Shoot moves", plainText.replace("plan", "plans")), false, false],
+          [extras, prepared("Anything", extrasText), false, true],
+          [extras, prepared("Anything", extrasText.replace("+10000000000", "+19999999999")), false, false],
+          [extras, prepared("Anything", extrasText.replace(" <PO number>", "")), false, false],
+          [extras, prepared("Anything", extrasText.replace("\n\n[1] Prices hold for 30 days.", "")), false, false],
         ] as const)
           assert.strictEqual(
             mailKeepsDraft(mailed, draft, reply),
