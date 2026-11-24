@@ -153,13 +153,16 @@ const addresses = (values: ReadonlyArray<string>) =>
   new Set(values.flatMap((value) => value.toLowerCase().match(ADDRESS) ?? []));
 const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) =>
   a.size === b.size && [...a].every((one) => b.has(one));
+/** A draft filed as a doc opens with its section's title ("## Mail"), which is not the mail's. */
+const TITLE = /^#{1,6}[ \t]+[^\n]*\n[ \t]*\n/;
+const untitled = (draft: string) => asWords(draft).replace(TITLE, "");
 
 /**
  * A mail draft's own heading: consecutive `Subject:`, `To:` or `Cc:` lines at its very start,
  * ended by its first blank line, and the rest below it. Undefined when it opens with none.
  */
 const headingOf = (draft: string) => {
-  const lines = asWords(draft).split("\n");
+  const lines = untitled(draft).split("\n");
   const blank = lines.findIndex((line) => line.trim() === "");
   if (blank <= 0) return undefined;
   const fields = lines.slice(0, blank).map((line) => HEADER.exec(line));
@@ -218,7 +221,8 @@ export const mailKeepsDraft = (
   reply: boolean,
 ) => {
   const heading = headingOf(draft);
-  if (heading === undefined) return keepsDraft(mail.body, draft);
+  if (heading === undefined)
+    return keepsDraft(mail.body, draft) || keepsDraft(mail.body, untitled(draft));
   if (!keepsDraft(mail.body, heading.rest) && !(reply && keepsDraft(mail.body, draft)))
     return false;
   if (!reply && heading.subject.some((subject) => subject !== mail.subject.trim())) return false;
