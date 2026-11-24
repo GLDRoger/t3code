@@ -42,7 +42,9 @@ import * as KinChatHub from "../chat/KinChatHub.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinFloor from "../floor/KinFloor.ts";
+import { billToolAllowed } from "../lead/billsOnly.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { toolAdmitted } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Bills from "./bills.ts";
 import { billTurn } from "./billTurn.ts";
@@ -178,16 +180,16 @@ const card = (batchId: string) =>
   });
 
 /** The Finance agent's next turn: Kin hands it the queued bills, as the runner claims them. */
-const claimTurn = (n: number) =>
+const claimTurn = (n: number, agentId: KinAgentId = finance) =>
   Effect.gen(function* () {
     const queue = yield* KinEventQueue.KinEventQueue;
     const sql = yield* SqlClient.SqlClient;
     yield* TestClock.adjust("3 minutes");
     const wakeupId = KinWakeupId.make(`wake-${n}`);
-    const events = yield* Effect.scoped(
-      queue.claim({ orgId, agentId: finance, wakeupId, model: "test" }),
-    );
-    yield* sql`UPDATE kin_wakeups SET thread_id = 'finance-thread' WHERE wakeup_id = ${wakeupId}`;
+    const events = yield* Effect.scoped(queue.claim({ orgId, agentId, wakeupId, model: "test" }));
+    // As the runner records the thread and who reads the turn (`turnAudience`).
+    yield* sql`UPDATE kin_wakeups SET thread_id = 'finance-thread', audience = 'owner_only'
+      WHERE wakeup_id = ${wakeupId}`;
     return { wakeupId, events };
   });
 const endTurn = (wakeupId: KinWakeupId, status: "completed" | "failed" = "completed") =>
@@ -482,6 +484,83 @@ describe("bills in bulk", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a bills turn may call bill_read and nothing else; any other turn isn't confined", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* Bills.add(
+        as(rhea),
+        {
+          orgId,
+          attachments: [yield* upload("a.png", "a vendor's bill")],
+          clientRequestId: "add",
+        },
+        TEST_UPLOAD_OWNER,
+      );
+      yield* (yield* KinChatRepository.KinChatRepository).insertMessage({
+        orgId,
+        chatId: KinChatId.make("rhea-finance"),
+        audience: "owner",
+        messageId: KinMessageId.make("rhea-asks"),
+        author: {
+          _tag: "human",
+          personId: rhea,
+          memberId: KinMemberId.make("rhea-finance-person"),
+        },
+        kind: "text",
+        body: "What did Sample Cloud bill us?",
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        clientMessageId: null,
+        createdAt: at,
+        editedAt: null,
+      });
+      yield* (yield* KinEventQueue.KinEventQueue).enqueue({
+        _tag: "chat.message",
+        orgId,
+        agentId: finance,
+        eventId: KinEventId.make("rhea-asks"),
+        receivedAt: DateTime.makeUnsafe(NOW + 1),
+        dedupeKey: null,
+        provenance: {
+          _tag: "human",
+          personId: rhea,
+          memberId: KinMemberId.make("rhea-finance-person"),
+        },
+        chatId: KinChatId.make("rhea-finance"),
+        messageId: KinMessageId.make("rhea-asks"),
+      });
+      // Rhea's own turn is an ordinary owner-only turn.
+      const asked = yield* claimTurn(0);
+      const hers = { orgId, agentId: finance, wakeupId: asked.wakeupId };
+      assert.isUndefined(yield* billToolAllowed(hers, "payment_record", {}));
+      assert.isTrue(yield* toolAdmitted(hers, "payment_record", {}));
+      yield* endTurn(asked.wakeupId);
+      // The bills turn: a bill's text can reach nothing but its own answer.
+      const { wakeupId } = yield* claimTurn(1);
+      const bills = { orgId, agentId: finance, wakeupId };
+      assert.isTrue(yield* toolAdmitted(bills, "bill_read", {}));
+      for (const tool of [
+        "delegate_task",
+        "payment_record",
+        "agent_update",
+        "people_update",
+        "kin_chat_post",
+        "kin_hand_off",
+        "kin_connection_call",
+        "memory_write",
+        "record_create",
+        "kin_ask",
+        "bills_add",
+      ])
+        assert.isFalse(yield* toolAdmitted(bills, tool, {}), tool);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "a bill like a recorded expense waits as a duplicate; adding it anyway, reading again and dismissing each act once",
     () =>
@@ -656,6 +735,17 @@ describe("bills in bulk", () => {
         yield* sql`SELECT b.state, b.agent_id, e.agent_id AS queued_to FROM kin_bill_reads b
           JOIN kin_events e ON e.event_id = b.event_id`,
         [{ state: "reading", agent_id: "chief", queued_to: "chief" }],
+      );
+      // The Chief of staff, no Finance lead, answers it in its own bills turn.
+      const chief = KinAgentId.make("chief");
+      const { wakeupId } = yield* claimTurn(9, chief);
+      assert.isTrue(yield* toolAdmitted({ orgId, agentId: chief, wakeupId }, "bill_read", {}));
+      assert.deepStrictEqual(
+        yield* Bills.answer(
+          { orgId, agentId: chief, wakeupId },
+          { bill: "B1", readable: false, read: {}, cannotRead: "Blank page." },
+        ),
+        { bill: "B1", result: "B1 saved as not read cleanly." },
       );
     }).pipe(Effect.provide(layer)),
   );

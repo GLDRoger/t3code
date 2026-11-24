@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { owedNotice } from "../floor/KinFloor.ts";
 import { CHAT_ANSWER_TAGS } from "../lead/Audience.ts";
+import { billsOnly } from "../lead/billsOnly.ts";
 import { outsideReview } from "../lead/outsideReview.ts";
 
 /**
@@ -70,12 +71,7 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
         quiet: true,
       });
     // Bills read in the background (`work/bills.ts`): their batch's card tells what came of them.
-    const [bills] = yield* sql<{ others: number }>`SELECT COUNT(event_id) FILTER (
-        WHERE tag != 'bills.read') AS others FROM kin_events
-      WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}
-        AND wakeup_id = ${input.wakeupId}
-      HAVING COUNT(event_id) FILTER (WHERE tag = 'bills.read') > 0`;
-    if (bills !== undefined && bills.others === 0)
+    if (yield* billsOnly(input))
       return Option.some<Lane>({
         chatId: KinChatId.make(chatId),
         mode: "notice",

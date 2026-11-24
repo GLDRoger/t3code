@@ -34,6 +34,7 @@ import { SHARED_TOOLS, sharedToolAllowed, toolAdmitted } from "../lead/SharedToo
 import { isSocialTool } from "../social/mcp.ts";
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 import { visibleOnKinEndpoint } from "../lead/AgentSession.ts";
+import { BILLS_THREAD_PREFIX, BILLS_TOOLS } from "../lead/billsOnly.ts";
 import { REVIEW_REFUSAL, REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "../lead/outsideReview.ts";
 import {
   APPROVED_REFUSAL,
@@ -962,6 +963,16 @@ it.effect.each([true, false])(
             )
               reviewListed.push(name);
           assert.sameMembers(reviewListed, [...REVIEW_TOOLS]);
+          // A bills turn's thread lists only `bill_read`, before any seat hides it (`SEAT_HOME`).
+          const billsListed: Array<string> = [];
+          for (const name of new Set([...toolNames, ...kinGitHub, ...LEAD_T3_TOOLS, "bill_read"]))
+            if (
+              yield* visibleOnKinEndpoint(name, ThreadId.make(`${BILLS_THREAD_PREFIX}lead`)).pipe(
+                Effect.provideService(Kin.KinServer, signedIn),
+              )
+            )
+              billsListed.push(name);
+          assert.sameMembers(billsListed, [...BILLS_TOOLS]);
           assert.isTrue(yield* visibleOnKinEndpoint("kin_relay", ThreadId.make("kin-shared:x")));
         }
         // Every tool a lead can call says what it may do where others read; a tool added later

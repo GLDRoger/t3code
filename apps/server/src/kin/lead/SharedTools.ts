@@ -7,6 +7,7 @@ import type { SqlError } from "effect/sql/SqlError";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { SALES_SHARED_TOOLS } from "../sales/policies.ts";
 import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from "./Audience.ts";
+import { billToolAllowed } from "./billsOnly.ts";
 import { reviewToolAllowed } from "./outsideReview.ts";
 import { mailboxPerson } from "../connections/turnMailbox.ts";
 
@@ -281,14 +282,17 @@ export const sharedToolAllowed = Effect.fn("KinSharedTools.allowed")(
 
 /**
  * The one check for a tool call: nothing in a turn aborted for its audience, only `REVIEW_TOOLS`
- * in an outside review, everything in an owner-only turn, else what `SHARED_TOOLS` allows. The
- * gate runs it before every call; services whose writes outlive the call run it again inside them.
+ * in an outside review and `BILLS_TOOLS` in a bills turn, everything in an owner-only turn, else
+ * what `SHARED_TOOLS` allows. The gate runs it before every call; services whose writes outlive
+ * the call run it again inside them.
  */
 export const toolAdmitted = Effect.fn("KinSharedTools.admitted")(
   function* (turn: Turn, name: string, args: unknown) {
     if (yield* aborted(turn)) return false;
     const review = yield* reviewToolAllowed(turn, name, args);
     if (review !== undefined) return review;
+    const bills = yield* billToolAllowed(turn, name, args);
+    if (bills !== undefined) return bills;
     if ((yield* effectiveAudience(turn)) === "owner_only") return true;
     return yield* sharedToolAllowed(turn, name, args);
   },

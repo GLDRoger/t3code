@@ -82,6 +82,7 @@ import {
   turnChat,
 } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
+import { BILLS_THREAD_PREFIX, billsOnly } from "./billsOnly.ts";
 import { KinLeadPrompt, STEER_CLOSING, stillJoined } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
@@ -767,9 +768,11 @@ const make = Effect.gen(function* () {
         threadId,
         threadKind: threadId.startsWith(REVIEW_THREAD_PREFIX)
           ? "review"
-          : threadId.startsWith(SHARED_THREAD_PREFIX)
-            ? "shared"
-            : "owner",
+          : threadId.startsWith(BILLS_THREAD_PREFIX)
+            ? "bills"
+            : threadId.startsWith(SHARED_THREAD_PREFIX)
+              ? "shared"
+              : "owner",
         seat:
           lead === undefined
             ? null
@@ -1629,15 +1632,22 @@ const make = Effect.gen(function* () {
             // registered again.
             const alone = !shared && (yield* ownerAlone(row).pipe(provideSql));
             const chatId = alone ? null : ((yield* turnChat(row).pipe(provideSql))?.chatId ?? null);
-            // A stranger's pull request is reviewed on a thread that lists only its review tools.
+            // A stranger's pull request is reviewed, and bills are read, on a thread that lists
+            // only that turn's tools.
             const review = shared && (yield* outsideReview(row).pipe(provideSql)) !== undefined;
-            const prefix = review ? REVIEW_THREAD_PREFIX : shared ? SHARED_THREAD_PREFIX : "kin:";
+            const confined = review
+              ? REVIEW_THREAD_PREFIX
+              : (yield* billsOnly(row).pipe(provideSql))
+                ? BILLS_THREAD_PREFIX
+                : undefined;
+            const prefix = confined ?? (shared ? SHARED_THREAD_PREFIX : "kin:");
             const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
               FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
                 AND ended_at IS NULL AND chat_id IS ${chatId}
                 AND substr(thread_id, 1, ${prefix.length}) = ${prefix}
-                AND (${review ? 1 : 0} = 1
-                  OR substr(thread_id, 1, ${REVIEW_THREAD_PREFIX.length}) <> ${REVIEW_THREAD_PREFIX})
+                AND (${confined === undefined ? 0 : 1} = 1
+                  OR (substr(thread_id, 1, ${REVIEW_THREAD_PREFIX.length}) <> ${REVIEW_THREAD_PREFIX}
+                    AND substr(thread_id, 1, ${BILLS_THREAD_PREFIX.length}) <> ${BILLS_THREAD_PREFIX}))
               ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
             let existingThreadId = !alone && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {

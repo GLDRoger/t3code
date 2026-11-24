@@ -34,6 +34,7 @@ import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } fro
 import { markOutside, outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
+import { BILLS_THREAD_PREFIX, BILLS_TOOLS } from "./billsOnly.ts";
 import { REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "./outsideReview.ts";
 import { CODING_T3_TOOLS, isEngineeringDomain, LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { wakeupOfRuns } from "../chat/wakeupRuns.ts";
@@ -269,14 +270,16 @@ const loginConnected = Effect.gen(function* () {
 
 /**
  * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
- * Shared threads list only what shared turns may run, an outside review's only `REVIEW_TOOLS`; T3
- * tools only an owner-only thread, its coding ones only an engineering lead's (`SEAT_HOME`'s).
- * `KinToolGate` checks each call.
+ * Shared threads list what shared turns may run, an outside review's `REVIEW_TOOLS`, a bills
+ * turn's `BILLS_TOOLS`; T3 tools only an owner-only thread, its coding ones only an engineering
+ * lead's (`SEAT_HOME`'s). `KinToolGate` checks each call.
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(function* (
   name: string,
   threadId: ThreadId,
 ) {
+  // A bills turn's reader may be any lead: it lists `bill_read` whatever its seat.
+  if (threadId.startsWith(BILLS_THREAD_PREFIX)) return BILLS_TOOLS.has(name);
   const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
   if (
     threadId.startsWith(REVIEW_THREAD_PREFIX)
