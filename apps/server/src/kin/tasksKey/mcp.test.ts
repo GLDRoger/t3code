@@ -1006,14 +1006,19 @@ it.effect(
       const teamItem = item("shared-kiln", false);
       const appItem = item("app-kiln", false);
       const privateItem = item("private-terms", true);
-      const items = [teamItem, appItem, privateItem];
-      for (const one of [teamItem, appItem])
+      const shadowItem = item("private-shadow", false);
+      const items = [teamItem, appItem, privateItem, shadowItem];
+      for (const one of [teamItem, appItem, shadowItem])
         yield* authorise(orgId, one.head.id, fingerprint(one), "owner_setting");
       const writerCalls: Array<{ itemId: string; codingFor: string | null }> = [];
       yield* memory.attachWriter({
         undo: Effect.fn("test.memoryUndo")(function* (_org, input) {
           const current = items.find(({ head }) => head.id === input.itemId)!;
-          if (input.codingAgent !== undefined) yield* input.codingAgent.admit(current);
+          const locked =
+            current === shadowItem
+              ? { ...current, head: { ...current.head, sensitive: true } }
+              : current;
+          if (input.codingAgent !== undefined) yield* input.codingAgent.admit(locked);
           writerCalls.push({
             itemId: input.itemId,
             codingFor: input.codingAgent?.personId ?? null,
@@ -1073,6 +1078,11 @@ it.effect(
         itemId: privateItem.head.id,
       });
       refusedLike(hidden, "Kin record not found.");
+      const shadow = yield* rhea.use("undo_memory_change", {
+        ...input,
+        itemId: shadowItem.head.id,
+      });
+      refusedLike(shadow, "Kin record not found.");
       const found = yield* rhea.use("search_memory", { text: "kiln" });
       assert.include(JSON.stringify(found.structuredContent), teamItem.head.id);
       assert.notInclude(JSON.stringify(found.structuredContent), privateItem.head.id);
@@ -1083,7 +1093,7 @@ it.effect(
       const { card } = yield* memory.undo(rhea.app, { orgId, ...input, itemId: appItem.head.id });
       assert.deepStrictEqual(
         card.items.map((one) => one.undo),
-        ["undone", "undone", null],
+        ["undone", "undone", null, null],
       );
       assert.deepStrictEqual(writerCalls, [
         { itemId: teamItem.head.id, codingFor: actor.personId },

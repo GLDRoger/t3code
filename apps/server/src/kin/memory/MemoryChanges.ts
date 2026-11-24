@@ -371,31 +371,42 @@ const make = Effect.gen(function* () {
       if (item === undefined) return yield* notFound;
       let codingAgent: MemoryUndo["codingAgent"];
       if (checkKey !== undefined) {
-        const reachableItem = Effect.fn("KinMemoryChanges.undoReachable")(function* () {
+        const reachableItem = Effect.fn("KinMemoryChanges.undoReachable")(function* (
+          locked?: MemoryItem,
+        ) {
           const snapshot = (yield* port?.snapshot?.(input.orgId) ?? Effect.undefined) ?? [];
-          const matches = current(snapshot, yield* Clock.currentTimeMillis).filter(
-            (one) => one.head.id === input.itemId,
-          );
+          const now = yield* Clock.currentTimeMillis;
+          const matches = current(snapshot, now).filter((one) => one.head.id === input.itemId);
           const [known] = matches;
           const labels = yield* storedLabels(input.orgId).pipe(provideSql);
           if (known === undefined || matches.length !== 1 || visibility(known, labels) !== "team")
             return yield* notFound;
-          return known;
+          if (
+            locked !== undefined &&
+            (locked.head.id !== input.itemId ||
+              current([locked], now).length !== 1 ||
+              visibility(locked, labels) !== "team")
+          )
+            return yield* notFound;
         }, failed);
         yield* reachableItem();
         codingAgent = {
           personId: person.personId,
-          admit: Effect.fn("KinMemoryChanges.admitUndo")(function* (locked) {
-            yield* checkKey;
-            if (
-              !(yield* ownerLevel(input.orgId, person.personId).pipe(
-                provideSql,
-                Effect.orElseSucceed(() => false),
-              ))
-            )
-              return yield* notAllowed;
-            if (fingerprint(yield* reachableItem()) !== fingerprint(locked)) return yield* notFound;
-          }),
+          admit: Effect.fn("KinMemoryChanges.admitUndo")(
+            function* (locked) {
+              yield* checkKey;
+              const owns = yield* ownerChat(input.orgId, card.agentId);
+              if (
+                !(yield* ownerLevel(input.orgId, person.personId).pipe(provideSql)) ||
+                owns?.owner !== person.personId ||
+                owns.chatId !== owner.chatId
+              )
+                return yield* notAllowed;
+              yield* reachableItem(locked);
+            },
+            transaction,
+            failed,
+          ),
         };
       }
       if (item.undo === "undone") return { card };
