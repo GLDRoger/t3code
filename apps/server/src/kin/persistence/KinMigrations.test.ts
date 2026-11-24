@@ -1906,7 +1906,7 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 220, and runs again",
+    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 216, and runs again",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -1938,7 +1938,7 @@ describe("Kin migrations", () => {
           (yield* runKinMigrations()).map(([id]) => id),
           [
             196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213, 214, 215, 220,
+            213, 214, 215, 216,
           ],
         );
         assert.deepStrictEqual(yield* receipts, [
@@ -1966,7 +1966,7 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("a host on K196 migrates through 197 to 220, and again", () =>
+  it.effect("a host on K196 migrates through 197 to 216, and again", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const added = sql<{ name: string }>`
@@ -1990,7 +1990,7 @@ describe("Kin migrations", () => {
         (yield* runKinMigrations()).map(([id]) => id),
         [
           197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-          215, 220,
+          215, 216,
         ],
       );
       const all = [
@@ -2009,7 +2009,7 @@ describe("Kin migrations", () => {
       );
       for (const from of [
         197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-        215, 220,
+        215, 216,
       ]) {
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
@@ -2636,18 +2636,18 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("K220 adds the skip record and keeps its rows on rerun", () =>
+  it.effect("K216 adds the skip record and keeps its rows on rerun", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
       yield* sql`DROP TABLE kin_offline_skips`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 220`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[220, "OfflineSkips"]]);
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 216`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [[216, "OfflineSkips"]]);
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
       yield* sql`INSERT INTO kin_offline_skips (org_id, kind, ref, reason, at)
         VALUES ('org', 'check_in', 'ns:task:1', 'outside_hours', 1)`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 220`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(220));
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 216`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(216));
       assert.lengthOf(yield* sql`SELECT ref FROM kin_offline_skips`, 1);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
