@@ -222,5 +222,8 @@ describe("one list behind every Needs you", () => {
       now,
     });
     expect(listed.hidden).toBe(250 - 9);
+    // Cards cut past the host's cap: Waiting on you keeps the inbox's, which holds them all.
+    const cut = { ...list, counts: { ...list.counts, waiting: 5 } };
+    expect(kinInboxWithOpen(inbox, orgId, cut)).toBe(inbox);
   });
 });

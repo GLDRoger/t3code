@@ -33,7 +33,8 @@ const inboxCache = new WeakMap<KinInboxState, WeakMap<KinOpenRead, KinInboxState
 
 /**
  * The inbox with this org's waiting rows taken from the list, so Waiting on you, its banner and
- * the chats it marks Needs you show the list's. Unchanged while there is no list (an older host).
+ * the chats it marks Needs you show the list's. Unchanged while there is no list (an older host),
+ * or when the host's row cap cut some of the viewer's cards: the inbox holds every one.
  */
 export function kinInboxWithOpen(
   inbox: KinInboxState,
@@ -43,12 +44,12 @@ export function kinInboxWithOpen(
   if (read == null || orgId === null) return inbox;
   const held = inboxCache.get(inbox)?.get(read);
   if (held !== undefined) return held;
+  const items = kinOpenWaitingItems(read);
+  if (items.filter((item) => item.waitsFor === undefined).length < read.counts.waiting)
+    return inbox;
   const next: KinInboxState = {
     ...inbox,
-    waiting: [
-      ...inbox.waiting.filter((item) => item.orgId !== orgId),
-      ...kinOpenWaitingItems(read),
-    ],
+    waiting: [...inbox.waiting.filter((item) => item.orgId !== orgId), ...items],
   };
   const byRead = inboxCache.get(inbox) ?? new WeakMap<KinOpenRead, KinInboxState>();
   byRead.set(read, next);
