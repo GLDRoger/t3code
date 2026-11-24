@@ -109,12 +109,16 @@ export type KinPushNotification =
       readonly chatId: KinChatId;
       readonly messageId: KinMessageId;
     }
-  /** A member's read mark moved: their other devices get the new badge, with no banner. */
+  /**
+   * A member's read mark moved: their other devices get the new badge, with no banner. With
+   * `seen`, they had the chat open up to that seq: its banners up to there go, the badge stays.
+   */
   | {
       readonly _tag: "read";
       readonly orgId: KinOrgId;
       readonly chatId: KinChatId;
       readonly memberId: KinMemberId;
+      readonly seen?: number;
     };
 
 export type KinPushOutcome = {
@@ -1326,6 +1330,8 @@ const make = Effect.gen(function* () {
       readonly orgId: KinOrgId;
       readonly personId: KinPersonId;
       readonly rows: Map<KinPushTopic, KinPushSentRow>;
+      /** Chat banners they had on screen, up to this seq: withdrawn though still unread. */
+      readonly seen: Map<KinPushTopic, number>;
     }
   >();
 
@@ -1409,9 +1415,11 @@ const make = Effect.gen(function* () {
     const { orgId, personId } = batch;
     // As they are now: a newer version sent since is checked, and withdrawn, as itself.
     const settled: Array<KinPushSentRow> = [];
+    const seen = (row: KinPushSentRow) =>
+      row.seq !== null && row.seq <= (batch.seen.get(row.topic) ?? -1);
     if (batch.rows.size > 0)
       for (const row of yield* topics.live(orgId, { topics: [...batch.rows.keys()], personId }))
-        if (!(yield* topics.stands(orgId, row))) settled.push(row);
+        if (seen(row) || !(yield* topics.stands(orgId, row))) settled.push(row);
     const withdraw = settled.map((row) => ({ topic: row.topic, version: row.version }));
     // Withdrawals are silent, so quiet hours never hold one.
     const targets = (yield* devices.forPeople(orgId, [personId])).filter(
@@ -1441,6 +1449,7 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     rows: ReadonlyArray<KinPushSentRow>,
     badgeOf?: KinPersonId,
+    seen?: { readonly topic: KinPushTopic; readonly seq: number },
   ) {
     const people = [
       ...rows.map((row) => row.personId),
@@ -1449,7 +1458,7 @@ const make = Effect.gen(function* () {
     for (const personId of people) {
       const key = `${orgId}\u0000${personId}`;
       if (waiting.has(key)) continue;
-      waiting.set(key, { orgId, personId, rows: new Map() });
+      waiting.set(key, { orgId, personId, rows: new Map(), seen: new Map() });
       yield* Effect.sleep(KIN_WITHDRAW_BATCH).pipe(
         Effect.andThen(flushWithdrawals(key)),
         Effect.catchCause((cause) =>
@@ -1459,6 +1468,9 @@ const make = Effect.gen(function* () {
       );
     }
     for (const row of rows) waiting.get(`${orgId}\u0000${row.personId}`)?.rows.set(row.topic, row);
+    const batch = badgeOf === undefined ? undefined : waiting.get(`${orgId}\u0000${badgeOf}`);
+    if (seen !== undefined && batch !== undefined)
+      batch.seen.set(seen.topic, Math.max(seen.seq, batch.seen.get(seen.topic) ?? -1));
   });
 
   const settle = Effect.fn("KinPushSender.settle")(
@@ -1509,12 +1521,14 @@ const make = Effect.gen(function* () {
   /**
    * A badge-only push to the reader's other devices that don't match by topic; the one reading
    * watches the chat. It wakes the app too, which takes the chat's banners off the pane once
-   * nothing in it is unread. Phones that match by topic hear of it in the reader's batch.
+   * nothing in it is unread, or once they had it open (`seen`). Phones that match by topic hear
+   * of it in the reader's batch.
    */
   const readBadge = Effect.fn("KinPushSender.readBadge")(function* (
     orgId: KinOrgId,
     chatId: KinChatId,
     memberId: KinMemberId,
+    seen: number | undefined,
   ) {
     const [row] = yield* sql<{ person_id: KinPersonId }>`
       SELECT person_id FROM kin_chat_members
@@ -1525,9 +1539,11 @@ const make = Effect.gen(function* () {
       orgId,
       yield* topics.live(orgId, { chatId, topics: [chatTopic(chatId)], personId: row.person_id }),
       row.person_id,
+      seen === undefined ? undefined : { topic: chatTopic(chatId), seq: seen },
     );
     const badge = yield* badgeFor(orgId, row.person_id);
-    const cleared = (yield* chats.unreadCount({ orgId, chatId, memberId })) === 0;
+    const cleared =
+      seen !== undefined || (yield* chats.unreadCount({ orgId, chatId, memberId })) === 0;
     const targets = (yield* devices.forPeople(orgId, [row.person_id])).filter(
       (device) => !device.withdraws,
     );
@@ -1542,7 +1558,8 @@ const make = Effect.gen(function* () {
     const results = yield* Effect.forEach(
       targets,
       Effect.fnUntraced(function* (device) {
-        if (shownBadge.get(device.token) === badge) return "suppressed" as const;
+        if (seen === undefined && shownBadge.get(device.token) === badge)
+          return "suppressed" as const;
         if (yield* presence.isWatching(device.sessionId, chatId)) return "suppressed" as const;
         if (statusFor(device.platform) === "unconfigured") return "skipped" as const;
         if (device.platform === "android") {
@@ -1792,7 +1809,12 @@ const make = Effect.gen(function* () {
       if (notification._tag === "read") {
         const outcome: KinPushOutcome = {
           status,
-          ...(yield* readBadge(notification.orgId, notification.chatId, notification.memberId)),
+          ...(yield* readBadge(
+            notification.orgId,
+            notification.chatId,
+            notification.memberId,
+            notification.seen,
+          )),
         };
         return outcome;
       }

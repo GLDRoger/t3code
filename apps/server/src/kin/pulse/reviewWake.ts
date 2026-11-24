@@ -386,17 +386,17 @@ export const reviewWakes = Effect.fn("KinPulse.reviewWakes")(function* (ctx: {
 });
 
 /**
- * The review wake's own line: who hasn't read what, and what to do. What changed is not in it:
+ * The review wake's own line: who hasn't answered what, and what to do. What changed is not in it:
  * the turn reads that as quoted data (`reviewWakeText`).
  */
 export const REVIEW_WAKE_TEXT = (input: {
   readonly who: ReadonlyArray<string>;
   readonly count: number;
 }) =>
-  `Kin woke you to look again at what you said here. ${joined(input.who) || "No one"} ${input.who.length > 1 ? "haven't" : "hasn't"} read ${input.count === 1 ? "your message" : `your ${input.count} messages`} listed under Your messages no one has read yet, and since you wrote ${input.count === 1 ? "it" : "them"}, what the event data above lists as changed has moved. For each one: leave it if it still stands, take it back with message_withdraw if it no longer matters, or put the current version in its place with message_replace. Post nothing new unless something new needs them. Then write exactly NO_REPLY.`;
+  `Kin woke you to look again at what you said here. ${joined(input.who) || "No one"} ${input.who.length > 1 ? "haven't" : "hasn't"} answered or reacted to ${input.count === 1 ? "your message" : `your ${input.count} messages`} listed under Your messages no one has answered or reacted to yet, and since you wrote ${input.count === 1 ? "it" : "them"}, what the event data above lists as changed has moved. For each one: leave it if it still stands, take it back with message_withdraw if it no longer matters, or put the current version in its place with message_replace. Post nothing new unless something new needs them. Then write exactly NO_REPLY.`;
 /** The review wake found, as it started, nothing of the agent's here unread any more. */
 export const REVIEW_NOTHING_NOW =
-  "Kin woke you to look again at your unread messages here, but as this turn started everything you said here had been read or taken back.";
+  "Kin woke you to look again at your unanswered messages here, but as this turn started everything you said here had been answered, reacted to or taken back.";
 
 /**
  * A review wake's words, worked out again as its turn starts, for what that turn may read:

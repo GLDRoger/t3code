@@ -58,6 +58,13 @@ type ChatEvent =
       readonly memberId: KinMemberId;
       readonly seq: number;
     }
+  // A person had the chat open up to `seq`: their banners for it go, their read mark stays.
+  | {
+      readonly type: "chat.seen";
+      readonly chatId: KinChatId;
+      readonly memberId: KinMemberId;
+      readonly seq: number;
+    }
   | {
       readonly type: "reaction.updated";
       readonly chatId: KinChatId;
@@ -228,6 +235,7 @@ const make = Effect.gen(function* () {
           return read;
         });
         const canDeliver = Effect.fn("KinChatHub.canDeliver")(function* (event: KinChatHubEvent) {
+          if (event.type === "chat.seen") return false;
           const chatId = chatOf(event);
           if (only !== undefined && chatId !== only) return false;
           if (event.type === "member.removed")

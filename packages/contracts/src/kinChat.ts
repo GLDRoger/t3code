@@ -866,6 +866,11 @@ export const KinChatStreamEvent = Schema.Union([
     reactions: Schema.optional(Schema.Array(KinReaction)),
     presence: Schema.optional(Schema.Array(KinPresence)),
     drafts: Schema.optional(Schema.Array(KinDraft)),
+    /**
+     * On a stream's first backlog: the viewer's own read mark, which later `read` events for
+     * their member move. Never another member's. Absent from servers without it.
+     */
+    readSeq: Schema.optional(NonNegativeInt),
   }),
   Schema.TaggedStruct("reset", {
     lastSeq: NonNegativeInt,
