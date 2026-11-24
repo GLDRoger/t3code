@@ -38,7 +38,11 @@ import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import { UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
 import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
-import { ASKED } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
+import {
+  ASKED,
+  CALL_ARGUMENTS_REFUSAL,
+} from "../../apps/server/src/kin/connections/ConnectionsService.ts";
+import { readCallArguments } from "../../apps/server/src/kin/connections/callArguments.ts";
 import { microsoftMail } from "../../apps/server/src/kin/connections/Microsoft.ts";
 import { resultText } from "../../apps/server/src/kin/connections/ResultText.ts";
 import { outlineOf, sectionsOf, WHOLE_DOC } from "../../apps/server/src/kin/work/docBody.ts";
@@ -1008,6 +1012,23 @@ export const fillKinMock = (
       Object.entries(value).map(([key, one]) => [key, fillKinMock(one, input, world)]),
     );
   return value;
+};
+
+/** A kin_connection_call's input as Kin reads it (`readCallArguments`); undefined when it holds no object. */
+export const kinCallInput = (input: Readonly<Record<string, unknown>>) => {
+  const read = readCallArguments(
+    input.arguments,
+    typeof input.reason === "string" ? input.reason : undefined,
+  );
+  if (read === undefined) return undefined;
+  const { arguments: _arguments, reason: _reason, ...rest } = input;
+  return { ...rest, ...read };
+};
+/** Kin's refusal of a kin_connection_call whose text arguments hold no object, as the server encodes it. */
+export const KIN_CALL_ARGUMENTS_REFUSAL = {
+  _tag: "KinChatError",
+  reason: "invalid_state",
+  message: CALL_ARGUMENTS_REFUSAL,
 };
 
 // Tools whose card or reaction answers the person in the chat, as Kin's own message would.

@@ -1435,6 +1435,38 @@ it.effect("fails preview calls with T3's errors when browser access is off or a 
       }),
       { is_error: true, content: '{"_tag":"No"}' },
     );
+    // A connection call's text arguments are read as Kin reads them before mocks match and calls
+    // are graded; text that holds no object is Kin's refusal and takes no mock.
+    const connectionCall = "mcp__t3-code__kin_connection_call";
+    const mail = { to: ["kabir@tidewater.example"], body: 'Hi Kabir, "reason": {ours}' };
+    const swallowed = `${JSON.stringify(mail)},"reason":"Send Kabir's mail"}`;
+    const staged = {
+      $when: [{ args: { "arguments.body": "~Hi Kabir", reason: "~Send Kabir" }, result: "staged" }],
+      $else: "unread",
+    };
+    const connected = makeSample(
+      { ...refusing, setup: { ...refusing.setup, mocks: { kin_connection_call: staged } } },
+      base,
+    );
+    connected.tools.push({ name: connectionCall });
+    const call = (args: unknown) =>
+      answerToolCall(connected, config, {
+        type: "tool_use",
+        id: "call",
+        name: connectionCall,
+        input: { connection: "conn-g1", tool: "mail_send", arguments: args },
+      });
+    assert.deepEqual(normalizeToolInput(connectionCall, { arguments: swallowed }), {
+      arguments: mail,
+      reason: "Send Kabir's mail",
+    });
+    assert.include(String((yield* call(swallowed)).content), "staged");
+    assert.deepInclude(yield* call("[1]"), {
+      is_error: true,
+      content:
+        '{"_tag":"KinChatError","reason":"invalid_state","message":"arguments must be an object matching the tool\'s input schema."}',
+    });
+    assert.lengthOf(connected.mockHistory.get("kin_connection_call") ?? [], 1);
     // A sequence mock answers each call with its next result, then repeats the last.
     const flow = makeSample(browserCase("br-flow-qa-missing-cli"), base);
     flow.tools.push({ name: "mcp__t3-code__preview_snapshot" });
