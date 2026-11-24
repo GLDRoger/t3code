@@ -378,24 +378,39 @@ function KinDocCard(props: {
       () => undefined,
     );
   };
-  // A long draft's card holds its opening: Copy text takes the whole of that version.
-  const copyDraft = async (shown: KinDocCardDraftView) => {
+  // A long draft's card holds its opening: Copy text takes the whole of that version. The
+  // clipboard gets a pending item within the press, as Safari copies only inside one.
+  const copyDraft = (shown: KinDocCardDraftView) => {
     if (shown.long === undefined) return copy(shown.copyText);
     if (copying) return;
     setCopying(true);
     setProblem(null);
-    const got = kinDocWholeCopy(
-      await readVersion({
-        environmentId: props.environmentId,
-        input: { orgId: doc.orgId, key: KinRecordKey.make(doc.key), version: shown.long.version },
-      }),
-    );
-    setCopying(false);
-    if ("problem" in got) return setProblem(got.problem);
-    await navigator.clipboard.writeText(got.text).then(
-      () => toastManager.add({ type: "success", title: KIN_DOCS.textCopied }),
-      () => setProblem(KIN_DOCS.copyFailed),
-    );
+    let failed: string = KIN_DOCS.copyFailed;
+    const text = readVersion({
+      environmentId: props.environmentId,
+      input: { orgId: doc.orgId, key: KinRecordKey.make(doc.key), version: shown.long.version },
+    }).then((result) => {
+      const got = kinDocWholeCopy(result);
+      if ("problem" in got) {
+        failed = got.problem;
+        return Promise.reject(new Error(got.problem));
+      }
+      return got.text;
+    });
+    const written =
+      typeof ClipboardItem === "undefined"
+        ? text.then((whole) => navigator.clipboard.writeText(whole))
+        : navigator.clipboard.write([
+            new ClipboardItem({
+              "text/plain": text.then((whole) => new Blob([whole], { type: "text/plain" })),
+            }),
+          ]);
+    void written
+      .then(
+        () => toastManager.add({ type: "success", title: KIN_DOCS.textCopied }),
+        () => setProblem(failed),
+      )
+      .finally(() => setCopying(false));
   };
   const send = async () => {
     if (sending) return;
@@ -440,12 +455,7 @@ function KinDocCard(props: {
       )}
       <div className="flex flex-wrap items-center gap-2">
         {draft === null ? null : (
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={copying}
-            onClick={() => void copyDraft(draft)}
-          >
+          <Button size="xs" variant="outline" disabled={copying} onClick={() => copyDraft(draft)}>
             {copying ? KIN_DOCS.copying : KIN_DOCS.copyText}
           </Button>
         )}
