@@ -709,6 +709,7 @@ const putBack = Effect.fn("KinDocTools.putBack")(function* (
               baseVersion: sent.version,
               summary: REDRAFT_SUMMARY,
               originKey: version.originKey,
+              redraft: true,
             },
           ),
           raise,

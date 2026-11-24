@@ -2996,7 +2996,7 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
       const long = (chars: number, from = 1) => {
         let text = "";
         for (let phase = from; text.length < chars; phase += 1)
-          text += `Phase ${phase} of the Harbourline refit is priced as agreed. `;
+          text += `Phase ${phase} of the Harbourline refit is priced as agreed.\n\n`;
         return `${text.slice(0, chars - 1)}x`;
       };
       const cardOf = (key: string) =>
@@ -3085,7 +3085,7 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
         card.detail,
         `This is only the opening. Open ${proposal.key} to read the whole draft before you approve.`,
       );
-      assert.isBelow(JSON.stringify(card).length, 2600);
+      assert.isBelow(JSON.stringify(card).length, WHOLE.length / 2);
 
       // A co-owner's tap on it does what it does on a short draft's card.
       yield* press((yield* cardOf(short.key)).widgetId);
@@ -3196,7 +3196,8 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
       const herWords = yield* wakeOn("chief", "rhea", chatOf("chief"), "Make it four phases.");
       const [herEvent] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
         FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${herWords} ORDER BY rowid`;
-      const REDRAFT = long(5000, 900);
+      // A redraft is mostly the words that went up, so not refused as an edit sent as a rewrite.
+      const REDRAFT = `${long(3500, 800)}\n\nA fourth phase closes the refit.`;
       const back = yield* LeadDocs.create(scopeOf("chief"), {
         sourceEventId: herEvent!.eventId,
         title: "Harbourline phases",
@@ -3208,7 +3209,11 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
       assert.include(back.note ?? "", "back from Rhea Rao's Changes first");
       const redone = (yield* upFor(redrafted.key)).find((one) => one.state === "open");
       const redoneDraft = JSON.parse(redone!.draft);
-      assert.deepInclude(redoneDraft.doc, { key: redrafted.key, version: 2, chars: 5000 });
+      assert.deepInclude(redoneDraft.doc, {
+        key: redrafted.key,
+        version: 2,
+        chars: REDRAFT.length,
+      });
       assert.isTrue(REDRAFT.startsWith(redoneDraft.text));
       assert.deepInclude(yield* ownersCard(redone!.questionId), { draft: redoneDraft.text });
       yield* tap(owner, redone!.questionId, "option-1", "rhea-approve-redraft");

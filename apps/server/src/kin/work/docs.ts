@@ -563,6 +563,8 @@ export const rewrite = Effect.fn("KinDocs.rewrite")(function* (
     readonly baseVersion: number;
     readonly summary: string;
     readonly originKey: string;
+    /** A redraft after Changes first: a new text in full, never an edit sent as a rewrite. */
+    readonly redraft?: true;
   },
 ) {
   const body = normalize(input.body);
@@ -576,7 +578,10 @@ export const rewrite = Effect.fn("KinDocs.rewrite")(function* (
       if (current === undefined) return yield* unavailable;
       if (current.bodyKind === "file") return yield* fileOnly(row.key);
       if (current.version !== input.baseVersion) return yield* stale(row.key, current.version);
-      const refused = rewriteRefusal(current.body, body);
+      const refused =
+        input.redraft === true && current.body !== body
+          ? undefined
+          : rewriteRefusal(current.body, body);
       if (refused !== undefined) return yield* refusedOn(row, refused);
       return yield* revise(orgId, writer, provenance, row, current, {
         title: row.title,
