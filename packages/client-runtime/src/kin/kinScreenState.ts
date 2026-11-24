@@ -18,6 +18,7 @@ import type { AsyncResult } from "effect/reactivity";
 
 import type { SupervisorConnectionState } from "../connection/model.ts";
 import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
+import { KIN_BILLS } from "./kinBills.ts";
 import type { KinSynced } from "./kinStreams.ts";
 import { kinHostLink, type KinHost } from "./kinHost.ts";
 import { kinMessageGistMarkdown } from "./kinMessagePage.ts";
@@ -337,6 +338,7 @@ function kinMessagePreview(
   // Hosts before the quiet-turn change posted their own bookkeeping as system rows.
   if (last.kind === "system" && last.widgetId?.startsWith("memory-changes:")) return "Saved a note";
   if (last.kind === "system" && last.widgetId?.startsWith("deferral:")) return "Set a reminder";
+  if (last.kind === "system" && last.widgetId?.startsWith("bills:")) return KIN_BILLS.added;
   return kinPreviewText(kinMessageGistMarkdown(last, preview)) || "Message";
 }
 
