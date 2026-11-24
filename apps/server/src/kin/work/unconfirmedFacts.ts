@@ -438,10 +438,10 @@ const cardDetail = (
 /** Each answer line opens with what is true of the record and ends with what to say. */
 const DONT = "never say it is added or on the record, or give it as";
 
-export const saidNoLine = (client: string, what: string, name: string) =>
+const saidNoLine = (client: string, what: string, name: string) =>
   `Not saved, and nothing on ${client} changed: ${name} said no to ${what} on Kin's card in this turn, so nothing is asked again now. Invoices and quotes print what they had. Say in one line that ${name} said no to it; ${DONT} ${client}'s.`;
 
-export const tooLongLine = (client: string, labels: ReadonlyArray<string>, name: string) =>
+const tooLongLine = (client: string, labels: ReadonlyArray<string>, name: string) =>
   `Not saved, and nothing on ${client} changed: the ${labels.join(" and ")} you gave ${labels.length === 1 ? "is" : "are"} too long to confirm on a card, so ${name} sets it on ${client}'s page. Until they do, invoices and quotes print what they had. Say in one line that ${name} sets it there; ${DONT} ${client}'s.`;
 
 export const waitingLine = (client: string, what: string, name: string, carded: boolean) =>
