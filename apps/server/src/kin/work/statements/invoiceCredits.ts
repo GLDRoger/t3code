@@ -5,7 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { companyMoney } from "../companyProfile.ts";
 import { parseFields } from "../lists.ts";
 import { dayIn, formatMinor } from "../money.ts";
-import { ownerZone } from "../recordRows.ts";
+import { countedEntry, ownerZone } from "../recordRows.ts";
 import { regionOf } from "../region.ts";
 import { bankStates, directionOf, findBankList } from "./bankList.ts";
 import { invoiceOffered } from "./statementMatch.ts";
@@ -42,6 +42,7 @@ export const invoiceCredits = Effect.fn("KinStatements.invoiceCredits")(function
     WHERE r.org_id = ${orgId} AND r.register_id = ${def.id} AND r.state = ${bankStates(def).open}
       AND COALESCE(r.currency, ${def.currency}) = ${invoice.currency}
       AND r.amount_minor > 0 AND r.amount_minor <= ${owed} AND r.date_at IS NOT NULL
+      AND ${countedEntry(sql)}
     ORDER BY r.date_at DESC, r.record_id DESC
     LIMIT ${LOOKED_AT}`;
   return rows
