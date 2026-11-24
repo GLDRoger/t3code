@@ -143,11 +143,9 @@ const listed = (items: ReadonlyArray<string>, shown: number) =>
   `${items.slice(0, shown).join("; ")}${items.length > shown ? `${shown > 0 ? "; " : ""}and ${items.length - shown} more` : ""}`;
 
 /**
- * payment_seen: an unexplained credit in Bank transactions, no agent's entry, that the statement
- * matcher offers as an open invoice's payment. One fact per credit, so a mark on it holds whatever
- * invoices come and go. About the invoice ranked first alone; when several rank level, about the
- * credit itself, with no client. Kin records nothing, and a credit that may be money already
- * recorded on an invoice is not raised.
+ * payment_seen: one fact per unexplained credit the matcher offers as an open invoice's payment,
+ * so a mark holds whatever invoices come and go. About the invoice ranked first alone, else the
+ * credit itself with no client; a credit that may be money already recorded is not raised.
  */
 export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(function* (
   ctx: SenseContext,
