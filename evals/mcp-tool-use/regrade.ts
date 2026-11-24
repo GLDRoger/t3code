@@ -42,6 +42,7 @@ for (const file of positionals) {
     const row = JSON.parse(line);
     const testCase = cases.get(row.id);
     if (testCase === undefined || row.error !== undefined) continue;
+    const expect = row.arm === "raw" ? (testCase.expectRaw ?? testCase.expect) : testCase.expect;
     // Claude rows carry their responses, so their text is read again as the chat shows it.
     const responses = Array.isArray(row.transcript)
       ? row.transcript.flatMap((message: { role?: string; content?: unknown }) =>
@@ -53,7 +54,7 @@ for (const file of positionals) {
       ? row.checks.filter((check: Check) => check.check.startsWith("rubric "))
       : [];
     const checks = [
-      ...gradeSample(testCase.expect, graded, pastedText(testCase), worldFilePaths(testCase)),
+      ...gradeSample(expect, graded, pastedText(testCase), worldFilePaths(testCase)),
       ...rubric,
     ];
     const failed = checks.filter((check) => !check.pass);

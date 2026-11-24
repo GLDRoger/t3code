@@ -11,6 +11,7 @@ import { useNowMinuteMs } from "./useKinClock";
 import { kinPlacesAtom } from "./kinPlacesAtom";
 import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
 import { kinWorkLiveAtom, type KinWorkTarget } from "./useKinWork";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 /** The destinations this person has, and whether the host has said which places they reach. */
 export function useKinDestinations(target: KinWorkTarget) {
@@ -42,7 +43,7 @@ export function useKinMyDueTasks(
   // Like the task list, it lives as long as the screen, which a new company or host remounts.
   const [follower] = useState(() =>
     createKinWorkFollowedRead({
-      read: (input) => kinClient.workList.run(appAtomRegistry, { environmentId, input }),
+      read: (input) => runKinCommand(appAtomRegistry, kinClient.workList, { environmentId, input }),
       rows: () =>
         appAtomRegistry
           .get(kinWorkLiveAtom({ environmentId, orgId }))

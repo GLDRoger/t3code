@@ -8,6 +8,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { kinClient } from "./kinClient";
 import { kinDraftAtom, kinDraftKey } from "./kinDraft";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 /** Opens a Kin chat, with `draft` ready in its box when given: an Ask of its own (`kinAskDraft`). */
 export function useKinOpenChat() {
@@ -42,7 +43,7 @@ export function useKinOpenAgentChat() {
     agentId: KinAgentId,
     draft?: string,
   ) => {
-    const result = await kinClient.chatWithAgent.run(appAtomRegistry, {
+    const result = await runKinCommand(appAtomRegistry, kinClient.chatWithAgent, {
       environmentId,
       input: { orgId, agentId },
     });

@@ -47,6 +47,7 @@ import { useKinSectionCanSet, useKinSectionSet, useKinShell } from "../useKinShe
 import type { KinWorkTarget } from "../useKinWork";
 import { KinSettingsField, KinSettingsFormDialog } from "./KinSettingsControls";
 import { KinSettingsLoading, KinSettingsRow, KinSettingsSection } from "./KinSettingsLayout";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 /**
  * The shell as this page holds it: the host's, or a save's answer until `kin.access.me` reads it
@@ -331,7 +332,7 @@ function KinSetUpRow(props: KinWorkTarget) {
     if (chief === undefined || chief === null) return;
     setBusy(true);
     setProblem(null);
-    const chat = await kinClient.chatWithAgent.run(appAtomRegistry, {
+    const chat = await runKinCommand(appAtomRegistry, kinClient.chatWithAgent, {
       environmentId,
       input: { orgId, agentId: chief.agentId },
     });

@@ -6,9 +6,11 @@ import {
   type KinAttachment,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
+  ComposerAttachButton,
+  ComposerAttachInput,
   ComposerAttachmentFileList,
   ComposerAttachmentMediaRow,
   ComposerFilePreviewDialog,
@@ -385,3 +387,21 @@ export function KinComposerAttachmentStrip(props: {
 const NONE: ReadonlyArray<never> = [];
 const noop = () => {};
 const noCopy = () => Promise.resolve();
+
+/** T3's paperclip with its own hidden file input, for a Kin composer. */
+export function KinAttachButton(props: {
+  readonly addComposerAttachments: (files: File[]) => Promise<boolean>;
+  readonly focusComposer: () => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <ComposerAttachInput
+        ref={input}
+        addComposerAttachments={props.addComposerAttachments}
+        focusComposer={props.focusComposer}
+      />
+      <ComposerAttachButton onOpenPicker={() => input.current?.click()} />
+    </>
+  );
+}
