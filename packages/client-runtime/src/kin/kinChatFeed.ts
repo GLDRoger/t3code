@@ -862,8 +862,9 @@ export const latestKinSeq = (messages: ReadonlyArray<KinMessage>) =>
   messages[messages.length - 1]?.seq ?? 0;
 
 /**
- * The seq to mark read, or null. Only while the reader sees the end, past the last seq marked or
- * already tried, and while the inbox counts anything unread (`null` while the inbox hasn't loaded).
+ * The seq to tell the host the reader has seen, or null; seeing clears banners, not unread. Only
+ * while the reader sees the end, past the last seq sent or already tried, and while the inbox
+ * counts anything unread (`null` while the inbox hasn't loaded).
  * A refused seq stays tried until the caller rearms it, so a failing host isn't asked on every render.
  */
 export function kinSeqToMarkRead(input: {

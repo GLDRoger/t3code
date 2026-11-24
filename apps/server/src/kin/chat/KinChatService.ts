@@ -810,6 +810,24 @@ const make = Effect.gen(function* () {
     }
     return member;
   });
+  /** A person answered here (a send, a reaction, a card answer): their read mark reaches `seq`. */
+  const markAnswered = Effect.fn("KinChatService.markAnswered")(function* (
+    member: KinChatMember,
+    seq: number,
+  ) {
+    if (member.principal._tag !== "person") return;
+    const previous = yield* repo.getReadState(member);
+    yield* repo.markRead({ ...member, seq, updatedAt: yield* now });
+    const updated = yield* requireRecord(repo.getReadState(member));
+    if (Option.isSome(previous) && updated.lastReadSeq === previous.value.lastReadSeq) return;
+    yield* hub.publish({
+      type: "read.updated",
+      orgId: member.orgId,
+      chatId: member.chatId,
+      memberId: member.memberId,
+      seq: updated.lastReadSeq,
+    });
+  });
   /**
    * Another person's direct chat with a lead: the lead reads it only on a turn that person's
    * message there woke, never on its owner's. Stored rows decide.
@@ -1732,6 +1750,16 @@ const make = Effect.gen(function* () {
       return yield* notAllowed;
     return yield* actOn(identity, member, widget, request, null, committed);
   });
+  /** Every answer a person gives on a card passes here: their read mark reaches its message. */
+  const answeredCard = Effect.fn("KinChatService.answeredCard")(function* (
+    caller: PersonCaller,
+    input: KinWidgetsActInput,
+  ) {
+    const identity = yield* personFor(caller, input);
+    const { widget, member } = yield* tapTarget(identity, input.widgetId);
+    const card = yield* requireRecord(repo.getMessage(widget));
+    yield* markAnswered(member, card.seq);
+  });
   /** Before the tap's transaction: the committed item a deferral card's decision tap acts on. */
   const committedDeferral = Effect.fn("KinChatService.committedDeferral")(function* (
     caller: PersonCaller,
@@ -2197,6 +2225,7 @@ const make = Effect.gen(function* () {
       passedOn: input.passedOn,
       ...(input.replies === false ? { replies: false as const } : {}),
     });
+    if (identity._tag === "person") yield* markAnswered(member, message.seq);
     // A reply someone waits on doesn't use up the hourly room for unprompted notices.
     if (
       Option.isNone(existing) &&
@@ -3437,20 +3466,17 @@ const make = Effect.gen(function* () {
       },
       (effect) => transaction(effect).pipe(NodeSqliteClient.readOnly),
     ),
+    // Opening a chat is seeing it, not reading it: only its banners go (`markAnswered` reads).
     markRead: Effect.fn("KinChatService.markRead")(function* (identity, input) {
       identity = yield* identityFor(identity, input);
       const member = yield* memberFor(identity, input.chatId);
-      const previous = yield* repo.getReadState(member);
-      yield* repo.markRead({ ...member, seq: input.seq, updatedAt: yield* now });
-      const updated = yield* requireRecord(repo.getReadState(member));
-      if (Option.isNone(previous) || updated.lastReadSeq !== previous.value.lastReadSeq)
-        yield* hub.publish({
-          type: "read.updated",
-          orgId: identity.orgId,
-          chatId: input.chatId,
-          memberId: member.memberId,
-          seq: updated.lastReadSeq,
-        });
+      yield* hub.publish({
+        type: "chat.seen",
+        orgId: identity.orgId,
+        chatId: input.chatId,
+        memberId: member.memberId,
+        seq: input.seq,
+      });
     }, transaction),
     createTaskCard: Effect.fn("KinChatService.createTaskCard")(function* (input) {
       if (input.orgId !== "kin-default") return yield* notFound;
@@ -3887,7 +3913,15 @@ const make = Effect.gen(function* () {
     }, transaction),
     act: Effect.fn("KinChatService.act")(function* (caller, input) {
       const committed = yield* committedDeferral(caller, input);
-      return yield* refusedAfter(actInside(caller, input, committed), caller, input);
+      return yield* refusedAfter(
+        actInside(caller, input, committed).pipe(
+          Effect.tap((result) =>
+            isKinChatError(result) ? Effect.void : answeredCard(caller, input),
+          ),
+        ),
+        caller,
+        input,
+      );
     }),
     attachDeferralItems: Effect.fn("KinChatService.attachDeferralItems")(function* (read) {
       yield* Effect.acquireRelease(
@@ -4056,6 +4090,7 @@ const make = Effect.gen(function* () {
             : {}),
           by,
         });
+      if (request.on) yield* markAnswered(member, message.seq);
       if (changed)
         yield* hub.publish({
           type: "reaction.updated",

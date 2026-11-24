@@ -256,7 +256,7 @@ The phase-1 updater rebuilds its open-card index for the reserved default org an
 
 ### Read state and Waiting on you
 
-- **Read state:** `kin_read_state (org_id, chat_id, member_id, last_read_seq)`. `kin.messages.markRead({ chatId, seq })` only moves forward. Unread count is the posted messages with `seq > last_read_seq` not authored by the member.
+- **Read state:** `kin_read_state (org_id, chat_id, member_id, last_read_seq)`. A person's mark moves, only forward, when they answer: their own send (to it), a reaction (to the message reacted to) or a card answer (to the card's message). Opening a chat is seeing, not reading: `kin.messages.markRead({ chatId, seq })` leaves the mark and only takes that chat's banners off the person's devices. Unread count is the posted messages with `seq > last_read_seq` not authored by the member.
 - **Waiting on you:** `kin_waiting (org_id, waiting_id, person_id, chat_id, message_id, widget_id, reason, created_at, resolved_at, resolution)`. `reason` is `approval | decision | question | suggestion | mention`. Rows come from:
   - a widget upsert with `awaiting` (one row per person; removed people resolve as `superseded`),
   - an agent message with `intent: "question"` that mentions a person, or any agent question in a direct chat,
@@ -497,7 +497,7 @@ Run with `cd apps/server && vp test run src/kin` and `cd packages/contracts && v
 - Widgets: `act` with a stale revision fails `widget_changed`; on an approval widget fails `use_approvals`; `kin_widget_upsert` with `type: "approval"` fails.
 - Task card: a fake orchestrator emitting thread status changes moves the card through `working → needs_decision → done` with rising revisions and no new messages.
 - Stream: subscribe with `afterSeq` and `afterChangeSeq` gets the missed messages plus messages and widgets changed while away, then live ones, with no duplicates across a concurrent send; more than 200 missed gives `reset`.
-- Read state: `markRead` never moves back; unread counts exclude the reader's own messages.
+- Read state: the mark never moves back and moves only on a send, reaction or card answer; unread counts exclude the reader's own messages.
 - Waiting: an agent question in a direct chat adds a row; the owner's reply resolves it; the list stream shows both changes.
 - Floor manager: table tests for rules 1 to 5, including a mention of the last speaker, the 6-turn cap, `answer` refused on a second turn, and notices outside runs.
 - Budget: `AgentContextBudget.test.ts` passes unchanged.

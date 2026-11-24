@@ -261,17 +261,18 @@ it.effect("an agent takes back or puts right only its own message that no one ha
     TestClock.setTime(IST_MON_0930),
     Effect.gen(function* () {
       const { sql, chats, repo, owner, orgId, chatOf, say, wake } = yield* ambermill;
+      // Her reply reads all before it, so Finance's words come after it.
+      const asked = yield* chats.send(owner, {
+        chatId: chatOf("finance"),
+        body: "ok",
+        clientMessageId: "m1",
+      });
       const chase = yield* say(
         "finance",
         "m-chase",
         "Lumen Grove still owes INV-14 (₹85,000), 12 days late.",
       );
       yield* say("finance", "m-gst", "The October GST return is due Thursday 26 Nov.");
-      const asked = yield* chats.send(owner, {
-        chatId: chatOf("finance"),
-        body: "ok",
-        clientMessageId: "m1",
-      });
       yield* wake("finance");
       const withdraw = (agent: string, messageId: string, why = "Lumen Grove paid") =>
         callAs(agent, "message_withdraw", { messageId, why });
@@ -384,10 +385,18 @@ it.effect("an agent takes back or puts right only its own message that no one ha
         edited: replacedAt,
       });
 
-      // Once Rhea has read it, it is hers as written: both tools refuse and name her.
-      const [latest] = yield* sql<{ seq: number }>`SELECT MAX(seq) AS seq FROM kin_messages
-        WHERE chat_id = ${chatOf("finance")}`;
+      // Rhea only opening the chat leaves it Finance's to put right.
+      const [latest] = yield* sql<{ seq: number; messageId: KinMessageId }>`SELECT seq,
+          message_id AS "messageId" FROM kin_messages WHERE chat_id = ${chatOf("finance")}
+        ORDER BY seq DESC LIMIT 1`;
       yield* chats.markRead(owner, { chatId: chatOf("finance"), seq: latest!.seq });
+      const again = yield* callAs("finance", "message_replace", {
+        messageId: "m-gst",
+        body: "The October GST return is due Friday 27 Nov, filed by Meera.",
+      });
+      assert.isTrue(again.ok, again.text);
+      // Once Rhea reacts at or past it, it is hers as written: both tools refuse and name her.
+      yield* chats.react(owner, { messageId: latest!.messageId, emoji: "❤️", on: true });
       const read = OWN_MESSAGE_REFUSALS.read("Rhea Rao");
       refused(yield* withdraw("finance", "m-gst"), read);
       refused(yield* callAs("finance", "message_replace", { messageId: "m-gst", body: "x" }), read);
@@ -542,15 +551,14 @@ it.effect("a review wake needs time unread, a change since, and no review pendin
         (yield* sweep(tuesday0945 + 3)).map((one) => one.agentId),
         ["chief"],
       );
-      // Once read, nothing is reviewed.
+      // Once answered, nothing is reviewed.
       yield* sql`UPDATE kin_events SET state = 'done' WHERE dedupe_key LIKE 'review:%'`;
       yield* moved(tuesday0945 + 4);
-      const [latest] = yield* sql<{ seq: number }>`SELECT MAX(seq) AS seq FROM kin_messages
-        WHERE chat_id = ${chatOf("finance")}`;
       const services = Option.getOrThrow((yield* Kin.KinServer).services);
-      yield* Context.get(services, KinChatService).markRead(owner, {
+      yield* Context.get(services, KinChatService).send(owner, {
         chatId: chatOf("finance"),
-        seq: latest!.seq,
+        body: "Noted.",
+        clientMessageId: "rhea-noted",
       });
       assert.deepStrictEqual(yield* sweep(tuesday0945 + 5), []);
     }).pipe(Effect.provide(layer)),
@@ -869,15 +877,15 @@ it.effect("a review wake names only entries matched exactly that its turn may re
       assert.isDefined(made);
       assert.include(made!.changed.join("\n"), "INV-42 (Orbit retainer)");
       assert.notInclude(made!.text, "Orbit");
-      // Read before its turn starts: nothing is left for it.
+      // Opened, it is still due; reacted to before its turn starts, nothing is left for it.
       assert.isTrue(yield* reviewStillDue(org, event));
-      const [latest] = yield* sql<{ seq: number }>`SELECT MAX(seq) AS seq FROM kin_messages
-        WHERE chat_id = ${chatOf("finance")}`;
-      const services = Option.getOrThrow((yield* Kin.KinServer).services);
-      yield* Context.get(services, KinChatService).markRead(owner, {
-        chatId: chatOf("finance"),
-        seq: latest!.seq,
-      });
+      const [latest] = yield* sql<{ seq: number; messageId: KinMessageId }>`SELECT seq,
+          message_id AS "messageId" FROM kin_messages WHERE chat_id = ${chatOf("finance")}
+        ORDER BY seq DESC LIMIT 1`;
+      const chats = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinChatService);
+      yield* chats.markRead(owner, { chatId: chatOf("finance"), seq: latest!.seq });
+      assert.isTrue(yield* reviewStillDue(org, event));
+      yield* chats.react(owner, { messageId: latest!.messageId, emoji: "❤️", on: true });
       assert.isFalse(yield* reviewStillDue(org, event));
       yield* done;
     }).pipe(Effect.provide(layer)),
