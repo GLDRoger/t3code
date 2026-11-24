@@ -37,7 +37,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
-import { ownerLevelSql } from "../people/KinAccess.ts";
+import { keySentSql } from "../chat/keySent.ts";
+import { ownerLevelPeople, ownerLevelSql } from "../people/KinAccess.ts";
 import { billedParty, billingClientFromProject } from "./billTo.ts";
 import { fieldList, listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
@@ -799,6 +800,36 @@ const changesOf = Effect.fn("KinRecords.changesOf")(function* (
     kind: row.kind,
     fields: parseChanges(row.fieldsJson).filter((change) => change.field.trim() !== ""),
   }));
+});
+
+const HAND_OFF_FIELDS = new Set(["owner", "handedBack", "reason", "state"]);
+
+/** G13: the hand-back that blocks giving this task again until it changes or the owner asks. */
+export const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
+  orgId: KinOrgId,
+  before: RecordRow,
+  to: KinWorkPrincipal,
+  turn?: { readonly agentId: KinAgentId; readonly wakeupId: string },
+) {
+  const who = `${to._tag}:${principalId(to)}`;
+  let back: FieldChange | undefined;
+  for (const change of yield* changesOf(orgId, before.recordId, 50).pipe(workFailure)) {
+    back = change.fields.find((field) => field.field === "handedBack" && field.from === who);
+    if (back !== undefined) break;
+    if (change.fields.some((field) => !HAND_OFF_FIELDS.has(field.field))) return;
+  }
+  if (back === undefined || turn === undefined) return back;
+  const sql = yield* SqlClient.SqlClient;
+  const owners = [...(yield* ownerLevelPeople(orgId))];
+  const said = yield* sql`SELECT 1 FROM kin_events e
+    JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+      AND m.chat_id = json_extract(e.json, '$.chatId')
+    WHERE e.org_id = ${orgId} AND e.agent_id = ${turn.agentId}
+      AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
+      AND m.origin_json IS NULL AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
+      AND m.author_person_id IN ${sql.in(owners.length === 0 ? [""] : owners)}
+    LIMIT 1`;
+  return said.length === 0 ? back : undefined;
 });
 
 const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, recordId: string) {

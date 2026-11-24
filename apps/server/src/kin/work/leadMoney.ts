@@ -255,6 +255,21 @@ const shownFields = (fields: ReadonlyArray<FieldDef>) =>
       ...(one.choices === undefined ? {} : { choices: [...one.choices] }),
     }));
 
+function fieldLine(field: (typeof ShownField)["Type"]) {
+  const type =
+    field.choices !== undefined
+      ? `one of: ${field.choices.join(", ")}`
+      : field.type === "money"
+        ? "amount"
+        : field.type === "yesno"
+          ? "yes or no"
+          : field.type
+              .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+              .replace(/_/g, " ")
+              .toLowerCase();
+  return `${field.label} (${type})`;
+}
+
 const describeDefined = Effect.fn("KinWorkTools.describeDefined")(function* (
   lead: Lead,
   id: string,
@@ -381,10 +396,7 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
       clientMessageId: `kin-list:${proposalId}`,
       question: `${proposal._tag === "new" ? "Create the list" : "Add to"} ${shown.name}?`,
       detail: [
-        ...shown.fields.map(
-          (one) =>
-            `${one.label} (${one.type}${one.choices === undefined ? "" : `: ${one.choices.join(", ")}`})`,
-        ),
+        ...shown.fields.map(fieldLine),
         ...(shown.categories.length === 0 ? [] : [`Categories: ${shown.categories.join(", ")}`]),
         ...(teamChange === true
           ? ["The whole team will see and add entries."]

@@ -1104,16 +1104,19 @@ const shownAs = (input: ListInput) => ({
 });
 
 /** Reminders and a check speak only for a list that is a section, or is asked to be one. */
-const watchRefusal = Effect.fn("KinRegisters.watchRefusal")(function* (
+const sectionOptionsRefusal = Effect.fn("KinRegisters.sectionOptionsRefusal")(function* (
   orgId: KinOrgId,
   id: string,
   input: ListInput,
 ) {
   if (input.dock !== undefined && input.section !== true)
     return invalid("dock comes with section true: the phone's dock holds sections.");
+  if (input.section === true) {
+    const refusal = yield* KinShell.listDockRefusal(orgId, id, input.dock);
+    return refusal === undefined ? undefined : invalid(refusal);
+  }
   if ((input.remindOn ?? undefined) === undefined && (input.check ?? undefined) === undefined)
     return undefined;
-  if (input.section === true) return undefined;
   const shell = yield* KinShell.get(orgId);
   return shell.sections.some((one) => one.id === KinShell.listSectionId(id))
     ? undefined
@@ -1170,7 +1173,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       }
       return true;
     });
-    const refused = yield* watchRefusal(orgId, def.id, input);
+    const refused = yield* sectionOptionsRefusal(orgId, def.id, input);
     if (refused !== undefined) return yield* refused;
     // A reminder on the due day stores none: the due day is sensed already.
     const onDue =
@@ -1272,8 +1275,8 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     return yield* invalid(
       `${name} has its place in Kin already, so it can't be a section of its own.`,
     );
-  const unwatched = yield* watchRefusal(orgId, named, input);
-  if (unwatched !== undefined) return yield* unwatched;
+  const sectionRefused = yield* sectionOptionsRefusal(orgId, named, input);
+  if (sectionRefused !== undefined) return yield* sectionRefused;
   if (!isCurrency(definition.currency))
     return yield* invalid(`${definition.currency} is not a currency code.`);
   const draft = {
