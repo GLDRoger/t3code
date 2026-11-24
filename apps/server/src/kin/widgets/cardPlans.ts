@@ -11,7 +11,14 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 /** The fixed actions a `kin_ask` option may run (`cardActions.ts`), and what each names. */
-const CARD_ACTIONS = ["done", "drop", "start", "create_list", "take_default"] as const;
+const CARD_ACTIONS = [
+  "done",
+  "drop",
+  "start",
+  "create_list",
+  "take_default",
+  "record_payment",
+] as const;
 export const CardActionInput = Schema.Struct({
   kind: Schema.Literals(CARD_ACTIONS),
   target: KinTrimmedText.check(Schema.isMaxLength(200)).annotate({
@@ -62,7 +69,28 @@ const ListPlan = Schema.Struct({
   name: Schema.String,
   draw: CardDraw,
 });
-const RunPlan = Schema.Union([RecordPlan, StartPlan, ListPlan]);
+/**
+ * A Bank transactions credit recorded as an invoice's payment, as the statement matcher offered
+ * the pair when drawn: the credit at its revision, the invoice at what it owed then (`seen`).
+ */
+const PaymentPlan = Schema.Struct({
+  kind: Schema.Literal("record_payment"),
+  recordId: Schema.String,
+  key: Schema.String,
+  title: Schema.String,
+  seen: Schema.String,
+  bankRecordId: Schema.String,
+  bankKey: Schema.String,
+  rev: Schema.Number,
+  amountMinor: Schema.Number,
+  currency: Schema.String,
+  day: Schema.String,
+  /** Tax the client withheld, when the matcher read the credit as the amount less it. */
+  withheldMinor: Schema.NullOr(Schema.Number),
+  draw: CardDraw,
+});
+export type PaymentPlan = typeof PaymentPlan.Type;
+const RunPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, PaymentPlan]);
 export type RunPlan = typeof RunPlan.Type;
 const DefaultPlan = Schema.Struct({
   kind: Schema.Literal("take_default"),
@@ -186,6 +214,7 @@ export const CardPlan = Schema.Union([
   RecordPlan,
   StartPlan,
   ListPlan,
+  PaymentPlan,
   DefaultPlan,
   RoutePlan,
   TakenPlan,

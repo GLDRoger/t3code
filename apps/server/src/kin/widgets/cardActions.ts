@@ -54,6 +54,12 @@ import {
 } from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
 import {
+  drawPayment,
+  paymentLabel,
+  paymentLine,
+  recordPayment,
+} from "../work/statements/creditPayment.ts";
+import {
   type CardActionInput,
   type CardDraw,
   type CardPlan,
@@ -99,6 +105,8 @@ const labelOf = (plan: CardPlan): string => {
       return "Start it now";
     case "create_list":
       return "Create the list";
+    case "record_payment":
+      return paymentLabel(plan);
     case "take_default": {
       const label = `Take the default: ${plan.label}`;
       return label.length <= LABEL_MAX ? label : `${label.slice(0, LABEL_MAX - 1)}…`;
@@ -130,6 +138,8 @@ const lineOf = (plan: CardPlan): string => {
       return `Start ${quoted(plan.title)} now`;
     case "create_list":
       return `Create the list ${quoted(plan.name, 60)}`;
+    case "record_payment":
+      return paymentLine(plan);
     case "take_default": {
       const went = `Go with ${quoted(plan.label, 40)} on ${quoted(plan.question, 60)}`;
       return plan.final === null ? went : `${went}: ${lineOf(plan.final)}`;
@@ -341,6 +351,10 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
           draw: drawn,
         } as const;
       }
+      case "record_payment": {
+        yield* ownerTier("payment_record");
+        return yield* drawPayment(orgId, input.target, drawn);
+      }
     }
   });
   return plan;
@@ -410,7 +424,13 @@ export const draw = Effect.fn("KinCardActions.draw")(function* (
 const actionOf = (plan: RunPlan): RunInput => ({
   kind: plan.kind,
   target:
-    plan.kind === "start" ? plan.itemId : plan.kind === "create_list" ? plan.proposalId : plan.key,
+    plan.kind === "start"
+      ? plan.itemId
+      : plan.kind === "create_list"
+        ? plan.proposalId
+        : plan.kind === "record_payment"
+          ? `${plan.bankKey} ${plan.key}`
+          : plan.key,
 });
 /** The same action on the same thing at the same revision, whoever drew it. */
 const sameAction = (a: CardPlan, b: CardPlan) =>
@@ -846,6 +866,27 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
       if (made === undefined) return { title: "List created", text: "Created." };
       const { words, ...open } = yield* listPlace(orgId, made);
       return { title: "List created", text: `Created. It's in ${words}.`, open };
+    }
+    case "record_payment": {
+      if (!owner) return yield* notAllowed("Only the owner or a co-owner confirms money received.");
+      yield* refuseOff("invoices");
+      yield* refuseOff("bank_transactions");
+      const why = yield* drawsHold(orgId, draws);
+      if (why !== undefined) return nothingDone(why);
+      const done = yield* recordPayment(
+        orgId,
+        plan,
+        {
+          actor: { _tag: "person", personId },
+          via: "owner",
+          askedBy: personId,
+          chatId: tap.widget.chatId,
+          answering: [tap.widget.widgetId, ...alsoAnswering],
+        },
+        tap.widget.widgetId,
+        records,
+      );
+      return done ?? nothingDone(`${plan.bankKey} or ${plan.key} changed since this was offered`);
     }
   }
 });
