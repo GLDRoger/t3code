@@ -3224,9 +3224,11 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
         priced.key,
       );
       assert.notInclude(
-        (yield* OwnerDocs.search(arjun, { orgId, text: "priced proposal", everything: true })).hits.map(
-          (hit) => hit.key,
-        ),
+        (yield* OwnerDocs.search(arjun, {
+          orgId,
+          text: "priced proposal",
+          everything: true,
+        })).hits.map((hit) => hit.key),
         priced.key,
       );
       assert.notInclude(
@@ -3245,8 +3247,14 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
         "not_found",
       );
       // Rhea marking it "Only me" herself takes Zoya's read and her card's text back.
-      yield* OwnerDocs.label([owner], { orgId, key: KinRecordKey.make(priced.key), sensitive: true });
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(readAsZoya(priced.key, 1, pricedCard.widgetId))));
+      yield* OwnerDocs.label([owner], {
+        orgId,
+        key: KinRecordKey.make(priced.key),
+        sensitive: true,
+      });
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(readAsZoya(priced.key, 1, pricedCard.widgetId))),
+      );
       assert.notProperty(yield* zoyasPage(), "draft");
 
       // A co-owner's tap on it does what it does on a short draft's card.

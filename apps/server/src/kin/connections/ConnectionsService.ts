@@ -3131,13 +3131,16 @@ const make = Effect.gen(function* () {
         : undefined;
     const approvedMail =
       called._tag === "email" && approval?.draft.kind === "mail" && approval.made === null;
-    if (
-      approvedMail &&
-      !mailKeepsDraft(called, approval.draft.text, tool.name === MAIL_TOOL.reply)
-    )
-      return yield* refuse(turn, entry, fail("invalid_state", approvedWords("kin_connection_call")));
+    if (approvedMail && !mailKeepsDraft(called, approval.draft.text, tool.name === MAIL_TOOL.reply))
+      return yield* refuse(
+        turn,
+        entry,
+        fail("invalid_state", approvedWords("kin_connection_call")),
+      );
     const prepared: Prepared =
-      approvedMail && called._tag === "email" ? { ...called, body: plainMail(called.body) } : called;
+      approvedMail && called._tag === "email"
+        ? { ...called, body: plainMail(called.body) }
+        : called;
     if (prepared._tag === "call" && toJson(args).length > MAX_CARD_ARGS)
       return yield* refuse(
         turn,

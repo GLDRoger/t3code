@@ -160,7 +160,10 @@ const untitled = (draft: string) => asWords(draft).replace(TITLE, "");
 
 /** A mail as it is sent: the draft's text without its markdown marks, as Copy text gives it. */
 export const plainMail = (text: string) => kinDocCopyText(text, { listMarks: true });
-const wordsOf = (text: string) => plainMail(text).split(/\s+/).filter((word) => word !== "");
+const wordsOf = (text: string) =>
+  plainMail(text)
+    .split(/\s+/)
+    .filter((word) => word !== "");
 /** Whether a mail's body has its draft's words, none added, dropped or changed: only marks go. */
 const keepsWords = (body: string, draft: string) => {
   const sent = wordsOf(body);

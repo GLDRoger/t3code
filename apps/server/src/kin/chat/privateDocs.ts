@@ -76,7 +76,11 @@ export const docsForViewer = Effect.fn("KinPrivateDocs.forViewer")(function* (
   if (keys.length === 0) return page;
   if ("personId" in viewer ? yield* isOrgOwner(orgId, viewer.personId) : !viewer.sharedTurn)
     return page;
-  const hidden = yield* sensitiveDocs(orgId, keys, "personId" in viewer ? viewer.personId : undefined);
+  const hidden = yield* sensitiveDocs(
+    orgId,
+    keys,
+    "personId" in viewer ? viewer.personId : undefined,
+  );
   if (hidden.size === 0) return page;
   return {
     messages: page.messages.map((message) =>
