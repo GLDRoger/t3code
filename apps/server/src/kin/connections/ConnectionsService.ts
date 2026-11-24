@@ -147,7 +147,7 @@ import {
   SIGN_IN_PRESETS,
 } from "./presets.ts";
 import { resultSource, resultText } from "./ResultText.ts";
-import { ownerLevel, ownerLevelSql } from "../people/KinAccess.ts";
+import { accessOf, accessSql, ownerLevel, ownerLevelSql } from "../people/KinAccess.ts";
 import { viewVisible } from "../work/teamView.ts";
 import {
   attachmentOf,
@@ -225,6 +225,9 @@ export const OWN_CONFIRM_ONLY =
 /** Why a card from a person's own mailbox closed when the mailbox went. */
 export const MAILBOX_GONE = "The mailbox it would go from was disconnected, so nothing was sent.";
 const MOVE_MAIL_ONLY = "Only a Google or Microsoft mailbox can move. Nothing changed.";
+/** Kin keeps no record of who signed a company mailbox in, so only the owner takes one. */
+export const MOVE_OWNER_ONLY =
+  "Only the owner makes a company mailbox their own. If this is your personal account, disconnect it here and connect it again under Your mailboxes. Nothing changed.";
 export const MOVE_PAUSED =
   "This mailbox is paused. Resume it first, then make it your own. Nothing changed.";
 export const MONEY_CONFIRM =
@@ -1864,6 +1867,11 @@ const make = Effect.gen(function* () {
       return yield* notFound;
     }
     if ((row.personId ?? null) === to) return yield* myMailbox(orgId, personId);
+    if (
+      to !== null &&
+      (yield* accessOf(orgId, KinPersonId.make(personId)).pipe(provideSql)) !== "owner"
+    )
+      return yield* fail("not_allowed", MOVE_OWNER_ONLY);
     if (mailProviderOf(row) === undefined || row.auth !== "oauth" || row.accountLabel === null)
       return yield* fail("invalid_state", MOVE_MAIL_ONLY);
     if (to !== null && row.pausedAt !== null) return yield* fail("invalid_state", MOVE_PAUSED);
@@ -1876,11 +1884,13 @@ const make = Effect.gen(function* () {
         if (Option.isSome(stored)) yield* secrets.setSignIn(connectionId, stored.value);
         yield* sql.withTransaction(
           Effect.gen(function* () {
-            // The mover is still on the team and owner level, and the row still of the kind read.
+            // The mover is still on the team and may move it this way (the owner takes a company
+            // one; owner level gives their own), and the row still of the kind read.
             const mover = yield* sql`SELECT 1 FROM kin_people p WHERE p.org_id = ${orgId}
               AND p.person_id = ${personId} AND p.removed_at IS NULL
-              AND ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}`;
-            if (mover.length === 0) return yield* notOwner;
+              AND ${sql.literal(to === null ? ownerLevelSql("p.org_id", "p.person_id") : `${accessSql("p")} = 'owner'`)}`;
+            if (mover.length === 0)
+              return yield* to === null ? notOwner : fail("not_allowed", MOVE_OWNER_ONLY);
             const ended = yield* sql`UPDATE kin_connections
               SET removed_at = ${now}, updated_at = ${now}
               WHERE org_id = ${orgId} AND connection_id = ${row.connectionId}

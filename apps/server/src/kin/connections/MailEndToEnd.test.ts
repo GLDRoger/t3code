@@ -75,6 +75,7 @@ import {
   ASKED_OWN,
   type CloseCards,
   MAILBOX_GONE,
+  MOVE_OWNER_ONLY,
   MOVE_PAUSED,
   NO_OWN_MAILBOX,
   OWN_CONFIRM_ONLY,
@@ -109,6 +110,7 @@ const HELLO = "hello@invented-co.example";
 const CLIENT = "Ravi Menon <ravi@lumen.example>";
 const MEERA = "meera@invented-co.example";
 const ARJUN_OWN = "arjun@invented-co.example";
+const ASHA_OWN = "asha@invented-co.example";
 const decodeStoredEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
 const people = (personId: KinPersonId) => [{ _tag: "person" as const, orgId, personId }];
 
@@ -175,7 +177,23 @@ const gateFor = (cards: Array<Card>) =>
 
 // Records beside connections, as on a running server (`kin/layer.ts`), not under them.
 /** Where a test holds a send: reading its file, or the provider's own send. */
-type Gates = { file?: Effect.Effect<void>; send?: () => Promise<void> };
+type Gates = {
+  file?: Effect.Effect<void>;
+  send?: () => Promise<void>;
+  /** Where a move holds, under its fence, as it keeps the sign-in for the new row. */
+  keep?: Effect.Effect<void>;
+};
+const gatedSecrets = (gates: Gates) =>
+  Layer.effect(
+    ConnectionSecrets.KinConnectionSecrets,
+    Effect.map(ConnectionSecrets.KinConnectionSecrets, (secrets) =>
+      ConnectionSecrets.KinConnectionSecrets.of({
+        ...secrets,
+        setSignIn: (connectionId, secret) =>
+          Effect.andThen(gates.keep ?? Effect.void, secrets.setSignIn(connectionId, secret)),
+      }),
+    ),
+  ).pipe(Layer.provideMerge(ConnectionSecrets.layer));
 const gatedFiles = (gates: Gates) =>
   Layer.effect(
     FileSystem.FileSystem,
@@ -191,7 +209,7 @@ const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
   ArrivalFeed.layer.pipe(
     Layer.provideMerge(Layer.merge(Connections.layer, KinRecords.layer)),
     Layer.provide(gateFor(cards)),
-    Layer.provideMerge(ConnectionSecrets.layer),
+    Layer.provideMerge(gatedSecrets(gates)),
     Layer.provide(McpGateway.layer),
     Layer.provide(
       guarded.pipe(
@@ -2302,8 +2320,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
       ),
   );
 
-  it.effect("only the owner level moves a mailbox, and only into or out of their own", () =>
-    setUp((fake) =>
+  it.effect("only the owner takes a company mailbox, and owner level gives only their own", () =>
+    setUp((fake, _cards, gates) =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const connections = yield* KinConnections;
@@ -2321,17 +2339,39 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         // Nobody moves another person's own mailbox: it answers as unknown.
         for (const to of ["mine", "company"] as const)
           assert.strictEqual((yield* refused(owner, meera, to)).reason, "not_found");
-        // A co-owner takes one: it becomes hers, never the owner's.
-        const taken = yield* connections.moveMailbox(people(coOwner), {
+        // A co-owner takes no company mailbox: she disconnects it and connects it as her own.
+        assert.strictEqual((yield* refused(coOwner, hello, "mine")).message, MOVE_OWNER_ONLY);
+        // The owner, made a co-owner after his check and before the move's transaction, is
+        // refused inside it, and nothing moves.
+        const reached = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        gates.keep = Effect.suspend(() => {
+          delete gates.keep;
+          return Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)));
+        });
+        const going = yield* Effect.forkChild(refused(owner, hello, "mine"));
+        yield* Deferred.await(reached);
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${owner}`;
+        yield* Deferred.succeed(release, undefined);
+        assert.strictEqual((yield* Fiber.join(going)).message, MOVE_OWNER_ONLY);
+        yield* sql`UPDATE kin_people SET access = 'owner' WHERE person_id = ${owner}`;
+        assert.include(
+          (yield* connections.list(people(owner), { orgId })).connections.map(
+            (one) => one.connectionId,
+          ),
+          hello,
+        );
+        // The owner takes one: it becomes his, never another person's.
+        const taken = yield* connections.moveMailbox(people(owner), {
           orgId,
           connectionId: hello,
           to: "mine",
         });
         assert.strictEqual(taken.mailbox?.account, HELLO);
-        assert.isNull((yield* connections.mine(people(owner), { orgId })).mailbox);
+        assert.isNull((yield* connections.mine(people(coOwner), { orgId })).mailbox);
         for (const to of ["mine", "company"] as const)
           assert.strictEqual(
-            (yield* refused(owner, taken.mailbox!.connectionId, to)).reason,
+            (yield* refused(coOwner, taken.mailbox!.connectionId, to)).reason,
             "not_found",
           );
         assert.deepStrictEqual(
@@ -2340,12 +2380,12 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           ),
           [accounts],
         );
-        // A paused one is resumed first; a second one of hers sits beside the first.
+        // A paused one is resumed first; a second one of his sits beside the first.
         yield* connections.update(people(owner), { orgId, connectionId: accounts, paused: true });
         assert.strictEqual((yield* refused(owner, accounts, "mine")).message, MOVE_PAUSED);
         yield* connections.update(people(owner), { orgId, connectionId: accounts, paused: false });
         yield* TestClock.adjust("1 minute");
-        const second = yield* connections.moveMailbox(people(coOwner), {
+        const second = yield* connections.moveMailbox(people(owner), {
           orgId,
           connectionId: accounts,
           to: "mine",
@@ -2354,11 +2394,23 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           second.mailboxes?.map((one) => one.account),
           [HELLO, ACCOUNTS],
         );
-        // No longer owner level, she can't give hers to the company.
+        // A co-owner gives her own to the company, but not once she is no longer owner level.
+        fake.addAccount({ provider: "google", address: ASHA_OWN, name: "Asha" });
+        const asha = yield* connectOwn(fake, coOwner, ASHA_OWN);
         yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${coOwner}`;
-        assert.strictEqual(
-          (yield* refused(coOwner, taken.mailbox!.connectionId, "company")).reason,
-          "not_allowed",
+        assert.strictEqual((yield* refused(coOwner, asha, "company")).reason, "not_allowed");
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${coOwner}`;
+        const given = yield* connections.moveMailbox(people(coOwner), {
+          orgId,
+          connectionId: asha as never,
+          to: "company",
+        });
+        assert.isNull(given.mailbox);
+        assert.include(
+          (yield* connections.list(people(owner), { orgId })).connections.map(
+            (one) => one.accountLabel,
+          ),
+          ASHA_OWN,
         );
       }),
     ),

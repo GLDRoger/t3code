@@ -1,9 +1,11 @@
+import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinFailureText, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CONNECTIONS_COPY as COPY,
   KIN_MY_MAILBOX_COPY as MINE,
+  kinTakesMailbox,
   kinAcceptAll,
   kinCallRow,
   kinConnectionChange,
@@ -35,6 +37,7 @@ import { SegmentedControl } from "../../../components/ui/SegmentedControl";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../../lib/clock";
+import { connectionAtomRuntime } from "../../../connection/runtime";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import { kinSignInInApp, kinSignInReturn, useKinConnectionActions } from "./kinConnectionSignIn";
@@ -84,6 +87,7 @@ function ConnectionRecord(props: {
   const actions = useKinConnectionActions(environmentId, orgId, reload);
   const move = useAtomCommand(kinClient.mailboxMove, { reportFailure: false });
   const canMove = useAtomValue(kinClient.mailboxMove.permissionAtom(environmentId));
+  const takes = kinTakesMailbox(useAtomValue(kinAccessAtom(connectionAtomRuntime, environmentId)));
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -359,7 +363,11 @@ function ConnectionRecord(props: {
             />
           </ListSection>
 
-          <ListSection>
+          <ListSection
+            {...(canMove && !takes && kinIsMailConnection(connection)
+              ? { footer: MINE.takeAsCoOwner }
+              : {})}
+          >
             <ListActionRow
               label={COPY.rename}
               onPress={() =>
@@ -392,7 +400,7 @@ function ConnectionRecord(props: {
                 )
               }
             />
-            {canMove && kinIsMailConnection(connection) ? (
+            {canMove && takes && kinIsMailConnection(connection) ? (
               <ListActionRow label={MINE.makeMine} disabled={busy !== null} onPress={confirmTake} />
             ) : null}
             <ListActionRow

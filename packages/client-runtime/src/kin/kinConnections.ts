@@ -24,6 +24,7 @@ import {
   type KinConnectionToolMode,
   type KinMyMailbox,
   type KinOrgId,
+  type KinPersonAccess,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
@@ -1034,6 +1035,9 @@ export const KIN_MY_MAILBOX_COPY = {
   companys: "The company's",
   yours: "Yours",
   makeMine: "Make this my own mailbox",
+  /** Said to a co-owner where the owner has the move (`kinTakesMailbox`). */
+  takeAsCoOwner:
+    "Only the owner can make a company mailbox their own. If this is your personal account, disconnect it here and connect it again under Your mailboxes.",
   makeMineRow: "Kin stops watching it for the company. Your sign-in stays.",
   makeMineTitle: (address: string) => `Make ${address} your own mailbox?`,
   makeMineDetail:
@@ -1046,6 +1050,9 @@ export const KIN_MY_MAILBOX_COPY = {
   makeCompanysAction: "Make it the company's",
   moving: "move this mailbox",
 } as const;
+
+/** Kin keeps no record of who signed a company mailbox in, so only the owner takes one. */
+export const kinTakesMailbox = (kind: KinPersonAccess | null | undefined) => kind === "owner";
 
 /** Every own mailbox, oldest first, from a host before several too. */
 export const kinMyMailboxes = (view: KinMyMailbox) =>
