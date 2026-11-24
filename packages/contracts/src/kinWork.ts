@@ -417,6 +417,7 @@ export const KinProjectNote = Schema.Struct({
   body: KinText,
   at: IsoDateTime,
   by: KinWorkPrincipal,
+  codingAgent: Schema.optional(Schema.String),
   project: KinRecordRef,
 });
 export type KinProjectNote = typeof KinProjectNote.Type;

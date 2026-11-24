@@ -203,6 +203,7 @@ it.effect(
         get_task: read,
         comment_on_task: write,
         set_task_state: write,
+        add_link: write,
         hand_over_tasks: write,
         nudge_task: write,
         hand_task_back: write,
@@ -245,6 +246,7 @@ it.effect(
         draft_invoice: write,
         money_summary: read,
         search_memory: read,
+        set_project_note: write,
       });
       assert.deepStrictEqual(
         Object.keys(yield* toolsOf(owners.secret)).toSorted(),

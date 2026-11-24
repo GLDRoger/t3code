@@ -544,7 +544,13 @@ export const GetResult = Schema.Struct({
   /** Present when a line above has `via`: how to read what a coding agent wrote. */
   codingAgent: Schema.optional(Schema.String),
   /** The note its project leaves on every task: the project's words, not this entry's. */
-  projectNote: Schema.optional(Schema.Struct({ from: Schema.String, text: Schema.String })),
+  projectNote: Schema.optional(
+    Schema.Struct({
+      from: Schema.String,
+      text: Schema.String,
+      via: Schema.optional(Schema.String),
+    }),
+  ),
 });
 /** A deal's next step: a task of ours on its client, linked to the deal, as its page adds one. */
 const DealNext = Schema.Struct({
@@ -2433,11 +2439,17 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, noteFrom)))
       ? undefined
       : yield* projectNoteOf(lead.orgId, noteFrom);
+  if (note?.codingAgent !== undefined)
+    yield* codingAgentTextShown(lead, codingAgentSource(note.codingAgent));
   const fromProject =
     note === undefined
       ? {}
       : {
-          projectNote: { from: `${note.project.key} ${note.project.title}`, text: note.body },
+          projectNote: {
+            from: `${note.project.key} ${note.project.title}`,
+            text: note.body,
+            ...viaKey(note),
+          },
         };
   const whole = team !== undefined && (yield* viewWhole(lead, team, row));
   const deals = yield* withPromises(

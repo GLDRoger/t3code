@@ -19,9 +19,11 @@ import {
   KinWorkHandBackInput,
   KinWorkHandBackResult,
   KinWorkHandOverResult,
+  KinWorkLinkAddInput,
   KinWorkNudgeResult,
   KinWorkTickStepInput,
   KinWorkSteps,
+  KinProjectNoteInput,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
@@ -925,6 +927,32 @@ export const TasksKeyToolkit = Toolkit.make(
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
+  Tool.make("add_link", {
+    ...shared,
+    description:
+      "Add an HTTP or HTTPS link to an entry the person may edit in Kin, with an optional name.",
+    parameters: KinWorkLinkAddInput.mapFields(Struct.pick(["key", "url", "name"])),
+    success: Schema.Struct({ key: KinRecordKey }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("set_project_note", {
+    ...shared,
+    description:
+      "Set the note shown at the top of a project’s tasks, as an owner or co-owner. Pass an empty body to clear it.",
+    parameters: KinProjectNoteInput.mapFields(Struct.pick(["key", "body"])),
+    success: Schema.Struct({
+      key: KinRecordKey,
+      note: Schema.NullOr(Schema.String),
+      material: Schema.String,
+    }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   Tool.make("find", {
     ...shared,
     description:
@@ -1064,6 +1092,7 @@ const GATED: Partial<
   write_doc: readsDocs,
 };
 
+const OWNER_LISTED = new Set(["set_project_note"]);
 const TOOL_SECTIONS: Readonly<Partial<Record<string, SectionId>>> = {
   money_summary: "money",
   open_client: "clients",
@@ -1368,6 +1397,16 @@ const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
       asHolder((holder) => handOverTasks(holder, input)),
     ),
   ),
+  add_link: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.add_link")((input) =>
+      asHolder((holder) => Acts.addLink(holder, input)),
+    ),
+  ),
+  set_project_note: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.set_project_note")((input) =>
+      asHolder((holder) => Acts.setProjectNote(holder, input)),
+    ),
+  ),
   find: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.find")(function* ({ kind, ...input }) {
       if (kind === "projects" || kind === "clients")
@@ -1418,8 +1457,9 @@ const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
 
 // Untraced: it runs for every tool on each list and call.
 const listed = toolVisibility(
-  Effect.fnUntraced(function* (name) {
-    const gate = GATED[name];
+  Effect.fnUntraced(function* (name, method) {
+    const gate =
+      GATED[name] ?? (OWNER_LISTED.has(name) && method !== "tools/call" ? readsMemory : undefined);
     // A direct call meets the same gates as the listing: a tool not listed is not there.
     const section = TOOL_SECTIONS[name];
     if (gate === undefined && section === undefined) return true;

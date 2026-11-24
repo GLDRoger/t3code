@@ -364,6 +364,7 @@ export const projectNoteOf = Effect.fn("KinRecordComments.projectNote")(function
     body: row.body,
     at: iso(row.createdAt),
     by: principalOf(row.authorKind, row.authorId),
+    ...(row.codingAgent === null ? {} : { codingAgent: row.codingAgent }),
     project: {
       recordId: KinRecordId.make(projectId),
       key: KinRecordKey.make(project.key),
@@ -405,13 +406,17 @@ export const writeProjectNote = Effect.fn("KinRecordComments.writeProjectNote")(
     SET removed_at = ${input.now}, removed_by_kind = ${input.by._tag}, removed_by_id = ${by}
     WHERE org_id = ${input.orgId} AND record_id = ${input.projectId} AND removed_at IS NULL
       AND substr(comment_id, 1, ${NOTE_ID.length}) = ${NOTE_ID}`;
-  if (body === "") return;
+  const codingAgentKey = (yield* markedKey({})) ?? null;
+  if (body === "" && codingAgentKey === null) return;
   yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
-      author_id, body, files_json, request_hash, created_at)
+      author_id, body, files_json, request_hash, created_at, coding_agent_key, removed_at,
+      removed_by_kind, removed_by_id)
     VALUES (${input.orgId}, ${commentId}, ${input.projectId},
       (SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_record_comments
         WHERE org_id = ${input.orgId} AND record_id = ${input.projectId}),
-      ${input.by._tag}, ${by}, ${body}, '[]', ${requestHash}, ${input.now})
+      ${input.by._tag}, ${by}, ${body}, '[]', ${requestHash}, ${input.now}, ${codingAgentKey},
+      ${body === "" ? input.now : null}, ${body === "" ? input.by._tag : null},
+      ${body === "" ? by : null})
     ON CONFLICT DO NOTHING`;
 });
 
@@ -554,6 +559,6 @@ export const sheetExtras = Effect.fn("KinRecordComments.sheetExtras")(function* 
       : { comments: detail.comments.map((one) => withCanRemove(viewer, one)) }),
     ...(detail.olderComments === undefined ? {} : { olderComments: detail.olderComments }),
     ...(waiting === undefined ? {} : { waiting }),
-    ...(projectNote === undefined ? {} : { projectNote }),
+    ...(projectNote === undefined ? {} : { projectNote: keyNamedFor(viewer, projectNote) }),
   };
 });

@@ -3292,6 +3292,24 @@ const make = Effect.gen(function* () {
   ) {
     return yield* transaction(
       Effect.gen(function* () {
+        if (input.kind === "url" && (yield* markedKey(writer)) !== undefined) {
+          const row = yield* byId(orgId, recordId).pipe(provideSql);
+          if (row === undefined) return yield* notFound(recordId);
+          const listed = yield* listDef(orgId, row.registerId).pipe(provideSql);
+          const numbered = "number" in parseFields(row.fieldsJson);
+          const refused = keyRefusal({
+            list: row.registerId,
+            money:
+              listed === undefined
+                ? { paidOverTime: row.takesPayments === 1, carriesAmount: false }
+                : moneyOf(listed),
+            state: row.state,
+            numbered,
+            before: { state: row.state, numbered },
+            touches: ["links"],
+          });
+          if (refused !== undefined) return yield* refused;
+        }
         const now = yield* Clock.currentTimeMillis;
         if (!(yield* insertLink(orgId, recordId, input, now))) return false;
         const [row] = yield* sql<{ rev: number; key: string }>`SELECT rev, key FROM kin_records

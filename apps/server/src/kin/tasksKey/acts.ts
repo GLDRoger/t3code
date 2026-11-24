@@ -3,6 +3,8 @@ import {
   type KinDocumentLine,
   type KinFieldValue,
   type KinOpenRow,
+  type KinProjectNoteInput,
+  type KinWorkLinkAddInput,
   type KinRecord,
   type KinRecordKey,
   type KinRecordState,
@@ -25,7 +27,8 @@ import * as Docs from "../work/ownerDocs.ts";
 import * as Money from "../work/ownerMoney.ts";
 import * as MoneyAnswers from "../work/ownerMoneyAnswers.ts";
 import * as Work from "../work/ownerWork.ts";
-import { workFailure } from "../work/recordRows.ts";
+import * as Comments from "../work/workComments.ts";
+import { notFound, workFailure } from "../work/recordRows.ts";
 import { companyList, moneyOf } from "../work/keyGuard.ts";
 import { listDef } from "../work/registers.ts";
 import { MATERIAL, taskSheet } from "../you/projection.ts";
@@ -465,6 +468,36 @@ const stillReached = Effect.fn("KinTasksKeyActs.stillReached")(function* (
 ) {
   if ((yield* keyHidden(holder.orgId, [recordId]).pipe(workFailure)).size > 0)
     return yield* unknownKey;
+});
+
+export const addLink = Effect.fn("KinTasksKeyActs.addLink")(function* (
+  holder: TasksKeyHolder,
+  input: Omit<KinWorkLinkAddInput, "orgId">,
+) {
+  return yield* keyed(holder, (people) =>
+    Effect.gen(function* () {
+      yield* reachKey(holder, input.key, notFound);
+      const entry = yield* Work.addLink(people, { orgId: holder.orgId, ...input });
+      return { key: entry.key };
+    }),
+  );
+});
+
+export const setProjectNote = Effect.fn("KinTasksKeyActs.setProjectNote")(function* (
+  holder: TasksKeyHolder,
+  input: Omit<KinProjectNoteInput, "orgId" | "clientRequestId">,
+) {
+  return yield* keyed(holder, (people) =>
+    Effect.gen(function* () {
+      yield* reachKey(holder, input.key, notFound);
+      const { note } = yield* Comments.projectNote(people, {
+        orgId: holder.orgId,
+        ...input,
+        clientRequestId: requestIdOf(holder, "project-note", input),
+      });
+      return { key: input.key, note: note?.body ?? null, material: MATERIAL };
+    }),
+  );
 });
 
 // ── Docs ─────────────────────────────────────────────────────────────────────────────────────
