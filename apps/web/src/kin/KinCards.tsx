@@ -3,6 +3,7 @@ import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useAtomValue } from "@effect/atom-react";
+import { KIN_BILLS, type KinBillBatchCardView } from "@t3tools/client-runtime/kin/kinBills";
 import {
   KIN_MISSING_CARD_TEXT,
   kinCardView,
@@ -266,6 +267,14 @@ export const KinCard = memo(function KinCard(props: {
       return (
         <KinStatementPasswordCard password={view.password} environmentId={props.environmentId} />
       );
+    case "bill_batch":
+      return (
+        <KinBillBatchCard
+          bills={view.bills}
+          environmentId={props.environmentId}
+          ownerLevel={ownerLevel !== false}
+        />
+      );
     case "social_week":
       return <KinSocialWeekCard week={view.week} environmentId={props.environmentId} />;
     case "social_pack":
@@ -443,6 +452,46 @@ function KinDocCard(props: {
           </Button>
         )}
       </div>
+    </CardFrame>
+  );
+}
+
+/**
+ * Bills added in bulk: the host's own sentence and, while Kin reads, how far it got; once done,
+ * Review opens the batch's list under Money. Nothing is kept from the card itself.
+ */
+function KinBillBatchCard(props: {
+  readonly bills: KinBillBatchCardView;
+  readonly environmentId: EnvironmentId;
+  readonly ownerLevel: boolean;
+}) {
+  const { bills } = props;
+  return (
+    <CardFrame label={`${KIN_BILLS.added}: ${bills.text}`}>
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-xs font-medium text-muted-foreground">{KIN_BILLS.added}</p>
+        {bills.progress === null ? null : (
+          <p className="text-xs text-muted-foreground tabular-nums">{bills.progress}</p>
+        )}
+      </div>
+      <p className="text-foreground">{bills.text}</p>
+      {bills.reading || !props.ownerLevel ? null : (
+        <div>
+          <Button
+            size="xs"
+            variant="outline"
+            render={
+              <Link
+                to="/kin/$environmentId/$orgId/money"
+                params={{ environmentId: props.environmentId, orgId: bills.orgId }}
+                search={{ bills: bills.batchId }}
+              />
+            }
+          >
+            {KIN_BILLS.review}
+          </Button>
+        </div>
+      )}
     </CardFrame>
   );
 }

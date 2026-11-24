@@ -74,6 +74,7 @@ import {
   KinWorkStaleLine,
 } from "./KinWorkParts";
 import { KinNewExpenseDialog, KinNewInvoiceDialog } from "./KinMoneyForms";
+import { KinBillsAddedLink } from "./KinBills";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { KinPlaceCombobox } from "./KinPlaceCombobox";
@@ -106,6 +107,8 @@ export function KinWorkListPage(
     readonly onGone: () => void;
     /** The page around it already says the list's name, so the list doesn't say it again. */
     readonly titled?: boolean;
+    /** Opens bills added in bulk, where Expenses links to them. */
+    readonly onBills?: (batchId: string | null) => void;
   },
 ) {
   // A list that was put away is still a page: that is where it is brought back.
@@ -155,6 +158,7 @@ function KinListEntries(
     readonly openKey: KinRecordKey | null;
     readonly onOpenKey: (key: KinRecordKey) => void;
     readonly titled?: boolean;
+    readonly onBills?: (batchId: string | null) => void;
   },
 ) {
   const { def } = props;
@@ -241,6 +245,9 @@ function KinListEntries(
         </div>
         {props.stale || state.stale ? (
           <KinWorkStaleLine environmentId={props.environmentId} onRetry={entries.refresh} />
+        ) : null}
+        {def.list === "expenses" && props.onBills !== undefined ? (
+          <KinBillsAddedLink {...props} onOpen={props.onBills} />
         ) : null}
         <div className="-mx-1 overflow-x-auto px-1 py-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <ToggleGroup

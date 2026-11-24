@@ -327,12 +327,14 @@ features:
   - id: bills
     name: Read many bills at once into suggested expenses
     tab: chats
-    web: [chat]
-    phone: [tab:chats, KinChat]
+    web: [chat, card:Bills added]
+    phone: [tab:chats, KinChat, card:Bills added]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [bills_add, bill_read]
+    note: The batch's card counts while Kin reads, and its Review opens the batch's list.
     proof:
       - apps/server/src/kin/work/bills.test.ts
+      - packages/client-runtime/src/kin/kinBills.test.ts
 
   - id: groups
     name: Start a group chat
@@ -663,6 +665,31 @@ features:
     proof:
       - apps/server/src/kin/work/money.test.ts
       - packages/client-runtime/src/kin/kinMoneyForms.test.ts
+
+  - id: bills-add
+    name: Add many bills at once, as photos or PDFs
+    tab: money
+    web: [money, menu:Add, dialog:Add bills]
+    phone: [tab:money, menu:Add, KinBillsAdd]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: On the phone from the photo library, Files or the camera. Each bill Kin reads becomes a suggested expense with its file.
+    proof:
+      - packages/client-runtime/src/kin/kinBills.test.ts
+      - apps/web/src/kin/KinBills.browser.test.tsx
+      - apps/server/src/kin/work/bills.test.ts
+
+  - id: bills-review
+    name: Review bills added at once, keeping each or every one read cleanly
+    tab: money
+    web: [money, "?bills"]
+    phone: [tab:money, KinList, KinBills]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: Reached from Expenses' Bills added, the batch's card in chat, and the add itself. Enter by hand opens New expense with the bill's file.
+    proof:
+      - packages/client-runtime/src/kin/kinBills.test.ts
+      - apps/web/src/kin/KinBills.browser.test.tsx
+      - apps/mobile/src/features/chats/state/kinBillsPick.test.ts
 
   - id: receipt-apply
     name: Set a receipt against an invoice
@@ -1778,12 +1805,6 @@ unlisted:
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.
-  "rpc:kin.bills.add": Served; Money's Add bills screen is the next job.
-  "rpc:kin.bills.list": Served; the bills list screen is the next job.
-  "rpc:kin.bills.keepRead": Served; the bills list's Keep all that read cleanly is the next job.
-  "rpc:kin.bills.addAnyway": Served; the bills list's Add anyway is the next job.
-  "rpc:kin.bills.dismiss": Served; the bills list's Dismiss is the next job.
-  "rpc:kin.bills.readAgain": Served; the bills list's Read again is the next job.
   "rpc:kin.lead.access.list": Served; no client shows an agent's access grants yet.
   "rpc:kin.lead.access.grant": Served; no client grants an agent access yet.
   "rpc:kin.lead.access.revoke": Served; no client revokes an agent's access yet.
