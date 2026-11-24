@@ -792,8 +792,9 @@ it.effect(
           sourceEventId: "owner-said",
           replaces: itemId,
         }).pipe(Effect.flatMap((input) => service.defer(scopeOf(leads.o), input)));
+      // Kin's notices never ring a phone.
       const told = sql<{ body: string }>`SELECT body FROM kin_messages
-      WHERE org_id = ${orgId} AND chat_id = 'fin-chat' ORDER BY seq`;
+      WHERE org_id = ${orgId} AND chat_id = 'fin-chat' AND silent = 1 ORDER BY seq`;
       const notMine =
         "Only the agent that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.";
       const rewrite = (itemId: string, change: Partial<MemoryItemHead>, op = "update") => {

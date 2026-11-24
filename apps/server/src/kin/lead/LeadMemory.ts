@@ -867,6 +867,7 @@ const make = Effect.gen(function* () {
       clientMessageId: null,
       createdAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
       editedAt: null,
+      silent: true,
     });
     if (Option.isSome(hub))
       yield* sql.afterCommit(
