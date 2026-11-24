@@ -67,6 +67,7 @@ import {
   byKey,
   endOfDay,
   iso,
+  isSuggestion,
   notBouncedBack,
   ownerZone,
   parseChanges,
@@ -1945,8 +1946,13 @@ const leaverRows = Effect.fn("KinDeals.leaverRows")(function* (
   personId: KinPersonId,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql<{ key: string; registerId: string; category: string | null }>`SELECT key,
-      register_id AS "registerId", category FROM kin_records
+  return yield* sql<{
+    key: string;
+    registerId: string;
+    category: string | null;
+    confirmed: number;
+  }>`SELECT key,
+      register_id AS "registerId", category, confirmed FROM kin_records
     WHERE org_id = ${orgId} AND owner_kind = 'person' AND owner_id = ${personId}
       AND ((register_id = 'clients' AND category IN ('client', 'prospect') AND state = 'open')
         OR (register_id = 'deals' AND state = 'open')
@@ -2041,8 +2047,12 @@ export const handOverLeaver = Effect.fn("KinDeals.handOverLeaver")(function* (in
     );
     yield* seesItAfter(orgId, after, to);
   }
+  const watches = yield* KinWatches.handOver(orgId, input.from, input.to).pipe(workFailure);
   return {
-    ...heldOf(rows),
-    watches: yield* KinWatches.handOver(orgId, input.from, input.to).pipe(workFailure),
-  } satisfies LeaverHeld;
+    moved: { ...heldOf(rows), watches },
+    given: {
+      ...heldOf(rows.filter((row) => row.registerId !== "work" || !isSuggestion(row))),
+      watches,
+    },
+  };
 });
