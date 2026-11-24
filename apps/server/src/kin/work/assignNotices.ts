@@ -929,7 +929,7 @@ export const askedOf = Effect.fn("KinAssignNotices.askedOf")(function* (
   recordIds: ReadonlyArray<string>,
   since: number,
 ) {
-  const asked = new Map<string, KinPersonId>();
+  const asked = new Map<string, { by: KinPersonId; codingAgent: boolean }>();
   if (recordIds.length === 0) return asked;
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ body: string }>`SELECT body FROM kin_held_posts
@@ -940,7 +940,8 @@ export const askedOf = Effect.fn("KinAssignNotices.askedOf")(function* (
     ORDER BY held_at DESC, rowid DESC`;
   for (const row of rows) {
     const news = Option.getOrUndefined(decodeNews(row.body));
-    if (news !== undefined && !asked.has(news.recordId)) asked.set(news.recordId, news.by);
+    if (news !== undefined && !asked.has(news.recordId))
+      asked.set(news.recordId, { by: news.by, codingAgent: news.codingAgent === true });
   }
   return asked;
 });

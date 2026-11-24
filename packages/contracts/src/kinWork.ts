@@ -642,8 +642,10 @@ export const KinWorkRowMove = Schema.Struct({
   nudgedAt: Schema.optional(IsoDateTime),
   /** A task handed back to the reader: its holder's words on why, when they left any. */
   handedBackNote: Schema.optional(KinText),
+  handedBackByCodingAgent: Schema.optional(Schema.Boolean),
   /** A task the reader holds: who last asked them today where it stands. */
   askedBy: Schema.optional(KinPersonId),
+  askedByCodingAgent: Schema.optional(Schema.Boolean),
   /** A Needs you task nothing asks of yet: undated, or dated past the coming week. */
   under: Schema.optional(KinWorkMoveUnder),
 });

@@ -661,6 +661,13 @@ it.effect(
       hasResult(yield* zoya.use("hand_task_back", back), { to: appReturn.to });
       yield* zoya.use("hand_task_back", back);
       yield* authored(returning, zoya.sessionId);
+      const givenBack = yield* Work.list(rhea.app, { orgId, byMove: true });
+      assert.deepInclude(
+        givenBack.moves?.find((row) => row.key === returning.key),
+        {
+          handedBackByCodingAgent: true,
+        },
+      );
 
       for (const [name, args] of [
         ["tick_task_step", tick],
@@ -683,6 +690,13 @@ it.effect(
       FROM kin_held_posts WHERE org_id = ${orgId} AND json_extract(body, '$.key') = ${held.key}
         AND json_extract(body, '$.kind') = 'nudged'`;
       assert.deepStrictEqual(news, [{ name: "Rhea", coded: 1 }]);
+      const asked = yield* Work.list(zoya.app, { orgId, byMove: true });
+      assert.deepInclude(
+        asked.moves?.find((row) => row.key === held.key),
+        {
+          askedByCodingAgent: true,
+        },
+      );
 
       const from = person(zoya.app[0]!.personId);
       const to = person(arjun.app[0]!.personId);

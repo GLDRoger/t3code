@@ -1,3 +1,4 @@
+import { CodingAgentCall } from "./keyCall.ts";
 // Loaded first: the chat and trigger modules import each other.
 import { KinChatService } from "../chat/KinChatService.ts";
 import { assert, it } from "@effect/vitest";
@@ -6647,7 +6648,19 @@ it.effect(
         sourceEventId: "ask-event",
         tasks: [{ key, to: "Mate", reason: "Invented: has time" }],
       });
-      yield* OwnerWork.handBack([mate], { orgId, key, note: "Invented: not my area" });
+      yield* OwnerWork.handBack([mate], { orgId, key, note: "Invented: not my area" }).pipe(
+        Effect.provideService(CodingAgentCall, "invented-key"),
+      );
+      const returnToMate = yield* Effect.flip(
+        LeadWork.assign(scope, {
+          sourceEventId: "ask-event",
+          tasks: [{ key, to: "Mate" }],
+        }),
+      );
+      assert.include(
+        returnToMate.message,
+        `Mate (coding agent) handed ${key} back: "Invented: not my area".`,
+      );
       assert.include((yield* Effect.flip(give)).message, "no repo yet");
       // Model people: someone removed from the company is given nothing.
       yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${mateId}`;

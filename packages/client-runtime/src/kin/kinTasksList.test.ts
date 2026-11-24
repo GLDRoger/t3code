@@ -745,6 +745,23 @@ describe("kinTaskStep", () => {
       { kind: "told", line: "Meera asked where this stands" },
     ],
     [
+      "handed back by a coding agent",
+      row("KB", { handedBack: { by: zoya, at: "2026-11-18T08:30:00.000Z" } }),
+      {
+        key: "KB",
+        group: "needsYou",
+        handedBackByCodingAgent: true,
+        handedBackNote: "I need the samples first.",
+      },
+      { kind: "told", line: "Zoya (coding agent) handed this back: “I need the samples first.”" },
+    ],
+    [
+      "asked where it stands by a coding agent",
+      row("KD"),
+      { key: "KD", group: "needsYou", askedBy: meera.personId, askedByCodingAgent: true },
+      { kind: "told", line: "Meera (coding agent) asked where this stands" },
+    ],
+    [
       "yours, nothing told: no step",
       row("E", { ...late("2026-11-15T00:00:00.000Z") }),
       { key: "E", group: "needsYou" },

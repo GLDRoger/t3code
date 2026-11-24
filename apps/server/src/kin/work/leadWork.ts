@@ -3670,10 +3670,15 @@ const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
   to: KinWorkPrincipal,
 ) {
   const who = `${to._tag}:${principalId(to)}`;
-  let back: { readonly to: string | null } | undefined;
+  let back: { readonly note: string | null; readonly codingAgent: boolean } | undefined;
   for (const change of (yield* (yield* KinRecords).detail(before, 50)).changes) {
-    back = change.fields.find((field) => field.field === "handedBack" && field.from === who);
-    if (back !== undefined) break;
+    const returned = change.fields.find(
+      (field) => field.field === "handedBack" && field.from === who,
+    );
+    if (returned !== undefined) {
+      back = { note: returned.to, codingAgent: change.codingAgent !== undefined };
+      break;
+    }
     if (change.fields.some((field) => !HAND_OFF_FIELDS.has(field.field))) return;
   }
   if (back === undefined) return;
@@ -3691,7 +3696,7 @@ const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
   const name = yield* namer(lead);
   return yield* new KinChatError({
     reason: "not_allowed",
-    message: `${name(to) ?? "They"} handed ${before.key} back${back.to === null ? "" : `: "${back.to}"`}. Nothing on it has changed since, so don't give it straight back. Fix what blocks it first, ask the owner, or give it to someone else.`,
+    message: `${name(to) ?? "They"}${back.codingAgent ? " (coding agent)" : ""} handed ${before.key} back${back.note === null ? "" : `: "${back.note}"`}. Nothing on it has changed since, so don't give it straight back. Fix what blocks it first, ask the owner, or give it to someone else.`,
   });
 });
 

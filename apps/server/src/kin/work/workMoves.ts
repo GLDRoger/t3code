@@ -131,15 +131,12 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
   // the same ones draw the row's note.
   const mineAll = light.filter((row) => row.ownerKind === "person" && row.ownerId === personId);
   const heldZone = yield* ownerZone(orgId).pipe(workFailure);
-  const asked =
-    mineAll.length === 0
-      ? new Map<string, KinPersonId>()
-      : yield* askedOf(
-          orgId,
-          personId,
-          mineAll.map((row) => row.recordId),
-          startOfDay(dayIn(at, heldZone), heldZone),
-        ).pipe(workFailure);
+  const asked = yield* askedOf(
+    orgId,
+    personId,
+    mineAll.map((row) => row.recordId),
+    startOfDay(dayIn(at, heldZone), heldZone),
+  ).pipe(workFailure);
   const placed = light.flatMap((row) => {
     const late = row.dueAt !== null && row.dueAt < at;
     const facts = {
@@ -233,15 +230,16 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
   const backNotes =
     backIds.length === 0
       ? []
-      : yield* sql<{ recordId: string; note: string | null }>`SELECT c.record_id AS "recordId",
-            json_extract(f.value, '$.to') AS note
+      : yield* sql<{ recordId: string; note: string | null; codingAgent: number }>`SELECT
+            c.record_id AS "recordId", json_extract(f.value, '$.to') AS note,
+            c.coding_agent_key IS NOT NULL AS "codingAgent"
           FROM kin_record_changes c, json_each(c.fields_json) f
           WHERE c.org_id = ${orgId} AND c.record_id IN ${sql.in(backIds)}
             AND json_extract(f.value, '$.field') = 'handedBack'
           ORDER BY c.seq DESC`.pipe(workFailure);
-  const backNote = new Map<string, string | null>();
+  const backByRecord = new Map<string, (typeof backNotes)[number]>();
   for (const one of backNotes)
-    if (!backNote.has(one.recordId)) backNote.set(one.recordId, one.note);
+    if (!backByRecord.has(one.recordId)) backByRecord.set(one.recordId, one);
   const zone =
     heldZone !== "" || chased.length === 0 ? heldZone : yield* ownerZone(orgId).pipe(workFailure);
   const day = zone === "" ? "" : dayIn(at, zone);
@@ -255,18 +253,19 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
     const sent = chased.includes(one)
       ? nudged.get(nudgeMessageId(orgId, one.row.recordId, personId, day))
       : undefined;
-    const note = backNote.get(one.row.recordId);
-    const askedBy = asked.get(one.row.recordId);
+    const back = backByRecord.get(one.row.recordId);
+    const note = back?.note?.trim();
+    const nudge = asked.get(one.row.recordId);
     return {
       key: one.row.key as KinWorkRowMove["key"],
       group: one.group,
       ...(card === undefined ? {} : { card }),
       ...(words === undefined || words === "" ? {} : { said: words as KinWorkRowMove["said"] }),
       ...(sent === undefined ? {} : { nudgedAt: iso(sent) }),
-      ...(note == null || note.trim() === ""
-        ? {}
-        : { handedBackNote: note.trim() as KinWorkRowMove["said"] }),
-      ...(askedBy === undefined ? {} : { askedBy }),
+      ...(note === undefined || note === "" ? {} : { handedBackNote: note }),
+      ...(back?.codingAgent === 1 ? { handedBackByCodingAgent: true } : {}),
+      ...(nudge === undefined ? {} : { askedBy: nudge.by }),
+      ...(nudge?.codingAgent === true ? { askedByCodingAgent: true } : {}),
       ...(one.under === null ? {} : { under: one.under }),
     };
   });
