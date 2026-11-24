@@ -19,7 +19,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
 
-import { IMPORTED_SERIES, ruleProblem, seriesOf } from "../gendocs/numbering.ts";
+import { IMPORTED_SERIES, ruleProblem, seriesOf, voidEntry } from "../gendocs/numbering.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { sectionOnFor as sectionOn } from "../shell/KinShell.ts";
 import { DEALS_OFF } from "../shell/sections.ts";
@@ -162,6 +162,8 @@ export type ImportReport = {
   readonly fileProblems: number;
   /** Writes that filled empty fields or notes on records Kin already had. */
   readonly filled: number;
+  /** Entries Kin already had that the file voids. */
+  readonly voided: number;
   /** Of the clients made, how many as prospects. */
   readonly prospects: number;
   /** Imported before and changed in Kin since: left as they are, with their payments. */
@@ -181,6 +183,8 @@ export type ImportReport = {
   readonly entryMatches: ReadonlyArray<{
     readonly key: string;
     readonly fields: ReadonlyArray<string>;
+    /** The row voids it, or it was void already. */
+    readonly void?: "voids" | "already";
   }>;
   /** What the file holds by list and currency, to check against the old system. */
   readonly money: ReadonlyArray<{
@@ -855,6 +859,8 @@ const make = Effect.gen(function* () {
 
     const plannedEntries = new Map<string, Pick<RecordRow, "recordId" | "fieldsJson" | "notes">>();
     const projectedEntries = new Set<string>();
+    /** A plan's voids, which its rolled-back chunks forget. */
+    const plannedVoids = new Set<string>();
     const matchEntry = Effect.fn("KinImport.matchEntry")(function* (
       line: number,
       spec: ImportEntryMatch,
@@ -902,41 +908,55 @@ const make = Effect.gen(function* () {
             fields[key] = yield* fieldValue(line, def, key, value);
           }
           const notes = before.notes.trim() === "" && spec.notes?.trim() ? spec.notes : undefined;
-          if (Object.keys(fields).length === 0 && notes === undefined)
-            return { key: had.key, fields: [] };
-          const after = yield* records.update(
-            orgId,
-            writer,
-            had.key,
-            {
-              ...(Object.keys(fields).length === 0 ? {} : { fields }),
-              ...(notes === undefined ? {} : { notes }),
-            },
-            had.rev,
-          );
-          // The writer can fill an additional field, such as defaulting reimbursement to owed.
-          const saved = parseFields(after.fieldsJson);
-          const filled = def.fields.filter(
-            ({ key }) => shownField(saved[key]) !== shownField(stored[key]),
-          );
-          const filledNotes = after.notes !== before.notes;
-          if (filled.length > 0 || filledNotes) {
-            fills.push({
-              recordId: after.recordId,
-              key: after.key,
-              rev: after.rev,
-              fields: filled.map(({ key }) => key),
-              entry: { notes: filledNotes },
-            });
+          let labels: Array<string> = [];
+          if (Object.keys(fields).length > 0 || notes !== undefined) {
+            const after = yield* records.update(
+              orgId,
+              writer,
+              had.key,
+              {
+                ...(Object.keys(fields).length === 0 ? {} : { fields }),
+                ...(notes === undefined ? {} : { notes }),
+              },
+              had.rev,
+            );
+            // The writer can fill an additional field, such as defaulting reimbursement to owed.
+            const saved = parseFields(after.fieldsJson);
+            const filled = def.fields.filter(
+              ({ key }) => shownField(saved[key]) !== shownField(stored[key]),
+            );
+            const filledNotes = after.notes !== before.notes;
+            if (filled.length > 0 || filledNotes) {
+              fills.push({
+                recordId: after.recordId,
+                key: after.key,
+                rev: after.rev,
+                fields: filled.map(({ key }) => key),
+                entry: { notes: filledNotes },
+              });
+            }
+            if (!keep) {
+              const { recordId, fieldsJson, notes } = after;
+              plannedEntries.set(had.key, { recordId, fieldsJson, notes });
+            }
+            labels = [...filled.map(({ label }) => label), ...(filledNotes ? ["Notes"] : [])];
           }
-          if (!keep) {
-            const { recordId, fieldsJson, notes } = after;
-            plannedEntries.set(had.key, { recordId, fieldsJson, notes });
-          }
-          return {
-            key: after.key,
-            fields: [...filled.map(({ label }) => label), ...(filledNotes ? ["Notes"] : [])],
-          };
+          if (spec.void !== true) return { key: had.key, fields: labels };
+          // The owner's Void tap's own method, so its rules and refusals are the row's.
+          yield* voidEntry(orgId, writer, had.key).pipe(Effect.provideService(KinRecords, records));
+          if (had.state === "dropped" || (!keep && plannedVoids.has(had.key)))
+            return { key: had.key, fields: labels, void: "already" as const };
+          const now = yield* records.get(orgId, had.key);
+          if (now === undefined) return yield* invalid(`There is no entry ${spec.match}.`);
+          fills.push({
+            recordId: now.recordId,
+            key: now.key,
+            rev: now.rev,
+            fields: [],
+            entry: { notes: false, voided: true },
+          });
+          if (!keep) plannedVoids.add(had.key);
+          return { key: had.key, fields: labels, void: "voids" as const };
         }),
       );
       if (matched === undefined) return;
@@ -1349,7 +1369,7 @@ const make = Effect.gen(function* () {
           line,
           "entry",
           decoded.extraMatchKeys.source,
-          "A row with match fills fields and notes only.",
+          "A row with match fills fields and notes, and may void its entry.",
         );
       if (decoded.row === undefined)
         return problem(
@@ -1660,7 +1680,8 @@ const make = Effect.gen(function* () {
         paid: asMoney(one.paid, one.currency),
       })),
       stale: byName(stale).map(([list, one]) => ({ list, ...one })),
-      filled: fills.length,
+      filled: fills.filter((one) => one.entry?.voided !== true).length,
+      voided: fills.filter((one) => one.entry?.voided === true).length,
       prospects,
       problems,
       more,

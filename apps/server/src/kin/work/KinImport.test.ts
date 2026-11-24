@@ -29,6 +29,7 @@ import type { ImportEntry } from "./importFormat.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { parseFields } from "./lists.ts";
+import { countedEntry } from "./recordRows.ts";
 import { presetList } from "./registers.ts";
 import { matchPartner, partnerPayees, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
 
@@ -787,6 +788,114 @@ describe("KinImport", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("voids a matched entry as the Void tap does, once, and undo brings it back", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const records = yield* KinRecords.KinRecords;
+      const sql = yield* SqlClient.SqlClient;
+      yield* imports.apply(orgId, ownerId, books());
+      const paid = (yield* records.get(orgId, (yield* recordOf("i1"))!.key))!;
+      const owed = (yield* records.get(orgId, (yield* recordOf("i2"))!.key))!;
+      const expense = (yield* recordOf("e1"))!;
+      const counted = Effect.map(
+        sql<{ n: number; total: number }>`SELECT COUNT(*) AS n,
+            COALESCE(SUM(r.amount_minor), 0) AS total
+          FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'invoices'
+            AND ${countedEntry(sql)}`,
+        ([row]) => [row!.n, row!.total],
+      );
+      const before = yield* counted;
+      const file = () =>
+        linesOf({ ...header, batch: "duplicates", lists: [] }, [
+          { entry: { source: "dup-1", list: "invoices", match: owed.key, void: true } },
+          {
+            entry: {
+              source: "dup-2",
+              list: "invoices",
+              match: paid.key,
+              notes: "Sent twice by mistake.",
+              void: true,
+            },
+          },
+          { entry: { source: "dup-3", list: "expenses", match: expense.key, void: true } },
+          { entry: { source: "dup-4", list: "invoices", match: "INV-999", void: true } },
+        ]);
+      const plan = yield* imports.plan(orgId, ownerId, file());
+      assert.deepStrictEqual(
+        plan.problems.map((one) => [one.source, one.reason]),
+        [
+          ["dup-3", "Expenses entries aren't voided; close them instead."],
+          ["dup-4", "There is no entry INV-999 on invoices."],
+        ],
+      );
+      assert.deepStrictEqual(plan.entryMatches, [
+        { key: owed.key, fields: [], void: "voids" },
+        { key: paid.key, fields: ["Notes"], void: "voids" },
+      ]);
+      assert.deepStrictEqual([plan.voided, plan.filled, plan.entries.matched], [2, 1, 2]);
+      assert.deepStrictEqual(yield* records.get(orgId, owed.key), owed);
+      assert.deepStrictEqual(yield* counted, before);
+
+      const applied = yield* imports.apply(orgId, ownerId, file());
+      assert.deepStrictEqual({ ...applied, applied: false }, plan);
+      const voided = (yield* records.get(orgId, owed.key))!;
+      assert.deepStrictEqual([voided.state, (yield* records.get(orgId, paid.key))!.state], [
+        "dropped",
+        "dropped",
+      ]);
+      assert.deepStrictEqual(yield* counted, [
+        before[0]! - 2,
+        before[1]! - (owed.amountMinor ?? 0) - (paid.amountMinor ?? 0),
+      ]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT actor_kind AS kind, actor_id AS id, via FROM kin_record_changes
+          WHERE org_id = ${orgId} AND record_id = ${owed.recordId} ORDER BY seq DESC LIMIT 1`,
+        [{ kind: "person", id: ownerId, via: "import" }],
+      );
+      assert.strictEqual((yield* records.get(orgId, expense.key))!.state, "done");
+
+      const again = yield* imports.apply(orgId, ownerId, file());
+      assert.deepStrictEqual(again.entryMatches, [
+        { key: owed.key, fields: [], void: "already" },
+        { key: paid.key, fields: [], void: "already" },
+      ]);
+      assert.deepStrictEqual([again.voided, again.filled], [0, 0]);
+      assert.deepStrictEqual(yield* records.get(orgId, owed.key), voided);
+
+      yield* records.update(orgId, owner, paid.key, { title: "April retainer, sent twice" });
+      const undoPlan = yield* imports.undo(orgId, ownerId, "duplicates", {
+        apply: false,
+        includeChanged: false,
+      });
+      assert.deepStrictEqual([undoPlan.unvoided, undoPlan.restored], [1, 0]);
+      assert.deepStrictEqual(undoPlan.kept, [
+        {
+          key: paid.key,
+          reason: "it changed since the import filled in its notes, so they stay, and it stays void",
+        },
+      ]);
+      const undone = yield* imports.undo(orgId, ownerId, "duplicates", {
+        apply: true,
+        includeChanged: false,
+      });
+      assert.deepStrictEqual({ ...undone, applied: false }, undoPlan);
+      assert.deepStrictEqual(
+        [(yield* records.get(orgId, owed.key))!.state, (yield* records.get(orgId, paid.key))!.state],
+        ["waiting", "dropped"],
+      );
+      assert.deepStrictEqual(yield* counted, [before[0]! - 1, before[1]! - (paid.amountMinor ?? 0)]);
+
+      const forced = yield* imports.undo(orgId, ownerId, "duplicates", {
+        apply: true,
+        includeChanged: true,
+      });
+      assert.deepStrictEqual([forced.unvoided, forced.restored], [1, 1]);
+      assert.strictEqual((yield* records.get(orgId, paid.key))!.state, "done");
+      assert.deepStrictEqual(yield* counted, before);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("reports refused entry matches without writing any part of the row", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -819,9 +928,9 @@ describe("KinImport", () => {
           ["missing", "There is no entry EXP-999 on expenses."],
           ["wrong-list", `There is no entry ${expense.key} on work.`],
           ["no-list", "There is no list unknown; name it in the header."],
-          ["title", "A row with match fills fields and notes only."],
-          ["amount", "A row with match fills fields and notes only."],
-          ["extra", "A row with match fills fields and notes only."],
+          ["title", "A row with match fills fields and notes, and may void its entry."],
+          ["amount", "A row with match fills fields and notes, and may void its entry."],
+          ["extra", "A row with match fills fields and notes, and may void its entry."],
         ],
       );
       assert.strictEqual(report.problems.length, 8);

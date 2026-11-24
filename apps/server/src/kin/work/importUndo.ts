@@ -7,6 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { unvoidEntry } from "../gendocs/numbering.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { parseFields, type FieldValue } from "./lists.ts";
 import { FUNDED_BY, REIMBURSEMENT } from "./reimbursement.ts";
@@ -26,7 +27,11 @@ const Fill = Schema.Struct({
   rev: Schema.Number,
   fields: Schema.Array(Schema.String),
   entry: Schema.optional(
-    Schema.Struct({ notes: Schema.Boolean, changed: Schema.optional(Schema.Boolean) }),
+    Schema.Struct({
+      notes: Schema.Boolean,
+      changed: Schema.optional(Schema.Boolean),
+      voided: Schema.optional(Schema.Boolean),
+    }),
   ),
 });
 export type ImportFill = typeof Fill.Type;
@@ -48,6 +53,8 @@ export type UndoReport = {
   };
   /** Fields the batch filled on records Kin had, emptied again. */
   readonly restored: number;
+  /** Entries Kin had that the batch voided, back as they were. */
+  readonly unvoided: number;
   /** Keys imported, then changed by someone; kept unless asked to include them. */
   readonly changed: ReadonlyArray<string>;
   /** Imported rows kept because something outside the batch uses or paid them, and what. */
@@ -73,8 +80,10 @@ const kinNumbered = (sql: SqlClient.SqlClient, orgId: KinOrgId, ids: Statement.F
         WHERE c.org_id = n.org_id AND c.record_id = n.record_id AND c.via <> 'import'
           AND json_extract(f.value, '$.field') = 'number')
     ORDER BY n.record_id`;
-const changedSinceFilled = (fields: ReadonlyArray<string>) =>
-  `it changed since the import filled in its ${fields.join(", ")}, so they stay`;
+const changedSinceImport = (fields: ReadonlyArray<string>, voided: boolean) =>
+  fields.length === 0
+    ? "it changed since the import voided it, so it stays void"
+    : `it changed since the import filled in its ${fields.join(", ")}, so they stay${voided ? ", and it stays void" : ""}`;
 
 const batchRange = (sql: SqlClient.SqlClient, batch: string) => {
   // `;` sorts right after `:`, so the range is every key with this batch's prefix.
@@ -255,6 +264,7 @@ const decide = Effect.fn("KinImport.undoPlan")(function* (
               entry: {
                 notes: before.entry.notes || entry.notes,
                 changed: before.entry.changed === true || fill.rev !== before.rev + 1,
+                ...(before.entry.voided === true || entry.voided === true ? { voided: true } : {}),
               },
             },
       );
@@ -280,7 +290,10 @@ const decide = Effect.fn("KinImport.undoPlan")(function* (
     } else {
       changedFills.push({
         key: fill.key,
-        reason: changedSinceFilled([...fill.fields, ...(fill.entry?.notes ? ["notes"] : [])]),
+        reason: changedSinceImport(
+          [...fill.fields, ...(fill.entry?.notes ? ["notes"] : [])],
+          fill.entry?.voided === true,
+        ),
       });
       if (fill.entry !== undefined) pendingFills.push(fill);
     }
@@ -305,7 +318,9 @@ const decide = Effect.fn("KinImport.undoPlan")(function* (
       contacts: gone.filter((one) => kindOf(one.originKey) === "contact").length,
       deals: gone.filter((one) => kindOf(one.originKey) === "deal").length,
     },
-    restored: restoring.length,
+    restored: restoring.filter((one) => one.fields.length > 0 || one.entry?.notes === true)
+      .length,
+    unvoided: restoring.filter((one) => one.entry?.voided === true).length,
     changed: rows
       .filter((one) => edited.has(one.recordId))
       .map((one) => one.key)
@@ -360,6 +375,7 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
       const plan = yield* decide(orgId, batch, options);
       const { gone, restoring, pendingFills, lists } = plan;
       if (entry !== undefined) entry.of = gone.length;
+      const refused: Array<UndoReport["kept"][number]> = [];
       for (const fill of restoring) {
         const fields: Record<string, FieldValue | null> = {};
         const notes = fill.entry?.notes ?? fill.fields.includes("notes");
@@ -378,16 +394,26 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
               fields[REIMBURSEMENT] = parseFields(current.fieldsJson)[REIMBURSEMENT] ?? null;
           }
         }
-        yield* records.update(
-          orgId,
-          writer,
-          fill.key,
-          {
-            ...(Object.keys(fields).length === 0 ? {} : { fields }),
-            ...(notes ? { notes: "" } : {}),
-          },
-          fill.rev,
-        );
+        if (Object.keys(fields).length > 0 || notes)
+          yield* records.update(
+            orgId,
+            writer,
+            fill.key,
+            {
+              ...(Object.keys(fields).length === 0 ? {} : { fields }),
+              ...(notes ? { notes: "" } : {}),
+            },
+            fill.rev,
+          );
+        // The owner's Undo void tap's own method: back to owed, or paid, with its number.
+        if (fill.entry?.voided === true)
+          yield* unvoidEntry(orgId, writer, fill.key).pipe(
+            Effect.catchTag("KinChatError", (error) =>
+              Effect.sync(() => {
+                refused.push({ key: fill.key, reason: error.message.replace(/\.$/, "") });
+              }),
+            ),
+          );
       }
       const indexed = yield* searchIndexed();
       for (let index = 0; index < gone.length; index += CHUNK) {
@@ -400,13 +426,20 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
         if (one.action === "remove")
           yield* sql`DELETE FROM kin_registers WHERE org_id = ${orgId} AND register_id = ${one.list}
             AND NOT EXISTS (SELECT 1 FROM kin_records WHERE org_id = ${orgId} AND register_id = ${one.list})`;
-      const { report } = plan;
+      const report =
+        refused.length === 0
+          ? plan.report
+          : {
+              ...plan.report,
+              unvoided: plan.report.unvoided - refused.length,
+              kept: [...plan.report.kept, ...refused].slice(0, MAX_LISTED),
+            };
       yield* sql`INSERT INTO kin_import_runs (org_id, batch, action, person_id, started_at,
           finished_at, lists_json, summary_json)
         VALUES (${orgId}, ${batch}, 'undo', ${owner}, ${started}, ${yield* Clock.currentTimeMillis},
           ${encodeJson(lists.filter((one) => one.action === "remove").map((one) => one.list))},
-          ${encodeJson({ ...report.removes, restored: report.restored, changed: report.changed.length, kept: report.kept.length, includeChanged: options.includeChanged, ...(pendingFills.length === 0 ? {} : { filled: pendingFills }) })})`;
-      return plan;
+          ${encodeJson({ ...report.removes, restored: report.restored, unvoided: report.unvoided, changed: report.changed.length, kept: report.kept.length, includeChanged: options.includeChanged, ...(pendingFills.length === 0 ? {} : { filled: pendingFills }) })})`;
+      return { report, lists };
     }),
   );
   if (lists.some((one) => one.action === "remove"))

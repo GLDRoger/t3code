@@ -69,6 +69,9 @@ const describeImport = (report: KinImport.ImportReport) =>
       ? []
       : [`Rows that don't fit the file format: ${report.fileProblems} with problems`]),
     ...(report.filled === 0 ? [] : [`Fills on records Kin already had: ${report.filled}.`]),
+    ...(report.voided === 0
+      ? []
+      : [`Entries Kin already had ${report.applied ? "voided" : "to void"}: ${report.voided}.`]),
     ...report.money.map(
       (one) =>
         `Money in ${one.list}: ${one.entries} entries, ${formatMoney(one.total)}, ${formatMoney(one.paid)} paid`,
@@ -83,10 +86,13 @@ const describeImport = (report: KinImport.ImportReport) =>
         ? `Client ${one.source} (${one.name}) is ${one.key}, matched by name.`
         : `Client ${one.source} (${one.name}) isn't ${one.key}: its ${report.taxIdLabel} differs, so it is a new client, ${one.made}.`,
     ),
-    ...report.entryMatches.map(
-      (one) =>
-        `${one.key}: ${one.fields.length === 0 ? "nothing to fill" : `fills ${one.fields.join(", ")}`}`,
-    ),
+    ...report.entryMatches.map((one) => {
+      const parts = [
+        ...(one.fields.length === 0 ? [] : [`fills ${one.fields.join(", ")}`]),
+        ...(one.void === undefined ? [] : [one.void === "voids" ? "voids" : "already voided"]),
+      ];
+      return `${one.key}: ${parts.length === 0 ? "nothing to fill" : parts.join(", ")}`;
+    }),
     ...report.problems.map(
       (one) =>
         `Problem${one.line === null ? "" : ` on line ${one.line}`} (${one.kind}${one.source === null ? "" : ` ${one.source}`}): ${one.reason}`,
@@ -101,6 +107,11 @@ const describeUndo = (report: UndoReport) =>
       ? []
       : [
           `Fields and notes it filled on ${report.restored} existing records ${report.applied ? "emptied" : "to empty"} again.`,
+        ]),
+    ...(report.unvoided === 0
+      ? []
+      : [
+          `Entries it voided ${report.applied ? "brought back" : "to bring back"}: ${report.unvoided}.`,
         ]),
     `Changed since import: ${report.changed.length}${report.changed.length === 0 ? "" : ` (${report.changed.join(", ")})`}, ${report.includeChanged ? "removed with the rest." : "left as they are. Add --include-changed to remove them too."}`,
     ...report.kept.map((one) => `Kept ${one.key}: ${one.reason}.`),
