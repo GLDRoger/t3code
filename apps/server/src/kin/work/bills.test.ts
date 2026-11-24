@@ -400,7 +400,13 @@ describe("bills in bulk", () => {
           }),
           { bill: "B1", result: "B1 saved; the owner keeps it." },
         );
-        yield* read({ bill: "B2", vendor: "Tidewater Freight", date: "2026-11-04", amount: "450" });
+        yield* read({
+          bill: "B2",
+          vendor: "Tidewater Freight",
+          date: "2026-11-04",
+          amount: "450",
+          cannotRead: "No currency\n  printed.",
+        });
         assert.include(yield* read({ bill: "B9" }).pipe(Effect.flip), { reason: "not_found" });
         assert.deepStrictEqual(yield* read({ bill: "B1", vendor: "Changed" }), {
           bill: "B1",
@@ -413,7 +419,8 @@ describe("bills in bulk", () => {
           rows.map(({ state, problem }) => [state, problem]),
           [
             ["read", null],
-            ["unreadable", "Couldn't read: currency"],
+            // Kin's own words first, then the agent's, said as its own, on one line.
+            ["unreadable", "Couldn't read: currency. Finance: No currency printed."],
             ["unreadable", "Kin could not read this one"],
           ],
         );
@@ -816,7 +823,7 @@ describe("bills in bulk", () => {
           list.bills.map((bill) => [bill.state, bill.problem, bill.duplicateOf?.key]),
           [
             ["duplicate", undefined, recorded.row.key],
-            ["unreadable", "The photo is blurred.", undefined],
+            ["unreadable", "Finance: The photo is blurred.", undefined],
             ["unreadable", "It is for 0", undefined],
           ],
         );
