@@ -84,8 +84,11 @@ export function KinEntryText(props: {
   readonly onSave: (text: string) => Promise<string | null>;
   /** An amount's question about a slip, shown as a line while the text is the one asked about. */
   readonly ask?: KinAmountAsk | null;
+  /** Opens as the box, for a detail the person just asked to type. */
+  readonly open?: boolean;
+  readonly onCancel?: () => void;
 }) {
-  const [text, setText] = useState<string | null>(null);
+  const [text, setText] = useState<string | null>(props.open === true ? props.draft : null);
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const id = useId();
@@ -147,6 +150,7 @@ export function KinEntryText(props: {
             if (event.key === "Escape") {
               event.stopPropagation();
               setText(null);
+              props.onCancel?.();
             }
           }}
         />
@@ -158,7 +162,10 @@ export function KinEntryText(props: {
           size="sm"
           variant="outline"
           disabled={saving}
-          onClick={() => setText(null)}
+          onClick={() => {
+            setText(null);
+            props.onCancel?.();
+          }}
         >
           {KIN_WORK_COPY.cancel}
         </Button>

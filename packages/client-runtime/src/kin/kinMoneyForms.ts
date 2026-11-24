@@ -13,6 +13,8 @@ import {
 } from "@t3tools/contracts";
 
 import { KIN_RETRY } from "./kinAnswers.ts";
+import { KIN_BILL_TO } from "./kinBillTo.ts";
+import { KIN_GSTIN_WRONG, kinGstinTyped } from "./kinWorkForms.ts";
 import { kinCategoryLabel, kinMoneyText, kinParseMoney } from "./kinLists.ts";
 import { KIN_EMPTY_LINE, kinLinesInput, type KinLineDraft } from "./kinMoneyAnswers.ts";
 import { kinWorkDueLabel } from "./kinWork.ts";
@@ -114,8 +116,22 @@ const oneLine = (text: string) => text.trim().replace(/\s+/g, " ");
 
 // The invoice
 
+/** A name to bill instead of a client, and its details; a blank one is left out. */
+export interface KinBillToDraft {
+  readonly name: string;
+  readonly address: string;
+  readonly taxNumber: string;
+  readonly place: string;
+  readonly email: string;
+}
+
+const NO_BILL_TO: KinBillToDraft = { name: "", address: "", taxNumber: "", place: "", email: "" };
+
 export interface KinInvoiceDraft {
   readonly party: KinRecordKey | null;
+  /** The person chose "Bill someone else by name" over the client picker. */
+  readonly byName: boolean;
+  readonly billTo: KinBillToDraft;
   readonly title: string;
   readonly lines: ReadonlyArray<KinLineDraft>;
   /** India's GST percent; unused elsewhere. */
@@ -129,6 +145,8 @@ export interface KinInvoiceDraft {
 /** An empty invoice, already for `client` when it is opened from one, with one line to fill. */
 export const kinInvoiceDraft = (party: KinRecordKey | null = null): KinInvoiceDraft => ({
   party,
+  byName: false,
+  billTo: NO_BILL_TO,
   title: "",
   lines: [KIN_EMPTY_LINE],
   gstRate: GST_DEFAULT,
@@ -140,6 +158,7 @@ export const kinInvoiceDraft = (party: KinRecordKey | null = null): KinInvoiceDr
 /** Whether closing the form would lose words the person typed: a client it opened with isn't theirs. */
 export const kinInvoiceTyped = (draft: KinInvoiceDraft, opened: KinInvoiceDraft) =>
   draft.party !== opened.party ||
+  Object.values(draft.billTo).some((value) => value.trim() !== "") ||
   draft.title.trim() !== "" ||
   draft.notes.trim() !== "" ||
   draft.dueOn !== null ||
@@ -239,13 +258,59 @@ export type KinMoneyFormCheck<A> =
   | { readonly ok: true; readonly input: A }
   | { readonly ok: false; readonly problem: string };
 
-/** The invoice as the host takes it, or the first thing to fix; `gst` when India's rate applies. */
+/**
+ * Whether the form bills a typed name: always with Clients off, never when the chosen project has
+ * a client, and otherwise when the person chose it on a host that takes it.
+ */
+export const kinInvoiceBillsByName = (
+  draft: Pick<KinInvoiceDraft, "byName">,
+  context: {
+    readonly clientsOn: boolean;
+    readonly offered: boolean;
+    readonly projectClient: string | null;
+  },
+) => !context.clientsOn || (context.projectClient === null && context.offered && draft.byName);
+
+const billToInput = (billTo: KinBillToDraft, india: boolean) => {
+  const text = (value: string, max: number) => value.trim().slice(0, max);
+  const address = text(billTo.address, 500);
+  const typed = text(billTo.taxNumber, 100);
+  // In India the tax number is a GSTIN, checked as the client form checks one.
+  const taxNumber = india && typed !== "" ? (kinGstinTyped(typed) ?? typed) : typed;
+  const place = text(billTo.place, 100);
+  const email = text(billTo.email, 100);
+  return {
+    name: text(billTo.name, 200),
+    ...(address === "" ? {} : { address }),
+    ...(taxNumber === "" ? {} : { taxNumber }),
+    ...(place === "" ? {} : { place }),
+    ...(email === "" ? {} : { email }),
+  };
+};
+
+/**
+ * The invoice as the host takes it, or the first thing to fix; `gst` when India's rate applies,
+ * `byName` (from `kinInvoiceBillsByName`) when it bills a typed name instead of a client.
+ */
 export function kinInvoiceInput(
   orgId: KinOrgId,
   draft: KinInvoiceDraft,
-  options: { readonly currency: string; readonly gst: boolean; readonly clientRequestId: string },
+  options: {
+    readonly currency: string;
+    readonly gst: boolean;
+    readonly clientRequestId: string;
+    readonly byName?: boolean;
+    /** The company is in India, where the tax number is a GSTIN. */
+    readonly india?: boolean;
+  },
 ): KinMoneyFormCheck<KinNewInvoiceInput> {
-  if (draft.party === null) return { ok: false, problem: KIN_MONEY_FORMS.problem.client };
+  const india = options.india === true;
+  const billTo = options.byName === true ? billToInput(draft.billTo, india) : null;
+  if (billTo !== null && billTo.name === "") return { ok: false, problem: KIN_BILL_TO.noName };
+  if (india && billTo?.taxNumber !== undefined && kinGstinTyped(billTo.taxNumber) === null)
+    return { ok: false, problem: KIN_GSTIN_WRONG };
+  if (billTo === null && draft.party === null)
+    return { ok: false, problem: KIN_MONEY_FORMS.problem.client };
   const title = oneLine(draft.title).slice(0, 280);
   if (title === "") return { ok: false, problem: KIN_MONEY_FORMS.problem.what };
   const lines = kinLinesInput(draft.lines, options.currency);
@@ -259,7 +324,7 @@ export function kinInvoiceInput(
     ok: true,
     input: {
       orgId,
-      client: draft.party,
+      ...(billTo !== null ? { billTo } : draft.party === null ? {} : { client: draft.party }),
       title,
       lines: lines.lines.slice(0, 50),
       ...(options.gst ? { gstRate } : {}),

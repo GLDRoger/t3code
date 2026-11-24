@@ -156,6 +156,14 @@ function kinGstStateName(place: string): string | null {
   return KIN_GST_STATE_NAMES.find((name) => letters(name) === wanted) ?? null;
 }
 const gstinOf = (text: string) => text.replace(/\s+/g, "").toUpperCase();
+
+/** A GSTIN as typed, with its spaces out and in capitals; null when it isn't one. */
+export const kinGstinTyped = (text: string) => {
+  const value = gstinOf(text);
+  return KIN_GSTIN_PATTERN.test(value) ? value : null;
+};
+export const KIN_GSTIN_WRONG =
+  "That GSTIN isn't right: it has 15 letters and digits, like 27ABCDE1234F1Z5.";
 /** The state a GSTIN is registered in, from its first two digits; null for one that isn't valid. */
 function kinGstinState(gstin: string): string | null {
   const value = gstinOf(gstin);
@@ -294,9 +302,7 @@ export const kinClientDraftCheck = (draft: KinClientDraft): string | null =>
       tagsCheck(draft.tags) ??
       tooLong(draft.terms, NOTES_MAX, "the terms") ??
       tooLong(draft.address, ADDRESS_MAX, "the address") ??
-      (draft.gstin.trim() !== "" && !KIN_GSTIN_PATTERN.test(gstinOf(draft.gstin))
-        ? "That GSTIN isn't right: it has 15 letters and digits, like 27ABCDE1234F1Z5."
-        : null) ??
+      (draft.gstin.trim() !== "" && kinGstinTyped(draft.gstin) === null ? KIN_GSTIN_WRONG : null) ??
       tooLong(draft.placeOfSupply, PLACE_MAX, "the country") ??
       tooLong(draft.notes, NOTES_MAX, "the notes") ??
       firstContactCheck(draft));

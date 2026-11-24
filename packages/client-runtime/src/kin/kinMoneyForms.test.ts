@@ -10,6 +10,7 @@ import {
   kinExpenseTyped,
   kinPersonChoices,
   kinInvoiceBeforeTax,
+  kinInvoiceBillsByName,
   kinInvoiceDraft,
   kinInvoiceDueChoices,
   kinInvoiceInput,
@@ -17,6 +18,8 @@ import {
   kinInvoiceTaxText,
   kinInvoiceTyped,
 } from "./kinMoneyForms.ts";
+import { KIN_BILL_TO } from "./kinBillTo.ts";
+import { KIN_GSTIN_WRONG } from "./kinWorkForms.ts";
 
 const orgId = KinOrgId.make("org");
 const acme = KinRecordKey.make("CL-1");
@@ -71,6 +74,78 @@ describe("an invoice typed by hand", () => {
     );
     expect(abroad.ok && abroad.input).toMatchObject({ lines: [{ rate: "£400.00" }] });
     expect(abroad.ok && "gstRate" in abroad.input).toBe(false);
+  });
+
+  it("bills a client, or a typed name with only the details given, as the form shows it", () => {
+    const filled = {
+      ...kinInvoiceDraft(acme),
+      title: "Saturday workshop",
+      lines: [line("Workshop", "1", "12,000")],
+    };
+    const shape = (draft: typeof filled, byName: boolean) => {
+      const checked = kinInvoiceInput(orgId, draft, { ...options, byName });
+      return checked.ok
+        ? { client: checked.input.client, billTo: checked.input.billTo }
+        : checked.problem;
+    };
+    // A client: today's payload, whatever was typed under a name.
+    const typed = { ...filled, billTo: { ...filled.billTo, name: "Asha Rao" } };
+    expect(shape(typed, false)).toEqual({ client: acme, billTo: undefined });
+    // A typed name with no details sends the name alone; blank details are left out, not empty.
+    expect(shape({ ...typed, billTo: { ...typed.billTo, email: "  " } }, true)).toEqual({
+      client: undefined,
+      billTo: { name: "Asha Rao" },
+    });
+    const detailed = {
+      ...typed,
+      billTo: {
+        name: " Asha Rao ",
+        address: "4 Mill Lane, Pune",
+        taxNumber: "27ABCDE1234F1Z5",
+        place: "Maharashtra",
+        email: "asha@example.com",
+      },
+    };
+    expect(shape(detailed, true)).toEqual({
+      client: undefined,
+      billTo: {
+        name: "Asha Rao",
+        address: "4 Mill Lane, Pune",
+        taxNumber: "27ABCDE1234F1Z5",
+        place: "Maharashtra",
+        email: "asha@example.com",
+      },
+    });
+    // In India the tax number is a GSTIN: spaced or lower case it goes as one, else the form asks.
+    const india = (taxNumber: string) =>
+      kinInvoiceInput(
+        orgId,
+        { ...detailed, billTo: { ...detailed.billTo, taxNumber } },
+        { ...options, byName: true, india: true },
+      );
+    expect(india(" 27abcde1234f1z5 ")).toMatchObject({
+      ok: true,
+      input: { billTo: { taxNumber: "27ABCDE1234F1Z5" } },
+    });
+    expect(india("GSTIN 27ABCDE1234F1Z5")).toEqual({ ok: false, problem: KIN_GSTIN_WRONG });
+    // Nobody named: the form says so before sending, client picked or not.
+    expect(shape({ ...detailed, billTo: { ...detailed.billTo, name: " " } }, true)).toBe(
+      KIN_BILL_TO.noName,
+    );
+    expect(kinInvoiceTyped({ ...kinInvoiceDraft(), billTo: typed.billTo }, kinInvoiceDraft())).toBe(
+      true,
+    );
+  });
+
+  it("bills by name always with Clients off, never for a project with a client", () => {
+    const on = { clientsOn: true, offered: true, projectClient: null };
+    expect(kinInvoiceBillsByName({ byName: false }, on)).toBe(false);
+    expect(kinInvoiceBillsByName({ byName: true }, on)).toBe(true);
+    // Clients off: no picker at all, so the name fields, whatever was chosen.
+    expect(kinInvoiceBillsByName({ byName: false }, { ...on, clientsOn: false })).toBe(true);
+    // The project bills its client; an older host takes no name.
+    expect(kinInvoiceBillsByName({ byName: true }, { ...on, projectClient: "C-2" })).toBe(false);
+    expect(kinInvoiceBillsByName({ byName: true }, { ...on, offered: false })).toBe(false);
   });
 
   it("asks before closing only when something was typed, not for the client it opened with", () => {

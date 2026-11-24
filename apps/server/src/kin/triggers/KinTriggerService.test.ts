@@ -124,7 +124,10 @@ it.effect("arms from front matter, re-arms on edits, and re-syncs without writes
       ],
     );
     const [posted] = yield* card(orgId);
-    assert.equal(posted?.state.text, "Deferred to Fri, 13 Nov, 9:00 am. I'll start then.");
+    assert.equal(
+      posted?.state.text,
+      "Deferred to Fri, 13 Nov, 9:00 am. I'll ask you to start it then.",
+    );
     const [message] = yield* sql<{ body: string }>`SELECT body FROM kin_messages
       WHERE org_id = ${orgId} AND kind = 'system' ORDER BY message_id`;
     assert.equal(message?.body, posted?.state.text);
@@ -366,7 +369,7 @@ it.effect("reads GitHub once per repo within one budget and asks for what it cou
   }).pipe(Effect.provideService(KinDeferralGithubReader, reader), Effect.provide(layer));
 });
 
-it.effect("refuses deferral cards from the model and taps until the dispatcher lands", () =>
+it.effect("refuses deferral cards from the model, and taps the confirm card doesn't offer", () =>
   Effect.gen(function* () {
     const { service } = yield* setup();
     yield* service.syncItem(deferral());
@@ -391,6 +394,6 @@ it.effect("refuses deferral cards from the model and taps until the dispatcher l
         },
       )
       .pipe(Effect.flip);
-    assert.equal(failure._tag === "KinChatError" && failure.reason, "not_allowed");
+    assert.equal(failure._tag === "KinChatError" && failure.reason, "widget_changed");
   }).pipe(Effect.provide(layer)),
 );

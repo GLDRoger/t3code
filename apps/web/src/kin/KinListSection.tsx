@@ -94,6 +94,7 @@ export function KinListSectionPage(
             openKey={props.openKey}
             onOpenKey={props.onOpenKey}
             onGone={props.onGone}
+            titled
           />
           {props.openKey === null ? null : (
             <KinWorkItemSheet

@@ -1248,7 +1248,7 @@ function KinDeferralCard(props: {
     });
     if (outcome.status === "ignored") return;
     setPending(null);
-    setLastStatus(kinCardStatusAfter(outcome, actionId, revision));
+    setLastStatus(kinCardStatusAfter(outcome, actionId, revision, deferral.agent));
   };
 
   return (
