@@ -361,6 +361,8 @@ export const KIN_LIST_SECTIONS = {
   dock: "In the phone's dock",
   dockFull: "The dock holds five places. Turn one off first.",
   remove: "Remove from sidebar",
+  /** The phone has no sidebar: the same move, said as the place it adds. */
+  removeOnPhone: "Stop showing as a section",
   removeDetail: "The list itself stays under Lists.",
   add: "Show a list as a section",
   addPick: "Choose a list",
