@@ -8,7 +8,6 @@ import {
   type KinBillsListInput,
   type KinChatHistoryInput,
   type KinChatId,
-  type KinWidgetId,
   type KinChatMembersInput,
   type KinCompanyProfileInput,
   type KinReceiptsInput,
@@ -67,7 +66,6 @@ import {
   type KinWorkSubscribeInput,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
-import * as Option from "effect/Option";
 import * as Effect from "effect/Effect";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
@@ -119,14 +117,6 @@ import {
 } from "./kinWorkStream.ts";
 import { KIN_PERSON_TASKS, kinPersonTasksCount, kinTasksMostUrgent } from "./kinTasksList.ts";
 import { makeKinWatches } from "./kinWatches.ts";
-
-/**
- * `kin.bills.list`, and the batch card to follow while it is open: the person who added the batch
- * is in its chat, so its card's every step reads the list again. Never sent to the host.
- */
-export interface KinBillsRead extends KinBillsListInput {
-  readonly follow?: { readonly chatId: KinChatId; readonly widgetId: KinWidgetId };
-}
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
 const KIN_HISTORY_PAGE_TIMEOUT = Duration.seconds(20);
@@ -624,39 +614,6 @@ export function makeKinClient<R, ER>(
     // A new direct chat may be with an agent the directory hasn't named yet.
     registry.refresh(kinClient.orgs({ environmentId, input: {} }));
     for (const orgId of orgIds) refreshLeads(environmentId, orgId);
-  });
-
-  const chat = createEnvironmentSubscriptionAtomFamily(runtime, {
-    label: KIN_CHAT_LABEL,
-    subscribe: (input: { readonly chatId: KinChatId }) =>
-      cached(chatStream(input)).pipe(rereadMembersOnChange(input.chatId)),
-  });
-  /** Bills added in bulk: the batches, newest first, or one batch's bills in the order added. */
-  const bills = createKinQueryAtomFamily(runtime, {
-    label: "kin:bills",
-    execute: Effect.fn("KinClient.bills")(function* (input: KinBillsRead) {
-      const { follow: _follow, ...read } = input;
-      return yield* readBills(read);
-    }),
-    staleTimeMs: 30_000,
-    refreshTrigger: (target: {
-      readonly environmentId: EnvironmentId;
-      readonly input: KinBillsRead;
-    }) => {
-      // Expenses move as bills are read and kept; the batch's card moves on every other step.
-      const work = kinWorkRefreshOn(["expenses"])(target);
-      const { follow } = target.input;
-      if (follow === undefined) return work;
-      return Atom.make((get) => {
-        const held = get(
-          chat({ environmentId: target.environmentId, input: { chatId: follow.chatId } }),
-        );
-        const card = Option.getOrNull(AsyncResult.value(held))?.value.widgets.find(
-          (widget) => widget.widgetId === follow.widgetId,
-        );
-        return `${get(work)}:${card?.revision ?? 0}`;
-      });
-    },
   });
 
   /** Web's Kin reads and commands. Mobile's twin adds the device cache and push. */
@@ -1239,7 +1196,11 @@ export function makeKinClient<R, ER>(
       subscribe: (input: Parameters<typeof kinInboxStream>[0]) =>
         cached(kinInboxStream(input)).pipe(rereadLeadsOnChange),
     }),
-    chat,
+    chat: createEnvironmentSubscriptionAtomFamily(runtime, {
+      label: KIN_CHAT_LABEL,
+      subscribe: (input: { readonly chatId: KinChatId }) =>
+        cached(chatStream(input)).pipe(rereadMembersOnChange(input.chatId)),
+    }),
     /** One "Load earlier" page, read fresh every time so a retry after a failure refetches. */
     readHistoryPage: (environmentId: EnvironmentId, input: KinChatHistoryInput) =>
       Effect.runPromiseExit(
@@ -2110,7 +2071,15 @@ export function makeKinClient<R, ER>(
     /** Its `permissionAtom` says whether this session may see bills added in bulk at all. */
     billsRead,
     /** Bills added in bulk: the batches, newest first, or one batch's bills in the order added. */
-    bills,
+    bills: createKinQueryAtomFamily(runtime, {
+      label: "kin:bills",
+      execute: Effect.fn("KinClient.bills")(function* (input: KinBillsListInput) {
+        return yield* readBills(input);
+      }),
+      staleTimeMs: 30_000,
+      // Expenses move as bills are read and kept; the screen follows the batch's card for the rest.
+      refreshTrigger: kinWorkRefreshOn(["expenses"]),
+    }),
     billsAdd: createKinRpcCommand(runtime, {
       label: "kin:bills:add",
       tag: "kin.bills.add",
@@ -2134,7 +2103,10 @@ export function makeKinClient<R, ER>(
     billsReadAgain: createKinRpcCommand(runtime, {
       label: "kin:bills:read-again",
       tag: "kin.bills.readAgain",
-      concurrency: { mode: "singleFlight", key: ({ input }) => input.sha256 ?? input.batchId ?? "" },
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ input }) => input.sha256 ?? input.batchId ?? "",
+      },
     }),
     /** In order per address: a second pick runs after the first and says if nothing is left. */
     workMatchPartner: createKinRpcCommand(runtime, {

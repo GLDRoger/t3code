@@ -4,30 +4,35 @@ import type {
   KinBillBatchSummary,
   KinBillRow,
   KinBillsListResult,
-  KinChatId,
-  KinWidgetId,
 } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useRef, useState } from "react";
 
 import {
   kinBillsAddingStart,
   kinBillsKeptAll,
+  kinBillsOutcome,
   kinBillsSend,
   kinBillsStep,
   type KinBillRowView,
   type KinBillsEvent,
 } from "../kinBills.ts";
+import { kinFeedViewer } from "../kinChatFeed.ts";
+import type { KinChatState } from "../kinInboxModel.ts";
 import { kinListSend } from "../kinLists.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import type { AtomCommandResult } from "../../state/runtime.ts";
 import { kinWorkReadState } from "../kinWorkForms.ts";
-import type { KinHookApp } from "./kinHookApp.ts";
+import type { KinSynced } from "../kinStreams.ts";
+import { useRereadOnChange, type KinHookApp } from "./kinHookApp.ts";
 
 const none: Atom.Atom<AsyncResult.AsyncResult<KinBillsListResult, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
 const NO_ROWS: ReadonlyArray<KinBillRow> = [];
+type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
+const noChat: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 
 export type KinBillTap = "keep" | "drop" | "addAnyway" | "dismiss" | "readAgain";
 
@@ -41,36 +46,38 @@ export function makeKinBillsHooks<R, ER>(app: KinHookApp<R, ER>) {
   /** The batches, newest first; nothing is asked of a host that would refuse this viewer. */
   function useKinBillBatches(target: KinScreenTarget, enabled = true) {
     const allowed = useAtomValue(kinClient.billsRead.permissionAtom(target.environmentId));
-    const state = kinWorkReadState(
-      useAtomValue(enabled && allowed ? batchesAtom(target) : none),
-    );
+    const state = kinWorkReadState(useAtomValue(enabled && allowed ? batchesAtom(target) : none));
     return { allowed, state, refresh: () => refreshBatches(target) };
   }
 
   /**
-   * One batch's bills in the order added. An add takes at most 100 files and a page holds 50, so
-   * two pages hold any batch. `follow` is its card, for the person who added it.
+   * One batch's bills in the order added, with the batch itself. An add takes at most 100 files
+   * and a page holds 50, so two pages hold any batch. The person who added it is in its card's
+   * chat, so for them every step of the card reads the list again.
    */
-  function useKinBillBatch(
-    target: KinScreenTarget,
-    batchId: string,
-    follow: { readonly chatId: KinChatId; readonly widgetId: KinWidgetId } | null,
-  ) {
-    const input = {
-      orgId: target.orgId,
-      batchId,
-      ...(follow === null ? {} : { follow }),
-    };
-    const firstAtom = kinClient.bills({ environmentId: target.environmentId, input });
+  function useKinBillBatch(target: KinScreenTarget, batchId: string) {
+    const { environmentId, orgId } = target;
+    const batches = kinWorkReadState(useAtomValue(batchesAtom(target)));
+    const batch = batches._tag === "ready" ? kinBillBatchOf(batches.value.batches, batchId) : null;
+    const orgs = useAtomValue(kinClient.orgs({ environmentId, input: {} }));
+    const me = kinFeedViewer(Option.getOrNull(AsyncResult.value(orgs)), orgId).personId;
+    const card = batch !== null && batch.addedBy === me ? batch : null;
+    const cardChat: Atom.Atom<ChatResult> =
+      card === null ? noChat : kinClient.chat({ environmentId, input: { chatId: card.chatId } });
+    const chat = useAtomValue(cardChat);
+    const revision =
+      card === null || chat === null
+        ? null
+        : (Option.getOrNull(AsyncResult.value(chat))?.value.widgets.find(
+            (widget) => widget.widgetId === card.widgetId,
+          )?.revision ?? null);
+
+    const input = { orgId, batchId };
+    const firstAtom = kinClient.bills({ environmentId, input });
     const first = kinWorkReadState(useAtomValue(firstAtom));
     const next = first._tag === "ready" ? (first.value.next ?? null) : null;
     const secondAtom =
-      next === null
-        ? none
-        : kinClient.bills({
-            environmentId: target.environmentId,
-            input: { ...input, cursor: next },
-          });
+      next === null ? none : kinClient.bills({ environmentId, input: { ...input, cursor: next } });
     const second = kinWorkReadState(useAtomValue(secondAtom));
     const rows =
       first._tag !== "ready"
@@ -78,15 +85,13 @@ export function makeKinBillsHooks<R, ER>(app: KinHookApp<R, ER>) {
         : second._tag === "ready"
           ? [...first.value.bills, ...second.value.bills]
           : first.value.bills;
-    return {
-      state: first,
-      rows,
-      refresh: () => {
-        registry.refresh(firstAtom);
-        if (next !== null) registry.refresh(secondAtom);
-        refreshBatches(target);
-      },
+    const refresh = () => {
+      registry.refresh(firstAtom);
+      if (next !== null) registry.refresh(secondAtom);
+      refreshBatches(target);
     };
+    useRereadOnChange(revision, refresh);
+    return { state: first, rows, batch, refresh };
   }
 
   /**
@@ -214,8 +219,9 @@ export function makeKinBillsHooks<R, ER>(app: KinHookApp<R, ER>) {
         }>,
       ) => dispatch({ _tag: "chose", files }),
       remove: (id: string) => dispatch({ _tag: "removed", id }),
-      send: () =>
-        kinBillsSend({
+      /** Uploads and adds; answers with what the add came to, or null when it didn't go in. */
+      send: async () => {
+        await kinBillsSend({
           state: () => held.current,
           dispatch,
           upload,
@@ -223,14 +229,15 @@ export function makeKinBillsHooks<R, ER>(app: KinHookApp<R, ER>) {
           add: async (attachments, clientRequestId) => {
             const outcome = await kinListSend({
               online: () => kinHostConnected(environmentId),
-              send: () =>
-                add({ environmentId, input: { orgId, attachments, clientRequestId } }),
+              send: () => add({ environmentId, input: { orgId, attachments, clientRequestId } }),
             });
             if (!outcome.ok) return { ok: false, problem: outcome.problem };
             refreshBatches(target);
             return { ok: true, value: outcome.value };
           },
-        }),
+        });
+        return kinBillsOutcome(held.current);
+      },
     };
   }
 

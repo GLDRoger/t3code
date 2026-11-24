@@ -33,7 +33,11 @@ export const KIN_BILLS = {
   addDetail: "Kin reads each one",
   title: "Add bills",
   hint: "Each bill Kin reads becomes a suggested expense with its file. Nothing counts in Money until you keep it.",
-  drop: "Drop photos or PDFs here, or click to choose them",
+  drop: "Drop photos or PDFs of bills here, or",
+  choose: "choose them",
+  /** The file picker's own name, and the list of what was chosen. */
+  pick: "Photos or PDFs of bills",
+  chosen: "Chosen bills",
   photoLibrary: "Photo library",
   files: "Files",
   takePhoto: "Take photo",
@@ -45,7 +49,7 @@ export const KIN_BILLS = {
   notABill: "Only photos and PDFs are read as bills.",
   tooMany: `Up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} bills at a time.`,
   uploadFailed: "Couldn't upload this one.",
-  noneUploaded: "None of them uploaded. Check the connection and try again.",
+  noneUploaded: "None of them uploaded: what went wrong is beside each one.",
   upload: {
     waiting: "Ready",
     uploading: "Uploading…",
@@ -277,9 +281,12 @@ export function kinBillRowView(
     expense: row.expense === undefined ? null : { key: row.expense.key, rev: row.expense.rev },
     duplicateOf: row.duplicateOf?.key ?? null,
     skipped: options.skipped?.get(row.sha256) ?? null,
-    accessibilityLabel: [row.file.name, label, ...read, ...(problem === null ? [] : [problem])].join(
-      ". ",
-    ),
+    accessibilityLabel: [
+      row.file.name,
+      label,
+      ...read,
+      ...(problem === null ? [] : [problem]),
+    ].join(". "),
   };
 }
 
@@ -346,11 +353,7 @@ export function kinBillsKeptAll(result: KinBillsKeepReadResult) {
   const kept = result.kept.length;
   const skipped = result.skipped.length;
   const said =
-    kept === 0
-      ? "None were kept."
-      : kept === 1
-        ? "Kept 1 expense."
-        : `Kept ${kept} expenses.`;
+    kept === 0 ? "None were kept." : kept === 1 ? "Kept 1 expense." : `Kept ${kept} expenses.`;
   return {
     said:
       skipped === 0
@@ -459,7 +462,8 @@ export function kinBillsStep<F>(state: KinBillsAdding<F>, event: KinBillsEvent<F
   });
   switch (event._tag) {
     case "chose": {
-      let room = PROVIDER_SEND_TURN_MAX_ATTACHMENTS - state.files.filter((f) => live(f.upload)).length;
+      let room =
+        PROVIDER_SEND_TURN_MAX_ATTACHMENTS - state.files.filter((f) => live(f.upload)).length;
       const added = event.files.map((file): KinBillDraft<F> => {
         const refusal = kinBillFileRefusal(file) ?? (room <= 0 ? KIN_BILLS.tooMany : null);
         if (refusal === null) room -= 1;
@@ -479,6 +483,7 @@ export function kinBillsStep<F>(state: KinBillsAdding<F>, event: KinBillsEvent<F
         ...state,
         phase: "uploading" as const,
         problem: null,
+        result: null,
         files: state.files.map((file) =>
           file.upload._tag === "waiting" || file.upload._tag === "failed"
             ? { ...file, upload: { _tag: "uploading" as const } }

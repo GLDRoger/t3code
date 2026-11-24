@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures read a batch's day against a fixed now.
 import type {
   KinAttachment,
   KinBillBatchSummary,
@@ -235,10 +236,7 @@ describe("adding bills", () => {
     expect(kinBillsOutcome(state)).toEqual({
       review: null,
       close: false,
-      lines: [
-        "Already added before: a.jpg.",
-        "b.txt: Only photos and PDFs are read as bills.",
-      ],
+      lines: ["Already added before: a.jpg.", "b.txt: Only photos and PDFs are read as bills."],
     });
   });
 });

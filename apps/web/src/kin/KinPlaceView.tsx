@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { KIN_DATES } from "@t3tools/client-runtime/kin/kinDates";
 import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions";
+import { KIN_BILLS } from "@t3tools/client-runtime/kin/kinBills";
 import { KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_MONEY, type KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import { kinPlaceInPlace } from "@t3tools/client-runtime/kin/kinNavigation";
@@ -53,6 +54,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { KinDocPage } from "./KinDocPage";
 import { KinDocsList } from "./KinDocsList";
 import { KinSubscriptionsPage } from "./KinSubscriptions";
+import { KinBillsPage } from "./KinBills";
 import { KinSearchDialog } from "./KinSearchDialog";
 import { KinWorkClientPage, KinWorkClientsList, KinWorkProjectsTab } from "./KinWorkClients";
 import { KinDealNewDialog, KinDealsTab } from "./KinDeals";
@@ -460,7 +462,9 @@ export function KinPlaceView({
               ? KIN_DATES.title
               : record !== null && !wide && !taskPage && "subscriptions" in record
                 ? KIN_SUBSCRIPTIONS.title
-                : title}
+                : record !== null && !wide && !taskPage && "bills" in record
+                  ? KIN_BILLS.added
+                  : title}
           </h1>
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
@@ -563,6 +567,7 @@ export function KinPlaceView({
           onOpenKey={setOpenKey}
           onDates={() => open({ dates: true })}
           onSubscriptions={() => open({ subscriptions: true })}
+          onBills={(batchId) => open({ bills: batchId })}
           onOpenDoc={openDoc}
         />
       );
@@ -676,6 +681,15 @@ export function KinPlaceView({
           onOpenKey={fromRecord.task}
         />
       );
+    if ("bills" in shown)
+      return (
+        <KinBillsPage
+          {...props}
+          batchId={shown.bills}
+          onOpenKey={fromRecord.task}
+          onOpenBatch={(batchId) => fromRecord.open({ bills: batchId })}
+        />
+      );
     if ("dates" in shown)
       return (
         <KinWorkDates
@@ -699,6 +713,7 @@ export function KinPlaceView({
           initial={listStart?.list === shown.list ? listStart.filter : KIN_LIST_DEFAULT_FILTER}
           openKey={openKey}
           onOpenKey={fromRecord.task}
+          onBills={(batchId) => fromRecord.open({ bills: batchId })}
           onGone={() => onGo("docs", null, false)}
         />
       );
