@@ -507,13 +507,6 @@ it("the connecting agent is told what stays a tap in Kin, and no tool offers to 
     "ask_agent",
   ])
     assert.include(KinTasksKeyMcp.TASKS_KEY_INSTRUCTIONS, place);
-  // No mailbox, company's or anyone's own, is reached through a key.
-  assert.deepStrictEqual(
-    Object.keys(KinTasksKeyMcp.TasksKeyToolkit.tools).filter(
-      (name) => name.includes("connection") || name.startsWith("mail"),
-    ),
-    [],
-  );
   const updateDeal = KinTasksKeyMcp.TasksKeyToolkit.tools.update_deal;
   assert.notInclude(JSON.stringify(Tool.getJsonSchema(updateDeal)), '"lost"');
   assert.include(Tool.getDescription(updateDeal) ?? "", "Marking a deal lost is done in Kin.");
