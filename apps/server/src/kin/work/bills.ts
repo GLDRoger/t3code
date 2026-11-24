@@ -20,11 +20,14 @@ import {
   type KinBillState,
   KinChatError,
   KinChatId,
+  type KinEvent,
   KinMessageId,
   type KinOrgId,
   KinPersonId,
   KinWidgetId,
+  formatKinWhen,
   isKinCurrency,
+  KIN_TEXT_LOCALE,
   parseKinMoney,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -440,8 +443,14 @@ const recordsById = Effect.fn("KinBills.recordsById")(function* (
 /**
  * Redraws a batch's card from its rows: progress while Kin reads, the counts when done. Once done
  * it waits on the adder while a bill still needs them, which rings them once; else it closes.
+ * `pause` holds reading until a time (the daily limit) or ends the hold; left out, a hold stands
+ * until its time.
  */
-const refreshCard = Effect.fn("KinBills.refreshCard")(function* (orgId: KinOrgId, batchId: string) {
+const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
+  orgId: KinOrgId,
+  batchId: string,
+  pause?: number | null,
+) {
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
   const sql = yield* SqlClient.SqlClient;
@@ -449,6 +458,7 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (orgId: KinOrgId
   if (Option.isNone(found)) return;
   const stored = Option.getOrUndefined(CardJson(found.value.state));
   if (stored === undefined) return;
+  const now = yield* Clock.currentTimeMillis;
   const rows = yield* batchRows(orgId, batchId);
   const records = yield* recordsById(
     orgId,
@@ -463,8 +473,32 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (orgId: KinOrgId
   };
   const total = rows.length + counts.already;
   const status = pending === 0 ? ("done" as const) : ("reading" as const);
-  const base = { ...stored, status, total, done: total - pending, counts };
-  const card: KinBillBatchCard = { ...base, text: cardText(base) };
+  const held =
+    pause === null
+      ? undefined
+      : pause !== undefined
+        ? pause
+        : stored.pausedUntil === undefined
+          ? undefined
+          : Date.parse(stored.pausedUntil);
+  const pausedUntil = status === "reading" && held !== undefined && held > now ? held : undefined;
+  const { pausedUntil: _held, ...rest } = stored;
+  const base = {
+    ...rest,
+    status,
+    total,
+    done: total - pending,
+    counts,
+    ...(pausedUntil === undefined ? {} : { pausedUntil: iso(pausedUntil) }),
+  };
+  const reader = rows.find((row) => row.state === "waiting" || row.state === "reading")?.agentId;
+  const card: KinBillBatchCard = {
+    ...base,
+    text:
+      pausedUntil === undefined || reader === undefined
+        ? cardText(base)
+        : `${cardText(base)} Paused until ${yield* clockTime(orgId, pausedUntil)}: today's limit for ${yield* agentName(orgId, reader)} is used up.`,
+  };
   const open = rows.some((row) => {
     if (row.dismissedAt !== null) return false;
     const shown = shownState(row, records.get(row.recordId ?? ""));
@@ -474,6 +508,7 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (orgId: KinOrgId
   const closed = status === "done" && !open;
   if (
     stored.text === card.text &&
+    stored.pausedUntil === card.pausedUntil &&
     stored.status === card.status &&
     stored.done === card.done &&
     stored.counts.read === card.counts.read &&
@@ -494,6 +529,49 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (orgId: KinOrgId
     updatedAt: at,
   });
   yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
+});
+
+/** A time on the company's clock, as the card's words say it. */
+const clockTime = Effect.fn("KinBills.clockTime")(function* (orgId: KinOrgId, at: number) {
+  return formatKinWhen(at, "time", { zone: yield* ownerZone(orgId), locale: KIN_TEXT_LOCALE });
+});
+const agentName = Effect.fn("KinBills.agentName")(function* (orgId: KinOrgId, agentId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const [agent] = yield* sql<{ name: string }>`SELECT COALESCE(l.name, a.display_name) AS name
+    FROM kin_agents a LEFT JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
+    WHERE a.org_id = ${orgId} AND a.agent_id = ${agentId}`;
+  return agent?.name ?? "the agent";
+});
+
+const batchesOf = (events: ReadonlyArray<KinEvent>) =>
+  new Set(events.flatMap((event) => (event._tag === "bills.read" ? [event.batchId] : [])));
+/**
+ * Bills turns the daily limit held until `until`: each batch's card says so once, in place of a
+ * line in the chat per turn.
+ */
+export const paused = Effect.fn("KinBills.paused")(function* (
+  orgId: KinOrgId,
+  events: ReadonlyArray<KinEvent>,
+  until: number,
+) {
+  const batches = batchesOf(events);
+  if (batches.size === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql.withTransaction(
+    Effect.forEach(batches, (batchId) => refreshCard(orgId, batchId, until), { discard: true }),
+  );
+});
+/** A bills turn starting: its batches' cards say they are reading again. */
+export const resumed = Effect.fn("KinBills.resumed")(function* (
+  orgId: KinOrgId,
+  events: ReadonlyArray<KinEvent>,
+) {
+  const batches = batchesOf(events);
+  if (batches.size === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql.withTransaction(
+    Effect.forEach(batches, (batchId) => refreshCard(orgId, batchId, null), { discard: true }),
+  );
 });
 
 /** Bills stored and waiting to be queued, in one transaction with their card. */

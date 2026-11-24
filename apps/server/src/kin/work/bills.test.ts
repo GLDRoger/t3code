@@ -975,6 +975,40 @@ describe("bills in bulk", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("bills held by the daily limit say so once on their card, until reading goes on", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const repo = yield* KinChatRepository.KinChatRepository;
+      const added = yield* Bills.add(
+        as(rhea),
+        { orgId, attachments: [yield* upload("a.png", "bill")], clientRequestId: "add" },
+        TEST_UPLOAD_OWNER,
+      );
+      const revision = Effect.map(
+        repo.getWidget({ orgId, widgetId: KinWidgetId.make(`bills:${added.batchId}`) }),
+        (widget) => Option.getOrThrow(widget).revision,
+      );
+      const before = yield* revision;
+      const { events } = yield* claimTurn(1);
+      // Midnight in Kolkata, when the day's limit resets: two turns held, one change.
+      const reset = Date.parse("2026-11-20T18:30:00.000Z");
+      yield* Bills.paused(orgId, events, reset);
+      yield* Bills.paused(orgId, events, reset);
+      const held = yield* card(added.batchId);
+      assert.strictEqual(
+        held.text,
+        "Reading 1 bill: 0 done. Paused until 00:00: today's limit for Finance is used up.",
+      );
+      assert.strictEqual(held.pausedUntil, "2026-11-20T18:30:00.000Z");
+      assert.strictEqual(yield* revision, before + 1);
+      // Its turn starts: reading again, in the card's own words.
+      yield* Bills.resumed(orgId, events);
+      const reading = yield* card(added.batchId);
+      assert.strictEqual(reading.text, "Reading 1 bill: 0 done.");
+      assert.isUndefined(reading.pausedUntil);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("bills a stopped host left mid-read are queued again, once each", () =>
     Effect.gen(function* () {
       yield* seed;

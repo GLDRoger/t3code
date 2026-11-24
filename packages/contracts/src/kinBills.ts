@@ -88,6 +88,11 @@ export const KinBillBatchCard = Schema.Struct({
   /** Files refused as neither an image nor a PDF; not in `total`. */
   refused: Schema.optional(NonNegativeInt),
   addedBy: KinPersonId,
+  /**
+   * While reading waits on the reading agent's daily limit: when it resumes. `text` says so too;
+   * absent once reading goes on.
+   */
+  pausedUntil: Schema.optional(IsoDateTime),
 });
 export type KinBillBatchCard = typeof KinBillBatchCard.Type;
 

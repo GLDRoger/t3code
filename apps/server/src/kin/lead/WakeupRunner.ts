@@ -399,6 +399,24 @@ const make = Effect.gen(function* () {
   const records = yield* Effect.serviceOption(KinRecords);
   const chatRepository = yield* Effect.serviceOption(Repository.KinChatRepository);
   const chatHub = yield* Effect.serviceOption(KinChatHub);
+  /** A batch's card redrawn (`work/bills.ts`); a card that can't be is no reason to stop a turn. */
+  const onCards = (
+    effect: Effect.Effect<
+      void,
+      unknown,
+      SqlClient.SqlClient | Repository.KinChatRepository | KinChatHub
+    >,
+  ) =>
+    Option.isNone(chatRepository) || Option.isNone(chatHub)
+      ? Effect.void
+      : effect.pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(Repository.KinChatRepository, chatRepository.value),
+          Effect.provideService(KinChatHub, chatHub.value),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't redraw a bills card", { cause }),
+          ),
+        );
   const scope = yield* Effect.scope;
   const spaceChecks = new Set<KinOrgId>();
   const spaceFolders = Option.map(yield* Effect.serviceOption(ServerConfig), (config) =>
@@ -869,6 +887,7 @@ const make = Effect.gen(function* () {
         for (const group of (yield* admitEvents(orgId, agentId, events)).held) {
           const ids = new Set(group.events.map((event) => event.eventId));
           yield* budget.defer({ orgId, agentId, wakeupId, ...group });
+          yield* onCards(Bills.paused(orgId, group.events, group.nextReset));
           events = events.filter((event) => !ids.has(event.eventId));
         }
         if (events.length === 0) return;
@@ -1437,6 +1456,7 @@ const make = Effect.gen(function* () {
                   heldBy: group.heldBy,
                   nextReset: group.nextReset,
                 });
+                yield* onCards(Bills.paused(orgId, waits, group.nextReset));
                 events = events.filter((event) => !deferred.has(event.eventId));
               }
             }
@@ -1464,6 +1484,7 @@ const make = Effect.gen(function* () {
               yield* queue.finish({ orgId, wakeupId, status: "completed" });
               return;
             }
+            yield* onCards(Bills.resumed(orgId, events));
             const budgetContext = yield* budget.promptContext(orgId);
             const lane = Option.isSome(bridge)
               ? Option.getOrUndefined(yield* bridge.value.lane({ orgId, agentId, wakeupId }))

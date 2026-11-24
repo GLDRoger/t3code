@@ -30,6 +30,8 @@ export type Lane = {
    * bills read in the background: nothing the model writes reaches a chat.
    */
   readonly quiet?: true;
+  /** Bills read in the background: their card tells what wasn't read, so a failure says nothing. */
+  readonly bills?: true;
 };
 
 /** The same turn-level reply/notice split, for a live reply or a recorded wake-up. */
@@ -78,6 +80,7 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
         owed: false,
         leadName: lead?.name ?? "Agent",
         quiet: true,
+        bills: true,
       });
     // Only discussion turns Kin handed on in the Team room (`team:` keys), nothing else there.
     const [team] = yield* sql<{ others: number }>`SELECT COUNT(e.event_id) FILTER (

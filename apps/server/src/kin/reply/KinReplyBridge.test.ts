@@ -75,6 +75,7 @@ import {
 import { claudeThinkingItemId } from "./claudeThinkingItem.ts";
 import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
+import { laneFor } from "./replyLane.ts";
 import { WEEK_FIGURES_TITLE } from "../pulse/weekly.ts";
 
 const threadId = ThreadId.make("lead-thread");
@@ -2588,6 +2589,20 @@ it.effect.each(
       );
       assert.deepStrictEqual(fake.prompts, !replied && wake.owed ? [RESCUE_PROMPT] : []);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a bills turn that fails posts nothing: the batch's card tells what wasn't read", () =>
+  Effect.gen(function* () {
+    const { bridge, owner, wakeupId, posted } = yield* setup({
+      event: WAKE_KINDS["bills.read"].event!,
+    });
+    const lane = Option.getOrThrow(
+      yield* laneFor({ orgId: owner.orgId, agentId, wakeupId: KinWakeupId.make(wakeupId) }),
+    );
+    for (const outcome of ["partway", "gave_up", "retrying", "signin"] as const)
+      yield* bridge.failed({ orgId: owner.orgId, wakeupId, lane, outcome, cause: "unreachable" });
+    assert.deepStrictEqual(yield* posted, []);
+  }).pipe(Effect.provide(layer)),
 );
 
 // Review 48: ten notices this hour refused a hand-over or task reply, and it counted as answered.
