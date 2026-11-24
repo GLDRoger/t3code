@@ -45,6 +45,7 @@ import {
   kinRecordChip,
   kinRecordHeld,
   kinTaskOrigin,
+  kinTaskBrief,
   kinTaskControls,
   kinTaskWith,
   kinTaskWithChoices,
@@ -52,6 +53,7 @@ import {
   type KinNextStepAct,
   type KinRecordWho,
 } from "@t3tools/client-runtime/kin/kinTaskRecord";
+import { kinNotesVersions } from "@t3tools/client-runtime/kin/kinTemplates";
 import {
   KIN_WORK_COPY,
   kinWorkApplied,
@@ -740,6 +742,12 @@ function KinWorkItem(
   const chip = kinRecordChip(shown, view, names, props.now);
   const origin = kinTaskOrigin(shown, names, props.now);
   const briefBy = kinBriefBy(shown, names, props.now);
+  const brief = kinTaskBrief({
+    view,
+    step,
+    edit: reword !== null,
+    versions: kinNotesVersions(props.item, names, props.now).length,
+  });
   const stepAct = (id: KinNextStepAct) => {
     if (change === null) return;
     if (id === "keep") return change({ type: "confirm" });
@@ -1245,7 +1253,7 @@ function KinWorkItem(
             )}
           </Section>
         )}
-        {edit !== null ? null : (
+        {edit !== null || brief === null ? null : (
           <Section
             title={KIN_TASK_RECORD.brief}
             action={
@@ -1263,15 +1271,17 @@ function KinWorkItem(
               )
             }
           >
-            <p
-              className={
-                view.notes === null
-                  ? "text-sm text-muted-foreground"
-                  : "whitespace-pre-wrap wrap-break-word text-sm text-foreground"
-              }
-            >
-              {view.notes ?? KIN_TASK_RECORD.noBrief}
-            </p>
+            {brief.words ? (
+              <p
+                className={
+                  view.notes === null
+                    ? "text-sm text-muted-foreground"
+                    : "whitespace-pre-wrap wrap-break-word text-sm text-foreground"
+                }
+              >
+                {view.notes ?? KIN_TASK_RECORD.noBrief}
+              </p>
+            ) : null}
             {briefBy === null ? null : (
               <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 {briefBy.avatar === null ? null : <KinAvatar avatar={briefBy.avatar} size="xs" />}

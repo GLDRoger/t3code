@@ -116,7 +116,7 @@ import {
   useKinRates,
 } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
-import { useKinSectionOn } from "./useKinShell";
+import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
 import { kinListCanBeSection } from "@t3tools/client-runtime/kin/kinShell";
 import {
   KIN_BILL_TO,
@@ -554,6 +554,7 @@ export function KinListEntry(
 ) {
   const { item, view, environmentId } = props;
   const clientsOn = useKinSectionOn(environmentId, "clients");
+  const named = useKinSectionNamed(environmentId);
   // Clients off: an entry's client and project are names alone, with no link or picker.
   const billing = clientsOn;
   const opensClients = useKinOpensClients(environmentId) && billing;
@@ -889,89 +890,96 @@ export function KinListEntry(
                 </dd>
               </>
             )}
-            {entry.facts.map((fact) => {
-              const { billTo } = entry;
-              if (
-                fact.id === "party" &&
-                billTo !== null &&
-                item.party === undefined &&
-                (billTo.typed || naming || !clientsOn)
-              )
+            {entry.facts
+              .map((said) => ({
+                ...said,
+                label: said.id === "party" ? named(said.label) : said.label,
+              }))
+              .map((fact) => {
+                const { billTo } = entry;
+                if (
+                  fact.id === "party" &&
+                  billTo !== null &&
+                  item.party === undefined &&
+                  (billTo.typed || naming || !clientsOn)
+                )
+                  return (
+                    <BillToRows
+                      key={fact.id}
+                      billTo={billTo}
+                      canName={canDraft && billTo.editable}
+                      canUseClient={canChange && billTo.editable && clientsOn && billTo.typed}
+                      useClientLabel={named(KIN_BILL_TO.useClient)}
+                      opening={naming}
+                      busy={busy}
+                      clients={clients.map((row) => ({ value: row.key, label: row.name }))}
+                      onSave={async (key, value) => {
+                        const failed = await changes.edit(item.rev, {
+                          fields: kinBillToFieldPatch(key, value),
+                        });
+                        if (failed === null) setNaming(false);
+                        return failed;
+                      }}
+                      onCancelName={() => setNaming(false)}
+                      onUseClient={(key) => void changes.update(item.rev, kinUseClientInstead(key))}
+                    />
+                  );
+                const opens = open(fact);
+                const picks =
+                  canChange && fact.id !== "owner" && (fact.id === "category" || billing);
+                const offersName =
+                  fact.id === "party" &&
+                  billTo !== null &&
+                  item.party === undefined &&
+                  canDraft &&
+                  billTo.editable;
+                if (!picks && fact.value === null) return null;
                 return (
-                  <BillToRows
-                    key={fact.id}
-                    billTo={billTo}
-                    canName={canDraft && billTo.editable}
-                    canUseClient={canChange && billTo.editable && clientsOn && billTo.typed}
-                    opening={naming}
-                    busy={busy}
-                    clients={clients.map((row) => ({ value: row.key, label: row.name }))}
-                    onSave={async (key, value) => {
-                      const failed = await changes.edit(item.rev, {
-                        fields: kinBillToFieldPatch(key, value),
-                      });
-                      if (failed === null) setNaming(false);
-                      return failed;
-                    }}
-                    onCancelName={() => setNaming(false)}
-                    onUseClient={(key) => void changes.update(item.rev, kinUseClientInstead(key))}
-                  />
-                );
-              const opens = open(fact);
-              const picks = canChange && fact.id !== "owner" && (fact.id === "category" || billing);
-              const offersName =
-                fact.id === "party" &&
-                billTo !== null &&
-                item.party === undefined &&
-                canDraft &&
-                billTo.editable;
-              if (!picks && fact.value === null) return null;
-              return (
-                <div key={fact.id} className="contents">
-                  <dt className="text-muted-foreground">{fact.label}</dt>
-                  <dd className="flex min-w-0 flex-wrap items-center gap-1 text-foreground">
-                    {picks ? (
-                      <KinEntryPick
-                        label={fact.label}
-                        shown={fact.value}
-                        current={fact.current}
-                        disabled={busy}
-                        choices={
-                          fact.id === "category"
-                            ? fact.choices
-                            : (fact.id === "project" ? projects : clients).map((row) => ({
-                                value: row.key,
-                                label: row.name,
-                              }))
-                        }
-                        onPick={(value) =>
-                          void changes.update(
-                            item.rev,
+                  <div key={fact.id} className="contents">
+                    <dt className="text-muted-foreground">{fact.label}</dt>
+                    <dd className="flex min-w-0 flex-wrap items-center gap-1 text-foreground">
+                      {picks ? (
+                        <KinEntryPick
+                          label={fact.label}
+                          shown={fact.value}
+                          current={fact.current}
+                          disabled={busy}
+                          choices={
                             fact.id === "category"
-                              ? { listCategory: value as never }
-                              : fact.id === "project"
-                                ? { project: value }
-                                : { party: value },
-                          )
-                        }
-                      />
-                    ) : opens === null ? (
-                      <span className="truncate">{fact.value}</span>
-                    ) : null}
-                    {opens === null ? null : (
-                      <Button size="xs" variant="ghost" onClick={opens}>
-                        {picks ? "Open" : fact.value}
-                      </Button>
-                    )}
-                    {offersName ? (
-                      <Button size="xs" variant="ghost" onClick={() => setNaming(true)}>
-                        {KIN_BILL_TO.byName}
-                      </Button>
-                    ) : null}
-                  </dd>
-                </div>
-              );
-            })}
+                              ? fact.choices
+                              : (fact.id === "project" ? projects : clients).map((row) => ({
+                                  value: row.key,
+                                  label: row.name,
+                                }))
+                          }
+                          onPick={(value) =>
+                            void changes.update(
+                              item.rev,
+                              fact.id === "category"
+                                ? { listCategory: value as never }
+                                : fact.id === "project"
+                                  ? { project: value }
+                                  : { party: value },
+                            )
+                          }
+                        />
+                      ) : opens === null ? (
+                        <span className="truncate">{fact.value}</span>
+                      ) : null}
+                      {opens === null ? null : (
+                        <Button size="xs" variant="ghost" onClick={opens}>
+                          {picks ? "Open" : fact.value}
+                        </Button>
+                      )}
+                      {offersName ? (
+                        <Button size="xs" variant="ghost" onClick={() => setNaming(true)}>
+                          {KIN_BILL_TO.byName}
+                        </Button>
+                      ) : null}
+                    </dd>
+                  </div>
+                );
+              })}
             {entry.repeat === null ? null : (
               <>
                 <dt className="text-muted-foreground">{KIN_LISTS.entry.repeats}</dt>
@@ -1265,6 +1273,8 @@ function BillToRows(props: {
   readonly billTo: NonNullable<KinListEntryView["billTo"]>;
   readonly canName: boolean;
   readonly canUseClient: boolean;
+  /** "Use a client instead", in the company's word for Clients. */
+  readonly useClientLabel: string;
   /** The person just chose to bill by name: the name opens as a box. */
   readonly opening: boolean;
   readonly busy: boolean;
@@ -1304,7 +1314,7 @@ function BillToRows(props: {
               {isName && props.canUseClient && props.clients.length > 0 ? (
                 <Menu>
                   <MenuTrigger render={<Button size="xs" variant="ghost" disabled={props.busy} />}>
-                    {KIN_BILL_TO.useClient}
+                    {props.useClientLabel}
                     <ChevronDownIcon />
                   </MenuTrigger>
                   <MenuPopup align="start">
