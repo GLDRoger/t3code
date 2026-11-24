@@ -446,8 +446,12 @@ export const isDraftWake = (event: Extract<KinEvent, { readonly _tag: "pulse" }>
 export const DRAFT_NOTHING_NOW =
   "Kin checked this follow-up again as this turn started: there is nothing to draft for it now.";
 /** The wake's own line when the person has their own mailbox and a contact to write to. */
-export const DRAFT_FROM_MAILBOX = (name: string, address: string) =>
-  `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. Draft the mail to the contact below from their own mailbox (${address}) with kin_connection_call mail_send, naming the task's key in the mail, so it waits on a Confirm card for them. Nothing goes until they tap Confirm: never say it was sent. Then tell them in one short line that it is ready.`;
+export const DRAFT_FROM_MAILBOX = (name: string, addresses: ReadonlyArray<string>) =>
+  `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. Draft the mail to the contact below from ${
+    addresses.length === 1
+      ? `their own mailbox (${addresses[0]})`
+      : `one of their own mailboxes (${addresses.join(", ")}): the one earlier mail with this contact went through, else the first`
+  } with kin_connection_call mail_send, naming the task's key in the mail, so it waits on a Confirm card for them. Nothing goes until they tap Confirm: never say it was sent. Then tell them in one short line that it is ready.`;
 /** The wake's own line when there is no mailbox of theirs, or no contact they may see. */
 export const DRAFT_CALL_NOTES = (name: string, mailbox: boolean) =>
   `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. ${mailbox ? "There is no contact address for it that they may see" : "No mailbox of theirs is connected"}, so draft no mail: give them call notes here in this chat (what to say, what was promised, the last contact).`;
@@ -528,16 +532,14 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
           AND r.party_id = ${task.partyId} AND ${seenBy(sql, viewer)}
           AND trim(COALESCE(json_extract(r.fields_json, '$.email'), '')) <> ''
         ORDER BY lower(r.title), r.key LIMIT 1`;
-  const [mailbox] = yield* personConnections(orgId, personId);
-  const address =
-    mailbox === undefined || mailbox.state !== "active" || mailbox.pausedAt !== null
-      ? undefined
-      : (mailbox.accountLabel ?? mailbox.label);
+  const addresses = (yield* personConnections(orgId, personId))
+    .filter((row) => row.state === "active" && row.pausedAt === null)
+    .map((row) => row.accountLabel ?? row.label);
   return {
     text:
-      address !== undefined && contact !== undefined
-        ? DRAFT_FROM_MAILBOX(person.name, address)
-        : DRAFT_CALL_NOTES(person.name, address !== undefined),
+      addresses.length > 0 && contact !== undefined
+        ? DRAFT_FROM_MAILBOX(person.name, addresses)
+        : DRAFT_CALL_NOTES(person.name, addresses.length > 0),
     data: {
       task: task.key,
       title: task.title,
@@ -545,7 +547,9 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
       ...(task.client === null ? {} : { client: task.client }),
       ...(contact === undefined ? {} : { writeTo: contact }),
       ...lastComment,
-      ...(address === undefined ? { mailbox: "none connected" } : { from: address }),
+      ...(addresses.length === 0
+        ? { mailbox: "none connected" }
+        : { from: addresses.length === 1 ? addresses[0]! : addresses }),
     },
   };
 });

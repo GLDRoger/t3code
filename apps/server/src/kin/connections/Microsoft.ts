@@ -148,6 +148,10 @@ const automationOf = (message: unknown) => ({
   bulk: false,
 });
 
+const receivedOf = (message: unknown) => {
+  const at = Date.parse(text(field(message, "receivedDateTime")) ?? "");
+  return Number.isFinite(at) ? at : null;
+};
 const messageOf = (message: unknown, files?: unknown): MailMessage => ({
   threadId: text(field(message, "conversationId")) ?? "",
   from: nameOf(field(message, "from")),
@@ -158,6 +162,7 @@ const messageOf = (message: unknown, files?: unknown): MailMessage => ({
   ccLine: recipientLine(message, "ccRecipients"),
   deliveredTo: [...recipients(message, "toRecipients"), ...recipients(message, "ccRecipients")],
   date: text(field(message, "receivedDateTime")) ?? null,
+  receivedAt: receivedOf(message),
   subject: text(field(message, "subject")) ?? "",
   preview: text(field(message, "bodyPreview")) ?? "",
   unread: field(message, "isRead") === false,

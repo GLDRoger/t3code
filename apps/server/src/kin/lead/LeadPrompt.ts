@@ -1789,33 +1789,28 @@ export class KinLeadPrompt extends Context.Service<
             Effect.logWarning("Kin speaker names unavailable", cause).pipe(Effect.as(undefined)),
           ),
         );
-        const addresses =
-          ownerOnly || directWith?.access !== "member" || laneChat?.archivedAt !== null
+        // A member's own turn, or an owner-level person's owner-only one: theirs alone.
+        const ownLevel = directWith?.access === "owner" || directWith?.access === "co_owner";
+        const ownRows =
+          directWith === undefined ||
+          laneChat?.archivedAt !== null ||
+          (ownerOnly ? !ownLevel : directWith.access !== "member")
             ? []
             : yield* Effect.gen(function* () {
                 const person = yield* mailboxPerson(input);
                 if (person !== directWith.personId) return [];
-                return (yield* personConnections(orgId, person))
-                  .filter((row) => row.state === "active" && row.pausedAt === null)
-                  .map((row) => encoded(row.accountLabel ?? row.label));
+                return (yield* personConnections(orgId, person)).filter(
+                  (row) => row.state === "active" && row.pausedAt === null,
+                );
               }).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
                 Effect.catch((cause) =>
                   Effect.logWarning("Kin own mailboxes unavailable", cause).pipe(Effect.as([])),
                 ),
               );
+        const addresses = ownRows.map((row) => encoded(row.accountLabel ?? row.label));
         const mailboxLine =
-          addresses.length === 0
-            ? []
-            : [
-                sharedPart(
-                  `Their own ${
-                    addresses.length === 1
-                      ? `mailbox ${addresses[0]} is connected: a mail they ask you to write is drafted from it`
-                      : `mailboxes ${addresses.join(", ")} are connected: a mail they ask you to write is drafted from one of them`
-                  } with kin_connection_call mail_send and waits on a Confirm card for them, not for the owner. Nothing goes until they tap Confirm: never say it was sent.`,
-                ),
-              ];
+          addresses.length === 0 ? [] : [sharedPart(ownMailboxLine(addresses, ownLevel))];
         const hasSpeaker = speaking !== undefined && speaking !== PASSED_ON_SPEAKER;
         // The domain picks the seat's static rules in every turn; the charter is the owner's.
         const [stored] = yield* sql<{ domain: string; charter: string }>`
@@ -1912,6 +1907,10 @@ export class KinLeadPrompt extends Context.Service<
                 ),
                 checkIn,
                 checkInEvents,
+                ownAccounts: ownRows.map((row) => ({
+                  connection: row.connectionId,
+                  account: row.accountLabel ?? row.label,
+                })),
               }).pipe(
                 Effect.tap((section) =>
                   section?.byProject.some((group) => group.facts.some((fact) => fact.sensitive))
@@ -2550,6 +2549,23 @@ export class KinLeadPrompt extends Context.Service<
 }
 
 /** The last line of a turn someone waits on an answer from, for an agent with a character. */
+/**
+ * The line naming the turn's person's own mailboxes (already quoted): a member's drafts wait on
+ * their card; an owner-level person's are named so the agent knows them without a tool call.
+ */
+export const ownMailboxLine = (addresses: ReadonlyArray<string>, ownLevel: boolean) =>
+  ownLevel
+    ? `Their own ${
+        addresses.length === 1
+          ? `mailbox ${addresses[0]} is connected too: in this chat you can read it and draft from it`
+          : `mailboxes ${addresses.join(", ")} are connected too: in this chat you can read them and draft from one of them`
+      } with kin_connection_tools and kin_connection_call; a mail from it waits on a Confirm card for them alone.`
+    : `Their own ${
+        addresses.length === 1
+          ? `mailbox ${addresses[0]} is connected: a mail they ask you to write is drafted from it`
+          : `mailboxes ${addresses.join(", ")} are connected: a mail they ask you to write is drafted from one of them`
+      } with kin_connection_call mail_send and waits on a Confirm card for them, not for the owner. Nothing goes until they tap Confirm: never say it was sent.`;
+
 export const REPLY_SHAPE =
   "Your reply: one short paragraph in your character's voice and within its length; no bullets, bold or blank lines unless asked.";
 const fallbackLeadName = "Agent";

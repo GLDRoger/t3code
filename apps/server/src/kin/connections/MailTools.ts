@@ -17,6 +17,7 @@ import {
   type MailVendor,
   ownAddress,
   quoteOf,
+  receivedAfter,
   receivedAmong,
 } from "./MailProvider.ts";
 import { looksLikeSignInMail, senderCheck, WITHHELD } from "./MailText.ts";
@@ -435,11 +436,15 @@ const activity = Effect.fn("KinMail.activity")(function* (
   since: number,
   cursor: string | null,
   now: number,
+  floor: number | null,
 ) {
   const found = yield* vendor.activity(context, since, cursor, now);
   const summarize = threadSummary(context.mailbox);
   return {
+    // Messages from before `floor` are left out before a thread is summed up, so none of them
+    // names it.
     mail: found.threads
+      .map((thread) => thread.filter((message) => receivedAfter(message.receivedAt, floor)))
       .filter((thread) => thread.length > 0)
       .map((thread) => {
         const { threadId, receivedBy, subject, from, date, unread } = summarize(thread);
@@ -493,8 +498,8 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
     sendAs: vendor.sendAs,
     call: (http, token, mailbox, tool, args, now) =>
       call(vendor, { http, token, mailbox }, tool, args, now),
-    activity: (http, token, mailbox, since, cursor, now) =>
-      activity(vendor, { http, token, mailbox }, since, cursor, now),
+    activity: (http, token, mailbox, since, cursor, now, floor = null) =>
+      activity(vendor, { http, token, mailbox }, since, cursor, now, floor),
     // A thread deleted since it was listed has nothing to read; it mustn't hold a pass back.
     messages: (http, token, mailbox, threadId) =>
       vendor.thread({ http, token, mailbox }, threadId, false).pipe(
