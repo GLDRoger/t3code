@@ -3819,7 +3819,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
           author: "agent",
         },
         {
-          body: "Rhea Rao changed the proposal; the new one is with Rhea Rao to approve.",
+          body: "Rhea Rao asked for changes; the new proposal is with Rhea Rao to approve.",
           author: "system",
         },
       ]);
@@ -3877,7 +3877,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.deepStrictEqual(yield* team.answeredWakes, []);
       assert.deepStrictEqual((yield* team.kinLines(zoyaChat)).slice(-2), [
         "Rhea Rao wants changes first; the new proposal goes back to Rhea Rao to approve.",
-        "Rhea Rao changed the proposal; the new one is with Rhea Rao to approve.",
+        "Rhea Rao asked for changes; the new proposal is with Rhea Rao to approve.",
       ]);
 
       // Approve on the redraft writes it in the tap, word for word, and Zoya hears so, as on the

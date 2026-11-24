@@ -824,7 +824,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           },
         });
       // Kin shows her the draft she sent up, unless her own card already holds that text, as the
-      // agent's own bubble, which draws its markdown; of a redraft, only Kin's line that it changed.
+      // agent's own bubble, which draws its markdown; of a redraft, only Kin's line that it is back.
       if (
         turn !== null &&
         sentUp !== undefined &&
@@ -843,7 +843,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
                   silent: true,
                 }
               : {
-                  body: `${target.name} changed the ${DRAFT_WORDS[sentUp.kind]}; the new one is with ${target.name} to approve.`,
+                  body: `${target.name} asked for changes; the new ${DRAFT_WORDS[sentUp.kind]} is with ${target.name} to approve.`,
                 }),
           })
           .pipe(
