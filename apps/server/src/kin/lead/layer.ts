@@ -7,6 +7,7 @@ import * as ScheduledTasks from "../triggers/scheduledTasks.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import * as Watchdogs from "../triggers/watchdogs.ts";
 import * as HostBackupCheck from "../host/backupCheck.ts";
+import * as OfflineCatchUp from "../host/offlineCatchUp.ts";
 import * as GithubReaders from "../triggers/githubReaders.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
@@ -20,6 +21,7 @@ import * as Option from "effect/Option";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -122,7 +124,16 @@ const routineRuntime = Layer.mergeAll(
   Layer.provideMerge(TriggerScheduler.layer),
   Layer.provideMerge(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
   // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.
-  Layer.provideMerge(Scheduler.layer),
+  Layer.provideMerge(
+    Layer.effect(
+      Scheduler.Scheduler,
+      Effect.gen(function* () {
+        const scheduler = yield* Scheduler.Scheduler;
+        const initialPass = yield* OfflineCatchUp.InitialPass;
+        return initialPass?.observe(scheduler) ?? scheduler;
+      }),
+    ).pipe(Layer.provide(Scheduler.layer)),
+  ),
 );
 const dreamRuntime = DreamRunner.layer.pipe(
   Layer.provide(DreamSession.layer),
@@ -251,8 +262,13 @@ const runner = Layer.effectDiscard(
         items: (orgId) => memory.items(orgId),
         snapshot: (orgId) => memory.snapshotItems(orgId),
       });
+    const initialPass = yield* OfflineCatchUp.InitialPass;
     yield* Effect.gen(function* () {
-      const context = yield* Layer.build(routineRuntime);
+      const context = yield* Layer.build(routineRuntime).pipe(
+        Effect.onExit(
+          (exit) => initialPass?.sourcesRegistered(Exit.isSuccess(exit)) ?? Effect.void,
+        ),
+      );
       yield* Context.get(context, Scheduler.Scheduler).register(
         "kin-memory-sync",
         yield* memorySync(memory, writer),
@@ -459,6 +475,7 @@ const production = withServices(
     Layer.provideMerge(Team.layer),
     Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),
+    Layer.provide(OfflineCatchUp.layer),
   ),
 );
 
