@@ -353,7 +353,12 @@ describe("kinNextStep", () => {
     expect(stepOf(briefed).words).toBe("Book two pilot clinics for the beta.");
     // Said once: the Brief section keeps only what the card can't (its Edit, earlier versions).
     const brief = (item: typeof why, edit: boolean, versions = 0) =>
-      kinTaskBrief({ view: kinWorkItemView(item, names, now), step: stepOf(item), edit, versions });
+      kinTaskBrief({
+        view: kinWorkItemView(item, names, now, 50, place),
+        step: stepOf(item),
+        edit,
+        versions,
+      });
     expect(brief(briefed, true)).toEqual({ words: false });
     expect(brief(briefed, false, 2)).toEqual({ words: false });
     expect(brief(briefed, false)).toBeNull();
