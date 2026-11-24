@@ -776,7 +776,8 @@ it.effect(
           source_event: KinEventId.make(`event-${leads.o}`),
         }),
         reminder("def-fail"),
-        reminder("def-sched"),
+        // Its notice quotes the first 120 graphemes: the cut falls just after a two-part emoji.
+        reminder("def-sched", { title: `${"Invented ".padEnd(119, "x")}👍🏽 and the rest` }),
       ];
       yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
       VALUES (${orgId}, 'def-drop', 'armed', ${Date.parse("2026-11-19T10:00:00Z")}, 'remind', '{}', 0)`;
@@ -899,7 +900,10 @@ it.effect(
         [{ status: "done" }, "update"],
         [{ invalid_at: "2026-11-10T00:00:00+00:00" }, "invalidate"],
       ] as const)
-        assert.strictEqual((yield* Effect.flip(rewrite("def-drop", change, op))).message, notMine);
+        assert.strictEqual(
+          (yield* Effect.flip(rewrite("def-drop", change, op))).message,
+          "Another agent's reminder: use kin_cancel, which works on the owner's word in his own chat with you.",
+        );
       // Nor a routine in its place without his own typed word.
       assert.strictEqual((yield* Effect.flip(routine("copied-said"))).message, notMine);
       assert.lengthOf(staged, 0);
@@ -932,7 +936,7 @@ it.effect(
         [
           `${leads.o} cancelled the reminder "Invented def-drop" on Owner's word.`,
           `${leads.o} replaced the reminder "Invented def-move" on Owner's word.`,
-          `${leads.o} replaced the reminder "Invented def-sched" on Owner's word.`,
+          `${leads.o} replaced the reminder "${"Invented ".padEnd(119, "x")}👍🏽…" on Owner's word.`,
         ],
       );
       // memory_write still changes a lead's own reminder, and one with no maker, as before.

@@ -252,6 +252,14 @@ const SearchHit = Schema.Struct({
   agent: Schema.optional(Schema.String),
 });
 const SEARCH_WHAT_CHARS = 200;
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const NOTICE_TITLE_GRAPHEMES = 120;
+const clipTitle = (title: string) => {
+  const parts = Array.from(graphemes.segment(title), (part) => part.segment);
+  return parts.length <= NOTICE_TITLE_GRAPHEMES
+    ? title
+    : `${parts.slice(0, NOTICE_TITLE_GRAPHEMES).join("")}…`;
+};
 export const SearchResult = Schema.Array(
   Schema.Union([SearchHit, Schema.Struct({ ...SharedHead.fields, duplicate: Schema.Boolean })]),
 );
@@ -271,6 +279,8 @@ const TEAM_CLAIMS_ONLY =
 const TEAM_OWN_ITEMS =
   "From a chat other people read you can change only what was saved from this same chat.";
 const TEAM_SOURCE = "sourceEventId must be the message, in this chat, of the person who said it.";
+const OTHERS_REMINDER =
+  "Another agent's reminder: use kin_cancel, which works on the owner's word in his own chat with you.";
 const TEAM_CAP_REFUSAL =
   "That is as much as can be saved from one person's messages today, so it was not saved.";
 const TEAM_FILTERS = "From a chat other people read, search memory only by kind or linksTo.";
@@ -856,7 +866,7 @@ const make = Effect.gen(function* () {
       messageId,
       author: { _tag: "system" },
       kind: "text",
-      body: `${other.by} ${replacing ? "replaced" : "cancelled"} the reminder "${head.title}" on ${other.asker}'s word.`,
+      body: `${other.by} ${replacing ? "replaced" : "cancelled"} the reminder "${clipTitle(head.title)}" on ${other.asker}'s word.`,
       intent: null,
       mentions: [],
       replyTo: null,
@@ -1280,9 +1290,7 @@ const make = Effect.gen(function* () {
               WHERE org_id = ${ctx.orgId} AND event_id = ${current.value.head.source_event}
               ORDER BY event_id`;
       if (maker !== undefined && maker.agentId !== ctx.agentId)
-        return yield* invalid(
-          "Only the agent that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.",
-        );
+        return yield* invalid(OTHERS_REMINDER);
     }
     if (fields.kind === "deferral") {
       if (current._tag === "None" || current.value.head.kind !== "deferral")
