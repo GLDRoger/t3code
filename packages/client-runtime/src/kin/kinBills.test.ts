@@ -389,8 +389,9 @@ describe("a batch", () => {
     const one = summary("b-1", "2026-11-24T09:00:00", { read: 2, kept: 1, duplicate: 1 });
     expect(kinBillsEntry([one], now)).toEqual({
       batchId: "b-1",
-      // The day as the reader's locale writes it, without the year this year.
-      label: expect.stringMatching(/^Bills added on (24 Nov|Nov 24)$/),
+      // The day and time as the reader's locale writes them, without the year this year: two
+      // batches of one day read apart.
+      label: expect.stringMatching(/^Bills added on (24 Nov|Nov 24), (09:00|9:00\s?[AP]M)$/i),
       detail: "4 bills: 2 to keep, 1 looks like a duplicate, 1 kept.",
     });
     // A clean read waiting on a check is not one that couldn't be read.
