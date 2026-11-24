@@ -668,7 +668,12 @@ it.effect("record_update changes only named fields, logs each change, and both o
     yield* records.update(orgId, mateWrites, "W-2", {
       title: "Draft the invented pricing page v2",
     });
-    yield* LeadWork.update(scopeOf(lead), { key: "W-2", sourceEventId: "ask-event", due: null });
+    const cleared = yield* LeadWork.update(scopeOf(lead), {
+      key: "W-2",
+      sourceEventId: "ask-event",
+      due: null,
+    });
+    assert.strictEqual(cleared.shows, "Due: No date");
     const got = yield* LeadWork.get(scopeOf(lead), { key: "W-2" });
     assert.include(got, { title: "Draft the invented pricing page v2", state: "doing", rev: 4 });
     assert.notProperty(got, "due");
@@ -735,6 +740,18 @@ it.effect("record_update changes only named fields, logs each change, and both o
       ),
       { reason: "invalid_state" },
     );
+    // "Moved to Monday 10:00": a time given for a task lands in its due, which its page shows,
+    // and the answer says the date as the page does.
+    const timed = yield* LeadWork.update(scopeOf(lead), {
+      key: "W-3",
+      sourceEventId: "ask-event",
+      at: "2026-11-30T10:00+05:30",
+    });
+    assert.deepInclude(timed, { changed: ["due"], shows: "Due: Mon 30 Nov, 04:30" });
+    assert.include(yield* OwnerWork.get([owner], { orgId, key: "W-3" }), {
+      dueAt: "2026-11-30T04:30:00.000Z",
+      dueAllDay: false,
+    });
   }).pipe(Effect.provide(layer)),
 );
 
