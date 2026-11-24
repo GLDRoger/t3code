@@ -355,6 +355,7 @@ export const memoryLines = Effect.fn("KinYouProjection.memoryLines")(function* (
   return {
     material: MATERIAL,
     lines: hits.map((hit) => ({
+      itemId: hit.itemId,
       title: hit.title,
       text: hit.snippet,
       from: saidBy(hit, names),

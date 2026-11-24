@@ -247,6 +247,7 @@ it.effect(
         draft_invoice: write,
         money_summary: read,
         search_memory: read,
+        undo_memory_change: write,
         budgets: read,
         save_goal: write,
         restore_doc_version: write,

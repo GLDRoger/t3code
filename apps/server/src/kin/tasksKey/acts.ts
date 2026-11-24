@@ -4,6 +4,7 @@ import {
   type KinDocRestoreInput,
   type KinGoalSaveInput,
   type KinFieldValue,
+  type KinMemoryUndoInput,
   type KinOpenRow,
   type KinProjectNoteInput,
   type KinWorkLinkAddInput,
@@ -16,7 +17,8 @@ import {
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { KinNumbers, normalizeDecimal } from "../numbers/KinNumbers.ts";
 import { numberFields } from "../numbers/numberRows.ts";
 import { parseFields } from "../work/lists.ts";
@@ -612,6 +614,18 @@ export const saveGoal = Effect.fn("KinTasksKeyActs.saveGoal")(function* (
       return { key: hidden.size > 0 ? null : goal.key, rev: hidden.size > 0 ? null : goal.rev };
     }),
   );
+});
+
+export const undoMemoryChange = Effect.fn("KinTasksKeyActs.undoMemoryChange")(function* (
+  holder: TasksKeyHolder,
+  input: Omit<KinMemoryUndoInput, "orgId">,
+) {
+  const memory = yield* KinMemoryChanges;
+  const { people } = asPerson(holder);
+  const context = yield* Effect.context<KinIdentity | SqlClient.SqlClient>();
+  const checkKey = keyed(holder, () => Effect.void).pipe(Effect.provideContext(context));
+  yield* memory.undo(people, { orgId: holder.orgId, ...input }, checkKey);
+  return { itemId: input.itemId };
 });
 
 // ── Money ────────────────────────────────────────────────────────────────────────────────────

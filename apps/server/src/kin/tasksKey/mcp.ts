@@ -29,6 +29,8 @@ import {
   KinWatchActInput,
   KinWatchState,
   KinMoneyBudgets,
+  KinMemoryUndoInput,
+  KinMemoryItemId,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
@@ -248,6 +250,7 @@ const MemoryLines = Schema.Struct({
   material: Schema.String,
   lines: Schema.Array(
     Schema.Struct({
+      itemId: KinMemoryItemId,
       title: Schema.String,
       text: Schema.String,
       from: Schema.String,
@@ -1103,6 +1106,17 @@ export const TasksKeyToolkit = Toolkit.make(
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
+  Tool.make("undo_memory_change", {
+    ...shared,
+    description:
+      "Undo an agent’s change to a team-readable memory line, using its item ID and the change card’s widget ID. Only an owner or co-owner who owns that agent may do this in Kin.",
+    parameters: KinMemoryUndoInput.mapFields(Struct.omit(["orgId"])),
+    success: Schema.Struct({ itemId: KinMemoryItemId }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   Tool.make("search_memory", {
     ...shared,
     description:
@@ -1146,7 +1160,13 @@ const GATED: Partial<
   write_doc: readsDocs,
 };
 
-const OWNER_LISTED = new Set(["set_project_note", "restore_doc_version", "save_goal", "budgets"]);
+const OWNER_LISTED = new Set([
+  "set_project_note",
+  "restore_doc_version",
+  "save_goal",
+  "budgets",
+  "undo_memory_change",
+]);
 const TOOL_SECTIONS: Readonly<Partial<Record<string, SectionId>>> = {
   money_summary: "money",
   budgets: "money",
@@ -1521,6 +1541,11 @@ const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
   budgets: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.budgets")(() =>
       asHolder((holder) => inSection("budgets", holder, budgets(holder))),
+    ),
+  ),
+  undo_memory_change: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.undoMemoryChange")((input) =>
+      asHolder((holder) => Acts.undoMemoryChange(holder, input)),
     ),
   ),
   search_memory: McpToolAccess.reads(

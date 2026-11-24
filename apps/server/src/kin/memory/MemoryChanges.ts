@@ -45,7 +45,7 @@ import { ownerLevel } from "../people/KinAccess.ts";
 import { endedBy } from "./frontMatter.ts";
 import { CHAT_SOURCE, readableSources } from "./quoteAccess.ts";
 import type { MemoryItem } from "./MemoryCache.ts";
-import type { KinDecision, MemoryWriter } from "./MemoryWriter.ts";
+import type { KinDecision, MemoryUndo, MemoryWriter } from "./MemoryWriter.ts";
 import {
   authorise,
   bindSuggestions,
@@ -76,8 +76,8 @@ export interface KinMemoryPort {
 
 /**
  * The owner's own actions on what the leads remember: per-item Undo on the `memory_changes` cards
- * earlier versions posted, and seeing and choosing who may know each item. No MCP tool or agent
- * path reaches them, and only the organization's owner may call the rest.
+ * earlier versions posted, and seeing and choosing who may know each item. A person's coding
+ * agent key can undo a change to a team-readable line with the same card ownership check.
  */
 export class KinMemoryChanges extends Context.Service<
   KinMemoryChanges,
@@ -85,6 +85,7 @@ export class KinMemoryChanges extends Context.Service<
     readonly undo: (
       people: ReadonlyArray<PersonIdentity>,
       input: KinMemoryUndoInput,
+      checkKey?: Effect.Effect<void, KinChatError>,
     ) => Effect.Effect<KinMemoryUndoResult, KinChatError>;
     /** What the leads remember and who may know each item; the owner only. */
     readonly list: (
@@ -343,9 +344,18 @@ const make = Effect.gen(function* () {
   });
 
   const undo = Effect.fn("KinMemoryChanges.undo")(
-    function* (people: ReadonlyArray<PersonIdentity>, input: KinMemoryUndoInput) {
+    function* (
+      people: ReadonlyArray<PersonIdentity>,
+      input: KinMemoryUndoInput,
+      checkKey?: Effect.Effect<void, KinChatError>,
+    ) {
       const person = people.find((candidate) => candidate.orgId === input.orgId);
       if (person === undefined) return yield* notFound;
+      if (checkKey !== undefined) {
+        yield* checkKey;
+        if (!(yield* ownerLevel(input.orgId, person.personId).pipe(provideSql)))
+          return yield* notAllowed;
+      }
       const widget = yield* repo.getWidget({ orgId: input.orgId, widgetId: input.widgetId });
       if (Option.isNone(widget) || widget.value.type !== KIN_MEMORY_CHANGES_CARD)
         return yield* notFound;
@@ -359,6 +369,35 @@ const make = Effect.gen(function* () {
         return yield* notAllowed;
       const item = card.items.find((candidate) => candidate.itemId === input.itemId);
       if (item === undefined) return yield* notFound;
+      let codingAgent: MemoryUndo["codingAgent"];
+      if (checkKey !== undefined) {
+        const reachableItem = Effect.fn("KinMemoryChanges.undoReachable")(function* () {
+          const snapshot = (yield* port?.snapshot?.(input.orgId) ?? Effect.undefined) ?? [];
+          const matches = current(snapshot, yield* Clock.currentTimeMillis).filter(
+            (one) => one.head.id === input.itemId,
+          );
+          const [known] = matches;
+          const labels = yield* storedLabels(input.orgId).pipe(provideSql);
+          if (known === undefined || matches.length !== 1 || visibility(known, labels) !== "team")
+            return yield* notFound;
+          return known;
+        }, failed);
+        yield* reachableItem();
+        codingAgent = {
+          personId: person.personId,
+          admit: Effect.fn("KinMemoryChanges.admitUndo")(function* (locked) {
+            yield* checkKey;
+            if (
+              !(yield* ownerLevel(input.orgId, person.personId).pipe(
+                provideSql,
+                Effect.orElseSucceed(() => false),
+              ))
+            )
+              return yield* notAllowed;
+            if (fingerprint(yield* reachableItem()) !== fingerprint(locked)) return yield* notFound;
+          }),
+        };
+      }
       if (item.undo === "undone") return { card };
       if (item.undo === "stale") return yield* stale;
       if (port === undefined) return yield* unavailable;
@@ -370,18 +409,21 @@ const make = Effect.gen(function* () {
           branch: card.branch,
           base: card.base,
           commit: card.commit,
+          ...(codingAgent === undefined ? {} : { codingAgent }),
         })
         .pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("Kin memory undo failed", { errorTag: error._tag }).pipe(
-              Effect.andThen(
-                Effect.fail(
-                  error._tag === "MemorySecretBlocked"
-                    ? refused("invalid_state", "The earlier version looks like it has a secret.")
-                    : unavailable,
+          Effect.catchIf(
+            (error) => !isKinChatError(error),
+            (error) =>
+              Effect.logWarning("Kin memory undo failed", { errorTag: error._tag }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    error._tag === "MemorySecretBlocked"
+                      ? refused("invalid_state", "The earlier version looks like it has a secret.")
+                      : unavailable,
+                  ),
                 ),
               ),
-            ),
           ),
         );
       const next = yield* mark(
