@@ -6654,7 +6654,7 @@ it.effect(
       const returnToMate = yield* Effect.flip(
         LeadWork.assign(scope, {
           sourceEventId: "ask-event",
-          tasks: [{ key, to: "Mate" }],
+          tasks: [{ key, to: "Mate", reason: "Invented: has time" }],
         }),
       );
       assert.include(

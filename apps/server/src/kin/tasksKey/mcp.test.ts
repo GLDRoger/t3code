@@ -794,7 +794,7 @@ it.effect(
       );
       for (const body of ["", "X", "", ""]) hasResult(yield* setNote(body), { note: body || null });
       assert.lengthOf(yield* notes, 6);
-      const activity = yield* commentsPage(meera.app, { orgId, key: project.key });
+      const activity = yield* commentsPage(meera.app, { orgId, key: project.key, beforeSeq: 100 });
       assert.deepStrictEqual(
         activity.comments.map((comment) => comment.seq),
         [1, 2, 3, 4, 6],
