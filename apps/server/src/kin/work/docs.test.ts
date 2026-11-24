@@ -2657,12 +2657,14 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
       FROM kin_records WHERE org_id = ${orgId} AND key = ${raised.key}`;
     assert.strictEqual(raisedBy?.marked, ownerId);
     assert.isFalse(yield* reads(mate, raised.key));
-    // A turn in a group with her and another teammate reads none of it.
+    // Her own turn's agent reads it; a group turn with another teammate reads none of it.
+    yield* wake("own-wake", lead, "mate-chat", mateId, "shared");
+    assert.strictEqual((yield* LeadDocs.read(scopeOf(lead), { key: first.key })).key, first.key);
     yield* sql`UPDATE kin_chats SET kind = 'team_group', direct_key = NULL WHERE chat_id = 'mate-chat'`;
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
         role, joined_at)
       VALUES ('mate-chat-other', ${orgId}, 'mate-chat', 'person', ${otherMate}, 'member', ${at})`;
-    const grouped = yield* wake("group-wake", lead, "mate-chat", mateId, "shared");
+    yield* wake("group-wake", lead, "mate-chat", mateId, "shared");
     assert.isTrue(
       Exit.isFailure(yield* Effect.exit(LeadDocs.read(scopeOf(lead), { key: first.key }))),
     );
