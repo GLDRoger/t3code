@@ -171,8 +171,10 @@ export const commentsPage = Effect.fn("KinRecordComments.page")(function* (
   beforeSeq?: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  // Clear receipts track retries without adding empty entries to Activity.
   const rows = yield* sql<CommentRow>`SELECT ${sql.literal(COLUMNS)} FROM kin_record_comments
     WHERE org_id = ${orgId} AND record_id = ${recordId}
+      AND NOT (removed_at IS NOT NULL AND body = '' AND substr(comment_id, 1, ${NOTE_ID.length}) = ${NOTE_ID})
       AND ${beforeSeq === undefined ? sql`1 = 1` : sql`seq < ${beforeSeq}`}
     ORDER BY seq DESC LIMIT ${KIN_RECORD_COMMENTS_PAGE + 1}`;
   return {

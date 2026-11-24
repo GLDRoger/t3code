@@ -43,7 +43,7 @@ import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as MoneyAnswers from "../work/ownerMoneyAnswers.ts";
 import * as Work from "../work/ownerWork.ts";
 import { presetList } from "../work/registers.ts";
-import { projectNote } from "../work/workComments.ts";
+import { page as commentsPage, projectNote } from "../work/workComments.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinServer, type Services } from "../KinServer.ts";
 import { type CreateInput, KinRecords } from "../work/KinRecords.ts";
@@ -794,6 +794,11 @@ it.effect(
       );
       for (const body of ["", "X", "", ""]) hasResult(yield* setNote(body), { note: body || null });
       assert.lengthOf(yield* notes, 6);
+      const activity = yield* commentsPage(meera.app, { orgId, key: project.key });
+      assert.deepStrictEqual(
+        activity.comments.map((comment) => comment.seq),
+        [1, 2, 3, 4, 6],
+      );
       hasResult(yield* setNote("X"), { note: "X" });
       assert.deepInclude(
         (yield* rhea.use("set_project_note", { ...note, key: hidden.key })).structuredContent,
