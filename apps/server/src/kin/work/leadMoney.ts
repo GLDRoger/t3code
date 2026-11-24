@@ -36,6 +36,7 @@ import * as CardActions from "../widgets/cardActions.ts";
 import { sealPlans } from "../widgets/cardPlans.ts";
 import { budgetsAnswer, budgetsView, setBudget } from "./budgets.ts";
 import {
+  agentProfile,
   attachChangeCard,
   changeLines,
   countryFirst,
@@ -884,12 +885,14 @@ export const ProfileResult = Schema.Struct({
   next: Schema.optional(Schema.String),
   /** The company said it is not registered for its tax. */
   taxNote: Schema.optional(Schema.String),
+  /** A new company's country isn't chosen: Kin knows no currency or tax for it yet. */
+  countryNeeded: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
 const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof ProfileInput.Type) {
   yield* admitted(lead, "company_profile", input);
-  const current = yield* readProfile(lead.orgId);
-  const { rev, updatedAt: _updatedAt, bank, ...rest } = current;
+  const { profile: current, shown, countryNeeded } = yield* agentProfile(lead.orgId);
+  const { rev, updatedAt: _updatedAt, bank, ...rest } = shown;
   let proposed: ReadonlyArray<string> | undefined;
   if (input.set !== undefined) {
     if (input.sourceEventId === undefined)
@@ -967,6 +970,7 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
           next: "Nothing has changed yet. Kin showed this change on a card in this chat; it applies when they tap Confirm. Say so in one line.",
         }),
     ...(taxNote === undefined ? {} : { taxNote }),
+    ...(countryNeeded === undefined ? {} : { countryNeeded }),
     sensitive: true as const,
   };
 });
