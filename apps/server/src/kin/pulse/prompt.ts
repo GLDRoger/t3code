@@ -50,6 +50,8 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   readonly checkIn?: ReadonlySet<string> | undefined;
   /** The check-in events, so a fact first told since its hold ended says it was set aside. */
   readonly checkInEvents?: ReadonlyArray<string> | undefined;
+  /** The own mailboxes this turn may use, its person's alone (`turnMailboxes`). */
+  readonly ownAccounts?: ReadonlyArray<{ readonly connection: string; readonly account: string }>;
 }) {
   const tell = input.checkIn;
   const checkIn = tell !== undefined;
@@ -100,7 +102,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         fact.subject.recordId,
         yield* clientHistory(input.orgId, fact.subject.recordId, input.now),
       );
-  const starts = yield* headStarts(input.orgId, shown);
+  const starts = yield* headStarts(input.orgId, shown, input.ownAccounts ?? []);
   const zone = yield* ownerZone(input.orgId);
   const ended = checkIn
     ? yield* asideEnded(input.orgId, input.agentId, input.now, shown, input.checkInEvents ?? [])

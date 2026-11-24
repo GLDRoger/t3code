@@ -239,8 +239,8 @@ export const MOVE_PAUSED =
   "This mailbox is paused. Resume it first, then make it your own. Nothing changed.";
 export const MONEY_CONFIRM =
   "A quote or invoice goes out only on the owner's or a co-owner's Confirm, so nothing was sent.";
-const SEVERAL_ACCOUNTS =
-  "There are several mail accounts: name one by its id or address. Connection mail on a mail search, inbox list or calendar list reads every one of them (connection google or microsoft reads that provider's). A reply always goes from the account its thread is in, whatever you name. For a new email or event, pick the account and from address by the owner's notes, then by the account earlier mail with that person or client went through; with neither, use the first account listed. The card shows the owner the account and From, and he can switch them there.";
+export const SEVERAL_ACCOUNTS =
+  "There are several mail accounts: name one by its id or address. Connection mail on a mail search, inbox list or calendar list reads every one of them (connection google or microsoft reads that provider's). A reply always goes from the account its thread is in, whatever you name. For a new email or event, pick the account and from address by the owner's notes on the company's accounts (a person's own mailbox has none), then by the account earlier mail with that person or client went through; with neither, use the first account listed. A company account's card shows the account and From, and the owner can switch them there; a card from a person's own mailbox goes from that mailbox.";
 const signedOut = (label: string) =>
   `${label}'s sign-in expired. The owner can sign in again in Settings.`;
 const SIGN_IN_TTL = Duration.minutes(10);
