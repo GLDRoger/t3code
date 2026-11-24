@@ -123,7 +123,9 @@ export function KinMyMailbox(props: Target) {
   return (
     <KinSettingsSection
       title={COPY.title}
-      description={all.length === 0 ? line.text : `${line.text} ${kinOwnMailboxReads(viewer)}`}
+      description={
+        all.length === 0 ? line.text : `${line.text} ${kinOwnMailboxReads(viewer, all.length)}`
+      }
       problem={problem}
       action={
         all.length === 0 ? undefined : (

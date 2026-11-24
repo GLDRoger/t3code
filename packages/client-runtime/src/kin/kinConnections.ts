@@ -1037,7 +1037,7 @@ export const KIN_MY_MAILBOX_COPY = {
   makeMine: "Make this my own mailbox",
   /** Said to a co-owner where the owner has the move (`kinTakesMailbox`). */
   takeAsCoOwner:
-    "Only the owner can make a company mailbox their own. If this is your personal account, disconnect it here and connect it again under Your mailboxes.",
+    "Only the owner can make a company mailbox their own. If this is your personal account, remove it here and connect it again under Your mailboxes.",
   makeMineRow: "Kin stops watching it for the company. Your sign-in stays.",
   makeMineTitle: (address: string) => `Make ${address} your own mailbox?`,
   makeMineDetail:
@@ -1052,10 +1052,12 @@ export const KIN_MY_MAILBOX_COPY = {
 } as const;
 
 /** Who reads a person's own mailboxes, said under them: the owner's agents also prepare for him. */
-export const kinOwnMailboxReads = (kind: KinPersonAccess | null | undefined) =>
-  kind === "owner"
-    ? "Your agents read these only when working for you alone: in your own chats with them, and when Kin prepares something for you. Never in anyone else's turn or a shared or group chat, and Kin never watches them for the company."
-    : "Agents read these only in your own direct chat with them. Never in anyone else's turn or a shared or group chat, and Kin never watches them for the company.";
+export const kinOwnMailboxReads = (kind: KinPersonAccess | null | undefined, count: number) => {
+  const [these, them] = count === 1 ? ["it", "it"] : ["these", "them"];
+  return kind === "owner"
+    ? `Your agents read ${these} only when working for you alone: in your own chats with them, and when Kin prepares something for you. Never in anyone else's turn or a shared or group chat, and Kin never watches ${them} for the company.`
+    : `Agents read ${these} only in your own direct chat with them. Never in anyone else's turn or a shared or group chat, and Kin never watches ${them} for the company.`;
+};
 
 /** Kin keeps no record of who signed a company mailbox in, so only the owner takes one. */
 export const kinTakesMailbox = (kind: KinPersonAccess | null | undefined) => kind === "owner";
