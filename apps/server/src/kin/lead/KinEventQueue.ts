@@ -607,7 +607,7 @@ const make = Effect.gen(function* () {
       FROM kin_events
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND state = 'queued'
         AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = kin_events.org_id
-          AND a.agent_id = kin_events.agent_id AND a.retired_at IS NULL)
+          AND a.agent_id = kin_events.agent_id AND a.retired_at IS NULL AND a.paused_at IS NULL)
     `;
     const readyAt =
       window?.first_at != null && window.last_at !== null
@@ -724,9 +724,9 @@ const make = Effect.gen(function* () {
                     e.tag IN ('chat.message', 'widget.action', 'chat.reaction') AS asked,
                     MAX(e.queued_at, COALESCE(e.not_before, 0)) AS due
                   FROM kin_events e JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
-                  -- Queued before a retirement, it never runs after it.
+                  -- Queued before a retirement, it never runs after it; nor while the agent is paused.
                   JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
-                    AND a.retired_at IS NULL
+                    AND a.retired_at IS NULL AND a.paused_at IS NULL
                   WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId} AND e.state = 'queued'
                     AND (e.not_before IS NULL OR e.not_before <= ${now})
                 ), first AS (

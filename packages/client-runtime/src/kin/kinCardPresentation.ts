@@ -328,6 +328,7 @@ export function kinReminderCardView(
     phase: open ? "reminder" : "closed",
     eyebrow: "Reminder",
     title,
+    agent: null,
     lines,
     countdown: null,
     actions: open ? reminderActions(card, ownerLevel) : [],
@@ -440,6 +441,7 @@ export function kinScheduledTaskCardView(
     phase: open ? "scheduled" : "closed",
     eyebrow: "Scheduled task",
     title,
+    agent: null,
     lines,
     countdown:
       open && card.status === "active" && nextMs !== null ? { to: nextMs, kind: "run" } : null,
@@ -574,7 +576,7 @@ function kinLiveCardView(
         : unknown(widget);
     }
     case "deferral": {
-      const deferral = kinDeferralCardView(widget);
+      const deferral = kinDeferralCardView(widget, undefined, ownerLevel);
       return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case "reminder": {

@@ -685,11 +685,12 @@ it.live(
           first.note,
           "No question was posted. Planned for its due time: a card asking to start, move or cancel it; Kin checks then who and what still stand.",
         );
-        for (const [onDue, ask, scheduled, asks] of [
-          ["remind", undefined, "reminder", undefined],
-          ["start", undefined, "start", undefined],
-          ["chase", undefined, "chase_ping", { name: "Owner" }],
-          ["chase", "Memb", "chase_ping", { name: "Member" }],
+        // A due start asks first while LEAD-11's stop switch is unbuilt: the note says so.
+        for (const [onDue, ask, scheduled, asks, planned] of [
+          ["remind", undefined, "reminder", undefined, "a reminder"],
+          ["start", undefined, "start", undefined, "a card asking to start, move or cancel it"],
+          ["chase", undefined, "chase_ping", { name: "Owner" }, "a ping to Owner"],
+          ["chase", "Memb", "chase_ping", { name: "Member" }, "a ping to Member"],
         ] as const) {
           const set = yield* service.defer(scope, {
             ...deferred,
@@ -698,7 +699,7 @@ it.live(
             ...(ask === undefined ? {} : { ask }),
           });
           assert.strictEqual(set.scheduled, scheduled, `${onDue} ${ask}`);
-          assert.match(set.note ?? "", /^No question was posted\. Planned for its due time: a /);
+          assert.include(set.note, `No question was posted. Planned for its due time: ${planned};`);
           assert.deepStrictEqual(set.asks, asks, `${onDue} ${ask}`);
         }
         // Who to ask is named as people are found here, and kept as the item's person.
@@ -1243,6 +1244,33 @@ it.live(
         assert.strictEqual(
           whole(yield* service.read(scope, { id: reminder.itemId })).head.title,
           "Invented stretch",
+        );
+        // What a tap did to its run is what the lead reads: moved to Monday, or cancelled.
+        const runOf = (set: string) =>
+          sql.unsafe(`UPDATE kin_deferral_runs SET ${set} WHERE org_id = ? AND item_id = ?`, [
+            orgId,
+            reminder.itemId,
+          ]);
+        const memoryDue = Date.parse("2026-11-09T16:09:12Z");
+        const monday = Date.parse("2026-11-16T03:30:00.000Z");
+        yield* runOf(
+          `due_at = ${monday}, snapshot_json = json_set(snapshot_json, '$.movedFrom', ${memoryDue})`,
+        );
+        const found = (yield* service.search(scope, { kind: "deferral", status: "open" })).find(
+          (item) => item.id === reminder.itemId,
+        );
+        assert.strictEqual(
+          found !== undefined && "due" in found ? found.due : undefined,
+          "2026-11-16T03:30:00.000Z",
+        );
+        yield* runOf(`state = 'undone'`);
+        assert.notInclude(yield* openDeferrals("open"), reminder.itemId);
+        assert.strictEqual(
+          whole(yield* service.read(scope, { id: reminder.itemId })).head.status,
+          "cancelled",
+        );
+        yield* runOf(
+          `state = 'armed', due_at = ${memoryDue}, snapshot_json = json_remove(snapshot_json, '$.movedFrom')`,
         );
         // The owner's words show only while he can open the message they came from.
         const quotesShown = Effect.gen(function* () {
