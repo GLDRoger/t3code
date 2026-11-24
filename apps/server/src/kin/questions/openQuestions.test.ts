@@ -3912,8 +3912,8 @@ it.effect("a question asked for someone that nobody answers lapses, and its chat
         ["open", "lapsed"],
       );
       assert.deepStrictEqual((yield* kinLines(devChat)).toSorted(), [
-        "Arjun Nair hasn't signed in to Kin, so “Is the call sheet final?”, asked on Mon 16 Nov, lapsed without an answer.",
-        "Meera Shah hasn't signed in to Kin, so a question asked for this chat, asked on Mon 16 Nov, lapsed without an answer.",
+        "Arjun Nair isn't signed in to Kin, so “Is the call sheet final?”, asked on Mon 16 Nov, lapsed without an answer.",
+        "Meera Shah isn't signed in to Kin, so a question asked for this chat, asked on Mon 16 Nov, lapsed without an answer.",
         "Zoya Sheikh hasn't answered “Did the client approve the quote?” by its day; Kin asked Zoya Sheikh once more.",
       ]);
       assert.deepStrictEqual(yield* outcomeOf(toArjun.questionId), {
@@ -3967,7 +3967,7 @@ it.effect("a question asked for someone that nobody answers lapses, and its chat
       );
       assert.match(
         (yield* Questions.lapsedTurnText(KinOrgId.make(orgId), toArjun.questionId))!.text,
-        /Arjun Nair hasn't signed in to Kin, so asking again in Kin won't reach them/,
+        /Arjun Nair isn't signed in to Kin, so asking again in Kin won't reach them/,
       );
       // Lapsed, it no longer counts among what waits on Zoya: she may be asked anew.
       assert.lengthOf(yield* Questions.openFor(KinOrgId.make(orgId), KinPersonId.make("zoya")), 0);

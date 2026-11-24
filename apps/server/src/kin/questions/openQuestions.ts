@@ -1981,7 +1981,7 @@ const lapsedNotice = (input: {
   const what =
     input.question === null ? "a question asked for this chat" : shortQuote(input.question);
   return input.unsigned
-    ? `${input.who} hasn't signed in to Kin, so ${what}, asked on ${input.asked}, lapsed without an answer.`
+    ? `${input.who} isn't signed in to Kin, so ${what}, asked on ${input.asked}, lapsed without an answer.`
     : `${input.who} didn't answer ${what}, asked on ${input.asked}. It has lapsed.`;
 };
 
@@ -2192,7 +2192,7 @@ export const lapsedTurnText = Effect.fn("KinQuestions.lapsedTurnText")(function*
   const zone = (yield* personClock(orgId, asker ?? row.personId)).zone;
   const unsigned = row.raisedAt === null;
   return {
-    text: `Your question for ${forWhom}, “${row.question}”, asked of ${who} on ${dayOf(row.askedAt, zone)}, lapsed: nobody answered${unsigned ? `, and ${who} hasn't signed in to Kin, so asking again in Kin won't reach them` : ""}. Kin told ${forWhom} in one line, so don't repeat that, and don't ask ${who} again on a card. In one or two sentences, tell ${forWhom} what you'll do without the answer, or that you'll ask someone else or take it to the owner, and then do it.`,
+    text: `Your question for ${forWhom}, “${row.question}”, asked of ${who} on ${dayOf(row.askedAt, zone)}, lapsed: nobody answered${unsigned ? `, and ${who} isn't signed in to Kin, so asking again in Kin won't reach them` : ""}. Kin told ${forWhom} in one line, so don't repeat that, and don't ask ${who} again on a card. In one or two sentences, tell ${forWhom} what you'll do without the answer, or that you'll ask someone else or take it to the owner, and then do it.`,
     data: {
       question: row.question,
       asked: who,
