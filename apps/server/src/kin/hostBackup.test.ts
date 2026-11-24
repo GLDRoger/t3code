@@ -199,10 +199,9 @@ it.effect.each(["retired", "none"] as const)(
           VALUES ('chief', ${orgId}, 'Chief of staff', 0, '{}', '[]', 'rhea-chief')`;
       yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE org_id = ${orgId} AND agent_id = 'chief'`;
       const rhea = { _tag: "person" as const, orgId, personId: KinPersonId.make("rhea") };
-      const list = yield* Stream.toQueue(
-        (yield* Chat.KinChatService).subscribeChats([rhea], {}),
-        { capacity: "unbounded" },
-      );
+      const list = yield* Stream.toQueue((yield* Chat.KinChatService).subscribeChats([rhea], {}), {
+        capacity: "unbounded",
+      });
       const first = yield* Queue.take(list);
       const unreadIn = (chats: ReadonlyArray<{ chatId: string; unread: number }>) =>
         chats.find((chat) => chat.chatId === "rhea-chief")?.unread;
