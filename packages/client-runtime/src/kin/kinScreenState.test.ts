@@ -261,8 +261,6 @@ describe("chat list rows", () => {
     ],
     [{ kind: "system", widgetId: "memory-changes:lead:1", body: "Remembered: x" }, "Saved a note"],
     [{ kind: "system", widgetId: "deferral:org:1", body: "Deferred to Fri" }, "Set a reminder"],
-    // Its body is the card's first sentence; the card moves on, the body does not.
-    [{ kind: "system", widgetId: "bills:b-1", body: "Reading 4 bills: 0 done." }, "Bills added"],
     [{ kind: "text", body: "**Fixed** `pay`" }, "Fixed pay"],
     // Kin's morning page: its first real line under the greeting, never its markup.
     [

@@ -554,6 +554,14 @@ const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
     updatedAt: at,
   });
   yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
+  if (stored.text === card.text) return;
+  // A chat list's line is the card message's body: it says what the card says now.
+  const messageId = KinMessageId.make(`bills:${batchId}`);
+  yield* sql`UPDATE kin_messages SET body = ${card.text}
+    WHERE org_id = ${orgId} AND message_id = ${messageId}`;
+  const message = yield* repo.getMessage({ orgId, messageId });
+  if (Option.isSome(message))
+    yield* sql.afterCommit(hub.publish({ type: "message.changed", orgId, message: message.value }));
 });
 
 /** A time on the company's clock, as the card's words say it. */
