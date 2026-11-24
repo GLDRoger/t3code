@@ -3116,6 +3116,17 @@ describe("list sections", () => {
           (yield* entryFacts(at + 3 * HOUR)).map((fact) => fact.key),
           `entry_late:BK-5:due=${B + 3 * DAY - 1}`,
         );
+        // Still open three days late, it comes back to her as a late task does.
+        const aged = yield* KinPulse.tick(orgId, at + 2 * DAY);
+        assert.deepInclude(aged.told, { agentId: chief, to: mate, key: late });
+        assert.strictEqual(
+          (yield* mateNotices).at(-1),
+          [
+            "2 things need you:",
+            "• BK-1 Invented BK-1, was due 2026-11-02, 4 days ago. Still open since 2026-11-02.",
+            "• W-8 Invented W-8, was due 3 days ago. Still open since 2026-11-03.",
+          ].join("\n"),
+        );
       }).pipe(Effect.provide(chatLayer)),
   );
 

@@ -60,13 +60,16 @@ export const holderLine = (
 
 /** A list section's entry: "BK-3 Room 4 was due 2026-11-19, yesterday", or off its check. */
 export const entryLine = (
-  fact: Pick<KinPulseFact, "sense" | "key" | "subject" | "consequence">,
+  fact: Pick<KinPulseFact, "sense" | "key" | "subject" | "consequence"> & {
+    readonly lateReminder?: string;
+  },
 ) => ({
   key: fact.subject.key,
   title: fact.subject.title,
   state: entryDueSoon(fact)
     ? "due today"
     : `${fact.consequence.charAt(0).toLowerCase()}${fact.consequence.slice(1).replace(/\.$/, "")}`,
+  ...(fact.lateReminder === undefined ? {} : { reminder: fact.lateReminder }),
   entry: true as const,
 });
 
