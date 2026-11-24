@@ -155,6 +155,7 @@ import {
   type ConnectDeviceRevokeRequest,
   RevokeConnectDeviceDialog,
 } from "./RevokeConnectDeviceDialog";
+import { kinSettingHidden } from "~/kin/kinNoCode";
 
 // Sessions T3 Connect minted for a device signed in to the linked account.
 const CLOUD_CONNECT_SESSION_SUBJECT = "cloud-connect";
@@ -1411,7 +1412,8 @@ function ConnectionsSettingsContent({
                 }
               />
             ) : null}
-            {accessServerConfig?.environment.capabilities.previewTunnelSetting ? (
+            {accessServerConfig?.environment.capabilities.previewTunnelSetting &&
+            !kinSettingHidden("preview-tunnel") ? (
               <SettingsRow
                 title={searchableSetting("preview-tunnel").title}
                 description={gt(
