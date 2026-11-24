@@ -83,8 +83,8 @@ export const KinRefreshes = Schema.Struct({
 });
 export type KinRefreshes = typeof KinRefreshes.Type;
 
-/** `pulse`: `kin.pulse.subscribe`; `money`: `kin.money.subscribe`. */
-export const KIN_STREAMS = ["pulse", "money"] as const;
+/** `pulse`: `kin.pulse.subscribe`; `money`: `kin.money.subscribe`; `open`: `kin.open.subscribe`. */
+export const KIN_STREAMS = ["pulse", "money", "open"] as const;
 
 export const KinRefreshesSubscribeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinRefreshesSubscribeInput = typeof KinRefreshesSubscribeInput.Type;

@@ -71,6 +71,7 @@ import {
 import { kinChatsSettledOpenAtom, setKinChatsSettledOpenAtom } from "./state/kinChatsSettledOpen";
 import { kinJoinedNameAtom } from "./state/kinJoin";
 import { useKinOpenAgentChat } from "./state/useKinOpenChat";
+import { useKinInboxShown } from "./state/useKinAttention";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinProfiles } from "./state/useKinProfiles";
 import { kinTabFoot, useKinTab } from "./components/KinTab";
@@ -97,11 +98,16 @@ export function KinChatsList({
   readonly bottomClearance?: number;
 }) {
   const navigation = useNavigation();
-  const { host, state, retry } = useKinInbox();
+  const inbox = useKinInbox();
+  const { host, retry } = inbox;
   const orgId =
     host._tag === "host" && host.probe._tag === "ready"
       ? (host.probe.orgs.me[0]?.orgId ?? null)
       : null;
+  const state = useKinInboxShown(
+    inbox.state,
+    host._tag === "host" && orgId !== null ? { environmentId: host.environmentId, orgId } : null,
+  );
   const myPersonId =
     host._tag === "host" && host.probe._tag === "ready"
       ? (host.probe.orgs.me[0]?.personId ?? null)

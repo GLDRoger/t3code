@@ -108,16 +108,14 @@ const nudgesSent = Effect.fn("KinWork.nudgesSent")(function* (
 });
 
 /**
- * A `byMove` page: every open match placed by `kinWorkMove` for this reader and ordered by
- * `kinWorkMoveOrder`, the page's rows, each row's step, and exact counts of every match.
+ * Every open match placed by `kinWorkMove` for this reader, in Tasks' order (`kinWorkMoveOrder`
+ * within each place): what Tasks' groups and the open list's tasks both read.
  */
-export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
+export const placeMoves = Effect.fn("KinWork.placeMoves")(function* (input: {
   readonly orgId: KinOrgId;
   readonly personId: KinPersonId;
   readonly ownerLevel: boolean;
   readonly filter: QueryInput;
-  readonly offset: number;
-  readonly limit: number;
   readonly at: number;
 }) {
   const { orgId, personId, at } = input;
@@ -179,6 +177,26 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
   const rank = (one: { group: KinWorkMoveGroup; under: KinWorkMoveUnder | null }) =>
     KIN_WORK_MOVE_PLACES.indexOf(one.under ?? one.group);
   placed.sort((a, b) => rank(a) - rank(b) || kinWorkMoveOrder(a, b));
+  return { placed, cards, asked, heldZone };
+});
+
+/**
+ * A `byMove` page: every open match placed by `kinWorkMove` for this reader and ordered by
+ * `kinWorkMoveOrder`, the page's rows, each row's step, and exact counts of every match.
+ */
+export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly personId: KinPersonId;
+  readonly ownerLevel: boolean;
+  readonly filter: QueryInput;
+  readonly offset: number;
+  readonly limit: number;
+  readonly at: number;
+}) {
+  const { orgId, personId, at } = input;
+  const records = yield* KinRecords;
+  const { states: _states, late: _late, open: _open, ...rest } = input.filter;
+  const { placed, cards, asked, heldZone } = yield* placeMoves(input);
   const page = placed.slice(input.offset, input.offset + input.limit);
   const done = yield* records.query(orgId, {
     ...rest,
