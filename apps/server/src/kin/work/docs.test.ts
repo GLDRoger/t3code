@@ -2523,9 +2523,7 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
         draft: { kind: "proposal" },
       });
     const mate = { _tag: "person" as const, orgId, personId: mateId };
-    const others = [
-      { _tag: "person" as const, orgId, personId: otherMate },
-    ] as const;
+    const others = [{ _tag: "person" as const, orgId, personId: otherMate }] as const;
     const reads = (who: typeof mate, key: KinRecordKey) =>
       Effect.match(OwnerDocs.get([who], { orgId, key }), {
         onSuccess: () => true,
@@ -2535,8 +2533,11 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
       for (const who of others) {
         assert.isFalse(yield* reads(who, key), `${who.personId} reads ${key}`);
         assert.notInclude(
-          (yield* OwnerDocs.search([who], { orgId, text: "invented scope", everything: true }))
-            .hits.map((hit) => hit.key),
+          (yield* OwnerDocs.search([who], {
+            orgId,
+            text: "invented scope",
+            everything: true,
+          })).hits.map((hit) => hit.key),
           key,
         );
       }
@@ -2548,9 +2549,11 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     yield* nobodyElse(first.key);
     // She finds it by search, in the app and through her agent in her own turn.
     assert.include(
-      (yield* OwnerDocs.search([mate], { orgId, text: "invented scope", everything: true })).hits.map(
-        (hit) => hit.key,
-      ),
+      (yield* OwnerDocs.search([mate], {
+        orgId,
+        text: "invented scope",
+        everything: true,
+      })).hits.map((hit) => hit.key),
       first.key,
     );
     assert.include(
@@ -2578,7 +2581,9 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
       key: first.key,
       sourceEventId: asked,
       summary: "Scope",
-      operations: [{ op: "replace_phrase", find: "Invented scope", replace: "Invented full scope" }],
+      operations: [
+        { op: "replace_phrase", find: "Invented scope", replace: "Invented full scope" },
+      ],
     });
     assert.isTrue(yield* reads(mate, first.key));
     // Her turn may not lift the label, raise it as hers, or change its kind; nor may her app.
@@ -2631,9 +2636,11 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     assert.isFalse(yield* reads(mate, byAgent.key));
     // Her search finds neither now.
     assert.notIncludeMembers(
-      (yield* OwnerDocs.search([mate], { orgId, text: "invented scope", everything: true })).hits.map(
-        (hit) => hit.key,
-      ),
+      (yield* OwnerDocs.search([mate], {
+        orgId,
+        text: "invented scope",
+        everything: true,
+      })).hits.map((hit) => hit.key),
       [handEdited.key, byAgent.key],
     );
     // Mark as private on a label only its kind gave records the owner, and ends it at once.
@@ -2644,7 +2651,11 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     // An agent's label in a co-owner's turn, with no one asking by name, is the owner's too.
     const raised = yield* draft("Acme raised");
     const coAsked = yield* wake("co-wake", other, "co-chat", coOwner, "owner_only");
-    yield* LeadDocs.move(scopeOf(other), { key: raised.key, sourceEventId: coAsked, sensitive: true });
+    yield* LeadDocs.move(scopeOf(other), {
+      key: raised.key,
+      sourceEventId: coAsked,
+      sensitive: true,
+    });
     const [raisedBy] = yield* sql<{ marked: string | null }>`SELECT marked_by_person_id AS marked
       FROM kin_records WHERE org_id = ${orgId} AND key = ${raised.key}`;
     assert.strictEqual(raisedBy?.marked, ownerId);
@@ -2656,9 +2667,7 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
       VALUES ('mate-chat-other', ${orgId}, 'mate-chat', 'person', ${otherMate}, 'member', ${at})`;
     const grouped = yield* wake("group-wake", lead, "mate-chat", mateId, "shared");
     assert.isTrue(
-      Exit.isFailure(
-        yield* Effect.exit(LeadDocs.read(scopeOf(lead), { key: first.key })),
-      ),
+      Exit.isFailure(yield* Effect.exit(LeadDocs.read(scopeOf(lead), { key: first.key }))),
     );
     for (const key of [first.key, handEdited.key, byAgent.key, marked.key, raised.key])
       yield* nobodyElse(key);

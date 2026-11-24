@@ -1814,9 +1814,19 @@ it.effect.each([true, false])(
           [headedMarked, prepared("Shoot moves", plainText), false, true],
           [headedMarked, prepared("Shoot moves", plainText.replace("plan", "plans")), false, false],
           [extras, prepared("Anything", extrasText), false, true],
-          [extras, prepared("Anything", extrasText.replace("+10000000000", "+19999999999")), false, false],
+          [
+            extras,
+            prepared("Anything", extrasText.replace("+10000000000", "+19999999999")),
+            false,
+            false,
+          ],
           [extras, prepared("Anything", extrasText.replace(" <PO number>", "")), false, false],
-          [extras, prepared("Anything", extrasText.replace("\n\n[1] Prices hold for 30 days.", "")), false, false],
+          [
+            extras,
+            prepared("Anything", extrasText.replace("\n\n[1] Prices hold for 30 days.", "")),
+            false,
+            false,
+          ],
         ] as const)
           assert.strictEqual(
             mailKeepsDraft(mailed, draft, reply),

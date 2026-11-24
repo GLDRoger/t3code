@@ -3256,7 +3256,10 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
       );
       yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'zoya-chat-arjun'`;
       // Rhea's own edit after it went up takes Zoya's read and her card's text back.
-      const pricedPage = yield* OwnerDocs.get([owner], { orgId, key: KinRecordKey.make(priced.key) });
+      const pricedPage = yield* OwnerDocs.get([owner], {
+        orgId,
+        key: KinRecordKey.make(priced.key),
+      });
       const pricedTop = sectionsOf(pricedPage.body).find((one) => one.id === "top")!;
       yield* OwnerDocs.editSection([owner], {
         orgId,

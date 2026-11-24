@@ -405,9 +405,7 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
   const day = yield* saidOn(orgId);
   const saidNo = given.flatMap((one) => {
     const no = noTo(one);
-    return no === undefined
-      ? []
-      : [saidNoLine(record.title, describe([one]), no.name, day(no.at))];
+    return no === undefined ? [] : [saidNoLine(record.title, describe([one]), no.name, day(no.at))];
   });
   const say = (line: string | undefined) =>
     [...(line === undefined ? [] : [line]), ...tooLong, ...saidNo].join(" ");

@@ -615,7 +615,10 @@ it.effect(
         sourceEventId: yield* turn(null),
         gstin: "29ccccc 2222 c1z5",
       });
-      assert.include(later.unconfirmed, `Rhea said no to GSTIN "29ccccc 2222 c1z5" on Kin's card today,`);
+      assert.include(
+        later.unconfirmed,
+        `Rhea said no to GSTIN "29ccccc 2222 c1z5" on Kin's card today,`,
+      );
       assert.notInclude(later.unconfirmed, "2026-11-24");
       assert.lengthOf(yield* forSaltmarsh, 0);
       assert.include(
@@ -745,7 +748,10 @@ it.effect(
         "Bill Harbourline at Invented 4 Pier Road from now on?",
         "Use 29FFFFF5555F1Z5 for Harbourline?",
       ])
-        assert.isUndefined(yield* declinedAsked(harbourAsk, ownerId, ["C-1"], [question]), question);
+        assert.isUndefined(
+          yield* declinedAsked(harbourAsk, ownerId, ["C-1"], [question]),
+          question,
+        );
       yield* LeadWork.update(scope, {
         key: "C-1",
         sourceEventId: yield* turn(null),
