@@ -1714,8 +1714,10 @@ describe("KinConnections", () => {
         );
         const unknown = yield* connections.offer(scope, { service: "myspace" }).pipe(Effect.flip);
         assert.instanceOf(unknown, KinChatError);
-        // An owner-level person's own mailbox is connected: never offered. A member's is theirs.
+        // The owner's own mailbox is connected in his own turn: never offered. A co-owner's own is
+        // theirs alone: neither counted nor named here.
         const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${mateId}`;
         for (const [person, preset] of [
           [ownerId, "google"],
           [mateId, "microsoft"],

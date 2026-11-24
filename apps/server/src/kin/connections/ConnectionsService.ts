@@ -2469,13 +2469,16 @@ const make = Effect.gen(function* () {
   const unreached = (reach: Effect.Success<ReturnType<typeof turnMailboxes>>) =>
     fail("not_allowed", reach.alone !== null ? NO_OWN_MAILBOX : SHARED_CONNECTIONS);
 
-  /** Owner-level people's own mailboxes: connected, though not the company's (`liveConnections`). */
-  const ownersMailboxes = (orgId: KinOrgId) =>
+  /**
+   * The own mailboxes of the owner-level person a turn is alone for (`turnMailboxes` `alone`):
+   * connected, though not the company's (`liveConnections`). Another person's are never counted.
+   */
+  const ownersMailboxes = (orgId: KinOrgId, alone: KinPersonId | null) =>
     sql<{ preset: string | null; name: string }>`SELECT k.preset, p.display_name AS name
       FROM kin_connections k
       JOIN kin_people p ON p.org_id = k.org_id AND p.person_id = k.person_id
         AND p.removed_at IS NULL
-      WHERE k.org_id = ${orgId} AND k.removed_at IS NULL AND k.person_id IS NOT NULL
+      WHERE k.org_id = ${orgId} AND k.removed_at IS NULL AND k.person_id = ${alone}
         AND ${sql.literal(ownerLevelSql("k.org_id", "k.person_id"))}
       ORDER BY k.person_id, k.created_at, k.connection_id`;
 
@@ -2537,7 +2540,7 @@ const make = Effect.gen(function* () {
         if (!ownerOnly) return { connections, note: "Call with connection to see its tools." };
         const connected = new Set([
           ...rows.filter((row) => row.personId == null).map((row) => row.preset),
-          ...(yield* ownersMailboxes(turn.orgId)).map((row) => row.preset),
+          ...(yield* ownersMailboxes(turn.orgId, reach.alone)).map((row) => row.preset),
         ]);
         const recentlySent = yield* sentMail({ orgId: turn.orgId, limit: 10 }).pipe(provideSql);
         const several =
@@ -4589,7 +4592,7 @@ const make = Effect.gen(function* () {
 
   const offer = leadOp("offer", (scope, input: typeof KinConnectionOfferInput.Type) =>
     Effect.gen(function* () {
-      const { turn, ownerOnly } = yield* ownerTurn(scope);
+      const { turn, ownerOnly, reach } = yield* ownerTurn(scope);
       const wanted = input.service.trim().toLowerCase();
       if (wanted === "github") {
         const entry = {
@@ -4633,7 +4636,7 @@ const make = Effect.gen(function* () {
         return {
           note: `${service.label} is already connected. kin_connection_tools lists its tools.`,
         };
-      const own = (yield* ownersMailboxes(turn.orgId)).find(
+      const own = (yield* ownersMailboxes(turn.orgId, reach.alone)).find(
         (row) => row.preset === service.service,
       );
       if (own !== undefined)
