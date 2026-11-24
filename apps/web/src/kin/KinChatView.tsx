@@ -21,7 +21,10 @@ import {
   kinMarkReadRearms,
   kinSeqToMarkRead,
   kinUnreadToMark,
+  kinNextNewLineHold,
+  kinOwnReadSeq,
   latestKinSeq,
+  type KinNewLineHold,
   type KinChatScreenState,
   type KinFeedRow,
   type KinFeedViewer,
@@ -177,6 +180,7 @@ import { useKinStopLine } from "./useKinStop";
 import { openKinSettings } from "./kinSettingsAddress";
 import { useKinProfiles } from "./kinPictures";
 import { kinDraftAtom, kinDraftKey, restoreDraft } from "./kinDraft";
+import { closeSeenKinAlert } from "./kinSystemAlerts";
 import { Skeleton } from "../components/ui/skeleton";
 import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
@@ -623,6 +627,15 @@ function KinChatFeed(props: {
   const outbox = useAtomValue(kinOutbox.chatAtom(props.environmentId, props.chatId));
   const dayStart = new Date(nowMs);
   dayStart.setHours(0, 0, 0, 0);
+  const viewerMemberId = kinViewerMemberId(props.members, props.viewer.personId);
+  const [heldLine, setHeldLine] = useState<KinNewLineHold | null>(null);
+  const newLine = kinNextNewLineHold(
+    heldLine,
+    props.chatId,
+    kinOwnReadSeq(live, viewerMemberId),
+    latestKinSeq(live.messages),
+  );
+  if (newLine !== heldLine) setHeldLine(newLine);
   const feed = kinChatFeedView({
     chatId: props.chatId,
     live,
@@ -641,6 +654,7 @@ function KinChatFeed(props: {
     agentName: props.agentName,
     retired: props.retired !== null,
     readOnly: props.readOnly !== null,
+    newLine,
   });
   const { streamed, widgets, pending, rows, display, landIndex, followsEnd, unseen } = feed;
   const echoedKey = feed.echoed.join("\n");
@@ -650,7 +664,6 @@ function KinChatFeed(props: {
   }, [echoedKey]);
   const canReactHere = useAtomValue(kinClient.react.permissionAtom(props.environmentId));
   const react = useAtomCommand(kinClient.react, "react");
-  const viewerMemberId = kinViewerMemberId(props.members, props.viewer.personId);
   const canReact =
     canReactHere &&
     viewerMemberId !== null &&
@@ -690,11 +703,13 @@ function KinChatFeed(props: {
 
   const { connected, unread } = props;
   const focused = typeof document === "undefined" || document.visibilityState === "visible";
-  const markRead = (seq: number) =>
-    runKinCommand(appAtomRegistry, kinClient.markRead, {
+  const markRead = (seq: number) => {
+    closeSeenKinAlert(props.environmentId, props.chatId);
+    return runKinCommand(appAtomRegistry, kinClient.markRead, {
       environmentId: props.environmentId,
       input: { chatId: props.chatId, seq },
     }).then((result) => result._tag === "Success");
+  };
   const seesEnd = followsEnd && focused && connected && props.chat.live;
   const reading = useRef({ markRead, seesEnd, latestSeq, unread, connected, focused });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the host what the reader has seen, one call in flight at a time

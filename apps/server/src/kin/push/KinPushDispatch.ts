@@ -185,12 +185,13 @@ const make = Effect.gen(function* () {
         ? onWidget(event.widget)
         : event.type === "presence.updated"
           ? onPresence(event.orgId, event.chatId, event.agentId, event.presence?.wakeupId)
-          : event.type === "read.updated"
+          : event.type === "read.updated" || event.type === "chat.seen"
             ? sender.notify({
                 _tag: "read",
                 orgId: event.orgId,
                 chatId: event.chatId,
                 memberId: event.memberId,
+                ...(event.type === "chat.seen" ? { seen: event.seq } : {}),
               })
             : event.type === "chat.cleared"
               ? sender.settle(event.orgId, {

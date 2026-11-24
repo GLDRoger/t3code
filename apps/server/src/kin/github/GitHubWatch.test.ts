@@ -911,6 +911,48 @@ describe("KinGitHubWatch", () => {
     },
   );
 
+  it.effect(
+    "a fork that loses its switch is watched from the next look, under the same caps",
+    () => {
+      const { github, layer } = setup();
+      const FORK = "invented-co/old-fork";
+      const pull = (title: string) =>
+        github.openItem({
+          repo: FORK,
+          pull: true,
+          author: "teammate-a",
+          association: "MEMBER",
+          title,
+        });
+      return Effect.gen(function* () {
+        yield* start(github);
+        yield* setRepo({ orgId, repo: FORK, watched: false }, T0);
+        const passed = pull("Opened while the fork was off");
+        // Past the look's overlap, so the next look's cursor is after it.
+        yield* look(github, 10);
+        assert.lengthOf(yield* events, 0);
+        const total = GitHubWatch.WAKES_PER_LOOK + 2;
+        for (let n = 0; n < total; n++) pull(`Task ${n}`);
+        github.tick(20 * MINUTE);
+        yield* TestClock.adjust(20 * MINUTE);
+        yield* setRepo({ orgId, repo: null }, T0);
+        const restarted = yield* GitHubWatch.make;
+        yield* restarted.poll(orgId, { force: true });
+        assert.lengthOf(yield* events, GitHubWatch.WAKES_PER_LOOK);
+        yield* restarted.poll(orgId, { force: true });
+        yield* restarted.poll(orgId, { force: true });
+        const woke = yield* events;
+        assert.lengthOf(woke, total);
+        assert.isTrue(woke.every((trigger) => trigger.kind === "review"));
+        // A PR a look already passed while the fork was off is never read again on its own.
+        assert.notInclude(
+          woke.map((trigger) => trigger.key),
+          `review:${FORK}#${passed}`,
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("a look that reads only some threads keeps its cursors for the rest", () => {
     const { github, layer } = setup();
     return Effect.gen(function* () {
@@ -996,7 +1038,7 @@ describe("KinGitHubWatch", () => {
       yield* start(github);
       assert.deepStrictEqual(told, ["connections"]);
       const before = yield* watchSummary(orgId, T0);
-      assert.include(before, { repos: 1, problem: null, handledToday: 0 });
+      assert.include(before, { repos: 2, problem: null, handledToday: 0 });
       yield* look(github);
       assert.lengthOf(told, 1);
       github.world.down = 401;
@@ -1004,10 +1046,25 @@ describe("KinGitHubWatch", () => {
       assert.lengthOf(told, 2);
       const after = yield* watchSummary(orgId, T0 + MINUTE);
       assert.include(after?.problem ?? "", "Reconnect GitHub");
+      const switches = Effect.map(repoList(orgId), (repos) =>
+        repos.map(({ repo, fork, watched }) => ({ repo, fork, watched })),
+      );
+      // No switch watches a fork too: a fork's own PRs and issues are the company's work.
+      assert.deepStrictEqual(yield* switches, [
+        { repo: REPO, fork: false, watched: true },
+        { repo: "invented-co/old-fork", fork: true, watched: true },
+      ]);
       yield* setRepo({ orgId, repo: REPO, watched: false }, T0);
+      yield* setRepo({ orgId, repo: "invented-co/old-fork", watched: false }, T0);
+      assert.deepStrictEqual(yield* switches, [
+        { repo: REPO, fork: false, watched: false },
+        { repo: "invented-co/old-fork", fork: true, watched: false },
+      ]);
       assert.strictEqual((yield* watchSummary(orgId, T0))?.repos, 0);
-      yield* setRepo({ orgId, repo: null }, T0);
+      yield* setRepo({ orgId, repo: "invented-co/old-fork", watched: true }, T0);
       assert.strictEqual((yield* watchSummary(orgId, T0))?.repos, 1);
+      yield* setRepo({ orgId, repo: null }, T0);
+      assert.strictEqual((yield* watchSummary(orgId, T0))?.repos, 2);
     }).pipe(
       Effect.provide(layer),
       Effect.provideService(KinRefreshObserver, {
@@ -1362,6 +1419,7 @@ describe("one look at one thread", () => {
       );
       yield* start(github);
       yield* setRepo({ orgId, repo: REPO, watched: false }, T0);
+      yield* setRepo({ orgId, repo: "invented-co/old-fork", watched: false }, T0);
       github.tick(MINUTE);
       for (const [index, repo] of repos.entries())
         github.comment({
@@ -1507,6 +1565,9 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
   const FREE = "invented-owner/private";
   const NOT_ADMIN = "invented-co/shared";
   const EMPTY = "invented-owner/fresh";
+  const seedForkOff = seed.pipe(
+    Effect.andThen(setRepo({ orgId, repo: "invented-co/old-fork", watched: false }, T0)),
+  );
   /** Seven watched repos as GitHub holds them: open, reviews required two ways, three Kin can't change, and one with no branch yet. */
   const world = (github: FakeGitHub) => {
     github.world.accounts = [
@@ -1552,7 +1613,7 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
     world(github);
     return Effect.gen(function* () {
       yield* TestClock.setTime(T0);
-      yield* seed;
+      yield* seedForkOff;
       yield* (yield* GitHubWatch.KinGitHubWatch).poll(orgId, { force: true });
       assert.deepStrictEqual(yield* guards, {
         [REPO]: { state: "open", branch: "main", byKin: false },
@@ -1564,7 +1625,7 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
         [NOT_ADMIN]: { state: "unknown", branch: "main", byKin: false, problem: "no_admin" },
         [EMPTY]: { state: "unknown", branch: "trunk", byKin: false, problem: "no_branch" },
       });
-      // The unwatched fork isn't read; classic protection only where rules didn't answer.
+      // The fork switched off isn't read; classic protection only where rules didn't answer.
       const reads = github.world.calls.filter((call) => /rules|protection/.test(call));
       assert.lengthOf(
         reads.filter((call) => /\/rules\/branches\/[^/]+$/.test(call)),
@@ -1676,7 +1737,7 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
       });
       return Effect.gen(function* () {
         yield* TestClock.setTime(T0);
-        yield* seed;
+        yield* seedForkOff;
         yield* (yield* GitHubWatch.KinGitHubWatch).poll(orgId, { force: true });
         assert.deepStrictEqual(yield* guards, {
           [REPO]: { state: "open", branch: "main", byKin: false, needsReview: true },
@@ -1773,7 +1834,7 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
       world(github);
       return Effect.gen(function* () {
         yield* TestClock.setTime(T0);
-        yield* seed;
+        yield* seedForkOff;
         const sql = yield* SqlClient.SqlClient;
         const misread = sql`UPDATE kin_github_branch_guards SET state = 'unknown', problem = 'no_access'
         WHERE repo = ${PAID.toLowerCase()}`;
@@ -1819,6 +1880,7 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
       const told: Array<string> = [];
       return Effect.gen(function* () {
         yield* start(github);
+        yield* setRepo({ orgId, repo: "invented-co/old-fork", watched: false }, T0);
         const merging = github.openItem({
           repo: REPO,
           pull: true,

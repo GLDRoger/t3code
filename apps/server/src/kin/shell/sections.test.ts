@@ -79,6 +79,7 @@ it("classifies client and project, money, and invoice and quote surfaces", () =>
     ["quote_unanswered", "invoices"],
     ["statement_missing", "money"],
     ["bank_alerts_unreadable", "money"],
+    ["payment_seen", "invoices"],
     ["budget_near", "money"],
     ["task_late", null],
   ] as const)

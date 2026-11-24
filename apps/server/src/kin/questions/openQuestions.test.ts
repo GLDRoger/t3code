@@ -3041,12 +3041,13 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
         title: string,
         body: string,
         kind: "proposal" | "mail" | "post" | "quote" | "terms" = "proposal",
+        client: string | null = "C-7",
       ) =>
         LeadDocs.create(scopeOf("chief"), {
           sourceEventId: asked.eventId,
           title,
           body,
-          client: "C-7",
+          ...(client === null ? {} : { client }),
           draft: kind === "post" ? { kind, on: "linkedin" } : { kind },
         }).pipe(Effect.provideService(KinIdentity, identity));
       /** Invented words, exactly `chars` long, from phase `from` on. */
@@ -3511,6 +3512,33 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
       assert.deepInclude(yield* press((yield* cardOf(tooLong[0][0].key)).widgetId), {
         held: false,
       });
+
+      // A long draft that named no client: its redraft naming one is still the one it redoes, and
+      // goes back up on its own Approve card bound to its own version.
+      yield* sql`UPDATE kin_questions SET state = 'answered' WHERE org_id = ${orgId}
+        AND state = 'open'`;
+      asked = yield* turnIn("Draft a welcome note for their accounts team.");
+      const unnamed = yield* file("Welcome note", long(3000, 1700), "mail", null);
+      yield* press((yield* cardOf(unnamed.key)).widgetId);
+      const unnamedUp = yield* openFor(unnamed.key);
+      yield* tap(owner, unnamedUp.questionId, "option-2", "rhea-changes-unnamed");
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'`;
+      yield* TestClock.adjust("1 minute");
+      const addPo = yield* wakeOn("chief", "rhea", chatOf("chief"), "Add a purchase order part.");
+      const [addPoEvent] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${addPo} ORDER BY rowid`;
+      const namedBack = yield* LeadDocs.create(scopeOf("chief"), {
+        sourceEventId: addPoEvent!.eventId,
+        title: "Welcome note",
+        body: long(3100, 1700),
+        client: "C-7",
+        draft: { kind: "mail" },
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.include(namedBack.note ?? "", "back from Rhea Rao's Changes first");
+      assert.deepInclude(JSON.parse((yield* openFor(unnamed.key)).draft).doc, {
+        key: namedBack.key,
+        version: 1,
+      });
     }).pipe(Effect.provide(layer)),
   ),
 );
@@ -3666,7 +3694,10 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         body: "Tidewater: one survey day",
         client: "C-8",
       });
-      assert.notInclude(other.note ?? "", "Changes first");
+      // The agent is told so, so it never asks her to approve a draft with no Approve card.
+      const NOT_A_REDRAFT =
+        "Kin couldn't tie it to a draft waiting on Changes first here, so no Approve card was made for it: never say it waits to be approved.";
+      assert.include(other.note ?? "", NOT_A_REDRAFT);
       assert.lengthOf(yield* drafts, 1);
       // The redraft goes back to her with every figure in it, Zoya's read check or not, marked
       // sensitive as an agent may mark a priced one: nothing filed, one new card asked for Zoya's
@@ -3796,7 +3827,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       const asked = (yield* drafts).length;
       const neither = yield* proposal(both, { title: "Tidewater proposal", client: "C-8" });
       assert.notStrictEqual(neither.key, "");
-      assert.notInclude(neither.note ?? "", "Changes first");
+      assert.include(neither.note ?? "", NOT_A_REDRAFT);
       assert.lengthOf(yield* drafts, asked);
 
       // Her own mail card, sent up and answered Changes first: Rhea's edit of it goes back up.

@@ -130,6 +130,8 @@ import {
   kinFeedViewer,
   kinLinkToOpen,
   kinMarkReadRearms,
+  kinNextNewLineHold,
+  kinOwnReadSeq,
   kinRowSeq,
   kinSeqToMarkRead,
   kinUnreadToMark,
@@ -137,6 +139,7 @@ import {
   type KinChatScreenState,
   type KinFeedRow,
   type KinFeedViewer,
+  type KinNewLineHold,
   type KinPaging,
   KIN_CHAT_COPY,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
@@ -1046,6 +1049,15 @@ function KinChatFeed(props: {
     typeof params === "object" && params !== null && "message" in params
       ? String(params.message)
       : null;
+  const viewerMemberId = kinViewerMemberId(props.members, props.viewer.personId);
+  const [heldLine, setHeldLine] = useState<KinNewLineHold | null>(null);
+  const newLine = kinNextNewLineHold(
+    heldLine,
+    props.chatId,
+    kinOwnReadSeq(live, viewerMemberId),
+    latestKinSeq(live.messages),
+  );
+  if (newLine !== heldLine) setHeldLine(newLine);
   // Apart from `follow`, so a scroll recomputes only where the feed stands, not its rows.
   const feed = kinChatFeedRows({
     chatId: props.chatId,
@@ -1064,6 +1076,7 @@ function KinChatFeed(props: {
     agentName: props.agentName,
     retired: props.retired !== null,
     readOnly: props.readOnly !== null,
+    newLine,
   });
   const { streamed, messages, widgets, pending, feedRows, rows, landIndex, earlierPage } = feed;
   const { followsEnd, unseen } = kinChatFeedFollow(messages, follow, props.viewer.personId);
@@ -1074,7 +1087,6 @@ function KinChatFeed(props: {
   }, [echoedKey]);
   const canReactHere = useAtomValue(kinClient.react.permissionAtom(props.environmentId));
   const react = useAtomCommand(kinClient.react, "react");
-  const viewerMemberId = kinViewerMemberId(props.members, props.viewer.personId);
   const canReact =
     canReactHere &&
     viewerMemberId !== null &&

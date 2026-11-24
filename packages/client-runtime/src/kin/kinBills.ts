@@ -59,7 +59,8 @@ export const KIN_BILLS = {
   review: "Review",
   /** On Expenses: where bills added in bulk are, once there are any. */
   added: "Bills added",
-  batchTitle: (addedAt: string, now: Date) => `Bills added on ${kinBillDay(addedAt, now)}`,
+  batchTitle: (addedAt: string, now: Date) =>
+    `Bills added on ${kinBillDay(addedAt, now)}, ${timeOfDay.format(new Date(addedAt))}`,
   newest: (addedAt: string, now: Date) => `Newest on ${kinBillDay(addedAt, now)}`,
   state: {
     reading: "Reading…",
@@ -67,6 +68,10 @@ export const KIN_BILLS = {
     kept: "Kept",
     dropped: "Dropped",
     unreadable: "Couldn't read this one",
+    /** Read cleanly, but its amount or date is the owner's to check. */
+    check: "Check this one",
+    checkAmount: "Check the amount",
+    checkDate: "Check the date",
     duplicate: (key: string, title: string) => `Looks like ${key} ${title}`.trim(),
   } as const,
   field: {
@@ -112,6 +117,7 @@ export const KIN_BILLS = {
 const dayOfYear = kinWhenFormat("dateYear", { zone: "UTC" });
 const dayInYear = kinWhenFormat("date");
 const dayWithYear = kinWhenFormat("dateYear");
+const timeOfDay = kinWhenFormat("time");
 
 /** "24 Nov" this year, "24 Nov 2025" before it, in the reader's own zone. */
 function kinBillDay(iso: string, now: Date) {
@@ -245,8 +251,10 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
         ? ["addAnyway", "dismiss"]
         : ["addAnyway", "dismiss", "openDuplicate"];
     case "unreadable":
-      // A clean read whose amount or date is in question reads the same again.
-      return row.readClean === true ? ["byHand", "dismiss"] : ["byHand", "readAgain", "dismiss"];
+      // A clean read in question, or a photo Kin can't read, reads the same again.
+      return row.readClean === true || row.wrongKind === true
+        ? ["byHand", "dismiss"]
+        : ["byHand", "readAgain", "dismiss"];
     case "kept":
     case "dropped":
       return row.expense === undefined ? [] : ["openExpense"];
@@ -256,9 +264,14 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
 }
 
 function kinBillStateLabel(row: KinBillRow) {
-  return row.state === "duplicate"
-    ? KIN_BILLS.state.duplicate(row.duplicateOf?.key ?? "", row.duplicateOf?.title ?? "")
-    : KIN_BILLS.state[row.state];
+  if (row.state === "duplicate")
+    return KIN_BILLS.state.duplicate(row.duplicateOf?.key ?? "", row.duplicateOf?.title ?? "");
+  if (row.state !== "unreadable" || row.readClean !== true) return KIN_BILLS.state[row.state];
+  return row.check === "amount"
+    ? KIN_BILLS.state.checkAmount
+    : row.check === "date"
+      ? KIN_BILLS.state.checkDate
+      : KIN_BILLS.state.check;
 }
 
 export function kinBillRowView(
@@ -300,7 +313,9 @@ export function kinBillRowView(
 
 export type KinBillCounts = KinBillBatchSummary["states"];
 
-export const kinBillCounts = (rows: ReadonlyArray<Pick<KinBillRow, "state">>): KinBillCounts => {
+export const kinBillCounts = (
+  rows: ReadonlyArray<Pick<KinBillRow, "state" | "readClean">>,
+): KinBillCounts => {
   const count = (state: KinBillState) => rows.filter((row) => row.state === state).length;
   return {
     reading: count("reading"),
@@ -309,17 +324,20 @@ export const kinBillCounts = (rows: ReadonlyArray<Pick<KinBillRow, "state">>): K
     dropped: count("dropped"),
     duplicate: count("duplicate"),
     unreadable: count("unreadable"),
+    check: rows.filter((row) => row.state === "unreadable" && row.readClean === true).length,
   };
 };
 
 /** "12 bills: 5 to keep, 1 looks like a duplicate, 3 kept." The host writes no line for this. */
 export function kinBillBatchSentence(counts: KinBillCounts, bills: number) {
+  const check = counts.check ?? 0;
   const parts = [
     counts.read === 0 ? null : `${counts.read} to keep`,
     counts.duplicate === 0
       ? null
       : `${counts.duplicate} ${counts.duplicate === 1 ? "looks like a duplicate" : "look like duplicates"}`,
-    counts.unreadable === 0 ? null : `${counts.unreadable} couldn't be read`,
+    counts.unreadable - check === 0 ? null : `${counts.unreadable - check} couldn't be read`,
+    check === 0 ? null : `${check} ${check === 1 ? "needs" : "need"} a check`,
     counts.reading === 0 ? null : `${counts.reading} being read`,
     counts.kept === 0 ? null : `${counts.kept} kept`,
     counts.dropped === 0 ? null : `${counts.dropped} dropped`,
@@ -357,14 +375,20 @@ export function kinBillsEntry(batches: ReadonlyArray<KinBillBatchSummary>, now: 
 /** After Keep all: how many were kept, and each skipped bill's reason by its file. */
 export function kinBillsKeptAll(result: KinBillsKeepReadResult) {
   const kept = result.kept.length;
-  const skipped = result.skipped.length;
+  const check = result.skipped.filter((one) => one.check === true).length;
+  const other = result.skipped.length - check;
   const said =
     kept === 0 ? "None were kept." : kept === 1 ? "Kept 1 expense." : `Kept ${kept} expenses.`;
+  const left = [
+    check === 0 ? null : `${check} ${check === 1 ? "needs" : "need"} a check`,
+    other === 0
+      ? null
+      : check === 0
+        ? `${other === 1 ? "1 wasn't" : `${other} weren't`}`
+        : `${other === 1 ? "1 other wasn't" : `${other} others weren't`}`,
+  ].filter((part) => part !== null);
   return {
-    said:
-      skipped === 0
-        ? said
-        : `${said} ${skipped === 1 ? "1 wasn't" : `${skipped} weren't`}: why is on each.`,
+    said: left.length === 0 ? said : `${said} ${left.join(" and ")}: why is on each.`,
     skipped: new Map(result.skipped.map((one) => [one.sha256, one.why])),
   };
 }
