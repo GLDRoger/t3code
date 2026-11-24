@@ -88,13 +88,6 @@ export interface WakeupContext extends JournalContext {
           readonly itemId: string;
           readonly action: "keep" | "update" | "drop";
         }
-      | { readonly kind: "deferral_card"; readonly itemId: string; readonly action: "remind" }
-      | {
-          readonly kind: "deferral_card";
-          readonly itemId: string;
-          readonly action: "monday";
-          readonly due: string;
-        }
     )
   >;
 }
@@ -1058,22 +1051,6 @@ const make = Effect.gen(function* () {
             source.action === "keep"
           )
             mutable.add("review_by");
-          if (
-            source.kind === "deferral_card" &&
-            source.action === "remind" &&
-            source.itemId === item.id &&
-            item.kind === "deferral" &&
-            fm.on_due === "remind"
-          )
-            mutable.add("on_due");
-          if (
-            source.kind === "deferral_card" &&
-            source.action === "monday" &&
-            source.itemId === item.id &&
-            item.kind === "deferral" &&
-            fm.due === source.due
-          )
-            mutable.add("due");
           if (changedKeys(item, fm).some((key) => !mutable.has(key)))
             return yield* new MemoryConflict({ existingId: item.id });
         }

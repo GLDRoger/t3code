@@ -117,6 +117,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
       fact.subject.key === fact.subject.title
         ? fact.subject.title
         : `${recordName(fact.subject.key, fact.subject.number)} ${fact.subject.title}`,
+    ...(fact.scope.billTo === undefined ? {} : { billTo: fact.scope.billTo }),
     consequence: [fact.consequence, reminders.get(fact.key)].filter(Boolean).join(" "),
     // A renewal's heads-up only mentions it; who drafts it acts from the draft day.
     ...(fact.stage === "heads_up" ? {} : { acts: who(fact.actor) }),

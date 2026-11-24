@@ -116,6 +116,13 @@ import {
   useKinRates,
 } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import { useKinSectionOn } from "./useKinShell";
+import { kinListCanBeSection } from "@t3tools/client-runtime/kin/kinShell";
+import {
+  KIN_BILL_TO,
+  kinBillToFieldPatch,
+  kinUseClientInstead,
+} from "@t3tools/client-runtime/kin/kinBillTo";
 
 const isImage = (file: KinFileRef) => file.mimeType.startsWith("image/");
 
@@ -535,6 +542,8 @@ export function KinListEntry(
     readonly directory: KinWorkDirectory;
     readonly now: Date;
     readonly links: React.ReactNode;
+    /** Giving it to someone, where the host lets this reader; shown on a company's own list. */
+    readonly give?: React.ReactNode;
     /** That its section is off, for an entry opened by its link; null while it is on. */
     readonly offLine?: string | null;
     readonly onOpenClient: (key: KinRecordKey) => void;
@@ -544,7 +553,11 @@ export function KinListEntry(
   },
 ) {
   const { item, view, environmentId } = props;
-  const opensClients = useKinOpensClients(environmentId);
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  // Clients off: an invoice's or quote's client and project are names alone, with no link or picker.
+  const billing = clientsOn || !["invoices", "quotes"].includes(item.list ?? "");
+  const opensClients = useKinOpensClients(environmentId) && billing;
+  const [naming, setNaming] = useState(false);
   const lists = useKinLists(props, { enabled: true, archived: true });
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
@@ -564,6 +577,10 @@ export function KinListEntry(
   // rest are owner-level, which the host says by letting this reader set its client.
   const canChange = mayUpdate && view.can.party;
   const canDraft = mayUpdate && view.can.edit;
+  // A company's own list: its status and who has it, as far as the host lets this reader.
+  const ownList = def !== null && kinListCanBeSection({ ...def, archivedAt: null });
+  const moves = canChange || (ownList && mayUpdate && view.can.states.length > 0);
+  const give = ownList ? (props.give ?? null) : null;
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
   const [paying, setPaying] = useState(false);
   const [takingBack, setTakingBack] = useState<string | null>(null);
@@ -605,7 +622,7 @@ export function KinListEntry(
       .map(([id, name]) => ({ value: `agent:${id}`, label: name })),
   ];
   const open = (fact: KinListEntryView["facts"][number]) =>
-    fact.opens === null || (fact.id !== "project" && !opensClients)
+    fact.opens === null || !billing || (fact.id !== "project" && !opensClients)
       ? null
       : fact.id === "project"
         ? () => props.onOpenProject(fact.opens!)
@@ -735,12 +752,12 @@ export function KinListEntry(
               onState={(state) => void changes.update(item.rev, { state })}
               onMakePdf={() => setMaking("pdf")}
             />
-          ) : !canChange ? null : (
+          ) : !moves && give === null ? null : (
             <div className="flex flex-wrap items-center gap-2">
               {payLater === null ? null : (
                 <p className="w-full text-sm text-muted-foreground">{payLater}</p>
               )}
-              {finish === null ? null : (
+              {finish === null || !canChange ? null : (
                 <Button
                   size="sm"
                   disabled={busy || (finish.pays !== null && !canPay)}
@@ -758,29 +775,37 @@ export function KinListEntry(
                   {finish.label}
                 </Button>
               )}
-              {finish?.pays == null || !canPay || paying ? null : (
+              {finish?.pays == null || !canPay || paying || !canChange ? null : (
                 <Button size="sm" variant="outline" disabled={busy} onClick={() => setPaying(true)}>
                   {KIN_LISTS.entry.recordPayment}
                 </Button>
               )}
-              <Menu>
-                <MenuTrigger render={<Button size="sm" variant="outline" disabled={busy} />}>
-                  {KIN_LISTS.entry.status}
-                  <ChevronDownIcon />
-                </MenuTrigger>
-                <MenuPopup align="start">
-                  {entry.states.map((choice) => (
-                    <MenuItem
-                      key={choice.state}
-                      disabled={choice.current}
-                      onClick={() => void changes.update(item.rev, { state: choice.state })}
-                    >
-                      <KinWorkStateIcon state={choice.state} />
-                      {choice.label}
-                    </MenuItem>
-                  ))}
-                </MenuPopup>
-              </Menu>
+              {!moves ? null : (
+                <Menu>
+                  <MenuTrigger render={<Button size="sm" variant="outline" disabled={busy} />}>
+                    {KIN_LISTS.entry.status}
+                    <ChevronDownIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="start">
+                    {entry.states
+                      .filter(
+                        (choice) =>
+                          canChange || choice.current || view.can.states.includes(choice.state),
+                      )
+                      .map((choice) => (
+                        <MenuItem
+                          key={choice.state}
+                          disabled={choice.current}
+                          onClick={() => void changes.update(item.rev, { state: choice.state })}
+                        >
+                          <KinWorkStateIcon state={choice.state} />
+                          {choice.label}
+                        </MenuItem>
+                      ))}
+                  </MenuPopup>
+                </Menu>
+              )}
+              {give}
             </div>
           )}
           {canChange && kinSuggestion(item) ? (
@@ -865,8 +890,41 @@ export function KinListEntry(
               </>
             )}
             {entry.facts.map((fact) => {
+              const { billTo } = entry;
+              if (
+                fact.id === "party" &&
+                billTo !== null &&
+                item.party === undefined &&
+                (billTo.typed || naming || !clientsOn)
+              )
+                return (
+                  <BillToRows
+                    key={fact.id}
+                    billTo={billTo}
+                    canName={canDraft && billTo.editable}
+                    canUseClient={canChange && billTo.editable && clientsOn && billTo.typed}
+                    opening={naming}
+                    busy={busy}
+                    clients={clients.map((row) => ({ value: row.key, label: row.name }))}
+                    onSave={async (key, value) => {
+                      const failed = await changes.edit(item.rev, {
+                        fields: kinBillToFieldPatch(key, value),
+                      });
+                      if (failed === null) setNaming(false);
+                      return failed;
+                    }}
+                    onCancelName={() => setNaming(false)}
+                    onUseClient={(key) => void changes.update(item.rev, kinUseClientInstead(key))}
+                  />
+                );
               const opens = open(fact);
-              const picks = canChange && fact.id !== "owner";
+              const picks = canChange && fact.id !== "owner" && (fact.id === "category" || billing);
+              const offersName =
+                fact.id === "party" &&
+                billTo !== null &&
+                item.party === undefined &&
+                canDraft &&
+                billTo.editable;
               if (!picks && fact.value === null) return null;
               return (
                 <div key={fact.id} className="contents">
@@ -905,6 +963,11 @@ export function KinListEntry(
                         {picks ? "Open" : fact.value}
                       </Button>
                     )}
+                    {offersName ? (
+                      <Button size="xs" variant="ghost" onClick={() => setNaming(true)}>
+                        {KIN_BILL_TO.byName}
+                      </Button>
+                    ) : null}
                   </dd>
                 </div>
               );
@@ -1190,6 +1253,73 @@ export function KinListEntry(
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
+    </>
+  );
+}
+
+/**
+ * Who an invoice or quote with no client bills: its typed name and the details this reader was
+ * sent, edited in place on a draft. Clearing the name clears the details, as the host does.
+ */
+function BillToRows(props: {
+  readonly billTo: NonNullable<KinListEntryView["billTo"]>;
+  readonly canName: boolean;
+  readonly canUseClient: boolean;
+  /** The person just chose to bill by name: the name opens as a box. */
+  readonly opening: boolean;
+  readonly busy: boolean;
+  readonly clients: ReadonlyArray<{ readonly value: KinRecordKey; readonly label: string }>;
+  readonly onSave: (key: string, value: string) => Promise<string | null>;
+  readonly onCancelName: () => void;
+  readonly onUseClient: (key: KinRecordKey) => void;
+}) {
+  const { name, details } = props.billTo;
+  const rows = [name, ...(props.billTo.typed ? details : [])];
+  return (
+    <>
+      {rows.map((field) => {
+        if (!props.canName && field.text === null) return null;
+        const isName = field === name;
+        return (
+          <div key={field.key} className="contents">
+            <dt className="flex items-center gap-1.5 self-start pt-0.5 text-muted-foreground">
+              {isName ? KIN_BILL_TO.label : field.label}
+              {field.private ? <KinWorkPrivateMark /> : null}
+            </dt>
+            <dd className="flex min-w-0 flex-col items-start gap-1.5 text-foreground">
+              {props.canName ? (
+                <KinEntryText
+                  label={isName ? KIN_BILL_TO.label : field.label}
+                  shown={field.text}
+                  draft={field.draft}
+                  disabled={props.busy}
+                  {...(isName && props.opening && field.text === null
+                    ? { open: true, onCancel: props.onCancelName }
+                    : {})}
+                  onSave={(text) => props.onSave(field.key, text)}
+                />
+              ) : (
+                <span className="whitespace-pre-wrap">{field.text}</span>
+              )}
+              {isName && props.canUseClient && props.clients.length > 0 ? (
+                <Menu>
+                  <MenuTrigger render={<Button size="xs" variant="ghost" disabled={props.busy} />}>
+                    {KIN_BILL_TO.useClient}
+                    <ChevronDownIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="start">
+                    {props.clients.map((client) => (
+                      <MenuItem key={client.value} onClick={() => props.onUseClient(client.value)}>
+                        {client.label}
+                      </MenuItem>
+                    ))}
+                  </MenuPopup>
+                </Menu>
+              ) : null}
+            </dd>
+          </div>
+        );
+      })}
     </>
   );
 }

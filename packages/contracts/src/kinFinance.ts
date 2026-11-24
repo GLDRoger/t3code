@@ -253,10 +253,11 @@ export const KinMoneySummary = Schema.Struct({
     overdue: KinMoneyTotals,
     invoices: NonNegativeInt,
     overdueInvoices: NonNegativeInt,
-    /** Longest overdue first, then most owed; `party` null for invoices with no client. */
+    /** Longest overdue first, then most owed; invoices without a client share one null group. */
     byClient: Schema.Array(
       Schema.Struct({
         party: Schema.NullOr(KinRecordRef),
+        billTo: Schema.optional(Schema.String),
         owed: KinMoneyTotals,
         overdue: KinMoneyTotals,
         invoices: NonNegativeInt,

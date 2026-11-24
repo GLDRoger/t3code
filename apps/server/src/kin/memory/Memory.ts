@@ -37,6 +37,7 @@ import { memoryGit as runMemoryGit } from "./git.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import { mergeMemoryFiles, uniqueMergeBase } from "./merge.ts";
+import { withRuns } from "../triggers/deferralRuns.ts";
 import { buildIndex, indexIsStale } from "./buildIndex.ts";
 import { leadOwner, readableFiles } from "./quoteAccess.ts";
 import { gitHubApp } from "../github/KinGitHubApp.ts";
@@ -2158,17 +2159,35 @@ const make = Effect.gen(function* () {
               ? current
               : yield* pinnedSnapshot(orgId, current.branch, expectedHead);
           const rules = snapshot.files.get("rules.md");
-          const index = snapshot.index ?? snapshot.files.get("INDEX.md") ?? "";
           if (rules === undefined)
             return yield* new MemoryError({
               orgId,
               operation: "promptSnapshot",
               reason: "Missing committed prompt rules",
             });
+          // Deferrals as their runs make them (a tap moved or cancelled one): the index is drawn
+          // again only then, so an unchanged prompt keeps its stored index.
+          const heads = snapshot.items.map((item) => item.head);
+          const items = yield* withRuns(orgId, heads).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(
+              (cause) => new MemoryError({ orgId, operation: "promptSnapshot", cause }),
+            ),
+          );
+          const index = items.some((head, at) => head !== heads[at])
+            ? buildIndex(
+                items,
+                yield* cache
+                  .lastReads(orgId)
+                  .pipe(Effect.orElseSucceed(() => Object.fromEntries<number>([]))),
+                yield* Clock.currentTimeMillis,
+                yield* cache.ownerTimeZone(orgId),
+              )
+            : (snapshot.index ?? snapshot.files.get("INDEX.md") ?? "");
           return {
             rules,
             index,
-            items: snapshot.items.map((item) => item.head),
+            items,
             bodies: new Map(snapshot.items.map((item) => [item.head.path, item.body])),
           };
         }),

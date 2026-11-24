@@ -19,6 +19,7 @@ import {
   KinChatId,
   KinMessageId,
   KinPersonId,
+  MemoryItemHead,
   ThreadId,
   ProviderTurnId,
   ProjectId,
@@ -107,6 +108,27 @@ import { ProviderAdapterSteerRunError } from "@t3tools/provider-core/server/Prov
 import { ProviderDriverKind, ProviderThreadId } from "@t3tools/contracts";
 
 const decodeEvent = Schema.decodeSync(KinEvent);
+const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
+const fixtureHead = (orgId: string, id: string, title: string) =>
+  decodeHead({
+    orgId,
+    id,
+    path: `deferrals/${id}.md`,
+    kind: "deferral",
+    title,
+    status: "open",
+    due: "2026-11-13T09:00+05:30",
+    on_due: "start",
+    recorded_at: "2026-11-08",
+    valid_from: "2026-11-08",
+    invalid_at: null,
+    superseded_by: null,
+    review_by: null,
+    source: "owner-chat",
+    said_by: "owner",
+    trust: "owner",
+    links: [],
+  });
 const decodeUsage = Schema.decodeEffect(
   Schema.fromJsonString(
     Schema.Array(
@@ -674,6 +696,8 @@ describe("WakeupRunner", () => {
     ["a room's routine whose setter left since its run was queued", "left", 0],
     ["a question answered or withdrawn before its day", "question", 0],
     ["a scheduled task whose memory read failed, in a turn", "unread", 1],
+    ["a started deferral whose item is gone since its card was drawn", "start-gone", 0],
+    ["a started deferral whose item was edited since its card was drawn", "start-edited", 0],
   ] as const)(
     "answers %s without the model when only NO_REPLY could answer it",
     ([, kind, turns]) =>
@@ -707,6 +731,18 @@ describe("WakeupRunner", () => {
                 'invented-setter', ${kind === "left" ? "shared" : "owner_only"}, 'sha', 'inbox', 0,
                 0, ${kind === "paused" ? 0 : null})`;
           }
+          const startKind = kind === "start-gone" || kind === "start-edited";
+          if (startKind)
+            yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due,
+                snapshot_json, updated_at)
+              VALUES (${orgId}, 'def-started', 'started', 0, 'start',
+                ${JSON.stringify({
+                  recordedAt: "2026-11-08T00:00:00.000Z",
+                  supersededBy: null,
+                  links: [],
+                  github: null,
+                  drawn: { fingerprint: "as-drawn" },
+                })}, 0)`;
           yield* queue.enqueue(
             decodeEvent({
               _tag: "deferral.due",
@@ -719,7 +755,9 @@ describe("WakeupRunner", () => {
               subject:
                 kind === "question"
                   ? { type: "question", questionId: "question-1" }
-                  : { type: "scheduled_task", itemId: "schedule-item", runId: "fire-1" },
+                  : startKind
+                    ? { type: "deferral", itemId: "def-started", phase: "due" }
+                    : { type: "scheduled_task", itemId: "schedule-item", runId: "fire-1" },
               lateByMs: 0,
             }),
           );
@@ -736,10 +774,26 @@ describe("WakeupRunner", () => {
             ]),
             [[turns > 0, "completed"]],
           );
+          // An edited item's dropped start asks again, and a new tap takes a new start key.
+          if (kind === "start-edited")
+            assert.deepEqual(
+              yield* sql`SELECT state, json_extract(snapshot_json, '$.restarts') AS restarts
+                FROM kin_deferral_runs WHERE item_id = 'def-started'`,
+              [{ state: "asked", restarts: 1 }],
+            );
         }).pipe(
           Effect.provide(
             harness({
               prompts,
+              ...(kind === "start-edited"
+                ? {
+                    readItem: (orgId, id) =>
+                      Effect.succeed({
+                        head: fixtureHead(orgId, id, "Invented work, edited since"),
+                        body: "Body\n",
+                      }),
+                  }
+                : {}),
               ...(kind === "unread"
                 ? {
                     readItem: (orgId) =>

@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
 import { kinIssuedAmountQuestion } from "@t3tools/client-runtime/kin/kinInvoices";
+import { kinBillToFieldPatch, kinIsBillToField } from "@t3tools/client-runtime/kin/kinBillTo";
 import {
   KIN_AMOUNT_SLIP,
   KIN_FIELD_FILES_MAX,
@@ -138,8 +139,12 @@ function KinEntryEditGate(
   }
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
+  const fields =
+    entry.billTo === null
+      ? entry.fields
+      : [...entry.fields, entry.billTo.name, ...entry.billTo.details];
   const field = what.startsWith(FIELD)
-    ? (entry.fields.find((held) => held.key === what.slice(FIELD.length)) ?? null)
+    ? (fields.find((held) => held.key === what.slice(FIELD.length)) ?? null)
     : null;
   const shared = { ...props, item, entry, directory, onClose: close };
   if (what === "amount" && entry.amountEdit !== null)
@@ -179,7 +184,9 @@ type Shared = KinWorkTarget & {
 };
 
 const fieldPatch = (field: KinListFieldView, value: KinFieldValue | null) => ({
-  fields: { [field.key]: value },
+  fields: kinIsBillToField(field.key)
+    ? kinBillToFieldPatch(field.key, value)
+    : { [field.key]: value },
 });
 
 /** The amount, or a detail that is typed. */

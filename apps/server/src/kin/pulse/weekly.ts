@@ -5,6 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail } from "../connections/Sending.ts";
 import { goalLine, goalsNow } from "../work/goals.ts";
+import { billedParty } from "../work/billTo.ts";
 import { homeCurrency, readProfile } from "../work/companyProfile.ts";
 import { projectHealths } from "../work/crm.ts";
 import * as KinShell from "../shell/KinShell.ts";
@@ -200,11 +201,12 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     : yield* sql<{
         key: string;
         client: string | null;
+        fieldsJson: string;
         minor: number | null;
         currency: string | null;
         state: string;
         number: unknown;
-      }>`SELECT r.key, c.title AS client, r.amount_minor AS minor, r.currency, r.state,
+      }>`SELECT r.key, c.title AS client, r.fields_json AS "fieldsJson", r.amount_minor AS minor, r.currency, r.state,
       json_extract(r.fields_json, '$.number') AS number
     FROM kin_records r
     LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
@@ -294,14 +296,16 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     limit: CAP,
   })).facts.filter((fact) => fact.sense === "client_cold" || fact.sense === "client_quiet");
 
-  const unpaidLine = (one: (typeof owed)[number]) =>
-    `${recordName(one.key, one.number)}${one.partyTitle === null ? "" : ` ${one.partyTitle}`}: ${formatMoney(one.balance)} ${
+  const unpaidLine = (one: (typeof owed)[number]) => {
+    const name = one.partyTitle ?? one.billTo;
+    return `${recordName(one.key, one.number)}${name === undefined ? "" : ` ${name}`}: ${formatMoney(one.balance)} ${
       one.dueAt === null
         ? "unpaid, no due date"
         : isOverdue(one)
           ? `unpaid, overdue ${overdueFor(one.dueAt, one.daysOverdue, now, zone)}; ${overdueMail.get(one.recordId)}`
           : `due ${dayIn(one.dueAt, zone)}`
     }`;
+  };
   const section = {
     week: `${dayIn(weekAgo, zone)} to ${dayIn(now, zone)}`,
     goals: goals.map(goalLine),
@@ -313,10 +317,12 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
       outThisWeek: totals(spent),
       unpaidTotal: totals(owed.map((one) => one.balance)),
       unpaid: owed.map(unpaidLine),
-      openQuotes: quotes.map(
-        (one) =>
-          `${recordName(one.key, one.number)}${one.client === null ? "" : ` ${one.client}`}${one.minor === null || one.currency === null ? "" : `: ${formatMoney({ minor: one.minor, currency: one.currency })}`}, ${one.state === "open" ? "draft, not sent" : "sent, no answer yet"}`,
-      ),
+      openQuotes: quotes.map((one) => {
+        const name =
+          one.client ??
+          billedParty({ registerId: "quotes", fieldsJson: one.fieldsJson }, undefined)?.name;
+        return `${recordName(one.key, one.number)}${name === undefined ? "" : ` ${name}`}${one.minor === null || one.currency === null ? "" : `: ${formatMoney({ minor: one.minor, currency: one.currency })}`}, ${one.state === "open" ? "draft, not sent" : "sent, no answer yet"}`;
+      }),
       renewalsThisMonth: [
         ...renewals.map((one) => `${one.on} ${one.key} ${one.title} renews`),
         ...listedRenewals.map((one) => `${dayIn(one.dueAt, zone)} ${one.key} ${one.title}`),

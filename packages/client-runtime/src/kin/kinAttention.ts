@@ -251,7 +251,7 @@ function kinAttentionRow(
     input.scope.type === "project" ? null : (scope.projectTitle ?? null),
     input.scope.type === "client" || input.scope.type === "project"
       ? null
-      : (scope.clientTitle ?? null),
+      : (scope.clientTitle ?? scope.billTo ?? null),
   ].filter((part) => part !== null && part !== subject.title);
   return {
     id: fact.key,

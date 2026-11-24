@@ -8,6 +8,7 @@ import type {
   KinRecordKey,
 } from "@t3tools/contracts";
 
+import { kinBilledName } from "./kinBillTo.ts";
 import {
   KIN_LIST_DEFAULT_FILTER,
   KIN_MONEY_NOTHING,
@@ -265,7 +266,7 @@ export function kinMoneyView(
       rev: record.rev,
       title: record.title,
       amount: record.amount === undefined ? null : kinMoneyText(record.amount),
-      line: [record.key, listName, KIN_SUGGESTED, record.party?.title ?? null]
+      line: [record.key, listName, KIN_SUGGESTED, kinBilledName(record)]
         .filter((part) => part !== null)
         .join(" · "),
     })),
@@ -301,7 +302,8 @@ export function kinMoneyView(
     },
     clients: summary.owed.byClient.map((client) => ({
       key: client.party?.key ?? "none",
-      name: client.party?.title ?? KIN_MONEY.noClient,
+      // The no-client group names the typed names it holds, when the host sends them.
+      name: client.party?.title ?? client.billTo ?? KIN_MONEY.noClient,
       owed: lines(client.owed),
       overdue:
         client.oldestOverdueDays === null

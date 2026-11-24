@@ -23,6 +23,12 @@ import type {
   KinWorkPrincipal,
 } from "@t3tools/contracts";
 import {
+  KIN_BILL_TO_NAME,
+  kinBillToEditable,
+  kinBillToName,
+  kinIsBillToField,
+} from "./kinBillTo.ts";
+import {
   formatKinMoney,
   KIN_DEFAULT_HOME_CURRENCY,
   KIN_LISTS_NEVER_TEAM,
@@ -1150,8 +1156,14 @@ export function kinListRow(
     record.balance.minor > 0 &&
     record.balance.minor < record.amount.minor;
   const owed = partPaid ? `${kinMoneyText(record.balance!)} still owed` : null;
+  // An invoice or quote with no client bills its typed name, said in the client's place.
+  const billed = record.party === undefined ? kinBillToName(record.fields) : null;
   const party =
-    record.party === undefined || record.party.key === within?.party ? null : record.party.title;
+    record.party === undefined
+      ? billed
+      : record.party.key === within?.party
+        ? null
+        : record.party.title;
   const dueLine = due === null || closed ? null : `${def?.dueLabel ?? "Due"} ${afterLabel(due)}`;
   const parts = [
     kinRecordName(record.key, record.fields?.number),
@@ -1171,7 +1183,11 @@ export function kinListRow(
       : { category: kinCategoryLabel(record.listCategory, def) }),
     ...(date === null ? {} : { date }),
     ...(due === null ? {} : { due }),
-    ...(record.party === undefined ? {} : { party: record.party.title }),
+    ...(record.party === undefined
+      ? billed === null
+        ? {}
+        : { party: billed }
+      : { party: record.party.title }),
     ...(record.amount === undefined ? {} : { amount: kinMoneyText(record.amount, true) }),
     ...(record.balance === undefined || kinDraftShowsNoBalance(record)
       ? {}
@@ -1285,6 +1301,18 @@ export interface KinListEntryView {
   } | null;
   readonly facts: ReadonlyArray<KinListFactView>;
   readonly fields: ReadonlyArray<KinListFieldView>;
+  /**
+   * An invoice's or quote's typed bill-to, kept out of `fields`: its name and the details this
+   * reader was sent. Null on any other list, and from a host older than it.
+   */
+  readonly billTo: {
+    readonly name: KinListFieldView;
+    readonly details: ReadonlyArray<KinListFieldView>;
+    /** It bills that name: there is one and no client. */
+    readonly typed: boolean;
+    /** Still a draft, so who it bills can change. */
+    readonly editable: boolean;
+  } | null;
   /** Files no field of the list holds any more. */
   readonly otherFiles: ReadonlyArray<KinFileRef>;
   readonly payments: ReadonlyArray<KinPaymentView>;
@@ -1322,7 +1350,7 @@ export function kinListEntryView(
   const closed = kinWorkClosed(item.state);
   const filesById = new Map((item.files ?? []).map((file) => [file.attachmentId, file]));
   const held = new Set<string>();
-  const fields = (def?.fields ?? []).flatMap((field): ReadonlyArray<KinListFieldView> => {
+  const allFields = (def?.fields ?? []).flatMap((field): ReadonlyArray<KinListFieldView> => {
     const type = shownFieldType(field);
     const value = item.fields?.[field.key];
     const ids = type === "file" && value !== undefined && isList(value) ? value : [];
@@ -1360,6 +1388,13 @@ export function kinListEntryView(
       },
     ];
   });
+  const billsByName = item.list === "invoices" || item.list === "quotes";
+  const fields = billsByName
+    ? allFields.filter((field) => !kinIsBillToField(field.key))
+    : allFields;
+  const billToName = billsByName
+    ? allFields.find((field) => field.key === KIN_BILL_TO_NAME)
+    : undefined;
   const date = whenText(item.dateAt, item.dateAllDay ?? true, names, now);
   const due = whenText(item.dueAt, item.dueAllDay, names, now);
   const categories = [
@@ -1452,6 +1487,17 @@ export function kinListEntryView(
           },
     facts,
     fields,
+    billTo:
+      billToName === undefined
+        ? null
+        : {
+            name: billToName,
+            details: allFields.filter(
+              (field) => kinIsBillToField(field.key) && field.key !== KIN_BILL_TO_NAME,
+            ),
+            typed: item.party === undefined && billToName.text !== null,
+            editable: kinBillToEditable(item),
+          },
     otherFiles: (item.files ?? []).filter((file) => !held.has(file.attachmentId)),
     takesTds: item.list === "invoices",
     payments: (item.payments ?? []).map((payment: KinPayment) => ({

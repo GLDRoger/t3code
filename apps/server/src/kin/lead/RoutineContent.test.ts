@@ -434,6 +434,15 @@ it.effect(
           "deferrals/def-late.md",
           memoryFile("def-late", { title: "Migrate the cron jobs", due: "2026-11-09T07:00Z" }),
         ],
+        // A tap moved this one to Monday and cancelled the other: memory still says today.
+        [
+          "deferrals/def-moved.md",
+          memoryFile("def-moved", { title: "Rotate the keys", due: "2026-11-09T06:00Z" }),
+        ],
+        [
+          "deferrals/def-cancelled.md",
+          memoryFile("def-cancelled", { title: "Archive the logs", due: "2026-11-09T05:00Z" }),
+        ],
       ],
       Effect.gen(function* () {
         const result = yield* runRoutine(
@@ -441,6 +450,13 @@ it.effect(
           Effect.gen(function* () {
             yield* otherOrg;
             const sql = yield* SqlClient.SqlClient;
+            const movedFrom = Date.parse("2026-11-09T06:00Z");
+            yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due,
+                snapshot_json, updated_at)
+              VALUES (${orgId}, 'def-moved', 'armed', ${Date.parse("2026-11-16T09:00Z")}, 'start',
+                ${JSON.stringify({ movedFrom })}, ${now - 60_000}),
+                (${orgId}, 'def-cancelled', 'undone', ${Date.parse("2026-11-09T05:00Z")}, 'start',
+                '{}', ${now - 60_000})`;
             yield* sql`INSERT INTO kin_budget (org_id, day, lead_units, worker_units) VALUES (${orgId}, '2026-11-09', 120000, 30000)`;
             yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, 'earlier', ${agentId}, 'fixture', ${now - 3_600_000}, 'failed', '[]')`;
             yield* sql`INSERT INTO kin_budget_charges (org_id, wakeup_id, day, units, tokens_json) VALUES (${orgId}, 'earlier', '2026-11-09', 10, '[{"providerTurnId":"t","turnTokenUsage":{"inputTokens":1000,"cachedInputTokens":750}}]')`;
@@ -452,7 +468,7 @@ it.effect(
         assert.lengthOf(posted, 1);
         assert.deepStrictEqual(posted[0]?.body.split("\n"), [
           "Evening summary, Mon 9 Nov",
-          "Slipped or moved: Migrate the cron jobs (was due 07\\:00, still open)",
+          "Slipped or moved: Rotate the keys (now Mon 16 Nov); Migrate the cron jobs (was due 07\\:00, still open)",
           "Promised today: Review the billing PR (sam)",
           "Due tomorrow: Review the billing PR (12\\:00)",
           "1 reply failed today; ask again if something went unanswered.",

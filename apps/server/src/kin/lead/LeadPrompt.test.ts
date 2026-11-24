@@ -2773,7 +2773,15 @@ const markedItems = new Map([
   ["zqmark-task", marked("zqmark-task")],
   ["zqmark-def", marked("zqmark-def", { every: undefined, on_due: "start" })],
   ["zqmark-follow", marked("zqmark-follow", { every: undefined, on_due: "chase" })],
-  ["zqmark-ask", marked("zqmark-ask", { every: undefined, on_due: "ask", owner: "teammate" })],
+  [
+    "zqmark-ask",
+    marked("zqmark-ask", {
+      every: undefined,
+      on_due: "ask",
+      owner: "teammate",
+      due: "2026-11-13T03:30:00.000Z",
+    }),
+  ],
   [
     "zqmark-started",
     marked("zqmark-started", {
@@ -3010,6 +3018,13 @@ it.effect("a started deferral says what it is for and whom, in a turn the owner 
       githubLogin: null,
       createdAt: timestamp,
     });
+    // A tap moved it to Monday after memory set its due: the turn reads the time it runs at.
+    const sql = yield* SqlClient.SqlClient;
+    const memoryDue = Date.parse(markedItems.get("zqmark-ask")?.head.due ?? "");
+    yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due,
+        snapshot_json, updated_at)
+      VALUES (${orgId}, 'zqmark-ask', 'started', ${Date.parse("2026-11-16T03:30:00.000Z")}, 'ask',
+        ${JSON.stringify({ movedFrom: memoryDue })}, 0)`;
     const wakeup = yield* decodeRawEvent(
       due("ask", { type: "deferral", itemId: "zqmark-ask", phase: "due" }),
     );
@@ -3020,6 +3035,7 @@ it.effect("a started deferral says what it is for and whom, in a turn the owner 
       events: [wakeup],
     });
     const data = built.split("# Events")[1] ?? "";
+    expect(data).toContain('"due":"2026-11-16T03:30:00.000Z"');
     expect(data).toContain('"what":"Invented zqmark what zqmark-ask"');
     expect(data).toContain('"onDue":"ask"');
     expect(data).toContain('"for":"Zoya"');

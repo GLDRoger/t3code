@@ -50,6 +50,7 @@ import {
 import { companyRegion, NEUTRAL_PAID_WITH } from "./statements/statementRegion.ts";
 import { dayIn, isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
+import { BILL_TO_FIELDS, hasBillTo } from "./billTo.ts";
 import { countedEntry } from "./recordRows.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 import { keySentSql } from "../chat/keySent.ts";
@@ -129,6 +130,12 @@ const field = (
   more: Partial<Omit<FieldDef, "key" | "label" | "type">> = {},
 ): FieldDef => ({ key, label, type, sensitive: type === "money", ...more });
 
+const billToFields = Object.entries(BILL_TO_FIELDS).map(([key, label]) =>
+  field(key, label, "text", {
+    sensitive: key === "billToTaxNumber" || key === "billToEmail" || key === "billToAddress",
+  }),
+);
+
 /** The three lists money and the calendar read, by these ids; each is created in chat by a yes. */
 export const PRESETS: Record<
   PresetId,
@@ -181,6 +188,7 @@ export const PRESETS: Record<
       field("number", "Invoice number", "text"),
       field("tax", "Tax", "money"),
       field("file", "Invoice file", "file", { sensitive: true }),
+      ...billToFields,
     ],
     sensitive: true,
     amount: true,
@@ -228,6 +236,7 @@ export const PRESETS: Record<
       field("number", "Quote number", "text"),
       field("tax", "Tax", "money"),
       field("file", "Quote file", "file", { sensitive: true }),
+      ...billToFields,
     ],
     sensitive: true,
     amount: true,
@@ -432,6 +441,21 @@ const presetExtras = (id: string, definition: StoredDefinition) => {
   const categoryLabels = { ...preset?.categoryLabels, ...definition.categoryLabels };
   return {
     ...(Object.keys(categoryLabels).length === 0 ? {} : { categoryLabels }),
+    ...(hasBillTo(id)
+      ? {
+          fields: [
+            ...definition.fields.map((stored) =>
+              billToFields.some((field) => field.key === stored.key && field.sensitive) &&
+              !stored.sensitive
+                ? { ...stored, sensitive: true }
+                : stored,
+            ),
+            ...billToFields.filter(
+              (field) => !definition.fields.some((stored) => stored.key === field.key),
+            ),
+          ],
+        }
+      : {}),
     ...(preset?.payments === true ? { payments: true as const } : {}),
   };
 };
@@ -1080,16 +1104,19 @@ const shownAs = (input: ListInput) => ({
 });
 
 /** Reminders and a check speak only for a list that is a section, or is asked to be one. */
-const watchRefusal = Effect.fn("KinRegisters.watchRefusal")(function* (
+const sectionOptionsRefusal = Effect.fn("KinRegisters.sectionOptionsRefusal")(function* (
   orgId: KinOrgId,
   id: string,
   input: ListInput,
 ) {
   if (input.dock !== undefined && input.section !== true)
     return invalid("dock comes with section true: the phone's dock holds sections.");
+  if (input.section === true) {
+    const refusal = yield* KinShell.listDockRefusal(orgId, id, input.dock);
+    return refusal === undefined ? undefined : invalid(refusal);
+  }
   if ((input.remindOn ?? undefined) === undefined && (input.check ?? undefined) === undefined)
     return undefined;
-  if (input.section === true) return undefined;
   const shell = yield* KinShell.get(orgId);
   return shell.sections.some((one) => one.id === KinShell.listSectionId(id))
     ? undefined
@@ -1146,7 +1173,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       }
       return true;
     });
-    const refused = yield* watchRefusal(orgId, def.id, input);
+    const refused = yield* sectionOptionsRefusal(orgId, def.id, input);
     if (refused !== undefined) return yield* refused;
     // A reminder on the due day stores none: the due day is sensed already.
     const onDue =
@@ -1248,8 +1275,8 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     return yield* invalid(
       `${name} has its place in Kin already, so it can't be a section of its own.`,
     );
-  const unwatched = yield* watchRefusal(orgId, named, input);
-  if (unwatched !== undefined) return yield* unwatched;
+  const sectionRefused = yield* sectionOptionsRefusal(orgId, named, input);
+  if (sectionRefused !== undefined) return yield* sectionRefused;
   if (!isCurrency(definition.currency))
     return yield* invalid(`${definition.currency} is not a currency code.`);
   const draft = {

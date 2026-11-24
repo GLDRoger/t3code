@@ -100,6 +100,7 @@ import { companyAccounts } from "../github/githubWatchStore.ts";
 import { inheritOutside, itemSource, renderSource, storedStamp } from "./OutsideContent.ts";
 import { outsideReview } from "./outsideReview.ts";
 import { askedWhereOthersRead, wordsReadable } from "../triggers/deferralOrigin.ts";
+import { withRuns } from "../triggers/deferralRuns.ts";
 import { setInChat } from "./tracked.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules, teamRules } from "./instructions.ts";
@@ -273,8 +274,15 @@ export class KinLeadPrompt extends Context.Service<
       const cache = yield* MemoryCache.MemoryCache;
       const sql = yield* SqlClient.SqlClient;
       // A reminder or scheduled task's memory item, from the trigger view its fire read.
+      // As its run makes it: a tap may have moved it to Monday since memory set its due.
       const dueItem = Effect.fnUntraced(function* (orgId: KinOrgId, itemId: KinMemoryItemId) {
-        return yield* memory.readItemQuietly(orgId, itemId, "triggers").pipe(Effect.option);
+        const found = yield* memory.readItemQuietly(orgId, itemId, "triggers").pipe(Effect.option);
+        if (Option.isNone(found)) return found;
+        const [head = found.value.head] = yield* withRuns(orgId, [found.value.head]).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.orElseSucceed(() => [found.value.head]),
+        );
+        return Option.some({ ...found.value, head });
       });
       // A native schedule's run: confirmed only while its prompt hashes to what the owner set up.
       const nativeRun = Effect.fnUntraced(
@@ -1951,16 +1959,18 @@ export class KinLeadPrompt extends Context.Service<
             ? yield* Effect.all([
                 moneySummaryForAgent(orgId, now, KIN_OWNER_LEVEL),
                 budgetFlags(orgId, now),
-                KinShell.sectionOnFor(orgId, "invoices").pipe(
-                  Effect.flatMap((on) =>
-                    on
-                      ? setAsideOverdue({ orgId, now, viewer: KIN_OWNER_LEVEL })
-                      : Effect.succeed([]),
-                  ),
+                KinShell.get(orgId).pipe(
+                  Effect.flatMap((shell) => {
+                    const clientsOn = KinShell.sectionOn(shell, "clients");
+                    const setAside = KinShell.sectionOn(shell, "invoices")
+                      ? setAsideOverdue({ orgId, now, viewer: KIN_OWNER_LEVEL, clientsOn })
+                      : Effect.succeed([]);
+                    return Effect.map(setAside, (rows) => ({ clientsOn, rows }));
+                  }),
                 ),
               ]).pipe(
-                Effect.map(([summary, budgets, setAside]) => {
-                  const section = moneySection(summary, summary.timeZone, setAside);
+                Effect.map(([summary, budgets, { clientsOn, rows }]) => {
+                  const section = moneySection(summary, summary.timeZone, rows, clientsOn);
                   return budgets === undefined
                     ? section
                     : { ...section, budgetsOverOrNear: budgets };

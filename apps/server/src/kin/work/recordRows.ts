@@ -37,7 +37,9 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
-import { ownerLevelSql } from "../people/KinAccess.ts";
+import { keySentSql } from "../chat/keySent.ts";
+import { ownerLevelPeople, ownerLevelSql } from "../people/KinAccess.ts";
+import { billedParty, billingClientFromProject } from "./billTo.ts";
 import { fieldList, listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
@@ -341,8 +343,10 @@ export const invoiceDue = (sql: SqlClient.SqlClient) => sql`COALESCE(r.due_at,
   r.date_at + ${DAY_MS} * ${termsDaysSql(
     sql,
     sql`(SELECT json_extract(c.fields_json, '$.terms') FROM kin_records c
-      WHERE c.org_id = r.org_id AND c.register_id = 'clients' AND c.record_id = COALESCE(r.party_id,
-        (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))`,
+      WHERE c.org_id = r.org_id AND c.register_id = 'clients' AND c.record_id = ${billingClientFromProject(
+        sql,
+        sql`(SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)`,
+      )})`,
   )})`;
 
 /** `owedInvoices`' overdue in SQL, for an invoice `r`: counted, issued, a balance left, past due. */
@@ -373,12 +377,14 @@ export const owedInvoices = Effect.fn("KinRecordRows.owedInvoices")(function* (i
     partyId: string | null;
     partyKey: string | null;
     partyTitle: string | null;
+    fieldsJson: string | null;
     minor: number;
     currency: string;
     paid: number;
     dueAt: number | null;
     number: unknown;
   }>`SELECT r.record_id AS "recordId", r.key, r.title, r.party_id AS "partyId",
+      CASE WHEN pa.record_id IS NULL THEN r.fields_json END AS "fieldsJson",
       pa.key AS "partyKey", pa.title AS "partyTitle", r.amount_minor AS minor, r.currency,
       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
@@ -392,10 +398,15 @@ export const owedInvoices = Effect.fn("KinRecordRows.owedInvoices")(function* (i
     ORDER BY r.due_at, r.key`;
   const zone = yield* ownerZone(input.orgId);
   return rows
-    .map((row) => {
+    .map(({ fieldsJson, ...row }) => {
+      const billTo =
+        fieldsJson === null
+          ? undefined
+          : billedParty({ registerId: "invoices", fieldsJson }, undefined)?.name;
       const overdue = row.dueAt !== null && row.dueAt < input.now;
       return {
         ...row,
+        ...(billTo === undefined ? {} : { billTo }),
         balance: { minor: row.minor - row.paid, currency: row.currency },
         overdue,
         daysOverdue: overdue ? daysOverdue(row.dueAt!, input.now, zone) : 0,
@@ -789,6 +800,47 @@ const changesOf = Effect.fn("KinRecords.changesOf")(function* (
     kind: row.kind,
     fields: parseChanges(row.fieldsJson).filter((change) => change.field.trim() !== ""),
   }));
+});
+
+const HAND_OFF_FIELDS = new Set(["owner", "handedBack", "reason", "state"]);
+
+/** G13: the hand-back that blocks giving this task again until it changes or the owner asks. */
+export const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
+  orgId: KinOrgId,
+  before: RecordRow,
+  to: KinWorkPrincipal,
+  turn?: { readonly agentId: KinAgentId; readonly wakeupId: string },
+) {
+  const who = `${to._tag}:${principalId(to)}`;
+  let back: { readonly seq: number; readonly to: string | null } | undefined;
+  for (const change of yield* changesOf(orgId, before.recordId, 50).pipe(workFailure)) {
+    const returned = change.fields.find(
+      (field) => field.field === "handedBack" && field.from === who,
+    );
+    if (returned !== undefined) {
+      back = { seq: change.seq, to: returned.to };
+      break;
+    }
+    if (change.fields.some((field) => !HAND_OFF_FIELDS.has(field.field))) return;
+  }
+  if (back === undefined) return;
+  const sql = yield* SqlClient.SqlClient;
+  if (turn !== undefined) {
+    const owners = [...(yield* ownerLevelPeople(orgId))];
+    const said = yield* sql`SELECT 1 FROM kin_events e
+      JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+        AND m.chat_id = json_extract(e.json, '$.chatId')
+      WHERE e.org_id = ${orgId} AND e.agent_id = ${turn.agentId}
+        AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
+        AND m.origin_json IS NULL AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
+        AND m.author_person_id IN ${sql.in(owners.length === 0 ? [""] : owners)}
+      LIMIT 1`;
+    if (said.length > 0) return;
+  }
+  const [mark] = yield* sql<{ marked: number }>`SELECT coding_agent_key IS NOT NULL AS marked
+    FROM kin_record_changes
+    WHERE org_id = ${orgId} AND record_id = ${before.recordId} AND seq = ${back.seq}`;
+  return { to: back.to, codingAgent: mark?.marked === 1 };
 });
 
 const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, recordId: string) {

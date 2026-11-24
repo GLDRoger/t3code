@@ -628,6 +628,8 @@ describe("lists through the tools", () => {
         fields: [
           { label: "Booked for", type: "date" as const },
           { label: "Room", type: "text" as const },
+          { label: "Counted", type: "yesno" as const },
+          { label: "Format", type: "choice" as const, choices: ["In person", "Online"] },
         ],
         remindOn: "Booked for",
       };
@@ -650,15 +652,28 @@ describe("lists through the tools", () => {
         ],
       ] as const)
         assert.include(yield* Effect.flip(LeadMoney.define(scope, input)), { message });
-      const proposed = yield* LeadMoney.define(scope, { ...bookings, section: true, dock: true });
+      const dockedBookings = { ...bookings, section: true, dock: true };
+      const dockRefusal = { message: "The dock holds five places. Turn one off first." };
+      assert.include(yield* Effect.flip(LeadMoney.define(scope, dockedBookings)), dockRefusal);
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_list_proposals`, 0);
+      yield* KinShell.set(orgId, ownerId, 0, [{ id: "clients", on: false }]);
+      const proposed = yield* LeadMoney.define(scope, dockedBookings);
       assert.strictEqual(proposed.status, "proposed");
       assert.includeMembers(yield* detail(proposed.proposal!), [
+        "Counted (yes or no)",
+        "Format (one of: In person, Online)",
         "Bookings will show as a section of its own, and in the phone's dock.",
         "Kin will remind whoever holds an entry on its Booked for day.",
       ]);
       assert.deepStrictEqual(yield* listSections, []);
       const yes = yield* turn(2, "Yes");
-      yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: proposed.proposal! });
+      const confirm = { sourceEventId: yes, proposal: proposed.proposal! };
+      yield* KinShell.set(orgId, ownerId, 1, []);
+      assert.include(yield* Effect.flip(LeadMoney.define(scope, confirm)), dockRefusal);
+      assert.isUndefined(yield* listDef(orgId, "bookings"));
+      assert.deepStrictEqual(yield* listSections, []);
+      yield* KinShell.set(orgId, ownerId, 2, [{ id: "clients", on: false }]);
+      yield* LeadMoney.define(scope, confirm);
       assert.deepStrictEqual(yield* listSections, [{ id: "list:bookings", on: true, dock: true }]);
       assert.strictEqual((yield* listDef(orgId, "bookings"))?.remindOn, "bookedFor");
       const [setBy] = yield* sql<{ by: string }>`SELECT set_by AS by FROM kin_company_shell`;

@@ -43,6 +43,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { outsideStamp, renderSource } from "../lead/OutsideContent.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import { buildPulseSection } from "../pulse/prompt.ts";
 import { fromConnections } from "../pulse/outside.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "../work/KinRecords.ts";
@@ -1179,6 +1180,39 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.deepInclude(fake.sent()[2], { account: HELLO, threadId: outlookSent.threadId });
         }),
       ),
+  );
+
+  it.effect("a typed invoice chase addresses a Confirm card to the bill-to email", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* KinShell.set(orgId, owner, 0, [{ id: "clients", on: false }]);
+        const dueAt = NOW - 15 * 86_400_000;
+        yield* sql`UPDATE kin_records SET title = 'Saturday workshop', party_id = NULL, project_id = NULL,
+          state = 'waiting', due_at = ${dueAt},
+          fields_json = json_set(fields_json, '$.billToName', 'Asha Rao', '$.billToEmail', 'asha@example.com')
+          WHERE org_id = ${orgId} AND record_id = 'rec_inv'`;
+        yield* connect(fake, "google", ACCOUNTS);
+        yield* wake({ person: owner });
+        const key = `invoice_overdue:INV-1:base=${dueAt}`;
+        const pulse = yield* buildPulseSection({ orgId, agentId: lead, now: NOW, wokeFor: [key] });
+        const invoice = pulse?.byProject
+          .flatMap((group) => group.facts)
+          .find((fact) => fact.key === key);
+        const recipient = invoice?.writeTo;
+        assert.deepStrictEqual(recipient, { name: "Asha Rao", email: "asha@example.com" });
+        if (typeof recipient !== "object") return assert.fail("No typed billing contact");
+        const draft = yield* callTool(ACCOUNTS, "mail_send", {
+          to: [recipient.email],
+          subject: "Saturday workshop payment reminder",
+          body: "Hi Asha, a quick reminder that the workshop invoice is past due.",
+          attachments: ["INV-1"],
+        });
+        assert.deepStrictEqual(cards.at(-1)?.send?.to, ["asha@example.com"]);
+        assert.match(draft.note ?? "", /Nothing was sent.*tap on Confirm/);
+        assert.lengthOf(fake.sent(), 0);
+      }),
+    ),
   );
 
   it.effect(

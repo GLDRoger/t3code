@@ -448,7 +448,16 @@ describe("bank statements", () => {
       const keys = yield* seed;
       const sql = yield* SqlClient.SqlClient;
       const records = yield* KinRecords.KinRecords;
+      yield* records.update(orgId, owner, keys.tds, {
+        partyId: null,
+        fields: { billToName: "Northwind Retail Pvt Ltd" },
+      });
       const result = yield* read(1, "statement-layout-a.pdf");
+      const listed = yield* LeadStatements.rows(scope, { statement: result.statement });
+      const match = listed.rows
+        .flatMap((row) => row.candidates ?? [])
+        .find((one) => one.key === keys.tds);
+      assert.include(match?.why ?? "", "client named");
       const { card } = yield* reviewCardOf(result.statement);
       const all = yield* confirmAll(card);
       // A card made before something changed, or a selection the owner hasn't seen, applies nothing.

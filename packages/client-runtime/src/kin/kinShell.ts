@@ -12,7 +12,7 @@ const NEEDS: Readonly<Record<KinSectionId, ReadonlyArray<KinSectionId>>> = {
   clients: [],
   deals: ["clients"],
   money: [],
-  invoices: ["clients", "money"],
+  invoices: ["money"],
   docs: [],
 };
 
@@ -35,7 +35,7 @@ export function kinSectionSwitchOn(shell: KinShell | null | undefined, id: KinSe
 /**
  * Whether a section is on, from `kin.access.me`'s `shell`: the one rule every screen asks. A host
  * older than the shell (none sent), one not answered yet, and a section it doesn't name are all on.
- * Deals needs Clients, and Invoices and quotes needs Clients and Money, as the host decides.
+ * Deals needs Clients, and Invoices and quotes needs Money, as the host decides.
  */
 export function kinSectionOn(shell: KinShell | null | undefined, id: KinSectionId): boolean {
   return (
@@ -313,6 +313,21 @@ export function kinDockRoom(shell: KinShell | null | undefined): {
   const room = Math.max(0, KIN_DOCK_PLACES - kins);
   const used = kinListSections(shell).filter((section) => section.on && section.dock).length;
   return { room, used, full: used >= room };
+}
+
+/**
+ * Whether a list section has its place in the phone's dock now: on, marked for it, and among the
+ * ones the dock has room for. One marked but left out reads as not in the dock.
+ */
+export function kinListSectionDocked(
+  shell: KinShell | null | undefined,
+  id: KinListSectionId,
+): boolean {
+  const { room } = kinDockRoom(shell);
+  return kinListSections(shell)
+    .filter((section) => section.on && section.dock)
+    .slice(0, room)
+    .some((section) => section.id === id);
 }
 
 /**

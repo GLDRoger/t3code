@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { cappedRows } from "./capped.ts";
 
+import { billedParty } from "../../work/billTo.ts";
 import { budgetsAnswer, budgetsView } from "../../work/budgets.ts";
 import { noticeDay } from "../../work/crm.ts";
 import { formatMoneyPlain } from "../../work/money.ts";
@@ -63,7 +64,7 @@ const moneyFact = (
   ctx: SenseContext,
   row: EntryRow,
   fact: Pick<SensedFact, "sense" | "key" | "since" | "consequence" | "wake"> &
-    Partial<Pick<SensedFact, "measure" | "quietForMs">>,
+    Partial<Pick<SensedFact, "measure" | "quietForMs" | "scope">>,
 ): SensedFact => ({
   family: "money",
   subject: entrySubject(row),
@@ -72,6 +73,14 @@ const moneyFact = (
   sensitive: true,
   ...fact,
 });
+
+const billingScope = (row: EntryRow & { fieldsJson: string | null }, registerId: string) => {
+  const billTo =
+    row.fieldsJson === null
+      ? undefined
+      : billedParty({ registerId, fieldsJson: row.fieldsJson }, undefined)?.name;
+  return { ...entryScope(row), ...(billTo === undefined ? {} : { billTo }) };
+};
 
 export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: SenseContext) {
   const sql = yield* SqlClient.SqlClient;
@@ -83,7 +92,9 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   const forClient = (key: ClientKey, clientId: string | null) => limits(key, clientId ?? undefined);
 
   // invoice_overdue: issued, still owed, and past its due date (else its client's terms) plus the grace.
-  const invoices = yield* cappedRows<EntryRow & { base: number; paid: number }>(
+  const invoices = yield* cappedRows<
+    EntryRow & { base: number; paid: number; fieldsJson: string | null }
+  >(
     ctx,
     facts,
     {
@@ -93,6 +104,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     },
     sql`SELECT * FROM (
     SELECT ${entryColumns(sql)}, ${invoiceDue(sql)} AS base,
+      CASE WHEN c.record_id IS NULL THEN r.fields_json END AS "fieldsJson",
       (SELECT COALESCE(SUM(pay.amount_minor), 0) FROM kin_record_payments pay
         WHERE pay.org_id = r.org_id AND pay.record_id = r.record_id AND pay.voided_at IS NULL) AS paid
     FROM ${entryJoins(sql)}
@@ -109,6 +121,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     facts.push(
       moneyFact(ctx, row, {
         sense: "invoice_overdue",
+        scope: billingScope(row, "invoices"),
         key: `invoice_overdue:${row.key}:base=${row.base}`,
         since: iso(row.base + toMs(chase)),
         measure: measure(days, chase),
@@ -121,7 +134,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   }
 
   // quote_unanswered: sent, and nothing recorded on it since for the threshold.
-  const quotes = yield* cappedRows<EntryRow & { lastAt: number }>(
+  const quotes = yield* cappedRows<EntryRow & { lastAt: number; fieldsJson: string | null }>(
     ctx,
     facts,
     {
@@ -130,7 +143,8 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
       access: "money",
     },
     sql`SELECT * FROM (
-    SELECT ${entryColumns(sql)}, COALESCE((SELECT MAX(ch.at) FROM kin_record_changes ch
+    SELECT ${entryColumns(sql)}, CASE WHEN c.record_id IS NULL THEN r.fields_json END AS "fieldsJson",
+      COALESCE((SELECT MAX(ch.at) FROM kin_record_changes ch
         WHERE ch.org_id = r.org_id AND ch.record_id = r.record_id), r.updated_at) AS "lastAt"
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'quotes' AND ${countedEntry(sql)}
@@ -146,6 +160,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     facts.push(
       moneyFact(ctx, row, {
         sense: "quote_unanswered",
+        scope: billingScope(row, "quotes"),
         key: `quote_unanswered:${row.key}:last=${row.lastAt}`,
         since: iso(row.lastAt + toMs(followUp)),
         measure: measure(days, followUp),
