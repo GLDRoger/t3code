@@ -178,6 +178,7 @@ import {
 import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
 import { leadNamer, shownName, type ToolNamer } from "./toolNames.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
+import { invoiceCredits } from "./statements/invoiceCredits.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { DAY_MS } from "../durations.ts";
@@ -2587,7 +2588,16 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
           })),
         }),
     ...(moneyOn && (list === "invoices" || page !== undefined)
-      ? { bank: bankAnswer(yield* bankKnown(lead.orgId)) }
+      ? {
+          bank: bankAnswer(
+            yield* bankKnown(lead.orgId),
+            false,
+            // Bank transactions are the owner level's alone (`teamView.ts`).
+            team === undefined && list === "invoices"
+              ? yield* invoiceCredits(lead.orgId, row.recordId)
+              : [],
+          ),
+        }
       : {}),
     ...(taxNote === undefined ? {} : { taxNote }),
     notes: detail.notes,

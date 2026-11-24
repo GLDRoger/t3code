@@ -1967,6 +1967,65 @@ describe("invoices", () => {
         knownThrough: null,
         note: "No bank statement is confirmed, so Kin can't see what reached the bank.",
       });
+      // Unexplained credits the statement matcher would offer for it are named beside the bank;
+      // an explained, ignored, other-currency or outgoing one isn't, and at most five, newest first.
+      const number = String(read.fields?.number);
+      const bankList = yield* ensureBankList(orgId, NOW);
+      const credit = (
+        title: string,
+        rupees: number,
+        day: string,
+        more: { state?: "done" | "dropped"; currency?: string; direction?: string } = {},
+      ) =>
+        Effect.flatMap(KinRecords.KinRecords, (records) =>
+          records.create(orgId, system, {
+            list: bankList.id,
+            originKey: `credit:${title}:${day}:${JSON.stringify(more)}`,
+            title,
+            owner: { _tag: "person", personId: ownerId },
+            amount: { minor: rupees * 100, currency: more.currency ?? "INR" },
+            dateAt: Date.parse(`${day}T06:00:00.000Z`),
+            fields: { direction: more.direction ?? "credit" },
+            ...(more.state === undefined ? {} : { state: more.state }),
+          }),
+        ).pipe(Effect.map(({ row }) => row.key));
+      const cited = yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-10");
+      yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-11", { state: "done" });
+      yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-11", { state: "dropped" });
+      yield* credit(`SWIFT CR-INVENTED ACME-${number}`, 600, "2026-11-11", { currency: "USD" });
+      yield* credit(`NEFT DR-INVENTED ACME-${number}`, 60_000, "2026-11-11", {
+        direction: "debit",
+      });
+      const credits = () =>
+        LeadWork.get(scope, { key: "INV-1" }).pipe(Effect.map((one) => one.bank?.credits));
+      assert.deepStrictEqual((yield* LeadWork.get(scope, { key: "INV-1" })).bank, {
+        knownThrough: null,
+        note: `No bank statement is confirmed. Bank transactions has an unexplained credit that looks like this invoice's payment: ${cited}, ₹60,000.00 on 10 Nov. The invoice isn't recorded as paid until the owner confirms.`,
+        credits: [
+          {
+            key: cited,
+            date: "2026-11-10",
+            amount: "₹60,000.00",
+            title: `NEFT CR-INVENTED ACME-${number}`,
+            reason: `cites ${number}`,
+          },
+        ],
+      });
+      const same = yield* credit("NEFT CR-INVENTED ACME", 60_000, "2026-11-09");
+      for (const day of ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05"])
+        yield* credit("UPI CR-INVENTED ACME", 10_000, day);
+      const five = yield* credits();
+      assert.deepStrictEqual(
+        five?.map((one) => [one.date, one.reason]),
+        [
+          ["2026-11-10", `cites ${number}`],
+          ["2026-11-09", "same amount from Invented Acme"],
+          ["2026-11-05", "part of what is owed from Invented Acme"],
+          ["2026-11-04", "part of what is owed from Invented Acme"],
+          ["2026-11-03", "part of what is owed from Invented Acme"],
+        ],
+      );
+      assert.deepStrictEqual([five?.[0]?.key, five?.[1]?.key], [cited, same]);
       const stored = yield* (yield* KinRecords.KinRecords).detail(
         (yield* (yield* KinRecords.KinRecords).get(orgId, "INV-1"))!,
       );
@@ -2055,6 +2114,7 @@ describe("invoices", () => {
         paidOn: "2026-11-06",
       });
       assert.deepStrictEqual([rest.balance, rest.state], ["₹0.00", "done"]);
+      assert.isUndefined(yield* credits());
       yield* LeadMoney.payment(scope, {
         sourceEventId: paid,
         key: "INV-1",
@@ -2072,6 +2132,24 @@ describe("invoices", () => {
       }).pipe(Effect.flip);
       assert.include(voidedRetry, { reason: "conflict" });
       assert.strictEqual((yield* records.get(orgId, "INV-1"))!.paid, 6_000_000);
+
+      // A turn a teammate reads gets the invoice and the bank's line, never Bank transactions.
+      assert.lengthOf((yield* credits()) ?? [], 4);
+      const sqlTeam = yield* SqlClient.SqlClient;
+      yield* sqlTeam`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, sees_money)
+        VALUES ('banker-mate', ${orgId}, 'banker-mate', 'Banker Mate', ${at}, 1)`;
+      yield* sqlTeam`UPDATE kin_records SET team_shared = 1 WHERE org_id = ${orgId} AND key = 'INV-1'`;
+      yield* sqlTeam`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at, joined_seq)
+        VALUES ('lead-chat-banker', ${orgId}, 'lead-chat', 'person', 'banker-mate', 'member', ${at}, 4)`;
+      yield* turn(5, "Did Acme pay?");
+      const teamRead = yield* LeadWork.get(scope, { key: "INV-1" });
+      assert.deepStrictEqual(teamRead.bank, {
+        knownThrough: null,
+        note: "No bank statement is confirmed, so Kin can't see what reached the bank.",
+      });
+      yield* sqlTeam`DELETE FROM kin_chat_members WHERE member_id = 'lead-chat-banker'`;
+      yield* sqlTeam`UPDATE kin_records SET team_shared = 0 WHERE org_id = ${orgId} AND key = 'INV-1'`;
 
       // A refusal that quotes what is owed or received marks the turn as having read figures.
       const sql = yield* SqlClient.SqlClient;
