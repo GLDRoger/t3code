@@ -49,6 +49,11 @@ const loose = (text: string | null) =>
     .normalize("NFKC")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]/gu, "");
+const same = (a: string | null, b: string | null) =>
+  loose(a) === loose(b) && (a === null) === (b === null);
+/** What a client's printed field holds now. */
+const holding = (record: Pick<RecordRow, "title" | "fieldsJson">, field: PrintedField) =>
+  field === "title" ? record.title : fieldText(parseFields(record.fieldsJson), field);
 
 const Item = Schema.Struct({
   field: Schema.Literals(PRINTED),
@@ -95,10 +100,7 @@ export const heldBack = Effect.fn("KinUnconfirmed.heldBack")(function* (
     readonly before: string | null;
   }>,
 ) {
-  const changing = asked.filter(
-    (one) =>
-      loose(one.value) !== loose(one.before) || (one.value === null) !== (one.before === null),
-  );
+  const changing = asked.filter((one) => !same(one.value, one.before));
   if (changing.length === 0) return [];
   const words = yield* ownWords(turn);
   const clears =
@@ -168,9 +170,7 @@ const pendingRows = Effect.fn("KinUnconfirmed.pending")(function* (
 });
 
 const sameItem = (a: UnconfirmedItem, b: Pick<UnconfirmedItem, "field" | "value">) =>
-  a.field === b.field &&
-  loose(a.value) === loose(b.value) &&
-  (a.value === null) === (b.value === null);
+  a.field === b.field && same(a.value, b.value);
 
 /**
  * Keeps an agent's held-back values on the record as one unconfirmed proposal, and asks the person
@@ -180,7 +180,7 @@ const sameItem = (a: UnconfirmedItem, b: Pick<UnconfirmedItem, "field" | "value"
  */
 export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
   lead: Lead,
-  record: Pick<RecordRow, "recordId" | "title" | "ownerKind" | "ownerId">,
+  record: Pick<RecordRow, "recordId" | "title" | "fieldsJson" | "ownerKind" | "ownerId">,
   held: ReadonlyArray<{
     readonly field: PrintedField;
     readonly value: string | null;
@@ -203,9 +203,11 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
     .join(" and ");
   const older = yield* pendingRows(orgId, record.recordId);
   const latest = older.at(-1);
+  // An item whose field changed since it was proposed is no longer asked.
+  const live = (item: UnconfirmedItem) => same(holding(record, item.field), item.before);
   if (
     latest?.widgetId != null &&
-    held.every((one) => latest.proposal.items.some((item) => sameItem(item, one)))
+    held.every((one) => latest.proposal.items.some((item) => live(item) && sameItem(item, one)))
   )
     return waitingLine(record.title, what, name, true);
   const stamp = yield* outsideStamp(lead);
@@ -215,7 +217,7 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
     null;
   const items: ReadonlyArray<UnconfirmedItem> = [
     ...(latest?.proposal.items ?? []).filter(
-      (item) => !held.some((one) => one.field === item.field),
+      (item) => live(item) && !held.some((one) => one.field === item.field),
     ),
     ...held.map((one) => ({ ...one, from, at: now })),
   ];
@@ -292,21 +294,27 @@ const cardDetail = (
     "Invoices and quotes print it only after you tap Use it.",
   ].join("\n\n");
 
-const waitingLine = (client: string, what: string, name: string, carded: boolean) =>
+export const waitingLine = (client: string, what: string, name: string, carded: boolean) =>
   carded
     ? `Kept unconfirmed, not saved: no one here typed ${what}, so ${name} confirms it on a card Kin showed them. Until they tap Use it, ${client}'s invoices and quotes print what they had. Say in one line it needs ${name}'s confirmation, and never give it as ${client}'s.`
     : `Kept unconfirmed, not saved: no one here typed ${what}, so it waits for ${name} to confirm it, and Kin couldn't show them a card now. Until then ${client}'s invoices and quotes print what they had. Ask ${name} to confirm it when you next speak, and never give it as ${client}'s.`;
 
-/** What waits unconfirmed on a client, as its read answer says it: never as the client's own. */
+/**
+ * What waits unconfirmed on a client, as its read answer says it: never as the client's own. A
+ * field changed since it was proposed no longer waits on it.
+ */
 export const unconfirmedLines = Effect.fn("KinUnconfirmed.lines")(function* (
   orgId: KinOrgId,
-  record: Pick<RecordRow, "recordId" | "ownerKind" | "ownerId">,
+  record: Pick<RecordRow, "recordId" | "ownerKind" | "ownerId" | "title" | "fieldsJson">,
 ) {
   const latest = (yield* pendingRows(orgId, record.recordId)).at(-1);
-  if (latest === undefined) return [];
+  const waiting = (latest?.proposal.items ?? []).filter((item) =>
+    same(holding(record, item.field), item.before),
+  );
+  if (waiting.length === 0) return [];
   const label = yield* labeller(orgId);
   const name = (yield* confirmer(orgId, record))?.name ?? "the owner";
-  return latest.proposal.items.map(
+  return waiting.map(
     (item) =>
       `Unconfirmed ${label(item.field)}: ${item.value === null ? "remove it" : `"${shown(item.value)}"`}, from ${item.from ?? "a source not said"}. It waits for ${name}'s tap and is not on invoices or quotes; never state it as fact.`,
   );
@@ -314,8 +322,8 @@ export const unconfirmedLines = Effect.fn("KinUnconfirmed.lines")(function* (
 
 /**
  * The answer on an unconfirmed-details card: an owner-level Use it writes exactly its values,
- * once, while each field still holds what the card showed; Not this drops them. Undefined for
- * any other card.
+ * once, while each field still holds what the card showed (one that already holds its value is
+ * left as it is); Not this drops them. Undefined for any other card.
  */
 export const answerUnconfirmed = Effect.fn("KinUnconfirmed.answer")(function* (input: {
   readonly orgId: KinOrgId;
@@ -356,36 +364,38 @@ export const answerUnconfirmed = Effect.fn("KinUnconfirmed.answer")(function* (i
   const proposal = yield* Effect.fromOption(decodeProposal(row.patch)).pipe(Effect.orDie);
   const records = yield* KinRecords;
   const record = yield* records.getById(input.orgId, proposal.recordId);
-  const fields = record === undefined ? {} : parseFields(record.fieldsJson);
-  const now = (field: PrintedField) =>
-    record === undefined ? null : field === "title" ? record.title : fieldText(fields, field);
+  const left =
+    record === undefined
+      ? []
+      : proposal.items.filter((item) => !same(holding(record, item.field), item.value));
   if (
     record === undefined ||
     record.state === "dropped" ||
-    proposal.items.some(
-      (item) =>
-        loose(now(item.field)) !== loose(item.before) ||
-        (now(item.field) === null) !== (item.before === null),
-    )
+    left.some((item) => !same(holding(record, item.field), item.before))
   )
     return yield* new KinChatError({
       reason: "conflict",
       message:
         "This client's details changed since this card was made, so nothing was changed. Ask for it again.",
     });
-  const title = proposal.items.find((item) => item.field === "title")?.value;
+  const title = left.find((item) => item.field === "title")?.value;
   const changed = Object.fromEntries(
-    proposal.items.flatMap((item) => (item.field === "title" ? [] : [[item.field, item.value]])),
+    left.flatMap((item) => (item.field === "title" ? [] : [[item.field, item.value]])),
   );
-  yield* records.update(
-    input.orgId,
-    { actor: { _tag: "person", personId: input.personId }, via: "owner", askedBy: input.personId },
-    record.key,
-    {
-      ...(typeof title === "string" ? { title } : {}),
-      ...(Object.keys(changed).length === 0 ? {} : { fields: changed }),
-    },
-  );
+  if (left.length > 0)
+    yield* records.update(
+      input.orgId,
+      {
+        actor: { _tag: "person", personId: input.personId },
+        via: "owner",
+        askedBy: input.personId,
+      },
+      record.key,
+      {
+        ...(typeof title === "string" ? { title } : {}),
+        ...(Object.keys(changed).length === 0 ? {} : { fields: changed }),
+      },
+    );
   yield* sql`UPDATE kin_profile_changes SET applied_at = ${input.now}
     WHERE org_id = ${input.orgId} AND change_id = ${row.changeId}`;
   return { title: "Saved", text: "Saved. Invoices and quotes made from now on print it." };

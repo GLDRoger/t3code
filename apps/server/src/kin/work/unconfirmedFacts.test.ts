@@ -303,6 +303,8 @@ it.effect(
         [["gstin", OLD, NEW]],
       );
       assert.isUndefined((yield* LeadWork.get(scope, { key: "C-1" })).unconfirmed);
+      const again = yield* Effect.flip(answer(card!.widgetId, ownerId, true));
+      assert.isTrue(isChatError(again) && again.reason === "widget_changed");
 
       // Not this drops it: the address stays, and the record says nothing waits.
       yield* LeadWork.update(scope, {
@@ -318,6 +320,38 @@ it.effect(
       const kept = yield* LeadWork.get(scope, { key: "C-2" });
       assert.strictEqual(kept.address, "Invented 1 Quay Road");
       assert.isUndefined(kept.unconfirmed);
+
+      // A field changed since it was proposed no longer waits: Rhea typed the same number, so
+      // its card's Use it leaves it as it is; another number since refuses the card.
+      for (const key of ["C-3", "C-4"])
+        yield* LeadWork.update(scope, { key, sourceEventId: yield* turn(null), gstin: NEW });
+      yield* LeadWork.update(scope, {
+        key: "C-3",
+        sourceEventId: yield* turn(`Tidewater's GSTIN is ${NEW}`),
+        gstin: NEW,
+      });
+      const other = "29ZZZZZ9999Z1Z5";
+      yield* (yield* KinRecords.KinRecords).update(
+        orgId,
+        { actor: { _tag: "person", personId: ownerId }, via: "owner" },
+        "C-4",
+        { fields: { gstin: other } },
+      );
+      for (const key of ["C-3", "C-4"])
+        assert.isUndefined((yield* LeadWork.get(scope, { key })).unconfirmed, key);
+      const [typed, changed] = yield* cards;
+      assert.strictEqual((yield* answer(typed!.widgetId, ownerId, true))?.title, "Saved");
+      assert.strictEqual((yield* stored("C-3")).gstin, NEW);
+      const stale = yield* Effect.flip(answer(changed!.widgetId, ownerId, true));
+      assert.isTrue(isChatError(stale) && stale.reason === "conflict");
+      assert.strictEqual((yield* stored("C-4")).gstin, other);
+      // Proposed again, it is asked again on a new card, which writes it.
+      yield* LeadWork.update(scope, { key: "C-4", sourceEventId: yield* turn(null), gstin: NEW });
+      const [anew, ...rest] = yield* cards;
+      assert.lengthOf(rest, 0);
+      assert.include(anew?.detail, `Now: ${other}`);
+      assert.strictEqual((yield* answer(anew!.widgetId, ownerId, true))?.title, "Saved");
+      assert.strictEqual((yield* stored("C-4")).gstin, NEW);
     }).pipe(Effect.provide(layer)),
 );
 
