@@ -628,6 +628,8 @@ describe("lists through the tools", () => {
         fields: [
           { label: "Booked for", type: "date" as const },
           { label: "Room", type: "text" as const },
+          { label: "Counted", type: "yesno" as const },
+          { label: "Format", type: "choice" as const, choices: ["In person", "Online"] },
         ],
         remindOn: "Booked for",
       };
@@ -653,6 +655,8 @@ describe("lists through the tools", () => {
       const proposed = yield* LeadMoney.define(scope, { ...bookings, section: true, dock: true });
       assert.strictEqual(proposed.status, "proposed");
       assert.includeMembers(yield* detail(proposed.proposal!), [
+        "Counted (yes or no)",
+        "Format (one of: In person, Online)",
         "Bookings will show as a section of its own, and in the phone's dock.",
         "Kin will remind whoever holds an entry on its Booked for day.",
       ]);
