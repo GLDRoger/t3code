@@ -1551,6 +1551,22 @@ export function kinMoneyDraft(money: KinMoney, listCurrency: string): string {
 export const kinPrincipalValue = (who: KinWorkPrincipal) =>
   who._tag === "agent" ? `agent:${who.agentId}` : `person:${who.personId}`;
 
+/**
+ * A private entry's line for an owner-level reader: every owner-level person sees it, so "you"
+ * only for the person it is theirs; anyone else is told whose it is. Unknown reader: as before.
+ */
+export function kinEntryPrivateLine(
+  owner: KinWorkPrincipal,
+  names: { readonly people: ReadonlyMap<string, string>; readonly me: string | null },
+) {
+  if (names.me === null || (owner._tag === "person" && owner.personId === names.me))
+    return KIN_LISTS.entry.private;
+  const name = owner._tag === "person" ? names.people.get(owner.personId) : undefined;
+  return name === undefined
+    ? "Private. Only owners see this."
+    : `Private to ${name}. Only owners see this.`;
+}
+
 type Checked<A> =
   | { readonly ok: true; readonly value: A }
   | { readonly ok: false; readonly problem: string };

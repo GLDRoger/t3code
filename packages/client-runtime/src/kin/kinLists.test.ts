@@ -1,9 +1,11 @@
 import {
   formatKinMoney,
   KIN_CURRENCY_CODES,
+  KinAgentId,
   KinChatError,
   KinListId,
   KinOrgId,
+  KinPersonId,
   KinRecordId,
   type KinListDefinition,
   type KinRecord,
@@ -25,6 +27,7 @@ import {
   kinAmountSlipLine,
   kinFieldCheck,
   kinListEntryView,
+  kinEntryPrivateLine,
   kinListFilterParam,
   kinListHeader,
   kinListFilterCleared,
@@ -192,6 +195,33 @@ describe("money", () => {
       amount: { minor: 0 },
     });
     expect(kinPaymentCheck({ ...day, amount: "55,000", tds: "6,000" }, left).ok).toBe(false);
+  });
+});
+
+describe("a private entry", () => {
+  it("says whose it is to every owner-level reader but its own person", () => {
+    const rhea = KinPersonId.make("p-rhea");
+    const meera = KinPersonId.make("p-meera");
+    const names = new Map([[rhea, "Rhea Kapoor"]]);
+    const rheas = { _tag: "person", personId: rhea } as const;
+    expect(kinEntryPrivateLine(rheas, { people: names, me: rhea })).toBe(
+      "Private. Only you see this.",
+    );
+    expect(kinEntryPrivateLine(rheas, { people: names, me: meera })).toBe(
+      "Private to Rhea Kapoor. Only owners see this.",
+    );
+    // Nobody's own, or a name not known here: no name, never "you".
+    const agent = { _tag: "agent", agentId: KinAgentId.make("lead-finance") } as const;
+    expect(kinEntryPrivateLine(agent, { people: names, me: meera })).toBe(
+      "Private. Only owners see this.",
+    );
+    expect(
+      kinEntryPrivateLine({ _tag: "person", personId: meera }, { people: names, me: rhea }),
+    ).toBe("Private. Only owners see this.");
+    // Before the host says who is reading: as it always read.
+    expect(kinEntryPrivateLine(rheas, { people: names, me: null })).toBe(
+      "Private. Only you see this.",
+    );
   });
 });
 

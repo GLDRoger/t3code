@@ -12,6 +12,7 @@ import {
   KIN_FIELD_FILES_MAX,
   KIN_YES_NO,
   KIN_LISTS,
+  kinEntryPrivateLine,
   kinAmountCheck,
   kinFieldCheck,
   kinListEntryView,
@@ -1075,7 +1076,7 @@ export function KinListEntry(
           {view.privacy.private && ownerLevel && !view.shared ? (
             <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <KinWorkPrivateMark />
-              {KIN_LISTS.entry.private}
+              {kinEntryPrivateLine(item.owner, props.directory.names)}
             </p>
           ) : null}
           {view.can.share ? (
