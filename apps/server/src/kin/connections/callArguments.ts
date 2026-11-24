@@ -1,6 +1,6 @@
 // A model writing long arguments often sends them as JSON text, at times swallowing the sibling
-// `reason` too: `{…},"reason":"…"}`, which is not valid JSON as a whole.
-const SWALLOWED_REASON = /^(\{[\s\S]*\})\s*,\s*"reason"\s*:\s*("(?:[^"\\]|\\.)*")\s*\}$/;
+// `reason` too: `{…},"reason":"…"}` or without the last brace, neither valid JSON as a whole.
+const SWALLOWED_REASON = /^(\{[\s\S]*\})\s*,\s*"reason"\s*:\s*("(?:[^"\\]|\\.)*")\s*\}?$/;
 const REASON_CHARS = 500;
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>

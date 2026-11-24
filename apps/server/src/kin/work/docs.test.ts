@@ -18,6 +18,7 @@ import {
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -30,6 +31,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { SHARED_TOOLS, sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { keyHidden } from "./codingAgent.ts";
 import { KinDocsToolkit } from "./mcp/docTools.ts";
 import { sectionsOf } from "./docBody.ts";
 import * as Docs from "./docs.ts";
@@ -2369,6 +2371,35 @@ it.effect(
         JSON.stringify((yield* OwnerDocs.list([mate], { orgId })).docs),
         "Invented Acme",
       );
+      // Their proposal as a draft to send up keeps its kind's label, and is theirs alone to read; a
+      // label they ask for on anything else is still not theirs to give.
+      const ownLabel = yield* Effect.flip(
+        LeadDocs.create(scopeOf(lead), {
+          sourceEventId: "ask-event",
+          title: "Invented private teaser",
+          body: "Doors open soon.",
+          sensitive: true,
+          draft: { kind: "mail" },
+        }),
+      );
+      assert.strictEqual(reasonOf(ownLabel), "not_allowed");
+      const pricedDraft = yield* LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "Invented priced proposal for Acme",
+        kind: "proposal",
+        body: "## Scope\n\nInvented scope.\n\n## Price\n\nLeft for the owner.",
+        draft: { kind: "proposal" },
+      });
+      assert.deepInclude(pricedDraft, { kind: "proposal", sensitive: true, changed: true });
+      const [labelled] = yield* sql<{ sensitive: number; marked: string | null; for: string }>`
+        SELECT sensitive, marked_by_person_id AS marked,
+          json_extract(fields_json, '$.draftFor') AS "for"
+        FROM kin_records WHERE org_id = ${orgId} AND key = ${pricedDraft.key}`;
+      assert.deepStrictEqual(labelled, { sensitive: 1, marked: null, for: mateId });
+      assert.strictEqual(
+        (yield* OwnerDocs.get([mate], { orgId, key: pricedDraft.key })).key,
+        pricedDraft.key,
+      );
       // A playbook sets how Kin works for everyone, so it stays the owner level's to file.
       const playbook = yield* Effect.flip(
         LeadDocs.create(scopeOf(lead), {
@@ -2379,7 +2410,7 @@ it.effect(
         }),
       );
       assert.strictEqual(reasonOf(playbook), "not_allowed");
-      assert.lengthOf(yield* docs, 5);
+      assert.lengthOf(yield* docs, 6);
       // A chat others share asks nobody outside it, so its refusal names no card.
       yield* sql`UPDATE kin_chats SET kind = 'team_group', direct_key = NULL WHERE chat_id = 'mate-chat'`;
       const inGroup = yield* propose;
@@ -2405,8 +2436,241 @@ it.effect(
         WHERE message_id = 'ask'`;
       const carried = yield* fileIt;
       assert.strictEqual("message" in carried ? carried.message : "", ownChatOnly);
-      assert.lengthOf(yield* docs, 5);
+      assert.lengthOf(yield* docs, 6);
     }).pipe(Effect.provide(layer)),
+);
+
+// A priced draft filed at a teammate's own word is hers alone to read below the owner level, and
+// only while every version of it is hers; an owner's version, or an owner's label, ends it.
+it.effect("a teammate's priced draft is hers to read until a version or a label is not hers", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const otherMate = KinPersonId.make("other-mate");
+    const coOwner = KinPersonId.make("co-owner");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES (${otherMate}, ${orgId}, 'other-mate', 'Other Mate', ${at}, 'member'),
+        (${coOwner}, ${orgId}, 'co-owner', 'Co Owner', ${at}, 'co_owner')`;
+    yield* sql`UPDATE kin_people SET sees_docs = 1, sees_clients = 1, sees_money = 1
+      WHERE person_id IN (${mateId}, ${otherMate})`;
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+    /** A running turn of `agent` in `chat`, woken by `from`'s own message there. */
+    const wake = Effect.fn("test.wake")(function* (
+      id: string,
+      agent: KinAgentId,
+      chat: string,
+      from: KinPersonId,
+      audience: "owner_only" | "shared",
+    ) {
+      yield* sql`UPDATE kin_wakeups SET status = 'completed'
+        WHERE agent_id = ${agent} AND status = 'running'`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+          created_at)
+        VALUES (${`${id}-ask`}, ${orgId}, ${chat}, (SELECT COALESCE(MAX(seq), 0) + 1
+            FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${chat}), 'human', ${from},
+          ${`${chat}-${from}`},
+          'owner', 'text', 'Draft the invented proposal for Acme', '[]', 'posted', ${at})`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+          started_at, status, event_ids, audience)
+        VALUES (${id}, ${orgId}, ${agent}, ${`${agent}-thread`}, 'test', 0, 'running',
+          ${JSON.stringify([`${id}-event`])}, ${audience})`;
+      const event = {
+        _tag: "chat.message",
+        orgId,
+        agentId: agent,
+        eventId: `${id}-event`,
+        receivedAt: at,
+        dedupeKey: null,
+        provenance: { _tag: "human", personId: from, memberId: `${chat}-${from}` },
+        chatId: chat,
+        messageId: `${id}-ask`,
+      };
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id)
+        VALUES (${`${id}-event`}, ${orgId}, ${agent}, 'chat.message', 'P0',
+          ${JSON.stringify(event)}, 0, 0, 'claimed', ${id})`;
+      return `${id}-event`;
+    });
+    const chatWith = Effect.fn("test.chatWith")(function* (
+      chat: string,
+      person: KinPersonId,
+      agent: KinAgentId,
+    ) {
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES (${chat}, ${orgId}, 'direct', ${`${person}:${agent}`}, 1, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at)
+        VALUES (${`${chat}-${person}`}, ${orgId}, ${chat}, 'person', ${person}, 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          agent_id, role, joined_at)
+        VALUES (${`${chat}-${agent}`}, ${orgId}, ${chat}, 'agent', ${agent}, 'member', ${at})`;
+    });
+    yield* chatWith("mate-chat", mateId, lead);
+    yield* chatWith("co-chat", coOwner, other);
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        role, joined_at)
+      VALUES (${`other-chat-${ownerId}`}, ${orgId}, 'other-chat', 'person', ${ownerId}, 'owner', ${at})
+      ON CONFLICT DO NOTHING`;
+    const asked = yield* wake("mate-wake", lead, "mate-chat", mateId, "shared");
+    const draft = (title: string) =>
+      LeadDocs.create(scopeOf(lead), {
+        sourceEventId: asked,
+        title,
+        kind: "proposal",
+        body: `## Scope\n\nInvented scope for ${title}.\n\n## Price\n\nLeft for the owner.`,
+        draft: { kind: "proposal" },
+      });
+    const mate = { _tag: "person" as const, orgId, personId: mateId };
+    const others = [{ _tag: "person" as const, orgId, personId: otherMate }] as const;
+    const reads = (who: typeof mate, key: KinRecordKey) =>
+      Effect.isSuccess(OwnerDocs.get([who], { orgId, key }));
+    const nobodyElse = Effect.fn("test.nobodyElse")(function* (key: KinRecordKey) {
+      for (const who of others) {
+        assert.isFalse(yield* reads(who, key), `${who.personId} reads ${key}`);
+        assert.notInclude(
+          (yield* OwnerDocs.search([who], {
+            orgId,
+            text: "invented scope",
+            everything: true,
+          })).hits.map((hit) => hit.key),
+          key,
+        );
+      }
+    });
+
+    const first = yield* draft("Acme refit");
+    assert.deepInclude(first, { kind: "proposal", sensitive: true, changed: true });
+    assert.isTrue(yield* reads(mate, first.key));
+    yield* nobodyElse(first.key);
+    // She finds it by search, in the app and through her agent in her own turn.
+    assert.include(
+      (yield* OwnerDocs.search([mate], {
+        orgId,
+        text: "invented scope",
+        everything: true,
+      })).hits.map((hit) => hit.key),
+      first.key,
+    );
+    assert.include(
+      (yield* LeadDocs.searchTool(scopeOf(lead), { text: "invented scope" })).hits.map(
+        (hit) => hit.key,
+      ),
+      first.key,
+    );
+    // The page says who reads it: the owner is told it is hers too; she, that only she and owners.
+    assert.deepStrictEqual((yield* OwnerDocs.get([owner], { orgId, key: first.key })).kindLabel, {
+      reader: { name: "Mate" },
+    });
+    assert.deepStrictEqual((yield* OwnerDocs.get([mate], { orgId, key: first.key })).kindLabel, {
+      reader: { name: "Mate", you: true },
+    });
+    // The same call again in the same wake-up finds the doc it made, and says nothing is unwritten.
+    const again = yield* draft("Acme refit");
+    assert.strictEqual(again.key, first.key);
+    assert.notInclude(again.note ?? "", "Nothing was written");
+    const docs = sql<{ key: string }>`SELECT key FROM kin_records
+      WHERE org_id = ${orgId} AND register_id = 'docs' ORDER BY key`;
+    assert.lengthOf(yield* docs, 1);
+    // Her own agent's edit in her own turn keeps her read.
+    yield* LeadDocs.edit(scopeOf(lead), {
+      key: first.key,
+      sourceEventId: asked,
+      summary: "Scope",
+      operations: [
+        { op: "replace_phrase", find: "Invented scope", replace: "Invented full scope" },
+      ],
+    });
+    assert.isTrue(yield* reads(mate, first.key));
+    // Her turn may not lift the label, raise it as hers, or change its kind; nor may her app.
+    for (const change of [{ sensitive: true }, { kind: "quote" }, { kind: "other" }] as const) {
+      const moved = yield* Effect.flip(
+        LeadDocs.move(scopeOf(lead), { key: first.key, sourceEventId: asked, ...change }),
+      );
+      assert.strictEqual(reasonOf(moved), "not_allowed", JSON.stringify(change));
+    }
+    assert.isTrue(
+      Exit.isFailure(
+        yield* Effect.exit(OwnerDocs.label([mate], { orgId, key: first.key, sensitive: false })),
+      ),
+    );
+    const [kept] = yield* sql<{ category: string; sensitive: number; marked: string | null }>`
+      SELECT category, sensitive, marked_by_person_id AS marked FROM kin_records
+      WHERE org_id = ${orgId} AND key = ${first.key}`;
+    assert.deepStrictEqual(kept, { category: "proposal", sensitive: 1, marked: null });
+    // A coding agent's key acting as her never carries it (`readDoc` refuses what `keyHidden` names).
+    const [firstRow] = yield* sql<{ id: string }>`SELECT record_id AS id FROM kin_records
+      WHERE org_id = ${orgId} AND key = ${first.key}`;
+    assert.isTrue((yield* keyHidden(orgId, [firstRow!.id])).has(firstRow!.id));
+
+    // The owner's edit by hand ends her read.
+    const handEdited = yield* draft("Acme hand edit");
+    const page = yield* OwnerDocs.get([owner], { orgId, key: handEdited.key });
+    const top = sectionsOf(page.body).find((one) => one.id !== "top")!;
+    yield* OwnerDocs.editSection([owner], {
+      orgId,
+      key: handEdited.key,
+      section: top.id,
+      hash: top.hash,
+      text: "## Scope\n\nInvented scope, and the real cost.",
+      clientRequestId: "hand:acme",
+    });
+    assert.isFalse(yield* reads(mate, handEdited.key));
+    assert.deepStrictEqual(
+      (yield* OwnerDocs.get([owner], { orgId, key: handEdited.key })).kindLabel,
+      {},
+    );
+    // So does the owner's agent's, in her own chat.
+    const byAgent = yield* draft("Acme agent edit");
+    const ownerAsked = yield* wake("owner-wake", other, "other-chat", ownerId, "owner_only");
+    yield* LeadDocs.edit(scopeOf(other), {
+      key: byAgent.key,
+      sourceEventId: ownerAsked,
+      summary: "Cost",
+      operations: [{ op: "replace_phrase", find: "Left for the owner.", replace: "Our cost." }],
+    });
+    assert.isFalse(yield* reads(mate, byAgent.key));
+    // Her search finds neither now.
+    assert.notIncludeMembers(
+      (yield* OwnerDocs.search([mate], {
+        orgId,
+        text: "invented scope",
+        everything: true,
+      })).hits.map((hit) => hit.key),
+      [handEdited.key, byAgent.key],
+    );
+    // Mark as private on a label only its kind gave records the owner, and ends it at once.
+    const marked = yield* draft("Acme marked");
+    const labelled = yield* OwnerDocs.label([owner], { orgId, key: marked.key, sensitive: true });
+    assert.notProperty(labelled, "kindLabel");
+    assert.isFalse(yield* reads(mate, marked.key));
+    // An agent's label in a co-owner's turn, with no one asking by name, is the owner's too.
+    const raised = yield* draft("Acme raised");
+    const coAsked = yield* wake("co-wake", other, "co-chat", coOwner, "owner_only");
+    yield* LeadDocs.move(scopeOf(other), {
+      key: raised.key,
+      sourceEventId: coAsked,
+      sensitive: true,
+    });
+    const [raisedBy] = yield* sql<{ marked: string | null }>`SELECT marked_by_person_id AS marked
+      FROM kin_records WHERE org_id = ${orgId} AND key = ${raised.key}`;
+    assert.strictEqual(raisedBy?.marked, ownerId);
+    assert.isFalse(yield* reads(mate, raised.key));
+    // Her own turn's agent reads it; a group turn with another teammate reads none of it.
+    yield* wake("own-wake", lead, "mate-chat", mateId, "shared");
+    assert.strictEqual((yield* LeadDocs.read(scopeOf(lead), { key: first.key })).key, first.key);
+    yield* sql`UPDATE kin_chats SET kind = 'team_group', direct_key = NULL WHERE chat_id = 'mate-chat'`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        role, joined_at)
+      VALUES ('mate-chat-other', ${orgId}, 'mate-chat', 'person', ${otherMate}, 'member', ${at})`;
+    yield* wake("group-wake", lead, "mate-chat", mateId, "shared");
+    assert.isTrue(
+      Exit.isFailure(yield* Effect.exit(LeadDocs.read(scopeOf(lead), { key: first.key }))),
+    );
+    for (const key of [first.key, handEdited.key, byAgent.key, marked.key, raised.key])
+      yield* nobodyElse(key);
+  }).pipe(Effect.provide(layer)),
 );
 
 // A teammate's due task with no client wakes an agent to make its first piece: that one doc, theirs
@@ -2490,6 +2754,23 @@ it.effect("a teammate's doc head start files one doc they open, linked to the ta
     const second = yield* Effect.flip(draft(woke, "Invented first-week plan"));
     assert.strictEqual(reasonOf(second), "not_allowed");
     assert.deepStrictEqual(yield* docs, [{ key: made.key }]);
+    // A head start reads only what its holder does, so its priced draft is theirs to read too.
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+        owner_kind, owner_id, created_by_kind, origin_key, due_at, created_at, updated_at)
+      VALUES (${orgId}, 'rec-w2', 'work', 'W-2', 'Invented onboarding quote', 'open',
+        'person', ${mateId}, 'person', 'w2', ${Date.parse("2026-11-11T12:00:00.000Z")}, 0, 0)`;
+    const next = yield* wake("head-priced", "draft:mate:task:rec-w2:2026-11-12");
+    const priced = yield* LeadDocs.create(scopeOf(lead), {
+      sourceEventId: next,
+      title: "Invented onboarding quote",
+      kind: "quote",
+      body: "## Price\n\nLeft for the owner.",
+      draft: { kind: "quote" },
+    });
+    assert.deepInclude(priced, { kind: "quote", sensitive: true });
+    assert.deepInclude((yield* OwnerDocs.get([mate], { orgId, key: priced.key })).kindLabel, {
+      reader: { name: "Mate", you: true },
+    });
   }).pipe(
     Effect.provide(
       Layer.mergeAll(KinRecords.layer, identity, shown).pipe(

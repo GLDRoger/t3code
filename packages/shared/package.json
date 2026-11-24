@@ -175,6 +175,10 @@
       "types": "./src/kinDocBlocks.ts",
       "import": "./src/kinDocBlocks.ts"
     },
+    "./kinDocCopyText": {
+      "types": "./src/kinDocCopyText.ts",
+      "import": "./src/kinDocCopyText.ts"
+    },
     "./favicon": {
       "types": "./src/favicon.ts",
       "import": "./src/favicon.ts"

@@ -3,6 +3,7 @@ import {
   KinAgentId,
   KinChatId,
   KinMemoryItemId,
+  KinPersonId,
   KinWakeupId,
   type KinPulseFact,
 } from "@t3tools/contracts";
@@ -12,8 +13,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
-import { fixture, orgId, seed } from "../triggers/routines.testkit.ts";
+import { deliverHeld } from "../triggers/heldDelivery.ts";
+import { holdLine } from "../triggers/quietHold.ts";
+import { addLead, fixture, orgId, seed } from "../triggers/routines.testkit.ts";
 import { queueCheckIn } from "./checkIn.ts";
+import { leftGiven, leftKind } from "./leftForCheckIn.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { morningMoneyLines } from "./morningMoney.ts";
 import { UNREADABLE_BANK_ALERTS_KEY } from "./senses/bank.ts";
@@ -49,6 +53,9 @@ it.effect.each([
   { body: "One decision is ready.", handle: true, kept: ["W-62"] },
   { body: undefined, handle: true, kept: [] },
   { body: undefined, bank: true, kept: [] },
+  // A line left with the agent for this check-in is told once it posts, then closed.
+  { body: "W-62 is waiting. Meera moved the kickoff.", left: true, kept: ["W-62"] },
+  { body: undefined, left: true, kept: [] },
 ])("records what a check-in tells or handles ($body, handle $handle, bank $bank)", (row) =>
   Effect.gen(function* () {
     yield* seed();
@@ -92,10 +99,69 @@ it.effect.each([
         zone: "UTC",
         outside: { lines: [], seen: [] },
       });
+    const [lead] = yield* sql<{ owner: KinPersonId }>`SELECT owner_person_id AS owner
+      FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+    // Meera's word, left with the agent for the owner's check-in; its own fallback time is past.
+    if (row.left === true)
+      yield* holdLine({
+        orgId,
+        chatId,
+        personId: lead!.owner,
+        key: leftKind("wakeup-meera", "invented"),
+        body: "The kickoff moved to Tue 1 Dec, 11:00.",
+        audience: "chat",
+        at: MONDAY,
+        agentId,
+        relay: {
+          kind: "sent_by",
+          agentId,
+          personId: KinPersonId.make("meera"),
+          personName: "Meera Iyer",
+        },
+      });
+    const [held] = yield* sql<{ holdId: string }>`SELECT hold_id AS "holdId" FROM kin_held_posts
+      WHERE org_id = ${orgId}`;
+    const leftKey = `left:${held?.holdId}`;
     assert.include(yield* queue(MONDAY), { _tag: "queued", facts: row.bank ? 3 : 2 });
     const [event] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
       WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY queued_at`;
     const eventId = event!.eventId;
+    if (row.left === true) {
+      assert.isTrue((yield* toldBy(orgId, [eventId])).has(leftKey));
+      assert.deepStrictEqual(yield* leftGiven(orgId, [eventId]), [
+        {
+          from: "Meera Iyer",
+          said: "The kickoff moved to Tue 1 Dec, 11:00.",
+          since: "Mon 16 Nov, 09:00",
+        },
+      ]);
+      // Taken by the check-in, it is never also sent as a message.
+      const posted: Array<string> = [];
+      const chat = {
+        notice: (input: { readonly body: string }) =>
+          Effect.sync(() => posted.push(input.body)).pipe(Effect.as({} as never)),
+      };
+      assert.strictEqual(yield* deliverHeld(orgId, chat), 0);
+      // Another of the owner's agents is not given it.
+      yield* addLead(orgId, "lead-other", "finance", "2026-11-07T00:00:00.000Z");
+      yield* queueCheckIn({
+        orgId,
+        agentId: KinAgentId.make("lead-other"),
+        scheduleId: KinMemoryItemId.make("checkin-other"),
+        title: "Afternoon check-in",
+        what: "Afternoon check-in.",
+        dueAt: MONDAY,
+        looseAt: null,
+        manualId: "run-now-other",
+        at: MONDAY,
+        zone: "UTC",
+        outside: { lines: [], seen: [] },
+      });
+      const [other] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE org_id = ${orgId} AND agent_id = 'lead-other'`;
+      assert.isFalse((yield* toldBy(orgId, [other!.eventId])).has(leftKey));
+      yield* sql`DELETE FROM kin_pulse_told WHERE event_id = ${other!.eventId}`;
+    }
     const wakeupId = KinWakeupId.make(`wakeup-${eventId}`);
     const factKeys = yield* toldBy(orgId, [eventId]);
     const body = row.bank
@@ -157,6 +223,7 @@ it.effect.each([
       WHERE org_id = ${orgId} AND event_id = ${eventId}`;
     const kept = new Set(row.kept.map(keyOf));
     if (row.bank) kept.add(UNREADABLE_BANK_ALERTS_KEY);
+    if (row.left === true && row.body !== undefined) kept.add(leftKey);
     assert.deepStrictEqual(yield* toldBy(orgId, [eventId]), kept);
     assert.include(yield* queue(MONDAY + DAY), { _tag: "queued" });
     const next = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
@@ -167,6 +234,14 @@ it.effect.each([
     );
     assert.isTrue(offered.has(keyOf("W-7")));
     assert.isFalse(offered.has(UNREADABLE_BANK_ALERTS_KEY));
+    // Told, it is closed; a check-in that posted nothing leaves it for the next one.
+    assert.strictEqual(offered.has(leftKey), row.left === true && row.body === undefined);
+    if (row.left === true)
+      assert.deepStrictEqual(
+        yield* sql<{ closed: number }>`SELECT delivered_at IS NOT NULL AS closed
+          FROM kin_held_posts WHERE org_id = ${orgId}`,
+        [{ closed: row.body === undefined ? 0 : 1 }],
+      );
     assert.strictEqual(
       offered.has(keyOf("W-62")),
       row.handle !== true && !row.kept.some((key) => key === "W-62"),

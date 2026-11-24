@@ -21,13 +21,6 @@ export function keepKinAlert(environmentId: string, chatId: string, alert: Notif
   });
 }
 
-/** Takes down this window's alert for a chat the person now has in front of them. */
-export function closeSeenKinAlert(environmentId: string, chatId: string): void {
-  const key = keyOf(environmentId, chatId);
-  shown.get(key)?.alert.close();
-  shown.delete(key);
-}
-
 /** Takes down this host's alerts of chats read on any device, as the phone's are withdrawn. */
 export function closeSettledKinAlerts(
   environmentId: string,

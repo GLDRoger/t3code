@@ -28,8 +28,10 @@ export const rules: Record<string, string> = {
   HandleKeepsTask: "Holding a fact (“I've got it”) never hides the member's task from them.",
   OmissionsReleased: "A fact the check-in left out can be offered again.",
   ToldOnce: "A fact that hasn't changed is told at most once.",
-  HeldDeliveredOnce: "A post held through your quiet hours reaches you exactly once.",
-  HeldNeverLost: "A held post is never lost, even when Kin restarts before your quiet hours end.",
+  HeldDeliveredOnce:
+    "A post held through your quiet hours, or left for your next check-in, reaches you exactly once.",
+  HeldNeverLost:
+    "A held post is never lost, even when Kin restarts before your quiet hours end or a check-in says nothing.",
   QuietIsQuiet:
     "Nothing anyone didn't ask for lands in their quiet hours, on their own clock: yours, or a member's half a day ahead.",
   OffHoursWait:
@@ -92,6 +94,16 @@ export const variants = [
     what: "only quiet hours hold a line; working hours don't (the code before this change)",
   },
   {
+    name: "deliver-taken",
+    breaks: "HeldDeliveredOnce",
+    what: "a line left for your check-in is also posted as a message once its day-later time comes",
+  },
+  {
+    name: "close-unposted",
+    breaks: "HeldNeverLost",
+    what: "a check-in that posted nothing still closes the line left for it",
+  },
+  {
     name: "held-left-out",
     breaks: "FactNeverAbsent",
     what: "a fact someone holds doesn't count, so the check-in says “nothing new” (the code before this change)",
@@ -101,6 +113,7 @@ export const variants = [
 export const state = (vars: Vars) => {
   const base = checkInState(vars);
   if (vars["held"] !== true) return base;
+  if (vars["left"] === true) return `${base}; a line waits for your check-in`;
   return vars["to"] === "member"
     ? `${base}; a post waits for the member to start`
     : `${base}; a post waits for morning`;
@@ -167,7 +180,10 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return to["to"] === "member"
         ? "Something nobody asked for comes for a member outside her hours"
         : "Something nobody asked for comes in your quiet hours";
+    case "Leave":
+      return "Someone leaves a line for your next check-in";
     case "Deliver":
+      if (from["left"] === true) return "No check-in took the line by the next day: it lands";
       return from["to"] === "member"
         ? "Her working hours start and the held post lands"
         : "Your quiet hours end and the held post lands";

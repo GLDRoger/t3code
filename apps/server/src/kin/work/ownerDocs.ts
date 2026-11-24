@@ -66,6 +66,7 @@ import {
   iso,
   principalId,
   recordSeq,
+  type RecordRow,
   selectRecords,
   unavailable,
   workFailure,
@@ -81,6 +82,7 @@ import {
   keyedViewer,
   teamSeq,
   linkedFromOf,
+  ownMoneyDraft,
   teamVisible,
   viewerOfPeople,
   type KinViewer,
@@ -203,6 +205,33 @@ const offsetOf = (cursor: string | undefined) => {
   return found === null ? Effect.fail(badCursor) : Effect.succeed(Number.parseInt(found[1]!, 10));
 };
 
+/** A label its kind gave and no person did, and the teammate who still reads it as their draft. */
+const kindLabelOf = Effect.fn("KinDocs.kindLabel")(function* (
+  orgId: KinOrgId,
+  row: RecordRow,
+  readerId: KinPersonId,
+) {
+  if (row.sensitive !== 1 || row.markedBy !== null) return {};
+  const sql = yield* SqlClient.SqlClient;
+  const [reader] = yield* sql<{ personId: string; name: string }>`SELECT p.person_id AS "personId",
+      p.display_name AS name FROM kin_records r
+    JOIN kin_people p ON p.org_id = r.org_id AND p.removed_at IS NULL
+      AND p.person_id = json_extract(r.fields_json, '$.draftFor')
+    WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId}
+      AND ${ownMoneyDraft(sql, sql`p.person_id`)}`;
+  return {
+    kindLabel:
+      reader === undefined
+        ? {}
+        : {
+            reader: {
+              name: reader.name,
+              ...(reader.personId === readerId ? { you: true as const } : {}),
+            },
+          },
+  };
+});
+
 const detailOf = Effect.fn("KinDocs.detail")(function* (
   orgId: KinOrgId,
   ref: { readonly key: string } | { readonly recordId: string },
@@ -259,6 +288,7 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
     undefined
       ? { editable: true as const }
       : {}),
+    ...(yield* kindLabelOf(orgId, row, readerId)),
   } satisfies KinDocDetail;
 });
 

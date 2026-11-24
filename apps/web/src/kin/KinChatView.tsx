@@ -180,7 +180,6 @@ import { useKinStopLine } from "./useKinStop";
 import { openKinSettings } from "./kinSettingsAddress";
 import { useKinProfiles } from "./kinPictures";
 import { kinDraftAtom, kinDraftKey, restoreDraft } from "./kinDraft";
-import { closeSeenKinAlert } from "./kinSystemAlerts";
 import { Skeleton } from "../components/ui/skeleton";
 import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
@@ -703,13 +702,11 @@ function KinChatFeed(props: {
 
   const { connected, unread } = props;
   const focused = typeof document === "undefined" || document.visibilityState === "visible";
-  const markRead = (seq: number) => {
-    closeSeenKinAlert(props.environmentId, props.chatId);
-    return runKinCommand(appAtomRegistry, kinClient.markRead, {
+  const markRead = (seq: number) =>
+    runKinCommand(appAtomRegistry, kinClient.markRead, {
       environmentId: props.environmentId,
       input: { chatId: props.chatId, seq },
     }).then((result) => result._tag === "Success");
-  };
   const seesEnd = followsEnd && focused && connected && props.chat.live;
   const reading = useRef({ markRead, seesEnd, latestSeq, unread, connected, focused });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the host what the reader has seen, one call in flight at a time

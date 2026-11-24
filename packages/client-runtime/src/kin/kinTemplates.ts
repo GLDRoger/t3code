@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
-import type { KinRecipe, KinRecordDetail } from "@t3tools/contracts";
+import type { KinDocDetail, KinRecipe, KinRecordDetail } from "@t3tools/contracts";
 
 import { formatKinTime } from "./kinScreenState.ts";
 import { kinWorkActorName, type KinWorkNames } from "./kinWork.ts";
@@ -168,12 +168,25 @@ export function kinNotesVersions(
   });
 }
 
-/** The doc menu's way to raise or lower its private label; none while its client's label holds it. */
+/**
+ * The doc menu's way to raise or lower its private label; none while its client's label holds it.
+ * While a teammate still reads it as their draft, the item makes the label yours and ends that read.
+ */
 export function kinDocLabelAction(doc: {
   readonly sensitive: boolean;
   readonly sensitiveInherited?: true | undefined;
+  readonly kindLabel?: KinDocDetail["kindLabel"];
 }) {
   if (doc.sensitiveInherited === true) return null;
+  // Only while a teammate still reads it as their draft: any other kind-only label lowers in one tap.
+  const reader = doc.kindLabel?.reader;
+  if (doc.sensitive && reader !== undefined && reader.you !== true)
+    return {
+      sensitive: true,
+      label: "Mark as private",
+      title: "Mark this doc as private?",
+      detail: `${reader.name} won't be able to read it any more. Only owners will, and agents only in your own chats.`,
+    };
   return doc.sensitive
     ? {
         sensitive: false,
@@ -186,7 +199,7 @@ export function kinDocLabelAction(doc: {
         sensitive: true,
         label: "Mark as private",
         title: "Mark this doc as private?",
-        detail: "Only you will be able to read it, and agents only in your own chats.",
+        detail: "Only owners will be able to read it, and agents only in your own chats.",
       };
 }
 
