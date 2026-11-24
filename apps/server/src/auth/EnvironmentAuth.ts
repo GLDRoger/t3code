@@ -1,4 +1,4 @@
-import { authHooks } from "../kin/auth/authHooks.ts";
+import { authHooks, cliAuthHooks } from "../kin/auth/authHooks.ts";
 import {
   AuthAccessTokenType,
   AuthAccessWriteScope,
@@ -1851,6 +1851,7 @@ export const layer = Layer.effect(EnvironmentAuth, make).pipe(
 const layerStorage = Layer.mergeAll(ServerSecretStore.layer, SqlitePersistence.layerCliConfig);
 
 export const layerRuntime = layer.pipe(
+  Layer.provideMerge(cliAuthHooks),
   Layer.provideMerge(ManagedPolicy.layer),
   Layer.provideMerge(layerStorage),
   Layer.provideMerge(ServerEnvironment.layerIdentity),

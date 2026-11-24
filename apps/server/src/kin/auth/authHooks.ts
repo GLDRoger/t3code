@@ -1,5 +1,6 @@
 import type { AuthSessionId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import { SessionHooks } from "./sessionHooks.ts";
 
@@ -29,3 +30,10 @@ export const authHooks = Effect.gen(function* () {
         ),
   };
 });
+
+/** Kin's session hooks for a host CLI's auth; loaded when built, as ProofKeySessions imports T3's auth. */
+export const cliAuthHooks = Layer.unwrap(
+  Effect.promise(() => import("./ProofKeySessions.ts")).pipe(
+    Effect.map(({ layerCli }) => layerCli),
+  ),
+);
