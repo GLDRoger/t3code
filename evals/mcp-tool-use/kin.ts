@@ -63,6 +63,7 @@ import {
 import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
+import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
 import { formatKinPicturesDay, KIN_TEXT_LOCALE, KinMoneySummary } from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
@@ -688,6 +689,9 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       message: countryFirstMessage(input.owner, input),
     },
   }),
+  // record_create or record_update's line for a client's printed detail kept unconfirmed.
+  unconfirmed: (input: { client: string; what: string; name: string; carded: boolean }) =>
+    waitingLine(input.client, input.what, input.name, input.carded),
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),
   cashUnknown: (input: { timeZone: string }) =>
