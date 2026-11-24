@@ -789,6 +789,26 @@ export const kinTaskWithout = (
   (item.alsoOn ?? []).filter((one) => !kinWorkSamePrincipal(one, who));
 
 /**
+ * Who holds a task or a list entry, and whether pressing it opens the hand-over: only for a reader
+ * the host lets give it (the holder or owner level) on a device that may give.
+ */
+export function kinRecordHeld(input: {
+  readonly item: Pick<KinRecordDetail, "owner">;
+  readonly view: Pick<KinWorkItemView, "owner" | "can" | "assignLabel">;
+  readonly names: KinWorkNames;
+  /** This device may give tasks to someone. */
+  readonly give: boolean;
+}): KinRecordWho & { readonly opens: boolean } {
+  const { view, names } = input;
+  const holder = kinRecordWho(input.item.owner, names);
+  return {
+    ...holder,
+    name: view.owner.retired ? `${holder.name} (${KIN_RETIRED_LABEL.toLowerCase()})` : holder.name,
+    opens: input.give && view.can.give && view.assignLabel !== null,
+  };
+}
+
+/**
  * Details' Held by and With rows. Held by opens the hand-over only for a reader who may give the
  * task; With opens a menu where someone on it can be taken off or the reader can leave, goes
  * straight to the picker when adding is all there is, and is absent when it has nothing to say.
@@ -804,8 +824,6 @@ export function kinTaskPeopleRows(input: {
   readonly held: KinRecordWho & { readonly opens: boolean };
   readonly with: { readonly value: string; readonly opens: "menu" | "add" | null } | null;
 } {
-  const { view, names } = input;
-  const holder = kinRecordWho(input.item.owner, names);
   const { people, add } = input.with;
   const acts = people.some((who) => who.act !== null);
   const first = people[0]?.name ?? "";
@@ -818,13 +836,7 @@ export function kinTaskPeopleRows(input: {
           ? `${first} and ${people[1]?.name ?? ""}`
           : `${first} and ${people.length - 1} more`;
   return {
-    held: {
-      ...holder,
-      name: view.owner.retired
-        ? `${holder.name} (${KIN_RETIRED_LABEL.toLowerCase()})`
-        : holder.name,
-      opens: input.give && view.can.give && view.assignLabel !== null,
-    },
+    held: kinRecordHeld(input),
     with: people.length === 0 && !add ? null : { value, opens: acts ? "menu" : add ? "add" : null },
   };
 }

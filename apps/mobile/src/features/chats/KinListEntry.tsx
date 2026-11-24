@@ -12,6 +12,8 @@ import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
 import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
+import { kinListCanBeSection } from "@t3tools/client-runtime/kin/kinShell";
+import { kinRecordHeld } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import {
   KIN_YES_NO,
   KIN_LISTS,
@@ -294,6 +296,14 @@ export function KinListEntryBody(
   const canChange = mayUpdate && ownerLevel;
   const canDraft = mayUpdate && (ownerLevel || leads);
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
+  const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
+  // A company's own list: who has an entry opens the hand-over, as a task's Held by does.
+  const gives =
+    def !== null &&
+    kinListCanBeSection({ ...def, archivedAt: null }) &&
+    kinRecordHeld({ item, view, names: props.directory.names, give: canGive }).opens;
+  const giveTo = () =>
+    navigation.navigate("KinWorkAssign", { environmentId, orgId, task: item.key });
   const [preview, setPreview] = useState<FilePreviewSource | null>(null);
   const { busy } = changes;
   const draftNote = kinInvoiceDraftNote(item, invoice, def);
@@ -578,7 +588,15 @@ export function KinListEntryBody(
           />
         )}
         {entry.facts.map((fact) =>
-          fact.id === "party" && billTo !== null && billsByName ? (
+          fact.id === "owner" && gives ? (
+            <ListRow
+              key={fact.id}
+              label={fact.value ?? ""}
+              detail={fact.label}
+              disabled={busy}
+              onPress={giveTo}
+            />
+          ) : fact.id === "party" && billTo !== null && billsByName ? (
             <View key={fact.id}>
               {[billTo.name, ...(billTo.typed ? billTo.details : [])].map((field) => {
                 const label = field.key === KIN_BILL_TO_NAME ? KIN_BILL_TO.label : field.label;
