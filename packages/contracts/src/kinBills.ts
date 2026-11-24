@@ -110,12 +110,17 @@ export const KinBillsAddResult = Schema.Struct({
   widgetId: Schema.optional(KinWidgetId),
   /** The bills this add put in to be read. */
   added: Schema.Array(AddedFile),
-  /** Files already added before: nothing new for them, with the expense made for one, if any. */
+  /**
+   * Files already added before: nothing new for them, with the expense made for one, if any. A
+   * bill dismissed, or whose file a cleared chat took, is added again instead.
+   */
   already: Schema.Array(
     Schema.Struct({
       name: Label,
       sha256: KinBillSha256,
       expense: Schema.optional(KinRecordKey),
+      /** That expense was dropped: restoring it brings it back; this file makes no other. */
+      dropped: Schema.optional(Schema.Boolean),
     }),
   ),
   /** Files that are neither an image nor a PDF, each with why. */

@@ -52,6 +52,7 @@ import { billTurn } from "./billTurn.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { moneySummary } from "./moneyViews.ts";
 import { newExpense } from "./ownerMoneyAnswers.ts";
+import { decline, update } from "./ownerWork.ts";
 import { defineList, PRESETS, presetDefinition } from "./registers.ts";
 import { KIN_OWNER_LEVEL } from "./teamView.ts";
 
@@ -885,6 +886,92 @@ describe("bills in bulk", () => {
         });
         const byHand = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills[1]!;
         assert.deepStrictEqual([byHand.state, byHand.expense?.key], ["kept", typed.expense]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a dismissed bill, or one whose chat was cleared, comes back when added again; a dropped one says so",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const add = (requestId: string, files: ReadonlyArray<[string, string]>) =>
+          Effect.gen(function* () {
+            return yield* Bills.add(
+              as(rhea),
+              {
+                orgId,
+                attachments: yield* Effect.forEach(files, ([name, text]) => upload(name, text)),
+                clientRequestId: requestId,
+              },
+              TEST_UPLOAD_OWNER,
+            );
+          });
+        const first = yield* add("add", [
+          ["blurred.png", "blurred"],
+          ["freight.png", "tidewater"],
+          ["lost.png", "lost"],
+        ]);
+        const [blurred, freight, lost] = first.added.map((file) => file.sha256);
+        const { wakeupId } = yield* claimTurn(1);
+        yield* read({ bill: "B1", readable: false, cannotRead: "The photo is blurred." });
+        yield* read({
+          bill: "B2",
+          vendor: "Tidewater Freight",
+          date: "2026-11-05",
+          amount: "2500",
+          currency: "INR",
+        });
+        yield* endTurn(wakeupId);
+        yield* Bills.dismiss(as(rhea), { orgId, sha256: blurred! });
+        const [expense] = (yield* Bills.list(as(rhea), { orgId, batchId: first.batchId })).bills
+          .filter((bill) => bill.sha256 === freight)
+          .map((bill) => bill.expense!);
+        yield* decline(as(rhea), { orgId, key: expense!.key, rev: expense!.rev });
+        // Rhea clears her chat with Finance: the lost bill's file goes with its card's message.
+        yield* sql`DELETE FROM kin_message_attachments WHERE org_id = ${orgId}
+          AND chat_id = 'rhea-finance' AND attachment_id IN (SELECT attachment_id
+            FROM kin_bill_reads WHERE sha256 = ${lost!})`;
+
+        const again = yield* add("add-2", [
+          ["retake.png", "blurred"],
+          ["freight-again.png", "tidewater"],
+          ["lost-again.png", "lost"],
+        ]);
+        // The dismissed and the orphaned bill are added and read anew, in this batch.
+        assert.sameMembers(
+          again.added.map((file) => file.sha256),
+          [blurred!, lost!],
+        );
+        // The dropped expense is said, and this file makes no other.
+        assert.deepStrictEqual(again.already, [
+          { name: "freight-again.png", sha256: freight!, expense: expense!.key, dropped: true },
+        ]);
+        assert.deepStrictEqual(
+          (yield* Bills.list(as(rhea), { orgId, batchId: again.batchId })).bills.map((bill) => [
+            bill.file.name,
+            bill.state,
+            bill.problem,
+          ]),
+          [
+            ["retake.png", "reading", undefined],
+            ["lost-again.png", "reading", undefined],
+          ],
+        );
+        assert.strictEqual((yield* card(again.batchId)).text, "Reading 3 bills: 1 done.");
+        // The dropped expense comes back the way any dropped entry does: its state set again.
+        const dropped = (yield* Bills.list(as(rhea), { orgId, batchId: first.batchId })).bills[0]!;
+        assert.strictEqual(dropped.state, "dropped");
+        yield* update(as(rhea), {
+          orgId,
+          key: dropped.expense!.key,
+          rev: dropped.expense!.rev,
+          state: "done",
+        });
+        assert.strictEqual(
+          (yield* Bills.list(as(rhea), { orgId, batchId: first.batchId })).bills[0]!.state,
+          "read",
+        );
       }).pipe(Effect.provide(layer)),
   );
 

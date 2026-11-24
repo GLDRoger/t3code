@@ -523,23 +523,72 @@ const insertBills = Effect.fn("KinBills.insertBills")(function* (input: {
         ${file.attachment.sizeBytes}, ${input.batchId}, ${position}, ${input.agentId},
         ${input.cardChatId}, ${billWidgetId(input.batchId)}, ${input.addedBy}, ${now}, 'waiting')
       ON CONFLICT DO NOTHING RETURNING sha256`;
-    if (inserted.length > 0) added.push(file.sha256);
+    // A dismissed or orphaned bill comes back as this batch's, on this file, to be read anew.
+    const revived =
+      inserted.length > 0
+        ? []
+        : yield* sql`UPDATE kin_bill_reads AS b SET attachment_id = ${file.attachment.id},
+              chat_id = ${file.chatId}, message_id = ${file.messageId},
+              name = ${file.attachment.name}, file_type = ${file.attachment.type},
+              mime_type = ${file.attachment.mimeType}, size_bytes = ${file.attachment.sizeBytes},
+              batch_id = ${input.batchId}, position = ${position}, agent_id = ${input.agentId},
+              card_chat_id = ${input.cardChatId}, widget_id = ${billWidgetId(input.batchId)},
+              added_by_person_id = ${input.addedBy}, added_at = ${now}, state = 'waiting',
+              event_id = NULL, reads = 0, read_json = NULL, problem = NULL, duplicate_of = NULL,
+              read_at = NULL, dismissed_at = NULL
+            WHERE b.org_id = ${input.orgId} AND b.sha256 = ${file.sha256}
+              AND ${revivable(sql)}
+            RETURNING sha256`;
+    if (inserted.length > 0 || revived.length > 0) added.push(file.sha256);
   }
   return added;
 });
 
-/** The files already a bill in this company, with the expense made for each, if any. */
+/**
+ * A bill with no expense that its owner dismissed, or whose file is on no message any more (its
+ * chat was cleared): the same bytes added again bring it back to be read.
+ */
+const revivable = (sql: SqlClient.SqlClient) =>
+  sql.literal(`(b.record_id IS NULL AND (b.dismissed_at IS NOT NULL OR NOT EXISTS (
+    SELECT 1 FROM kin_message_attachments a JOIN kin_messages m ON m.org_id = a.org_id
+      AND m.message_id = a.message_id
+    WHERE a.org_id = b.org_id AND a.attachment_id = b.attachment_id AND m.status <> 'deleted')))`);
+
+type Known = {
+  readonly expense: string | undefined;
+  readonly dropped: boolean;
+  readonly revive: boolean;
+  readonly batchId: string;
+};
+/** The files already a bill in this company: the expense made for each, and whether it returns. */
 const alreadyAdded = Effect.fn("KinBills.alreadyAdded")(function* (
   orgId: KinOrgId,
   hashes: ReadonlyArray<string>,
 ) {
-  if (hashes.length === 0) return new Map<string, string | undefined>();
+  if (hashes.length === 0) return new Map<string, Known>();
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ sha256: string; key: string | null }>`SELECT b.sha256, r.key
+  const rows = yield* sql<{
+    sha256: string;
+    key: string | null;
+    recordState: string | null;
+    revive: number;
+    batchId: string;
+  }>`SELECT b.sha256, r.key, r.state AS "recordState", ${revivable(sql)} AS revive,
+      b.batch_id AS "batchId"
     FROM kin_bill_reads b LEFT JOIN kin_records r ON r.org_id = b.org_id
       AND r.record_id = b.record_id
     WHERE b.org_id = ${orgId} AND b.sha256 IN ${sql.in([...new Set(hashes)])} ORDER BY b.sha256`;
-  return new Map(rows.map((row) => [row.sha256, row.key ?? undefined]));
+  return new Map(
+    rows.map((row) => [
+      row.sha256,
+      {
+        expense: row.key ?? undefined,
+        dropped: row.recordState === "dropped",
+        revive: row.revive === 1,
+        batchId: row.batchId,
+      },
+    ]),
+  );
 });
 
 type Prepared = {
@@ -569,14 +618,15 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
   );
   const seen = new Set<string>();
   const fresh: Array<Prepared["accepted"][number]> = [];
-  const already: Array<{ name: string; sha256: string; expense?: string }> = [];
+  const already: Array<KinBillsAddResult["already"][number]> = [];
   for (const file of input.prepared.accepted) {
-    if (known.has(file.sha256) || seen.has(file.sha256)) {
-      const expense = known.get(file.sha256);
+    const prior = known.get(file.sha256);
+    if ((prior !== undefined && !prior.revive) || seen.has(file.sha256)) {
       already.push({
         name: file.attachment.name,
         sha256: file.sha256,
-        ...(expense === undefined ? {} : { expense }),
+        ...(prior?.expense === undefined ? {} : { expense: prior.expense }),
+        ...(prior?.dropped === true ? { dropped: true } : {}),
       });
       continue;
     }
@@ -617,6 +667,14 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
   });
   yield* queueWaiting(input.orgId, input.batchId);
   if (posted !== undefined) yield* refreshCard(input.orgId, input.batchId);
+  // A bill brought back left its old batch: that card counts it no more.
+  for (const batchId of new Set(
+    added.flatMap((hash) => {
+      const prior = known.get(hash);
+      return prior === undefined || prior.batchId === input.batchId ? [] : [prior.batchId];
+    }),
+  ))
+    yield* refreshCard(input.orgId, batchId);
   return {
     batchId: input.batchId,
     ...(posted === undefined ? {} : posted),
