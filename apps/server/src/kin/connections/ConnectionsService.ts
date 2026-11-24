@@ -124,6 +124,7 @@ import {
   MAIL_SEND_TOOL_NAMES,
   MAIL_TOOL,
   type MailArrival,
+  type MailActivity,
   type Mailbox,
   type MailChange,
   type MailMessage,
@@ -362,14 +363,7 @@ export type KinConnectionActivity =
       readonly account: string | null;
       /** Where the vendor's calendar feed stopped; `activitySeen` keeps it with `until`. */
       readonly cursor: string | null;
-      readonly mail: ReadonlyArray<{
-        readonly threadId: string;
-        readonly receivedBy: string | null;
-        readonly subject: string;
-        readonly from: string | null;
-        readonly date: string | null;
-        readonly unread: boolean;
-      }>;
+      readonly mail: MailActivity["mail"];
       readonly calendar: ReadonlyArray<{
         readonly eventId: string;
         readonly summary: string | null;

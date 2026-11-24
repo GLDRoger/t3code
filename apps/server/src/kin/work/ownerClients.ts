@@ -49,7 +49,7 @@ import {
   writerOf,
 } from "./ownerWork.ts";
 import { principalOfText, principalText } from "./projectSpine.ts";
-import { projectNoteOf } from "./recordComments.ts";
+import { keyNamedFor, projectNoteOf } from "./recordComments.ts";
 import {
   iso,
   notFound,
@@ -359,7 +359,7 @@ export const project = Effect.fn("KinWork.project")(function* (
       : undefined;
   return {
     ...page,
-    ...(note === undefined ? {} : { note }),
+    ...(note === undefined ? {} : { note: keyNamedFor(person, note) }),
     ...(results === undefined ? {} : { results }),
     can: { people: !person.teammate || leads, note: !person.teammate },
   };

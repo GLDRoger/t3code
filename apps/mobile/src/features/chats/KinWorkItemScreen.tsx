@@ -117,6 +117,7 @@ import { KinDayField } from "./components/KinDayField";
 import { KinWorkStatusRow } from "./components/KinWorkTaskMenus";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinListEntryBody } from "./KinListEntry";
+import { kinListsOf, useKinLists } from "./state/useKinMoney";
 import { KinMakeDocumentStep } from "./KinInvoice";
 import type { KinMakeStep } from "./kinMakeStep";
 import {
@@ -282,6 +283,10 @@ function KinWorkItemBody(props: ItemTarget) {
     state._tag === "ready" ? state.item.tasks?.map((task) => task.key) : undefined,
   );
   const directory = useKinWorkDirectory(props, true);
+  const entryOf = state._tag === "ready" ? (state.item.list ?? null) : null;
+  const lists = useKinLists(props, { enabled: entryOf !== null, archived: true });
+  // An entry's bar names its list, as a task's names its kind: the page's own title says which.
+  const listName = kinListsOf(lists).find((def) => def.list === entryOf)?.name ?? "";
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const canComment = useAtomValue(kinClient.workComment.permissionAtom(environmentId));
@@ -440,7 +445,7 @@ function KinWorkItemBody(props: ItemTarget) {
     const section = kinSectionOf({ list: item.list });
     const offLine = section === null ? null : kinSectionOffLine(shell, section, ownerLevel);
     return (
-      <KinWorkFrame title={item.title} onBack={back}>
+      <KinWorkFrame title={listName} onBack={back}>
         {offLine === null ? null : (
           <Text textRole="footnote" className="px-2 text-foreground-muted">
             {offLine}

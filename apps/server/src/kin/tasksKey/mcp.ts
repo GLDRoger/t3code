@@ -16,6 +16,21 @@ import {
   KinRecordKey,
   KinRecordState,
   KinTrimmedText,
+  KinWorkHandBackInput,
+  KinWorkHandBackResult,
+  KinWorkHandOverResult,
+  KinWorkLinkAddInput,
+  KinWorkNudgeResult,
+  KinWorkTickStepInput,
+  KinWorkSteps,
+  KinProjectNoteInput,
+  KinDocRestoreInput,
+  KinGoalSaveInput,
+  KinWatchActInput,
+  KinWatchState,
+  KinMoneyBudgets,
+  KinMemoryUndoInput,
+  KinMemoryItemId,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
@@ -26,6 +41,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import type * as Types from "effect/Types";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
@@ -41,6 +57,7 @@ import { KinServer, type Services } from "../KinServer.ts";
 import { toolVisibility } from "../mcp/toolPolicy.ts";
 import { orgOwner, toolName, toolNamesOf } from "../work/toolNames.ts";
 import {
+  budgets,
   findDocs,
   listClients,
   listProjects,
@@ -63,6 +80,10 @@ import {
   createProject,
   createTask,
   getMine,
+  handTaskBack,
+  handOverTasks,
+  nudgeTask,
+  tickTaskStep,
   listMine,
   listSeenBy,
   setStateMine,
@@ -94,6 +115,7 @@ const TaskSummary = Schema.Struct({
 const TaskDetail = Schema.Struct({
   ...TaskSummary.fields,
   brief: Schema.String,
+  checklist: Schema.optional(KinWorkSteps),
   material: Schema.String,
   comments: Schema.Array(
     Schema.Struct({ by: Schema.String, at: Schema.String, text: Schema.String }),
@@ -228,6 +250,7 @@ const MemoryLines = Schema.Struct({
   material: Schema.String,
   lines: Schema.Array(
     Schema.Struct({
+      itemId: KinMemoryItemId,
       title: Schema.String,
       text: Schema.String,
       from: Schema.String,
@@ -869,6 +892,114 @@ export const TasksKeyToolkit = Toolkit.make(
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
+  Tool.make("tick_task_step", {
+    ...shared,
+    description:
+      "Tick or untick one step of a task as the person may in Kin. Pass the step title and its zero-based index from get_task.",
+    parameters: KinWorkTickStepInput.mapFields(Struct.pick(["key", "index", "title", "done"])),
+    success: Schema.Struct({ key: KinRecordKey, checklist: KinWorkSteps, material: Schema.String }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("hand_task_back", {
+    ...shared,
+    description:
+      "Give a task the person holds back to whoever gave it to them, with an optional note. The giver sees the note as from this person’s coding agent.",
+    parameters: KinWorkHandBackInput.mapFields(Struct.pick(["key", "note"])),
+    success: KinWorkHandBackResult,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("nudge_task", {
+    ...shared,
+    description:
+      "Ask the person holding a task where it stands, at most once per day from this person. The holder sees it came from this person’s coding agent.",
+    parameters: Schema.Struct({ key: TaskKey }),
+    success: KinWorkNudgeResult,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("hand_over_tasks", {
+    ...shared,
+    description:
+      "Give all reachable open tasks from one holder to another, by names from list_people. In Kin, only owners and co-owners can give someone else’s tasks away.",
+    parameters: Schema.Struct({ from: PersonName, to: PersonName }),
+    success: KinWorkHandOverResult,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("add_link", {
+    ...shared,
+    description:
+      "Add an HTTP or HTTPS link to an entry the person may edit in Kin, with an optional name. Invoices, quotes and other money entries refuse it.",
+    parameters: KinWorkLinkAddInput.mapFields(Struct.pick(["key", "url", "name"])),
+    success: Schema.Struct({ key: KinRecordKey }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("set_project_note", {
+    ...shared,
+    description:
+      "Set the note shown at the top of a project’s tasks, as an owner or co-owner. Pass an empty body to clear it.",
+    parameters: KinProjectNoteInput.mapFields(Struct.pick(["key", "body"])),
+    success: Schema.Struct({
+      key: KinRecordKey,
+      note: Schema.NullOr(Schema.String),
+      material: Schema.String,
+    }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("restore_doc_version", {
+    ...shared,
+    description:
+      "Bring back an earlier text document version as a new version, as an owner or co-owner. Pass the current version as latest; the person says which earlier version.",
+    parameters: KinDocRestoreInput.mapFields(Struct.omit(["orgId"])),
+    success: Schema.Struct({ key: KinRecordKey, version: Schema.Int }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("restart_watch", {
+    ...shared,
+    description:
+      "Start a stopped watch again. The person gives the watch ID from Kin; no tool here lists watches. Kin can look again right away.",
+    parameters: KinWatchActInput.mapFields(Struct.omit(["orgId"])),
+    success: Schema.Struct({ watchId: Schema.String, state: KinWatchState }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("save_goal", {
+    ...shared,
+    description:
+      "Create or update a goal as an owner or co-owner. Pass its key and revision to update it, or leave them out to create one. The same create twice returns the first goal. A goal measured in money comes back with no key: the person updates it in Kin.",
+    parameters: KinGoalSaveInput.mapFields(
+      ({ orgId: _org, clientRequestId: _request, state: _state, ...fields }) => ({
+        ...fields,
+        state: Schema.optional(Schema.Literals(["open", "done"])),
+      }),
+    ),
+    success: Schema.Struct({ key: Schema.NullOr(KinRecordKey), rev: Schema.NullOr(Schema.Int) }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   Tool.make("find", {
     ...shared,
     description:
@@ -965,6 +1096,26 @@ export const TasksKeyToolkit = Toolkit.make(
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
+  Tool.make("budgets", {
+    ...shared,
+    description:
+      "Read this month’s budgets as an owner or co-owner sees them in Kin. Figures omit privately labelled entries and budgets on private projects.",
+    success: Schema.Struct({ ...KinMoneyBudgets.fields, privateLeftOut: Schema.Boolean }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("undo_memory_change", {
+    ...shared,
+    description:
+      "Undo an agent’s change to a team-readable memory line. The person gives the line’s item ID and the change card’s widget ID from Kin. Only an owner or co-owner who owns that agent may do this. Once undone the line is theirs alone, so a repeat answers not found.",
+    parameters: KinMemoryUndoInput.mapFields(Struct.omit(["orgId"])),
+    success: Schema.Struct({ itemId: KinMemoryItemId }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.OpenWorld, false),
   Tool.make("search_memory", {
     ...shared,
     description:
@@ -1008,8 +1159,16 @@ const GATED: Partial<
   write_doc: readsDocs,
 };
 
+const OWNER_LISTED = new Set([
+  "set_project_note",
+  "restore_doc_version",
+  "save_goal",
+  "budgets",
+  "undo_memory_change",
+]);
 const TOOL_SECTIONS: Readonly<Partial<Record<string, SectionId>>> = {
   money_summary: "money",
+  budgets: "money",
   open_client: "clients",
   open_project: "clients",
   create_project: "clients",
@@ -1292,6 +1451,51 @@ const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
       asHolder((holder) => setStateMine(holder, input)),
     ),
   ),
+  tick_task_step: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.tick_task_step")((input) =>
+      asHolder((holder) => tickTaskStep(holder, input)),
+    ),
+  ),
+  hand_task_back: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.hand_task_back")((input) =>
+      asHolder((holder) => handTaskBack(holder, input)),
+    ),
+  ),
+  nudge_task: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.nudge_task")((input) =>
+      asHolder((holder) => nudgeTask(holder, input.key)),
+    ),
+  ),
+  hand_over_tasks: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.hand_over_tasks")((input) =>
+      asHolder((holder) => handOverTasks(holder, input)),
+    ),
+  ),
+  add_link: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.add_link")((input) =>
+      asHolder((holder) => Acts.addLink(holder, input)),
+    ),
+  ),
+  set_project_note: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.set_project_note")((input) =>
+      asHolder((holder) => Acts.setProjectNote(holder, input)),
+    ),
+  ),
+  restore_doc_version: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.restore_doc_version")((input) =>
+      asHolder((holder) => Acts.restoreDocVersion(holder, input)),
+    ),
+  ),
+  restart_watch: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.restart_watch")((input) =>
+      asHolder((holder) => Acts.restartWatch(holder, input.watchId)),
+    ),
+  ),
+  save_goal: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.save_goal")((input) =>
+      asHolder((holder) => Acts.saveGoal(holder, input)),
+    ),
+  ),
   find: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.find")(function* ({ kind, ...input }) {
       if (kind === "projects" || kind === "clients")
@@ -1333,6 +1537,16 @@ const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
       ),
     ),
   ),
+  budgets: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.budgets")(() =>
+      asHolder((holder) => inSection("budgets", holder, budgets(holder))),
+    ),
+  ),
+  undo_memory_change: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.undoMemoryChange")((input) =>
+      asHolder((holder) => Acts.undoMemoryChange(holder, input)),
+    ),
+  ),
   search_memory: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.memory")((input) =>
       asHolder((holder) => searchMemory(holder, input.text)),
@@ -1342,9 +1556,10 @@ const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
 
 // Untraced: it runs for every tool on each list and call.
 const listed = toolVisibility(
-  Effect.fnUntraced(function* (name) {
-    const gate = GATED[name];
-    // A direct call meets the same gates as the listing: a tool not listed is not there.
+  Effect.fnUntraced(function* (name, method) {
+    const gate =
+      GATED[name] ?? (OWNER_LISTED.has(name) && method !== "tools/call" ? readsMemory : undefined);
+    // New owner tools let the app service explain a direct refusal using its usual wording.
     const section = TOOL_SECTIONS[name];
     if (gate === undefined && section === undefined) return true;
     return yield* asHolder((holder) =>

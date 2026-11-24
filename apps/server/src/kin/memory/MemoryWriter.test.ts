@@ -8,6 +8,7 @@ import {
   KinChatId,
   KinMemoryItemId,
   KinOrgId,
+  KinPersonId,
   type MemoryItemHead,
   VcsProcessSpawnError,
 } from "@t3tools/contracts";
@@ -25,7 +26,14 @@ import * as Writer from "./MemoryWriter.ts";
 import * as Scan from "./secretScan.ts";
 import { journalEntry } from "./journal.ts";
 import { FIXTURE_QUOTE, FIXTURE_SAID, fixtureItem } from "./__fixtures__/items.ts";
-import { authorise, fingerprint, reaches, storedLabels, suggest } from "./sensitivity.ts";
+import {
+  authorise,
+  fingerprint,
+  reaches,
+  storedLabels,
+  suggest,
+  visibility,
+} from "./sensitivity.ts";
 
 const orgId = KinOrgId.make("fixture-org");
 const agentId = KinAgentId.make("fixture-lead");
@@ -34,6 +42,7 @@ it.live.each([
   "supersede-retry",
   "update-provenance",
   "undo-created",
+  "undo-coding-agent",
   "undo",
   "recovered-commit",
   "lost-session-retry",
@@ -143,6 +152,23 @@ it.live.each([
             }),
       );
     }
+    const undoFiles = ["created", "ended", "superseded", "normal"] as const;
+    const undoFile = (id: (typeof undoFiles)[number]) => `claims/${id}.md`;
+    const writeUndoLine = (
+      id: (typeof undoFiles)[number],
+      title: string,
+      fields: Record<string, unknown> = {},
+    ) =>
+      fs.writeFileString(
+        `${source}/${undoFile(id)}`,
+        fixtureItem({ id, kind: "claim", title, sensitive: false, ...fields }),
+      );
+    if (scenario === "undo-coding-agent") {
+      yield* fs.makeDirectory(`${source}/claims`);
+      yield* writeUndoLine("ended", "Ended stock", { invalid_at: "2026-11-02T00:00:00.000Z" });
+      yield* writeUndoLine("superseded", "Old stock", { superseded_by: "normal" });
+      yield* writeUndoLine("normal", "Three boxes");
+    }
     if (scenario.startsWith("deferral-")) {
       yield* fs.makeDirectory(`${source}/deferrals`);
       yield* fs.writeFileString(`${source}/deferrals/def-001.md`, fixtureItem());
@@ -168,6 +194,11 @@ it.live.each([
     if (scenario === "M4-modes")
       yield* git(source, ["update-index", "--chmod=+x", "owner-executable"]);
     yield* commit(source);
+    if (scenario === "undo-coding-agent") {
+      for (const id of undoFiles) yield* writeUndoLine(id, `Updated ${id}`);
+      yield* git(source, ["add", "--", "claims"]);
+      yield* commit(source);
+    }
     if (scenario === "M4-modes") {
       const head = yield* git(source, ["rev-parse", "HEAD"]);
       yield* git(source, [
@@ -585,6 +616,43 @@ it.live.each([
         const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
         yield* writer.discard(orgId, "wake1");
         expect(yield* writer.commitWakeup(orgId, "wake1", "completed")).toEqual(committed);
+        return;
+      }
+      if (scenario === "undo-coding-agent") {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Fixture', '2026-11-08T00:00:00.000Z')`;
+        const base = yield* git(paths.writer, ["rev-parse", "main^"]);
+        const head = yield* git(paths.writer, ["rev-parse", "main"]);
+        const undo = (id: (typeof undoFiles)[number]) =>
+          writer.undoChange(orgId, {
+            agentId,
+            branch: "main",
+            base,
+            commit: head,
+            itemId: KinMemoryItemId.make(id),
+            path: undoFile(id),
+            codingAgent: { personId: KinPersonId.make("owner"), admit: () => Effect.void },
+          });
+        for (const id of ["created", "ended", "superseded"] as const)
+          expect(yield* Effect.flip(undo(id)), id).toMatchObject({
+            reason: "not_allowed",
+            message: "A coding agent's key never deletes or archives anything.",
+          });
+        expect(yield* git(paths.writer, ["rev-parse", "main"])).toBe(head);
+
+        const normal = KinMemoryItemId.make("normal");
+        const current = yield* memory.readItemQuietly(orgId, normal);
+        yield* authorise(orgId, normal, fingerprint(current), "owner_setting");
+        expect(visibility(current, yield* storedLabels(orgId))).toBe("team");
+        expect((yield* undo("normal"))._tag).toBe("undone");
+        const restored = yield* memory.readItemQuietly(orgId, normal);
+        const labels = yield* storedLabels(orgId);
+        expect(restored.head.title).toBe("Three boxes");
+        expect(labels.shared.has(normal)).toBe(false);
+        expect(visibility(restored, labels)).toBe("only_owner");
+        expect(yield* git(remote, ["--git-dir=.", "log", "-1", "--format=%s", "main"])).toBe(
+          `kin(${agentId}): owner (coding agent) undo normal`,
+        );
         return;
       }
       if (scenario === "undo-created" || scenario === "undo") {

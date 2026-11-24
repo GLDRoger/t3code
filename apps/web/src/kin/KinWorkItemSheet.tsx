@@ -43,6 +43,7 @@ import {
   kinBriefBy,
   kinNextStep,
   kinRecordChip,
+  kinRecordHeld,
   kinTaskOrigin,
   kinTaskControls,
   kinTaskWith,
@@ -276,7 +277,8 @@ export function KinWorkItemSheet(
         view={entryView}
         now={now}
         give={
-          !canGive || !entryView.can.give || entryView.assignLabel === null ? null : (
+          !kinRecordHeld({ item: state.item, view: entryView, names, give: canGive })
+            .opens ? null : (
             <Menu>
               <MenuTrigger render={<Button size="sm" variant="outline" disabled={saving} />}>
                 {entryView.assignLabel}
