@@ -1014,21 +1014,28 @@ export const fillKinMock = (
   return value;
 };
 
-/** A kin_connection_call's input as Kin reads it (`readCallArguments`); undefined when it holds no object. */
-export const kinCallInput = (input: Readonly<Record<string, unknown>>) => {
+/** Kin's refusal of a kin_connection_call whose text arguments hold no object, as the server encodes it. */
+export const KIN_CALL_REFUSAL = JSON.stringify({
+  _tag: "KinChatError",
+  reason: "invalid_state",
+  message: CALL_ARGUMENTS_REFUSAL,
+});
+/**
+ * A tool call's input as Kin reads it: a kin_connection_call's text arguments, a swallowed reason
+ * included, become the object they hold (`readCallArguments`); text holding none is refused.
+ */
+export const kinCallRead = <I>(
+  name: string,
+  input: I,
+): { readonly input: I | Record<string, unknown>; readonly refused?: string } => {
+  if (name !== "kin_connection_call" || !isRecord(input)) return { input };
   const read = readCallArguments(
     input.arguments,
     typeof input.reason === "string" ? input.reason : undefined,
   );
-  if (read === undefined) return undefined;
+  if (read === undefined) return { input, refused: KIN_CALL_REFUSAL };
   const { arguments: _arguments, reason: _reason, ...rest } = input;
-  return { ...rest, ...read };
-};
-/** Kin's refusal of a kin_connection_call whose text arguments hold no object, as the server encodes it. */
-export const KIN_CALL_ARGUMENTS_REFUSAL = {
-  _tag: "KinChatError",
-  reason: "invalid_state",
-  message: CALL_ARGUMENTS_REFUSAL,
+  return { input: { ...rest, ...read } };
 };
 
 // Tools whose card or reaction answers the person in the chat, as Kin's own message would.

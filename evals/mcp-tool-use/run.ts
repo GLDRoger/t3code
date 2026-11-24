@@ -82,8 +82,7 @@ import {
   kinLoadedBefore,
   type KinSeatOptions,
   kinSessionOf,
-  KIN_CALL_ARGUMENTS_REFUSAL,
-  kinCallInput,
+  kinCallRead,
   KIN_KEY_PREFIX,
   kinToolVisible,
   kinTurnBlocks,
@@ -524,12 +523,11 @@ export const normalizeToolName = (name: string) => {
 };
 export const normalizeToolInput = (name: string, input: unknown) => {
   const decode = t3InputDecoders.get(normalizeToolName(name));
-  const decoded =
-    decode === undefined ? input : unredact(Option.getOrElse(decode(input), () => input));
-  // Kin reads a connection call's text arguments as the object they hold.
-  if (normalizeToolName(name) === "kin_connection_call" && isRecord(decoded))
-    return kinCallInput(decoded) ?? decoded;
-  if (decode !== undefined) return decoded;
+  if (decode !== undefined)
+    return kinCallRead(
+      normalizeToolName(name),
+      unredact(Option.getOrElse(decode(input), () => input)),
+    ).input;
   return normalizeToolName(name) === "Bash" && isRecord(input)
     ? { ...input, command: input.command ?? input.cmd }
     : typeof input === "string" && normalizeToolName(name) === "Edit"
@@ -2182,12 +2180,9 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     const error = `InputValidationError: ${call.name} is deferred. Load it with ToolSearch first.`;
     return failed(`<tool_use_error>${error}</tool_use_error>`);
   }
-  // Kin refuses a connection call whose text arguments hold no object before any mocked result.
-  if (name === "kin_connection_call") {
-    const read = kinCallInput(input);
-    if (read === undefined) return failed(valueText(KIN_CALL_ARGUMENTS_REFUSAL));
-    input = read;
-  }
+  const kin = kinCallRead(name, input);
+  if (kin.refused !== undefined) return failed(kin.refused);
+  input = kin.input;
   if (name === "ToolSearch") {
     const max = typeof input.max_results === "number" ? input.max_results : 5;
     const found = searchTools(base, valueText(input.query), max);
