@@ -28,6 +28,7 @@ import {
   KinGoalSaveInput,
   KinWatchActInput,
   KinWatchState,
+  KinMoneyBudgets,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
@@ -54,6 +55,7 @@ import { KinServer, type Services } from "../KinServer.ts";
 import { toolVisibility } from "../mcp/toolPolicy.ts";
 import { orgOwner, toolName, toolNamesOf } from "../work/toolNames.ts";
 import {
+  budgets,
   findDocs,
   listClients,
   listProjects,
@@ -1091,6 +1093,16 @@ export const TasksKeyToolkit = Toolkit.make(
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
+  Tool.make("budgets", {
+    ...shared,
+    description:
+      "Read this month’s budgets as an owner or co-owner sees them in Kin. Figures omit privately labelled entries and budgets on private projects.",
+    success: Schema.Struct({ ...KinMoneyBudgets.fields, privateLeftOut: Schema.Boolean }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   Tool.make("search_memory", {
     ...shared,
     description:
@@ -1134,9 +1146,10 @@ const GATED: Partial<
   write_doc: readsDocs,
 };
 
-const OWNER_LISTED = new Set(["set_project_note", "restore_doc_version", "save_goal"]);
+const OWNER_LISTED = new Set(["set_project_note", "restore_doc_version", "save_goal", "budgets"]);
 const TOOL_SECTIONS: Readonly<Partial<Record<string, SectionId>>> = {
   money_summary: "money",
+  budgets: "money",
   open_client: "clients",
   open_project: "clients",
   create_project: "clients",
@@ -1503,6 +1516,11 @@ const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
       asHolder((holder) =>
         requireSection(holder, "money").pipe(Effect.andThen(moneySummary(holder))),
       ),
+    ),
+  ),
+  budgets: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.budgets")(() =>
+      asHolder((holder) => inSection("budgets", holder, budgets(holder))),
     ),
   ),
   search_memory: McpToolAccess.reads(

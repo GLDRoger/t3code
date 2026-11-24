@@ -204,8 +204,11 @@ export const outlook = Effect.fn("KinMoneyAnswers.rpc.outlook")(function* (
   };
 }, workFailure);
 
-const budgetsOf = Effect.fn("KinMoneyAnswers.budgetsOf")(function* (orgId: KinOrgId) {
-  const view = yield* budgetsView(orgId, yield* Clock.currentTimeMillis);
+const budgetsOf = Effect.fn("KinMoneyAnswers.budgetsOf")(function* (
+  orgId: KinOrgId,
+  keyed = false,
+) {
+  const view = yield* budgetsView(orgId, yield* Clock.currentTimeMillis, undefined, keyed);
   return {
     month: view.month,
     budgets: view.budgets.map((one) => ({
@@ -228,9 +231,10 @@ const budgetsOf = Effect.fn("KinMoneyAnswers.budgetsOf")(function* (orgId: KinOr
 export const budgets = Effect.fn("KinMoneyAnswers.rpc.budgets")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinMoneyBudgetsInput,
+  options: { readonly keyed?: boolean } = {},
 ) {
   yield* theOwner(people, input.orgId);
-  return yield* budgetsOf(input.orgId);
+  return yield* budgetsOf(input.orgId, options.keyed);
 }, workFailure);
 
 /** The owner's own set, change or removal of a budget; a retry of one request repeats it. */

@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth } from "./money.ts";
-import { countedEntry, moneyDay, ownerZone, startOfDay } from "./recordRows.ts";
+import { countedEntry, keyWithheld, moneyDay, ownerZone, startOfDay } from "./recordRows.ts";
 
 /**
  * Monthly spending limits on paid expenses: per category, per project, or a category within a
@@ -122,6 +122,7 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
   orgId: KinOrgId,
   now: number,
   month?: string,
+  keyed = false,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
@@ -141,6 +142,12 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
     FROM kin_money_budgets b
     LEFT JOIN kin_records p ON p.org_id = b.org_id AND p.record_id = b.project_id
     WHERE b.org_id = ${orgId}
+      ${
+        keyed
+          ? sql`AND NOT EXISTS (SELECT 1 FROM kin_records r
+        WHERE r.org_id = b.org_id AND r.record_id = b.project_id AND ${keyWithheld(sql)})`
+          : sql``
+      }
     ORDER BY b.category IS NULL, lower(b.category), p.key, b.currency`;
   if (budgets.length === 0) return { month: shown, budgets: [] };
   const spent = yield* sql<{
@@ -152,6 +159,7 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
       AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${from} AND ${moneyDay(sql)} < ${to}
+      ${keyed ? sql`AND NOT ${keyWithheld(sql)}` : sql``}
     ORDER BY r.key`;
   return {
     month: shown,
