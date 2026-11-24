@@ -53,6 +53,7 @@ import { sentMail, SentMailView } from "../connections/Sending.ts";
 import {
   countryFirst,
   countryRefusal,
+  rememberRefused,
   homeCurrency,
   isCountryFirst,
   notRegisteredFact,
@@ -1946,10 +1947,29 @@ export const leadTool = <I, A, E, R>(
     // A refusal's own write rolled back, so its mark is made here, after it.
     const result = yield* body(lead, input).pipe(
       Effect.tapError((error) => (isSensitiveRefusal(error) ? marked : Effect.void)),
+      Effect.tapError((error) =>
+        isKinChatError(error) && isCountryFirst(error) ? refusedForCountry(lead) : Effect.void,
+      ),
     );
     if (showsSensitive(result)) yield* marked;
     return result;
   });
+
+/** Kin wakes this agent in this turn's chat once the company's country is chosen. */
+const refusedForCountry = Effect.fn("KinWorkTools.refusedForCountry")(
+  function* (lead: Lead) {
+    const chat = yield* turnChat(lead);
+    if (chat === undefined) return;
+    yield* rememberRefused({
+      orgId: lead.orgId,
+      agentId: lead.agentId,
+      chatId: chat.chatId,
+      personId: yield* turnAsker(lead),
+      wakeupId: lead.wakeupId,
+    });
+  },
+  Effect.catchCause((cause) => Effect.logWarning("Kin couldn't note a country refusal", cause)),
+);
 
 const NAMED_REFUSALS = 25;
 type Refusal = { readonly label: string; readonly error: KinChatError };

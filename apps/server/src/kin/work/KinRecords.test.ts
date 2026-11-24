@@ -61,7 +61,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { taskNewsBanner } from "./assignNotices.ts";
 import { keepAllDayDays } from "./allDayZone.ts";
 import { importWork } from "./importWork.ts";
-import { newCompanyProfileJson } from "./companyProfile.ts";
+import { countryChosenLine, newCompanyProfileJson } from "./companyProfile.ts";
 import { inheritOutside, markOutside, renderSource } from "../lead/OutsideContent.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
@@ -1592,6 +1592,30 @@ it.effect(
           "Nothing was saved: this company's country isn't chosen yet, and Kin records no money until an owner chooses it in Settings, Company details.",
         ],
       );
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(profile_json, '$.countryWaiting') AS waiting
+          FROM kin_company_profile WHERE org_id = ${orgId}`,
+        [
+          {
+            waiting: JSON.stringify([
+              { agentId: lead, chatId: "lead-chat", personId: mateId, wakeupId: "wake" },
+            ]),
+          },
+        ],
+      );
+      // Choosing the country wakes the agent once, in the chat the teammate asked in, with a line
+      // that names no amount.
+      yield* OwnerMoney.setCompanyProfile([owner], { orgId, rev: 0, country: "GB" });
+      const woken = yield* sql<{ json: string }>`SELECT json FROM kin_events
+        WHERE tag = 'deferral.due'`;
+      assert.lengthOf(woken, 1);
+      assert.deepInclude(JSON.parse(woken[0]!.json), {
+        agentId: lead,
+        subject: { type: "country", country: "GB", currency: "GBP" },
+        askedIn: ["wake"],
+      });
+      assert.notProperty(JSON.parse(woken[0]!.json), "chatId");
+      assert.notMatch(countryChosenLine("GB", "GBP"), /\d/);
       yield* sql`DELETE FROM kin_company_profile WHERE org_id = ${orgId}`;
       // The services check again, so a turn that became shared since the gate is refused too.
       const refused = [
