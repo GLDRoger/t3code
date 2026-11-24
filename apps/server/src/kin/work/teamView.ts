@@ -325,7 +325,7 @@ const moneyKind = (sql: SqlClient.SqlClient) =>
  * What Clients shows this person of `r`'s money: all of it with the Money switch, none without,
  * whichever project they lead. Money's own screens keep `personSees`.
  */
-export const clientMoneySeen = (
+const clientMoneySeen = (
   sql: SqlClient.SqlClient,
   personId: KinPersonId | Statement.Fragment,
 ) => sql`(NOT ${moneyKind(sql)} OR ${placeOn(sql, personId, "sees_money")})`;
