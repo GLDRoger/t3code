@@ -173,7 +173,12 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
     ...(isKey(raw.project) ? { project: raw.project } : {}),
     ...(raw.dates === true ? { dates: true } : {}),
     ...(raw.subscriptions === true ? { subscriptions: true } : {}),
-    ...(raw.bills === true || isBatch(raw.bills) ? { bills: raw.bills } : {}),
+    // `?bills` with no value is every batch, as `bills=true` is.
+    ...(raw.bills === true || raw.bills === ""
+      ? { bills: true }
+      : isBatch(raw.bills)
+        ? { bills: raw.bills }
+        : {}),
     ...(isKey(raw.doc) ? { doc: raw.doc } : {}),
     ...(v === undefined ? {} : { v }),
     ...(isCard(raw.card) ? { card: raw.card } : {}),
@@ -211,7 +216,9 @@ export function kinRecordOf(search: KinPlaceSearch): KinRecordWhere | null {
   if (search.list !== undefined) return { list: search.list };
   if (search.dates === true) return { dates: true };
   if (search.subscriptions === true) return { subscriptions: true };
-  if (search.bills !== undefined) return { bills: search.bills === true ? null : search.bills };
+  // The router lays the raw search under the validated one: a value it dropped is still here.
+  if (search.bills === true) return { bills: null };
+  if (isBatch(search.bills)) return { bills: search.bills };
   return null;
 }
 

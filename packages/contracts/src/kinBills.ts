@@ -11,7 +11,7 @@ import {
   KinPersonId,
   KinWidgetId,
 } from "./kinChat.ts";
-import { KinDay, KinFileRef } from "./kinMoney.ts";
+import { KinDay, KinFileRef, KinSignedMoney } from "./kinMoney.ts";
 import { KinRecordKey } from "./kinWork.ts";
 
 /**
@@ -128,6 +128,10 @@ export const KinBillsAddResult = Schema.Struct({
       expense: Schema.optional(KinRecordKey),
       /** That expense was dropped: restoring it brings it back; this file makes no other. */
       dropped: Schema.optional(Schema.Boolean),
+      /** The id this add sent the file under, so a client can tell which chosen file it is. */
+      attachmentId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+      /** The batch the earlier bill is in. */
+      batchId: Schema.optional(KinBillBatchId),
     }),
   ),
   /** Files that are neither an image nor a PDF, each with why. */
@@ -185,7 +189,17 @@ export const KinBillRow = Schema.Struct({
   check: Schema.optional(Schema.Literals(["amount", "date"])),
   /** The suggested expense made for it, as it stands now. */
   expense: Schema.optional(
-    Schema.Struct({ key: KinRecordKey, rev: NonNegativeInt, title: Schema.String }),
+    Schema.Struct({
+      key: KinRecordKey,
+      rev: NonNegativeInt,
+      title: Schema.String,
+      /** Its own figures, which a kept or dropped bill shows in place of what was read. */
+      vendor: Schema.optional(Label),
+      date: Schema.optional(KinDay),
+      amount: Schema.optional(KinSignedMoney),
+      tax: Schema.optional(KinSignedMoney),
+      category: Schema.optional(Label),
+    }),
   ),
   /** The expense it looks like, for a duplicate. */
   duplicateOf: Schema.optional(Schema.Struct({ key: KinRecordKey, title: Schema.String })),

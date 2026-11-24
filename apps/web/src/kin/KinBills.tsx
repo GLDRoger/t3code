@@ -9,6 +9,7 @@ import {
   kinBillsCanKeepAll,
   kinBillsEntry,
   kinBillsOutcome,
+  kinBillUploadBatch,
   kinBillUploadText,
   type KinBillAction,
   type KinBillRowView,
@@ -231,7 +232,11 @@ export function KinAddBillsDialog(
                 {state.files.map((file) => {
                   const wrong = file.upload._tag === "failed" || file.upload._tag === "refused";
                   const removable =
-                    !busy && file.upload._tag !== "added" && file.upload._tag !== "uploading";
+                    !busy &&
+                    file.upload._tag !== "added" &&
+                    file.upload._tag !== "already" &&
+                    file.upload._tag !== "uploading";
+                  const earlier = kinBillUploadBatch(file.upload);
                   return (
                     <li key={file.id} className="flex min-h-9 items-center gap-3 py-1 text-sm">
                       <span className="min-w-0 flex-1 truncate text-foreground">{file.name}</span>
@@ -245,6 +250,18 @@ export function KinAddBillsDialog(
                       >
                         {kinBillUploadText(file.upload)}
                       </span>
+                      {earlier === null ? null : (
+                        <Button
+                          variant="link"
+                          size="xs"
+                          className="shrink-0"
+                          aria-label={`${KIN_BILLS.review} ${file.name}`}
+                          disabled={busy}
+                          onClick={() => review(earlier)}
+                        >
+                          {KIN_BILLS.review}
+                        </Button>
+                      )}
                       <span className="size-7 shrink-0">
                         {removable ? (
                           <Button
@@ -419,6 +436,7 @@ function KinBillBatchReview(
   props: KinWorkTarget & {
     readonly batchId: string;
     readonly onOpenKey: (key: KinRecordKey) => void;
+    readonly onOpenBatch: (batchId: string) => void;
   },
 ) {
   const { environmentId } = props;
@@ -446,7 +464,15 @@ function KinBillBatchReview(
     })),
   );
   if (state._tag === "refused") return <KinWorkNotice {...KIN_BILLS.onlyOwner} />;
-  if (state._tag === "gone") return <KinWorkNotice {...KIN_BILLS.gone} />;
+  if (state._tag === "gone")
+    return (
+      <>
+        <p role="status" className="px-2 text-sm text-muted-foreground">
+          {KIN_BILLS.noBatch}
+        </p>
+        <KinBillBatches {...props} />
+      </>
+    );
   if (state._tag === "loading") return <Loading />;
   if (state._tag === "failed")
     return <KinLoadFailed what={KIN_BILLS.loadFailed} cause={state.cause} onRetry={refresh} />;

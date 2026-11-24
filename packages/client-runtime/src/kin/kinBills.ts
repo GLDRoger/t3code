@@ -15,6 +15,7 @@ import {
   type KinFileRef,
   type KinOrgId,
   type KinRecordKey,
+  type KinSignedMoney,
   type KinWidget,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -55,6 +56,7 @@ export const KIN_BILLS = {
     uploading: "Uploading…",
     uploaded: "Uploaded",
     added: "Added",
+    already: "Already added before",
   },
   review: "Review",
   /** On Expenses: where bills added in bulk are, once there are any. */
@@ -103,6 +105,8 @@ export const KIN_BILLS = {
     title: "Nothing left here",
     detail: "Every bill added that day was dismissed.",
   },
+  /** Above the batches when a link names one that isn't there. */
+  noBatch: "That batch isn't here.",
   gone: {
     title: "These bills aren't here any more",
     detail: "Open Money to see the bills added since.",
@@ -274,6 +278,37 @@ function kinBillStateLabel(row: KinBillRow) {
       : KIN_BILLS.state.check;
 }
 
+/** A kept or dropped bill is its expense now: that expense's figures, the bill's own number kept. */
+function kinBillExpenseFields(
+  row: KinBillRow,
+  categoryLabel: (category: string) => string = (category) => category,
+): ReadonlyArray<KinBillField> | null {
+  const expense = row.expense;
+  if ((row.state !== "kept" && row.state !== "dropped") || expense === undefined) return null;
+  if (expense.amount === undefined && expense.date === undefined && expense.vendor === undefined)
+    return null;
+  const category = blank(expense.category);
+  const money = (value: KinSignedMoney | undefined) =>
+    value === undefined ? null : kinMoneyText(value, true);
+  return [
+    { key: "vendor", label: KIN_BILLS.field.vendor, value: blank(expense.vendor) },
+    {
+      key: "date",
+      label: KIN_BILLS.field.date,
+      value:
+        expense.date === undefined ? null : dayOfYear.format(new Date(`${expense.date}T00:00:00Z`)),
+    },
+    { key: "amount", label: KIN_BILLS.field.amount, value: money(expense.amount) },
+    { key: "tax", label: KIN_BILLS.field.tax, value: money(expense.tax) },
+    {
+      key: "category",
+      label: KIN_BILLS.field.category,
+      value: category === null ? null : categoryLabel(category),
+    },
+    { key: "number", label: KIN_BILLS.field.number, value: blank(row.read.number) },
+  ];
+}
+
 export function kinBillRowView(
   row: KinBillRow,
   options: {
@@ -282,7 +317,9 @@ export function kinBillRowView(
   } = {},
 ): KinBillRowView {
   const label = kinBillStateLabel(row);
-  const fields = kinBillFields(row.read, options.categoryLabel);
+  const fields =
+    kinBillExpenseFields(row, options.categoryLabel) ??
+    kinBillFields(row.read, options.categoryLabel);
   const problem = row.state === "unreadable" ? (row.problem ?? null) : null;
   const read = fields.flatMap((field) =>
     field.value === null ? [] : [`${field.label} ${field.value}`],
@@ -431,8 +468,10 @@ export type KinBillUpload =
   | { readonly _tag: "uploading" }
   | { readonly _tag: "uploaded"; readonly attachment: KinAttachment }
   | { readonly _tag: "failed"; readonly problem: string }
-  /** Sent in an add the host answered. */
+  /** Sent in an add the host answered, and put in to be read. */
   | { readonly _tag: "added" }
+  /** Sent, but the host had it as a bill already: in `batchId`, when the host says. */
+  | { readonly _tag: "already"; readonly batchId: string | null }
   /** Not a photo or a PDF: never uploaded. */
   | { readonly _tag: "refused"; readonly reason: string };
 
@@ -478,7 +517,8 @@ export const kinBillsAddingStart = <F>(): KinBillsAdding<F> => ({
   problem: null,
 });
 
-const live = (upload: KinBillUpload) => upload._tag !== "added" && upload._tag !== "refused";
+const live = (upload: KinBillUpload) =>
+  upload._tag !== "added" && upload._tag !== "already" && upload._tag !== "refused";
 const sentKey = (attachments: ReadonlyArray<KinAttachment>) =>
   attachments.map((attachment) => attachment.id).join(",");
 
@@ -536,17 +576,29 @@ export function kinBillsStep<F>(state: KinBillsAdding<F>, event: KinBillsEvent<F
           : event.freshId;
       return { ...state, phase: "adding" as const, attempt: { requestId, sent } };
     }
-    case "added":
+    case "added": {
+      // A host that doesn't name the file it had already leaves every sent file "added".
+      const already = new Map(
+        event.result.already.flatMap((one) =>
+          one.attachmentId === undefined ? [] : [[one.attachmentId, one.batchId ?? null] as const],
+        ),
+      );
       return {
         ...state,
         phase: "choosing" as const,
         attempt: null,
         result: event.result,
         problem: null,
-        files: state.files.map((file) =>
-          file.upload._tag === "uploaded" ? { ...file, upload: { _tag: "added" as const } } : file,
-        ),
+        files: state.files.map((file): KinBillDraft<F> => {
+          if (file.upload._tag !== "uploaded") return file;
+          const batchId = already.get(file.upload.attachment.id);
+          return {
+            ...file,
+            upload: batchId === undefined ? { _tag: "added" } : { _tag: "already", batchId },
+          };
+        }),
       };
+    }
     case "addFailed":
       return { ...state, phase: "choosing" as const, problem: event.problem };
   }
@@ -569,6 +621,10 @@ export function kinBillsButton<F>(state: KinBillsAdding<F>) {
     disabled: count === 0 || state.phase !== "choosing",
   };
 }
+
+/** The batch a file already added before is in, to open from its line. */
+export const kinBillUploadBatch = (upload: KinBillUpload) =>
+  upload._tag === "already" ? upload.batchId : null;
 
 export function kinBillUploadText(upload: KinBillUpload) {
   switch (upload._tag) {
