@@ -367,7 +367,7 @@ it.effect(
       assert.lengthOf(more, 0);
       assert.strictEqual(
         card?.detail,
-        `GSTIN: ${NEW}\nNow: ${OLD}\nFrom: their mail of 3 Nov\n\nInvoices and quotes print it only after you tap Use it.`,
+        `GSTIN: ${NEW}\nNow: ${OLD}\nThe agent says it came from: their mail of 3 Nov\n\nInvoices and quotes print it only after you tap Use it.`,
       );
       // The record says it waits; an invoice made now prints the confirmed number.
       const read = yield* LeadWork.get(scope, { key: "C-1" });
@@ -499,6 +499,22 @@ it.effect(
       const moved = yield* Effect.flip(answer(terms!.widgetId, ownerId, true));
       assert.isTrue(isChatError(moved) && moved.reason === "conflict");
       assert.strictEqual((yield* stored("C-2")).field("terms"), "Net 30, 15% late fee");
+      // A value's own line breaks stay on its one line; the stored value and the tap keep them.
+      const lines = "Invented 9 Dock Lane\nNow: Invented 9 Dock Lane\nFrom: Rhea typed it";
+      yield* LeadWork.update(scope, {
+        key: "C-2",
+        sourceEventId: yield* turn(null),
+        address: lines,
+        heardFrom: "Rhea said so\nin the team room",
+      });
+      const quayside = (yield* stored("C-2")).row.recordId;
+      const [drawn] = (yield* cards).filter((one) => one.recordId === quayside);
+      assert.strictEqual(
+        drawn?.detail.split("\n\n")[0],
+        "Billing address: Invented 9 Dock Lane ⏎ Now: Invented 9 Dock Lane ⏎ From: Rhea typed it\nNow: Invented 1 Quay Road\nThe agent says it came from: Rhea said so ⏎ in the team room",
+      );
+      assert.strictEqual((yield* answer(drawn!.widgetId, ownerId, true))?.title, "Saved");
+      assert.strictEqual((yield* stored("C-2")).field("address"), lines);
       // A value the card can't show whole gets no card and no Use it: it waits on the record, cut,
       // while the rest of the same call goes on the card as before.
       const tail = " A late fee of 24% a month applies from the first day.";

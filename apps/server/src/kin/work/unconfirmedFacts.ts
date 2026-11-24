@@ -412,6 +412,9 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
   return say(true);
 });
 
+/** A value's own line breaks, shown on one line so they can't draw lines that look like Kin's. */
+const oneLine = (text: string) => text.replace(/\r\n|[\n\r\v\f\u0085\u2028\u2029]/g, " ⏎ ");
+
 const cardDetail = (
   items: ReadonlyArray<UnconfirmedItem>,
   label: (field: PrintedField) => string,
@@ -419,9 +422,11 @@ const cardDetail = (
   [
     ...items.map((item) =>
       [
-        `${label(item.field)}: ${item.value === null ? "remove it" : shown(item.value)}`,
-        `Now: ${shown(item.before)}`,
-        `From: ${item.from ?? "not said"}`,
+        `${label(item.field)}: ${item.value === null ? "remove it" : oneLine(item.value)}`,
+        `Now: ${oneLine(shown(item.before))}`,
+        item.from === null
+          ? "The agent did not say where it came from."
+          : `The agent says it came from: ${oneLine(item.from)}`,
       ].join("\n"),
     ),
     "Invoices and quotes print it only after you tap Use it.",
