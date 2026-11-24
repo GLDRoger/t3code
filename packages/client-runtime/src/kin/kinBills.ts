@@ -59,7 +59,8 @@ export const KIN_BILLS = {
   review: "Review",
   /** On Expenses: where bills added in bulk are, once there are any. */
   added: "Bills added",
-  batchTitle: (addedAt: string, now: Date) => `Bills added on ${kinBillDay(addedAt, now)}`,
+  batchTitle: (addedAt: string, now: Date) =>
+    `Bills added on ${kinBillDay(addedAt, now)}, ${timeOfDay.format(new Date(addedAt))}`,
   newest: (addedAt: string, now: Date) => `Newest on ${kinBillDay(addedAt, now)}`,
   state: {
     reading: "Reading…",
@@ -116,6 +117,7 @@ export const KIN_BILLS = {
 const dayOfYear = kinWhenFormat("dateYear", { zone: "UTC" });
 const dayInYear = kinWhenFormat("date");
 const dayWithYear = kinWhenFormat("dateYear");
+const timeOfDay = kinWhenFormat("time");
 
 /** "24 Nov" this year, "24 Nov 2025" before it, in the reader's own zone. */
 function kinBillDay(iso: string, now: Date) {
