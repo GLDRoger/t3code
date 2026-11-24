@@ -33,6 +33,7 @@ import {
   type KinConnectionsView,
   type KinConnectionToolMode,
   type KinMyMailbox,
+  type KinMyMailboxRemoveInput,
   type KinMyMailboxSignInStartInput,
   type KinMailboxMoveInput,
   type KinOrgId,
@@ -226,8 +227,6 @@ export const MAILBOX_GONE = "The mailbox it would go from was disconnected, so n
 const MOVE_MAIL_ONLY = "Only a Google or Microsoft mailbox can move. Nothing changed.";
 export const MOVE_PAUSED =
   "This mailbox is paused. Resume it first, then make it your own. Nothing changed.";
-export const MOVE_HAS_OWN =
-  "You already have your own mailbox connected. Make it the company's or disconnect it first. Nothing changed.";
 export const MONEY_CONFIRM =
   "A quote or invoice goes out only on the owner's or a co-owner's Confirm, so nothing was sent.";
 const SEVERAL_ACCOUNTS =
@@ -703,13 +702,13 @@ export class KinConnections extends Context.Service<
       input: KinConnectionRef,
       close?: CloseCards,
     ) => Effect.Effect<KinConnectionsView, KinChatError>;
-    /** The caller's own mailbox: anyone's to connect, see and disconnect, nobody else's. */
+    /** The caller's own mailboxes: anyone's to connect, see and disconnect, nobody else's. */
     readonly mine: Owner<KinConnectionsInput, KinMyMailbox>;
     readonly mineSignInStart: Owner<KinMyMailboxSignInStartInput, KinConnectionSignInStart>;
     readonly mineSignInFinish: Owner<KinConnectionSignInFinishInput, KinMyMailbox>;
     readonly mineRemove: (
       people: People,
-      input: KinConnectionsInput,
+      input: KinMyMailboxRemoveInput,
       close?: CloseCards,
     ) => Effect.Effect<KinMyMailbox, KinChatError>;
     /**
@@ -1289,12 +1288,10 @@ const make = Effect.gen(function* () {
             ${instructionsDigest(listed.instructions)}, ${listed.instructions ?? null},
             ${instructionsDigest(listed.instructions)}, ${now}, ${now}, ${now}, ${now},
             ${row.personId ?? null}, ${key}
-          -- In this statement: a person's own mailbox needs them on the team and none live yet,
-          -- and a mail address is one live connection in the company, whoever's and wherever.
-          WHERE (${row.personId ?? null} IS NULL OR (EXISTS (SELECT 1 FROM kin_people
-              WHERE org_id = ${orgId} AND person_id = ${row.personId ?? null} AND removed_at IS NULL)
-            AND NOT EXISTS (SELECT 1 FROM kin_connections WHERE org_id = ${orgId}
-              AND person_id = ${row.personId ?? null} AND removed_at IS NULL)))
+          -- In this statement: a person's own mailbox needs them on the team, and a mail address
+          -- is one live connection in the company, whoever's and wherever.
+          WHERE (${row.personId ?? null} IS NULL OR EXISTS (SELECT 1 FROM kin_people
+              WHERE org_id = ${orgId} AND person_id = ${row.personId ?? null} AND removed_at IS NULL))
             AND (${key} IS NULL OR NOT EXISTS (SELECT 1 FROM kin_connections WHERE org_id = ${orgId}
               AND account_key = ${key} AND removed_at IS NULL))
           ON CONFLICT (org_id, connection_id) DO NOTHING RETURNING connection_id`.pipe(
@@ -1654,10 +1651,17 @@ const make = Effect.gen(function* () {
       }
       return fence.withPermits(1)(inner);
     }, effect);
-  /** A person's sign-ins still open go with their mailbox or their access. */
+  /** A person's sign-ins still open go with their access. */
   const forgetSignIns = (personId: string) =>
     Effect.sync(() => {
       for (const [state, entry] of pending) if (entry.personId === personId) pending.delete(state);
+    });
+  /** A sign-in again to a mailbox goes with it; the person's others stay open. */
+  const forgetSignInsTo = (connectionId: string) =>
+    Effect.sync(() => {
+      for (const [state, entry] of pending)
+        if (entry.target._tag === "again" && entry.target.connectionId === connectionId)
+          pending.delete(state);
     });
   /**
    * Removes a person's own mailbox under its fence, in one transaction: the row is revoked, its
@@ -1691,7 +1695,7 @@ const make = Effect.gen(function* () {
       ),
     );
     yield* touched(orgId);
-    if (personId !== null) yield* forgetSignIns(personId);
+    if (personId !== null) yield* forgetSignInsTo(connectionId);
     yield* dropKeys([connectionId]);
   });
   /** After a removal commits: the removed connections' keys go. */
@@ -1742,22 +1746,21 @@ const make = Effect.gen(function* () {
     return caller.personId;
   });
   const myMailbox = Effect.fnUntraced(function* (orgId: KinOrgId, personId: string) {
-    const [row] = yield* personConnections(orgId, personId).pipe(provideSql);
+    const rows = yield* personConnections(orgId, personId).pipe(provideSql);
+    const mailboxes = rows.map((row) => ({
+      connectionId: row.connectionId,
+      preset: row.preset,
+      account: row.accountLabel,
+      state: row.state,
+    }));
     const ready = new Set<string>();
     for (const service of MAIL_PRESETS)
       if (Option.isSome(yield* secrets.getClient(service).pipe(Effect.orElseSucceed(Option.none))))
         ready.add(service);
     return {
       orgId,
-      mailbox:
-        row === undefined
-          ? null
-          : {
-              connectionId: row.connectionId,
-              preset: row.preset,
-              account: row.accountLabel,
-              state: row.state,
-            },
+      mailbox: mailboxes[0] ?? null,
+      mailboxes,
       services: MAIL_PRESETS.map((service) => ({
         service,
         label: SIGN_IN_PRESETS[service]?.label ?? service,
@@ -1772,7 +1775,10 @@ const make = Effect.gen(function* () {
   ) {
     return yield* myMailbox(input.orgId, yield* self(people, input.orgId));
   }, settle);
-  /** Signs in to the caller's own mailbox: a new one, or again the one that needs it. */
+  /**
+   * Signs in to one of the caller's own mailboxes again (`connectionId`), or to another one
+   * (`another`). With neither, as a build from before several asks: the oldest again, or a first.
+   */
   const mineSignInStart = Effect.fn("KinConnections.mineSignInStart")(function* (
     people: People,
     input: KinMyMailboxSignInStartInput,
@@ -1781,8 +1787,15 @@ const make = Effect.gen(function* () {
     const service = MAIL_PRESETS.find((one) => one === input.service);
     if (service === undefined)
       return yield* fail("invalid_state", "Your mailbox signs in with Google or Microsoft.");
-    const [own] = yield* personConnections(input.orgId, personId).pipe(provideSql);
-    if (own !== undefined && own.state !== "needs_sign_in")
+    const mine = yield* personConnections(input.orgId, personId).pipe(provideSql);
+    const own =
+      input.connectionId !== undefined
+        ? mine.find((row) => row.connectionId === input.connectionId)
+        : input.another === true
+          ? undefined
+          : mine[0];
+    if (input.connectionId !== undefined && own === undefined) return yield* notFound;
+    if (input.connectionId === undefined && own !== undefined && own.state !== "needs_sign_in")
       return yield* fail(
         "invalid_state",
         "Your mailbox is already connected. Disconnect it first to connect another.",
@@ -1801,16 +1814,23 @@ const make = Effect.gen(function* () {
     yield* finishSignIn(input, personId);
     return yield* myMailbox(input.orgId, personId);
   }, settle);
-  /** Disconnects the caller's own mailbox: its waiting cards close; connecting again is the way back. */
+  /**
+   * Disconnects one of the caller's own mailboxes, the oldest without an id: its waiting cards
+   * close, the others stay as they are; connecting again is the way back.
+   */
   const mineRemove = Effect.fn("KinConnections.mineRemove")(function* (
     people: People,
-    input: KinConnectionsInput,
+    input: KinMyMailboxRemoveInput,
     close: CloseCards = () => Effect.void,
   ) {
     const personId = yield* self(people, input.orgId);
-    for (const row of yield* personConnections(input.orgId, personId).pipe(provideSql))
-      yield* removeRow(input.orgId, row.connectionId, MAILBOX_GONE, close);
-    yield* forgetSignIns(personId);
+    const mine = yield* personConnections(input.orgId, personId).pipe(provideSql);
+    const row =
+      input.connectionId === undefined
+        ? mine[0]
+        : mine.find((one) => one.connectionId === input.connectionId);
+    if (row === undefined && input.connectionId !== undefined) return yield* notFound;
+    if (row !== undefined) yield* removeRow(input.orgId, row.connectionId, MAILBOX_GONE, close);
     return yield* myMailbox(input.orgId, personId);
   }, settle);
 
@@ -1847,8 +1867,6 @@ const make = Effect.gen(function* () {
     if (mailProviderOf(row) === undefined || row.auth !== "oauth" || row.accountLabel === null)
       return yield* fail("invalid_state", MOVE_MAIL_ONLY);
     if (to !== null && row.pausedAt !== null) return yield* fail("invalid_state", MOVE_PAUSED);
-    if (to !== null && (yield* personConnections(orgId, to).pipe(provideSql)).length > 0)
-      return yield* fail("invalid_state", MOVE_HAS_OWN);
     const connectionId = newConnectionId();
     const moved = fenced(
       [row.connectionId],
@@ -1881,10 +1899,8 @@ const make = Effect.gen(function* () {
                 instructions_accepted_text, instructions_accepted_digest, ${now}, ${now},
                 listed_at, last_ok_at, last_error, paused_at, NULL, ${to}, account_key
               FROM kin_connections WHERE org_id = ${orgId} AND connection_id = ${row.connectionId}
-                AND (${to} IS NULL OR NOT EXISTS (SELECT 1 FROM kin_connections
-                  WHERE org_id = ${orgId} AND person_id = ${to} AND removed_at IS NULL))
               RETURNING connection_id`;
-            if (made.length === 0) return yield* fail("invalid_state", MOVE_HAS_OWN);
+            if (made.length === 0) return yield* notFound;
             // An own mailbox's tools are on as Kin marks them, as at its sign-in (`insertConnection`).
             const own = to === null ? 0 : 1;
             yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,

@@ -97,7 +97,7 @@ export const liveConnections = Effect.fn("KinConnectionRows.live")(function* (or
     ORDER BY created_at, connection_id`;
 });
 
-/** `personId`'s own live mailbox connections: at most one, by `KinConnections.mineSignInFinish`. */
+/** `personId`'s own live mailbox connections, oldest first. */
 export const personConnections = Effect.fn("KinConnectionRows.person")(function* (
   orgId: KinOrgId,
   personId: string,

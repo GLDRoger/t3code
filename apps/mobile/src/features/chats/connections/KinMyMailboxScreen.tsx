@@ -3,9 +3,10 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { kinFailureText, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_MY_MAILBOX_COPY as COPY,
+  kinMyMailboxes,
   kinMyMailboxLine,
 } from "@t3tools/client-runtime/kin/kinConnections";
-import type { KinConnectionPreset } from "@t3tools/contracts";
+import type { KinConnectionId, KinConnectionPreset, KinOwnMailbox } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -54,12 +55,23 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
-  const signIn = async (service: KinConnectionPreset) => {
+  const all = view === null ? [] : kinMyMailboxes(view);
+  /** A first mailbox, another beside those connected, or one of them again. */
+  const signIn = async (service: KinConnectionPreset, again?: KinConnectionId) => {
     setBusy(true);
     setProblem(null);
     const started = await start({
       environmentId,
-      input: { orgId, service, returnTo: kinSignInReturn() },
+      input: {
+        orgId,
+        service,
+        returnTo: kinSignInReturn(),
+        ...(again !== undefined
+          ? { connectionId: again }
+          : all.length > 0
+            ? { another: true }
+            : {}),
+      },
     });
     if (!AsyncResult.isSuccess(started)) {
       setBusy(false);
@@ -73,18 +85,16 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
     if (done !== null && !AsyncResult.isSuccess(done))
       setProblem(kinFailureText(done, "finish the sign-in"));
   };
-  const disconnect = async () => {
+  const disconnect = async (connectionId: KinConnectionId) => {
     setBusy(true);
     setProblem(null);
-    const done = await remove({ environmentId, input: { orgId } });
+    const done = await remove({ environmentId, input: { orgId, connectionId } });
     setBusy(false);
     if (!AsyncResult.isSuccess(done)) setProblem(kinFailureText(done, "disconnect your mailbox"));
   };
 
   const line = view === null ? null : kinMyMailboxLine(view);
-  const connected = view?.mailbox ?? null;
-  const confirmGive = () => {
-    if (connected === null) return;
+  const confirmGive = (connected: KinOwnMailbox) => {
     Dialog.alert(COPY.makeCompanysTitle(connected.account ?? COPY.title), COPY.makeCompanysDetail, [
       { text: "Cancel", style: "cancel" },
       {
@@ -123,7 +133,7 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
             ) : (
               <AppActivityIndicator />
             )
-          ) : connected === null ? (
+          ) : all.length === 0 ? (
             <ListSection footer={line.text}>
               {view.services.map((service) => (
                 <ListActionRow
@@ -137,27 +147,48 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
               ))}
             </ListSection>
           ) : (
-            <ListSection
-              title={`${connected.account ?? COPY.title} · ${COPY.yours}`}
-              footer={line.text}
-            >
-              {line._tag === "signIn" && connected.preset !== null ? (
-                <ListActionRow
-                  label={COPY.signInAgain}
-                  loading={busy}
-                  onPress={() => void signIn(connected.preset!)}
-                />
-              ) : null}
-              {canMove ? (
-                <ListActionRow label={COPY.makeCompanys} loading={busy} onPress={confirmGive} />
-              ) : null}
-              <ListActionRow
-                label={COPY.disconnect}
-                tone="danger"
-                loading={busy}
-                onPress={() => void disconnect()}
-              />
-            </ListSection>
+            <>
+              {all.map((mailbox, index) => (
+                <ListSection
+                  key={mailbox.connectionId}
+                  title={`${mailbox.account ?? COPY.title} · ${COPY.yours}`}
+                  {...(index === all.length - 1 ? { footer: line.text } : {})}
+                >
+                  {mailbox.state === "needs_sign_in" && mailbox.preset !== null ? (
+                    <ListActionRow
+                      label={COPY.signInAgain}
+                      loading={busy}
+                      onPress={() => void signIn(mailbox.preset!, mailbox.connectionId)}
+                    />
+                  ) : null}
+                  {canMove ? (
+                    <ListActionRow
+                      label={COPY.makeCompanys}
+                      loading={busy}
+                      onPress={() => confirmGive(mailbox)}
+                    />
+                  ) : null}
+                  <ListActionRow
+                    label={COPY.disconnect}
+                    tone="danger"
+                    loading={busy}
+                    onPress={() => void disconnect(mailbox.connectionId)}
+                  />
+                </ListSection>
+              ))}
+              <ListSection title={COPY.connectAnother}>
+                {view.services.map((service) => (
+                  <ListActionRow
+                    key={service.service}
+                    label={COPY.connect(service.label)}
+                    {...(service.ready ? {} : { description: COPY.notReady(service.label) })}
+                    disabled={!service.ready}
+                    loading={busy}
+                    onPress={() => void signIn(service.service)}
+                  />
+                ))}
+              </ListSection>
+            </>
           )}
         </ScreenScrollView>
       </ScreenContent>

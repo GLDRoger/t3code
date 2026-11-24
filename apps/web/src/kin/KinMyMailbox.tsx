@@ -1,6 +1,7 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   KIN_MY_MAILBOX_COPY as COPY,
+  kinMyMailboxes,
   kinMyMailboxLine,
 } from "@t3tools/client-runtime/kin/kinConnections";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -9,13 +10,16 @@ import type {
   KinConnectionId,
   KinConnectionPreset,
   KinOrgId,
+  KinOwnMailbox,
   KinPersonMailbox,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
+import { PlusIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "../components/ui/button";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
@@ -45,7 +49,7 @@ export function KinMyMailbox(props: Target) {
   const remove = useAtomCommand(kinClient.myMailboxRemove, { reportFailure: false });
   const move = useAtomCommand(kinClient.mailboxMove, { reportFailure: false });
   const canMove = useAtomValue(kinClient.mailboxMove.permissionAtom(environmentId));
-  const [moving, setMoving] = useState(false);
+  const [moving, setMoving] = useState<KinOwnMailbox | null>(null);
   const [waiting, setWaiting] = useState<{ host: string; url: string; opened: boolean } | null>(
     null,
   );
@@ -62,14 +66,25 @@ export function KinMyMailbox(props: Target) {
       </KinSettingsSection>
     );
   const line = kinMyMailboxLine(view);
-  const signIn = async (service: KinConnectionPreset) => {
+  const all = kinMyMailboxes(view);
+  /** A first mailbox, another beside those connected, or one of them again. */
+  const signIn = async (service: KinConnectionPreset, again?: KinConnectionId) => {
     setBusy(true);
     setProblem(null);
     // Opened on the tap itself, so the browser lets it through; the address follows.
     const popup = openSignInWindow();
     const started = await start({
       environmentId,
-      input: { orgId, service, returnTo: "web" },
+      input: {
+        orgId,
+        service,
+        returnTo: "web",
+        ...(again !== undefined
+          ? { connectionId: again }
+          : all.length > 0
+            ? { another: true }
+            : {}),
+      },
     });
     setBusy(false);
     if (!AsyncResult.isSuccess(started)) {
@@ -84,14 +99,13 @@ export function KinMyMailbox(props: Target) {
       opened: popup !== null,
     });
   };
-  const disconnect = async () => {
+  const disconnect = async (connectionId: KinConnectionId) => {
     setBusy(true);
     setProblem(null);
-    const done = await remove({ environmentId, input: { orgId } });
+    const done = await remove({ environmentId, input: { orgId, connectionId } });
     setBusy(false);
     if (!AsyncResult.isSuccess(done)) setProblem(kinFailureText(done, "disconnect your mailbox"));
   };
-  const connected = view.mailbox;
   const giveToCompany = async (connectionId: KinConnectionId) => {
     setBusy(true);
     setProblem(null);
@@ -100,73 +114,112 @@ export function KinMyMailbox(props: Target) {
     if (!AsyncResult.isSuccess(done)) setProblem(kinFailureText(done, COPY.moving));
   };
   return (
-    <KinSettingsSection title={COPY.title} description={line.text} problem={problem}>
-      {connected === null ? (
-        view.services.map((service) => (
-          <KinSettingsRow
-            key={service.service}
-            title={service.label}
-            wrap
-            detail={service.ready ? undefined : COPY.notReady(service.label)}
-            control={
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={!service.ready || busy}
-                onClick={() => void signIn(service.service)}
-              >
-                {COPY.connect(service.label)}
-              </Button>
-            }
-          />
-        ))
-      ) : (
-        <KinSettingsRow
-          title={connected.account ?? COPY.title}
-          detail={COPY.yours}
-          status={
-            line._tag === "signIn" ? (
-              <KinSettingsStatus tone="attention">{COPY.signInAgain}</KinSettingsStatus>
-            ) : null
-          }
-          control={
-            <div className="flex gap-1">
-              {line._tag === "signIn" && connected.preset !== null ? (
+    <KinSettingsSection
+      title={COPY.title}
+      description={line.text}
+      problem={problem}
+      action={
+        all.length === 0 ? undefined : (
+          <Menu>
+            <MenuTrigger render={<Button size="xs" variant="outline" disabled={busy} />}>
+              <PlusIcon />
+              {COPY.connectAnother}
+            </MenuTrigger>
+            <MenuPopup align="end">
+              {view.services.map((service) => (
+                <MenuItem
+                  key={service.service}
+                  disabled={!service.ready}
+                  onClick={() => void signIn(service.service)}
+                >
+                  {service.ready ? service.label : COPY.notReady(service.label)}
+                </MenuItem>
+              ))}
+            </MenuPopup>
+          </Menu>
+        )
+      }
+    >
+      {all.length === 0
+        ? view.services.map((service) => (
+            <KinSettingsRow
+              key={service.service}
+              title={service.label}
+              wrap
+              detail={service.ready ? undefined : COPY.notReady(service.label)}
+              control={
                 <Button
                   size="xs"
                   variant="outline"
-                  disabled={busy}
-                  onClick={() => void signIn(connected.preset!)}
+                  disabled={!service.ready || busy}
+                  onClick={() => void signIn(service.service)}
                 >
-                  {COPY.signInAgain}
+                  {COPY.connect(service.label)}
                 </Button>
-              ) : null}
-              {canMove ? (
-                <Button size="xs" variant="outline" disabled={busy} onClick={() => setMoving(true)}>
-                  {COPY.makeCompanys}
-                </Button>
-              ) : null}
-              <Button size="xs" variant="ghost" disabled={busy} onClick={() => void disconnect()}>
-                {COPY.disconnect}
-              </Button>
-            </div>
-          }
-        />
-      )}
+              }
+            />
+          ))
+        : all.map((mailbox) => {
+            const lapsed = mailbox.state === "needs_sign_in";
+            return (
+              <KinSettingsRow
+                key={mailbox.connectionId}
+                title={mailbox.account ?? COPY.title}
+                detail={COPY.yours}
+                status={
+                  lapsed ? (
+                    <KinSettingsStatus tone="attention">{COPY.signInAgain}</KinSettingsStatus>
+                  ) : null
+                }
+                control={
+                  <div className="flex gap-1">
+                    {lapsed && mailbox.preset !== null ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => void signIn(mailbox.preset!, mailbox.connectionId)}
+                      >
+                        {COPY.signInAgain}
+                      </Button>
+                    ) : null}
+                    {canMove ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => setMoving(mailbox)}
+                      >
+                        {COPY.makeCompanys}
+                      </Button>
+                    ) : null}
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => void disconnect(mailbox.connectionId)}
+                    >
+                      {COPY.disconnect}
+                    </Button>
+                  </div>
+                }
+              />
+            );
+          })}
       <KinConfirm
         ask={
-          moving && connected !== null
-            ? {
-                title: COPY.makeCompanysTitle(connected.account ?? COPY.title),
+          moving === null
+            ? null
+            : {
+                title: COPY.makeCompanysTitle(moving.account ?? COPY.title),
                 detail: COPY.makeCompanysDetail,
                 action: COPY.makeCompanysAction,
               }
-            : null
         }
         onConfirm={() => {
-          if (connected !== null) void giveToCompany(connected.connectionId);
+          if (moving !== null) void giveToCompany(moving.connectionId);
         }}
-        onClose={() => setMoving(false)}
+        onClose={() => setMoving(null)}
       />
       {waiting === null ? null : (
         <div className="px-4 py-3">

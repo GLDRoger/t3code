@@ -516,10 +516,11 @@ GitHub, and others. Each mail account reads, and sends only on your Confirm. Tel
 account is for ("accounts@ is for invoices") and it sends from the right one. A reply always goes
 from the account and thread the email is in.
 
-Anyone can also connect their own mail under **Settings → Connections → Your mailbox**. It is read
-only in their own chat with an agent, and only they confirm what goes from it. An account an owner
-or co-owner connected as the company's can become theirs without a new sign-in: open it and choose
-**Make this my own mailbox**. **Make this the company's mailbox** under Your mailbox moves it back.
+Anyone can also connect their own mail under **Settings → Connections → Your mailboxes**, one
+account or several (**Connect another mailbox**). Each is read only in their own chat with an agent,
+and only they confirm what goes from it. An account an owner or co-owner connected as the company's
+can become theirs without a new sign-in: open it and choose **Make this my own mailbox**. **Make
+this the company's mailbox** on one of Your mailboxes moves it back.
 From then on Kin watches it, or stops watching it, for the company; what it already made from that
 mailbox stays.
 

@@ -528,11 +528,11 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
           AND r.party_id = ${task.partyId} AND ${seenBy(sql, viewer)}
           AND trim(COALESCE(json_extract(r.fields_json, '$.email'), '')) <> ''
         ORDER BY lower(r.title), r.key LIMIT 1`;
-  const [mailbox] = yield* personConnections(orgId, personId);
-  const address =
-    mailbox === undefined || mailbox.state !== "active" || mailbox.pausedAt !== null
-      ? undefined
-      : (mailbox.accountLabel ?? mailbox.label);
+  // Of several, the oldest that can send; the agent may still pick another of theirs.
+  const mailbox = (yield* personConnections(orgId, personId)).find(
+    (row) => row.state === "active" && row.pausedAt === null,
+  );
+  const address = mailbox === undefined ? undefined : (mailbox.accountLabel ?? mailbox.label);
   return {
     text:
       address !== undefined && contact !== undefined

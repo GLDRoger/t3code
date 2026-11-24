@@ -118,6 +118,9 @@ describe("Your mailbox", () => {
     await using _screen = await render(screen());
     await expect.element(page.getByText("needs signing in again", { exact: false })).toBeVisible();
     await userEvent.click(page.getByRole("button", { name: "Sign in again" }).last());
-    expect(host.started).toEqual([{ orgId: "org-1", service: "google", returnTo: "web" }]);
+    // The row's own mailbox, by id: several may be connected.
+    expect(host.started).toEqual([
+      { orgId: "org-1", service: "google", returnTo: "web", connectionId: "conn-mine" },
+    ]);
   });
 });
