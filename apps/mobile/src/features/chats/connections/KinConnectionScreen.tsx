@@ -158,10 +158,11 @@ function ConnectionRecord(props: {
       },
     ]);
 
+  // iOS cuts an alert title after two lines, so a long address goes in the message.
   const confirmTake = () =>
     Dialog.alert(
-      MINE.makeMineTitle(connection.accountLabel ?? connection.label),
-      MINE.makeMineDetail,
+      `${MINE.makeMine}?`,
+      `${connection.accountLabel ?? connection.label}\n\n${MINE.makeMineDetail}`,
       [
         { text: "Cancel", style: "cancel" },
         {

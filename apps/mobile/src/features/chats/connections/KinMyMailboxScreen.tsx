@@ -98,23 +98,28 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
 
   const line = view === null ? null : kinMyMailboxLine(view);
   const confirmGive = (connected: KinOwnMailbox) => {
-    Dialog.alert(COPY.makeCompanysTitle(connected.account ?? COPY.title), COPY.makeCompanysDetail, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: COPY.makeCompanysAction,
-        onPress: () => {
-          setBusy(true);
-          setProblem(null);
-          void move({
-            environmentId,
-            input: { orgId, connectionId: connected.connectionId, to: "company" },
-          }).then((done) => {
-            setBusy(false);
-            if (!AsyncResult.isSuccess(done)) setProblem(kinFailureText(done, COPY.moving));
-          });
+    // iOS cuts an alert title after two lines, so a long address goes in the message.
+    Dialog.alert(
+      `${COPY.makeCompanys}?`,
+      `${connected.account ?? COPY.title}\n\n${COPY.makeCompanysDetail}`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: COPY.makeCompanysAction,
+          onPress: () => {
+            setBusy(true);
+            setProblem(null);
+            void move({
+              environmentId,
+              input: { orgId, connectionId: connected.connectionId, to: "company" },
+            }).then((done) => {
+              setBusy(false);
+              if (!AsyncResult.isSuccess(done)) setProblem(kinFailureText(done, COPY.moving));
+            });
+          },
         },
-      },
-    ]);
+      ],
+    );
   };
   return (
     <View collapsable={false} className="flex-1 bg-screen">
