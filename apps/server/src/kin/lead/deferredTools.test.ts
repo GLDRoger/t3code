@@ -11,6 +11,7 @@ import contextBudget from "../mcp/agentContextBudget.json" with { type: "json" }
 import { KinPulseToolkit } from "../pulse/mcp.ts";
 import { KinSalesToolkit } from "../sales/mcp.ts";
 import { KinSocialToolkit } from "../social/mcp.ts";
+import { KinBillToolkit } from "../work/mcp/billTools.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
@@ -22,6 +23,7 @@ const kinTools = [
   KinLeadToolkit,
   KinWorkToolkit,
   KinStatementToolkit,
+  KinBillToolkit,
   KinDocsToolkit,
   KinDocumentToolkit,
   KinPictureToolkit,

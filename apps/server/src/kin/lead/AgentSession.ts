@@ -224,6 +224,8 @@ const threadSeat = Effect.fn("KinAgentSession.threadSeat")(
 const SEAT_HOME: Readonly<Record<string, string>> = {
   statement_read: "finance",
   statement_rows: "finance",
+  bills_add: "finance",
+  bill_read: "finance",
   money_query: "finance",
   money_summary: "finance",
   payment_record: "finance",

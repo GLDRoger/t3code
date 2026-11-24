@@ -68,6 +68,11 @@ import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
 import { KinStatementToolkit } from "../../apps/server/src/kin/work/mcp/statementTools.ts";
+import { KinBillToolkit } from "../../apps/server/src/kin/work/mcp/billTools.ts";
+import { readAnswer } from "../../apps/server/src/kin/work/bills.ts";
+import { billTurnText } from "../../apps/server/src/kin/work/billTurn.ts";
+import { addAnswer } from "../../apps/server/src/kin/work/leadBills.ts";
+import { PRESETS } from "../../apps/server/src/kin/work/registers.ts";
 import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
@@ -171,6 +176,7 @@ export const KIN_TOOLKITS = [
   KinLeadToolkit,
   KinWorkToolkit,
   KinStatementToolkit,
+  KinBillToolkit,
   KinDocsToolkit,
   KinDocumentToolkit,
   KinPictureToolkit,
@@ -198,6 +204,7 @@ const LEAD = names(
   KinLeadToolkit,
   KinWorkToolkit,
   KinStatementToolkit,
+  KinBillToolkit,
   KinDocsToolkit,
   KinDocumentToolkit,
   KinPictureToolkit,
@@ -493,6 +500,17 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
     .replaceAll("{{HEAD_START_WAKE}}", HEAD_START_WAKE)
+    // A quiet bills turn's section for files named as the bill ids Kin gives them (`billTurn.ts`).
+    .replace(/\{\{BILLS_TURN:([^}]+)\}\}/g, (_, names: string) =>
+      billTurnText(
+        names.split(",").map((name) => ({
+          id: name.split(".")[0]!,
+          image: !name.endsWith(".pdf"),
+          name,
+        })),
+        PRESETS.expenses.categories,
+      ),
+    )
     .replace(/\{\{DRAFT_DOCUMENT:([^}]+)\}\}/g, (_, name: string) => DRAFT_DOCUMENT(name))
     .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
@@ -593,6 +611,10 @@ const docReadAnswer = (input: {
 };
 
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
+  billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
+  billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>
+    readAnswer(input.bill, input.outcome),
   // numbers_watch's answer for numbers not watched yet: the owner's card lines, as Kin draws them.
   numbersWatch: (input: { numbers: unknown; feed: unknown }) =>
     proposedAnswer(

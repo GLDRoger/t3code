@@ -132,6 +132,8 @@ export const OUTSIDE_TOOLS = {
   numbers_watch: "refused",
   statement_read: "allowed",
   statement_rows: "allowed",
+  bills_add: "allowed",
+  bill_read: "allowed",
   kin_document: recipeOnly,
   kin_recipes: "allowed",
   kin_issue: "allowed",

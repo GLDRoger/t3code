@@ -44,6 +44,7 @@ import * as KinFloor from "../floor/KinFloor.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Bills from "./bills.ts";
+import { billTurn } from "./billTurn.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { moneySummary } from "./moneyViews.ts";
 import { newExpense } from "./ownerMoneyAnswers.ts";
@@ -351,6 +352,16 @@ describe("bills in bulk", () => {
           events.map((event) => event._tag),
           ["bills.read"],
         );
+        const event = events[0]!;
+        assert.strictEqual(event._tag, "bills.read");
+        if (event._tag !== "bills.read") return;
+        const turn = (yield* billTurn(orgId, event))!;
+        assert.deepStrictEqual(
+          turn.attachments.map((file) => file.name),
+          ["B1.png", "B2.png", "B3.png"],
+        );
+        assert.include(turn.text, "B1 is image 1, B2 is image 2, B3 is image 3.");
+        assert.include(turn.text, "write exactly NO_REPLY.");
 
         assert.deepStrictEqual(
           yield* read({

@@ -21,6 +21,28 @@ import { PDF_PAGE_IMAGES, type PageBudget, renderPdfPages } from "./pdfPageImage
 /** About 50k tokens across a turn's documents: a long contract, not a book. */
 export const TURN_TEXT_CHARS = 200_000;
 
+/**
+ * A turn's own files, newest kept: past 20 images a request's images shrink on Claude, and its
+ * adapter carries 28 MB of base64, which 20 MB of images (PDF pages counted after them) fits.
+ */
+export const TURN_FILES = { count: 20, imageBytes: PDF_PAGE_IMAGES.bytesPerTurn };
+
+/** The files of `files` a turn takes, newest kept, in the order they were sent; and how many not. */
+export const turnFiles = <A extends Pick<ChatAttachment, "type" | "mimeType" | "sizeBytes">>(
+  files: ReadonlyArray<A>,
+) => {
+  const newest: Array<A> = [];
+  let bytes = 0;
+  for (const file of files.toReversed()) {
+    const image = file.type === "image" || isProviderSendTurnSupportedImageMimeType(file.mimeType);
+    if (newest.length + 1 > TURN_FILES.count) break;
+    if (image && bytes + file.sizeBytes > TURN_FILES.imageBytes) break;
+    if (image) bytes += file.sizeBytes;
+    newest.push(file);
+  }
+  return { kept: newest.toReversed(), left: files.length - newest.length };
+};
+
 const KIN_FILES = KIN_ATTACHMENT_ID_PREFIX.slice(0, -1);
 const PAGE_IMAGE_VERSION = 1;
 
@@ -105,10 +127,11 @@ export class KinTurnContent extends Context.Service<
           readonly attachments: ReadonlyArray<ChatAttachment>;
         }) {
           if (input.attachments.length === 0) return input;
+          const { kept, left } = turnFiles(input.attachments);
           const seen = (attachment: ChatAttachment) =>
             attachment.type === "image" &&
             isProviderSendTurnSupportedImageMimeType(attachment.mimeType);
-          const own = input.attachments.filter(seen);
+          const own = kept.filter(seen);
           // Claude's adapter carries 28 MB of base64 a request: the turn's own pictures come first.
           const budget: PageBudget = {
             pages: PDF_PAGE_IMAGES.pagesPerTurn,
@@ -125,9 +148,14 @@ export class KinTurnContent extends Context.Service<
             chars -= kept.length;
             return `[${heading}${cut ? `, cut at ${kept.length} characters` : ""}]\n${kept}\n[End of "${name}"]`;
           };
-          const lines: Array<string> = [];
+          const lines: Array<string> =
+            left === 0
+              ? []
+              : [
+                  `[${left} of the attached files ${left === 1 ? "isn't" : "aren't"} shown: too many for one turn. bills_add reads bills and receipts among them in the background.]`,
+                ];
           const pages: Array<ChatAttachment> = [];
-          for (const attachment of input.attachments) {
+          for (const attachment of kept) {
             if (seen(attachment)) continue;
             const file = resolveAttachmentPath({ attachmentsDir, attachment });
             const named = `[Attached ${attachment.type} "${attachment.name}"`;

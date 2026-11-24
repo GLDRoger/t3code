@@ -188,6 +188,45 @@ it.effect(
     }).pipe(Effect.provide(layer("kin-turn-content-cut-"))),
 );
 
+it.effect(
+  "a turn takes its newest 20 files and 20 MB of images, and says how many it left out",
+  () =>
+    Effect.gen(function* () {
+      const photo = (n: number, sizeBytes = 8): ChatAttachment => ({
+        type: "image",
+        id: `kin-chat-photo-${n}`,
+        name: `IMG_${n}.png`,
+        mimeType: "image/png",
+        sizeBytes,
+      });
+      const content = yield* KinTurnContent;
+      const many = yield* content.prepare({
+        text: "These are this month's bills",
+        attachments: Array.from({ length: 22 }, (_, index) => photo(index)),
+      });
+      assert.deepStrictEqual(
+        many.attachments.map((file) => file.name),
+        Array.from({ length: 20 }, (_, index) => `IMG_${index + 2}.png`),
+      );
+      assert.strictEqual(
+        many.text,
+        "These are this month's bills\n\n[2 of the attached files aren't shown: too many for one turn. bills_add reads bills and receipts among them in the background.]",
+      );
+      const large = yield* content.prepare({
+        text: "Big ones",
+        attachments: [1, 2, 3].map((n) => photo(n, 8 * 1024 * 1024)),
+      });
+      assert.deepStrictEqual(
+        large.attachments.map((file) => file.name),
+        ["IMG_2.png", "IMG_3.png"],
+      );
+      assert.include(large.text, "[1 of the attached files isn't shown:");
+      // Files that fit are the turn's own, with nothing said.
+      const few = yield* content.prepare({ text: "Two", attachments: [photo(1), photo(2)] });
+      assert.deepStrictEqual(few, { text: "Two", attachments: [photo(1), photo(2)] });
+    }).pipe(Effect.provide(layer("kin-turn-content-budget-"))),
+);
+
 it.effect("a stored PDF that Kin deletes takes the page images a turn drew of it along", () =>
   Effect.gen(function* () {
     const lease = file(

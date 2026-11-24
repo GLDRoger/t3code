@@ -58,6 +58,8 @@ import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
 import * as Bills from "../work/bills.ts";
+import { handlers as billHandlers } from "../work/mcp/billHandlers.ts";
+import { KinBillToolkit } from "../work/mcp/billTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
@@ -346,6 +348,7 @@ const registration = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinWorkToolkit), workHandlers),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers),
   McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),
+  McpHttpServer.toolkitRegistration(KinBillToolkit, billHandlers),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPictureToolkit), pictureHandlers),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPulseToolkit), pulseHandlers),
