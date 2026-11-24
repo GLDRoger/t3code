@@ -41,6 +41,7 @@ import { wakeupOfRuns } from "../chat/wakeupRuns.ts";
 import { isSocialTool } from "../social/mcp.ts";
 import { socialSeatThread } from "../social/seat.ts";
 import { seatOf } from "./characterDefaults.ts";
+import { leftToHome, seatHomeOf } from "./seatHome.ts";
 
 const leadT3Tools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
 const codingT3Tools: ReadonlySet<string> = new Set(CODING_T3_TOOLS);
@@ -218,25 +219,6 @@ const threadSeat = Effect.fn("KinAgentSession.threadSeat")(
   ),
 );
 
-/**
- * Money and pipeline tools an engineering or social lead leaves to the seat they belong to, once
- * the company has a lead in it; with none, every lead keeps them.
- */
-const SEAT_HOME: Readonly<Record<string, string>> = {
-  statement_read: "finance",
-  statement_rows: "finance",
-  bills_add: "finance",
-  bill_read: "finance",
-  money_query: "finance",
-  money_summary: "finance",
-  payment_record: "finance",
-  budget_set: "finance",
-  kin_receipt: "finance",
-  pipeline_read: "growth",
-  deal_stages: "growth",
-};
-const LEAVES_TO_HOME: ReadonlySet<string> = new Set(["engineering", "social"]);
-
 /** The name of the lead whose thread this is, or whose turn delegated this task. */
 export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
   function* (threadId: ThreadId) {
@@ -289,10 +271,9 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
     return false;
   if (isKinGitHubTool(name)) return LOGIN_GITHUB_TOOLS.has(name) && (yield* loginConnected);
   if (isSocialTool(name)) return yield* onSocialSeat(threadId);
-  const home = Object.hasOwn(SEAT_HOME, name) ? SEAT_HOME[name] : undefined;
-  if (home !== undefined) {
+  if (seatHomeOf(name) !== undefined) {
     const lead = yield* threadSeat(threadId);
-    return lead === undefined || !LEAVES_TO_HOME.has(lead.seat) || !lead.others.includes(home);
+    return lead === undefined || !leftToHome(name, lead);
   }
   if (!isT3Tool(name)) return true;
   if (!leadT3Tools.has(name) || shared) return false;

@@ -83,6 +83,7 @@ import {
 } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
 import { BILLS_THREAD_PREFIX, billsOnly } from "./billsOnly.ts";
+import { leadListsTool } from "./seatHome.ts";
 import { KinLeadPrompt, STEER_CLOSING, stillJoined } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
@@ -460,6 +461,17 @@ const make = Effect.gen(function* () {
     Effect.forever,
     Effect.forkScoped,
   );
+  /** Whether a turn's files left out are named to `bills_add`: only where the turn can call it. */
+  const offersBillsAdd = Effect.fn("WakeupRunner.offersBillsAdd")(function* (
+    turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
+    shared: boolean,
+  ) {
+    if (shared || (yield* billsOnly(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql))))
+      return false;
+    return yield* leadListsTool(turn.orgId, turn.agentId, "bills_add").pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+  });
   /** Who each finished-task event's work was for (`WorkFor.workFor`), by event id. */
   const finishedFor = Effect.fn("WakeupRunner.finishedFor")(function* (
     orgId: KinOrgId,
@@ -892,6 +904,10 @@ const make = Effect.gen(function* () {
               first,
             }),
             attachments: yield* prompt.attachments({ orgId, events }),
+            offersBillsAdd: yield* offersBillsAdd(
+              row,
+              (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared",
+            ),
           });
           yield* holdFloor;
           if (Option.isSome(bridge))
@@ -1610,15 +1626,16 @@ const make = Effect.gen(function* () {
               workFor,
               ...(lane === undefined ? {} : { lane }),
             });
+            // The prompt recorded who reads this turn; a shared one runs without file tools.
+            const shared =
+              (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
             // What the people in the chat attached to the messages this turn answers, as text and
             // pictures every provider reads alike.
             const { text, attachments } = yield* turnContent.prepare({
               text: built,
               attachments: yield* prompt.attachments({ orgId, events }),
+              offersBillsAdd: yield* offersBillsAdd(row, shared),
             });
-            // The prompt recorded who reads this turn; a shared one runs without file tools.
-            const shared =
-              (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
             // A project per lead, since its root is the provider's cwd: the lead's own checkout.
             const { project } = yield* bootstrapLeadProject(projects, {
               orgId,

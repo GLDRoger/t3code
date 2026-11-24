@@ -200,9 +200,11 @@ it.effect(
         sizeBytes,
       });
       const content = yield* KinTurnContent;
+      // An owner-only turn of a lead that lists bills_add is told it reads the rest.
       const many = yield* content.prepare({
         text: "These are this month's bills",
         attachments: Array.from({ length: 22 }, (_, index) => photo(index)),
+        offersBillsAdd: true,
       });
       assert.deepStrictEqual(
         many.attachments.map((file) => file.name),
@@ -220,10 +222,30 @@ it.effect(
         large.attachments.map((file) => file.name),
         ["IMG_2.png", "IMG_3.png"],
       );
-      assert.include(large.text, "[1 of the attached files isn't shown:");
+      // Any other turn: how many, and no tool it can't call.
+      assert.strictEqual(
+        large.text,
+        "Big ones\n\n[1 of the attached files isn't shown: too many for one turn.]",
+      );
       // Files that fit are the turn's own, with nothing said.
       const few = yield* content.prepare({ text: "Two", attachments: [photo(1), photo(2)] });
       assert.deepStrictEqual(few, { text: "Two", attachments: [photo(1), photo(2)] });
+      // A file that can't be prepared (here a folder where a PDF should be) still leaves the cut.
+      const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const broken = file("kin-chat-broken-pdf", "Broken.pdf", "application/pdf");
+      yield* fs.makeDirectory(resolveAttachmentPath({ attachmentsDir, attachment: broken })!, {
+        recursive: true,
+      });
+      const failed = yield* content.prepare({
+        text: "Bills",
+        attachments: [...Array.from({ length: 22 }, (_, index) => photo(index)), broken],
+      });
+      assert.strictEqual(failed.text, "Bills");
+      assert.deepStrictEqual(
+        failed.attachments.map((one) => one.name),
+        [...Array.from({ length: 19 }, (_, index) => `IMG_${index + 3}.png`), "Broken.pdf"],
+      );
     }).pipe(Effect.provide(layer("kin-turn-content-budget-"))),
 );
 

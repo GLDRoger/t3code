@@ -88,6 +88,8 @@ export class KinTurnContent extends Context.Service<
     readonly prepare: (input: {
       readonly text: string;
       readonly attachments: ReadonlyArray<ChatAttachment>;
+      /** The turn offers `bills_add`, so the files left out are named to it. */
+      readonly offersBillsAdd?: boolean;
     }) => Effect.Effect<{
       readonly text: string;
       readonly attachments: ReadonlyArray<ChatAttachment>;
@@ -129,8 +131,10 @@ export class KinTurnContent extends Context.Service<
         function* (input: {
           readonly text: string;
           readonly attachments: ReadonlyArray<ChatAttachment>;
+          readonly offersBillsAdd?: boolean;
         }) {
-          if (input.attachments.length === 0) return input;
+          if (input.attachments.length === 0)
+            return { text: input.text, attachments: input.attachments };
           const { kept, left } = turnFiles(input.attachments);
           const own = kept.filter(shownAsPicture);
           // Claude's adapter carries 28 MB of base64 a request: the turn's own pictures come first.
@@ -153,7 +157,7 @@ export class KinTurnContent extends Context.Service<
             left === 0
               ? []
               : [
-                  `[${left} of the attached files ${left === 1 ? "isn't" : "aren't"} shown: too many for one turn. bills_add reads bills and receipts among them in the background.]`,
+                  `[${left} of the attached files ${left === 1 ? "isn't" : "aren't"} shown: too many for one turn.${input.offersBillsAdd === true ? " bills_add reads bills and receipts among them in the background." : ""}]`,
                 ];
           const pages: Array<ChatAttachment> = [];
           for (const attachment of kept) {
@@ -235,12 +239,12 @@ export class KinTurnContent extends Context.Service<
             attachments: [...own, ...pages],
           };
         },
-        // A file Kin can't prepare leaves the turn as it was, never stops it.
+        // A file Kin can't prepare leaves the turn its text and the files that fit, never stops it.
         (effect, input) =>
           effect.pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("Kin couldn't prepare a turn's attachments", { cause }).pipe(
-                Effect.as(input),
+                Effect.as({ text: input.text, attachments: turnFiles(input.attachments).kept }),
               ),
             ),
           ),
