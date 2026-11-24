@@ -3,29 +3,40 @@ import {
   type KinRecordKey,
   type KinRecordState,
   type KinWorkPrincipal,
+  type KinWorkHandBackInput,
+  type KinWorkTickStepInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { keySentClientId } from "../chat/keySent.ts";
-import { type CodingAgentConnection, connectionOf, keyHidden } from "../work/codingAgent.ts";
+import {
+  type CodingAgentConnection,
+  connectionOf,
+  connectionReaches,
+  keyHidden,
+} from "../work/codingAgent.ts";
 import { CodingAgentCall } from "../work/keyCall.ts";
-import { requestHashOf as entryHashOf } from "../work/KinRecords.ts";
+import { KinRecords, requestHashOf as entryHashOf } from "../work/KinRecords.ts";
 import * as Clients from "../work/ownerClients.ts";
 import {
   connectionViewer,
   create,
   get,
+  handBack,
+  handOver,
+  nudge,
+  tickStep,
   list,
   listSeen,
   update,
   updateAndGive,
 } from "../work/ownerWork.ts";
 import { requestHashOf } from "../work/recordComments.ts";
-import { workFailure } from "../work/recordRows.ts";
+import { notFound, workFailure } from "../work/recordRows.ts";
 import { comment } from "../work/workComments.ts";
-import { commentResult, taskRows, taskSheet } from "../you/projection.ts";
+import { commentResult, MATERIAL, taskRows, taskSheet } from "../you/projection.ts";
 import { whoNamed } from "./people.ts";
 import type { TasksKeyHolder } from "./TasksKeys.ts";
 
@@ -66,12 +77,14 @@ export const keyed = Effect.fn("KinTasksKey.keyed")(function* <
 export const reachKey = Effect.fn("KinTasksKey.reachKey")(function* (
   holder: TasksKeyHolder,
   key: KinRecordKey,
-) {
+  missing: (key: string) => KinChatError = (key) =>
+    new KinChatError({ reason: "not_found", message: `No ${key} here.` }),
+): Effect.fn.Return<KinRecordKey, KinChatError, SqlClient.SqlClient> {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ id: string }>`SELECT record_id AS id FROM kin_records
     WHERE org_id = ${holder.orgId} AND key = ${key}`.pipe(workFailure);
   if (row !== undefined && (yield* keyHidden(holder.orgId, [row.id]).pipe(workFailure)).size > 0)
-    return yield* new KinChatError({ reason: "not_found", message: `No ${key} here.` });
+    return yield* missing(key);
   return key;
 });
 export const reachable = <K extends KinRecordKey | null | undefined>(
@@ -201,6 +214,62 @@ export const listSeenBy = Effect.fn("KinTasksKey.listSeen")(function* (
     workFailure,
   );
   return { ...rows, next: page.nextCursor };
+});
+
+const withTask = <A, R>(
+  holder: TasksKeyHolder,
+  key: KinRecordKey,
+  run: (people: ReadonlyArray<PersonIdentity>) => Effect.Effect<A, KinChatError, R>,
+) =>
+  keyed(holder, (people) =>
+    Effect.gen(function* () {
+      const row = yield* (yield* KinRecords).get(holder.orgId, key);
+      if (
+        row === undefined ||
+        !(yield* connectionReaches(asPerson(holder).connection, row.recordId).pipe(workFailure))
+      )
+        return yield* notFound(key);
+      return yield* run(people);
+    }),
+  );
+
+export const tickTaskStep = Effect.fn("KinTasksKey.tickTaskStep")(function* (
+  holder: TasksKeyHolder,
+  input: Omit<KinWorkTickStepInput, "orgId">,
+) {
+  const task = yield* withTask(holder, input.key, (people) =>
+    tickStep(people, { orgId: holder.orgId, ...input }),
+  );
+  return { key: task.key, checklist: task.checklist ?? [], material: MATERIAL };
+});
+
+export const handTaskBack = Effect.fn("KinTasksKey.handTaskBack")(function* (
+  holder: TasksKeyHolder,
+  input: Omit<KinWorkHandBackInput, "orgId">,
+) {
+  return yield* withTask(holder, input.key, (people) =>
+    handBack(people, { orgId: holder.orgId, ...input }),
+  );
+});
+
+export const nudgeTask = Effect.fn("KinTasksKey.nudgeTask")(function* (
+  holder: TasksKeyHolder,
+  key: KinRecordKey,
+) {
+  return yield* withTask(holder, key, (people) => nudge(people, { orgId: holder.orgId, key }));
+});
+
+export const handOverTasks = Effect.fn("KinTasksKey.handOverTasks")(function* (
+  holder: TasksKeyHolder,
+  input: { readonly from: string; readonly to: string },
+) {
+  return yield* keyed(holder, (people) =>
+    Effect.gen(function* () {
+      const from = yield* whoNamed(holder, input.from);
+      const to = yield* whoNamed(holder, input.to);
+      return yield* handOver(people, { orgId: holder.orgId, from, to });
+    }),
+  );
 });
 
 /** The other entries a call names, for the write's own reach check (`ownerWork.keyedWrite`). */

@@ -447,7 +447,7 @@ class T3WorkspaceNavigationView(
 
   @Composable
   private fun tabIconPainter(tab: String) = painterResource(
-    if (titles.containsKey(tab)) R.drawable.t3_list else when (tab) {
+    if (tab.startsWith("list:")) R.drawable.t3_list else when (tab) {
       "threads" -> R.drawable.t3_chats
       "pullRequests" -> R.drawable.t3_pull_requests
       "issues" -> R.drawable.t3_issues

@@ -1687,12 +1687,25 @@ features:
         read_doc,
         money_summary,
         search_memory,
+        tick_task_step,
+        hand_task_back,
+        nudge_task,
+        hand_over_tasks,
+        add_link,
+        set_project_note,
+        restore_doc_version,
+        undo_memory_change,
+        budgets,
+        restart_watch,
+        save_goal,
       ]
     note: >-
       A person makes a key for their own coding agent (Claude Code, Codex, Cursor), which acts as
       them through `/kin/you/mcp`: it reads what their own screens show them and does what those
       screens let them do, through the same service methods, and every write is marked as from their
-      coding agent. It sends the person's words to their agents in their own direct chats (marked as
+      coding agent. It can tick and hand back tasks, nudge holders, hand over open tasks, add entry
+      links, pin a project note, restore document versions, undo a shareable memory change, read
+      budgets, restart watches and save goals using the app's permissions. It sends the person's words to their agents in their own direct chats (marked as
       from their coding agent, never counted as their own word, answering nothing), and no agent's
       reply comes back through the key. Anything a person marked private, and everything under a
       private client or project, stays in Kin for every key. A tool whose section is off or whose
@@ -1769,5 +1782,4 @@ unlisted:
   "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
-  "rpc:kin.open.read": Served; no client reads the open list (Needs you and Tasks use their own reads).
-  "rpc:kin.open.subscribe": Served; no host lists "open" in its streams, so no client follows it.
+  "rpc:kin.open.read": Served; clients follow kin.open.subscribe instead, and an agent's list_waiting reads the same list on the host.

@@ -302,7 +302,10 @@ tasks and gives them to people or agents, changes them, comments on them and set
 done; adds and changes clients, contacts, deals, promises and entries on the team's lists; logs
 contact with a client; writes a new version of a doc; records a watched number; reads what waits on
 you; and sends your agents messages in your own chats with them, whose answers you read in Kin.
-Owners and co-owners can also make projects, and with Money draft invoices. Everything it changes,
+It can also tick task steps, hand tasks back or over, nudge holders, add links to entries and restart
+watches. Owners and co-owners can also make projects, pin project notes, restore document versions,
+undo changes to team-readable memory they manage, save goals, read budgets and draft invoices with
+Money. Everything it changes,
 and every message it sends, shows as from your coding agent. Some things stay a tap in Kin itself
 and have no way in through a key: answering cards (Confirm, choices, approvals), sending money or
 mail out of the company, recording or changing money (an invoice draft aside), people and their

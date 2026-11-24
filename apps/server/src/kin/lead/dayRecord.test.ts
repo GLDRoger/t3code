@@ -136,6 +136,11 @@ it.effect(
   () =>
     Effect.gen(function* () {
       yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
+          author_id, body, request_hash, created_at, coding_agent_key)
+        VALUES (${orgId}, 'n2', 'r-W-4', 2, 'person', 'zoya', 'The clinic sent the roster.',
+          'h2', ${from + 10 * HOUR}, 'invented-key')`;
       const owner = yield* dayRecord({
         orgId,
         from,
@@ -151,6 +156,7 @@ it.effect(
         ],
         notes: [
           'W-4 Pilot handoff checklist: note by Rhea (owner): "The clinic confirmed the checklist."',
+          'W-4 Pilot handoff checklist: note by Zoya (coding agent): "The clinic sent the roster."',
         ],
         made: [
           "INV-2 Renewal invoice, Orbit Dental (invoice, suggested, not kept yet), by Finance (you)",

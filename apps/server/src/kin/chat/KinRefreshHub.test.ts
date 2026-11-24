@@ -489,8 +489,8 @@ describe("KinRefreshHub", () => {
         "github/appRepos.ts",
       ],
       kin_budget_limits: ["lead/KinBudget.ts"],
-      // Pause and resume touch `stop` (KinStop.test.ts counts them).
-      kin_org_state: ["lead/KinStop.ts"],
+      // Pause and resume touch `stop`. The heartbeat and pending offline notices have no stop state.
+      kin_org_state: ["lead/KinStop.ts", "host/offlineCatchUp.ts"],
       // A zone change renames due-keyed facts; KinRoutines.configure touches pulse (pinned below).
       kin_pulse_facts: ["pulse/KinPulse.ts", "work/allDayZone.ts"],
       // Lists read only rows a company defined (`built_in = 0`). The deals files write the built-in
@@ -557,6 +557,7 @@ describe("KinRefreshHub", () => {
     assert.deepStrictEqual(watchWriters.toSorted(), [
       "lead/Retirement.ts",
       "persistence/KinRetention.ts",
+      "tasksKey/acts.ts",
       "watches/KinWatchRounds.ts",
       "watches/rpcHandlers.ts",
       "work/deals.ts",

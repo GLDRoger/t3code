@@ -230,6 +230,7 @@ it.effect("a key reaches the tasks its person's screen shows, and changes them a
     // No money and no client on a task: what her Tasks screen shows of it.
     assert.deepStrictEqual(yield* getMine(zoyaKey, hers.key), {
       ...task,
+      checklist: [],
       brief: "Invented brief: two rooms",
       material: MATERIAL,
       comments: [],

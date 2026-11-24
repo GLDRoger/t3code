@@ -124,6 +124,7 @@ import {
   MAIL_SEND_TOOL_NAMES,
   MAIL_TOOL,
   type MailArrival,
+  type MailActivity,
   type Mailbox,
   type MailChange,
   type MailMessage,
@@ -172,6 +173,7 @@ import {
 } from "./Sending.ts";
 import { choiceExpired } from "../widgets/choiceCard.ts";
 import { KinRecords, layer as recordsLayer } from "../work/KinRecords.ts";
+import { readCallArguments } from "./callArguments.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
 import { textLocale } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -329,9 +331,24 @@ export const KinConnectionToolsResult = Schema.Struct({
 export const KinConnectionCallInput = Schema.Struct({
   connection: Schema.String.check(Schema.isMaxLength(200)),
   tool: Schema.String.check(Schema.isMaxLength(200)),
-  arguments: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  // Text is read by `readCallArguments`; its JSON media type keeps it out of the advertised schema.
+  arguments: Schema.optional(
+    Schema.Union([
+      Schema.Record(Schema.String, Schema.Unknown),
+      Schema.String.annotate({ contentMediaType: "application/json" }),
+    ]),
+  ),
   reason: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
 });
+/** A call once text arguments are read (`readCallArguments`): only an object goes further. */
+type CallInput = {
+  readonly connection: string;
+  readonly tool: string;
+  readonly arguments?: Record<string, unknown>;
+  readonly reason?: string;
+};
+export const CALL_ARGUMENTS_REFUSAL =
+  "arguments must be an object matching the tool's input schema.";
 export const KinConnectionCallResult = Schema.Struct({
   quoted: Schema.optional(Schema.String),
   note: Schema.optional(Schema.String),
@@ -362,14 +379,7 @@ export type KinConnectionActivity =
       readonly account: string | null;
       /** Where the vendor's calendar feed stopped; `activitySeen` keeps it with `until`. */
       readonly cursor: string | null;
-      readonly mail: ReadonlyArray<{
-        readonly threadId: string;
-        readonly receivedBy: string | null;
-        readonly subject: string;
-        readonly from: string | null;
-        readonly date: string | null;
-        readonly unread: boolean;
-      }>;
+      readonly mail: MailActivity["mail"];
       readonly calendar: ReadonlyArray<{
         readonly eventId: string;
         readonly summary: string | null;
@@ -2696,7 +2706,7 @@ const make = Effect.gen(function* () {
   const callOn = Effect.fn("KinConnections.callOn")(function* (
     turn: Turn,
     row: ConnectionRow,
-    input: typeof KinConnectionCallInput.Type,
+    input: CallInput,
     base: Omit<Parameters<typeof record>[1], "status">,
   ) {
     const args = input.arguments ?? {};
@@ -2832,8 +2842,11 @@ const make = Effect.gen(function* () {
     return undefined;
   });
 
-  const call = leadOp("call", (scope, input: typeof KinConnectionCallInput.Type) =>
+  const call = leadOp("call", (scope, given: typeof KinConnectionCallInput.Type) =>
     Effect.gen(function* () {
+      const read = readCallArguments(given.arguments, given.reason);
+      if (read === undefined) return yield* fail("invalid_state", CALL_ARGUMENTS_REFUSAL);
+      const input: CallInput = { connection: given.connection, tool: given.tool, ...read };
       const { turn, ownerOnly, reach } = yield* ownerTurn(scope);
       const args = input.arguments ?? {};
       const base: Omit<Parameters<typeof record>[1], "status"> = {

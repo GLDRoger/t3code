@@ -53,6 +53,7 @@ import {
   type Totals,
   type Writer,
 } from "./KinRecords.ts";
+import { CodingAgentCall } from "./keyCall.ts";
 import { fieldList, LISTS, type ListName, parseFields, TEAM_LIST_RESERVED } from "./lists.ts";
 import { milestoneLinks, principalText } from "./projectSpine.ts";
 import { keyNamedFor, personSeesRecord, sheetExtras } from "./recordComments.ts";
@@ -66,6 +67,8 @@ import {
   chatLinksFor,
   endOfDay,
   isClosed,
+  isSuggestion,
+  keyWithheld,
   iso,
   notFound,
   ownerZone,
@@ -1205,7 +1208,7 @@ export const handBack = Effect.fn("KinWork.handBack")(function* (
   );
   const to = toRecord(row, yield* Clock.currentTimeMillis).owner;
   // An agent it goes back to is woken by the write; a person sees it on Tasks.
-  if (to._tag === "person")
+  if (to._tag === "person" && !isSuggestion(row))
     yield* tellOnScreen(viewer.person, `${row.recordId}:${row.rev}`, [
       { personId: to.personId, kind: "returned", row, why: input.note ?? null },
     ]);
@@ -1231,12 +1234,14 @@ export const handOver = Effect.fn("KinWork.handOver")(function* (
       message: "Only the owner or a co-owner gives someone else's tasks away.",
     });
   const sql = yield* SqlClient.SqlClient;
-  // Whoever holds a task sees it, and the owner level sees all: nothing listed here is hidden.
+  const throughKey = (yield* CodingAgentCall) !== undefined;
+  // The holder and owner level see all their open tasks in the app. A key leaves private tasks out.
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- the holder's own tasks, or an owner-level caller's
-  const held = yield* sql<{ key: string }>`SELECT key FROM kin_records
+  const held = yield* sql<{ key: string }>`SELECT key FROM kin_records r
     WHERE org_id = ${input.orgId} AND register_id = 'work' AND owner_kind = ${input.from._tag}
       AND owner_id = ${fromId} AND state IN ${sql.in(OPEN_STATES)}
       ${input.keys === undefined ? sql`` : sql`AND key IN ${sql.in(input.keys.length === 0 ? [""] : input.keys)}`}
+      ${throughKey ? sql`AND NOT ${keyWithheld(sql)}` : sql``}
     ORDER BY key`.pipe(workFailure);
   // The count comes before anyone is chosen, so it names no receiver to check.
   if (input.dryRun === true) return { keys: held.map((row) => row.key), kept: 0 };

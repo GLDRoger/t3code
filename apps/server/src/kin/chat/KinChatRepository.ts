@@ -1358,10 +1358,14 @@ const make = Effect.gen(function* () {
     Effect.mapError(toRepositoryError("KinChatRepository.addWaiting")),
   );
   // A card with no words of its own, once closed (answered, replaced, run out), is Kin's status
-  // of it, not a message: it leaves the unread count. A card that carries words still counts.
+  // of it, not a message: it leaves the unread count. A card that carries words still counts. Kin's
+  // notice leaves it once what it waited on is resolved (the trouble is over).
   const notStatusLine = sql`NOT (kin_messages.body = '' AND EXISTS (SELECT 1 FROM kin_widgets w
  WHERE w.org_id = kin_messages.org_id AND w.message_id = kin_messages.message_id
- AND w.closed_at IS NOT NULL))`;
+ AND w.closed_at IS NOT NULL))
+ AND NOT (kin_messages.author_kind = 'system' AND EXISTS (SELECT 1 FROM kin_waiting n
+ WHERE n.org_id = kin_messages.org_id AND n.message_id = kin_messages.message_id
+ AND n.widget_id IS NULL AND n.resolved_at IS NOT NULL))`;
   // `unreadCount` for each of a person's chats in one read, each from its own member row's join.
   const unreadByChat = (
     input: Scope & { readonly personId: KinPersonId },

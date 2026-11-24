@@ -28,6 +28,7 @@ import {
   kinChoiceUndoneLine,
   KIN_CHOICE_DISMISS_COPY,
   kinChoiceDismissedLine,
+  kinChoiceClosedLine,
   kinChoiceDismissible,
   kinSendEditControls,
   kinSendEditedLine,
@@ -691,7 +692,9 @@ function KinChoiceCard(props: {
           </div>
         )
       ) : phase === "expired" ? (
-        <p className="text-xs text-muted-foreground">{choice.closedText}</p>
+        <p className="text-xs text-muted-foreground">
+          {kinChoiceClosedLine(choice, props.viewerPersonId, new Date(nowMs))}
+        </p>
       ) : !canAct ? (
         <p className="text-xs text-muted-foreground">{CANT_ACT_TEXT}</p>
       ) : shownEdit !== null ? null : held !== null ? (

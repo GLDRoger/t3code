@@ -159,16 +159,19 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
     title: string;
     authorKind: string;
     authorId: string;
+    codingAgent: number;
     body: string;
-  }>`SELECT r.key, r.title, k.author_kind AS "authorKind", k.author_id AS "authorId", k.body
+  }>`SELECT r.key, r.title, k.author_kind AS "authorKind", k.author_id AS "authorId", k.body,
+      k.coding_agent_key IS NOT NULL AS "codingAgent"
     FROM kin_record_comments k JOIN kin_records r ON r.org_id = k.org_id AND r.record_id = k.record_id
     WHERE k.org_id = ${orgId} AND k.created_at >= ${from} AND k.created_at < ${until}
       AND k.removed_at IS NULL AND ${seenBy(sql, viewer)}
     ORDER BY k.created_at, k.comment_id`;
-  for (const comment of comments)
-    notes.push(
-      `${comment.key} ${comment.title}: note by ${nameOf(comment.authorKind, comment.authorId)}: "${excerpt(comment.body)}"`,
-    );
+  for (const comment of comments) {
+    const name = nameOf(comment.authorKind, comment.authorId);
+    const by = comment.codingAgent === 1 ? `${name} (coding agent)` : name;
+    notes.push(`${comment.key} ${comment.title}: note by ${by}: "${excerpt(comment.body)}"`);
+  }
 
   const payments = yield* sql<{
     key: string;

@@ -318,8 +318,8 @@ it.effect.each([true, false])(
         );
         const http = yield* HttpRouter.toHttpEffect(routes);
         // The wake-up runner, the chat wake bridge, the worker tracker, the finished-task watch,
-        // the Work import, the issued amounts check and archiving Kin's earlier projects.
-        if (enabled) yield* Queue.takeN(runnerStarts, 7);
+        // the Work import, the issued amounts check, archiving earlier projects, and offline notices.
+        if (enabled) yield* Queue.takeN(runnerStarts, 8);
         assert.strictEqual(yield* Queue.size(runnerStarts), 0);
         const services = yield* Deferred.await(ready);
         const kin = Context.get(services, Kin.KinServer);
@@ -716,6 +716,20 @@ it.effect.each([true, false])(
         });
         assert.notInclude(linear, "Donors is turned off for this company.");
         assert.match(linear, /connection|connected/i);
+        // A reason naming a hidden record refuses the call, also when swallowed into text arguments.
+        for (const hidden of [
+          { arguments: { project: "Website" }, reason: client.key },
+          { arguments: `{"project":"Website"},"reason":${JSON.stringify(client.key)}}` },
+        ])
+          assert.include(
+            yield* leadCall("kin_connection_call", {
+              connection: "linear",
+              tool: "create_issue",
+              ...hidden,
+            }),
+            "Donors is turned off for this company.",
+            JSON.stringify(hidden),
+          );
         assert.notInclude(yield* leadMcp.list, "client_read");
         assert.notInclude(yield* leadMcp.list, "pipeline_read");
         for (const args of [readClient, { key: project.key }])

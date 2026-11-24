@@ -74,6 +74,7 @@ export type MailActivity = {
     readonly from: string | null;
     readonly date: string | null;
     readonly unread: boolean;
+    readonly automatedNotice?: true;
   }>;
   readonly calendar: ReadonlyArray<{
     readonly eventId: string;
@@ -120,6 +121,10 @@ export type MailArrival = {
   readonly bulk: boolean;
   readonly hasFile: boolean;
 };
+export type MailAutomation = Pick<
+  MailArrival,
+  "listUnsubscribe" | "precedence" | "autoSubmitted" | "bulk"
+>;
 
 export type MailEvent = {
   readonly calendarId: string;
@@ -167,6 +172,7 @@ export type MailMessage = {
   readonly messageId: string | null;
   readonly references: string | null;
   readonly authResults: ReadonlyArray<string>;
+  readonly automation?: MailAutomation;
   /** Only on a whole read of the thread. */
   readonly body: { readonly text: string; readonly attachments: ReadonlyArray<MailFile> } | null;
 };

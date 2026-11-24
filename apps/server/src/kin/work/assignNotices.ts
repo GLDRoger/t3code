@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
+import { CodingAgentCall } from "./keyCall.ts";
 import * as Effect from "effect/Effect";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Option from "effect/Option";
@@ -707,6 +708,7 @@ const NEWS_BURST_MS = MINUTE_MS;
 const TaskNews = Schema.Struct({
   by: KinPersonId,
   name: Schema.String,
+  codingAgent: Schema.optional(Schema.Boolean),
   kind: Schema.Literals(NOTICE_KINDS),
   recordId: Schema.String,
   key: Schema.String,
@@ -749,6 +751,7 @@ export const tellOnTasks = Effect.fn("KinAssignNotices.tellOnTasks")(function* (
           WHERE org_id = ${orgId} AND agent_id = ${id}`
     ).pipe(Effect.map((rows) => rows[0]?.name ?? null));
   const name = (yield* nameOf("person", mover.personId)) ?? "Someone";
+  const coding = (yield* CodingAgentCall) !== undefined;
   const now = yield* Clock.currentTimeMillis;
   const byPerson = new Map<string, Array<AssignNotice>>();
   for (const notice of yield* forDelivery(orgId, notices, mover.personId))
@@ -780,7 +783,8 @@ export const tellOnTasks = Effect.fn("KinAssignNotices.tellOnTasks")(function* (
       const to = notice.to;
       const body = yield* encodeNews({
         by: mover.personId,
-        name: participantKind(notice.kind) ? firstName(name) : name,
+        name: participantKind(notice.kind) && !coding ? firstName(name) : name,
+        ...(coding ? { codingAgent: true } : {}),
         kind: notice.kind,
         recordId: notice.row.recordId,
         key: notice.row.key,
@@ -830,7 +834,8 @@ const newsText = (news: ReadonlyArray<TaskNews>) => {
   const records = new Set(news.map((one) => one.recordId)).size;
   const mixed = new Set(news.map((one) => one.kind)).size > 1;
   const task = `${first.key} ${first.title}`;
-  const text = `${first.name} ${
+  const name = first.codingAgent === true ? `${first.name} (coding agent)` : first.name;
+  const text = `${name} ${
     records === 1
       ? mixed
         ? `updated ${task}`
@@ -898,7 +903,13 @@ export const taskNewsBanner = Effect.fn("KinAssignNotices.taskNewsBanner")(funct
   const chatId = rows.find((row) => row.chatId !== "")?.chatId;
   return {
     personId: person,
-    body: newsText(told),
+    body: [
+      told.filter((one) => one.codingAgent !== true),
+      told.filter((one) => one.codingAgent === true),
+    ]
+      .filter((group) => group.length > 0)
+      .map(newsText)
+      .join(". "),
     /** Some of it is work now theirs: given to them, or handed back. */
     gives: told.some((news) => news.kind === "given" || news.kind === "returned"),
     chatId: chatId === undefined ? undefined : KinChatId.make(chatId),
@@ -918,7 +929,7 @@ export const askedOf = Effect.fn("KinAssignNotices.askedOf")(function* (
   recordIds: ReadonlyArray<string>,
   since: number,
 ) {
-  const asked = new Map<string, KinPersonId>();
+  const asked = new Map<string, { by: KinPersonId; codingAgent: boolean }>();
   if (recordIds.length === 0) return asked;
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ body: string }>`SELECT body FROM kin_held_posts
@@ -929,7 +940,8 @@ export const askedOf = Effect.fn("KinAssignNotices.askedOf")(function* (
     ORDER BY held_at DESC, rowid DESC`;
   for (const row of rows) {
     const news = Option.getOrUndefined(decodeNews(row.body));
-    if (news !== undefined && !asked.has(news.recordId)) asked.set(news.recordId, news.by);
+    if (news !== undefined && !asked.has(news.recordId))
+      asked.set(news.recordId, { by: news.by, codingAgent: news.codingAgent === true });
   }
   return asked;
 });

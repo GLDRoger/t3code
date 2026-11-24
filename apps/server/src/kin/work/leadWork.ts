@@ -544,7 +544,13 @@ export const GetResult = Schema.Struct({
   /** Present when a line above has `via`: how to read what a coding agent wrote. */
   codingAgent: Schema.optional(Schema.String),
   /** The note its project leaves on every task: the project's words, not this entry's. */
-  projectNote: Schema.optional(Schema.Struct({ from: Schema.String, text: Schema.String })),
+  projectNote: Schema.optional(
+    Schema.Struct({
+      from: Schema.String,
+      text: Schema.String,
+      via: Schema.optional(Schema.String),
+    }),
+  ),
 });
 /** A deal's next step: a task of ours on its client, linked to the deal, as its page adds one. */
 const DealNext = Schema.Struct({
@@ -2433,11 +2439,17 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, noteFrom)))
       ? undefined
       : yield* projectNoteOf(lead.orgId, noteFrom);
+  if (note?.codingAgent !== undefined)
+    yield* codingAgentTextShown(lead, codingAgentSource(note.codingAgent));
   const fromProject =
     note === undefined
       ? {}
       : {
-          projectNote: { from: `${note.project.key} ${note.project.title}`, text: note.body },
+          projectNote: {
+            from: `${note.project.key} ${note.project.title}`,
+            text: note.body,
+            ...viaKey(note),
+          },
         };
   const whole = team !== undefined && (yield* viewWhole(lead, team, row));
   const deals = yield* withPromises(
@@ -3771,7 +3783,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
       const name = yield* namer(lead);
       return yield* new KinChatError({
         reason: "not_allowed",
-        message: `${name(patch.owner) ?? "They"} handed ${before.key} back${back.to === null ? "" : `: "${back.to}"`}. Nothing on it has changed since, so don't give it straight back. Fix what blocks it first, ask the owner, or give it to someone else.`,
+        message: `${name(patch.owner) ?? "They"}${back.codingAgent ? " (coding agent)" : ""} handed ${before.key} back${back.to === null ? "" : `: "${back.to}"`}. Nothing on it has changed since, so don't give it straight back. Fix what blocks it first, ask the owner, or give it to someone else.`,
       });
     }
   }
@@ -3976,7 +3988,7 @@ const runHandBack = Effect.fnUntraced(function* (lead: Lead, input: typeof HandB
   const after = yield* records.handBack(lead.orgId, writer, input.key, holder, input.note);
   const to = toRecord(after, 0).owner;
   const notices: Array<AssignNotice> =
-    to._tag === "person"
+    to._tag === "person" && !isSuggestion(after)
       ? [
           {
             personId: to.personId,

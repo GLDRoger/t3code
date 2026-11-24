@@ -38,7 +38,11 @@ import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import { UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
 import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
-import { ASKED } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
+import {
+  ASKED,
+  CALL_ARGUMENTS_REFUSAL,
+} from "../../apps/server/src/kin/connections/ConnectionsService.ts";
+import { readCallArguments } from "../../apps/server/src/kin/connections/callArguments.ts";
 import { microsoftMail } from "../../apps/server/src/kin/connections/Microsoft.ts";
 import { resultText } from "../../apps/server/src/kin/connections/ResultText.ts";
 import { outlineOf, sectionsOf, WHOLE_DOC } from "../../apps/server/src/kin/work/docBody.ts";
@@ -1008,6 +1012,30 @@ export const fillKinMock = (
       Object.entries(value).map(([key, one]) => [key, fillKinMock(one, input, world)]),
     );
   return value;
+};
+
+/** Kin's refusal of a kin_connection_call whose text arguments hold no object, as the server encodes it. */
+export const KIN_CALL_REFUSAL = JSON.stringify({
+  _tag: "KinChatError",
+  reason: "invalid_state",
+  message: CALL_ARGUMENTS_REFUSAL,
+});
+/**
+ * A tool call's input as Kin reads it: a kin_connection_call's text arguments, a swallowed reason
+ * included, become the object they hold (`readCallArguments`); text holding none is refused.
+ */
+export const kinCallRead = <I>(
+  name: string,
+  input: I,
+): { readonly input: I | Record<string, unknown>; readonly refused?: string } => {
+  if (name !== "kin_connection_call" || !isRecord(input)) return { input };
+  const read = readCallArguments(
+    input.arguments,
+    typeof input.reason === "string" ? input.reason : undefined,
+  );
+  if (read === undefined) return { input, refused: KIN_CALL_REFUSAL };
+  const { arguments: _arguments, reason: _reason, ...rest } = input;
+  return { input: { ...rest, ...read } };
 };
 
 // Tools whose card or reaction answers the person in the chat, as Kin's own message would.

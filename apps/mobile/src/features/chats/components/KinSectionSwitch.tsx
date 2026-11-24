@@ -394,7 +394,7 @@ function KinListSectionRows(props: {
         onValueChange={(dock) => props.onChange({ id: section.id, dock })}
       />
       <ListActionRow
-        label={KIN_LIST_SECTIONS.remove}
+        label={KIN_LIST_SECTIONS.removeOnPhone}
         tone="danger"
         disabled={props.busy}
         onPress={() => props.onChange({ id: section.id, remove: true })}
