@@ -27,6 +27,7 @@ import { forkParked } from "../../serverActivation.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { speakerOrder } from "../floor/KinFloor.ts";
+import { InitialPass } from "../host/offlineCatchUp.ts";
 import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
@@ -452,7 +453,10 @@ const make = Effect.gen(function* () {
 
   // Subscribe before activation so nothing posted from here on is missed.
   const events = yield* hub.subscribeAll;
-  yield* catchUp().pipe(
+  const initialPass = yield* InitialPass;
+  yield* (initialPass?.started ?? Effect.void).pipe(
+    Effect.andThen(catchUp()),
+    Effect.ensuring(initialPass?.chatDone ?? Effect.void),
     Effect.andThen(
       Stream.runForEach(events, (event) =>
         event.type === "message.posted"
