@@ -63,7 +63,8 @@ export const SpineInputs = {
   reason: Schema.optional(Schema.NullOr(Reason)),
   from: Schema.optional(From),
   at: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(40)))).annotate({
-    description: "A meeting's start: a time with its offset (2026-11-20T15:00+05:30).",
+    description:
+      "A meeting's start: a time with its offset (2026-11-20T15:00+05:30). On any other task it is its due.",
   }),
   attendees: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(30))).annotate({
     description: "A meeting's people: each as owner is named.",

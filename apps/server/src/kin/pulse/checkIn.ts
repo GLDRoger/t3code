@@ -32,6 +32,7 @@ import { endOfDay, ownerZone, startOfDay } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { matchLines, outsideKey, type OutsideRead } from "./outside.ts";
 import { importedSince } from "./personMorning.ts";
+import { leftOpen, reserveLeft } from "./leftForCheckIn.ts";
 import { markTold, toldBy, untold } from "./told.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { sectionOfList } from "../shell/sections.ts";
@@ -286,7 +287,8 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   const tell = fresh.filter(
     (fact) => fact.subject.recordId === undefined || !imported.has(fact.subject.recordId),
   );
-  if (tell.length === 0 && sent.length === 0 && input.scheduleId !== WEEKLY) {
+  const left = yield* leftOpen(orgId, input.agentId, agent.owner);
+  if (tell.length === 0 && sent.length === 0 && left.length === 0 && input.scheduleId !== WEEKLY) {
     const weekDay = DateTime.toParts(
       DateTime.makeZonedUnsafe(minute ?? at, { timeZone: company }),
     ).weekDay;
@@ -351,6 +353,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
           result.duplicate
             ? Effect.void
             : markTold({ ...told, eventId, facts: tell }).pipe(
+                Effect.andThen(reserveLeft({ ...told, eventId, holdIds: left })),
                 Effect.andThen(
                   heldPast.length === 0
                     ? Effect.void
