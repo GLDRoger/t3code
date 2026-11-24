@@ -1303,6 +1303,9 @@ export const dueWhenText = (
   allDay
     ? formatKinWhen(at, "day", { zone: company, locale: clock.locale })
     : formatKinWhen(at, timed, clock);
+/** A task's due as the tasks tools write it, in the company's zone. */
+export const dueText = (dueAt: number, allDay: boolean, zone: string) =>
+  dueWhenText(dueAt, allDay, zone, { zone, locale: KIN_TEXT_LOCALE });
 /** A date field's value as an instant: a day is its last millisecond, as an all-day entry's is. */
 export const fieldDateAt = (value: string, zone: string) => {
   if (value.length === 10) return { at: endOfDay(value, zone), allDay: true };
