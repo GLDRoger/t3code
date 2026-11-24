@@ -24,6 +24,10 @@ import {
   KinWorkTickStepInput,
   KinWorkSteps,
   KinProjectNoteInput,
+  KinDocRestoreInput,
+  KinGoalSaveInput,
+  KinWatchActInput,
+  KinWatchState,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
@@ -953,6 +957,44 @@ export const TasksKeyToolkit = Toolkit.make(
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
+  Tool.make("restore_doc_version", {
+    ...shared,
+    description:
+      "Bring back an earlier text document version as a new version, as an owner or co-owner. Pass the current version as latest.",
+    parameters: KinDocRestoreInput.mapFields(Struct.omit(["orgId"])),
+    success: Schema.Struct({ key: KinRecordKey, version: Schema.Int }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("restart_watch", {
+    ...shared,
+    description:
+      "Start watching again from a watch ID the person can open in Kin. Kin can look again right away.",
+    parameters: KinWatchActInput.mapFields(Struct.omit(["orgId"])),
+    success: Schema.Struct({ watchId: Schema.String, state: KinWatchState }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("save_goal", {
+    ...shared,
+    description:
+      "Create or update a goal as an owner or co-owner. Pass its key and revision to update it, or leave them out to create one.",
+    parameters: KinGoalSaveInput.mapFields(
+      ({ orgId: _org, clientRequestId: _request, state: _state, ...fields }) => ({
+        ...fields,
+        state: Schema.optional(Schema.Literals(["open", "done"])),
+      }),
+    ),
+    success: Schema.Struct({ key: Schema.NullOr(KinRecordKey), rev: Schema.NullOr(Schema.Int) }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   Tool.make("find", {
     ...shared,
     description:
@@ -1092,7 +1134,7 @@ const GATED: Partial<
   write_doc: readsDocs,
 };
 
-const OWNER_LISTED = new Set(["set_project_note"]);
+const OWNER_LISTED = new Set(["set_project_note", "restore_doc_version", "save_goal"]);
 const TOOL_SECTIONS: Readonly<Partial<Record<string, SectionId>>> = {
   money_summary: "money",
   open_client: "clients",
@@ -1405,6 +1447,21 @@ const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
   set_project_note: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.set_project_note")((input) =>
       asHolder((holder) => Acts.setProjectNote(holder, input)),
+    ),
+  ),
+  restore_doc_version: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.restore_doc_version")((input) =>
+      asHolder((holder) => Acts.restoreDocVersion(holder, input)),
+    ),
+  ),
+  restart_watch: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.restart_watch")((input) =>
+      asHolder((holder) => Acts.restartWatch(holder, input.watchId)),
+    ),
+  ),
+  save_goal: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.save_goal")((input) =>
+      asHolder((holder) => Acts.saveGoal(holder, input)),
     ),
   ),
   find: McpToolAccess.reads(

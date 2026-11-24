@@ -1,6 +1,8 @@
 import {
   KinChatError,
   type KinDocumentLine,
+  type KinDocRestoreInput,
+  type KinGoalSaveInput,
   type KinFieldValue,
   type KinOpenRow,
   type KinProjectNoteInput,
@@ -21,11 +23,15 @@ import { parseFields } from "../work/lists.ts";
 import * as Open from "../open/people.ts";
 import { keyHidden } from "../work/codingAgent.ts";
 import { outlineOf } from "../work/docBody.ts";
+import { docNotFound } from "../work/docs.ts";
 import * as Deals from "../work/deals.ts";
 import * as Clients from "../work/ownerClients.ts";
 import * as Docs from "../work/ownerDocs.ts";
 import * as Money from "../work/ownerMoney.ts";
 import * as MoneyAnswers from "../work/ownerMoneyAnswers.ts";
+import * as Goals from "../work/goals.ts";
+import * as Watches from "../watches/KinWatches.ts";
+import { watchReader } from "../watches/readRpcs.ts";
 import * as Work from "../work/ownerWork.ts";
 import * as Comments from "../work/workComments.ts";
 import { notFound, workFailure } from "../work/recordRows.ts";
@@ -554,6 +560,56 @@ export const writeDoc = Effect.fn("KinTasksKeyActs.writeDoc")(function* (
         clientRequestId: requestIdOf(holder, "doc", input),
       });
       return { key: written.key, title: written.title, version: written.version.version };
+    }),
+  );
+});
+
+export const restoreDocVersion = Effect.fn("KinTasksKeyActs.restoreDocVersion")(function* (
+  holder: TasksKeyHolder,
+  input: Omit<KinDocRestoreInput, "orgId">,
+) {
+  return yield* keyed(holder, (people) =>
+    Effect.gen(function* () {
+      yield* reachKey(holder, input.key, docNotFound);
+      const doc = yield* Docs.restore(
+        people,
+        { orgId: holder.orgId, ...input },
+        requestIdOf(holder, "restore-doc", input),
+      );
+      return { key: doc.key, version: doc.version.version };
+    }),
+  );
+});
+
+export const restartWatch = Effect.fn("KinTasksKeyActs.restartWatch")(function* (
+  holder: TasksKeyHolder,
+  watchId: string,
+) {
+  return yield* keyed(holder, (people) =>
+    Effect.gen(function* () {
+      const reader = yield* watchReader(people, holder.orgId);
+      const { watch } = yield* Watches.again(holder.orgId, reader, watchId);
+      return { watchId: watch.watchId, state: watch.state };
+    }),
+  );
+});
+
+export const saveGoal = Effect.fn("KinTasksKeyActs.saveGoal")(function* (
+  holder: TasksKeyHolder,
+  input: Omit<KinGoalSaveInput, "orgId" | "clientRequestId" | "state"> & {
+    readonly state?: "open" | "done" | undefined;
+  },
+) {
+  return yield* keyed(holder, (people) =>
+    Effect.gen(function* () {
+      yield* reachable(holder, input.key);
+      const goal = yield* Goals.save(people, {
+        orgId: holder.orgId,
+        clientRequestId: requestIdOf(holder, "save-goal", input),
+        ...input,
+      });
+      const hidden = yield* keyHidden(holder.orgId, [goal.recordId]).pipe(workFailure);
+      return { key: hidden.size > 0 ? null : goal.key, rev: hidden.size > 0 ? null : goal.rev };
     }),
   );
 });

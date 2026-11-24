@@ -203,6 +203,7 @@ it.effect(
         get_task: read,
         comment_on_task: write,
         set_task_state: write,
+        restart_watch: write,
         add_link: write,
         hand_over_tasks: write,
         nudge_task: write,
@@ -246,6 +247,8 @@ it.effect(
         draft_invoice: write,
         money_summary: read,
         search_memory: read,
+        save_goal: write,
+        restore_doc_version: write,
         set_project_note: write,
       });
       assert.deepStrictEqual(
