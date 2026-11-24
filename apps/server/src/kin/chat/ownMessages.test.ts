@@ -733,7 +733,7 @@ it.effect("an agent changes only a plain message of its own that no one has read
   ),
 );
 
-it.effect("a shared turn changes only what its history shows, and once read is read for good", () =>
+it.effect("a shared turn changes only what its history shows, and once answered is answered for good", () =>
   Effect.andThen(
     TestClock.setTime(IST_MON_0930),
     Effect.gen(function* () {
@@ -806,11 +806,12 @@ it.effect("a shared turn changes only what its history shows, and once read is r
       const [forRhea] = yield* withLinks(org, { _tag: "person", personId: owner.personId }, [line]);
       assert.strictEqual(forRhea!.withdrawn?.said, "The site copy is due Friday.");
 
-      // Dev read it, then left: it stays read.
+      // Dev answered it, then left: it stays answered.
       const [mark] = yield* sql<{ seq: number }>`SELECT seq FROM kin_messages
         WHERE message_id = 'm-new'`;
-      yield* sql`INSERT INTO kin_read_state (chat_id, member_id, org_id, last_read_seq, updated_at)
-        VALUES (${chat}, ${devMember}, ${orgId}, ${mark!.seq}, ${at})`;
+      yield* sql`INSERT INTO kin_read_state (chat_id, member_id, org_id, last_read_seq,
+          answered_seq, updated_at)
+        VALUES (${chat}, ${devMember}, ${orgId}, ${mark!.seq}, ${mark!.seq}, ${at})`;
       yield* repo.leaveChat({ orgId, chatId: chat, memberId: devMember, leftAt: at });
       const left = yield* withdraw("m-new");
       assert.isFalse(left.ok, left.text);
