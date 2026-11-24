@@ -2670,6 +2670,61 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     );
     for (const key of [first.key, handEdited.key, byAgent.key, marked.key, raised.key])
       yield* nobodyElse(key);
+
+    // Every list that shows an owner her own priced draft shows it to her, quote or proposal,
+    // without the Money switch; never another teammate's, nor one the owner marked private.
+    yield* sql`DELETE FROM kin_chat_members WHERE member_id = 'mate-chat-other'`;
+    yield* sql`UPDATE kin_chats SET kind = 'direct', direct_key = ${`${mateId}:${lead}`}
+      WHERE chat_id = 'mate-chat'`;
+    yield* sql`UPDATE kin_people SET sees_money = 0 WHERE person_id IN (${mateId}, ${otherMate})`;
+    const listing = yield* wake("list-wake", lead, "mate-chat", mateId, "shared");
+    const priced = (title: string, kind: "quote" | "proposal") =>
+      LeadDocs.create(scopeOf(lead), {
+        sourceEventId: listing,
+        title,
+        kind,
+        body: `## Scope\n\nInvented listed scope for ${title}.`,
+        draft: { kind },
+      });
+    const quote = yield* priced("Listed quote", "quote");
+    const proposal = yield* priced("Listed proposal", "proposal");
+    const theirs = yield* priced("Listed for another", "proposal");
+    const privated = yield* priced("Listed then private", "quote");
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.draftFor', ${otherMate})
+      WHERE org_id = ${orgId} AND key = ${theirs.key}`;
+    yield* OwnerDocs.label([owner], { orgId, key: privated.key, sensitive: true });
+    const records = yield* KinRecords.KinRecords;
+    const home = (list: "clients" | "projects") =>
+      records.create(orgId, agentWriter(lead), {
+        list,
+        originKey: `listed-${list}`,
+        title: `Invented listed ${list}`,
+        owner: { _tag: "agent", agentId: lead },
+      });
+    const client = yield* home("clients");
+    const project = yield* home("projects");
+    const all = [quote.key, proposal.key, theirs.key, privated.key];
+    const listers = {
+      docs: (who: typeof mate) => OwnerDocs.list([who], { orgId }),
+      client: (who: typeof mate) => OwnerDocs.list([who], { orgId, party: client.row.key }),
+      project: (who: typeof mate) => OwnerDocs.list([who], { orgId, project: project.row.key }),
+      search: (who: typeof mate) =>
+        OwnerDocs.search([who], { orgId, text: "invented listed scope", everything: true }).pipe(
+          Effect.map((found) => ({ docs: found.hits })),
+        ),
+    };
+    for (const [name, list] of Object.entries(listers)) {
+      yield* sql`UPDATE kin_records SET
+          party_id = ${name === "client" ? client.row.recordId : null},
+          project_id = ${name === "project" ? project.row.recordId : null}
+        WHERE org_id = ${orgId} AND key IN ${sql.in(all)}`;
+      const keys = (who: typeof mate) =>
+        list(who).pipe(
+          Effect.map((page) => page.docs.map((doc) => doc.key).filter((key) => all.includes(key))),
+        );
+      assert.sameMembers(yield* keys(mate), [quote.key, proposal.key], name);
+      assert.sameMembers(yield* keys(owner), all, name);
+    }
   }).pipe(Effect.provide(layer)),
 );
 

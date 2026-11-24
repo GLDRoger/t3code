@@ -331,6 +331,15 @@ export const clientMoneySeen = (
 ) => sql`(NOT ${moneyKind(sql)} OR ${placeOn(sql, personId, "sees_money")})`;
 
 /**
+ * What a client's Docs list shows this person of `r`'s money: `clientMoneySeen`, and their own
+ * priced draft of either kind wherever they read it (`ownMoneyDraft`), as an owner's list shows it.
+ */
+export const clientDocMoneySeen = (
+  sql: SqlClient.SqlClient,
+  personId: KinPersonId | Statement.Fragment,
+) => sql`(${clientMoneySeen(sql, personId)} OR ${ownMoneyDraft(sql, personId)})`;
+
+/**
  * What a member reads in Clients (rows, counts, next steps, contact, history, contacts): what
  * `personSees` shows them, less anything labelled itself or through its client or project, tasks
  * included, and less money without the Money switch. Tasks keeps `personSees`.
