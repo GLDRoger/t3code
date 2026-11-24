@@ -117,6 +117,7 @@ import {
 } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 import { useKinSectionOn } from "./useKinShell";
+import { kinListCanBeSection } from "@t3tools/client-runtime/kin/kinShell";
 import {
   KIN_BILL_TO,
   kinBillToFieldPatch,
@@ -577,7 +578,7 @@ export function KinListEntry(
   const canChange = mayUpdate && view.can.party;
   const canDraft = mayUpdate && view.can.edit;
   // A company's own list: its status and who has it, as far as the host lets this reader.
-  const ownList = def?.builtIn === false;
+  const ownList = def !== null && kinListCanBeSection({ ...def, archivedAt: null });
   const moves = canChange || (ownList && mayUpdate && view.can.states.length > 0);
   const give = ownList ? (props.give ?? null) : null;
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
