@@ -394,11 +394,18 @@ export class KinChatService extends Context.Service<
       readonly widgetId: KinWidgetId;
       readonly changesFirst: NonNullable<NonNullable<KinDocCardState["draft"]>["changesFirst"]>;
     }) => Effect.Effect<KinWidget, ServiceError>;
-    /** Server-only: what a draft's card sent up changed before it was approved; it is sendable again. */
+    /**
+     * Server-only: what a draft's card sent up changed before it was approved; it is sendable
+     * again, with the doc's title and client as they are now, which Send to checks.
+     */
     readonly setDocCardChanged: (input: {
       readonly orgId: KinOrgId;
       readonly widgetId: KinWidgetId;
       readonly changed: NonNullable<NonNullable<KinDocCardState["draft"]>["changed"]>;
+      readonly now?: {
+        readonly title: string;
+        readonly client: NonNullable<KinDocCardState["draft"]>["client"];
+      };
     }) => Effect.Effect<KinWidget, ServiceError>;
     /**
      * Server-only, in the doc write's transaction: its draft cards take the doc's new text (a long
@@ -1649,7 +1656,9 @@ const make = Effect.gen(function* () {
       yield* sql.afterCommit(
         hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: answered }),
       );
-      if (choice !== null)
+      // A refused tap chose nothing: the card it replaced reads only as replaced.
+      const settled = changed ?? handled;
+      if (choice !== null && !(settled !== undefined && "refused" in settled && settled.refused))
         yield* tellReplaced(answered, { name: decidedBy.name, label: choice.option.label });
     }
     return message;
@@ -3697,11 +3706,20 @@ const make = Effect.gen(function* () {
       if (existing.type !== KIN_DOC_CARD) return yield* notFound;
       const card = yield* decodeDocCard(existing.state).pipe(Effect.mapError(() => invalidState));
       if (card.draft?.sent === undefined) return existing;
-      const { sent: _sent, ...draft } = card.draft;
+      const { sent: _sent, client, ...draft } = card.draft;
+      const { title, client: nowClient } = input.now ?? { title: card.title, client };
       const widget = yield* repo.updateWidget({
         ...existing,
         audience: "chat",
-        state: { ...card, draft: { ...draft, changed: input.changed } },
+        state: {
+          ...card,
+          title,
+          draft: {
+            ...draft,
+            ...(nowClient === undefined ? {} : { client: nowClient }),
+            changed: input.changed,
+          },
+        },
         expectedRevision: existing.revision,
         updatedAt: yield* now,
       });

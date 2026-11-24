@@ -55,7 +55,7 @@ import {
 } from "./leadWork.ts";
 import { iso, type RecordRow, unavailable } from "./recordRows.ts";
 import { docCardId, draftCardOf } from "./draftCards.ts";
-import { DRAFT_TEXT_MAX } from "./draftOpening.ts";
+import { isLongDraft } from "./draftOpening.ts";
 import { search } from "./search.ts";
 import {
   DRAFT_OWN_CHAT_ONLY,
@@ -606,47 +606,18 @@ const draftNote = (draft: KinDocCardDraft, key: string, placed: boolean) =>
         ]),
   ].join(" ");
 const DRAFT_BLANK = "A draft needs its text. Nothing was written.";
-/** The summary of the version a long redraft writes on its draft's doc. */
-const REDRAFT_SUMMARY = "Redrafted after Changes first";
+const DRAFT_CARD_FULL =
+  "With who asks and who it is for, this draft is too long for the card it goes up on. Shorten it, or file it without draft. Nothing was written.";
 
 /**
- * The doc a draft waiting on a redraft went up from, at the version that went up: a long one's
- * own, else the one doc it is about whose version holds the text that went up.
+ * The one teammate's draft the owner answered Changes first on that this turn's redraft is, with
+ * what raising it needs; undefined when it is none (`redoOf`).
  */
-const sentDoc = Effect.fn("KinDocTools.sentDoc")(function* (lead: Lead, of: Redraft) {
-  if (of.draft.doc !== undefined) return { key: of.draft.doc.key, version: of.draft.doc.version };
-  if (of.about.length === 0) return undefined;
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ key: string; version: number }>`SELECT r.key,
-      MAX(v.version) AS version
-    FROM kin_records r JOIN kin_doc_versions v ON v.org_id = r.org_id
-      AND v.record_id = r.record_id
-    WHERE r.org_id = ${lead.orgId} AND r.register_id = 'docs' AND r.key IN ${sql.in(of.about)}
-      AND v.body_kind = 'markdown'
-      AND trim(v.body, ' ' || char(9) || char(10) || char(13)) = ${of.draft.text.trim()}
-    GROUP BY r.key ORDER BY r.key`;
-  return rows.length === 1 ? rows[0] : undefined;
-});
-
-/**
- * The owner's redraft of the one teammate's draft she answered Changes first on goes back to her
- * on a new Approve card (`redo`): `raised`, or `refused` with the reason; undefined when it is none.
- */
-const putBack = Effect.fn("KinDocTools.putBack")(function* (
+const redraftOf = Effect.fn("KinDocTools.redraftOf")(function* (
   lead: Lead,
   redraft: Parameters<typeof redoOf>[1],
-  text: string,
   on?: KinSocialPlatform,
   edited?: Pick<RecordRow, "recordId" | "partyId">,
-  /** The version it is, when written already; else how to write a long one on its draft's doc. */
-  version?:
-    | { readonly _tag: "written"; readonly written: Docs.Written }
-    | {
-        readonly _tag: "write";
-        readonly writer: Parameters<typeof Docs.rewrite>[1];
-        readonly provenance: Docs.Provenance;
-        readonly originKey: string;
-      },
 ) {
   const turn = {
     orgId: lead.orgId,
@@ -660,67 +631,36 @@ const putBack = Effect.fn("KinDocTools.putBack")(function* (
     edited === undefined ? [] : [edited.recordId, edited.partyId].filter((id) => id !== null);
   const found = yield* redoOf(turn, redraft, seen);
   if (found === undefined) return undefined;
-  const of =
-    on === undefined
-      ? found
-      : { ...found, draft: { ...found.draft, on: KIN_SOCIAL_PLATFORM_LABELS[on] } };
-  const deps = { chat: chat.value, gate: yield* KinLevelGate };
-  const raise = (written?: Docs.Written) =>
-    redo(
-      { ...lead, wakeupId: turn.wakeupId },
-      of,
-      written?.version.body ?? text,
-      deps,
-      written === undefined
-        ? undefined
-        : {
-            recordId: written.row.recordId,
-            key: written.row.key,
-            version: written.version.version,
-            text: written.version.body,
-          },
-    ).pipe(
-      Effect.map((asked) => ({
-        _tag: "raised" as const,
-        note: redoRaised(of, asked.state),
-        written,
-      })),
-    );
-  const refused = (error: KinChatError) =>
-    Effect.succeed({ _tag: "refused" as const, note: redoRefused(of, error) });
-  // Too long to go up whole, it is a new version of the doc that went up, and goes up bound to it;
-  // that doc's own version rules decide whether it may be written.
-  const sent =
-    version?._tag === "write" && text.length > DRAFT_TEXT_MAX
-      ? yield* sentDoc(lead, of)
-      : undefined;
-  if (version?._tag === "write" && sent !== undefined) {
-    const sql = yield* SqlClient.SqlClient;
-    return yield* sql
-      .withTransaction(
-        Effect.flatMap(
-          Docs.rewrite(
-            lead.orgId,
-            version.writer,
-            version.provenance,
-            { key: sent.key },
-            {
-              body: text,
-              baseVersion: sent.version,
-              summary: REDRAFT_SUMMARY,
-              originKey: version.originKey,
-              redraft: true,
-            },
-          ),
-          raise,
-        ),
-      )
-      .pipe(Effect.catchTags({ KinChatError: refused }));
-  }
-  return yield* raise(version?._tag === "written" ? version.written : undefined).pipe(
-    Effect.catchTags({ KinChatError: refused }),
-  );
+  return {
+    lead: { ...lead, wakeupId: turn.wakeupId },
+    of:
+      on === undefined
+        ? found
+        : { ...found, draft: { ...found.draft, on: KIN_SOCIAL_PLATFORM_LABELS[on] } },
+    deps: { chat: chat.value, gate: yield* KinLevelGate },
+  };
 });
+type Redrafting = NonNullable<Effect.Success<ReturnType<typeof redraftOf>>>;
+
+/**
+ * The redraft goes back to the owner on a new Approve card (`redo`): whole, or a long one bound
+ * to the doc version it was filed as. Fails as the ask does, so a caller's write rolls back.
+ */
+const raiseRedraft = (redrafting: Redrafting, text: string, written?: Docs.Written) =>
+  redo(
+    redrafting.lead,
+    redrafting.of,
+    text,
+    redrafting.deps,
+    written === undefined
+      ? undefined
+      : {
+          recordId: written.row.recordId,
+          key: written.row.key,
+          version: written.version.version,
+          text: written.version.body,
+        },
+  ).pipe(Effect.map((asked) => redoRaised(redrafting.of, asked.state)));
 
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   if (input.whatWeSell === true) return yield* runStartOfferings(lead, input);
@@ -743,43 +683,8 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     (input.project === undefined && input.company !== true
       ? yield* projectFor(lead, input, partyId ?? undefined)
       : undefined);
-  // Kin makes the redraft once the owner approves it, so it is filed only if it can't go up. Marked
-  // sensitive or not: none of its body reaches the teammate, and nothing is filed.
-  const back =
-    input.draft === undefined
-      ? undefined
-      : yield* putBack(
-          lead,
-          { kind: input.draft.kind, partyId: partyId ?? null },
-          input.body,
-          input.draft.kind === "post" ? input.draft.on : undefined,
-          undefined,
-          {
-            _tag: "write",
-            writer: context.writer,
-            provenance: context.provenance,
-            originKey: context.originKey,
-          },
-        );
-  if (back?._tag === "raised" && back.written !== undefined)
-    return {
-      ...writeResult(back.written, back.written.created),
-      note: `This is ${back.note}`,
-    };
-  if (back?._tag === "raised") {
-    const putUp: typeof WriteResult.Type = {
-      key: "",
-      title: input.title,
-      version: 0,
-      changed: false,
-      outline: [],
-      kind: input.kind ?? input.draft?.kind ?? "other",
-      note: `Not filed: this is ${back.note}`,
-    };
-    return putUp;
-  }
   const sql = yield* SqlClient.SqlClient;
-  const filed = Docs.create(lead.orgId, writer, context.provenance, {
+  const filing = {
     title: input.title,
     body: input.body,
     owner,
@@ -798,7 +703,65 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
           },
         }
       : {}),
-  }).pipe(
+  };
+  const linked = (written: Docs.Written) =>
+    links.length === 0
+      ? Effect.succeed(written)
+      : Effect.as(
+          Docs.link(lead.orgId, writer, { key: written.row.key }, links, "relates"),
+          written,
+        );
+  // Kin makes the redraft once the owner approves it: none of its body reaches the teammate.
+  // A short one goes up whole and is not filed; a long one is its own doc, marked sensitive so
+  // only the owner level and the agent read it, and goes up bound to it. It never writes the
+  // teammate's doc. Refused, nothing of it stays, and it is filed as any doc below.
+  const redrafting =
+    input.draft === undefined
+      ? undefined
+      : yield* redraftOf(
+          lead,
+          { kind: input.draft.kind, partyId: partyId ?? null },
+          input.draft.kind === "post" ? input.draft.on : undefined,
+        );
+  const refusedBy = (of: Redraft) => (error: KinChatError) =>
+    Effect.succeed({ _tag: "refused" as const, note: redoRefused(of, error) });
+  const back =
+    redrafting === undefined
+      ? undefined
+      : isLongDraft(input.body)
+        ? yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const written = yield* linked(
+                  yield* Docs.create(lead.orgId, writer, context.provenance, {
+                    ...filing,
+                    sensitive: true,
+                  }),
+                );
+                const note = yield* raiseRedraft(redrafting, written.version.body, written);
+                return { _tag: "filed" as const, written, note };
+              }),
+            )
+            .pipe(Effect.catchTag("KinChatError", refusedBy(redrafting.of)))
+        : yield* raiseRedraft(redrafting, input.body).pipe(
+            Effect.map((note) => ({ _tag: "raised" as const, note })),
+            Effect.catchTag("KinChatError", refusedBy(redrafting.of)),
+          );
+  if (back?._tag === "filed")
+    return { ...writeResult(back.written, back.written.created), note: `This is ${back.note}` };
+  if (back?._tag === "raised") {
+    const putUp: typeof WriteResult.Type = {
+      key: "",
+      title: input.title,
+      version: 0,
+      changed: false,
+      outline: [],
+      kind: input.kind ?? input.draft?.kind ?? "other",
+      note: `Not filed: this is ${back.note}`,
+    };
+    return putUp;
+  }
+  const filed = Docs.create(lead.orgId, writer, context.provenance, filing).pipe(
     Effect.catchIf(
       (error): error is KinChatError =>
         isChatError(error) && error.reason === "not_allowed" && headStart === undefined,
@@ -806,18 +769,19 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     ),
   );
   // Its links go in with it, so a refused link leaves no doc behind.
+  // Its Approve card must carry a short one whole, worked out on the doc as filed: else nothing is.
   const { written, draft } = yield* sql.withTransaction(
     Effect.gen(function* () {
-      const written = yield* filed;
-      if (links.length > 0)
-        yield* Docs.link(lead.orgId, writer, { key: written.row.key }, links, "relates");
+      const written = yield* linked(yield* filed);
       if (input.draft === undefined) return { written, draft: undefined };
-      const card = yield* draftCardOf(lead, input.draft, {
+      const drawn = yield* draftCardOf(lead, input.draft, {
         text: written.version.body,
         partyId: written.row.partyId,
         version: written.version.version,
+        key: written.row.key,
       });
-      return { written, draft: card };
+      if (!drawn.fits) return yield* invalid(DRAFT_CARD_FULL);
+      return { written, draft: drawn.card };
     }),
   );
   const placed = yield* shown(
@@ -929,17 +893,23 @@ const putBackOrShow = Effect.fnUntraced(function* (
   written: Docs.Written,
   card: boolean | undefined,
 ) {
-  const back =
+  const redrafting =
     written.created && !sensitiveOf(written.row)
-      ? yield* putBack(
-          lead,
-          { docKey: written.row.key },
-          written.version.body,
-          undefined,
-          written.row,
-          { _tag: "written", written },
-        )
+      ? yield* redraftOf(lead, { docKey: written.row.key }, undefined, written.row)
       : undefined;
+  const back =
+    redrafting === undefined
+      ? undefined
+      : yield* raiseRedraft(
+          redrafting,
+          written.version.body,
+          isLongDraft(written.version.body) ? written : undefined,
+        ).pipe(
+          Effect.map((note) => ({ _tag: "raised" as const, note })),
+          Effect.catchTag("KinChatError", (error) =>
+            Effect.succeed({ _tag: "refused" as const, note: redoRefused(redrafting.of, error) }),
+          ),
+        );
   if (back?._tag !== "raised") yield* shown(lead, written, card);
   return {
     ...writeResult(written, written.created),

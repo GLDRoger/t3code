@@ -3,6 +3,7 @@ import {
   KIN_SOCIAL_PLATFORM_LABELS,
   KinAgentId,
   KinChatError,
+  KinChoiceCardState,
   type KinDocCardDraft,
   KinDocCardState,
   type KinDocSendUpInput,
@@ -25,10 +26,11 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { turnChat, turnPeople } from "../lead/Audience.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { DRAFT_WORDS } from "../questions/approval.ts";
+import { destinationRefusal, DRAFT_WORDS, draftDetail, draftLine } from "../questions/approval.ts";
 import { sendUpFromCard } from "../questions/askPerson.ts";
+import { askedBy } from "../questions/openQuestions.ts";
 import { postsTo } from "../social/rows.ts";
-import { draftOnCard } from "./draftOpening.ts";
+import { draftOnCard, isLongDraft } from "./draftOpening.ts";
 import type { Lead } from "./leadWork.ts";
 import { iso, unavailable } from "./recordRows.ts";
 import { personSees } from "./teamView.ts";
@@ -43,15 +45,23 @@ const docCardTurn = (stored: string | null) =>
     ? KinWakeupId.make(stored.slice(`send:${DOC_CARD_ID}`.length).split(":")[0]!)
     : undefined;
 
+const cardHolds = Schema.is(KinChoiceCardState.fields.detail);
+
 /**
  * A draft's card, from stored rows: its text (a long one's opening and version), client and
  * service as filed; "Send to" the agent's owner only in the one teammate's own chat with it; for a
  * post, that Kin can't post it when that client's group (ours, with none) has no account there.
+ * `fits`: a short draft's Approve card can carry it whole; a long one goes up as its opening.
  */
 export const draftCardOf = Effect.fn("KinDraftCards.of")(function* (
   lead: Lead,
   draft: { readonly kind: KinDraftKind; readonly on?: KinSocialPlatform | undefined },
-  doc: { readonly text: string; readonly partyId: string | null; readonly version: number },
+  doc: {
+    readonly text: string;
+    readonly partyId: string | null;
+    readonly version: number;
+    readonly key: string;
+  },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const [owner] = yield* sql<{ personId: string; name: string }>`SELECT
@@ -81,8 +91,15 @@ export const draftCardOf = Effect.fn("KinDraftCards.of")(function* (
   const on = draft.kind === "post" ? draft.on : undefined;
   const posts = draft.kind !== "post" || (yield* postsTo(lead.orgId, on, client?.recordId ?? null));
   const sendTo = own && by !== undefined ? by : undefined;
-  const { text, whole } = { whole: undefined, ...draftOnCard(doc.text, doc.version) };
-  return {
+  const { text, whole } = { whole: undefined, ...draftOnCard(doc.text, doc.version, doc.key) };
+  const [names] =
+    sendTo === undefined || asker === undefined || whole !== undefined
+      ? []
+      : yield* sql<{ asker: string; agent: string }>`SELECT p.display_name AS asker,
+          l.name AS agent FROM kin_people p JOIN kin_leads l ON l.org_id = p.org_id
+            AND l.agent_id = ${lead.agentId}
+        WHERE p.org_id = ${lead.orgId} AND p.person_id = ${asker}`;
+  const card = {
     kind: draft.kind,
     text,
     ...(on === undefined ? {} : { on }),
@@ -106,6 +123,21 @@ export const draftCardOf = Effect.fn("KinDraftCards.of")(function* (
       : {}),
     ...(whole === undefined ? {} : { whole }),
   } satisfies KinDocCardDraft;
+  return {
+    card,
+    fits:
+      names === undefined ||
+      cardHolds(
+        draftDetail(askedBy(names.asker, names.agent), {
+          text: doc.text.trim(),
+          line: draftLine(
+            draft.kind,
+            on === undefined ? undefined : KIN_SOCIAL_PLATFORM_LABELS[on],
+            client?.title,
+          ),
+        }),
+      ),
+  };
 });
 
 const decodeCard = Schema.decodeUnknownOption(Schema.fromJsonString(KinDocCardState));
@@ -190,6 +222,16 @@ export const sendUp = Effect.fn("KinDraftCards.sendUp")(
         reason: "invalid_state",
         message: "This draft has changed since it was written. Ask for a fresh one here.",
       });
+    // A long one goes up bound to the version its card holds; a short one as its card's text.
+    const long = isLongDraft(doc.body, draft);
+    // Nothing goes up that where it goes would refuse whole: the card stays sendable.
+    const tooLong = destinationRefusal(
+      draft.kind,
+      long ? doc.body : draft.text,
+      draft.on === undefined ? undefined : KIN_SOCIAL_PLATFORM_LABELS[draft.on],
+    );
+    if (tooLong !== undefined)
+      return yield* new KinChatError({ reason: "invalid_state", message: tooLong });
     const chat = yield* KinChatService;
     const asked = yield* sendUpFromCard(
       {
@@ -208,19 +250,16 @@ export const sendUp = Effect.fn("KinDraftCards.sendUp")(
           .filter((at) => at !== undefined)
           .toSorted()
           .at(-1),
-        doc: {
-          recordId: card.recordId,
-          key: doc.key,
-          version: doc.version,
-          text: draft.whole === undefined ? draft.text.trim() : doc.body,
-        },
+        ...(long
+          ? { doc: { recordId: card.recordId, key: doc.key, version: doc.version, text: doc.body } }
+          : {}),
         ...(draft.on === undefined ? {} : { on: KIN_SOCIAL_PLATFORM_LABELS[draft.on] }),
         madeIn: docCardTurn(row.clientMessageId),
       },
       {
         to: row.owner,
         question: `Approve this ${DRAFT_WORDS[draft.kind]}: ${card.title}`.slice(0, 239) + "?",
-        detail: draft.whole === undefined ? draft.text.trim() : doc.body.trim(),
+        detail: long ? doc.body.trim() : draft.text.trim(),
         draft: {
           kind: draft.kind,
           ...(draft.client === undefined ? {} : { for: draft.client.key }),

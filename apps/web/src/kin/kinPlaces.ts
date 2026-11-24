@@ -7,6 +7,7 @@ import {
   KinListId,
   KinPersonId,
   KinRecordKey,
+  KinWidgetId,
   type KinMessageLinkTarget,
   type KinSearchKind,
 } from "@t3tools/contracts";
@@ -109,6 +110,8 @@ export interface KinPlaceSearch {
   /** The open doc: the version read, the section arrived at, or the versions compared. */
   doc?: KinRecordKey;
   v?: number;
+  /** The long draft card the doc was opened from (`KinDocWhere.card`). */
+  card?: KinWidgetId;
   section?: string;
   changes?: number;
   from?: number;
@@ -143,6 +146,7 @@ const isKey = Schema.is(KinRecordKey);
 const isPerson = Schema.is(KinPersonId);
 const isList = Schema.is(KinListId);
 const isSection = Schema.is(KinDocSectionId);
+const isCard = Schema.is(KinWidgetId);
 const versionOf = (raw: unknown) => {
   const version = Number(raw);
   return Number.isSafeInteger(version) && version > 0 ? version : undefined;
@@ -163,6 +167,7 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
     ...(raw.subscriptions === true ? { subscriptions: true } : {}),
     ...(isKey(raw.doc) ? { doc: raw.doc } : {}),
     ...(v === undefined ? {} : { v }),
+    ...(isCard(raw.card) ? { card: raw.card } : {}),
     ...(isSection(raw.section) ? { section: raw.section } : {}),
     ...(changes === undefined ? {} : { changes }),
     ...(from === undefined ? {} : { from }),
@@ -180,6 +185,7 @@ export function kinRecordOf(search: KinPlaceSearch): KinRecordWhere | null {
     return {
       doc: search.doc,
       ...(search.v === undefined ? {} : { version: search.v }),
+      ...(search.card === undefined ? {} : { card: search.card }),
       ...(search.section === undefined ? {} : { section: search.section }),
       ...(search.changes === undefined
         ? {}
@@ -209,6 +215,7 @@ export function kinSearchOf(record: KinRecordWhere | null): KinPlaceSearch {
   return {
     doc: record.doc,
     ...(record.version === undefined ? {} : { v: record.version }),
+    ...(record.card === undefined ? {} : { card: record.card }),
     ...(record.section === undefined ? {} : { section: record.section }),
     ...(record.changes === undefined
       ? {}

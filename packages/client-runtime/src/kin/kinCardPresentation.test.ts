@@ -393,6 +393,27 @@ describe("choice cards", () => {
       folds: false,
       open: { key: "D-12", version: 4 },
     });
+    // Refused as moved: nothing is left to approve, so it neither asks for a read first nor says
+    // anyone chose Approve.
+    const refused = choice({
+      revision: 2,
+      state: {
+        ...choiceState({
+          optionId: "option-1",
+          personId: "rhea",
+          via: "tap",
+          emoji: null,
+          answeredAt: "2026-11-08T09:05:00.000Z",
+        }),
+        detail: `${head}\n\n${text}\n\n${note}\n\nProposal for Harbourline Hotels`,
+        draft: text,
+        draftDoc: { recordId: "rec-d12", key: "D-12", version: 4 },
+        outcome: { title: "Not approved", text: "This draft changed.", refused: true },
+        decidedBy: { personId: "rhea", name: "Rhea Rao" },
+      },
+    });
+    expect(refused.draft?.after).toBe("Proposal for Harbourline Hotels");
+    expect(kinChoiceDecidedLine(refused, "meera" as never)).toBeNull();
   });
 
   it("takes taps until it is answered, closed or a day old", () => {

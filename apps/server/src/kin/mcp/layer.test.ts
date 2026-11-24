@@ -1770,6 +1770,52 @@ it.effect.each([true, false])(
         ] as const)
           assert.strictEqual(yield* refusedWith("social_draft", { caption }), answer, caption);
         assert.strictEqual(yield* refusedWith("social_week", { group: "our own" }), POST_FIRST);
+        // A long draft's turn holds it to the whole text of the version that went up, not the
+        // opening its card showed: the opening alone, or the whole with words added, is refused.
+        const whole = Array.from(
+          { length: 40 },
+          (_, n) => `Paragraph ${n + 1}: the shoot runs as agreed, and every word stays.`,
+        ).join("\n\n");
+        const opening = whole.slice(0, whole.indexOf("\n\nParagraph 15"));
+        assert.isAbove(whole.length, 2000);
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+          VALUES (${person.orgId}, 'rec_long', 'docs', 'D-90', 'Long draft', 'person',
+            ${person.personId}, 'person', 'D-90', 0, 0, '{}')`;
+        yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind,
+            summary, operations_json, actor_kind, actor_id, via, origin_key, created_at)
+          VALUES (${person.orgId}, 'rec_long', 1, ${whole}, 'Long draft', 'created', 'Written',
+            '[]', 'person', ${person.personId}, 'owner', 'D-90-1', 0)`;
+        const longUp = (kind: string) =>
+          JSON.stringify({
+            ...JSON.parse(sentUp(kind, opening)),
+            doc: { recordId: "rec_long", key: "D-90", version: 1, chars: whole.length },
+          });
+        for (const [kind, name, args] of [
+          ["post", "social_draft", (text: string) => ({ caption: text })],
+          ["invoice", "record_create", (text: string) => ({ records: [invoice(text)] })],
+        ] as const) {
+          yield* sql`UPDATE kin_questions SET draft_json = ${longUp(kind)}, draft_made_json = NULL
+            WHERE question_id = 'q-approved'`;
+          for (const [text, answer] of [
+            [opening, approvedWords(name)],
+            [`${whole}\n\nAnd one more line.`, approvedWords(name)],
+            [whole, undefined],
+          ] as const)
+            assert.strictEqual(yield* refusedWith(name, args(text)), answer, `${kind} ${text.length}`);
+        }
+        for (const [body, kept] of [
+          [opening, false],
+          [`${whole}\n\nAnd one more line.`, false],
+          [whole, true],
+        ] as const)
+          assert.strictEqual(
+            mailKeepsDraft(prepared("The shoot", body), whole, false),
+            kept,
+            `mail ${body.length}`,
+          );
+        yield* sql`DELETE FROM kin_doc_versions WHERE record_id = 'rec_long'`;
+        yield* sql`DELETE FROM kin_records WHERE record_id = 'rec_long'`;
         // A proposal or client terms Kin wrote itself on the Approve: no doc is made in a turn.
         for (const kind of ["proposal", "terms"])
           for (const name of ["doc_create", "kin_document"]) {

@@ -477,7 +477,8 @@ const revise = Effect.fn("KinDocs.revise")(function* (
     [{ field: "version", from: String(current.version), to: String(version) }],
   );
   yield* guardPlaybook(orgId, row.recordId);
-  if (next.file === undefined) yield* refreshCards(orgId, row.recordId, next.body, version);
+  if (next.file === undefined)
+    yield* refreshCards(orgId, row.recordId, { text: next.body, version, key: row.key });
   return { ...(yield* settle(orgId, row.recordId)), created: true };
 });
 
@@ -485,15 +486,14 @@ const revise = Effect.fn("KinDocs.revise")(function* (
 const refreshCards = Effect.fn("KinDocs.refreshCards")(function* (
   orgId: KinOrgId,
   recordId: string,
-  text?: string,
-  version?: number,
+  next?: { readonly text: string; readonly version: number; readonly key: string },
 ) {
   const chats = yield* Effect.serviceOption(KinChatService);
   if (Option.isSome(chats))
     yield* chats.value.refreshDocCards({
       orgId,
       recordId,
-      ...(text === undefined || version === undefined ? {} : draftOnCard(text, version)),
+      ...(next === undefined ? {} : draftOnCard(next.text, next.version, next.key)),
     });
 });
 
@@ -563,8 +563,6 @@ export const rewrite = Effect.fn("KinDocs.rewrite")(function* (
     readonly baseVersion: number;
     readonly summary: string;
     readonly originKey: string;
-    /** A redraft after Changes first: a new text in full, never an edit sent as a rewrite. */
-    readonly redraft?: true;
   },
 ) {
   const body = normalize(input.body);
@@ -578,10 +576,7 @@ export const rewrite = Effect.fn("KinDocs.rewrite")(function* (
       if (current === undefined) return yield* unavailable;
       if (current.bodyKind === "file") return yield* fileOnly(row.key);
       if (current.version !== input.baseVersion) return yield* stale(row.key, current.version);
-      const refused =
-        input.redraft === true && current.body !== body
-          ? undefined
-          : rewriteRefusal(current.body, body);
+      const refused = rewriteRefusal(current.body, body);
       if (refused !== undefined) return yield* refusedOn(row, refused);
       return yield* revise(orgId, writer, provenance, row, current, {
         title: row.title,

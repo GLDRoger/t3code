@@ -388,7 +388,12 @@ function KinDocCard(props: {
     let failed: string = KIN_DOCS.copyFailed;
     const text = readVersion({
       environmentId: props.environmentId,
-      input: { orgId: doc.orgId, key: KinRecordKey.make(doc.key), version: shown.long.version },
+      input: {
+          orgId: doc.orgId,
+          key: KinRecordKey.make(doc.key),
+          version: shown.long.version,
+          card: doc.widgetId,
+        },
     }).then((result) => {
       const got = kinDocWholeCopy(result);
       if ("problem" in got) {
@@ -468,7 +473,15 @@ function KinDocCard(props: {
           size="xs"
           variant="outline"
           render={
-            <Link to="/kin/$environmentId/$orgId/docs" params={params} search={{ doc: doc.key }} />
+            <Link
+              to="/kin/$environmentId/$orgId/docs"
+              params={params}
+              search={
+                draft?.long === undefined
+                  ? { doc: doc.key }
+                  : { doc: doc.key, v: draft.long.version, card: doc.widgetId }
+              }
+            />
           }
         >
           Open

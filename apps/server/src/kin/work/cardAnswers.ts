@@ -28,7 +28,7 @@ import { isNotChecked, KinConnections, type StaleAsk } from "../connections/Conn
 import { cardDecision } from "../memory/decisions.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
-import { answerCard, DRAFT_MOVED } from "../questions/openQuestions.ts";
+import { answerCard } from "../questions/openQuestions.ts";
 import { dismissQuestion, undismissQuestion } from "../questions/dismissed.ts";
 import { answerReceiptCard } from "../gendocs/receiptProposals.ts";
 import { receiptDocument } from "../gendocs/receipts.ts";
@@ -129,7 +129,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
     asked === undefined &&
     made === undefined &&
     currency === undefined &&
-    sentBack?.title !== DRAFT_MOVED
+    !(sentBack !== undefined && "refused" in sentBack)
   )
     yield* followOn("Kin couldn't prepare the card decision", saveDecision(input, scope));
   if (made?._tag === "made")

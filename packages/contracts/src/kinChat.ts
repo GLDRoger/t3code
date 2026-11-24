@@ -620,6 +620,8 @@ export const KinChoiceCardState = Schema.Struct({
           subscriptions: Schema.optionalKey(Schema.Literal(true)),
         }),
       ),
+      /** The tap was refused and did nothing, as the text says: nobody chose anything. */
+      refused: Schema.optionalKey(Schema.Literal(true)),
       /** Set when the person undid what a default Kin took: who, by name then, and when. */
       undone: Schema.optionalKey(
         Schema.Struct({
@@ -643,6 +645,10 @@ export const KinChoiceCardState = Schema.Struct({
 });
 export type KinChoiceCardState = typeof KinChoiceCardState.Type;
 export type KinChoiceOutcome = NonNullable<KinChoiceCardState["outcome"]>;
+
+/** The line under a long draft's opening on its Approve card (`KinChoiceCardState.draftDoc`). */
+export const kinApproveOpeningNote = (key: string) =>
+  `This is only the opening. Open ${key} to read the whole draft before you approve.`;
 
 export const KinPresenceState = Schema.Literals([
   // Older servers only; clients show no line for it.

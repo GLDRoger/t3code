@@ -181,6 +181,7 @@ import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { DAY_MS } from "../durations.ts";
 import { withArticle } from "../article.ts";
+import { NOTES_MAX } from "../textLimits.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -204,7 +205,7 @@ const Steps = Schema.Array(
   Schema.Struct({ title: KinToolText(200), done: Schema.optional(Schema.Boolean) }),
 ).check(Schema.isMaxLength(30));
 const Title = KinToolText(280);
-const Notes = Schema.String.check(Schema.isMaxLength(4_000));
+const Notes = Schema.String.check(Schema.isMaxLength(NOTES_MAX));
 const List = KinListId.annotate({
   description:
     "work (default), clients, contacts, projects, milestones, goals, or a list defined with list_define, such as expenses, invoices or dates.",

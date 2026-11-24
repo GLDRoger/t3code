@@ -1,4 +1,10 @@
-import { type KinDocKind, KinEventId, type KinOrgId, KinPersonId } from "@t3tools/contracts";
+import {
+  kinApproveOpeningNote,
+  type KinDocKind,
+  KinEventId,
+  type KinOrgId,
+  KinPersonId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -7,6 +13,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeCrypto from "node:crypto";
 
 import { ownerLevelSql } from "../people/KinAccess.ts";
+import { PLATFORM_RULES } from "../social/rows.ts";
+import { MAIL_BODY_MAX, NOTES_MAX } from "../textLimits.ts";
 
 /** What a teammate's draft sent up to the owner is (`askPerson`'s `draft`). */
 export const DRAFT_KINDS = ["proposal", "quote", "invoice", "terms", "mail", "post"] as const;
@@ -81,13 +89,9 @@ export const DRAFT_OPTIONS = [
 /** The answer a sent-up draft's "no" stores. */
 export const CHANGES_FIRST = DRAFT_OPTIONS[1].label;
 
-/** What a long draft's card says under its opening, in older clients too. */
-const openingNote = (key: string) =>
-  `This is only the opening. Open ${key} to read the whole draft before you approve.`;
-
 /** A sent-up draft's card text from its stored payload: who asks, the draft, then Kin's line. */
 export const draftDetail = (head: string, draft: Pick<StoredDraft, "text" | "line" | "doc">) =>
-  `${head}\n\n${draft.text}\n\n${draft.doc === undefined ? "" : `${openingNote(draft.doc.key)}\n\n`}${draft.line}`;
+  `${head}\n\n${draft.text}\n\n${draft.doc === undefined ? "" : `${kinApproveOpeningNote(draft.doc.key)}\n\n`}${draft.line}`;
 
 /** The card's own fields for a long draft's doc and version; none for a short one. */
 export const draftDocOf = (draft: Pick<StoredDraft, "doc">) =>
@@ -168,6 +172,34 @@ const headingOf = (draft: string) => {
     cc: values("cc"),
     rest: lines.slice(blank + 1).join("\n"),
   };
+};
+
+const count = (n: number) => n.toLocaleString("en-US");
+/**
+ * Why a draft's destination would refuse its whole text, by the limits Kin already holds: a post's
+ * caption on its service, a mail's body, a quote's or invoice's notes. Undefined when it fits.
+ */
+export const destinationRefusal = (kind: DraftKind, text: string, on?: string) => {
+  if (kind === "post") {
+    const rule = Object.values(PLATFORM_RULES).find((one) => one.label === on);
+    const length = asWords(text).length;
+    return rule === undefined || length <= rule.caption
+      ? undefined
+      : `This post is ${count(length)} characters, and ${rule.label} takes at most ${count(rule.caption)}. Shorten it, then send it again.`;
+  }
+  if (kind === "mail") {
+    const length = asWords(headingOf(text)?.rest ?? text).length;
+    return length <= MAIL_BODY_MAX
+      ? undefined
+      : `This mail is ${count(length)} characters, and a mail holds at most ${count(MAIL_BODY_MAX)}. Shorten it, then send it again.`;
+  }
+  if (kind === "quote" || kind === "invoice") {
+    const length = asWords(text).length;
+    return length <= NOTES_MAX
+      ? undefined
+      : `This ${DRAFT_WORDS[kind]} is ${count(length)} characters, and its notes hold at most ${count(NOTES_MAX)}. Shorten it, then send it again.`;
+  }
+  return undefined;
 };
 
 /**

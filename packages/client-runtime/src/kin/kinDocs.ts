@@ -30,6 +30,7 @@ import {
   type KinWidget,
   type KinWorkActor,
   type KinWorkPrincipal,
+  kinDraftOpeningOf,
   kinPlainBody,
   kinSalesLead,
   kinThreadLinksAsWords,
@@ -1286,7 +1287,7 @@ export interface KinDocCardDraftView {
  * have nothing to send up, so Copy text only.
  */
 export function kinDocCardDraft(
-  card: Pick<KinDocCardView, "draft">,
+  card: Pick<KinDocCardView, "draft" | "key">,
   ownerLevel: boolean,
   readOnly: boolean,
 ): KinDocCardDraftView | null {
@@ -1296,7 +1297,9 @@ export function kinDocCardDraft(
     draft.changed !== undefined &&
     (draft.changesFirst === undefined || draft.changed.at > draft.changesFirst.at);
   return {
-    copyText: kinDocCopyText(draft.text),
+    copyText: kinDocCopyText(
+      draft.whole === undefined ? draft.text : kinDraftOpeningOf(draft.text, card.key),
+    ),
     ...(draft.whole === undefined
       ? {}
       : { long: { line: KIN_DOCS.longDraft, version: draft.whole.version } }),

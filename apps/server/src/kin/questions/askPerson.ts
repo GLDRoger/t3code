@@ -56,6 +56,7 @@ import {
   DRAFT_OPTIONS,
   DRAFT_WORDS,
   draftDetail,
+  destinationRefusal,
   draftDocOf,
   draftLine,
   encodeStoredDraft,
@@ -251,15 +252,15 @@ type Press = {
   readonly on?: string;
   /** The turn that wrote the card: what she wrote it from is hers here too (`draftSource`). */
   readonly madeIn?: KinWakeupId | undefined;
-  /** The card's doc at its latest version, and that version's whole text. */
-  readonly doc?: DraftDoc;
+  /** A long draft's doc at its latest version, and that version's whole text. */
+  readonly doc?: DraftDoc | undefined;
   /** Checks the press as a message of theirs in that chat would be checked (`send`). */
   readonly mayPost: ReturnType<KinChatService["Service"]["mayPost"]>;
 };
 type TurnLead = AgentIdentity & { readonly wakeupId: KinWakeupId };
 /**
- * The doc version a draft is, with its whole text: a draft too long for its card goes up as its
- * opening, bound to this version (`StoredDraft.doc`).
+ * The doc version a long draft is, with its whole text: it goes up as its opening, bound to this
+ * version (`StoredDraft.doc`).
  */
 export type DraftDoc = {
   readonly recordId: string;
@@ -556,6 +557,8 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           },
         };
         draft = yield* encodeStoredDraft(sentUp);
+        const tooLong = destinationRefusal(sentUp.kind, bound?.text ?? input.detail, on);
+        if (tooLong !== undefined) return yield* refuse(tooLong);
       }
       if (sentUp === undefined && input.options === undefined)
         return yield* refuse("Give it 2 to 4 options.");
@@ -697,12 +700,9 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
       const read = turn === null ? undefined : yield* outsideStamp(turn);
       const afterLine =
         read === undefined ? "" : `\n\nAsked after reading: ${renderSource(read, targetOwnerSide)}`;
-      // Too long for its card whole, a draft with a doc goes up as its opening, bound to that version.
-      if (
-        sentUp !== undefined &&
-        bound !== undefined &&
-        !cardHolds(`${draftDetail(by, sentUp)}${afterLine}`)
-      ) {
+      // A long draft goes up as its opening, bound to its version (`isLongDraft`, by the caller);
+      // how much of it the card has room for sets only the opening's length.
+      if (sentUp !== undefined && bound !== undefined) {
         const doc = {
           recordId: bound.recordId,
           key: bound.key,
@@ -711,7 +711,11 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         };
         const room =
           DETAIL_MAX - `${draftDetail(by, { ...sentUp, text: "", doc })}${afterLine}`.length;
-        sentUp = { ...sentUp, text: draftOpening(bound.text, Math.min(OPENING_MAX, room)), doc };
+        sentUp = {
+          ...sentUp,
+          text: draftOpening(bound.text, Math.max(1, Math.min(OPENING_MAX, room))),
+          doc,
+        };
         draft = yield* encodeStoredDraft(sentUp);
       }
       if (

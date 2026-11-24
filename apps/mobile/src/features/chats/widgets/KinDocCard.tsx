@@ -44,9 +44,16 @@ export const KinDocCard = memo(function KinDocCard(props: {
   const openRecord = useKinWorkLink();
   const line = kinDocCardLine(doc, props.agentNames ?? NO_NAMES, new Date(useNowMinuteMs()));
   const where = { environmentId: props.environmentId, orgId: props.orgId, doc: doc.key };
-  const open = () => openRecord("KinDoc", where);
   const { previousVersion } = doc;
   const draft = kinDocCardDraft(doc, props.ownerLevel, props.readOnly);
+  // A long draft opens at the version its card holds, which the card lets its reader read.
+  const open = () =>
+    openRecord(
+      "KinDoc",
+      draft?.long === undefined
+        ? where
+        : { ...where, v: String(draft.long.version), card: doc.widgetId },
+    );
   const sendUp = useAtomCommand(kinClient.docSendUp, { reportFailure: false });
   const readVersion = useAtomCommand(kinClient.docVersion, { reportFailure: false });
   const [sending, setSending] = useState(false);
@@ -64,7 +71,12 @@ export const KinDocCard = memo(function KinDocCard(props: {
     const got = kinDocWholeCopy(
       await readVersion({
         environmentId: props.environmentId,
-        input: { orgId: doc.orgId, key: KinRecordKey.make(doc.key), version: shown.long.version },
+        input: {
+          orgId: doc.orgId,
+          key: KinRecordKey.make(doc.key),
+          version: shown.long.version,
+          card: doc.widgetId,
+        },
       }),
     );
     setCopying(false);

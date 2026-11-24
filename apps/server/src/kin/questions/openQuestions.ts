@@ -11,6 +11,8 @@ import {
   KinMessageId,
   type KinOrgId,
   KinPersonId,
+  KinRecordId,
+  KinRecordKey,
   type KinWidget,
   KinWidgetId,
   ThreadId,
@@ -442,10 +444,7 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
   const sql = yield* SqlClient.SqlClient;
   const open = sql`org_id = ${input.orgId} AND person_id = ${input.personId} AND state = 'open'
     AND (widget_id = ${input.widgetId} OR raise_widget_id = ${input.widgetId})`;
-  if (input.approves === true) {
-    const moved = yield* approvedTooLate(input, chat);
-    if (moved !== undefined) return moved;
-  }
+  // A reaction never answers a draft, nor finds one moved: only a tap does.
   if (input.via === "reaction") {
     const [draft] = yield* sql`SELECT 1 FROM kin_questions WHERE ${open} AND draft_json IS NOT NULL
       ORDER BY question_id LIMIT 1`;
@@ -454,6 +453,10 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
         reason: "not_allowed",
         message: "Tap Approve or Changes first on the card.",
       });
+  }
+  if (input.approves === true) {
+    const moved = yield* approvedTooLate(input, chat);
+    if (moved !== undefined) return moved;
   }
   const moved = yield* sql<{ questionId: string }>`UPDATE kin_questions SET state = 'answered',
       answer = ${input.label}, closed_at = ${input.now}
@@ -516,7 +519,7 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
 });
 
 /** The title of an Approve that found its long draft changed since it went up. */
-export const DRAFT_MOVED = "Not approved";
+const DRAFT_MOVED = "Not approved";
 
 /**
  * An Approve on a long draft whose doc is gone, deleted or past the version that went up: the
@@ -541,6 +544,20 @@ const approvedTooLate = Effect.fn("KinQuestions.approvedTooLate")(function* (
   if (row?.draft == null || !(yield* draftMoved(input.orgId, row.draft))) return undefined;
   yield* sql`UPDATE kin_questions SET state = 'withdrawn', closed_at = ${input.now}
     WHERE org_id = ${input.orgId} AND question_id = ${row.questionId} AND state = 'open'`;
+  // Sent again, it goes up as the doc is now: its title and client too (`draftCards.sendUp`).
+  const [doc] =
+    row.draft.doc === undefined
+      ? []
+      : yield* sql<{
+          title: string;
+          clientId: string | null;
+          clientKey: string | null;
+          clientTitle: string | null;
+        }>`SELECT r.title, c.record_id AS "clientId", c.key AS "clientKey",
+          c.title AS "clientTitle"
+        FROM kin_records r LEFT JOIN kin_records c ON c.org_id = r.org_id
+          AND c.record_id = r.party_id AND c.register_id = 'clients'
+        WHERE r.org_id = ${input.orgId} AND r.record_id = ${row.draft.doc.recordId}`;
   if (row.forChatId !== null)
     for (const { widgetId } of yield* draftCardsAbout(
       input.orgId,
@@ -552,10 +569,26 @@ const approvedTooLate = Effect.fn("KinQuestions.approvedTooLate")(function* (
         orgId: input.orgId,
         widgetId,
         changed: { at: iso(input.now) },
+        ...(doc === undefined
+          ? {}
+          : {
+              now: {
+                title: doc.title,
+                client:
+                  doc.clientId === null || doc.clientKey === null || doc.clientTitle === null
+                    ? undefined
+                    : {
+                        recordId: KinRecordId.make(doc.clientId),
+                        key: KinRecordKey.make(doc.clientKey),
+                        title: doc.clientTitle,
+                      },
+              },
+            }),
       });
   return {
     title: DRAFT_MOVED,
     text: `The draft changed after it was sent, so nothing was approved. Ask ${row.draft.names.asker} to send it again.`,
+    refused: true,
   } satisfies KinChoiceOutcome;
 });
 
