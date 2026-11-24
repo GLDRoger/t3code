@@ -77,8 +77,51 @@ const tellOwners = Effect.fn("KinHostBackup.tellOwners")(function* (
 });
 
 const NO_LEAD_NOTICE =
-  "No agent is running\n\nNobody is watching for you right now: every agent is paused or retired. Resume one, or add one, in Settings, Agents.";
+  "No agent is running\n\nNobody is watching for you right now: Kin is stopped or every agent is paused or retired. Resume one, or add one, in Settings, Agents.";
 
+const epochOf = (iso: string) => DateTime.toEpochMillis(DateTime.makeUnsafe(iso));
+
+/**
+ * Whether a lead (as `liveLead` counts them) is awake: not retired, not paused, and the company's
+ * stop switch off. Asleep, `since` is when the last of them went down, which names the episode.
+ */
+const leadsAwake = Effect.fn("KinHostBackup.leadsAwake")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+) {
+  const leads = yield* sql<{
+    pausedAt: string | null;
+    retiredAt: string | null;
+    listed: number;
+  }>`SELECT a.paused_at AS "pausedAt", a.retired_at AS "retiredAt",
+      CASE WHEN l.agent_id IS NULL THEN 0 ELSE 1 END AS listed
+    FROM kin_agents a
+    LEFT JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
+    WHERE a.org_id = ${orgId} AND a.role = 'lead'
+    ORDER BY a.created_at, a.agent_id`;
+  const [stop] = yield* sql<{ pausedAt: number }>`SELECT paused_at AS "pausedAt"
+    FROM kin_org_state WHERE org_id = ${orgId} AND paused = 1 ORDER BY org_id`;
+  const leadAwake = leads.some(
+    (lead) => lead.listed === 1 && lead.pausedAt === null && lead.retiredAt === null,
+  );
+  if (leadAwake && stop === undefined) return { awake: true as const };
+  const downs = leads.flatMap((lead) => {
+    const at = [lead.pausedAt, lead.retiredAt].flatMap((iso) =>
+      iso === null ? [] : [epochOf(iso)],
+    );
+    return at.length === 0 ? [] : [Math.min(...at)];
+  });
+  const starts = [
+    ...(stop === undefined ? [] : [stop.pausedAt]),
+    ...(leadAwake || downs.length === 0 ? [] : [Math.max(...downs)]),
+  ];
+  return { awake: false as const, since: starts.length === 0 ? 0 : Math.min(...starts) };
+});
+
+/**
+ * One notice in the owner's private chat while no lead is awake, kept for the episode and closed
+ * once one is; a new episode is told again. Plain reads and writes: no turn, no model.
+ */
 export const checkLeadNotice = Effect.fn("KinHostBackup.checkLeadNotice")(function* (
   orgId: KinOrgId,
 ) {
@@ -87,22 +130,24 @@ export const checkLeadNotice = Effect.fn("KinHostBackup.checkLeadNotice")(functi
   const repo = yield* Repository.KinChatRepository;
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      const live = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
+      const leads = yield* leadsAwake(sql, orgId);
       const prefix = `kin-no-lead:${orgId}:`;
       const now = yield* Clock.currentTimeMillis;
-      const messageId = KinMessageId.make(`${prefix}${Math.floor(now / DAY_MS)}`);
-      const notices = yield* sql<{ waitingId: string }>`SELECT waiting_id AS "waitingId"
+      const open = yield* sql<{ waitingId: string }>`SELECT waiting_id AS "waitingId"
         FROM kin_waiting WHERE org_id = ${orgId} AND resolved_at IS NULL
           AND substr(message_id, 1, ${prefix.length}) = ${prefix}
-          AND (${live === undefined ? 0 : 1} OR message_id <> ${messageId})
         ORDER BY waiting_id`;
-      for (const { waitingId } of notices)
-        yield* chat.resolveNotice({
-          orgId,
-          waitingId: KinWaitingId.make(waitingId),
-          resolution: "closed",
-        });
-      if (live !== undefined) return;
+      if (leads.awake) {
+        for (const { waitingId } of open)
+          yield* chat.resolveNotice({
+            orgId,
+            waitingId: KinWaitingId.make(waitingId),
+            resolution: "closed",
+          });
+        return;
+      }
+      if (open.length > 0) return;
+      const messageId = KinMessageId.make(`${prefix}since:${leads.since}`);
       if (Option.isSome(yield* repo.getMessage({ orgId, messageId }))) return;
       const [owner] = yield* sql<{ personId: KinPersonId }>`SELECT p.person_id AS "personId"
         FROM kin_people p WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
@@ -145,6 +190,23 @@ export const checkLeadNotice = Effect.fn("KinHostBackup.checkLeadNotice")(functi
         waitingFor: owner.personId,
       });
     }),
+  );
+});
+
+/**
+ * `checkLeadNotice` right after a pause, resume, retire or stop, so the notice isn't up to an
+ * hour late. Skipped where the chat services aren't provided; the hourly check covers that.
+ */
+export const checkLeadNoticeNow = Effect.fn("KinHostBackup.checkLeadNoticeNow")(function* (
+  orgId: KinOrgId,
+) {
+  const chat = yield* Effect.serviceOption(Chat.KinChatService);
+  const repo = yield* Effect.serviceOption(Repository.KinChatRepository);
+  if (Option.isNone(chat) || Option.isNone(repo)) return;
+  yield* checkLeadNotice(orgId).pipe(
+    Effect.provideService(Chat.KinChatService, chat.value),
+    Effect.provideService(Repository.KinChatRepository, repo.value),
+    Effect.catchCause((cause) => Effect.logWarning("Kin no-agent notice failed", { orgId, cause })),
   );
 });
 

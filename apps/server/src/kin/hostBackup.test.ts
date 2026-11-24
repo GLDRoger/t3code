@@ -11,6 +11,7 @@ import {
   type KinTroubleCause,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -165,16 +166,27 @@ const notices = Effect.gen(function* () {
   return rows.map((row) => row.body);
 });
 
-it.effect.each(["retired", "none"] as const)(
-  "tells the owner once a day with %s leads and clears the notice on recovery",
+it.effect.each(["retired", "none", "paused", "stopped"] as const)(
+  "tells the owner once while every lead is %s, clears the notice on recovery, and tells a new episode again",
   (scenario) =>
     Effect.gen(function* () {
       yield* TestClock.setTime(DAY_START);
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
-      const retiredAt = DateTime.formatIso(DateTime.makeUnsafe(DAY_START));
-      yield* sql`UPDATE kin_agents SET retired_at = ${retiredAt} WHERE org_id = ${orgId}`;
+      const down = Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const at = DateTime.formatIso(DateTime.makeUnsafe(now));
+        if (scenario === "paused")
+          yield* sql`UPDATE kin_agents SET paused_at = ${at} WHERE org_id = ${orgId}`;
+        else if (scenario === "stopped")
+          yield* sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by)
+            VALUES (${orgId}, 1, ${now}, 'rhea')
+            ON CONFLICT (org_id) DO UPDATE SET paused = 1, paused_at = ${now}, paused_by = 'rhea'`;
+        else yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId}`;
+      });
+      yield* down;
       if (scenario === "none") {
+        const retiredAt = DateTime.formatIso(DateTime.makeUnsafe(DAY_START));
         yield* sql`UPDATE kin_people SET access = 'owner' WHERE org_id = ${orgId} AND person_id = 'rhea'`;
         yield* sql`UPDATE kin_chats SET archived_at = ${retiredAt} WHERE org_id = ${orgId}`;
         yield* sql`DELETE FROM kin_leads WHERE org_id = ${orgId}`;
@@ -185,20 +197,23 @@ it.effect.each(["retired", "none"] as const)(
         WHERE m.org_id = ${orgId} AND m.message_id LIKE 'kin-no-lead:%'
         ORDER BY m.created_at, m.message_id`;
       const body =
-        "No agent is running\n\nNobody is watching for you right now: every agent is paused or retired. Resume one, or add one, in Settings, Agents.";
+        "No agent is running\n\nNobody is watching for you right now: Kin is stopped or every agent is paused or retired. Resume one, or add one, in Settings, Agents.";
       yield* HostBackupCheck.check();
       yield* HostBackupCheck.check();
       assert.deepStrictEqual(yield* messages, [{ body, resolvedAt: null }]);
+      // The same episode a day on: still the one notice.
       yield* TestClock.adjust("1 day");
       yield* HostBackupCheck.check();
-      assert.deepStrictEqual(
-        (yield* messages).map((message) => message.body),
-        [body, body],
-      );
+      assert.deepStrictEqual(yield* messages, [{ body, resolvedAt: null }]);
       if (scenario === "none")
         yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
           VALUES ('chief', ${orgId}, 'Chief of staff', 0, '{}', '[]', 'rhea-chief')`;
-      yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE org_id = ${orgId} AND agent_id = 'chief'`;
+      if (scenario === "paused")
+        yield* sql`UPDATE kin_agents SET paused_at = NULL WHERE org_id = ${orgId} AND agent_id = 'chief'`;
+      else if (scenario === "stopped")
+        yield* sql`UPDATE kin_org_state SET paused = 0, paused_at = NULL, paused_by = NULL WHERE org_id = ${orgId}`;
+      else
+        yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE org_id = ${orgId} AND agent_id = 'chief'`;
       const rhea = { _tag: "person" as const, orgId, personId: KinPersonId.make("rhea") };
       const list = yield* Stream.toQueue((yield* Chat.KinChatService).subscribeChats([rhea], {}), {
         capacity: "unbounded",
@@ -206,7 +221,6 @@ it.effect.each(["retired", "none"] as const)(
       const first = yield* Queue.take(list);
       const unreadIn = (chats: ReadonlyArray<{ chatId: string; unread: number }>) =>
         chats.find((chat) => chat.chatId === "rhea-chief")?.unread;
-      // Yesterday's notice was settled by today's; only today's still counts.
       if (scenario === "retired")
         assert.strictEqual(first._tag === "snapshot" ? unreadIn(first.chats) : null, 1);
       yield* TestClock.adjust("1 day");
@@ -219,10 +233,11 @@ it.effect.each(["retired", "none"] as const)(
         status({ ok: true, lastGoodAt: DAY_START + 2 * 24 * HOUR }),
       );
       yield* HostBackupCheck.check();
-      const resolved = yield* messages;
-      assert.lengthOf(resolved, 2);
-      assert.isTrue(resolved.every((message) => message.resolvedAt !== null));
-      // Settled, the notices leave the row's unread count (and the badge) while the list is open.
+      assert.deepStrictEqual(
+        (yield* messages).map((message) => [message.body, message.resolvedAt !== null]),
+        [[body, true]],
+      );
+      // Settled, the notice leaves the row's unread count (and the badge) while the list is open.
       if (scenario === "retired") {
         let unread: number | undefined;
         while (unread !== 0) {
@@ -231,7 +246,29 @@ it.effect.each(["retired", "none"] as const)(
             unread = event.chat.unread;
         }
       }
+      // Down again the same day: a new episode, told again.
+      yield* TestClock.adjust("1 hour");
+      yield* down;
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(
+        (yield* messages).map((message) => message.resolvedAt === null),
+        [false, true],
+      );
     }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("one lead awake, with the others paused, is no notice", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const at = DateTime.formatIso(DateTime.makeUnsafe(DAY_START));
+    yield* sql`UPDATE kin_agents SET paused_at = ${at} WHERE org_id = ${orgId} AND agent_id = 'chief'`;
+    yield* HostBackupCheck.check();
+    const told = yield* sql`SELECT 1 FROM kin_messages
+      WHERE org_id = ${orgId} AND message_id LIKE 'kin-no-lead:%' ORDER BY message_id`;
+    assert.lengthOf(told, 0);
+  }).pipe(Effect.provide(services)),
 );
 
 const decodeCard = Schema.decodeUnknownSync(Schema.fromJsonString(KinHostTroubleCard));
