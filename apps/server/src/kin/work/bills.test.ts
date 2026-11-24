@@ -487,6 +487,10 @@ describe("bills in bulk", () => {
 
         const done = yield* card(added.batchId);
         assert.strictEqual(done.text, "3 bills: 1 read, 2 couldn't be read.");
+        // Its message says what the card says, so a chat list's line never reads "Reading…".
+        const [message] = yield* (yield* SqlClient.SqlClient)<{ body: string }>`SELECT body
+          FROM kin_messages WHERE org_id = ${orgId} AND message_id = ${`bills:${added.batchId}`}`;
+        assert.strictEqual(message?.body, done.text);
         assert.deepStrictEqual(done.awaiting, [rhea]);
         // After its turn, nothing answers: the turn is over.
         assert.include(yield* read({ bill: "B3" }).pipe(Effect.flip), { reason: "not_allowed" });
