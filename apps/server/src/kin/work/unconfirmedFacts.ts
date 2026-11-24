@@ -43,14 +43,18 @@ const PRINTED = ["title", "address", "gstin", "placeOfSupply", "terms"] as const
 export type PrintedField = (typeof PRINTED)[number];
 export const PRINTED_FIELDS: ReadonlyArray<PrintedField> = PRINTED;
 
-/** Case, spaces and punctuation ignored: "29 abcde-1234f1z5" is "29ABCDE1234F1Z5". */
-const loose = (text: string | null) =>
-  (text ?? "")
+/** Outer whitespace ignored, nothing else: "1.5%" is not "15%". */
+const same = (a: string | null, b: string | null) => (a?.trim() ?? null) === (b?.trim() ?? null);
+/**
+ * How a typed value is matched: case, spaces, hyphens and slashes ignored, so "29 abcde-1234f1z5"
+ * is "29ABCDE1234F1Z5"; marks, signs and a point or comma between digits kept.
+ */
+const gentle = (text: string) =>
+  text
     .normalize("NFKC")
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}]/gu, "");
-const same = (a: string | null, b: string | null) =>
-  loose(a) === loose(b) && (a === null) === (b === null);
+    .replace(/(?<!\p{N})[.,]|[.,](?!\p{N})/gu, "")
+    .replace(/[\s\p{Pd}/]/gu, "");
 /** What a client's printed field holds now. */
 const holding = (record: Pick<RecordRow, "title" | "fieldsJson">, field: PrintedField) =>
   field === "title" ? record.title : fieldText(parseFields(record.fieldsJson), field);
@@ -71,7 +75,7 @@ const encodeProposal = Schema.encodeEffect(ProposalJson);
 
 type Turn = Pick<Lead, "orgId" | "agentId" | "wakeupId">;
 
-/** What people of the company wrote themselves in the messages that woke this turn, loosely. */
+/** What people of the company wrote themselves in the messages that woke this turn, folded. */
 const ownWords = Effect.fn("KinUnconfirmed.ownWords")(function* (turn: Turn) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ body: string }>`SELECT m.body FROM kin_events e
@@ -84,7 +88,7 @@ const ownWords = Effect.fn("KinUnconfirmed.ownWords")(function* (turn: Turn) {
       AND COALESCE(m.client_message_id, '') NOT LIKE 'send:private:%'
       AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     ORDER BY e.event_id`;
-  return rows.map((row) => loose(row.body));
+  return rows.map((row) => gentle(row.body));
 });
 
 /**
@@ -109,7 +113,7 @@ export const heldBack = Effect.fn("KinUnconfirmed.heldBack")(function* (
     !(yield* followsOutsideRead(turn.orgId, turn.wakeupId));
   return changing.filter((one) => {
     if (one.value === null) return !clears;
-    const said = loose(one.value);
+    const said = gentle(one.value);
     return said === "" || !words.some((text) => text.includes(said));
   });
 });

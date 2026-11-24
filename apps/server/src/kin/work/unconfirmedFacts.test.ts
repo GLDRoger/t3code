@@ -142,18 +142,19 @@ const seed = Effect.gen(function* () {
     VALUES (${lead}, ${orgId}, 'Chief of staff', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
   const records = yield* KinRecords.KinRecords;
   const rhea = { actor: { _tag: "person" as const, personId: ownerId }, via: "owner" as const };
-  for (const [title, holder] of [
-    ["Invented Harbourline", ownerId],
-    ["Invented Quayside", ownerId],
-    ["Invented Tidewater", ownerId],
-    ["Invented Saltmarsh", mateId],
+  for (const [title, holder, fields] of [
+    ["Invented Harbourline", ownerId, {}],
+    ["Invented Quayside", ownerId, {}],
+    ["Invented Tidewater", ownerId, {}],
+    ["Invented Saltmarsh", mateId, {}],
+    ["रीमा ट्रेडर्स", ownerId, { terms: "Net 30, 1.5% late fee", address: "Flat 1, 23 Quay Road" }],
   ] as const)
     yield* records.create(orgId, rhea, {
       list: "clients",
       originKey: `seed:${title}`,
       title,
       owner: { _tag: "person", personId: holder },
-      fields: { address: "Invented 1 Quay Road", gstin: OLD },
+      fields: { address: "Invented 1 Quay Road", gstin: OLD, ...fields },
     });
 });
 
@@ -202,9 +203,16 @@ const turn = (body: string | null, who: "owner" | "mate" = "owner") =>
 /** The cards still waiting for a tap. */
 const cards = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql<{ widgetId: string; chatId: string; awaiting: string; detail: string }>`
+  return yield* sql<{
+    widgetId: string;
+    chatId: string;
+    awaiting: string;
+    detail: string;
+    recordId: string;
+  }>`
     SELECT w.widget_id AS "widgetId", w.chat_id AS "chatId", w.awaiting_json AS awaiting,
-      json_extract(w.state_json, '$.detail') AS detail
+      json_extract(w.state_json, '$.detail') AS detail,
+      json_extract(c.patch_json, '$.recordId') AS "recordId"
     FROM kin_profile_changes c JOIN kin_widgets w ON w.widget_id = c.widget_id
     WHERE substr(c.change_id, 1, 3) = 'uf_' AND w.closed_at IS NULL AND c.applied_at IS NULL
       AND c.declined_at IS NULL
@@ -213,7 +221,9 @@ const cards = Effect.gen(function* () {
 const stored = (key: string) =>
   Effect.gen(function* () {
     const row = (yield* (yield* KinRecords.KinRecords).get(orgId, key))!;
-    return { row, gstin: fieldText(parseFields(row.fieldsJson), "gstin") };
+    const field = (name: string) =>
+      name === "title" ? row.title : fieldText(parseFields(row.fieldsJson), name);
+    return { row, gstin: field("gstin"), field };
   });
 const answer = (widgetId: string, personId: KinPersonId, confirmed: boolean) =>
   answerUnconfirmed({ orgId, widgetId, personId, confirmed, via: "tap", now: NOW });
@@ -221,25 +231,56 @@ const answer = (widgetId: string, personId: KinPersonId, confirmed: boolean) =>
 it.effect("an agent's printed client detail goes straight in only as a person typed it", () =>
   Effect.gen(function* () {
     yield* seed;
-    const cases = [
-      { key: "C-1", said: `Harbourline's GSTIN is 29abcde 1234 f1z5`, straight: true },
-      { key: "C-2", said: "Use the number from their mail", straight: false },
-      { key: "C-3", said: null, straight: false },
-    ] as const;
+    const cases: ReadonlyArray<{
+      readonly key: string;
+      readonly said: string | null;
+      readonly set: Readonly<Record<"title" | "gstin" | "terms" | "address", string>>;
+      readonly straight: boolean;
+    }> = [
+      {
+        key: "C-1",
+        said: `Harbourline's GSTIN is 29abcde 1234 f1z5`,
+        set: { gstin: NEW },
+        straight: true,
+      },
+      { key: "C-2", said: "Use the number from their mail", set: { gstin: NEW }, straight: false },
+      { key: "C-3", said: null, set: { gstin: NEW }, straight: false },
+      // A different value waits however close its letters and digits are: points, signs, marks.
+      {
+        key: "C-5",
+        said: null,
+        set: {
+          title: "रामा ट्रेडर्स",
+          terms: "Net 30, 15% late fee",
+          address: "Flat 12, 3 Quay Road",
+        },
+        straight: false,
+      },
+      {
+        key: "C-5",
+        said: "Their terms are Net 30, 1.5% late fee",
+        set: { terms: "Net 30, 15% late fee" },
+        straight: false,
+      },
+    ];
     for (const one of cases) {
+      const before = yield* stored(one.key);
       const sourceEventId = yield* turn(one.said);
-      const result = yield* LeadWork.update(scope, { key: one.key, sourceEventId, gstin: NEW });
-      assert.strictEqual((yield* stored(one.key)).gstin, one.straight ? NEW : OLD, one.key);
+      const result = yield* LeadWork.update(scope, { key: one.key, sourceEventId, ...one.set });
+      const after = yield* stored(one.key);
+      for (const [name, value] of Object.entries(one.set))
+        assert.strictEqual(after.field(name), one.straight ? value : before.field(name), one.key);
       assert.strictEqual(result.unconfirmed === undefined, one.straight, one.key);
+      // Each that waits has its card in Rhea's chat with the lead.
+      if (!one.straight)
+        assert.deepStrictEqual(
+          (yield* cards)
+            .filter((card) => card.recordId === after.row.recordId)
+            .map((card) => [card.chatId, JSON.parse(card.awaiting)]),
+          [["lead-chat", [ownerId]]],
+          one.key,
+        );
     }
-    // One card each for the two that wait, both in Rhea's chat with the lead.
-    assert.deepStrictEqual(
-      (yield* cards).map((card) => [card.chatId, JSON.parse(card.awaiting)]),
-      [
-        ["lead-chat", [ownerId]],
-        ["lead-chat", [ownerId]],
-      ],
-    );
     // A new client keeps the name it was made with; its tax number from a mail waits.
     const made = yield* LeadWork.create(scope, {
       sourceEventId: yield* turn("Add the client from that mail"),
@@ -271,7 +312,7 @@ it.effect(
       yield* LeadWork.update(scope, {
         key: "C-1",
         sourceEventId: yield* turn(null),
-        gstin: NEW.toLowerCase(),
+        gstin: ` ${NEW} `,
       });
       const [card, ...more] = yield* cards;
       assert.lengthOf(more, 0);
@@ -352,6 +393,22 @@ it.effect(
       assert.include(anew?.detail, `Now: ${other}`);
       assert.strictEqual((yield* answer(anew!.widgetId, ownerId, true))?.title, "Saved");
       assert.strictEqual((yield* stored("C-4")).gstin, NEW);
+      // Only the exact value is the card's: 15% since 1.5% was asked is a change, so it refuses.
+      yield* LeadWork.update(scope, {
+        key: "C-2",
+        sourceEventId: yield* turn(null),
+        terms: "Net 30, 1.5% late fee",
+      });
+      yield* (yield* KinRecords.KinRecords).update(
+        orgId,
+        { actor: { _tag: "person", personId: ownerId }, via: "owner" },
+        "C-2",
+        { fields: { terms: "Net 30, 15% late fee" } },
+      );
+      const [terms] = yield* cards;
+      const moved = yield* Effect.flip(answer(terms!.widgetId, ownerId, true));
+      assert.isTrue(isChatError(moved) && moved.reason === "conflict");
+      assert.strictEqual((yield* stored("C-2")).field("terms"), "Net 30, 15% late fee");
     }).pipe(Effect.provide(layer)),
 );
 
