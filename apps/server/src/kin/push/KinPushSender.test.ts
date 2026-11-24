@@ -2869,6 +2869,11 @@ describe("KinPushSender to Android phones", () => {
         WHERE member_id = 'm_owner'`;
         yield* notify(read);
         assert.deepStrictEqual(fcm.sent, []);
+        // Opened on the web with nothing answered: still unread, yet the chat's banners go.
+        yield* notify({ ...read, seen: 999 });
+        assert.deepStrictEqual(fcm.sent, [
+          { token: androidPhone, priority: "NORMAL", data: { body: JSON.stringify(ios.body) } },
+        ]);
       }).pipe(Effect.provide(build(apns, fcm)));
     },
   );
@@ -3066,16 +3071,17 @@ describe("KinPushSender withdrawals", () => {
           apns.sent.filter((push) => push.token === ownerPhone).map((push) => payloadOf(push).body);
         const a = yield* postMessage(sql, from, "posted", { chatId: "chat_pair", body: "A" });
         yield* notify({ _tag: "message", orgId, messageId: a });
-        // Read A on the web; its withdrawal goes, naming version 1.
-        yield* sql`INSERT INTO kin_read_state (org_id, chat_id, member_id, last_read_seq, updated_at)
-        SELECT 'org_01', 'chat_pair', 'm_owner_pair', MAX(seq), ${T} FROM kin_messages
-        WHERE chat_id = 'chat_pair'`;
-        yield* notify({
+        // A seen on the web, not answered: still unread, yet its withdrawal goes, naming version 1.
+        const [shownA] = yield* sql<{ seq: number }>`SELECT seq FROM kin_messages
+          WHERE message_id = ${a}`;
+        const seenA = {
           _tag: "read",
           orgId,
           chatId: KinChatId.make("chat_pair"),
           memberId: KinMemberId.make("m_owner_pair"),
-        });
+          seen: shownA!.seq,
+        } as const;
+        yield* notify(seenA);
         yield* afterBatch(sender);
         // B replaces it on the lock screen as version 2: a late withdrawal of 1 can't remove it.
         const b = yield* postMessage(sql, from, "posted", { chatId: "chat_pair", body: "B" });
@@ -3087,6 +3093,13 @@ describe("KinPushSender withdrawals", () => {
             [undefined, undefined, [{ topic: "c:chat_pair", version: 1 }]],
             ["c:chat_pair", 2, undefined],
           ],
+        );
+        // Seen again only as far as A: B's banner stands.
+        yield* notify(seenA);
+        yield* afterBatch(sender);
+        assert.deepStrictEqual(
+          (yield* sender.reconcile(orgId, owner, ["c:chat_pair" as KinPushTopic])).remove,
+          [],
         );
 
         // A card dismissed, then reopened by undo before the dismissal's withdrawal lands.

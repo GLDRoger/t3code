@@ -27,7 +27,7 @@ import { KIN_BILLS } from "@t3tools/client-runtime/kin/kinBills";
 import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions";
 import { ArrowLeftRightIcon, MessageSquareIcon, PlusIcon, BotIcon } from "lucide-react";
 import { KIN_CHIEF_OF_STAFF } from "@t3tools/client-runtime/kin/kinLeadPresentation";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
@@ -380,22 +380,30 @@ function MoneyScreen(props: MoneyProps) {
       {ratesOpen ? <KinRatesDialog {...props} onClose={() => setRatesOpen(false)} /> : null}
     </>
   );
-  if (state._tag === "refused") return <KinWorkNotice {...KIN_MONEY.onlyOwner} />;
+  // The dialogs keep one place whatever the page shows, so a form whose first save turns Money from
+  // empty to full (or through a reload) stays the same form, its draft and busy Save kept.
+  const withDialogs = (page: ReactNode) => (
+    <>
+      {page}
+      {dialogs}
+    </>
+  );
+  if (state._tag === "refused") return withDialogs(<KinWorkNotice {...KIN_MONEY.onlyOwner} />);
   if (state._tag === "failed" || state._tag === "gone") {
-    return (
+    return withDialogs(
       <KinLoadFailed
         what={KIN_MONEY.loadFailed}
         cause={state._tag === "failed" ? state.cause : null}
         onRetry={refresh}
         className="mx-auto w-full max-w-3xl p-4"
-      />
+      />,
     );
   }
   if (state._tag === "loading" || props.lists.state._tag === "loading") {
-    return (
+    return withDialogs(
       <div className="mx-auto w-full max-w-3xl p-4" role="status" aria-label="Loading Money">
         <KinWorkRowSkeletons />
-      </div>
+      </div>,
     );
   }
   const summary = state.value;
@@ -426,7 +434,7 @@ function MoneyScreen(props: MoneyProps) {
         {KIN_MONEY.createChief}
       </Button>
     ) : null;
-    return (
+    return withDialogs(
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-7 px-4 pt-4">{top}</div>
         <KinWorkNotice
@@ -438,8 +446,7 @@ function MoneyScreen(props: MoneyProps) {
             </div>
           }
         />
-        {dialogs}
-      </div>
+      </div>,
     );
   }
   // Every exact figure stays in its own currency; beside a foreign one, "about ₹x" when a rate is set.
@@ -465,7 +472,7 @@ function MoneyScreen(props: MoneyProps) {
     ],
     rates,
   );
-  return (
+  return withDialogs(
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-7 px-4 pt-4">
         {props.stale || state.stale ? (
@@ -674,7 +681,6 @@ function MoneyScreen(props: MoneyProps) {
         </div>
         <div className="px-2">{actions(true)}</div>
       </div>
-      {dialogs}
-    </div>
+    </div>,
   );
 }
