@@ -435,6 +435,33 @@ it.effect(
       assert.include(anew?.detail, `Now: ${other}`);
       assert.strictEqual((yield* answer(anew!.widgetId, ownerId, true))?.title, "Saved");
       assert.strictEqual((yield* stored("C-4")).gstin, NEW);
+      // A card that no longer takes the tap of who confirms now is asked again on a new one.
+      const sql = yield* SqlClient.SqlClient;
+      const tidewater = (yield* stored("C-3")).row.recordId;
+      const open = Effect.map(cards, (all) => all.filter((one) => one.recordId === tidewater));
+      yield* LeadWork.update(scope, {
+        key: "C-3",
+        sourceEventId: yield* turn(null),
+        terms: "Net 45",
+      });
+      for (const dead of [
+        (widgetId: string) =>
+          sql`UPDATE kin_widgets SET closed_at = ${at} WHERE widget_id = ${widgetId}`,
+        (widgetId: string) =>
+          sql`UPDATE kin_widgets SET awaiting_json = ${JSON.stringify([mateId])} WHERE widget_id = ${widgetId}`,
+      ]) {
+        const [gone] = yield* open;
+        yield* dead(gone!.widgetId);
+        yield* LeadWork.update(scope, {
+          key: "C-3",
+          sourceEventId: yield* turn(null),
+          terms: "Net 45",
+        });
+        const [anew, ...extra] = yield* open;
+        assert.lengthOf(extra, 0);
+        assert.notStrictEqual(anew?.widgetId, gone?.widgetId);
+        assert.deepStrictEqual(JSON.parse(anew!.awaiting), [ownerId]);
+      }
       // Only the exact value is the card's: 15% since 1.5% was asked is a change, so it refuses.
       yield* LeadWork.update(scope, {
         key: "C-2",
@@ -447,7 +474,7 @@ it.effect(
         "C-2",
         { fields: { terms: "Net 30, 15% late fee" } },
       );
-      const [terms] = yield* cards;
+      const [terms] = (yield* cards).filter((one) => one.recordId !== tidewater);
       const moved = yield* Effect.flip(answer(terms!.widgetId, ownerId, true));
       assert.isTrue(isChatError(moved) && moved.reason === "conflict");
       assert.strictEqual((yield* stored("C-2")).field("terms"), "Net 30, 15% late fee");

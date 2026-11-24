@@ -196,6 +196,24 @@ const pendingRows = Effect.fn("KinUnconfirmed.pending")(function* (
 
 const sameItem = (a: UnconfirmedItem, b: Pick<UnconfirmedItem, "field" | "value">) =>
   a.field === b.field && same(a.value, b.value);
+const itemsKey = (items: ReadonlyArray<UnconfirmedItem>) =>
+  stableStringify(items.map(({ at: _at, ...one }) => one));
+const hashed = (text: string) =>
+  `${UNCONFIRMED_CHANGE}${NodeCrypto.createHash("sha256").update(text).digest("hex").slice(0, 32)}`;
+
+/** Whether a card is still open and waits on the person who confirms now. */
+const awaits = Effect.fn("KinUnconfirmed.awaits")(function* (
+  orgId: KinOrgId,
+  widgetId: string | null,
+  personId: KinPersonId | undefined,
+) {
+  if (widgetId === null || personId === undefined) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_widgets w
+    WHERE w.org_id = ${orgId} AND w.widget_id = ${widgetId} AND w.closed_at IS NULL
+      AND EXISTS (SELECT 1 FROM json_each(w.awaiting_json) WHERE value = ${personId})`;
+  return rows.length > 0;
+});
 
 /**
  * Keeps an agent's held-back values on the record as one unconfirmed proposal, and asks the person
@@ -231,7 +249,8 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
   // An item whose field changed since it was proposed is no longer asked.
   const live = (item: UnconfirmedItem) => same(holding(record, item.field), item.before);
   if (
-    latest?.widgetId != null &&
+    latest !== undefined &&
+    (yield* awaits(orgId, latest.widgetId, who?.personId)) &&
     held.every((one) => latest.proposal.items.some((item) => live(item) && sameItem(item, one)))
   )
     return waitingLine(record.title, what, name, true);
@@ -247,12 +266,17 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
     ...held.map((one) => ({ ...one, from, at: now })),
   ];
   const patch = yield* encodeProposal({ recordId: record.recordId, items }).pipe(Effect.orDie);
-  const changeId = `${UNCONFIRMED_CHANGE}${NodeCrypto.createHash("sha256")
-    .update(
-      `${orgId}|${lead.agentId}|${lead.wakeupId}|${record.recordId}|${stableStringify(items.map(({ at: _at, ...one }) => one))}`,
-    )
-    .digest("hex")
-    .slice(0, 32)}`;
+  const key = itemsKey(items);
+  const base = hashed(`${orgId}|${lead.agentId}|${lead.wakeupId}|${record.recordId}|${key}`);
+  const [made] = yield* sql<{ taken: number; count: number }>`
+    SELECT COALESCE(SUM(change_id = ${base}), 0) AS taken, COUNT(*) AS count
+    FROM kin_profile_changes
+    WHERE org_id = ${orgId} AND substr(change_id, 1, 3) = ${UNCONFIRMED_CHANGE}
+      AND json_extract(patch_json, '$.recordId') = ${record.recordId}`;
+  // A retry reuses its card-less row; the same items after a dead or answered card are a new one.
+  const changeId =
+    older.find((row) => row.widgetId === null && itemsKey(row.proposal.items) === key)?.changeId ??
+    (!made?.taken ? base : hashed(`${base}|${made.count}`));
   yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id, patch_json,
       base_rev, proposed_at)
     VALUES (${orgId}, ${changeId}, ${lead.agentId}, ${lead.wakeupId}, ${patch}, 0, ${now})
@@ -275,6 +299,7 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
             {
               chatId: KinChatId.make(chatId),
               clientMessageId: `kin-unconfirmed:${changeId}`,
+              untilAnswered: true,
               question: `${items.length === 1 ? "Use this" : "Use these"} for ${record.title}?`,
               detail: cardDetail(items, label),
               options: [
