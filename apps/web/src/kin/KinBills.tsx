@@ -479,6 +479,7 @@ function KinBillBatchReview(
           </p>
         ) : null}
       </section>
+      {views.length === 0 ? <KinWorkNotice {...KIN_BILLS.allDismissed} /> : null}
       <ul aria-label={KIN_BILLS.added} className="flex flex-col divide-y divide-border">
         {views.map((view, index) => (
           <BillRow

@@ -436,6 +436,7 @@ function Review(props: KinWorkTarget & { readonly batchId: string }) {
         extraData={actions}
         estimatedItemSize={196}
         recycleItems
+        ListEmptyComponent={<EmptyState variant="plain" {...KIN_BILLS.allDismissed} />}
         ListHeaderComponent={
           <View className="gap-3 px-4 pb-2 pt-3">
             <Text textRole="body" className="text-foreground">

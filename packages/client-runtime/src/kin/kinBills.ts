@@ -93,6 +93,10 @@ export const KIN_BILLS = {
     title: "No bills added yet",
     detail: "Add photos or PDFs of bills from Money's Add, and Kin reads each one.",
   },
+  allDismissed: {
+    title: "Nothing left here",
+    detail: "Every bill added that day was dismissed.",
+  },
   gone: {
     title: "These bills aren't here any more",
     detail: "Open Money to see the bills added since.",
