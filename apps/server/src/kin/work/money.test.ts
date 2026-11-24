@@ -4779,7 +4779,7 @@ describe("the company profile", () => {
         personId: null,
         wakeupId: "their-wake",
       });
-      const [theirs] = yield* sql<{ json: string }>`SELECT profile_json AS json
+      const theirs = yield* sql`SELECT profile_json AS json
         FROM kin_company_profile WHERE org_id = ${otherOrg}`;
 
       // Choosing it wakes each once, in the chat it was refused in, and clears the list.
@@ -4834,7 +4834,7 @@ describe("the company profile", () => {
       assert.sameDeepMembers(yield* woken(), expected);
       assert.deepStrictEqual(
         yield* sql`SELECT profile_json AS json FROM kin_company_profile WHERE org_id = ${otherOrg}`,
-        [theirs],
+        theirs,
       );
 
       // Its turn, woken in the owner's chat, records what was refused, in pounds.
@@ -4859,7 +4859,8 @@ describe("the company profile", () => {
       // Once chosen, the agent reads the company's currency and country as any company's.
       const after = yield* LeadMoney.profile(scope, {});
       assert.notProperty(after, "countryNeeded");
-      assert.include(after.profile, { homeCurrency: "GBP", country: "GB" });
+      assert.propertyVal(after.profile, "homeCurrency", "GBP");
+      assert.propertyVal(after.profile, "country", "GB");
     }).pipe(Effect.provide(layer)),
   );
 
