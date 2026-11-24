@@ -49,7 +49,7 @@ const ordered = (sections: readonly KinShellSection[]) => [
   ),
 ];
 
-const storedOn = (shell: Shell, id: SectionId) =>
+const storedOn = (shell: Pick<Shell, "sections">, id: SectionId) =>
   shell.sections.find((section) => section.id === id)?.on !== false;
 
 /** Every built-in section switched on: no tool or record is kept from an agent by the shell. */
@@ -179,6 +179,20 @@ export const shellRefusal = (input: readonly KinShellSection[]): string | undefi
   return undefined;
 };
 
+const dockRefusal = (sections: readonly KinShellSection[], held: readonly KinShellSection[]) => {
+  const docked = (section: KinShellSection) =>
+    listOfSection(section.id) !== undefined && section.on && section.dock === true;
+  const next = sections.filter(docked);
+  const room =
+    5 - (3 + Number(storedOn({ sections }, "money")) + Number(storedOn({ sections }, "clients")));
+  if (
+    next.length > room &&
+    next.some((one) => !held.some((before) => before.id === one.id && docked(before)))
+  )
+    return "The dock holds five places. Turn one off first.";
+  return undefined;
+};
+
 /**
  * Why one of these list sections can't be in the shell, in the setter's words; else undefined. A
  * section the shell already `held` stays whatever its list has become: put away, it waits there.
@@ -191,7 +205,7 @@ export const listSectionsRefusal = Effect.fn("KinShell.listSectionsRefusal")(fun
   const lists = sections.flatMap((section) =>
     held.some((one) => one.id === section.id) ? [] : (listOfSection(section.id) ?? []),
   );
-  if (lists.length === 0) return undefined;
+  if (lists.length === 0) return dockRefusal(sections, held);
   const sql = yield* SqlClient.SqlClient;
   const defined = yield* sql<{
     id: string;
@@ -208,7 +222,7 @@ export const listSectionsRefusal = Effect.fn("KinShell.listSectionsRefusal")(fun
     if (listSectionRefused(list))
       return `${list.name} has its place in Kin already, so it can't be a section of its own.`;
   }
-  return undefined;
+  return dockRefusal(sections, held);
 });
 
 /**
@@ -277,6 +291,27 @@ const save = Effect.fn("KinShell.save")(function* (
   return after;
 });
 
+const withListShown = (
+  current: readonly KinShellSection[],
+  listId: string,
+  dock: boolean | undefined,
+) => {
+  const id = listSectionId(listId);
+  const shown = { id, on: true, ...(dock === undefined ? {} : { dock }) };
+  return current.some((section) => section.id === id)
+    ? current.map((section) => (section.id === id ? { ...section, ...shown } : section))
+    : [...current, shown];
+};
+
+export const listDockRefusal = Effect.fn("KinShell.listDockRefusal")(function* (
+  orgId: KinOrgId,
+  listId: string,
+  dock: boolean | undefined,
+) {
+  const { sections } = yield* get(orgId);
+  return dockRefusal(withListShown(sections, listId, dock), sections);
+});
+
 /**
  * Shows a list as a section, switched on, in the caller's transaction: the owner-level answer on
  * the list's own card (`registers.defineList`) is who set it. `dock` given sets its dock switch.
@@ -287,25 +322,11 @@ export const showList = Effect.fn("KinShell.showList")(function* (
   dock: boolean | undefined,
   personId: string,
 ) {
-  const sql = yield* SqlClient.SqlClient;
-  const [stored] = yield* sql<{
-    rev: number;
-    shellJson: string;
-  }>`SELECT rev, shell_json AS "shellJson" FROM kin_company_shell WHERE org_id = ${orgId}`;
-  const current = ordered(stored === undefined ? [] : yield* decode(stored.shellJson));
-  const id = listSectionId(listId);
-  const shown = { id, on: true, ...(dock === undefined ? {} : { dock }) };
-  const sections = current.some((section) => section.id === id)
-    ? current.map((section) => (section.id === id ? { ...section, ...shown } : section))
-    : [...current, shown];
-  const refusal = yield* listSectionsRefusal(orgId, sections, current);
+  const current = yield* get(orgId);
+  const sections = withListShown(current.sections, listId, dock);
+  const refusal = yield* listSectionsRefusal(orgId, sections, current.sections);
   if (refusal !== undefined) return yield* invalid(refusal);
-  return yield* save(
-    orgId,
-    personId,
-    { rev: stored?.rev ?? 0, sections: current },
-    sections.map(labelsOf),
-  );
+  return yield* save(orgId, personId, current, sections.map(labelsOf));
 });
 
 export const set = Effect.fn("KinShell.set")(function* (

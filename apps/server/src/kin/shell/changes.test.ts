@@ -483,8 +483,14 @@ it.effect("shows a company list as a section, docks it and turns it off, each on
       [[{ id: "list:shelves" }], "There is no list shelves to show as a section."],
     ] as const)
       assert.include(yield* Effect.flip(propose(scope, { sections })), { message });
-    const shown = yield* propose(scope, { sections: [{ id: "list:stock", dock: true }] });
+    const dock = { id: "list:stock", dock: true };
+    assert.include(yield* Effect.flip(propose(scope, { sections: [dock] })), {
+      message: "The dock holds five places. Turn one off first.",
+    });
+    assert.lengthOf(yield* cards, 0);
+    const shown = yield* propose(scope, { sections: [{ id: "clients", on: false }, dock] });
     assert.deepStrictEqual(shown.proposed, [
+      "Turn off Clients",
       `Show the list "Stock" as a section, also in the phone's dock`,
     ]);
     assert.strictEqual((yield* KinShell.get(orgId)).rev, 0);
@@ -495,7 +501,7 @@ it.effect("shows a company list as a section, docks it and turns it off, each on
     ]);
     assert.strictEqual(
       yield* shellDecision(orgId, first!.widgetId, true),
-      'Showed the list "Stock" as a section.',
+      'Turned off Clients. Showed the list "Stock" as a section.',
     );
     yield* turn(2);
     const off = yield* propose(scope, { sections: [{ id: "list:stock", on: false, dock: false }] });
