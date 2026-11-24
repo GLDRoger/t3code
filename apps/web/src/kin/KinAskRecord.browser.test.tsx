@@ -12,6 +12,7 @@ const made = vi.hoisted(() => ({ agents: [] as Array<string> }));
 
 // Arjun may message Chief of staff, whom he has a chat with, and Finance, whom he has never messaged.
 vi.mock("./kinClient", async () => {
+  const { commandRun } = await import("../../test/commandRun");
   const { Atom: A, AsyncResult: R } = await import("effect/reactivity");
   const agent = (agentId: string, name: string) => ({
     orgId: "ambermill",
@@ -31,10 +32,12 @@ vi.mock("./kinClient", async () => {
     kinClient: {
       leads: () => leads,
       chatWithAgent: {
-        run: async (_registry: unknown, { input }: { readonly input: { agentId: string } }) => {
-          made.agents.push(input.agentId);
-          return R.success({ chatId: `arjun-${input.agentId}` });
-        },
+        run: commandRun(
+          async (_registry: unknown, { input }: { readonly input: { agentId: string } }) => {
+            made.agents.push(input.agentId);
+            return R.success({ chatId: `arjun-${input.agentId}` });
+          },
+        ),
       },
     },
   };

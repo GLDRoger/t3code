@@ -43,6 +43,7 @@ vi.mock(import("./KinComposerAttachments"), async (importOriginal) => ({
   })) as never,
 }));
 vi.mock(import("./kinClient"), async (importOriginal) => {
+  const { commandRun } = await import("../../test/commandRun");
   const real = await importOriginal();
   const { AsyncResult, Atom } = await import("effect/reactivity");
   const Cause = await import("effect/Cause");
@@ -65,20 +66,22 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
       send: {
         label: "test:send",
         permissionAtom: () => allowed,
-        run: async (_registry: unknown, { input }: { readonly input: Record<string, unknown> }) => {
-          host.sends.push(input);
-          return host.refuse === null
-            ? AsyncResult.success({
-                ...posted,
-                messageId: `posted-${String(input.clientMessageId)}`,
-                chatId: input.chatId,
-                clientMessageId: input.clientMessageId,
-                body: input.body,
-              })
-            : AsyncResult.failure(
-                Cause.fail(new Refused({ reason: "not_allowed", message: host.refuse })),
-              );
-        },
+        run: commandRun(
+          async (_registry: unknown, { input }: { readonly input: Record<string, unknown> }) => {
+            host.sends.push(input);
+            return host.refuse === null
+              ? AsyncResult.success({
+                  ...posted,
+                  messageId: `posted-${String(input.clientMessageId)}`,
+                  chatId: input.chatId,
+                  clientMessageId: input.clientMessageId,
+                  body: input.body,
+                })
+              : AsyncResult.failure(
+                  Cause.fail(new Refused({ reason: "not_allowed", message: host.refuse })),
+                );
+          },
+        ),
       },
     } as never,
   };
