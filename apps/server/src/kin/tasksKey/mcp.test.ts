@@ -35,6 +35,7 @@ import { authorise, fingerprint, retireLabels } from "../memory/sensitivity.ts";
 import * as People from "../people/KinPeople.ts";
 import * as Watches from "../watches/KinWatches.ts";
 import { watchReader } from "../watches/readRpcs.ts";
+import { taskNewsBanner } from "../work/assignNotices.ts";
 import { setBudget } from "../work/budgets.ts";
 import * as Docs from "../work/docs.ts";
 import * as Goals from "../work/goals.ts";
@@ -710,6 +711,22 @@ it.effect(
       assert.strictEqual((yield* records.get(orgId, held.key))?.ownerId, to.personId);
       assert.strictEqual((yield* records.get(orgId, privateTask.key))?.ownerId, from.personId);
       yield* authored(appHeld, meera.sessionId);
+
+      hasResult(yield* arjun.use("hand_over_tasks", { from: "me", to: "Zoya Sheikh" }), {
+        keys: moved,
+        kept: 0,
+      });
+      for (const key of moved) {
+        assert.strictEqual((yield* records.get(orgId, key))?.ownerId, from.personId);
+      }
+      const heldForZoya = yield* sql<{ id: string }>`SELECT hold_id AS id FROM kin_held_posts
+        WHERE org_id = ${orgId} AND person_id = ${from.personId}
+          AND json_extract(body, '$.by') = ${to.personId}`;
+      const banner = yield* taskNewsBanner(
+        orgId,
+        heldForZoya.map(({ id }) => id),
+      );
+      assert.strictEqual(banner?.body, `Arjun (coding agent) gave you ${moved.length} tasks`);
     }).pipe(Effect.scoped, Effect.provide(roundTwoLayer)),
 );
 
@@ -893,7 +910,12 @@ it.effect(
       const member = yield* watchReader(arjun.app, orgId);
       const denied = yield* Watches.again(orgId, member, "key-watch").pipe(Effect.flip);
       refusedLike(yield* arjun.use("restart_watch", { watchId: "key-watch" }), denied.message);
-      refusedLike(yield* rhea.use("restart_watch", { watchId: "quiet-watch" }), denied.message);
+      const quiet = yield* rhea.use("restart_watch", { watchId: "quiet-watch" });
+      refusedLike(quiet, "Kin isn't watching that.");
+      assert.deepInclude(quiet.structuredContent, { reason: "not_found" });
+      const [privateWatch] = yield* sql`SELECT state FROM kin_watches
+        WHERE org_id = ${orgId} AND watch_id = 'quiet-watch'`;
+      assert.deepStrictEqual(privateWatch, { state: "stopped" });
       yield* TestClock.setTime(1_000);
       const byHand = yield* Watches.again(orgId, reader, "app-watch");
       const input = { watchId: "key-watch" };
