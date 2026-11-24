@@ -67,12 +67,19 @@ const identity = Layer.mock(KinIdentity)({
       threadId: ThreadId.make("lead-thread"),
     }),
 });
-// Kin's card for one person, stored and bound in one transaction, as the chat service does.
+// Kin's card for one person, stored and bound in one transaction, as the chat service does; held
+// with nothing posted while the company has quiet hours set.
 const gate = Layer.unwrap(
   Effect.map(SqlClient.SqlClient, (sql) =>
     Layer.mock(KinLevelGate)({
       askTo: (_agent, personId, input, bind) =>
         Effect.gen(function* () {
+          const [quiet] = yield* sql<{ on: number }>`SELECT quiet_hours_json != '{}' AS "on"
+            FROM kin_trigger_settings WHERE org_id = ${orgId}`;
+          if (quiet?.on === 1) {
+            yield* bind(null);
+            return { _tag: "held" } as never;
+          }
           const widgetId = `choice:${input.clientMessageId}`;
           const state = { question: input.question, detail: input.detail ?? null, answer: null };
           const [{ seq }] = (yield* sql<{ seq: number }>`SELECT 1000 + COUNT(*) AS seq
@@ -462,6 +469,20 @@ it.effect(
         assert.notStrictEqual(anew?.widgetId, gone?.widgetId);
         assert.deepStrictEqual(JSON.parse(anew!.awaiting), [ownerId]);
       }
+      // A newer value that can't be shown now waits with no card; the person keeps the card they had.
+      const [shown] = yield* open;
+      yield* sql`UPDATE kin_trigger_settings SET quiet_hours_json = '{"weekdays":"22:00-07:00"}'`;
+      yield* LeadWork.update(scope, {
+        key: "C-3",
+        sourceEventId: yield* turn(null),
+        terms: "Net 60",
+      });
+      yield* sql`UPDATE kin_trigger_settings SET quiet_hours_json = '{}'`;
+      assert.deepStrictEqual(
+        (yield* open).map((one) => one.widgetId),
+        [shown!.widgetId],
+      );
+      assert.include((yield* LeadWork.get(scope, { key: "C-3" })).unconfirmed?.[0], '"Net 60"');
       // Only the exact value is the card's: 15% since 1.5% was asked is a change, so it refuses.
       yield* LeadWork.update(scope, {
         key: "C-2",

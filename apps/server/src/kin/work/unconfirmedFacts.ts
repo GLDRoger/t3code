@@ -281,10 +281,6 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
       base_rev, proposed_at)
     VALUES (${orgId}, ${changeId}, ${lead.agentId}, ${lead.wakeupId}, ${patch}, 0, ${now})
     ON CONFLICT (org_id, change_id) DO NOTHING`;
-  const replaced = older.filter((row) => row.changeId !== changeId);
-  if (replaced.length > 0)
-    yield* sql`UPDATE kin_profile_changes SET declined_at = ${now}
-      WHERE org_id = ${orgId} AND change_id IN ${sql.in(replaced.map((row) => row.changeId))}`;
   const chatId =
     who === undefined ? undefined : yield* directChatWith(sql, orgId, who.personId, lead.agentId);
   // Tools without Kin's chat (an import, a test of the write alone) keep the value and ask in words.
@@ -317,16 +313,19 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
           )
           // The value is kept either way; a card that can't be shown now is asked for in words.
           .pipe(Effect.catchTags({ KinChatError: () => Effect.undefined }));
+  if (posted === undefined || "_tag" in posted || gate === undefined)
+    return waitingLine(record.title, what, name, false);
+  // Only a card now shown replaces the older ones; until then the person keeps theirs.
+  const replaced = older.filter((row) => row.changeId !== changeId);
+  if (replaced.length > 0)
+    yield* sql`UPDATE kin_profile_changes SET declined_at = ${now}
+      WHERE org_id = ${orgId} AND change_id IN ${sql.in(replaced.map((row) => row.changeId))}`;
   const widgets = replaced.flatMap((row) => (row.widgetId === null ? [] : [row.widgetId]));
-  if (widgets.length > 0 && gate !== undefined)
+  if (widgets.length > 0)
     yield* gate
-      .closeReplaced(
-        lead,
-        widgets,
-        ...(posted === undefined || "_tag" in posted ? [] : [posted.widgetId]),
-      )
+      .closeReplaced(lead, widgets, posted.widgetId)
       .pipe(Effect.catchTags({ KinChatError: () => Effect.void }));
-  return waitingLine(record.title, what, name, posted !== undefined && !("_tag" in posted));
+  return waitingLine(record.title, what, name, true);
 });
 
 const cardDetail = (
