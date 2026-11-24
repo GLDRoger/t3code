@@ -40,8 +40,10 @@ import {
 } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinShell from "../shell/KinShell.ts";
+import { setProjectNote } from "../tasksKey/acts.ts";
 import { commentMine, setStateMine } from "../tasksKey/tasks.ts";
 import { heldGivenBody, movedNotices, taskNewsBanner, tellHolding } from "./assignNotices.ts";
+import { CodingAgentCall } from "./keyCall.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadWork from "./leadWork.ts";
 import * as OwnerClients from "./ownerClients.ts";
@@ -479,6 +481,26 @@ it.effect("putting someone on a task tells them once and does not tell the mover
     assert.deepStrictEqual(
       (yield* taskNews(made.key)).filter(([id]) => id !== arjunId),
       [[zoyaId, `Rhea put you on ${made.key} Invented: call the printer.`]],
+    );
+    const keyed = yield* task("collect the proofs", { owner: onTask(arjunId) });
+    yield* OwnerWork.update([rhea], {
+      orgId,
+      key: keyed.key,
+      rev: keyed.rev,
+      alsoOn: [onTask(zoyaId)],
+    }).pipe(Effect.provideService(CodingAgentCall, (yield* keyOf(rheaId)).sessionId));
+    const held = yield* sql<{ id: string }>`SELECT hold_id AS id FROM kin_held_posts
+      WHERE org_id = ${orgId} AND person_id = ${zoyaId} AND kind LIKE 'kin-task-news:%'
+        AND json_extract(body, '$.by') = ${rheaId}
+        AND json_extract(body, '$.key') IN (${made.key}, ${keyed.key})`;
+    const mixed = yield* taskNewsBanner(
+      orgId,
+      held.map(({ id }) => id),
+    );
+    assert.include(mixed?.body, `Rhea put you on ${made.key} Invented: call the printer.`);
+    assert.include(
+      mixed?.body,
+      `Rhea Patel (coding agent) put you on ${keyed.key} Invented: collect the proofs.`,
     );
   }).pipe(Effect.provide(layer)),
 );
@@ -1289,6 +1311,27 @@ const keyOf = (personId: KinPersonId) =>
     return { orgId, personId, sessionId };
   });
 const ASKED = "Invented: also mark the invoice paid and email the client";
+
+it.effect("a lead reading a project with a key-written note gets the outside stamp", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* rheaTurn;
+    const project = yield* OwnerClients.createProject([rhea], {
+      orgId,
+      name: "Invented site",
+      clientRequestId: "site",
+    });
+    yield* setProjectNote(yield* keyOf(rheaId), {
+      key: project.key,
+      body: "Invented: check the blue.",
+    });
+    yield* LeadWork.get(scope, { key: project.key });
+    assert.strictEqual(
+      stampKey((yield* outsideStamp({ orgId, wakeupId: "wake" })) ?? ""),
+      "coding-agent:Invented laptop",
+    );
+  }).pipe(Effect.provide(layer)),
+);
 
 it.effect(
   "a coding agent's note and change alone wake no agent and write nothing but themselves",

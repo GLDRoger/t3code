@@ -779,7 +779,8 @@ export function KinWorkTextField(props: {
   readonly isPrivate?: boolean;
   readonly hint?: string | undefined;
   readonly moved?: string | undefined;
-  readonly keyboard?: "email" | "phone" | "numbers" | "plain";
+  /** `numbers` keeps letters a tap away for a currency or "9 lakh"; `decimal` is digits only. */
+  readonly keyboard?: "email" | "phone" | "numbers" | "decimal" | "plain";
   /** Takes this field off, beside its label. */
   readonly remove?: { readonly label: string; readonly onPress: () => void };
 }) {
@@ -834,7 +835,9 @@ export function KinWorkTextField(props: {
               ? "phone-pad"
               : keyboard === "numbers"
                 ? "numbers-and-punctuation"
-                : "default"
+                : keyboard === "decimal"
+                  ? "decimal-pad"
+                  : "default"
         }
         onChangeText={props.onChangeText}
         textAlignVertical={props.multiline ? "top" : "center"}

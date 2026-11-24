@@ -2,6 +2,7 @@
 import {
   EnvironmentId,
   KinAgentId,
+  KinListId,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -24,8 +25,10 @@ import {
   kinRecordAskedBy,
   kinRecordChip,
   kinTaskActivity,
+  kinTaskBrief,
   kinTaskControls,
   kinTaskOrigin,
+  kinRecordHeld,
   kinTaskPeopleRows,
   kinTaskWith,
   kinTaskWithChoices,
@@ -346,9 +349,22 @@ describe("kinNextStep", () => {
   it("shows the holder the brief on top, and why it came only while there is no brief", () => {
     const why = task({ owner: rhea, reason: "Owner's ask; Dev leads the booking app" });
     expect(stepOf(why).words).toBe("Owner's ask; Dev leads the booking app");
-    expect(stepOf({ ...why, notes: "Book two pilot clinics for the beta." }).words).toBe(
-      "Book two pilot clinics for the beta.",
-    );
+    const briefed = { ...why, notes: "Book two pilot clinics for the beta." };
+    expect(stepOf(briefed).words).toBe("Book two pilot clinics for the beta.");
+    // Said once: the Brief section keeps only what the card can't (its Edit, earlier versions).
+    const brief = (item: typeof why, edit: boolean, versions = 0) =>
+      kinTaskBrief({
+        view: kinWorkItemView(item, names, now, 50, place),
+        step: stepOf(item),
+        edit,
+        versions,
+      });
+    expect(brief(briefed, true)).toEqual({ words: false });
+    expect(brief(briefed, false, 2)).toEqual({ words: false });
+    expect(brief(briefed, false)).toBeNull();
+    // Anyone the card doesn't quote it to reads it in the Brief section, as before.
+    expect(brief({ ...briefed, owner: meera }, false)).toEqual({ words: true });
+    expect(brief(why, false)).toEqual({ words: true });
   });
 
   it("quotes the words a task came back with", () => {
@@ -433,6 +449,17 @@ describe("kinTaskPeopleRows", () => {
     expect(rows(task(), names, false).held.opens).toBe(false);
     const retired = { ...names, retired: new Set([chief.agentId]) };
     expect(rows(task({ owner: chief }), retired).held.name).toBe("Chief of staff (retired)");
+    // A company list's entry is given by the same rule: its holder or owner level, never a member.
+    const entry = task({ key: "BK-3", list: KinListId.make("bookings"), owner: zoya });
+    const held = (item: KinRecordDetail, who: KinWorkNames) =>
+      kinRecordHeld({
+        item,
+        view: kinWorkItemView(item, who, now, 50, place),
+        names: who,
+        give: true,
+      });
+    expect(held(entry, asZoya)).toMatchObject({ name: "Zoya (you)", opens: true });
+    expect(held({ ...entry, can: readOnly }, asZoya).opens).toBe(false);
   });
 
   it("says who else is on it, Add someone when nobody, and opens only what the reader may do", () => {

@@ -51,7 +51,7 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   var selectedTab = "threads" { didSet { updateSelection() } }
   /// A small count on a tab, such as what needs attention on Tasks; absent tabs show none.
   var badges: [String: String] = [:] { didSet { if badges != oldValue { updateBadges() } } }
-  /// Titles for tabs this bar doesn't name itself, such as a company list shown as a section.
+  /// Titles that name a tab, such as a company list shown as a section or a renamed Clients.
   var titles: [String: String] = [:] { didSet { if titles != oldValue { updateItems() } } }
   /// Titles under the icons, as a stock UITabBar draws them; the workspace dock stays icon-only.
   var showsLabels = false { didSet { if showsLabels != oldValue { updateItems() } } }
@@ -138,7 +138,7 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   private func updateItems() {
     tabBar.items = tabs.enumerated().compactMap { index, tab in
       guard let item = itemsByTab[tab] ?? titledItem(tab) else { return nil }
-      let title = labels[tab] ?? titles[tab]
+      let title = titles[tab] ?? labels[tab]
       item.tag = index
       item.accessibilityLabel = title
       item.title = showsLabels ? title : nil

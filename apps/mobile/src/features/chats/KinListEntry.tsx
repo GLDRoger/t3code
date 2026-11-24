@@ -12,6 +12,8 @@ import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
 import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
+import { kinListCanBeSection } from "@t3tools/client-runtime/kin/kinShell";
+import { kinRecordHeld } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import {
   KIN_YES_NO,
   KIN_LISTS,
@@ -79,7 +81,7 @@ import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
 import { MessageAttachmentList } from "../threads/ThreadFeed";
-import { useKinSectionOn } from "./state/useKinShell";
+import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
 import {
   KinInvoiceActions,
   KinInvoiceDocuments,
@@ -294,6 +296,14 @@ export function KinListEntryBody(
   const canChange = mayUpdate && ownerLevel;
   const canDraft = mayUpdate && (ownerLevel || leads);
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
+  const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
+  // A company's own list: who has an entry opens the hand-over, as a task's Held by does.
+  const gives =
+    def !== null &&
+    kinListCanBeSection({ ...def, archivedAt: null }) &&
+    kinRecordHeld({ item, view, names: props.directory.names, give: canGive }).opens;
+  const giveTo = () =>
+    navigation.navigate("KinWorkAssign", { environmentId, orgId, task: item.key });
   const [preview, setPreview] = useState<FilePreviewSource | null>(null);
   const { busy } = changes;
   const draftNote = kinInvoiceDraftNote(item, invoice, def);
@@ -304,8 +314,9 @@ export function KinListEntryBody(
   const clients = held?.clients ?? [];
   const projects = held?.projects ?? [];
   const clientsOn = useKinSectionOn(environmentId, "clients");
-  // Clients off: an invoice's or quote's client and project are names alone, with no link or picker.
-  const billing = clientsOn || !["invoices", "quotes"].includes(item.list ?? "");
+  const named = useKinSectionNamed(environmentId);
+  // Clients off: an entry's client and project are names alone, with no link or picker.
+  const billing = clientsOn;
   const { billTo } = entry;
   const billsByName = billTo !== null && item.party === undefined && (billTo.typed || !clientsOn);
   const canName = billTo !== null && canDraft && billTo.editable;
@@ -338,8 +349,9 @@ export function KinListEntryBody(
   return (
     <>
       <View className="gap-3 px-2">
+        {/* The bar names the list, so the line above the title is the entry's key alone. */}
         <Text textRole="footnote" selectable className="text-foreground-muted">
-          {entry.heading}
+          {item.key}
         </Text>
         <Text
           textRole="headline"
@@ -577,83 +589,93 @@ export function KinListEntryBody(
             detail={entry.dueLabel}
           />
         )}
-        {entry.facts.map((fact) =>
-          fact.id === "party" && billTo !== null && billsByName ? (
-            <View key={fact.id}>
-              {[billTo.name, ...(billTo.typed ? billTo.details : [])].map((field) => {
-                const label = field.key === KIN_BILL_TO_NAME ? KIN_BILL_TO.label : field.label;
-                return canName ? (
-                  <ListRow
-                    key={field.key}
-                    label={field.text ?? "–"}
-                    detail={label}
-                    disabled={busy}
-                    onPress={() => edit(`field:${field.key}`)}
-                  />
-                ) : field.text === null ? null : (
-                  <ListRowLayout key={field.key} label={field.text} detail={label} />
-                );
-              })}
-              {canChange && billTo.editable && clientsOn && billTo.typed && clients.length > 0 ? (
-                <Menu
-                  title={KIN_BILL_TO.useClient}
-                  accessibilityRole="button"
-                  accessibilityLabel={KIN_BILL_TO.useClient}
-                  actions={clients.map((row) => ({ id: row.key, title: row.name }))}
-                  onPressAction={({ nativeEvent: { event } }) => {
-                    const client = clients.find((row) => row.key === event);
-                    if (!busy && client !== undefined)
-                      void changes.update(item.rev, kinUseClientInstead(client.key));
-                  }}
-                >
-                  <View pointerEvents="none">
-                    <ListRowLayout label={KIN_BILL_TO.useClient} disabled={busy} />
-                  </View>
-                </Menu>
-              ) : null}
-            </View>
-          ) : (fact.id === "party" || fact.id === "project") && !billing ? (
-            fact.value === null ? null : (
-              <ListRowLayout key={fact.id} label={fact.value} detail={fact.label} />
-            )
-          ) : canChange && fact.id !== "owner" && (fact.id === "category" || billing) ? (
-            <PickRow
-              key={fact.id}
-              label={fact.label}
-              shown={fact.value}
-              current={fact.current}
-              disabled={busy}
-              choices={
-                fact.id === "category"
-                  ? fact.choices
-                  : (fact.id === "project" ? projects : clients).map((row) => ({
-                      value: row.key,
-                      label: row.name,
-                    }))
-              }
-              onOpen={fact.opens === null || !billing ? undefined : () => openPlace(fact)}
-              onPick={(value) =>
-                void changes.update(
-                  item.rev,
+        {entry.facts
+          .map((said) => ({ ...said, label: said.id === "party" ? named(said.label) : said.label }))
+          .map((fact) =>
+            fact.id === "owner" && gives ? (
+              <ListRow
+                key={fact.id}
+                label={fact.value ?? ""}
+                detail={fact.label}
+                disabled={busy}
+                onPress={giveTo}
+              />
+            ) : fact.id === "party" && billTo !== null && billsByName ? (
+              <View key={fact.id}>
+                {[billTo.name, ...(billTo.typed ? billTo.details : [])].map((field) => {
+                  const label = field.key === KIN_BILL_TO_NAME ? KIN_BILL_TO.label : field.label;
+                  return canName ? (
+                    <ListRow
+                      key={field.key}
+                      label={field.text ?? "–"}
+                      detail={label}
+                      disabled={busy}
+                      onPress={() => edit(`field:${field.key}`)}
+                    />
+                  ) : field.text === null ? null : (
+                    <ListRowLayout key={field.key} label={field.text} detail={label} />
+                  );
+                })}
+                {canChange && billTo.editable && clientsOn && billTo.typed && clients.length > 0 ? (
+                  <Menu
+                    title={named(KIN_BILL_TO.useClient)}
+                    accessibilityRole="button"
+                    accessibilityLabel={named(KIN_BILL_TO.useClient)}
+                    actions={clients.map((row) => ({ id: row.key, title: row.name }))}
+                    onPressAction={({ nativeEvent: { event } }) => {
+                      const client = clients.find((row) => row.key === event);
+                      if (!busy && client !== undefined)
+                        void changes.update(item.rev, kinUseClientInstead(client.key));
+                    }}
+                  >
+                    <View pointerEvents="none">
+                      <ListRowLayout label={named(KIN_BILL_TO.useClient)} disabled={busy} />
+                    </View>
+                  </Menu>
+                ) : null}
+              </View>
+            ) : (fact.id === "party" || fact.id === "project") && !billing ? (
+              fact.value === null ? null : (
+                <ListRowLayout key={fact.id} label={fact.value} detail={fact.label} />
+              )
+            ) : canChange && fact.id !== "owner" && (fact.id === "category" || billing) ? (
+              <PickRow
+                key={fact.id}
+                label={fact.label}
+                shown={fact.value}
+                current={fact.current}
+                disabled={busy}
+                choices={
                   fact.id === "category"
-                    ? { listCategory: value as never }
-                    : fact.id === "project"
-                      ? { project: value as never }
-                      : { party: value as never },
-                )
-              }
-            />
-          ) : fact.value === null ? null : fact.opens === null || !billing ? (
-            <ListRowLayout key={fact.id} label={fact.value} detail={fact.label} />
-          ) : (
-            <ListRow
-              key={fact.id}
-              label={fact.value}
-              detail={fact.label}
-              onPress={() => openPlace(fact)}
-            />
-          ),
-        )}
+                    ? fact.choices
+                    : (fact.id === "project" ? projects : clients).map((row) => ({
+                        value: row.key,
+                        label: row.name,
+                      }))
+                }
+                onOpen={fact.opens === null || !billing ? undefined : () => openPlace(fact)}
+                onPick={(value) =>
+                  void changes.update(
+                    item.rev,
+                    fact.id === "category"
+                      ? { listCategory: value as never }
+                      : fact.id === "project"
+                        ? { project: value as never }
+                        : { party: value as never },
+                  )
+                }
+              />
+            ) : fact.value === null ? null : fact.opens === null || !billing ? (
+              <ListRowLayout key={fact.id} label={fact.value} detail={fact.label} />
+            ) : (
+              <ListRow
+                key={fact.id}
+                label={fact.value}
+                detail={fact.label}
+                onPress={() => openPlace(fact)}
+              />
+            ),
+          )}
         {canName && !billsByName && item.party === undefined ? (
           <ListActionRow
             label={KIN_BILL_TO.byName}

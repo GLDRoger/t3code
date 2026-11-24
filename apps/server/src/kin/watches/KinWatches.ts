@@ -1,4 +1,5 @@
 import {
+  AuthSessionId,
   type KinAgentId,
   KinChatError,
   type KinOrgId,
@@ -14,9 +15,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 
+import * as Audit from "../approvals/Audit.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { DAY_MS, MINUTE_MS } from "../durations.ts";
 import type { CodeOutcome, Evidence, Found, WatchKind, WatchRow } from "./kinds/kind.ts";
+import { keyWithheld } from "../work/recordRows.ts";
+import { CodingAgentCall } from "../work/keyCall.ts";
 import { one, watchSeen, type WatchReader } from "./readRpcs.ts";
 
 /**
@@ -325,7 +329,14 @@ const seenWatch = Effect.fn("KinWatches.seen")(function* (
       EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = w.org_id
         AND a.agent_id = w.agent_id AND a.retired_at IS NOT NULL) AS retired
     FROM kin_watches w
-    WHERE w.org_id = ${orgId} AND w.watch_id = ${watchId} AND ${watchSeen(sql, reader)}`;
+    WHERE w.org_id = ${orgId} AND w.watch_id = ${watchId} AND ${watchSeen(sql, reader)}
+      ${
+        (yield* CodingAgentCall) === undefined
+          ? sql``
+          : sql`AND NOT EXISTS (
+        SELECT 1 FROM kin_records r WHERE r.org_id = w.org_id
+          AND r.record_id = w.record_id AND ${keyWithheld(sql)})`
+      }`;
   if (row === undefined) return yield* notFound;
   return row;
 });
@@ -418,6 +429,19 @@ export const again = Effect.fn("KinWatches.again")(function* (
           interval_ms = ${FIRST_INTERVAL_MS}, next_look_at = ${at}, asked_look_at = ${at},
           updated_at = ${at}
         WHERE org_id = ${orgId} AND watch_id = ${watchId} AND state <> 'open'`;
+      const key = yield* CodingAgentCall;
+      if (key !== undefined) {
+        const [person] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+          WHERE org_id = ${orgId} AND person_id = ${reader.personId}`;
+        yield* Audit.KinAudit.use((audit) =>
+          audit.append({
+            orgId,
+            event: "watch_restarted",
+            sessionId: AuthSessionId.make(key),
+            result: `${person?.name ?? "Someone"} (coding agent) restarted ${watchId}.`,
+          }),
+        ).pipe(Effect.provide(Audit.layer));
+      }
       yield* (yield* KinRefreshObserver).touch(orgId, "watches");
     }),
   );

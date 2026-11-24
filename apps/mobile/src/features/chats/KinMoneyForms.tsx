@@ -67,7 +67,7 @@ import {
 } from "./state/useKinMoney";
 import { useKinNewExpense, useKinNewInvoice } from "./state/useKinMoneyAnswers";
 import { kinWorkChoicesAtom, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
-import { useKinSectionOn } from "./state/useKinShell";
+import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -290,6 +290,7 @@ function InvoiceForm(
   } | null>(null);
   const saving = useKinNewInvoice(props);
   const clientsOn = useKinSectionOn(props.environmentId, "clients");
+  const named = useKinSectionNamed(props.environmentId);
   const held = Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))));
   // Clients off: no client or project to pick, so the form asks for a name.
   const choices = clientsOn ? held : null;
@@ -331,6 +332,7 @@ function InvoiceForm(
       clientRequestId: requestId,
       byName,
       india,
+      projectClient,
     });
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);
@@ -348,7 +350,7 @@ function InvoiceForm(
     <Button
       tone="secondary"
       fullWidth
-      label={draft.byName ? KIN_BILL_TO.pickClient : KIN_BILL_TO.byName}
+      label={draft.byName ? named(KIN_BILL_TO.pickClient) : KIN_BILL_TO.byName}
       disabled={locked}
       onPress={() => set({ byName: !draft.byName })}
     />
@@ -398,14 +400,14 @@ function InvoiceForm(
         <ListSection>
           {clients.length === 0 && client === null ? (
             <ListRowLayout
-              label={KIN_MONEY_FORMS.invoice.noClients}
-              detail={KIN_MONEY_FORMS.invoice.party}
+              label={named(KIN_MONEY_FORMS.invoice.noClients)}
+              detail={named(KIN_MONEY_FORMS.invoice.party)}
             />
           ) : (
             <PickRow
-              label={KIN_MONEY_FORMS.invoice.party}
+              label={named(KIN_MONEY_FORMS.invoice.party)}
               value={draft.party ?? ""}
-              shown={client?.name ?? KIN_MONEY_FORMS.invoice.pickClient}
+              shown={client?.name ?? named(KIN_MONEY_FORMS.invoice.pickClient)}
               options={clients.map((one) => ({ id: one.key, title: one.name }))}
               disabled={locked}
               onPick={(key) => set({ party: clients.find((one) => one.key === key)?.key ?? null })}
@@ -440,7 +442,7 @@ function InvoiceForm(
         <KinWorkTextField
           label={KIN_MONEY_FORMS.invoice.gstRate}
           value={draft.gstRate}
-          keyboard="numbers"
+          keyboard="decimal"
           hint={KIN_MONEY_FORMS.invoice.gstHint}
           disabled={locked}
           onChangeText={(gstRate) => set({ gstRate })}

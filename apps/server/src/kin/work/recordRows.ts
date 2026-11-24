@@ -812,24 +812,35 @@ export const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function*
   turn?: { readonly agentId: KinAgentId; readonly wakeupId: string },
 ) {
   const who = `${to._tag}:${principalId(to)}`;
-  let back: FieldChange | undefined;
+  let back: { readonly seq: number; readonly to: string | null } | undefined;
   for (const change of yield* changesOf(orgId, before.recordId, 50).pipe(workFailure)) {
-    back = change.fields.find((field) => field.field === "handedBack" && field.from === who);
-    if (back !== undefined) break;
+    const returned = change.fields.find(
+      (field) => field.field === "handedBack" && field.from === who,
+    );
+    if (returned !== undefined) {
+      back = { seq: change.seq, to: returned.to };
+      break;
+    }
     if (change.fields.some((field) => !HAND_OFF_FIELDS.has(field.field))) return;
   }
-  if (back === undefined || turn === undefined) return back;
+  if (back === undefined) return;
   const sql = yield* SqlClient.SqlClient;
-  const owners = [...(yield* ownerLevelPeople(orgId))];
-  const said = yield* sql`SELECT 1 FROM kin_events e
-    JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
-      AND m.chat_id = json_extract(e.json, '$.chatId')
-    WHERE e.org_id = ${orgId} AND e.agent_id = ${turn.agentId}
-      AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
-      AND m.origin_json IS NULL AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
-      AND m.author_person_id IN ${sql.in(owners.length === 0 ? [""] : owners)}
-    LIMIT 1`;
-  return said.length === 0 ? back : undefined;
+  if (turn !== undefined) {
+    const owners = [...(yield* ownerLevelPeople(orgId))];
+    const said = yield* sql`SELECT 1 FROM kin_events e
+      JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+        AND m.chat_id = json_extract(e.json, '$.chatId')
+      WHERE e.org_id = ${orgId} AND e.agent_id = ${turn.agentId}
+        AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
+        AND m.origin_json IS NULL AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
+        AND m.author_person_id IN ${sql.in(owners.length === 0 ? [""] : owners)}
+      LIMIT 1`;
+    if (said.length > 0) return;
+  }
+  const [mark] = yield* sql<{ marked: number }>`SELECT coding_agent_key IS NOT NULL AS marked
+    FROM kin_record_changes
+    WHERE org_id = ${orgId} AND record_id = ${before.recordId} AND seq = ${back.seq}`;
+  return { to: back.to, codingAgent: mark?.marked === 1 };
 });
 
 const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, recordId: string) {

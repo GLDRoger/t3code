@@ -480,9 +480,8 @@ export const makeDeferralStarter = Effect.gen(function* () {
   });
 });
 
-/** The asked card's words: what a tap does, and why Kin won't or can't start it itself. */
+/** The asked card's words under its title: what a tap does, and why Kin won't or can't start it. */
 export function askText(input: {
-  readonly title: string;
   readonly dueAt: number;
   readonly now: number;
   readonly clock: TextClock;
@@ -498,7 +497,7 @@ export function askText(input: {
       : input.startable
         ? ` I won't start it on my own: ${input.why.join("; ")}.`
         : ` I can't start it now: ${input.why.join("; ")}.`;
-  return `${input.title} is due at ${ownerTime(input.dueAt, input.now, input.clock)}. ${taps}${reason}${lateNote(input.dueAt, input.now, input.clock)}`;
+  return `Due at ${ownerTime(input.dueAt, input.now, input.clock)}. ${taps}${reason}${lateNote(input.dueAt, input.now, input.clock)}`;
 }
 
 /** Whether an agent is paused: a person's [Start now] never queues work for it then. */
@@ -579,7 +578,6 @@ export const makeDeferralRedraw = Effect.gen(function* () {
         dueAt: iso(run.dueAt),
         onDue: run.onDue,
         text: askText({
-          title: item.head.title,
           dueAt: run.dueAt,
           now,
           clock: input.clock,

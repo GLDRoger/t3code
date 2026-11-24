@@ -22,6 +22,7 @@ import {
   kinBriefBy,
   kinNextStep,
   kinRecordChip,
+  kinTaskBrief,
   kinTaskControls,
   kinTaskActivity,
   kinTaskOrigin,
@@ -108,6 +109,7 @@ import { KIN_ONLY } from "../../lib/kinOnly";
 import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinNotesVersions } from "./KinNotesVersions";
+import { kinNotesVersions } from "@t3tools/client-runtime/kin/kinTemplates";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinAttachments } from "./components/KinMessageBubble";
 import { KinTaskNoteComposer } from "./components/KinTaskNoteComposer";
@@ -117,6 +119,7 @@ import { KinDayField } from "./components/KinDayField";
 import { KinWorkStatusRow } from "./components/KinWorkTaskMenus";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinListEntryBody } from "./KinListEntry";
+import { kinListsOf, useKinLists } from "./state/useKinMoney";
 import { KinMakeDocumentStep } from "./KinInvoice";
 import type { KinMakeStep } from "./kinMakeStep";
 import {
@@ -282,6 +285,10 @@ function KinWorkItemBody(props: ItemTarget) {
     state._tag === "ready" ? state.item.tasks?.map((task) => task.key) : undefined,
   );
   const directory = useKinWorkDirectory(props, true);
+  const entryOf = state._tag === "ready" ? (state.item.list ?? null) : null;
+  const lists = useKinLists(props, { enabled: entryOf !== null, archived: true });
+  // An entry's bar names its list, as a task's names its kind: the page's own title says which.
+  const listName = kinListsOf(lists).find((def) => def.list === entryOf)?.name ?? "";
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const canComment = useAtomValue(kinClient.workComment.permissionAtom(environmentId));
@@ -440,7 +447,7 @@ function KinWorkItemBody(props: ItemTarget) {
     const section = kinSectionOf({ list: item.list });
     const offLine = section === null ? null : kinSectionOffLine(shell, section, ownerLevel);
     return (
-      <KinWorkFrame title={item.title} onBack={back}>
+      <KinWorkFrame title={listName} onBack={back}>
         {offLine === null ? null : (
           <Text textRole="footnote" className="px-2 text-foreground-muted">
             {offLine}
@@ -487,6 +494,12 @@ function KinWorkItemBody(props: ItemTarget) {
       to: view.handBackTo ?? "",
     });
   const step = kinNextStep({ item: shown, view, names, now, change: act !== null, give: canGive });
+  const brief = kinTaskBrief({
+    view,
+    step,
+    edit: reword !== null,
+    versions: kinNotesVersions(item, names, now).length,
+  });
   const onStep = (id: KinNextStepAct) => {
     if (id === "openWaiting" && step.waiting !== null)
       return navigation.navigate("KinChat", {
@@ -924,7 +937,7 @@ function KinWorkItemBody(props: ItemTarget) {
         {!hostClients ? null : act === null || !view.can.party ? (
           view.party === null ? null : opensClients ? (
             <ListRow
-              icon="person.2"
+              icon="person.crop.circle"
               label={KIN_WORK_NEW_COPY.clientLabel}
               detail={view.party.title}
               detailEllipsizeMode="tail"
@@ -933,7 +946,7 @@ function KinWorkItemBody(props: ItemTarget) {
             />
           ) : (
             <ListRowLayout
-              icon="person.2"
+              icon="person.crop.circle"
               label={KIN_WORK_NEW_COPY.clientLabel}
               detail={view.party.title}
               detailEllipsizeMode="tail"
@@ -944,7 +957,7 @@ function KinWorkItemBody(props: ItemTarget) {
           <KinWorkPlacePicker
             target={props}
             noun="client"
-            icon="person.2"
+            icon="person.crop.circle"
             label={KIN_WORK_NEW_COPY.clientLabel}
             held={view.party}
             choices={choices.clients}
@@ -1010,7 +1023,7 @@ function KinWorkItemBody(props: ItemTarget) {
           )}
         </ListSection>
       )}
-      {edit !== null ? null : (
+      {edit !== null || brief === null ? null : (
         <View className="gap-2">
           <ListSection
             title={KIN_TASK_RECORD.brief}
@@ -1029,13 +1042,15 @@ function KinWorkItemBody(props: ItemTarget) {
                 })}
           >
             <View className="gap-2.5 px-4 py-3.5">
-              <Text
-                textRole="body"
-                selectable
-                className={view.notes === null ? "text-foreground-muted" : "text-foreground"}
-              >
-                {view.notes ?? KIN_TASK_RECORD.noBrief}
-              </Text>
+              {brief.words ? (
+                <Text
+                  textRole="body"
+                  selectable
+                  className={view.notes === null ? "text-foreground-muted" : "text-foreground"}
+                >
+                  {view.notes ?? KIN_TASK_RECORD.noBrief}
+                </Text>
+              ) : null}
               {briefBy === null ? null : (
                 <View className="flex-row items-center gap-1.5">
                   {briefBy.avatar === null ? null : (
