@@ -554,7 +554,7 @@ export function KinListEntry(
 ) {
   const { item, view, environmentId } = props;
   const clientsOn = useKinSectionOn(environmentId, "clients");
-  // Clients off: an invoice's or quote's client is its name alone, with no link or picker.
+  // Clients off: an invoice's or quote's client and project are names alone, with no link or picker.
   const billing = clientsOn || !["invoices", "quotes"].includes(item.list ?? "");
   const opensClients = useKinOpensClients(environmentId) && billing;
   const [naming, setNaming] = useState(false);
@@ -622,7 +622,7 @@ export function KinListEntry(
       .map(([id, name]) => ({ value: `agent:${id}`, label: name })),
   ];
   const open = (fact: KinListEntryView["facts"][number]) =>
-    fact.opens === null || (fact.id !== "project" && !opensClients)
+    fact.opens === null || !billing || (fact.id !== "project" && !opensClients)
       ? null
       : fact.id === "project"
         ? () => props.onOpenProject(fact.opens!)

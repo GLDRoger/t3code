@@ -304,7 +304,7 @@ export function KinListEntryBody(
   const clients = held?.clients ?? [];
   const projects = held?.projects ?? [];
   const clientsOn = useKinSectionOn(environmentId, "clients");
-  // Clients off: an invoice's or quote's client is its name alone, with no link or picker.
+  // Clients off: an invoice's or quote's client and project are names alone, with no link or picker.
   const billing = clientsOn || !["invoices", "quotes"].includes(item.list ?? "");
   const { billTo } = entry;
   const billsByName = billTo !== null && item.party === undefined && (billTo.typed || !clientsOn);
@@ -612,7 +612,7 @@ export function KinListEntryBody(
                 </Menu>
               ) : null}
             </View>
-          ) : fact.id === "party" && billTo !== null && !billing ? (
+          ) : (fact.id === "party" || fact.id === "project") && !billing ? (
             fact.value === null ? null : (
               <ListRowLayout key={fact.id} label={fact.value} detail={fact.label} />
             )
