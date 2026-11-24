@@ -10,6 +10,8 @@ import {
   kinDockWithLists,
   kinIsListSection,
   kinListOfSection,
+  kinSectionName,
+  kinSectionRenamed,
 } from "@t3tools/client-runtime/kin/kinShell";
 import { kinAttentionBadge } from "@t3tools/client-runtime/kin/kinAttention";
 import { kinBadgeCount } from "@t3tools/client-runtime/kin/kinInboxModel";
@@ -120,12 +122,14 @@ function KinHomeWithWork(props: {
     const list = kinListOfSection(tab);
     return list === null || names.has(list);
   });
-  const titles = Object.fromEntries(
-    tabs.flatMap((tab) => {
+  const titles = Object.fromEntries([
+    ...tabs.flatMap((tab) => {
       const name = names.get(kinListOfSection(tab) ?? "");
       return name === undefined ? [] : [[tab, name]];
     }),
-  );
+    // The company's word for Clients ("Patients"), as every screen says it.
+    ...(kinSectionRenamed(shell) ? [["clients", kinSectionName(shell, "clients")]] : []),
+  ]);
   return (
     <KinHomeTabs tabs={tabs} titles={titles} known={dock.known} workTarget={props.workTarget} />
   );

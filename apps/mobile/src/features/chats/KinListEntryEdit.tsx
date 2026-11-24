@@ -260,7 +260,10 @@ function TypedEdit(
             keyboard={numeric ? "numbers" : "plain"}
             disabled={changes.busy}
             {...(isAmount ? { placeholder: KIN_LISTS.entry.amountPlaceholder } : {})}
-            onChangeText={setText}
+            onChangeText={(next) => {
+              setText(next);
+              setProblem(null);
+            }}
           />
         </KinCountryFirstField>
       </ListSection>
