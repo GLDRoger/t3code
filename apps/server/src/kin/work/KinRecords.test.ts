@@ -2734,7 +2734,58 @@ it.effect(
       );
       yield* OwnerWork.confirm([owner], { orgId, key: started.key, rev: moved.rev });
       assert.deepStrictEqual(yield* wakes, [keptWake, buildWake]);
-    }).pipe(Effect.provide(layer)),
+
+      yield* mateMayMessage;
+      yield* turn();
+      const sql = yield* SqlClient.SqlClient;
+      const person = { _tag: "person" as const, personId: mateId };
+      const {
+        records: [proposed],
+      } = yield* LeadWork.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        records: [
+          { title: "Invented: prepare a launch checklist", owner: "Mate", suggested: true },
+        ],
+      });
+      assert.include(proposed, { suggested: true });
+      const chatNotices = sql`SELECT message_id FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = 'mate-chat'`;
+      const news = sql<{ key: string; kind: string; by: string }>`SELECT
+        json_extract(body, '$.key') AS key, json_extract(body, '$.kind') AS kind,
+        json_extract(body, '$.by') AS by FROM kin_held_posts
+        WHERE org_id = ${orgId} AND person_id = ${mateId} ORDER BY rowid`;
+      assert.deepStrictEqual(yield* chatNotices, []);
+      assert.deepStrictEqual(yield* news, []);
+      const toKeep = yield* OwnerWork.get([owner], { orgId, key: proposed!.key });
+      yield* OwnerWork.confirm([owner], { orgId, key: toKeep.key, rev: toKeep.rev });
+      yield* OwnerWork.confirm([owner], { orgId, key: toKeep.key, rev: toKeep.rev });
+      const direct = yield* OwnerWork.create([owner], {
+        orgId,
+        clientRequestId: "direct-give",
+        title: "Invented: write the launch notes",
+        owner: person,
+      });
+      assert.deepStrictEqual(yield* news, [
+        { key: toKeep.key, kind: "given", by: ownerId },
+        { key: direct.key, kind: "given", by: ownerId },
+      ]);
+      assert.deepStrictEqual(yield* chatNotices, []);
+
+      const moving = (yield* suggest("moving")).row;
+      const reassigned = yield* OwnerWork.assign([owner], {
+        orgId,
+        key: moving.key,
+        to: { _tag: "agent", agentId: other },
+      });
+      assert.include(reassigned, { confirmed: false });
+      assert.deepStrictEqual(yield* wakes, [keptWake, buildWake]);
+      yield* OwnerWork.confirm([owner], { orgId, key: moving.key, rev: reassigned.rev });
+      assert.deepStrictEqual(yield* wakes, [
+        keptWake,
+        buildWake,
+        [other, "assigned", moving.key, ownerId],
+      ]);
+    }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );
 
 it.effect(

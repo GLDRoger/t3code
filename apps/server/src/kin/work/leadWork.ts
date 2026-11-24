@@ -3988,7 +3988,7 @@ const runHandBack = Effect.fnUntraced(function* (lead: Lead, input: typeof HandB
   const after = yield* records.handBack(lead.orgId, writer, input.key, holder, input.note);
   const to = toRecord(after, 0).owner;
   const notices: Array<AssignNotice> =
-    to._tag === "person"
+    to._tag === "person" && !isSuggestion(after)
       ? [
           {
             personId: to.personId,

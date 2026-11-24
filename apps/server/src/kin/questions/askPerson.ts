@@ -116,9 +116,9 @@ export const AskPersonResult = Schema.Struct({
   note: KinTrimmedText,
 });
 
-/** What the agent is told when the person has never signed in: it waits, and nobody was alerted. */
+/** What the agent is told when the person has never signed in: it waits, then lapses. */
 const notSignedIn = (name: string) =>
-  `${name} hasn't signed in to Kin yet: it waits in their chat with you and reaches them when they do. Nobody was alerted. Their answer comes back here.`;
+  `${name} hasn't signed in to Kin yet: it waits in their chat with you, and if they haven't signed in by its day, it lapses and this chat is told. Their answer comes back here.`;
 
 /** At most this many questions asked for others wait on one person, from every agent together. */
 const ASKED_FOR_PER_PERSON = 3;
