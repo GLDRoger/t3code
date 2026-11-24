@@ -49,6 +49,7 @@ import { readCallArguments } from "../../apps/server/src/kin/connections/callArg
 import { microsoftMail } from "../../apps/server/src/kin/connections/Microsoft.ts";
 import { resultText } from "../../apps/server/src/kin/connections/ResultText.ts";
 import { outlineOf, sectionsOf, WHOLE_DOC } from "../../apps/server/src/kin/work/docBody.ts";
+import { privateNowLine } from "../../apps/server/src/kin/work/docs.ts";
 import { parseRecipe } from "../../apps/server/src/kin/gendocs/recipe.ts";
 import { STARTER_FILES } from "../../apps/server/src/kin/gendocs/starter.ts";
 import { quote } from "../../apps/server/src/kin/lead/quote.ts";
@@ -700,6 +701,15 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       _tag: "KinChatError",
       reason: "not_allowed",
       message: helperRefusal(input.holder, input.key),
+    },
+  }),
+  // doc_read of a draft filed for the reader that an owner since kept to owners only (`docRow`).
+  docPrivateNow: (input: { key: string; owner: string }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_found",
+      message: privateNowLine(input.key, input.owner),
+      privateNow: { by: input.owner },
     },
   }),
   // An approved draft's one make that changed the approved words, refused at Kin's gate.

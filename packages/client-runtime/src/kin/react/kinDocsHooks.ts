@@ -19,6 +19,7 @@ import {
   KIN_DOCS_DEFAULT_FILTER,
   KIN_SEARCH_INITIAL,
   createKinSearch,
+  kinDocState,
   kinDocsQuery,
   kinDocsSameFilter,
   kinWhatWeSellAgent,
@@ -32,7 +33,6 @@ import { type KinDocsLive, kinDocsPageFollower } from "../kinDocsStream.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinWorkFailuresOf, kinWorkRefused } from "../kinWork.ts";
 import { createKinWorkItemWatch } from "../kinWorkChanges.ts";
-import { kinWorkReadState } from "../kinWorkForms.ts";
 import { createKinPagedList, mapPage } from "../kinWorkList.ts";
 import type { KinHookApp, KinUseOpenChat } from "./kinHookApp.ts";
 import { kinPagedKeeper, kinSchedule, useKinViewer, type KinWorkHooks } from "./kinWorkHooks.ts";
@@ -258,7 +258,7 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
         ...(card === null ? {} : { card }),
       },
     });
-    const state = kinWorkReadState<KinDocDetail>(useAtomValue(atom));
+    const state = kinDocState(useAtomValue(atom));
     const { live } = useKinDocsLive(target);
     const [watch] = useState(() =>
       createKinWorkItemWatch({ key, reread: () => registry.refresh(atom) }),
