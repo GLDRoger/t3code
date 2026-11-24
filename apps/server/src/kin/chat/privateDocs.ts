@@ -14,6 +14,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { isOrgOwner } from "../lead/orgState.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
+import { ownMoneyDraft } from "../work/teamView.ts";
 
 /**
  * A doc pointed at or shown in a chat keeps the titles it had then. Whether it is sensitive is
@@ -24,16 +25,19 @@ export const PRIVATE_DOC = "a private document";
 
 const decodeCard = Schema.decodeUnknownOption(KinDocCardState);
 
-/** Which of `keys` are docs of this org that are sensitive now. */
+/** Which of `keys` are docs of this org that are sensitive now, but a person's own priced draft. */
 export const sensitiveDocs = Effect.fn("KinPrivateDocs.sensitive")(function* (
   orgId: KinOrgId,
   keys: ReadonlyArray<string>,
+  personId?: KinPersonId,
 ) {
   if (keys.length === 0) return new Set<string>();
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'docs' AND r.key IN ${sql.in([...new Set(keys)])}
-      AND ${sensitiveNow(sql)} ORDER BY r.key`;
+      AND ${sensitiveNow(sql)}
+      ${personId === undefined ? sql`` : sql`AND NOT ${ownMoneyDraft(sql, personId)}`}
+    ORDER BY r.key`;
   return new Set(rows.map((row) => row.key));
 });
 
@@ -72,7 +76,7 @@ export const docsForViewer = Effect.fn("KinPrivateDocs.forViewer")(function* (
   if (keys.length === 0) return page;
   if ("personId" in viewer ? yield* isOrgOwner(orgId, viewer.personId) : !viewer.sharedTurn)
     return page;
-  const hidden = yield* sensitiveDocs(orgId, keys);
+  const hidden = yield* sensitiveDocs(orgId, keys, "personId" in viewer ? viewer.personId : undefined);
   if (hidden.size === 0) return page;
   return {
     messages: page.messages.map((message) =>

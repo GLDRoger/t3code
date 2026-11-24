@@ -2369,6 +2369,35 @@ it.effect(
         JSON.stringify((yield* OwnerDocs.list([mate], { orgId })).docs),
         "Invented Acme",
       );
+      // Their proposal as a draft to send up keeps its kind's label, and is theirs alone to read; a
+      // label they ask for on anything else is still not theirs to give.
+      const ownLabel = yield* Effect.flip(
+        LeadDocs.create(scopeOf(lead), {
+          sourceEventId: "ask-event",
+          title: "Invented private teaser",
+          body: "Doors open soon.",
+          sensitive: true,
+          draft: { kind: "mail" },
+        }),
+      );
+      assert.strictEqual(reasonOf(ownLabel), "not_allowed");
+      const pricedDraft = yield* LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "Invented priced proposal for Acme",
+        kind: "proposal",
+        body: "## Scope\n\nInvented scope.\n\n## Price\n\nLeft for the owner.",
+        draft: { kind: "proposal" },
+      });
+      assert.deepInclude(pricedDraft, { kind: "proposal", sensitive: true, changed: true });
+      const [labelled] = yield* sql<{ sensitive: number; marked: string | null; for: string }>`
+        SELECT sensitive, marked_by_person_id AS marked,
+          json_extract(fields_json, '$.draftFor') AS "for"
+        FROM kin_records WHERE org_id = ${orgId} AND key = ${pricedDraft.key}`;
+      assert.deepStrictEqual(labelled, { sensitive: 1, marked: null, for: mateId });
+      assert.strictEqual(
+        (yield* OwnerDocs.get([mate], { orgId, key: pricedDraft.key })).key,
+        pricedDraft.key,
+      );
       // A playbook sets how Kin works for everyone, so it stays the owner level's to file.
       const playbook = yield* Effect.flip(
         LeadDocs.create(scopeOf(lead), {
@@ -2379,7 +2408,7 @@ it.effect(
         }),
       );
       assert.strictEqual(reasonOf(playbook), "not_allowed");
-      assert.lengthOf(yield* docs, 5);
+      assert.lengthOf(yield* docs, 6);
       // A chat others share asks nobody outside it, so its refusal names no card.
       yield* sql`UPDATE kin_chats SET kind = 'team_group', direct_key = NULL WHERE chat_id = 'mate-chat'`;
       const inGroup = yield* propose;
@@ -2405,7 +2434,7 @@ it.effect(
         WHERE message_id = 'ask'`;
       const carried = yield* fileIt;
       assert.strictEqual("message" in carried ? carried.message : "", ownChatOnly);
-      assert.lengthOf(yield* docs, 5);
+      assert.lengthOf(yield* docs, 6);
     }).pipe(Effect.provide(layer)),
 );
 

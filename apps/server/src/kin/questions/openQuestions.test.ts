@@ -3169,6 +3169,86 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
         "not_allowed",
       );
 
+      // Filed as a proposal, a money kind, it keeps its label and goes up as any long draft:
+      // of the team only Zoya reads it, through her own card, which shows it to her whole.
+      const PRICED = long(4200, 900);
+      const priced = yield* LeadDocs.create(scopeOf("chief"), {
+        sourceEventId: asked.eventId,
+        title: "Harbourline priced proposal",
+        body: PRICED,
+        client: "C-7",
+        kind: "proposal",
+        draft: { kind: "proposal" },
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.deepInclude(priced, { kind: "proposal", sensitive: true, version: 1 });
+      const pricedCard = yield* cardOf(priced.key);
+      assert.deepStrictEqual(pricedCard.state.draft.whole, { version: 1, chars: 4200 });
+      assert.strictEqual(pricedCard.state.draft.sendTo.name, "Rhea Rao");
+      assert.strictEqual(
+        (yield* readAsZoya(priced.key, 1, pricedCard.widgetId)).body.trim(),
+        PRICED,
+      );
+      const zoyasPage = Effect.fn("test.zoyasPage")(function* () {
+        const page = yield* chats.history(person("zoya"), {
+          chatId: zoyaChat,
+          beforeSeq: 1000,
+          limit: 100,
+        });
+        return page.widgets.find((widget) => widget.widgetId === pricedCard.widgetId)!.state;
+      });
+      assert.deepInclude(yield* zoyasPage(), { title: "Harbourline priced proposal" });
+      assert.property(yield* zoyasPage(), "draft");
+      assert.deepStrictEqual(yield* press(pricedCard.widgetId), { to: "Rhea Rao", held: false });
+      const [pricedUp] = yield* upFor(priced.key);
+      assert.deepInclude(JSON.parse(pricedUp!.draft).doc, { key: priced.key, version: 1 });
+      assert.deepInclude((yield* ownersCard(pricedUp!.questionId)).draftDoc, {
+        key: priced.key,
+        version: 1,
+      });
+      yield* tap(owner, pricedUp!.questionId, "option-1", "rhea-approve-priced");
+      assert.strictEqual((yield* made(pricedUp!.questionId))[0]!.body.trim(), PRICED);
+      // Arjun, with Docs, Clients and Money on and its link on his own project, reads none of it.
+      yield* sql`UPDATE kin_people SET sees_docs = 1, sees_clients = 1, sees_money = 1
+        WHERE person_id = 'arjun'`;
+      yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation, created_at)
+        SELECT org_id, record_id, 'record', 'rec_shoot', 'relates', 0 FROM kin_records
+        WHERE org_id = ${orgId} AND key = ${priced.key}`;
+      const arjun = [person("arjun")];
+      assert.strictEqual(
+        (yield* Effect.flip(OwnerDocs.get(arjun, { orgId, key: KinRecordKey.make(priced.key) })))
+          .reason,
+        "not_found",
+      );
+      assert.notInclude(
+        (yield* OwnerDocs.list(arjun, { orgId })).docs.map((doc) => doc.key),
+        priced.key,
+      );
+      assert.notInclude(
+        (yield* OwnerDocs.search(arjun, { orgId, text: "priced proposal", everything: true })).hits.map(
+          (hit) => hit.key,
+        ),
+        priced.key,
+      );
+      assert.notInclude(
+        JSON.stringify((yield* OwnerWork.get(arjun, { orgId, key: "P-4" })).linkedFrom ?? []),
+        priced.key,
+      );
+      assert.strictEqual(
+        (yield* Effect.flip(
+          OwnerDocs.get(arjun, {
+            orgId,
+            key: KinRecordKey.make(priced.key),
+            version: 1,
+            card: KinWidgetId.make(pricedCard.widgetId),
+          }),
+        )).reason,
+        "not_found",
+      );
+      // Rhea marking it "Only me" herself takes Zoya's read and her card's text back.
+      yield* OwnerDocs.label([owner], { orgId, key: KinRecordKey.make(priced.key), sensitive: true });
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(readAsZoya(priced.key, 1, pricedCard.widgetId))));
+      assert.notProperty(yield* zoyasPage(), "draft");
+
       // A co-owner's tap on it does what it does on a short draft's card.
       yield* press((yield* cardOf(short.key)).widgetId);
       const [shortUp] = yield* upFor(short.key);

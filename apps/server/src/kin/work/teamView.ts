@@ -235,6 +235,21 @@ export const allSeeMoney = Effect.fn("KinTeamView.allSeeMoney")(function* (
   return row?.count === ids.length;
 });
 
+/** Doc kinds that carry prices: labelled when made (`Docs.create`). */
+export const MONEY_DOC_KINDS: ReadonlyArray<string> = ["quote", "proposal"];
+
+/**
+ * `r` is a priced draft filed at this person's own ask to go up from their card (`draftDoc`): it
+ * keeps its kind's label, and they read it until a person labels it themselves.
+ */
+export const ownMoneyDraft = (
+  sql: SqlClient.SqlClient,
+  personId: KinPersonId | Statement.Fragment,
+) =>
+  sql`COALESCE(r.register_id = 'docs' AND r.sensitive = 1 AND r.marked_by_person_id IS NULL
+    AND r.category IN ${sql.in(MONEY_DOC_KINDS)}
+    AND json_extract(r.fields_json, '$.draftFor') = ${personId} AND NOT ${inheritedSensitive(sql)}, 0)`;
+
 /**
  * What a non-owner-level person sees: a picture by `pictureReader` alone; else a task they hold, are
  * on, attend or marked private; what they made, gave or share; their projects' entries and docs;
@@ -261,6 +276,7 @@ const legacyPersonSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Stat
     OR (r.register_id = 'docs' AND (r.team_shared = 1
       OR json_extract(r.fields_json, '$.home') = 'company')
       AND ${placeOn(sql, personId, "sees_docs")})))
+  OR ${ownMoneyDraft(sql, personId)}
   OR (r.register_id = 'deals' AND NOT ${keySensitive(sql)}
     AND ${placeOn(sql, personId, "sees_clients")})
   OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND ${teamListRow(sql, personId)})) END)`;
@@ -601,6 +617,12 @@ const ROOM_FIELDS: ReadonlySet<string> = new Set(LISTS.work.fields);
 const DRAFT_DOC_FIELDS: ReadonlySet<string> = new Set(["list", "source", "partyId", "projectId"]);
 /** Kinds whose text sets how Kin works for everyone (`playbooks.ts`): the owner level's to file. */
 const COMPANY_DOC_KINDS: ReadonlyArray<unknown> = ["playbook", "policy"];
+/** A new priced draft to go up from its card keeps its kind's label (`ownMoneyDraft`). */
+const moneyDraftLabel = (write: Parameters<typeof teamGuard>[2], turn: HeadStartTurn | undefined) =>
+  write.row === undefined &&
+  turn?.draftCard === true &&
+  write.input.sensitive === true &&
+  MONEY_DOC_KINDS.some((kind) => kind === write.input.category);
 
 /**
  * A doc filed at the one teammate's ask behind the turn, marked theirs (`draftFor`), so they see
@@ -626,7 +648,12 @@ const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
     input.list !== "docs" ||
     COMPANY_DOC_KINDS.includes(input.category) ||
     write.changes ||
-    OWNERS_FIELDS.some((field) => input[field] !== undefined && !DRAFT_DOC_FIELDS.has(field))
+    OWNERS_FIELDS.some(
+      (field) =>
+        input[field] !== undefined &&
+        !DRAFT_DOC_FIELDS.has(field) &&
+        !(field === "sensitive" && moneyDraftLabel(write, turn)),
+    )
   )
     return undefined;
   if (row === undefined && (turn === undefined || !(yield* ownDirectAsk(orgId, person, turn)))) {
@@ -658,6 +685,8 @@ type HeadStartTurn = {
   readonly agentId: KinAgentId;
   readonly wakeupId: string;
   readonly headStartFor?: KinPersonId | undefined;
+  /** A draft filed to go up from its card (`doc_create` with draft). */
+  readonly draftCard?: boolean | undefined;
 };
 
 export const HEAD_START_ONE_DOC = new KinChatError({

@@ -139,5 +139,19 @@ it.effect("shows a doc labelled sensitive since as a private document to all but
     assert.notProperty(mate.widgets[0]!.state, "draft");
     // The owner still sees it normally.
     assert.deepStrictEqual(yield* seenBy(ownerId), page);
+
+    // A teammate's own priced draft keeps its label: she sees her card whole, no one else does,
+    // until a person marks it themselves.
+    const otherId = KinPersonId.make("other");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES (${otherId}, ${orgId}, 'other', 'Other', ${at}, 'member')`;
+    yield* sql`UPDATE kin_records SET category = 'proposal',
+        fields_json = json_object('draftFor', ${mateId})
+      WHERE org_id = ${orgId} AND key = 'D-1'`;
+    assert.deepStrictEqual(yield* seenBy(mateId), page);
+    assert.include((yield* seenBy(otherId)).widgets[0]!.state, { title: PRIVATE_DOC });
+    yield* sql`UPDATE kin_records SET marked_by_person_id = ${ownerId}
+      WHERE org_id = ${orgId} AND key = 'D-1'`;
+    assert.notProperty((yield* seenBy(mateId)).widgets[0]!.state, "draft");
   }).pipe(Effect.provide(layer)),
 );

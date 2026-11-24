@@ -223,6 +223,8 @@ export type Writer = {
   readonly teamShared?: boolean;
   /** The holder whose doc head start this turn is (`docHeadStart`): its one new doc is theirs. */
   readonly headStartFor?: KinPersonId;
+  /** A draft filed to go up from its card (`doc_create` with draft): `draftDoc` decides its label. */
+  readonly draftCard?: true;
   /** A lead's turn others read: `viewGuard` decides the write inside its transaction. */
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- a write's guard, not a read; absent is an owner-level writer.
   readonly view?: {
@@ -1965,7 +1967,8 @@ const make = Effect.gen(function* () {
         givenAway && writer.actor._tag === "agent" && writer.askedBy == null
           ? writer.actor.agentId
           : null,
-      marked_by_person_id: input.sensitive === true ? author : null,
+      // A teammate's draft keeps its kind's label, not theirs: they can't lift it (`teamRule`).
+      marked_by_person_id: input.sensitive === true && guarded === undefined ? author : null,
       asked_by_person_id: author,
       steps_json: steps.length === 0 ? null : yield* encodeSteps(steps),
       urgent: input.urgent === true ? 1 : null,
@@ -2034,6 +2037,7 @@ const make = Effect.gen(function* () {
                   agentId: writer.actor.agentId,
                   wakeupId: writer.wakeupId,
                   headStartFor: writer.headStartFor,
+                  draftCard: writer.draftCard,
                 }
               : undefined,
           ).pipe(provideSql);
