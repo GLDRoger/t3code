@@ -1118,38 +1118,35 @@ describe("new line", () => {
     expect(lineOf(opened(messages, readSeq)).seq).toBe(expected);
   });
 
-  it("holds where the chat opened it until the viewer's own mark moves", () => {
+  it("holds where the chat opened it while it is open, whatever the viewer's mark does", () => {
     const open = opened(agentRun, 2);
     const first = lineOf(open);
     expect(first.seq).toBe(3);
-    // A message arriving while the chat is open lands below the line.
-    const arrived = applyKinChatEvent(open, { _tag: "message", message: agentMessage(6) });
-    expect(lineOf(arrived, first.hold)).toEqual(first);
-    // Another member's mark moves nothing.
-    const theirs = applyKinChatEvent(arrived, {
-      _tag: "read",
-      memberId: KinMemberId.make("them"),
-      seq: 6,
-    });
-    expect(lineOf(theirs, first.hold).seq).toBe(3);
-    // A reaction to 3 moves it above the next unanswered one.
-    const reacted = applyKinChatEvent(theirs, {
+    // Opening moves the viewer's seen mark at once: the line stays.
+    const seen = applyKinChatEvent(open, {
       _tag: "read",
       memberId: KinMemberId.make("me"),
-      seq: 3,
+      seq: 5,
     });
-    const after = lineOf(reacted, first.hold);
-    expect(after.seq).toBe(5);
-    // A reply reads everything; what arrives after it gets no line.
+    expect(lineOf(seen, first.hold)).toEqual(first);
+    // A message arriving while the chat is open lands below the line.
+    const arrived = applyKinChatEvent(seen, { _tag: "message", message: agentMessage(6) });
+    expect(lineOf(arrived, first.hold)).toEqual(first);
+    // A reply, and the seen mark it moves, leave it where it is too.
     const replied = applyKinChatEvent(
-      applyKinChatEvent(reacted, { _tag: "message", message: mine(7) }),
+      applyKinChatEvent(arrived, { _tag: "message", message: mine(7) }),
       { _tag: "read", memberId: KinMemberId.make("me"), seq: 7 },
     );
-    const gone = lineOf(replied, after.hold);
-    expect(gone.seq).toBeNull();
-    const answer = applyKinChatEvent(replied, { _tag: "message", message: agentMessage(8) });
-    expect(lineOf(answer, gone.hold).seq).toBeNull();
-    // Nothing unanswered at open: a message arriving while open gets no line either.
+    expect(lineOf(replied, first.hold)).toEqual(first);
+    // Opened again with nothing new (a fresh hold from the mark now): no line.
+    expect(lineOf(replied).seq).toBeNull();
+    // Another chat gets its own hold.
+    expect(kinNextNewLineHold(first.hold, "other", 0, 5)).toEqual({
+      chatId: "other",
+      mark: 0,
+      upTo: 5,
+    });
+    // Nothing new at open: a message arriving while open gets no line either.
     const read = opened(agentRun, 5);
     const none = lineOf(read);
     const later = applyKinChatEvent(read, { _tag: "message", message: agentMessage(6) });
