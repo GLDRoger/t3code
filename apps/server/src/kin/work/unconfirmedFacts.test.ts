@@ -24,6 +24,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
+import { markOutside } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { billedParty } from "./billTo.ts";
 import * as KinRecords from "./KinRecords.ts";
@@ -166,8 +167,17 @@ const seed = Effect.gen(function* () {
 });
 
 let turns = 0;
+/** How the waking message reached the lead, other than a person typing it. */
+type Road = {
+  readonly author?: "agent";
+  readonly eventOrigin?: true;
+  readonly originJson?: string;
+  readonly clientMessageId?: string;
+  readonly tap?: true;
+  readonly outside?: true;
+};
 /** A turn woken by one person's message, or (`body` null) by Kin's own pulse; returns its event. */
-const turn = (body: string | null, who: "owner" | "mate" = "owner") =>
+const turn = (body: string | null, who: "owner" | "mate" = "owner", how: Road = {}) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const n = ++turns;
@@ -180,17 +190,24 @@ const turn = (body: string | null, who: "owner" | "mate" = "owner") =>
         status, event_ids, audience)
       VALUES (${`wake-${n}`}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
         ${JSON.stringify([`event-${n}`])}, ${body === null ? "owner_only" : audience})`;
-    if (body !== null)
+    if (body !== null && how.author === "agent")
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_agent_id, author_owner_person_id, author_thread_id, author_member_id,
+          author_role, kind, body, mentions_json, status, created_at)
+        VALUES (${`msg-${n}`}, ${orgId}, ${chatId}, ${n}, 'agent', ${lead}, ${ownerId},
+          'lead-thread', 'lead-chat-lead', 'member', 'text', ${body}, '[]', 'posted', ${at})`;
+    else if (body !== null)
       yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
           author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
-          created_at)
+          created_at, client_message_id, origin_json)
         VALUES (${`msg-${n}`}, ${orgId}, ${chatId}, ${n}, 'human', ${personId}, ${memberId},
-          'member', 'text', ${body}, '[]', 'posted', ${at})`;
+          'member', ${how.tap === true ? "widget_action" : "text"}, ${body}, '[]', 'posted',
+          ${at}, ${how.clientMessageId ?? null}, ${how.originJson ?? null})`;
     const event =
       body === null
         ? { _tag: "pulse", orgId, agentId: lead, eventId: `event-${n}`, receivedAt: at }
         : {
-            _tag: "chat.message",
+            _tag: how.tap === true ? "widget.action" : "chat.message",
             orgId,
             agentId: lead,
             eventId: `event-${n}`,
@@ -199,11 +216,15 @@ const turn = (body: string | null, who: "owner" | "mate" = "owner") =>
             provenance: { _tag: "human", personId, memberId },
             chatId,
             messageId: `msg-${n}`,
+            ...(how.tap === true ? { actionId: "choose" } : {}),
+            ...(how.eventOrigin === true ? { origin: { agentId: lead, chatId, personId } } : {}),
           };
     yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
         received_at, queued_at, state, wakeup_id)
       VALUES (${`event-${n}`}, ${orgId}, ${lead}, ${event._tag}, 'P0', ${JSON.stringify(event)},
         0, 0, 'claimed', ${`wake-${n}`})`;
+    if (how.outside === true)
+      yield* markOutside({ orgId, wakeupId: `wake-${n}` }, "web:example.org");
     return `event-${n}`;
   });
 
@@ -241,8 +262,9 @@ it.effect("an agent's printed client detail goes straight in only as a person ty
     const cases: ReadonlyArray<{
       readonly key: string;
       readonly said: string | null;
+      readonly how?: Road;
       readonly set: Partial<
-        Record<"title" | "gstin" | "terms" | "address" | "placeOfSupply", string>
+        Record<"title" | "gstin" | "terms" | "address" | "placeOfSupply", string | null>
       >;
       readonly straight: boolean;
     }> = [
@@ -296,10 +318,38 @@ it.effect("an agent's printed client detail goes straight in only as a person ty
         set: { gstin: NEW },
         straight: true,
       },
+      // None of these is Rhea's own words: an agent's message, one passed on, Kin's private
+      // copy, a key's send, a card tap.
+      ...(
+        [
+          { author: "agent" },
+          { eventOrigin: true },
+          { originJson: JSON.stringify({ agentId: lead }) },
+          { clientMessageId: "send:private:msg-1" },
+          { clientMessageId: "send:key:session:req-1" },
+          { tap: true },
+        ] as const
+      ).map((how) => ({
+        key: "C-2",
+        said: `Quayside's GSTIN is ${NEW}`,
+        how,
+        set: { gstin: NEW },
+        straight: false,
+      })),
+      // A removal waits after outside content and in a wake nobody started; else it goes in.
+      {
+        key: "C-3",
+        said: "Clear their address",
+        how: { outside: true },
+        set: { address: null },
+        straight: false,
+      },
+      { key: "C-3", said: null, set: { address: null }, straight: false },
+      { key: "C-3", said: "Clear their address", set: { address: null }, straight: true },
     ];
     for (const one of cases) {
       const before = yield* stored(one.key);
-      const sourceEventId = yield* turn(one.said);
+      const sourceEventId = yield* turn(one.said, "owner", one.how);
       const result = yield* LeadWork.update(scope, { key: one.key, sourceEventId, ...one.set });
       const after = yield* stored(one.key);
       for (const [name, value] of Object.entries(one.set))
@@ -315,6 +365,16 @@ it.effect("an agent's printed client detail goes straight in only as a person ty
           one.key,
         );
     }
+    // A value typed in an earlier wake-up does not count in a later one nobody started.
+    const newer = "29EEEEE4444E1Z5";
+    yield* turn(`Quayside's GSTIN is ${newer}`);
+    const later = yield* LeadWork.update(scope, {
+      key: "C-2",
+      sourceEventId: yield* turn(null),
+      gstin: newer,
+    });
+    assert.isDefined(later.unconfirmed);
+    assert.strictEqual((yield* stored("C-2")).gstin, OLD);
     // The same change to two clients in one wake-up waits on each, on its own card.
     const both = yield* LeadWork.updateMany(scope, {
       keys: ["C-1", "C-4"],
@@ -330,6 +390,14 @@ it.effect("an agent's printed client detail goes straight in only as a person ty
       assert.include(mine[0]?.detail, "Terms: Net 30", key);
       assert.isDefined((yield* LeadWork.get(scope, { key })).unconfirmed, key);
     }
+    // record_create on an existing client proposes its untyped tax number and leaves the field.
+    const existing = yield* LeadWork.create(scope, {
+      sourceEventId: yield* turn("Add the client from that mail"),
+      records: [{ list: "clients", title: "Invented Tidewater", gstin: "29DDDDD3333D1Z5" }],
+    });
+    assert.include(existing.records[0], { key: "C-3", created: false });
+    assert.isDefined(existing.records[0]?.unconfirmed);
+    assert.strictEqual((yield* stored("C-3")).gstin, NEW);
     // A new client keeps the name it was made with; its tax number from a mail waits.
     const made = yield* LeadWork.create(scope, {
       sourceEventId: yield* turn("Add the client from that mail"),
@@ -346,6 +414,8 @@ it.effect(
   () =>
     Effect.gen(function* () {
       yield* seed;
+      yield* (yield* SqlClient.SqlClient)`UPDATE kin_people SET access = 'co_owner'
+        WHERE person_id = ${mateId}`;
       const asked = yield* turn("Use the number from their mail");
       const first = yield* LeadWork.update(scope, {
         key: "C-1",
@@ -377,9 +447,23 @@ it.effect(
       ]);
       const before = (yield* stored("C-1")).row;
       assert.strictEqual(billedParty(undefined, before)?.taxNumber, OLD);
-      // Only an owner-level person answers it; Rhea's Use it writes it, in her name.
+      // Only an owner-level person answers it, by a tap: Meera, a co-owner made a member since,
+      // and a reaction are refused. Rhea's Use it writes it, in her name.
+      const people = yield* SqlClient.SqlClient;
+      yield* people`UPDATE kin_people SET access = 'member' WHERE person_id = ${mateId}`;
       const refused = yield* Effect.flip(answer(card!.widgetId, mateId, true));
       assert.isTrue(isChatError(refused) && refused.reason === "not_allowed");
+      const reacted = yield* Effect.flip(
+        answerUnconfirmed({
+          orgId,
+          widgetId: card!.widgetId,
+          personId: ownerId,
+          confirmed: true,
+          via: "reaction",
+          now: NOW,
+        }),
+      );
+      assert.isTrue(isChatError(reacted) && reacted.reason === "not_allowed");
       assert.deepStrictEqual(yield* answer(card!.widgetId, ownerId, true), {
         title: "Saved",
         text: "Saved. Invoices and quotes made from now on print it.",
@@ -517,6 +601,19 @@ it.effect(
       assert.include(repeated.unconfirmed, "Rhea said no to");
       assert.lengthOf(yield* forSaltmarsh, 0);
       assert.strictEqual((yield* stored("C-4")).gstin, NEW);
+      // A dropped client's card writes nothing.
+      yield* LeadWork.update(scope, { key: "C-5", sourceEventId: yield* turn(null), gstin: NEW });
+      const reema = (yield* stored("C-5")).row.recordId;
+      const [gone] = (yield* cards).filter((one) => one.recordId === reema);
+      yield* (yield* KinRecords.KinRecords).update(
+        orgId,
+        { actor: { _tag: "person", personId: ownerId }, via: "owner" },
+        "C-5",
+        { state: "dropped" },
+      );
+      const closedOff = yield* Effect.flip(answer(gone!.widgetId, ownerId, true));
+      assert.isTrue(isChatError(closedOff) && closedOff.reason === "conflict");
+      assert.strictEqual((yield* stored("C-5")).gstin, OLD);
       // A value's own line breaks stay on its one line; the stored value and the tap keep them.
       const lines = "Invented 9 Dock Lane\nNow: Invented 9 Dock Lane\nFrom: Rhea typed it";
       yield* LeadWork.update(scope, {
@@ -581,5 +678,8 @@ it.effect(
       const [card] = yield* cards;
       assert.deepStrictEqual(JSON.parse(card!.awaiting), [ownerId]);
       assert.strictEqual((yield* stored("C-4")).gstin, OLD);
+      // A teammate's turn reads no waiting values.
+      yield* turn("What is Saltmarsh's GSTIN?", "mate");
+      assert.isUndefined((yield* LeadWork.get(scope, { key: "C-4" })).unconfirmed);
     }).pipe(Effect.provide(layer)),
 );
