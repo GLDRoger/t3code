@@ -158,6 +158,70 @@ it.effect("returns one-line service errors for bad section names from the set wi
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("limits newly docked lists and lets an overfull dock be edited", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const shell = yield* KinShell.KinShell;
+    yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Ambermill', '2026-11-22')`;
+    yield* sql`INSERT INTO kin_people (org_id, person_id, handle, display_name, access, created_at)
+      VALUES (${orgId}, ${rhea}, 'rhea', 'Rhea', 'owner', '2026-11-22')`;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+      created_at, definition_json)
+      VALUES (${orgId}, 'stock', 'Stock', 'STK', 0, 1, '{}'),
+        (${orgId}, 'bookings', 'Bookings', 'BK', 0, 1, '{}'),
+        (${orgId}, 'visits', 'Visits', 'VIS', 0, 1, '{}')`;
+    const stock = { id: "list:stock", on: true, dock: true };
+    const bookings = { id: "list:bookings", on: true, dock: true };
+    const visits = { id: "list:visits", on: true, dock: true };
+    const clientsOff = { id: "clients", on: false };
+    const moneyOff = { id: "money", on: false };
+    let current = yield* shell.get(orgId);
+    for (const [label, sections, saved] of [
+      ["both built-ins on, add one", [stock], false],
+      ["Clients off, add one", [clientsOff, stock], true],
+      ["Clients off, add a second", [clientsOff, stock, bookings], false],
+      ["both built-ins off, add a second", [clientsOff, moneyOff, stock, bookings], true],
+      [
+        "both built-ins off, store a third switched off",
+        [clientsOff, moneyOff, stock, bookings, { ...visits, on: false }],
+        true,
+      ],
+      [
+        "both built-ins off, switch on the third",
+        [clientsOff, moneyOff, stock, bookings, visits],
+        false,
+      ],
+      ["turn Clients back on", [moneyOff, stock, bookings], true],
+      [
+        "rename Clients with the dock already overfull",
+        [{ id: "clients", on: true, name: "Donors" }, moneyOff, stock, bookings],
+        true,
+      ],
+      ["turn Money back on", [{ id: "clients", on: true, name: "Donors" }, stock, bookings], true],
+      [
+        "turn a docked list off",
+        [{ id: "clients", on: true, name: "Donors" }, stock, { ...bookings, on: false }],
+        true,
+      ],
+    ] as const) {
+      const result = yield* Effect.result(shell.set(orgId, rhea, current.rev, sections));
+      assert.strictEqual(result._tag, saved ? "Success" : "Failure", label);
+      if (result._tag === "Success") {
+        assert.equal(result.success.rev, current.rev + 1, label);
+        assert.deepInclude(result.success.sections, stock, label);
+        current = result.success;
+      } else {
+        assert.strictEqual(
+          result.failure.message,
+          "The dock holds five places. Turn one off first.",
+          label,
+        );
+      }
+      assert.deepStrictEqual(yield* shell.get(orgId), current, label);
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "keeps a company list as a section after the built-ins, shown only where it reaches",
   () =>
@@ -204,6 +268,7 @@ it.effect(
         "A section can only be set once.",
       );
       const saved = yield* shell.set(orgId, rhea, 0, [
+        { id: "clients", on: false },
         { id: "list:stock", on: true, dock: true, name: "Inventory" } as never,
         { id: "deals", on: false },
         { id: "list:payroll", on: true },
@@ -249,6 +314,7 @@ it.effect(
       const docked = yield* counted(
         KinShell.set(orgId, rhea, 1, [
           { id: "deals", on: false },
+          { id: "clients", on: false },
           { id: "list:stock", on: true, dock: false },
           { id: "list:payroll", on: true },
           { id: "list:bookings", on: true },
