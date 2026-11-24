@@ -192,6 +192,9 @@ describe("kinDeferralCardView", () => {
   it("treats Kin's own note as bookkeeping, but not a card that needs a decision", () => {
     expect(kinDeferralIsBookkeeping(deferral({ onDue: "remind" }))).toBe(true);
     expect(kinDeferralIsBookkeeping(deferral({ phase: "started" }))).toBe(true);
+    expect(kinDeferralIsBookkeeping(deferral({ phase: "started", actions: [] }))).toBe(true);
+    expect(kinDeferralIsBookkeeping(deferral({ actions: ["undo"] }))).toBe(false);
+    expect(kinDeferralIsBookkeeping(deferral({ actions: ["undo"] }, { closedAt: DUE }))).toBe(true);
     expect(kinDeferralIsBookkeeping(deferral({ phase: "asked" }))).toBe(false);
     expect(kinDeferralIsBookkeeping(deferral({ phase: "heads_up" }))).toBe(false);
     expect(kinDeferralIsBookkeeping(deferral({ phase: "asked" }, { closedAt: DUE }))).toBe(true);
