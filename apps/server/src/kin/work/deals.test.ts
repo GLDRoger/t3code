@@ -106,6 +106,19 @@ const seed = Effect.gen(function* () {
   };
 });
 
+const seedSales = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const agent = { _tag: "agent" as const, agentId: KinAgentId.make("sales") };
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+    VALUES (${agent.agentId}, ${orgId}, 'Sales', 'lead', ${ownerId}, ${at})`;
+  yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+    VALUES ('sales-chat', ${orgId}, 'direct', ${`${ownerId}:sales`}, 0, ${at})`;
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+      worker_projects_json, owner_chat_id)
+    VALUES (${agent.agentId}, ${orgId}, 'Sales', 0, 'sales-thread', '{}', '[]', 'sales-chat')`;
+  return agent;
+});
+
 const refusal = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.flip,
@@ -493,16 +506,8 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       const records = yield* KinRecords.KinRecords;
       const { corran } = yield* seed;
-      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id,
-          created_at, retired_at)
-        VALUES ('sales', ${orgId}, 'Sales', 'lead', ${ownerId}, ${at}, NULL)`;
-      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
-        VALUES ('sales-chat', ${orgId}, 'direct', ${`${ownerId}:sales`}, 0, ${at})`;
-      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
-          worker_projects_json, owner_chat_id)
-        VALUES ('sales', ${orgId}, 'Sales', 0, 'sales-thread', '{}', '[]', 'sales-chat')`;
+      const agent = yield* seedSales;
       const person = (personId: KinPersonId) => ({ _tag: "person" as const, personId });
-      const agent = { _tag: "agent" as const, agentId: KinAgentId.make("sales") };
       const deal = (yield* Deals.create([owner], newDeal(corran, "Invented revised quote"))).deal;
       const dealRow = (yield* records.get(orgId, deal.key))!;
       const step = (title: string, holder: KinWorkPrincipal, extra: object = {}) =>
@@ -597,6 +602,68 @@ it.effect(
       );
       assert.strictEqual((yield* records.get(orgId, devs))!.ownerId, devId);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { how: "in its own turn", holder: "person:owner" },
+  { how: "from the owner's app", holder: "agent:sales" },
+  { how: "when the owner asks in person", holder: "agent:sales" },
+] as const)("a deal moves $how after its new keeper handed back a step", ({ how, holder }) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const records = yield* KinRecords.KinRecords;
+    const { corran } = yield* seed;
+    const agent = yield* seedSales;
+    const { deal } = yield* Deals.create(
+      [owner],
+      newDeal(corran, "Invented revised quote", { next: { title: "Send the revised quote" } }),
+    );
+    const step = deal.next!.key;
+    yield* records.update(orgId, OwnerWork.ownerWriter(owner), step, { owner: agent });
+    const back = yield* records.handBack(
+      orgId,
+      { actor: agent, via: "lead" },
+      step,
+      agent,
+      "Waiting on the revised price.",
+    );
+    assert.strictEqual(back.ownerId, ownerId);
+
+    if (how === "from the owner's app") {
+      yield* Deals.update([owner], { orgId, key: deal.key, rev: deal.rev, owner: agent });
+    } else {
+      const wakeupId = "sales-wake";
+      const asked = how === "when the owner asks in person";
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+        VALUES (${wakeupId}, ${orgId}, ${agent.agentId}, 'test', 0, 'running', '[]')`;
+      if (asked) {
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES ('sales-owner', ${orgId}, 'sales-chat', 'person', ${ownerId}, 'owner', ${at})`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('deal-ask', ${orgId}, 'sales-chat', 1, 'human', ${ownerId}, 'sales-owner', 'owner', 'text',
+            ${`Take over ${deal.key}, including its step ${step}.`}, '[]', 'posted', ${at})`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, wakeup_id)
+          VALUES ('deal-ask-event', ${orgId}, ${agent.agentId}, 'chat.message', 'P0',
+            ${JSON.stringify({ chatId: "sales-chat", messageId: "deal-ask" })}, 0, 0, 'claimed', ${wakeupId})`;
+      } else {
+        yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = ${wakeupId}
+          WHERE org_id = ${orgId} AND agent_id = ${agent.agentId} AND tag = 'record.changed'`;
+      }
+      const actor = yield* Deals.agentActor(orgId, {
+        actor: agent,
+        via: "lead",
+        wakeupId,
+        askedBy: asked ? ownerId : null,
+      });
+      yield* sql.withTransaction(Deals.updateAs(actor, deal.key, { owner: agent }));
+    }
+    const movedDeal = (yield* records.get(orgId, deal.key))!;
+    assert.strictEqual(`${movedDeal.ownerKind}:${movedDeal.ownerId}`, "agent:sales");
+    const movedStep = (yield* records.get(orgId, step))!;
+    assert.strictEqual(`${movedStep.ownerKind}:${movedStep.ownerId}`, holder);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect(

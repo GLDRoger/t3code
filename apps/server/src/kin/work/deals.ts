@@ -67,6 +67,7 @@ import {
   byKey,
   endOfDay,
   iso,
+  notBouncedBack,
   ownerZone,
   parseChanges,
   principal,
@@ -459,8 +460,7 @@ export const updateAs = Effect.fn("KinDeals.update")(function* (
     ...(change.sensitive === undefined ? {} : { sensitive: change.sensitive }),
     ...(Object.keys(fields).length === 0 ? {} : { fields }),
   };
-  const steps =
-    change.owner === undefined ? [] : yield* keepersSteps(actor.orgId, row, change.owner);
+  const steps = change.owner === undefined ? [] : yield* keepersSteps(actor, row, change.owner);
   const after =
     Object.keys(patch).length === 0
       ? row
@@ -489,16 +489,23 @@ export const updateAs = Effect.fn("KinDeals.update")(function* (
   return { row: after, notices };
 });
 
-/**
- * The deal's open next steps and promises its keeper holds, which go with it to whoever takes it
- * on, person or agent; one held by anyone else, or kept private, stays.
- */
 const keepersSteps = Effect.fn("KinDeals.keepersSteps")(function* (
-  orgId: KinOrgId,
+  actor: DealActor,
   deal: RecordRow,
   to: KinWorkPrincipal,
 ) {
   if (samePrincipal(to, ownerOf(deal))) return [];
+  const { orgId, writer } = actor;
+  const byOwner =
+    actor.members.length === 0 &&
+    writer.actor._tag === "person" &&
+    writer.via === "owner" &&
+    writer.codingAgentKey === undefined &&
+    writer.wakeupId === undefined;
+  const turn =
+    writer.actor._tag === "agent" && writer.wakeupId !== undefined
+      ? { agentId: writer.actor.agentId, wakeupId: writer.wakeupId }
+      : undefined;
   const sql = yield* SqlClient.SqlClient;
   const keys = yield* sql<{ key: string }>`SELECT r.key FROM kin_record_links l
       JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
@@ -509,7 +516,11 @@ const keepersSteps = Effect.fn("KinDeals.keepersSteps")(function* (
   const steps: Array<RecordRow> = [];
   for (const { key } of keys) {
     const step = yield* byKey(orgId, key).pipe(workFailure);
-    if (step !== undefined) steps.push(step);
+    if (
+      step !== undefined &&
+      (byOwner || (yield* notBouncedBack(orgId, step, to, turn)) === undefined)
+    )
+      steps.push(step);
   }
   return steps;
 });
