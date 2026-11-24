@@ -906,7 +906,7 @@ export const TasksKeyToolkit = Toolkit.make(
   Tool.make("hand_task_back", {
     ...shared,
     description:
-      "Give a task the person holds back to whoever gave it to them, with an optional note.",
+      "Give a task the person holds back to whoever gave it to them, with an optional note. The giver sees the note as from this person’s coding agent.",
     parameters: KinWorkHandBackInput.mapFields(Struct.pick(["key", "note"])),
     success: KinWorkHandBackResult,
   })
@@ -917,7 +917,7 @@ export const TasksKeyToolkit = Toolkit.make(
   Tool.make("nudge_task", {
     ...shared,
     description:
-      "Ask the person holding a task where it stands, at most once per day from this person. The holder sees it came from the caller’s coding agent.",
+      "Ask the person holding a task where it stands, at most once per day from this person. The holder sees it came from this person’s coding agent.",
     parameters: Schema.Struct({ key: TaskKey }),
     success: KinWorkNudgeResult,
   })
@@ -939,7 +939,7 @@ export const TasksKeyToolkit = Toolkit.make(
   Tool.make("add_link", {
     ...shared,
     description:
-      "Add an HTTP or HTTPS link to an entry the person may edit in Kin, with an optional name.",
+      "Add an HTTP or HTTPS link to an entry the person may edit in Kin, with an optional name. Invoices, quotes and other money entries refuse it.",
     parameters: KinWorkLinkAddInput.mapFields(Struct.pick(["key", "url", "name"])),
     success: Schema.Struct({ key: KinRecordKey }),
   })
@@ -965,7 +965,7 @@ export const TasksKeyToolkit = Toolkit.make(
   Tool.make("restore_doc_version", {
     ...shared,
     description:
-      "Bring back an earlier text document version as a new version, as an owner or co-owner. Pass the current version as latest.",
+      "Bring back an earlier text document version as a new version, as an owner or co-owner. Pass the current version as latest; the person says which earlier version.",
     parameters: KinDocRestoreInput.mapFields(Struct.omit(["orgId"])),
     success: Schema.Struct({ key: KinRecordKey, version: Schema.Int }),
   })
@@ -976,7 +976,7 @@ export const TasksKeyToolkit = Toolkit.make(
   Tool.make("restart_watch", {
     ...shared,
     description:
-      "Start watching again from a watch ID the person can open in Kin. Kin can look again right away.",
+      "Start a stopped watch again. The person gives the watch ID from Kin; no tool here lists watches. Kin can look again right away.",
     parameters: KinWatchActInput.mapFields(Struct.omit(["orgId"])),
     success: Schema.Struct({ watchId: Schema.String, state: KinWatchState }),
   })
@@ -987,7 +987,7 @@ export const TasksKeyToolkit = Toolkit.make(
   Tool.make("save_goal", {
     ...shared,
     description:
-      "Create or update a goal as an owner or co-owner. Pass its key and revision to update it, or leave them out to create one.",
+      "Create or update a goal as an owner or co-owner. Pass its key and revision to update it, or leave them out to create one. The same create twice returns the first goal. A goal measured in money comes back with no key: the person updates it in Kin.",
     parameters: KinGoalSaveInput.mapFields(
       ({ orgId: _org, clientRequestId: _request, state: _state, ...fields }) => ({
         ...fields,
@@ -1109,7 +1109,7 @@ export const TasksKeyToolkit = Toolkit.make(
   Tool.make("undo_memory_change", {
     ...shared,
     description:
-      "Undo an agent’s change to a team-readable memory line, using its item ID and the change card’s widget ID. Only an owner or co-owner who owns that agent may do this in Kin.",
+      "Undo an agent’s change to a team-readable memory line. The person gives the line’s item ID and the change card’s widget ID from Kin. Only an owner or co-owner who owns that agent may do this. Once undone the line is theirs alone, so a repeat answers not found.",
     parameters: KinMemoryUndoInput.mapFields(Struct.omit(["orgId"])),
     success: Schema.Struct({ itemId: KinMemoryItemId }),
   })
