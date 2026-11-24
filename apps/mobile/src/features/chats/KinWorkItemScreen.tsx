@@ -22,6 +22,7 @@ import {
   kinBriefBy,
   kinNextStep,
   kinRecordChip,
+  kinTaskBrief,
   kinTaskControls,
   kinTaskActivity,
   kinTaskOrigin,
@@ -108,6 +109,7 @@ import { KIN_ONLY } from "../../lib/kinOnly";
 import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinNotesVersions } from "./KinNotesVersions";
+import { kinNotesVersions } from "@t3tools/client-runtime/kin/kinTemplates";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinAttachments } from "./components/KinMessageBubble";
 import { KinTaskNoteComposer } from "./components/KinTaskNoteComposer";
@@ -492,6 +494,12 @@ function KinWorkItemBody(props: ItemTarget) {
       to: view.handBackTo ?? "",
     });
   const step = kinNextStep({ item: shown, view, names, now, change: act !== null, give: canGive });
+  const brief = kinTaskBrief({
+    view,
+    step,
+    edit: reword !== null,
+    versions: kinNotesVersions(item, names, now).length,
+  });
   const onStep = (id: KinNextStepAct) => {
     if (id === "openWaiting" && step.waiting !== null)
       return navigation.navigate("KinChat", {
@@ -1015,7 +1023,7 @@ function KinWorkItemBody(props: ItemTarget) {
           )}
         </ListSection>
       )}
-      {edit !== null ? null : (
+      {edit !== null || brief === null ? null : (
         <View className="gap-2">
           <ListSection
             title={KIN_TASK_RECORD.brief}
@@ -1034,13 +1042,15 @@ function KinWorkItemBody(props: ItemTarget) {
                 })}
           >
             <View className="gap-2.5 px-4 py-3.5">
-              <Text
-                textRole="body"
-                selectable
-                className={view.notes === null ? "text-foreground-muted" : "text-foreground"}
-              >
-                {view.notes ?? KIN_TASK_RECORD.noBrief}
-              </Text>
+              {brief.words ? (
+                <Text
+                  textRole="body"
+                  selectable
+                  className={view.notes === null ? "text-foreground-muted" : "text-foreground"}
+                >
+                  {view.notes ?? KIN_TASK_RECORD.noBrief}
+                </Text>
+              ) : null}
               {briefBy === null ? null : (
                 <View className="flex-row items-center gap-1.5">
                   {briefBy.avatar === null ? null : (
