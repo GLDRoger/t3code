@@ -126,6 +126,7 @@ async function uploadBill(
 export function KinAddBillsDialog(
   props: KinWorkTarget & {
     readonly onReview: (batchId: string) => void;
+    readonly onOpenKey: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
 ) {
@@ -152,6 +153,10 @@ export function KinAddBillsDialog(
   const review = (batchId: string) => {
     leave();
     props.onReview(batchId);
+  };
+  const openExpense = (key: KinRecordKey) => {
+    leave();
+    props.onOpenKey(key);
   };
   const choose = (files: FileList | null) => {
     if (files === null || busy) return;
@@ -260,10 +265,24 @@ export function KinAddBillsDialog(
                 <AlertDescription>{state.problem}</AlertDescription>
               </Alert>
             )}
-            {outcome === null || outcome.lines.length === 0 ? null : (
+            {outcome === null ||
+            (outcome.lines.length === 0 && outcome.dropped.length === 0) ? null : (
               <div role="status" className="flex flex-col gap-1 text-sm text-muted-foreground">
                 {outcome.lines.map((line) => (
                   <p key={line}>{line}</p>
+                ))}
+                {outcome.dropped.map((one) => (
+                  <p key={one.key}>
+                    {one.text}{" "}
+                    <Button
+                      variant="link"
+                      size="xs"
+                      disabled={busy}
+                      onClick={() => openExpense(one.expense)}
+                    >
+                      {KIN_BILLS.open(one.expense)}
+                    </Button>
+                  </p>
                 ))}
               </div>
             )}

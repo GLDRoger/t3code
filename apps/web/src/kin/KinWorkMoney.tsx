@@ -370,6 +370,10 @@ function MoneyScreen(props: MoneyProps) {
             setAdding(null);
             props.onBills(batchId);
           }}
+          onOpenKey={(key) => {
+            setAdding(null);
+            props.onOpenKey(key);
+          }}
           onClose={() => setAdding(null)}
         />
       ) : null}

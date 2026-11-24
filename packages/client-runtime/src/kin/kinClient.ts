@@ -508,6 +508,13 @@ export function makeKinClient<R, ER>(
       ),
   });
   const kinWorkRefreshOn = createKinWorkRefreshTriggers(runtime, workLive);
+  // Counts this app's adds of bills per company: a bill that came back leaves the batch an earlier
+  // read listed it in, and no expense moves to say so.
+  const billsAddedFamily = Atom.family((_key: string) => Atom.make(0).pipe(Atom.keepAlive));
+  const billsAdded = (target: {
+    readonly environmentId: EnvironmentId;
+    readonly input: { readonly orgId: KinOrgId };
+  }) => billsAddedFamily(`${target.environmentId}:${target.input.orgId}`);
 
   const workFilesRead = createKinRpcCommand(runtime, {
     label: "kin:work:files:read",
@@ -2070,6 +2077,8 @@ export function makeKinClient<R, ER>(
     }),
     /** Its `permissionAtom` says whether this session may see bills added in bulk at all. */
     billsRead,
+    /** Bumped after an add: every list of the company's bills reads again. */
+    billsAdded,
     /** Bills added in bulk: the batches, newest first, or one batch's bills in the order added. */
     bills: createKinQueryAtomFamily(runtime, {
       label: "kin:bills",
@@ -2078,7 +2087,7 @@ export function makeKinClient<R, ER>(
       }),
       staleTimeMs: 30_000,
       // Expenses move as bills are read and kept; the screen follows the batch's card for the rest.
-      refreshTrigger: kinWorkRefreshOn(["expenses"]),
+      refreshTrigger: kinWorkRefreshOn(["expenses"], billsAdded),
     }),
     billsAdd: createKinRpcCommand(runtime, {
       label: "kin:bills:add",

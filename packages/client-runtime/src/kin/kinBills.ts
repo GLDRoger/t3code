@@ -87,6 +87,7 @@ export const KIN_BILLS = {
     readAgain: "Read again",
   },
   open: (key: string) => `Open ${key}`,
+  alreadyDropped: (name: string) => `${name} was added before, and its expense was dropped.`,
   keepAll: "Keep all that read cleanly",
   loadFailed: "Couldn't load these bills",
   none: {
@@ -244,7 +245,8 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
         ? ["addAnyway", "dismiss"]
         : ["addAnyway", "dismiss", "openDuplicate"];
     case "unreadable":
-      return ["byHand", "readAgain", "dismiss"];
+      // A clean read whose amount or date is in question reads the same again.
+      return row.readClean === true ? ["byHand", "dismiss"] : ["byHand", "readAgain", "dismiss"];
     case "kept":
     case "dropped":
       return row.expense === undefined ? [] : ["openExpense"];
@@ -375,7 +377,7 @@ export interface KinBillBatchCardView {
   /** The host's own sentence, the same an older app shows. */
   readonly text: string;
   readonly reading: boolean;
-  /** "12 of 50" while Kin reads; null once done. */
+  /** "12 of 50" while Kin reads; null once done, and while reading waits (`text` says so). */
   readonly progress: string | null;
 }
 
@@ -385,13 +387,16 @@ export function kinBillBatchCardView(widget: KinWidget): KinBillBatchCardView | 
   if (widget.type !== KIN_BILL_BATCH_CARD) return null;
   const card = decodeCard(widget.state);
   if (Option.isNone(card)) return null;
-  const { text, status, done, total, batchId } = card.value;
+  const { text, status, done, total, batchId, pausedUntil } = card.value;
   return {
     orgId: widget.orgId,
     batchId,
     text,
     reading: status === "reading",
-    progress: status === "reading" ? `${Math.min(done, total)} of ${total}` : null,
+    progress:
+      status === "reading" && pausedUntil === undefined
+        ? `${Math.min(done, total)} of ${total}`
+        : null,
   };
 }
 
@@ -553,24 +558,33 @@ export function kinBillUploadText(upload: KinBillUpload) {
 }
 
 /**
- * What the last add came to. It closes onto the batch's list only when every file went in as a
- * new bill; else it stays to say what didn't, with the list one tap away.
+ * What the last add came to, from the host's own lists (its names may be cut short, so nothing is
+ * matched back to a chosen file by name). It closes onto the batch's list only when every file
+ * went in as a new bill; else it stays to say what didn't, with the list one tap away.
  */
 export function kinBillsOutcome<F>(state: KinBillsAdding<F>) {
   const { result } = state;
   if (result === null) return null;
   const failed = state.files.some((file) => file.upload._tag === "failed");
+  const dropped = result.already.flatMap((one) =>
+    one.dropped === true && one.expense !== undefined
+      ? [{ key: one.sha256, text: KIN_BILLS.alreadyDropped(one.name), expense: one.expense }]
+      : [],
+  );
+  const already = result.already.filter((one) => !dropped.some((gone) => gone.key === one.sha256));
   const lines = [
-    result.already.length === 0
+    already.length === 0
       ? null
-      : `Already added before: ${result.already.map((one) => one.name).join(", ")}.`,
+      : `Already added before: ${already.map((one) => one.name).join(", ")}.`,
     ...result.refused.map((one) => `${one.name}: ${one.reason}`),
   ].filter((line) => line !== null);
   const review = result.added.length === 0 ? null : result.batchId;
   return {
     review,
-    close: review !== null && lines.length === 0 && !failed,
+    close: review !== null && lines.length === 0 && dropped.length === 0 && !failed,
     lines,
+    /** Added before, its expense dropped: restored on that expense's own page, never added again. */
+    dropped,
   };
 }
 

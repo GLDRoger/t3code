@@ -94,15 +94,21 @@ function setup() {
   state.rows = [
     bill(1, {
       state: "read",
-      read: { vendor: "Sample Cloud", amount: "49.00", currency: "USD" },
+      read: { vendor: "Sample Cloud", amount: "49", currency: "USD" },
       expense: { key: KinRecordKey.make("EXP-4"), rev: 1, title: "Sample Cloud, Nov 2026" },
     }),
     bill(2, {
       state: "duplicate",
-      read: { vendor: "Tidewater Freight", amount: "2,350", currency: "INR" },
+      read: { vendor: "Tidewater Freight", amount: "2350", currency: "INR" },
       duplicateOf: { key: KinRecordKey.make("EXP-2"), title: "Tidewater Freight, Nov 2026" },
     }),
     bill(3, { state: "unreadable", problem: "Couldn't read: amount, currency" }),
+    bill(4, {
+      state: "unreadable",
+      read: { vendor: "Tidewater Freight", date: "2026-11-03", amount: "1180000", currency: "CAD" },
+      problem: "The amount is far above the rest of Expenses: check it.",
+      readClean: true,
+    }),
   ];
   state.batch = {
     batchId: "b-1",
@@ -121,7 +127,7 @@ function setup() {
 describe("bills added in bulk", () => {
   it("lists every chosen file, and says why one isn't a bill before anything uploads", async () => {
     await using screen = await render(
-      <KinAddBillsDialog {...target} onReview={() => {}} onClose={() => {}} />,
+      <KinAddBillsDialog {...target} onReview={() => {}} onOpenKey={() => {}} onClose={() => {}} />,
     );
     await userEvent.upload(screen.getByLabelText("Photos or PDFs of bills"), [
       new File(["a"], "sample-cloud.jpg", { type: "image/jpeg" }),
@@ -179,6 +185,14 @@ describe("bills added in bulk", () => {
     expect(host.act).toHaveBeenLastCalledWith(expect.objectContaining({ key: SHA(3) }), "dismiss");
     await expect
       .element(screen.getByRole("button", { name: "Keep: bill-3.jpg" }))
+      .not.toBeInTheDocument();
+    // Read cleanly with a figure to check: typed by hand, since reading again reads the same.
+    await expect.element(screen.getByText("CA$1,180,000.00")).toBeVisible();
+    await expect
+      .element(screen.getByRole("button", { name: "Enter by hand: bill-4.jpg" }))
+      .toBeVisible();
+    await expect
+      .element(screen.getByRole("button", { name: "Read again: bill-4.jpg" }))
       .not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Keep all that read cleanly" }));

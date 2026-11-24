@@ -238,7 +238,11 @@ export function makeKinBillsHooks<R, ER>(app: KinHookApp<R, ER>) {
               send: () => add({ environmentId, input: { orgId, attachments, clientRequestId } }),
             });
             if (!outcome.ok) return { ok: false, problem: outcome.problem };
-            refreshBatches(target);
+            // A bill that came back left its old batch: every list of bills reads again.
+            registry.update(
+              kinClient.billsAdded({ environmentId, input: { orgId } }),
+              (n) => n + 1,
+            );
             return { ok: true, value: outcome.value };
           },
         });

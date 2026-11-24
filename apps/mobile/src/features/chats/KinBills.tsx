@@ -152,6 +152,14 @@ function AddBills(props: KinWorkTarget) {
         batch,
       }),
     );
+  const openExpense = (task: string) =>
+    navigation.dispatch(
+      StackActions.replace("KinWorkItem", {
+        environmentId: String(environmentId),
+        orgId: String(props.orgId),
+        task,
+      }),
+    );
   const take = async (from: "library" | "files" | "camera") => {
     setPicking(null);
     if (from === "camera") {
@@ -246,12 +254,26 @@ function AddBills(props: KinWorkTarget) {
           })}
         </ListSection>
       )}
-      {outcome === null || outcome.lines.length === 0 ? null : (
+      {outcome === null || (outcome.lines.length === 0 && outcome.dropped.length === 0) ? null : (
         <View className="gap-1 px-2" accessibilityLiveRegion="polite">
           {outcome.lines.map((line) => (
             <Text key={line} textRole="footnote" className="text-foreground-muted">
               {line}
             </Text>
+          ))}
+          {outcome.dropped.map((one) => (
+            <View key={one.key} className="gap-1">
+              <Text textRole="footnote" className="text-foreground-muted">
+                {one.text}
+              </Text>
+              <Button
+                size="compact"
+                tone="text"
+                label={KIN_BILLS.open(one.expense)}
+                disabled={busy}
+                onPress={() => openExpense(one.expense)}
+              />
+            </View>
           ))}
         </View>
       )}
