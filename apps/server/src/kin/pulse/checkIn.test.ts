@@ -1002,6 +1002,22 @@ describe("pulse check-ins", () => {
     assert.isFalse(
       inHoursAt({ ...dev, timeZone: "Europe/London" }, "Asia/Kolkata", late - 9 * HOUR),
     );
+    // An owner on nights, Monday to Friday 22:00 to 06:00 in Kolkata, as a missed check-in reads
+    // them: Tuesday 02:00, Tuesday 12:00, Friday 23:00, Saturday 03:00, Saturday 23:00.
+    const nights = {
+      timeZone: "Asia/Kolkata",
+      workHours: '{"days":[1,2,3,4,5],"start":"22:00","end":"06:00"}',
+    };
+    assert.deepStrictEqual(
+      [
+        Date.UTC(2026, 10, 16, 20, 30),
+        Date.UTC(2026, 10, 17, 6, 30),
+        Date.UTC(2026, 10, 20, 17, 30),
+        Date.UTC(2026, 10, 20, 21, 30),
+        Date.UTC(2026, 10, 21, 17, 30),
+      ].map((moment) => inHoursAt(nights, "Europe/London", moment)),
+      [true, false, true, true, false],
+    );
   });
 
   it("seeded times move to the host clock, and their days with them across midnight", () => {
