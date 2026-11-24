@@ -436,6 +436,7 @@ function KinBillBatchReview(
   props: KinWorkTarget & {
     readonly batchId: string;
     readonly onOpenKey: (key: KinRecordKey) => void;
+    readonly onOpenBatch: (batchId: string) => void;
   },
 ) {
   const { environmentId } = props;
@@ -463,7 +464,15 @@ function KinBillBatchReview(
     })),
   );
   if (state._tag === "refused") return <KinWorkNotice {...KIN_BILLS.onlyOwner} />;
-  if (state._tag === "gone") return <KinWorkNotice {...KIN_BILLS.gone} />;
+  if (state._tag === "gone")
+    return (
+      <>
+        <p role="status" className="px-2 text-sm text-muted-foreground">
+          {KIN_BILLS.noBatch}
+        </p>
+        <KinBillBatches {...props} />
+      </>
+    );
   if (state._tag === "loading") return <Loading />;
   if (state._tag === "failed")
     return <KinLoadFailed what={KIN_BILLS.loadFailed} cause={state.cause} onRetry={refresh} />;

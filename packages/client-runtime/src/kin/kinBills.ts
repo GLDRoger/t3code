@@ -105,6 +105,8 @@ export const KIN_BILLS = {
     title: "Nothing left here",
     detail: "Every bill added that day was dismissed.",
   },
+  /** Above the batches when a link names one that isn't there. */
+  noBatch: "That batch isn't here.",
   gone: {
     title: "These bills aren't here any more",
     detail: "Open Money to see the bills added since.",
