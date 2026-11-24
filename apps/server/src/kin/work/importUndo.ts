@@ -318,8 +318,7 @@ const decide = Effect.fn("KinImport.undoPlan")(function* (
       contacts: gone.filter((one) => kindOf(one.originKey) === "contact").length,
       deals: gone.filter((one) => kindOf(one.originKey) === "deal").length,
     },
-    restored: restoring.filter((one) => one.fields.length > 0 || one.entry?.notes === true)
-      .length,
+    restored: restoring.filter((one) => one.fields.length > 0 || one.entry?.notes === true).length,
     unvoided: restoring.filter((one) => one.entry?.voided === true).length,
     changed: rows
       .filter((one) => edited.has(one.recordId))
@@ -408,11 +407,12 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
         // The owner's Undo void tap's own method: back to owed, or paid, with its number.
         if (fill.entry?.voided === true)
           yield* unvoidEntry(orgId, writer, fill.key).pipe(
-            Effect.catchTag("KinChatError", (error) =>
-              Effect.sync(() => {
-                refused.push({ key: fill.key, reason: error.message.replace(/\.$/, "") });
-              }),
-            ),
+            Effect.catchTags({
+              KinChatError: (error) =>
+                Effect.sync(() => {
+                  refused.push({ key: fill.key, reason: error.message.replace(/\.$/, "") });
+                }),
+            }),
           );
       }
       const indexed = yield* searchIndexed();

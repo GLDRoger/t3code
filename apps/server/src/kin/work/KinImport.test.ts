@@ -840,10 +840,10 @@ describe("KinImport", () => {
       const applied = yield* imports.apply(orgId, ownerId, file());
       assert.deepStrictEqual({ ...applied, applied: false }, plan);
       const voided = (yield* records.get(orgId, owed.key))!;
-      assert.deepStrictEqual([voided.state, (yield* records.get(orgId, paid.key))!.state], [
-        "dropped",
-        "dropped",
-      ]);
+      assert.deepStrictEqual(
+        [voided.state, (yield* records.get(orgId, paid.key))!.state],
+        ["dropped", "dropped"],
+      );
       assert.deepStrictEqual(yield* counted, [
         before[0]! - 2,
         before[1]! - (owed.amountMinor ?? 0) - (paid.amountMinor ?? 0),
@@ -872,7 +872,8 @@ describe("KinImport", () => {
       assert.deepStrictEqual(undoPlan.kept, [
         {
           key: paid.key,
-          reason: "it changed since the import filled in its notes, so they stay, and it stays void",
+          reason:
+            "it changed since the import filled in its notes, so they stay, and it stays void",
         },
       ]);
       const undone = yield* imports.undo(orgId, ownerId, "duplicates", {
@@ -881,10 +882,16 @@ describe("KinImport", () => {
       });
       assert.deepStrictEqual({ ...undone, applied: false }, undoPlan);
       assert.deepStrictEqual(
-        [(yield* records.get(orgId, owed.key))!.state, (yield* records.get(orgId, paid.key))!.state],
+        [
+          (yield* records.get(orgId, owed.key))!.state,
+          (yield* records.get(orgId, paid.key))!.state,
+        ],
         ["waiting", "dropped"],
       );
-      assert.deepStrictEqual(yield* counted, [before[0]! - 1, before[1]! - (paid.amountMinor ?? 0)]);
+      assert.deepStrictEqual(yield* counted, [
+        before[0]! - 1,
+        before[1]! - (paid.amountMinor ?? 0),
+      ]);
 
       const forced = yield* imports.undo(orgId, ownerId, "duplicates", {
         apply: true,
