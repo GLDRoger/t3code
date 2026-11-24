@@ -124,6 +124,7 @@ const shownCards: Array<string> = [];
 const gate = Layer.unwrap(
   Effect.map(SqlClient.SqlClient, (sql) =>
     Layer.mock(KinLevelGate)({
+      askTo: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
       showCard: (_agent, input) =>
         Effect.sync(() => {
           shownCards.push(String(Reflect.get(input.state as object, "key")));
@@ -338,7 +339,11 @@ const seed = Effect.gen(function* () {
     placeOfSupply: "Karnataka",
     bank: { accountNumber: "000111222333", ifsc: "ABCD0123456" },
   });
-  const work = yield* turn(3, "Invoice Invented Acme for October");
+  // The owner types the client details the lead writes, so they go straight in.
+  const work = yield* turn(
+    3,
+    "Invoice Invented Acme for October: Maharashtra, 4 Invented Lane, Pune 411001. Invented Local is in Karnataka, Invented Abroad in the United Kingdom.",
+  );
   yield* LeadWork.create(scope, {
     sourceEventId: work,
     records: [
