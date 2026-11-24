@@ -141,7 +141,11 @@ export const KinListsInput = Schema.Struct({
   accept: Schema.optional(Schema.Array(Schema.String)),
 });
 export type KinListsInput = typeof KinListsInput.Type;
-export const KinListsResult = Schema.Struct({ lists: Schema.Array(KinListDefinition) });
+export const KinListsResult = Schema.Struct({
+  lists: Schema.Array(KinListDefinition),
+  /** This host takes a name to bill on an invoice or quote; an older host sends nothing. */
+  billToByName: Schema.optional(Schema.Boolean),
+});
 export type KinListsResult = typeof KinListsResult.Type;
 
 /** Company-made lists that keep money or bank rows and are never opened to the team. */

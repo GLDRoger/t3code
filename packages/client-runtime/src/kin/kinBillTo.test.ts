@@ -17,14 +17,18 @@ const cleared = {
 };
 
 describe("an invoice or quote billed by name", () => {
-  it("is offered only by a host whose invoices or quotes list has the name field", () => {
+  it("is offered by a host that says it takes a name, or whose invoices or quotes list has the field", () => {
     const field = (key: string) => ({ key }) as never;
-    expect(kinBillToOffered([])).toBe(false);
-    expect(kinBillToOffered([{ list: "invoices", fields: [field("number"), field("file")] }])).toBe(
+    const withField = [{ list: "quotes", fields: [field("billToName")] }];
+    const without = [{ list: "invoices", fields: [field("number"), field("file")] }];
+    expect(kinBillToOffered({ lists: [], billToByName: true })).toBe(true);
+    expect(kinBillToOffered({ lists: [] })).toBe(false);
+    expect(kinBillToOffered({ lists: without })).toBe(false);
+    expect(kinBillToOffered({ lists: without, billToByName: false })).toBe(false);
+    expect(kinBillToOffered({ lists: withField })).toBe(true);
+    expect(kinBillToOffered({ lists: [{ list: "expenses", fields: [field("billToName")] }] })).toBe(
       false,
     );
-    expect(kinBillToOffered([{ list: "quotes", fields: [field("billToName")] }])).toBe(true);
-    expect(kinBillToOffered([{ list: "expenses", fields: [field("billToName")] }])).toBe(false);
   });
 
   it("clears every detail with the name, and gives a client in the same update", () => {
