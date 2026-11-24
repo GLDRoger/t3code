@@ -17,6 +17,7 @@ import * as OwnerTimeZone from "../triggers/ownerTimeZone.ts";
 import { forkParked } from "../../serverActivation.ts";
 import * as OwnerNotices from "./OwnerNotices.ts";
 import * as Option from "effect/Option";
+import { KinChatService } from "../chat/KinChatService.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -227,6 +228,18 @@ const runner = Layer.effectDiscard(
         Stream.filter((event) => event.type === "chat.cleared"),
         Stream.runForEach((event) => stripQuotes(writer.value, event.orgId)),
         Effect.forkScoped,
+      );
+    // A deferral card's decision tap reads its committed item through this runtime's memory.
+    const chat = yield* Effect.serviceOption(KinChatService);
+    if (Option.isSome(chat))
+      yield* chat.value.attachDeferralItems((orgId, itemId) =>
+        memory.readItemQuietly(orgId, itemId, "triggers").pipe(
+          Effect.asSome,
+          Effect.catchTags({
+            MemoryNotFound: () => Effect.succeedNone,
+            MemoryDuplicateId: () => Effect.succeedNone,
+          }),
+        ),
       );
     if (Option.isSome(writer) && Option.isSome(memoryChanges))
       yield* memoryChanges.value.attachWriter({

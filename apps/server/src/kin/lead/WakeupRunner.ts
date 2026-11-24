@@ -7,9 +7,12 @@ import {
   KinEventId,
   type KinEvent,
   KinLead,
+  KinDeferralCard,
+  type KinMemoryItemId,
   KinMessageId,
   KinOrgId,
   type KinPersonId,
+  type MemoryItemHead,
   KinWakeupId,
   MessageId,
   ModelSelection,
@@ -101,6 +104,18 @@ import { isOrgPaused } from "./orgState.ts";
 import { isEveningCheckIn, isMorningCheckIn } from "../pulse/weekly.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { textLocale } from "../work/companyProfile.ts";
+import * as Repository from "../chat/KinChatRepository.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import {
+  DeferralSnapshot,
+  deferralFingerprint,
+  deferralOpen,
+  makeDeferralRedraw,
+} from "../triggers/deferrals.ts";
+
+const decodeDeferralSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(DeferralSnapshot));
+const decodeOnDue = Schema.decodeUnknownEffect(KinDeferralCard.fields.onDue);
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { HOLD_MS, KinHostCare } from "../host/KinHostCare.ts";
@@ -369,6 +384,8 @@ const make = Effect.gen(function* () {
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const chat = yield* Effect.serviceOption(KinChatService);
   const records = yield* Effect.serviceOption(KinRecords);
+  const chatRepository = yield* Effect.serviceOption(Repository.KinChatRepository);
+  const chatHub = yield* Effect.serviceOption(KinChatHub);
   const scope = yield* Effect.scope;
   const spaceChecks = new Set<KinOrgId>();
   const spaceFolders = Option.map(yield* Effect.serviceOption(ServerConfig), (config) =>
@@ -485,6 +502,60 @@ const make = Effect.gen(function* () {
     ),
   );
   /**
+   * A queued start whose item is gone, closed or changed since its card was drawn: the work it
+   * would read is no longer what was started, so it runs no turn and its card asks again.
+   */
+  const staleStart = Effect.fn("WakeupRunner.staleStart")(function* (
+    orgId: KinOrgId,
+    itemId: KinMemoryItemId,
+  ) {
+    const [run] = yield* sql<{
+      state: string;
+      dueAt: number | null;
+      onDue: string;
+      snapshot: string;
+    }>`SELECT state, due_at AS "dueAt", on_due AS "onDue", snapshot_json AS snapshot
+      FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = ${itemId} ORDER BY item_id`;
+    if (run === undefined || run.state !== "started" || run.dueAt === null) return false;
+    const snapshot = yield* decodeDeferralSnapshot(run.snapshot);
+    if (snapshot.drawn === undefined) return false;
+    const item = yield* memory.readItemQuietly(orgId, itemId, "triggers").pipe(
+      Effect.map((found): { head: MemoryItemHead; body: string } | undefined => found),
+      Effect.catchTags({ MemoryNotFound: () => Effect.undefined }),
+    );
+    if (
+      item !== undefined &&
+      deferralOpen(item.head) &&
+      deferralFingerprint(item) === snapshot.drawn.fingerprint
+    )
+      return false;
+    if (Option.isNone(chatRepository)) return false;
+    const dueAt = run.dueAt;
+    const onDue = yield* decodeOnDue(run.onDue);
+    const now = yield* Clock.currentTimeMillis;
+    const clock = { zone: yield* ownerZone(orgId), locale: yield* textLocale(orgId) };
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const redraw = yield* makeDeferralRedraw;
+        yield* redraw({
+          orgId,
+          itemId,
+          run: { state: "started", dueAt, onDue, snapshot },
+          item,
+          why: ["it changed before the work began"],
+          clock,
+          now,
+        });
+      }).pipe(
+        Effect.provideService(Repository.KinChatRepository, chatRepository.value),
+        Option.isSome(chatHub)
+          ? Effect.provideService(KinChatHub, chatHub.value)
+          : (effect) => effect,
+      ),
+    );
+    return true;
+  });
+  /**
    * A due run of a scheduled task that no longer exists, a question with nothing left to take, or
    * a task an agent was put on and is off now or closed: no prompt shows it (`KinLeadPrompt`), so
    * it starts no turn. A failed read keeps the event for the turn.
@@ -515,6 +586,7 @@ const make = Effect.gen(function* () {
         );
       if (event._tag !== "deferral.due") return false;
       const subject = event.subject;
+      if (subject.type === "deferral") return yield* staleStart(orgId, subject.itemId);
       if (subject.type === "scheduled_task") {
         const schedule = yield* KinSchedules.readSchedule(sql, orgId, subject.itemId);
         if (schedule !== undefined) {

@@ -222,6 +222,18 @@ it.live.each([
         expect((yield* memory.readPromptSnapshot(orgA, prepared.head)).index).toBe(
           yield* memory.readIndex(orgA),
         );
+        // A tap cancelled the deferral: the turn reads it cancelled, and its index leaves it out.
+        const before = yield* memory.readPromptSnapshot(orgA, prepared.head);
+        const deferral = before.items.find((item) => item.id === "def-001");
+        expect(before.index).toContain("def-001");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due,
+            snapshot_json, updated_at)
+          VALUES (${orgA}, 'def-001', 'undone', ${Date.parse(deferral?.due ?? "")}, 'start', '{}', 0)`;
+        const cancelled = yield* memory.readPromptSnapshot(orgA, prepared.head);
+        expect(cancelled.items.find((item) => item.id === "def-001")?.status).toBe("cancelled");
+        expect(cancelled.index).not.toContain("def-001");
+        yield* sql`DELETE FROM kin_deferral_runs WHERE org_id = ${orgA}`;
         expect(
           yield* memory.readPromptSnapshot(orgA, "wrong-head").pipe(Effect.result),
         ).toMatchObject({ _tag: "Failure", failure: { _tag: "MemoryError" } });
