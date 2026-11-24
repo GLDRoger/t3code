@@ -847,6 +847,40 @@ it.effect(
         assert.strictEqual((yield* Effect.flip(cancel(leads.o, itemId))).message, notMine, itemId);
         assert.strictEqual((yield* Effect.flip(move(itemId))).message, notMine, itemId);
       }
+      // Only his own typed words in this chat: not Kin's private copy of his group words, a
+      // message he withdrew, or one his coding agent sent through its key.
+      yield* sql`INSERT INTO kin_handoffs (org_id, message_id, from_agent_id, to_agent_id, event_id,
+          created_at)
+        VALUES (${orgId}, 'private:group-message', ${leads.a}, ${leads.o}, 'private:group-message', 0)`;
+      for (const [index, [cited, clientId, status]] of [
+        ["copied-said", "send:private:group-message", "posted"],
+        ["withdrawn-said", null, "deleted"],
+        ["key-said", "send:key:session:request", "posted"],
+      ].entries()) {
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+            created_at, client_message_id)
+          VALUES (${cited}, ${orgId}, 'owner-chat', ${index + 2}, 'human', ${ownerId},
+            'owner-in-direct', 'owner', 'text', 'Invented: drop it', '[]', ${status}, ${at},
+            ${clientId})`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+          VALUES (${cited}, ${orgId}, ${leads.o}, 'chat.message', 'P0', ${JSON.stringify({
+            _tag: "chat.message",
+            chatId: "owner-chat",
+            messageId: cited,
+            provenance: { _tag: "human", personId: ownerId, memberId: "owner-in-direct" },
+            orgId,
+            agentId: leads.o,
+            eventId: cited,
+            receivedAt: at,
+            dedupeKey: null,
+          })}, 0, 0, 'claimed', ${`wake-${leads.o}`})`;
+        state.sources = [...state.sources, [cited!, state.sources[0]![1]]];
+        assert.strictEqual(
+          (yield* Effect.flip(cancel(leads.o, "def-drop", cited!))).message,
+          notMine,
+        );
+      }
       // Nor through memory_write, on his word or not: marked cancelled or done, or invalidated.
       for (const [change, op] of [
         [{ status: "cancelled" }, "update"],

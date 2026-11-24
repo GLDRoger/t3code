@@ -99,6 +99,7 @@ import { ownerZone } from "../work/recordRows.ts";
 import { pauseTriggers } from "../triggers/KinTriggerStore.ts";
 import { DAY_MS } from "../durations.ts";
 import { keySentSql } from "../chat/keySent.ts";
+import { ownTypedSql } from "./awaySet.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -894,8 +895,14 @@ const make = Effect.gen(function* () {
     )
       return undefined;
     const asker = yield* speaker(ctx, sourceEventId);
+    const [typed] = yield* sql`SELECT 1 FROM kin_events e JOIN kin_messages m
+        ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+        AND m.chat_id = json_extract(e.json, '$.chatId') AND ${sql.literal(ownTypedSql("m"))}
+      WHERE e.org_id = ${ctx.orgId} AND e.event_id = ${sourceEventId}
+        AND json_extract(e.json, '$.origin') IS NULL ORDER BY e.event_id`;
     if (
       asker === undefined ||
+      typed === undefined ||
       !(yield* ownerLevel(ctx.orgId, asker.person).pipe(provideSql)) ||
       (yield* directChatWith(sql, ctx.orgId, asker.person, ctx.agentId)) !== asker.chat
     )

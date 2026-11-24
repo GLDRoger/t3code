@@ -56,6 +56,17 @@ const written = (day: string, today: string) =>
   ).replace(/,/g, "");
 
 /**
+ * Message `m` is a person's own typed text as it stands: posted, not relayed, passed on, key-sent
+ * or Kin's private copy (kin_take_private sends it with its claim's key as its client id).
+ */
+export const ownTypedSql = (m: string) =>
+  `${m}.author_kind = 'human' AND ${m}.kind = 'text' AND ${m}.status = 'posted'
+    AND ${m}.relay_json IS NULL AND ${m}.origin_json IS NULL
+    AND NOT ${keySentSql(`${m}.client_message_id`)}
+    AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = ${m}.org_id
+      AND ${m}.client_message_id = '${storedClientId("send", "")}' || h.message_id)`;
+
+/**
  * The person whose own typed message, in their own direct chat with this agent, is everything
  * that woke the turn; else null. A copy (a hand-off, a relay, a message taken private), a
  * reaction, a tap, a routine, or a second person's word anywhere in the turn makes it null.
@@ -71,12 +82,8 @@ const ownSpeaker = Effect.fn("KinAwaySet.speaker")(function* (
         THEN json_extract(e.json, '$.chatId') END AS "chatId",
       (SELECT m.author_person_id FROM kin_messages m WHERE m.org_id = e.org_id
         AND e.tag = 'chat.message' AND m.message_id = json_extract(e.json, '$.messageId')
-        AND m.chat_id = json_extract(e.json, '$.chatId') AND m.author_kind = 'human'
-        AND m.kind = 'text' AND m.status = 'posted' AND m.relay_json IS NULL
-        AND m.origin_json IS NULL AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
-        -- A copy kin_take_private posts is sent with its claim's key as its client id.
-        AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = m.org_id
-          AND m.client_message_id = ${storedClientId("send", "")} || h.message_id)) AS speaker
+        AND m.chat_id = json_extract(e.json, '$.chatId') AND ${sql.literal(ownTypedSql("m"))})
+        AS speaker
     FROM kin_events e JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId}
       AND e.wakeup_id = ${lead.wakeupId} AND w.status = 'running' AND w.aborted_at IS NULL
