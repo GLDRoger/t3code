@@ -58,7 +58,7 @@ import { askedForSuffix } from "../github/askedFor.ts";
 import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
-import { LAST_RETRY_MS } from "../lead/KinEventQueue.ts";
+import { didVisibleWork, LAST_RETRY_MS, requeueForAudience } from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { activityAt, waitWhileActive } from "../lead/runSilence.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -897,8 +897,8 @@ const make = Effect.gen(function* () {
         wake.withheld ??= result.reason;
         yield* end(null);
         yield* journal(wake, [`Withheld (${result.reason}): ${cutLabel(text)}`]);
-        // Lost, not refused: the owner hears it once and can ask again, now as a shared chat.
-        // An aborted turn says nothing: a fresh wake-up answers instead.
+        // Lost, not refused. An aborted turn says nothing: a fresh wake-up answers instead, and
+        // one that did nothing visible is aborted for that, once; otherwise the chat hears it once.
         if (
           result.moved &&
           !wake.movedNoticed &&
@@ -908,12 +908,25 @@ const make = Effect.gen(function* () {
           ))
         ) {
           wake.movedNoticed = true;
+          if (
+            yield* requeueForAudience(wake).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.orElseSucceed(() => false),
+            )
+          )
+            return;
+          const partway = yield* didVisibleWork(wake).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orElseSucceed(() => false),
+          );
           yield* chat.notice({
             messageId: KinMessageId.make(`kin-audience-moved:${wake.wakeupId}`),
             orgId: wake.orgId,
             chatId: wake.lane.chatId,
             audience: "chat",
-            body: `${wake.lane.leadName} didn't reply: someone joined while it was working. Send it again.`,
+            body: partway
+              ? `${wake.lane.leadName} didn't finish its reply: someone joined while it was working. What it had already done stays; ask again for the answer.`
+              : `${wake.lane.leadName} didn't reply: someone joined while it was working. Send it again.`,
           });
         }
         if (result.reason === "limit")
@@ -1433,7 +1446,7 @@ const make = Effect.gen(function* () {
       // A person told this agent answers them in their own chat never meets silence there.
       const why =
         wake.withheldWhy ?? (wake.withheld === "not_allowed" ? yield* refusedHere(wake) : null);
-      // The chat itself said no (a mute, a group's level), or someone joining already said so.
+      // The chat itself said no (a mute, a group's level), or someone joining was already handled.
       if (wake.movedNoticed || (wake.withheld !== null && why === null)) return;
       // Honest, never faked: whoever asked sees that no reply came, and why Kin held one back.
       yield* chat.notice({

@@ -300,6 +300,59 @@ export class KinEventQueue extends Context.Service<
   }
 >()("t3/kin/lead/KinEventQueue") {}
 
+// Whether running wake-up `w` posted, carded or wrote anything; every subquery stays in its org.
+const DID_VISIBLE_WORK = `(
+  EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = w.org_id AND m.author_kind = 'agent'
+    AND m.author_agent_id = w.agent_id AND m.author_thread_id = w.thread_id
+    AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch'))
+  OR EXISTS (SELECT 1 FROM kin_lead_tool_calls c WHERE c.org_id = w.org_id
+    AND c.wakeup_id = w.wakeup_id AND c.call_key != 'end')
+  OR EXISTS (SELECT 1 FROM kin_pending_actions p WHERE p.org_id = w.org_id
+    AND p.requested_by_agent_id = w.agent_id AND p.requested_by_thread_id = w.thread_id
+    AND p.created_at >= w.started_at))`;
+
+export const didVisibleWork = Effect.fn("KinEventQueue.didVisibleWork")(function* (wake: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: KinWakeupId;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_wakeups w
+    WHERE w.org_id = ${wake.orgId} AND w.wakeup_id = ${wake.wakeupId}
+      AND ${sql.literal(DID_VISIBLE_WORK)}
+    ORDER BY w.wakeup_id LIMIT 1`;
+  return rows.length > 0;
+});
+
+/**
+ * A reply refused because someone joined (`AUDIENCE_MOVED`): when the wake-up did nothing visible
+ * and its events were not moved this way before, marks it aborted, so `finish` hands them to a
+ * fresh wake-up for the chat as it now stands. False when the caller must tell the chat instead.
+ */
+export const requeueForAudience = Effect.fn("KinEventQueue.requeueForAudience")(function* (wake: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: KinWakeupId;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const marked = yield* sql`UPDATE kin_wakeups AS w SET aborted_at = ${now}
+        WHERE w.org_id = ${wake.orgId} AND w.wakeup_id = ${wake.wakeupId} AND w.status = 'running'
+          AND w.aborted_at IS NULL AND NOT ${sql.literal(DID_VISIBLE_WORK)}
+          AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
+            AND e.wakeup_id = w.wakeup_id AND e.state = 'claimed')
+          AND NOT EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
+            AND e.wakeup_id = w.wakeup_id AND e.state = 'claimed'
+            AND json_extract(e.json, '$._audienceMoved') IS 1)
+        RETURNING wakeup_id`;
+      if (marked.length === 0) return false;
+      yield* sql`UPDATE kin_events SET json = json_set(json, '$._audienceMoved', 1)
+        WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId} AND state = 'claimed'`;
+      return true;
+    }),
+  );
+});
+
 /**
  * A failed start that showed nothing retries soon, so the owner's "trying again" is true, and
  * once more a quarter of an hour on, so a provider down for minutes doesn't lose the request.
@@ -937,15 +990,8 @@ const make = Effect.gen(function* () {
             input.status === "completed" || input.status === "interrupted"
               ? [undefined]
               : yield* sql`SELECT 1 FROM kin_wakeups w
-            WHERE w.org_id = ${input.orgId} AND w.wakeup_id = ${input.wakeupId} AND w.status = 'running' AND (
-              EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = w.org_id AND m.author_kind = 'agent'
-                AND m.author_agent_id = w.agent_id AND m.author_thread_id = w.thread_id
-                AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch'))
-              OR EXISTS (SELECT 1 FROM kin_lead_tool_calls c WHERE c.org_id = w.org_id
-                AND c.wakeup_id = w.wakeup_id AND c.call_key != 'end')
-              OR EXISTS (SELECT 1 FROM kin_pending_actions p WHERE p.org_id = w.org_id
-                AND p.requested_by_agent_id = w.agent_id AND p.requested_by_thread_id = w.thread_id
-                AND p.created_at >= w.started_at))
+            WHERE w.org_id = ${input.orgId} AND w.wakeup_id = ${input.wakeupId} AND w.status = 'running'
+              AND ${sql.literal(DID_VISIBLE_WORK)}
             ORDER BY w.wakeup_id LIMIT 1`;
           const closed =
             yield* sql`UPDATE kin_wakeups SET status = ${input.status}, ended_at = ${now}

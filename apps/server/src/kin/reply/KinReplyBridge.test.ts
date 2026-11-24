@@ -1475,24 +1475,62 @@ it.effect("a teammate joining mid-draft sees none of it, and the draft ends unse
   }).pipe(Effect.provide(layer)),
 );
 
-// G01: a co-owner's chat is owner-level, so a reply with money in it posts there.
-it.effect.each(["co_owner", "member"] as const)(
-  "an owner-only reply posts where everyone reading is owner-level, never silently held (%s)",
-  (access) =>
+// G01: a co-owner's chat is owner-level, so a reply with money in it posts there. Someone else
+// joined: a turn that did nothing visible answers again by itself, once; one partway says so.
+it.effect.each([
+  { access: "co_owner", before: "none", expected: ["agent:Draft INV-2 is ready: ₹40,000 + GST."] },
+  { access: "member", before: "none", expected: [] },
+  {
+    access: "member",
+    before: "a tool call",
+    expected: [
+      "system:Ada didn't finish its reply: someone joined while it was working. What it had already done stays; ask again for the answer.",
+    ],
+  },
+  {
+    access: "member",
+    before: "a join already",
+    expected: ["system:Ada didn't reply: someone joined while it was working. Send it again."],
+  },
+] as const)(
+  "an owner-only reply posts where everyone reading is owner-level, never silently held ($access, $before)",
+  ({ access, before, expected }) =>
     Effect.gen(function* () {
-      const { fake, runId, complete, posted, sql, wakeupId } = yield* setup({
+      const { fake, runId, complete, posted, sql, wakeupId, owner, services } = yield* setup({
         lane: "shared-group",
         ask: "Draft the December retainer invoice",
       });
       yield* sql`UPDATE kin_people SET access = ${access} WHERE person_id = 'mate'`;
       yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = ${wakeupId}`;
+      if (before === "a tool call")
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${owner.orgId}, ${wakeupId}, 'item:task-1', 'fixture-hash')`;
+      if (before === "a join already")
+        yield* sql`UPDATE kin_events SET json = json_set(json, '$._audienceMoved', 1) WHERE wakeup_id = ${wakeupId}`;
       fake.items = [text("a", 1, "Draft INV-2 is ready: ₹40,000 + GST.", runId)];
       yield* complete;
       assert.deepStrictEqual(
         (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
-        access === "co_owner"
-          ? ["agent:Draft INV-2 is ready: ₹40,000 + GST."]
-          : ["system:Ada didn't reply: someone joined while it was working. Send it again."],
+        [...expected],
+      );
+      const requeued = access === "member" && before === "none";
+      yield* Context.get(services, KinEventQueue.KinEventQueue).finish({
+        orgId: owner.orgId,
+        wakeupId,
+        status: "completed",
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT state, attempts, wakeup_id AS "wakeupId", json_extract(json, '$._audienceMoved') AS moved
+          FROM kin_events WHERE org_id = ${owner.orgId} ORDER BY event_id`,
+        [
+          requeued
+            ? { state: "queued", attempts: 0, wakeupId: null, moved: 1 }
+            : {
+                state: "done",
+                attempts: 0,
+                wakeupId,
+                moved: before === "a join already" ? 1 : null,
+              },
+        ],
       );
     }).pipe(Effect.provide(layer)),
 );
