@@ -733,91 +733,95 @@ it.effect("an agent changes only a plain message of its own that no one has read
   ),
 );
 
-it.effect("a shared turn changes only what its history shows, and once answered is answered for good", () =>
-  Effect.andThen(
-    TestClock.setTime(IST_MON_0930),
-    Effect.gen(function* () {
-      const { sql, repo, owner, orgId, chatOf, say, wake } = yield* ambermill;
-      const chat = chatOf("finance");
-      const org = KinOrgId.make(orgId);
-      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+it.effect(
+  "a shared turn changes only what its history shows, and once answered is answered for good",
+  () =>
+    Effect.andThen(
+      TestClock.setTime(IST_MON_0930),
+      Effect.gen(function* () {
+        const { sql, repo, owner, orgId, chatOf, say, wake } = yield* ambermill;
+        const chat = chatOf("finance");
+        const org = KinOrgId.make(orgId);
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
         VALUES ('dev', ${orgId}, 'dev', 'Dev Patel', ${at}, 'member')`;
-      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
           owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
         VALUES (${orgId}, 'rec-inv14', 'invoices', 'INV-14', 'Lumen Grove retainer', 'person',
           ${owner.personId}, 'person', 'inv14', 0, 0, '{"number":"INV/26-27/014"}')`;
-      // Written for Rhea alone, before Dev joined.
-      yield* say("finance", "m-old", "Rhea, your salary draft is ready.");
-      const devMember = KinMemberId.make("dev-member");
-      yield* repo.addMember({
-        orgId,
-        chatId: chat,
-        memberId: devMember,
-        principal: { _tag: "person", personId: KinPersonId.make("dev") },
-        role: "member",
-        joinedAt: at,
-        leftAt: null,
-        mutedUntil: null,
-      });
-      yield* say("finance", "m-new", "Lumen Grove still owes INV-14.", "chat");
-      yield* say("finance", "m-later", "The site copy is due Friday.", "chat");
-      const turn = yield* wake("finance");
-      const withdraw = (messageId: string) =>
-        callAs("finance", "message_withdraw", { messageId, why: "No longer so" });
-
-      const built = yield* Effect.flatMap(KinLeadPrompt, (prompt) =>
-        prompt.build({
+        // Written for Rhea alone, before Dev joined.
+        yield* say("finance", "m-old", "Rhea, your salary draft is ready.");
+        const devMember = KinMemberId.make("dev-member");
+        yield* repo.addMember({
           orgId,
-          agentId: KinAgentId.make("finance"),
-          wakeupId: turn,
-          events: [],
-          memoryHead: "fixture",
-          lane: { chatId: chat, mode: "reply" },
-        }),
-      ).pipe(Effect.provide(promptLayer));
-      const listed = unreadSection(built)!;
-      assert.include(listed, "- m-new,");
-      assert.notInclude(listed, "m-old");
-      const old = yield* withdraw("m-old");
-      assert.isFalse(old.ok, old.text);
-      assert.include(old.text, OWN_MESSAGE_REFUSALS.unknown);
+          chatId: chat,
+          memberId: devMember,
+          principal: { _tag: "person", personId: KinPersonId.make("dev") },
+          role: "member",
+          joinedAt: at,
+          leftAt: null,
+          mutedUntil: null,
+        });
+        yield* say("finance", "m-new", "Lumen Grove still owes INV-14.", "chat");
+        yield* say("finance", "m-later", "The site copy is due Friday.", "chat");
+        const turn = yield* wake("finance");
+        const withdraw = (messageId: string) =>
+          callAs("finance", "message_withdraw", { messageId, why: "No longer so" });
 
-      // An invoice Dev can't see changing wakes no review of a chat Dev reads.
-      yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
+        const built = yield* Effect.flatMap(KinLeadPrompt, (prompt) =>
+          prompt.build({
+            orgId,
+            agentId: KinAgentId.make("finance"),
+            wakeupId: turn,
+            events: [],
+            memoryHead: "fixture",
+            lane: { chatId: chat, mode: "reply" },
+          }),
+        ).pipe(Effect.provide(promptLayer));
+        const listed = unreadSection(built)!;
+        assert.include(listed, "- m-new,");
+        assert.notInclude(listed, "m-old");
+        const old = yield* withdraw("m-old");
+        assert.isFalse(old.ok, old.text);
+        assert.include(old.text, OWN_MESSAGE_REFUSALS.unknown);
+
+        // An invoice Dev can't see changing wakes no review of a chat Dev reads.
+        yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
           via, kind, fields_json)
         VALUES (${orgId}, 'rec-inv14', 2, ${IST_MON_0930 + HOUR}, 'person', ${owner.personId},
           'owner', 'updated', '[{"field":"state","from":"waiting","to":"done"}]')`;
-      const due = IST_MON_0930 + REVIEW_UNREAD_MS + HOUR;
-      yield* TestClock.setTime(due);
-      assert.deepStrictEqual(yield* reviewWakes({ orgId: org, at: due }), []);
+        const due = IST_MON_0930 + REVIEW_UNREAD_MS + HOUR;
+        yield* TestClock.setTime(due);
+        assert.deepStrictEqual(yield* reviewWakes({ orgId: org, at: due }), []);
 
-      // Dev sees the withdrawn line, never its words; Rhea sees both.
-      const later = yield* withdraw("m-later");
-      assert.isTrue(later.ok, later.text);
-      const line = Option.getOrThrow(
-        yield* repo.getMessage({ orgId: org, messageId: KinMessageId.make("m-later") }),
-      );
-      const [forDev] = yield* withLinks(
-        org,
-        { _tag: "person", personId: KinPersonId.make("dev") },
-        [line],
-      );
-      assert.isUndefined(forDev!.withdrawn?.said);
-      const [forRhea] = yield* withLinks(org, { _tag: "person", personId: owner.personId }, [line]);
-      assert.strictEqual(forRhea!.withdrawn?.said, "The site copy is due Friday.");
+        // Dev sees the withdrawn line, never its words; Rhea sees both.
+        const later = yield* withdraw("m-later");
+        assert.isTrue(later.ok, later.text);
+        const line = Option.getOrThrow(
+          yield* repo.getMessage({ orgId: org, messageId: KinMessageId.make("m-later") }),
+        );
+        const [forDev] = yield* withLinks(
+          org,
+          { _tag: "person", personId: KinPersonId.make("dev") },
+          [line],
+        );
+        assert.isUndefined(forDev!.withdrawn?.said);
+        const [forRhea] = yield* withLinks(org, { _tag: "person", personId: owner.personId }, [
+          line,
+        ]);
+        assert.strictEqual(forRhea!.withdrawn?.said, "The site copy is due Friday.");
 
-      // Dev answered it, then left: it stays answered.
-      const [mark] = yield* sql<{ seq: number }>`SELECT seq FROM kin_messages
+        // Dev answered it, then left: it stays answered.
+        const [mark] = yield* sql<{ seq: number }>`SELECT seq FROM kin_messages
         WHERE message_id = 'm-new'`;
-      yield* sql`INSERT INTO kin_read_state (chat_id, member_id, org_id, last_read_seq,
+        yield* sql`INSERT INTO kin_read_state (chat_id, member_id, org_id, last_read_seq,
           answered_seq, updated_at)
         VALUES (${chat}, ${devMember}, ${orgId}, ${mark!.seq}, ${mark!.seq}, ${at})`;
-      yield* repo.leaveChat({ orgId, chatId: chat, memberId: devMember, leftAt: at });
-      const left = yield* withdraw("m-new");
-      assert.isFalse(left.ok, left.text);
-      assert.include(left.text, OWN_MESSAGE_REFUSALS.read("Dev Patel"));
-    }).pipe(Effect.provide(layer)),
-  ),
+        yield* repo.leaveChat({ orgId, chatId: chat, memberId: devMember, leftAt: at });
+        const left = yield* withdraw("m-new");
+        assert.isFalse(left.ok, left.text);
+        assert.include(left.text, OWN_MESSAGE_REFUSALS.read("Dev Patel"));
+      }).pipe(Effect.provide(layer)),
+    ),
 );
 
 it.effect("a review wake names only entries matched exactly that its turn may read", () =>
