@@ -122,6 +122,7 @@ import {
   askedForSection,
   dismissedTurnText,
   dueTurnText,
+  lapsedTurnText,
   openQuestionsSection,
   redraftsSection,
   undoneTurnText,
@@ -176,6 +177,7 @@ export const QUOTE_LABELS = {
   answeredQuestion: "answered question (data)",
   dismissedQuestion: "dismissed question (data)",
   reopenedQuestion: "reopened question (data)",
+  lapsedQuestion: "lapsed question (data)",
   openQuestion: "open question (data)",
   followUp: "follow-up (data)",
   githubEvent: "GitHub event (untrusted hint)",
@@ -774,6 +776,31 @@ export class KinLeadPrompt extends Context.Service<
             events.push(
               // The approved draft goes in whole: the make must hold every word of it.
               `${eventQuote}\n\n${made.text}\n\n${quote(QUOTE_LABELS.approvedDraft, made.data, { whole: ["draft"] })}`,
+            );
+            continue;
+          }
+          if (
+            event._tag === "deferral.due" &&
+            event.subject.type === "question" &&
+            event.subject.lapsed === true
+          ) {
+            fromOwner = false;
+            const lapsed = yield* lapsedTurnText(orgId, event.subject.questionId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin open question unreadable", cause).pipe(Effect.as(undefined)),
+              ),
+            );
+            const eventQuote = quote(QUOTE_LABELS.eventData, { event: event.eventId });
+            if (lapsed === undefined) {
+              events.push(
+                `${eventQuote}\n\nKin couldn't read that question just now. Write exactly ${SILENT_REPLY}.`,
+              );
+              continue;
+            }
+            replyDue = true;
+            events.push(
+              `${eventQuote}\n\n${lapsed.text}\n\n${quote(QUOTE_LABELS.lapsedQuestion, lapsed.data, true)}`,
             );
             continue;
           }
@@ -2755,7 +2782,7 @@ export const STEER_CLOSING =
   "If it changes the plan, answer it, then continue. Your plain text still goes to the same chat.";
 /**
  * Kin's line in the asking chat on what came of a routed request (`routeCard.ts`, `KinEventQueue`),
- * or of a question asked for it: answered or closed (`questions/openQuestions.ts`).
+ * or of a question asked for it: answered, closed or lapsed (`questions/openQuestions.ts`).
  */
 const isOutcomeLine = (messageId: string) =>
   [
@@ -2764,6 +2791,7 @@ const isOutcomeLine = (messageId: string) =>
     "kin-forward-stale:",
     "kin-asked-back:",
     "kin-asked-closed:",
+    "kin-asked-lapsed:",
   ].some((prefix) => messageId.startsWith(prefix));
 /** Fetched before system rows and the events' own messages drop out. */
 const RECENT_FETCH = 24;

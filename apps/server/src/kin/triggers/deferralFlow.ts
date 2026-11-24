@@ -642,7 +642,7 @@ const make = Effect.gen(function* () {
           yield* cards.write({ orgId, itemId, state, chatId, now });
         });
         const ask = Effect.fn("KinDeferralFlow.ask")(function* (why: ReadonlyArray<string>) {
-          yield* post(card("asked", askText({ title, dueAt, now, clock, startable, why })));
+          yield* post(card("asked", askText({ dueAt, now, clock, startable, why })));
           yield* setState("asked");
         });
 

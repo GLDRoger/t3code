@@ -75,7 +75,7 @@ import {
 } from "./useKinMoney";
 import { useKinNewExpense, useKinNewInvoice } from "./useKinMoneyAnswers";
 import { useKinWorkChoices, useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
-import { useKinSectionOn } from "./useKinShell";
+import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
 
 const NONE = "none";
 
@@ -317,6 +317,7 @@ export function KinNewInvoiceDialog(
   const saving = useKinNewInvoice(props);
   const { clients, projects, projectClients } = useKinWorkChoices(props, true);
   const clientsOn = useKinSectionOn(props.environmentId, "clients");
+  const named = useKinSectionNamed(props.environmentId);
   const offered = kinBillToOffered(kinListsOf(useKinLists(props, { enabled: true })));
   const india = kinIndiaFields(useKinCompanyCountry(props));
   const projectClient = draft.project === null ? null : (projectClients.get(draft.project) ?? null);
@@ -372,7 +373,7 @@ export function KinNewInvoiceDialog(
         disabled={locked}
         onClick={() => set({ byName: !draft.byName })}
       >
-        {draft.byName ? KIN_BILL_TO.pickClient : KIN_BILL_TO.byName}
+        {draft.byName ? named(KIN_BILL_TO.pickClient) : KIN_BILL_TO.byName}
       </Button>
     </div>
   ) : null;

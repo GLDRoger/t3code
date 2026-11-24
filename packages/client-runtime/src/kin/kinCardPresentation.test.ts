@@ -32,6 +32,7 @@ import {
   kinChoiceDismissible,
   kinChoiceDismissInput,
   kinChoiceUndoneLine,
+  kinChoiceClosedLine,
   createKinHeldPress,
   kinMailCancels,
   kinQuotedInZone,
@@ -573,6 +574,32 @@ describe("choice cards", () => {
       "No answer by Tuesday, so Finance went with “Wait”.",
     ]);
     expect(kinChoiceUndoneLine(taken, null)).toBeNull();
+    // A host's closing words, from an older host too, read as they are.
+    expect(kinChoiceClosedLine(taken, null)).toBe(taken.closedText);
+    // Lapsed unanswered: who was asked and the day, "you" to them; the text for older clients.
+    const lapsedAt = new Date(2026, 10, 19, 19, 30);
+    const lapsed = choice({
+      closedAt: lapsedAt.toISOString(),
+      state: {
+        ...choiceState(),
+        untilAnswered: true,
+        outcome: {
+          title: "Lapsed",
+          text: "Lapsed on Thu 19 Nov: Zoya Sheikh didn't answer.",
+          lapsed: { personId: "zoya", name: "Zoya Sheikh", at: lapsedAt.toISOString() },
+        },
+      },
+    });
+    expect([kinChoicePhase(lapsed, posted), lapsed.closedText]).toEqual([
+      "expired",
+      "Lapsed on Thu 19 Nov: Zoya Sheikh didn't answer.",
+    ]);
+    expect(kinChoiceClosedLine(lapsed, "zoya" as never, new Date(2026, 10, 19, 21))).toBe(
+      "Lapsed today: you didn't answer.",
+    );
+    expect(kinChoiceClosedLine(lapsed, "rhea" as never, new Date(2026, 10, 21))).toBe(
+      `Lapsed on ${formatKinWhen(lapsedAt, "day")}: Zoya Sheikh didn't answer.`,
+    );
     // A taken default's note, undone from Settings: who and when, said to each reader.
     const at = new Date(2026, 10, 10, 9, 52);
     const undone = choice({

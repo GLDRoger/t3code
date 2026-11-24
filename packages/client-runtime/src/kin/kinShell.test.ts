@@ -154,7 +154,50 @@ describe("kinSectionNamed", () => {
     };
     expect(kinSectionNamed(ngos, "Search clients")).toBe("Search NGOs");
     expect(kinSectionNamed(ngos, "New client")).toBe("New NGO");
+    // A singular stored as typed ("Patient") still reads lower case inside a sentence.
+    const typed: KinShell = {
+      rev: 2,
+      sections: [{ id: "clients", on: true, name: "Patients", noun: "Patient" }],
+    };
+    expect(kinSectionNamed(typed, "Pick a client")).toBe("Pick a patient");
+    expect(kinSectionNamed(typed, "Client")).toBe("Patient");
   });
+
+  it.each([
+    ["Client", "Patient", "From Patients", "Client"],
+    ["Pick a client", "Pick a patient", "Pick who it is for", "Pick a client"],
+    [
+      "Bill a client instead",
+      "Bill a patient instead",
+      "Pick from Patients instead",
+      "Bill a client instead",
+    ],
+    [
+      "Use a client instead",
+      "Use a patient instead",
+      "Pick from Patients instead",
+      "Use a client instead",
+    ],
+    ["No client", "No patient", "None", "No client"],
+    ["Any client", "Any patient", "Any", "Any client"],
+    [
+      "Add the client in Clients first.",
+      "Add the patient in Patients first.",
+      "Add them in Patients first.",
+      "Add the client in Clients first.",
+    ],
+  ])(
+    "says %j with the company's singular, reworded without one, and as Kin's",
+    (text, one, none, kins) => {
+      const noSingular: KinShell = {
+        rev: 3,
+        sections: [{ id: "clients", on: true, name: "Patients" }],
+      };
+      expect(kinSectionNamed(patients, text)).toBe(one);
+      expect(kinSectionNamed(noSingular, text)).toBe(none);
+      expect(kinSectionNamed(defaults, text)).toBe(kins);
+    },
+  );
 
   it("changes nothing with Kin's name, or from a host older than sections", () => {
     expect(kinSectionNamed(defaults, "Search clients")).toBe("Search clients");

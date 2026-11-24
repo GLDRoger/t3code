@@ -32,6 +32,7 @@ import {
   kinChoiceUndoneLine,
   KIN_CHOICE_DISMISS_COPY,
   kinChoiceDismissedLine,
+  kinChoiceClosedLine,
   kinChoiceDismissible,
   createKinHeldPress,
   kinDeviceTimers,
@@ -820,7 +821,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         )
       ) : phase === "expired" ? (
         <Text textRole="footnote" className="text-foreground-muted">
-          {choice.closedText}
+          {kinChoiceClosedLine(choice, props.viewerPersonId, new Date(nowMs))}
         </Text>
       ) : !canAct ? (
         <Text textRole="footnote" className="text-foreground-muted">

@@ -1610,7 +1610,7 @@ it.effect(
       yield* records.update(orgId, { ...byOwner, deal: true }, hushDeal.key, {
         owner: { _tag: "person", personId: ownerId },
       });
-      assert.deepStrictEqual(yield* handOver(ownerId, arjunId), {
+      assert.deepStrictEqual((yield* handOver(ownerId, arjunId)).moved, {
         deals: 1,
         prospects: 1,
         clients: 1,

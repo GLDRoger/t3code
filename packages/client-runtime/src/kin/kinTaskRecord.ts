@@ -329,6 +329,24 @@ export function kinNextStep(input: NextStepInput): KinNextStepView {
 }
 
 /**
+ * A task page's Brief section under the next-step card, web and phone: whole, or without its words
+ * where the card quotes them already (keeping its Edit, who wrote it and earlier versions), or not
+ * drawn where that leaves nothing to do.
+ */
+export function kinTaskBrief(input: {
+  readonly view: Pick<KinWorkItemView, "notes">;
+  readonly step: Pick<KinNextStepView, "words">;
+  /** This viewer may edit the brief here. */
+  readonly edit: boolean;
+  /** How many earlier versions of the brief there are. */
+  readonly versions: number;
+}): { readonly words: boolean } | null {
+  const quoted = input.view.notes !== null && input.step.words === input.view.notes;
+  if (!quoted) return { words: true };
+  return input.edit || input.versions > 0 ? { words: false } : null;
+}
+
+/**
  * Where a task page's own controls sit for this viewer: status on the page, the rest in the ••• /
  * More menu; the Brief section carries the page's edit. Each is present only where the host takes
  * that move from this viewer, and Done or Reopen only where the next-step card doesn't offer it.

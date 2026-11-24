@@ -999,7 +999,7 @@ export function KinLinesFields(props: {
               label={KIN_LINES.sac}
               value={line.sac}
               maxLength={8}
-              keyboard="numbers"
+              keyboard="decimal"
               disabled={props.disabled}
               onChangeText={(sac) => set(index, { sac })}
             />
@@ -1007,7 +1007,7 @@ export function KinLinesFields(props: {
           <KinWorkTextField
             label={KIN_LINES.quantity}
             value={line.quantity}
-            keyboard="numbers"
+            keyboard="decimal"
             disabled={props.disabled}
             onChangeText={(quantity) => set(index, { quantity })}
           />

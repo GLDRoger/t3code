@@ -62,6 +62,7 @@ import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
   ASK_CLOSED,
   ASKED,
+  CALL_ARGUMENTS_REFUSAL,
   DRAFTED,
   EDITED_OVER,
   type EditCards,
@@ -462,7 +463,7 @@ type Env =
 const callTool = (
   connection: string,
   tool: string,
-  args: Record<string, unknown>,
+  args: Record<string, unknown> | string,
   as: McpInvocationScope = scope,
 ) =>
   Effect.gen(function* () {
@@ -1518,14 +1519,25 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             approvedWords("kin_connection_call"),
             JSON.stringify(changed),
           );
+        // Sent as text that swallowed its reason, the mail is checked word for word all the same.
+        const approved = { to: ["ravi@lumen.example"], subject: "The redesign", body };
+        const asText = (mail: Record<string, unknown>) =>
+          `${JSON.stringify(mail)},"reason":"Send Meera's approved mail to Ravi"}`;
+        assert.strictEqual(
+          yield* callTool(
+            ACCOUNTS,
+            "mail_send",
+            asText({ ...approved, body: `${body}\n\nSent from Kin` }),
+          ).pipe(
+            Effect.flip,
+            Effect.map((error) => error.message),
+          ),
+          approvedWords("kin_connection_call"),
+        );
         assert.strictEqual(yield* asks, 0);
         const before = cards.length;
         // As approved: its Confirm card is made, and it is the approval's one result.
-        yield* callTool(ACCOUNTS, "mail_send", {
-          to: ["ravi@lumen.example"],
-          subject: "The redesign",
-          body,
-        });
+        yield* callTool(ACCOUNTS, "mail_send", asText(approved));
         assert.lengthOf(cards, before + 1);
         assert.deepInclude(cards.at(-1)!.send, { subject: "The redesign", body });
         const [made] = yield* sql<{ made: string }>`SELECT draft_made_json AS made
@@ -1534,6 +1546,43 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.lengthOf(fake.sent(), 0);
       }),
     ),
+  );
+
+  // A long mail's arguments often come as JSON text, at times with the reason swallowed into it.
+  it.effect(
+    "a mail sent as text makes the same Confirm card as the object; other text is refused",
+    () =>
+      setUp((fake, cards) =>
+        Effect.gen(function* () {
+          yield* connect(fake, "google", ACCOUNTS);
+          yield* wake({ person: owner });
+          const mail = {
+            to: ["kabir@tidewater.example"],
+            subject: "Your single-site start at Eastgate",
+            body: 'Hi Kabir,\nWe start at "Eastgate" {one site},\n"reason": the pilot.\n\nZoya',
+          };
+          const sent = [];
+          for (const args of [
+            mail,
+            JSON.stringify(mail),
+            `${JSON.stringify(mail)},"reason":"Send Zoya's approved pilot mail to Kabir"}`,
+          ]) {
+            yield* callTool(ACCOUNTS, "mail_send", args);
+            sent.push(cards.at(-1)!.send);
+          }
+          assert.lengthOf(cards, 3);
+          assert.deepInclude(sent[0], { subject: mail.subject, body: mail.body });
+          assert.deepStrictEqual(sent[1], sent[0]);
+          assert.deepStrictEqual(sent[2], sent[0]);
+          for (const args of ["[1]", '{"to": oops},"reason":"x"}'])
+            assert.deepStrictEqual(
+              yield* callTool(ACCOUNTS, "mail_send", args).pipe(Effect.flip),
+              new KinChatError({ reason: "invalid_state", message: CALL_ARGUMENTS_REFUSAL }),
+            );
+          assert.lengthOf(cards, 3);
+          assert.lengthOf(fake.sent(), 0);
+        }),
+      ),
   );
 
   // The chat card's Confirm and the Tasks row's "Approve and send" are the same tap.

@@ -98,8 +98,14 @@ export interface KinChoiceCardView {
   /** When an unanswered card stops taking taps; the host refuses later ones. */
   readonly expiresAtMs: number;
   readonly closed: boolean;
-  /** What a closed or expired card says instead of its buttons. */
+  /** What a closed or expired card says instead of its buttons (`kinChoiceClosedLine`). */
   readonly closedText: string;
+  /** Set when nobody answered by its day and it lapsed: who was asked, by name then, and when. */
+  readonly lapsed: {
+    readonly personId: KinPersonId;
+    readonly name: string;
+    readonly atMs: number;
+  } | null;
 }
 
 export type KinChoiceOpen = NonNullable<NonNullable<KinChoiceCardState["outcome"]>["open"]>;
@@ -550,7 +556,32 @@ export function kinChoiceCardView(
         : card.outcome !== undefined
           ? card.outcome.text
           : KIN_CHOICE_EXPIRED_TEXT,
+    lapsed:
+      card.answer !== null || card.outcome?.lapsed === undefined
+        ? null
+        : {
+            personId: card.outcome.lapsed.personId,
+            name: card.outcome.lapsed.name,
+            atMs: Date.parse(card.outcome.lapsed.at),
+          },
   };
+}
+
+/**
+ * What a closed card says instead of its buttons: of a lapsed question, who was asked and the day
+ * ("Lapsed on Mon 16 Nov: you didn't answer."); of any other, the host's own words.
+ */
+export function kinChoiceClosedLine(
+  view: Pick<KinChoiceCardView, "closedText" | "lapsed">,
+  viewerPersonId: KinPersonId | null,
+  now: Date = kinNow(),
+): string {
+  const { lapsed } = view;
+  if (lapsed === null) return view.closedText;
+  const at = new Date(lapsed.atMs);
+  const when =
+    at.toDateString() === now.toDateString() ? "today" : `on ${formatKinWhen(at, "day")}`;
+  return `Lapsed ${when}: ${lapsed.personId === viewerPersonId ? "you" : lapsed.name} didn't answer.`;
 }
 
 export type KinChoicePhase = "open" | "answered" | "expired" | "dismissed";

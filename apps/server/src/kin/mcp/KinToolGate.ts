@@ -19,6 +19,7 @@ import { OWN_MESSAGE_REFUSALS } from "../chat/ownMessages.ts";
 import { effectiveAudience, SHARED_REFUSAL, turnPeople } from "../lead/Audience.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
+import { readCallArguments } from "../connections/callArguments.ts";
 import { PRIVATE_WRITE, privateRefusal } from "../connections/privateTurn.ts";
 import { REVIEW_REFUSAL, reviewToolAllowed } from "../lead/outsideReview.ts";
 import { APPROVED_REFUSAL, approvedRefusal, approvedToolAllowed } from "../lead/approvedDraft.ts";
@@ -300,14 +301,25 @@ const sectionRefusal = (
   return `Row ${index + 1}${named}: ${message} Nothing was saved.`;
 };
 
+/** A connection call as `KinConnections.call` reads it, a reason swallowed into text included. */
+const asCalled = (args: unknown) => {
+  if (!Predicate.isReadonlyObject(args)) return args;
+  const read = readCallArguments(
+    args.arguments,
+    typeof args.reason === "string" ? args.reason : undefined,
+  );
+  return read === undefined ? args : { ...args, ...read };
+};
+
 const referenceFields = new Set(["key", "keys", "entry", "against", "record", "attachments"]);
 const forwardedTools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
 const sectionAdmitted = McpToolPolicy.toolCallRefusal(
-  Effect.succeed((name: string, args: unknown) => {
+  Effect.succeed((name: string, given: unknown) => {
     if (!Object.hasOwn(SECTIONS.tools, name) || forwardedTools.has(name)) return Effect.undefined;
     // Names, nouns and sources are words a company chose, never record references.
     if (name === "company_sections" || name === "numbers_watch") return Effect.undefined;
     const foreign = name === "kin_connection_call";
+    const args = foreign ? asCalled(given) : given;
     const references = new Set<string>();
     const sections = sectionsOfArguments(
       args,

@@ -280,7 +280,7 @@ export const runLeaver = Effect.fn("KinLeaver.run")(function* (
     );
   }
   const to = KinPersonId.make(plan.to.personId);
-  const held = yield* handOverLeaver({
+  const { moved: held, given } = yield* handOverLeaver({
     orgId,
     by: tap.personId,
     from: KinPersonId.make(plan.personId),
@@ -298,17 +298,18 @@ export const runLeaver = Effect.fn("KinLeaver.run")(function* (
   }
   const what = heldText(held);
   const someRecords = recordCount(held) > 0;
-  if (to !== tap.personId) {
+  const tell = to !== tap.personId && heldCount(given) > 0;
+  if (tell) {
     const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
     if (lead !== undefined)
       yield* noticeHolder({
         orgId,
         personId: to,
         agentId: lead.agentId,
-        body: `${byName} gave you what ${gone} looked after: ${what}.${
-          held.watches === 0
+        body: `${byName} gave you what ${gone} looked after: ${heldText(given)}.${
+          given.watches === 0
             ? " Each one's Activity says so."
-            : someRecords
+            : recordCount(given) > 0
               ? " Each record's Activity says so."
               : ""
         }`,
@@ -328,7 +329,7 @@ export const runLeaver = Effect.fn("KinLeaver.run")(function* (
       text:
         to === tap.personId
           ? `You now look after ${what} that ${gone} looked after.${after}`
-          : `${toName} now looks after ${what} that ${gone} looked after, and was told.${after}`,
+          : `${toName} now looks after ${what} that ${gone} looked after${tell ? ", and was told" : ""}.${after}`,
     },
     {
       title,

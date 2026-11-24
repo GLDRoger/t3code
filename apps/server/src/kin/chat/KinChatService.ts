@@ -364,6 +364,8 @@ export class KinChatService extends Context.Service<
       readonly outcome?: KinChoiceOutcome;
       /** The newer card that replaces it: its answer is told on this one too. */
       readonly by?: KinWidgetId;
+      /** Its title once closed, where the open one said it was still open. */
+      readonly question?: string;
     }) => Effect.Effect<void, ServiceError>;
     /**
      * Server-only: a choice card `closeReplaced` closed with an outcome takes taps again, as it was
@@ -3210,12 +3212,12 @@ const make = Effect.gen(function* () {
                   const { item } = event;
                   if (!heardWaiting(item)) return [];
                   const viewer = viewers.find((identity) => identity.orgId === item.orgId);
-                  // A row already sent short is read again once an item waits on its message.
+                  // A row already sent short is read again once an item waits on its message, and
+                  // any row once one resolves: a settled notice leaves its unread count.
                   if (
                     viewer === undefined ||
-                    item.resolvedAt !== null ||
                     item.messageId === null ||
-                    short.get(keyOf(item)) !== item.messageId
+                    (item.resolvedAt === null && short.get(keyOf(item)) !== item.messageId)
                   )
                     return [event];
                   const again = yield* summary(viewer, item.chatId).pipe(
@@ -3594,7 +3596,11 @@ const make = Effect.gen(function* () {
                 replaced: true,
                 ...(input.by === undefined ? {} : { replacedBy: { widgetId: input.by } }),
               }
-            : { ...card, outcome: input.outcome },
+            : {
+                ...card,
+                ...(input.question === undefined ? {} : { question: input.question }),
+                outcome: input.outcome,
+              },
         awaiting: [],
         expectedRevision: existing.value.revision,
         closedAt: at,
