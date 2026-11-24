@@ -71,6 +71,17 @@ const upperFirst = (word: string) => word.charAt(0).toUpperCase() + word.slice(1
 const lowerFirst = (word: string) =>
   /^\p{Lu}\p{Lu}/u.test(word) ? word : word.charAt(0).toLowerCase() + word.slice(1);
 
+/** Kin's words that need one client, as said when a renamed Clients has no singular stored. */
+const NO_SINGULAR: Readonly<Record<string, string>> = {
+  Client: "From Clients",
+  "Pick a client": "Pick who it is for",
+  "Bill a client instead": "Pick from Clients instead",
+  "Use a client instead": "Pick from Clients instead",
+  "No client": "None",
+  "Any client": "Any",
+  "Add the client in Clients first.": "Add them in Clients first.",
+};
+
 /**
  * Kin's own words about the Clients section, said with this company's name for it: "Search
  * clients" reads "Search patients". Only for text that names the section, never a person's or an
@@ -80,14 +91,16 @@ export function kinSectionNamed(shell: KinShell | null | undefined, text: string
   if (!kinSectionRenamed(shell)) return text;
   const plural = kinSectionName(shell, "clients");
   const one = kinSectionNoun(shell, "clients");
-  return text.replace(/\b(Clients|clients|Client|client)\b/g, (word) =>
+  // A singular is never made from the plural: with none stored, these say it without one.
+  const said = held(shell, "clients")?.noun === undefined ? (NO_SINGULAR[text] ?? text) : text;
+  return said.replace(/\b(Clients|clients|Client|client)\b/g, (word) =>
     word === "Clients"
       ? upperFirst(plural)
       : word === "clients"
         ? lowerFirst(plural)
         : word === "Client"
           ? upperFirst(one)
-          : one,
+          : lowerFirst(one),
   );
 }
 
