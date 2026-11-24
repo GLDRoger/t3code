@@ -4,6 +4,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 
+import { isAutomatedNotice } from "../arrivals/classify.ts";
 import { KinGatewayError } from "./McpGateway.ts";
 import {
   firstLines,
@@ -436,18 +437,26 @@ const activity = Effect.fn("KinMail.activity")(function* (
   now: number,
 ) {
   const found = yield* vendor.activity(context, since, cursor, now);
+  const summarize = threadSummary(context.mailbox);
   return {
     mail: found.threads
       .filter((thread) => thread.length > 0)
-      .map(threadSummary(context.mailbox))
-      .map(({ threadId, receivedBy, subject, from, date, unread }) => ({
-        threadId,
-        receivedBy,
-        subject,
-        from,
-        date,
-        unread,
-      })),
+      .map((thread) => {
+        const { threadId, receivedBy, subject, from, date, unread } = summarize(thread);
+        const last = thread.at(-1)!;
+        const automatedNotice =
+          last.automation !== undefined &&
+          isAutomatedNotice(last.subject, last.automation, last.fromAddress);
+        return {
+          threadId,
+          receivedBy,
+          subject,
+          from,
+          date,
+          unread,
+          ...(automatedNotice ? { automatedNotice: true as const } : {}),
+        };
+      }),
     calendar: found.events.map(({ eventId, summary, start, status, updated }) => ({
       eventId,
       summary,

@@ -8,12 +8,15 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
   KinAgentId,
+  KinChatId,
   KinChatError,
+  KinEvent,
   KinMessageId,
   KinOrgId,
   KinPersonId,
   type KinSendTry,
   KinWidgetId,
+  KinWakeupId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -27,6 +30,7 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -36,12 +40,15 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { Scheduler } from "../../scheduling/Scheduler.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
+import * as Chat from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { KinLeadPrompt } from "../lead/LeadPrompt.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { outsideStamp, renderSource } from "../lead/OutsideContent.ts";
+import { outsideStamp, renderSource, stampKey, stampReads } from "../lead/OutsideContent.ts";
+import * as Memory from "../memory/Memory.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { buildPulseSection } from "../pulse/prompt.ts";
 import { fromConnections } from "../pulse/outside.ts";
@@ -98,6 +105,7 @@ const HELLO = "hello@invented-co.example";
 const CLIENT = "Ravi Menon <ravi@lumen.example>";
 const MEERA = "meera@invented-co.example";
 const ARJUN_OWN = "arjun@invented-co.example";
+const decodeStoredEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
 const people = (personId: KinPersonId) => [{ _tag: "person" as const, orgId, personId }];
 
 const scope: McpInvocationScope = {
@@ -867,6 +875,163 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         );
       }),
     ),
+  );
+
+  it.effect(
+    "wakes once for an automated notice with the same outside mark as an unknown sender",
+    () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const hello = yield* connect(fake, "microsoft", HELLO);
+          const accounts = yield* connect(fake, "google", ACCOUNTS);
+          yield* readMail(hello);
+          yield* readMail(accounts);
+          yield* TestClock.adjust("2 minutes");
+          const subject = "Invoice overdue";
+          const from = "Billing Robot <billing@utility.example>";
+          const body = "The November water bill is overdue. Pay by November 20 to keep service.";
+          const extra = fake.deliver({
+            to: HELLO,
+            from: "Billing Robot <billing@another-utility.example>",
+            subject: "Invoice overdue again",
+            body: "Another overdue bill.",
+            headers: { Precedence: "bulk" },
+            at: NOW + 59_000,
+          });
+          const notice = fake.deliver({
+            to: HELLO,
+            from,
+            subject,
+            body,
+            headers: { "Auto-Submitted": "auto-generated" },
+            at: NOW + 60_000,
+          });
+          fake.deliver({
+            to: HELLO,
+            from: "alerts@hosting.example",
+            subject: "Payment failed for your subscription",
+            body: "Hosting renewal payment failed.",
+            at: NOW + 61_000,
+          });
+          fake.deliver({
+            to: HELLO,
+            from: "no-reply@utility.example",
+            subject: "Final notice: disconnection of service",
+            body: "There is a disconnection scheduled.",
+            at: NOW + 62_000,
+          });
+          fake.deliver({
+            to: ACCOUNTS,
+            from: "Billing Robot <billing@gmail-vendor.example>",
+            subject: "Tax notice",
+            body: "A tax notice sent to the accounts mailbox.",
+            headers: { "List-Unsubscribe": "<mailto:stop@gmail-vendor.example>" },
+            at: NOW + 64_000,
+          });
+          for (const name of ["meera", "dev", "zoya", "arjun"])
+            fake.deliver({
+              to: HELLO,
+              from: `${name}@ambermill-leads.example`,
+              subject: `A question from ${name}`,
+              body: "Do you take on small studios?",
+              at: NOW + 65_000,
+            });
+
+          // The independent watch may run first. Header-only notices don't take a person's slot.
+          yield* watchMail();
+          assert.lengthOf(yield* pulseEvents, 3);
+          assert.lengthOf((yield* readMail(hello)).recorded, 8);
+          assert.lengthOf((yield* readMail(accounts)).recorded, 1);
+          assert.deepInclude(
+            (yield* arrivalRows).find(({ messageId }) => messageId === extra.id),
+            {
+              class: "automated_notice",
+              state: "new",
+              agentId: null,
+            },
+          );
+          yield* TestClock.adjust("1 minute");
+          assert.lengthOf((yield* readMail(hello)).recorded, 0);
+          assert.lengthOf((yield* readMail(accounts)).recorded, 0);
+          yield* watchMail();
+          const events = yield* Effect.forEach(
+            yield* sql<{ json: string }>`SELECT json FROM kin_events WHERE org_id = ${orgId}
+            AND tag = 'pulse' ORDER BY queued_at, event_id`,
+            ({ json }) => decodeStoredEvent(json),
+          );
+          const pulses = events.filter((event) => event._tag === "pulse");
+          assert.lengthOf(pulses, 7);
+          assert.deepStrictEqual(
+            pulses
+              .filter((event) => event.arrivalId !== undefined)
+              .map((event) => [event.outside?.[0]?.subject, event.agentId])
+              .sort(),
+            [
+              ["Final notice: disconnection of service", lead],
+              [subject, finance],
+              ["Payment failed for your subscription", lead],
+              ["Tax notice", finance],
+            ].sort(),
+          );
+          const event = pulses.find((pulse) => pulse.outside?.[0]?.subject === subject)!;
+          const unknown = pulses.find((pulse) =>
+            pulse.outside?.[0]?.matched?.includes("new enquiry"),
+          )!;
+          assert.deepInclude(event.outside?.[0], {
+            source: "mail",
+            account: HELLO,
+            who: from,
+            subject,
+            matched: "automated mail whose subject says “overdue”",
+          });
+          const promptLayer = KinLeadPrompt.layer.pipe(
+            Layer.provide(
+              Layer.merge(
+                Chat.layer,
+                Layer.mock(Memory.Memory)({
+                  query: () => Effect.succeed([]),
+                  readPromptSnapshot: () =>
+                    Effect.succeed({ rules: "", index: "", items: [], bodies: new Map() }),
+                }),
+              ),
+            ),
+          );
+          for (const checked of [unknown, event]) {
+            yield* wake({ eventId: checked.eventId }, checked.agentId);
+            const turn = {
+              orgId,
+              agentId: checked.agentId,
+              wakeupId: KinWakeupId.make(`wake-${wakes}`),
+            };
+            const line = checked.outside![0]!;
+            const prompt = yield* Effect.flatMap(KinLeadPrompt, (leadPrompt) =>
+              leadPrompt.build({
+                ...turn,
+                events: [checked],
+                lane: { chatId: KinChatId.make(`${checked.agentId}-owner`), mode: "notice" },
+                memoryHead: "fixture",
+              }),
+            ).pipe(Effect.provide(promptLayer));
+            assert.include(prompt, "> BEGIN QUOTE: event data");
+            assert.include(prompt, line.matched!);
+            assert.notInclude(prompt, body);
+            const mark = (yield* outsideStamp(turn))!;
+            assert.strictEqual(stampKey(mark), "check-in");
+            assert.deepStrictEqual(stampReads(mark), [
+              { k: "check-in", from: line.who!, subject: line.subject! },
+            ]);
+          }
+          assert.strictEqual(event.outside?.[0]?.id.split(":")[0], notice.threadId);
+          const thread = yield* callTool(
+            HELLO,
+            "mail_read_thread",
+            { threadId: notice.threadId },
+            financeScope,
+          );
+          assert.include(thread.quoted ?? "", body);
+        }),
+      ),
   );
 
   it.effect(
