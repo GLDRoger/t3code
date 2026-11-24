@@ -113,12 +113,12 @@ describe("kinNotesVersions", () => {
 });
 
 describe("a doc's private line and its label item", () => {
-  it("say who reads it, and a label only its kind gave is made yours first", () => {
+  it("say who reads it, and a draft a teammate still reads is made yours first", () => {
     const zoya = { reader: { name: "Zoya Sheikh" } };
     const rows = [
       [{ sensitive: false }, null, "Mark as private"],
       [{ sensitive: true }, "Private. Only owners see this.", "Mark as not private"],
-      [{ sensitive: true, kindLabel: {} }, "Private. Only owners see this.", "Mark as private"],
+      [{ sensitive: true, kindLabel: {} }, "Private. Only owners see this.", "Mark as not private"],
       [
         { sensitive: true, kindLabel: zoya },
         "Private. Only owners and Zoya Sheikh, whose draft it is, see this.",
@@ -127,7 +127,7 @@ describe("a doc's private line and its label item", () => {
       [
         { sensitive: true, kindLabel: { reader: { name: "Zoya Sheikh", you: true as const } } },
         "Private. Only you and the owners see this.",
-        "Mark as private",
+        "Mark as not private",
       ],
       [
         { sensitive: false, sensitiveInherited: true as const },

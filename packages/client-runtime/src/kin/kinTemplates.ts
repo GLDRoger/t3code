@@ -170,7 +170,7 @@ export function kinNotesVersions(
 
 /**
  * The doc menu's way to raise or lower its private label; none while its client's label holds it.
- * A label only its kind gave is first made yours, which ends a teammate's read of their draft.
+ * While a teammate still reads it as their draft, the item makes the label yours and ends that read.
  */
 export function kinDocLabelAction(doc: {
   readonly sensitive: boolean;
@@ -178,18 +178,15 @@ export function kinDocLabelAction(doc: {
   readonly kindLabel?: KinDocDetail["kindLabel"];
 }) {
   if (doc.sensitiveInherited === true) return null;
-  if (doc.sensitive && doc.kindLabel !== undefined) {
-    const reader = doc.kindLabel.reader;
+  // Only while a teammate still reads it as their draft: any other kind-only label lowers in one tap.
+  const reader = doc.kindLabel?.reader;
+  if (doc.sensitive && reader !== undefined && reader.you !== true)
     return {
       sensitive: true,
       label: "Mark as private",
       title: "Mark this doc as private?",
-      detail:
-        reader === undefined
-          ? "Only owners will be able to read it, whatever its kind, and agents only in your own chats."
-          : `${reader.name} won't be able to read it any more. Only owners will, and agents only in your own chats.`,
+      detail: `${reader.name} won't be able to read it any more. Only owners will, and agents only in your own chats.`,
     };
-  }
   return doc.sensitive
     ? {
         sensitive: false,
@@ -202,7 +199,7 @@ export function kinDocLabelAction(doc: {
         sensitive: true,
         label: "Mark as private",
         title: "Mark this doc as private?",
-        detail: "Only you will be able to read it, and agents only in your own chats.",
+        detail: "Only owners will be able to read it, and agents only in your own chats.",
       };
 }
 
