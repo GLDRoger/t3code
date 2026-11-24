@@ -366,14 +366,15 @@ export function kinDeferralCardView(
 }
 
 /**
- * Kin's own note that it set something for later. False while the card asks for a decision,
- * which still needs its buttons.
+ * Kin's own note that it set something for later. False while the card is open and asks for a
+ * decision or the host lists a tap on it (the confirm card's Undo), which still need their buttons.
  */
 export function kinDeferralIsBookkeeping(widget: KinWidget): boolean {
   const decoded = decodeDeferral(widget.state);
   if (Option.isNone(decoded)) return false;
-  const { phase } = decoded.value;
-  return !(widget.closedAt === null && (phase === "heads_up" || phase === "asked"));
+  const { phase, actions } = decoded.value;
+  const tappable = phase === "heads_up" || phase === "asked" || (actions?.length ?? 0) > 0;
+  return !(widget.closedAt === null && tappable);
 }
 
 type KinCardTarget = Pick<KinDeferralCardView, "widgetId" | "revision" | "itemId">;
