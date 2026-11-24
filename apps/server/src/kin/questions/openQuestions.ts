@@ -33,7 +33,7 @@ import * as Reach from "../lead/Reach.ts";
 import { stampEvent, storedStamp } from "../lead/OutsideContent.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { signedIn } from "../people/signedIn.ts";
-import { holdFor } from "../triggers/quietHold.ts";
+import { holdFor, validZone } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
 import type * as CardActions from "../widgets/cardActions.ts";
 import {
@@ -130,14 +130,6 @@ const OptionsJson = Schema.fromJsonString(
 );
 const decodeOptions = Schema.decodeUnknownOption(OptionsJson);
 const encodeOptions = Schema.encodeEffect(OptionsJson);
-const validZone = (zone: string) => {
-  try {
-    DateTime.makeZonedUnsafe(0, { timeZone: zone });
-    return true;
-  } catch {
-    return false;
-  }
-};
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
@@ -171,22 +163,16 @@ const toRow = (raw: Raw): QuestionRow => ({
   draft: raw.draft === null ? null : Option.getOrNull(decodeStoredDraft(raw.draft)),
 });
 
-/**
- * The person's clock and working hours: the owner's zone is the company's (`ownerZone`), anyone
- * else's their profile's, else the company's.
- */
+/** The person's clock and working hours: their profile's zone, else the company's (`ownerZone`). */
 export const personClock = Effect.fn("KinQuestions.personClock")(function* (
   orgId: KinOrgId,
   personId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [person] = yield* sql<{ zone: string | null; hours: string | null; owner: number }>`
-    SELECT time_zone AS zone, work_hours_json AS hours, EXISTS (SELECT 1 FROM kin_agents a
-        WHERE a.org_id = p.org_id AND a.owner_person_id = p.person_id) AS owner
+  const [person] = yield* sql<{ zone: string | null; hours: string | null }>`
+    SELECT time_zone AS zone, work_hours_json AS hours
     FROM kin_people p WHERE org_id = ${orgId} AND person_id = ${personId} ORDER BY person_id`;
-  const company = yield* ownerZone(orgId);
-  const own = person?.owner === 1 || person?.zone == null ? undefined : person.zone;
-  const zone = own !== undefined && validZone(own) ? own : company;
+  const zone = validZone(person?.zone) ?? (yield* ownerZone(orgId));
   return { zone, work: storedWorkHours(person?.hours) };
 });
 
