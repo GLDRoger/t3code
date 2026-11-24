@@ -63,6 +63,9 @@ vi.mock(import("./useKinAttention"), async (importOriginal) => ({
   ...(await importOriginal()),
   useKinAttention: (() => null) as never,
   useKinAttentionHandle: (() => ({})) as never,
+  // A host that doesn't stream the open list: the pane composes its rows as before.
+  useKinOpen: (() => undefined) as never,
+  useKinInboxShown: ((state: unknown) => state) as never,
 }));
 vi.mock(import("./useKinOwnerLevel"), async (importOriginal) => ({
   ...(await importOriginal()),

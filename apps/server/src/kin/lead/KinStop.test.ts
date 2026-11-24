@@ -196,6 +196,7 @@ describe("KinStop", () => {
           causeFor: () => Effect.undefined,
           refresh: () => Effect.void,
           checkBackup: () => Effect.void,
+          postOfflineNotice: () => Effect.die("no startup pass here"),
           status: () => Effect.die("not read here"),
           freeSpace: () => Effect.die("not tapped here"),
           backUpNow: () => Effect.die("not tapped here"),

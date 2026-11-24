@@ -195,18 +195,25 @@ export function kinNeedsYou(input: {
         ];
   const waiting = [...input.waiting]
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    .map((item): KinNeedsYouRow => {
-      const row = kinWaitingRowView(item, input.chats, input.agentNames);
-      return {
-        id: `waiting:${item.waitingId}`,
-        kind: "waiting",
-        title: `${row.label} · ${row.chatTitle}`,
-        detail: row.text ?? `Open the chat with ${row.chatTitle}`,
-        late: false,
-        open: { type: "chat", chatId: item.chatId, messageId: item.messageId },
-      };
-    });
+    .map((item) => kinNeedsWaitingRow(item, input.chats, input.agentNames));
   return [...late, ...owed, ...waiting, ...today];
+}
+
+/** What an agent waits on the viewer for, as a Needs-you row that opens its card. */
+export function kinNeedsWaitingRow(
+  item: KinWaitingItem,
+  chats: ReadonlyArray<KinChatSummary>,
+  agentNames: ReadonlyMap<string, string>,
+): KinNeedsYouRow {
+  const row = kinWaitingRowView(item, chats, agentNames);
+  return {
+    id: `waiting:${item.waitingId}`,
+    kind: "waiting",
+    title: `${row.label} · ${row.chatTitle}`,
+    detail: row.text ?? `Open the chat with ${row.chatTitle}`,
+    late: false,
+    open: { type: "chat", chatId: item.chatId, messageId: item.messageId },
+  };
 }
 
 // Tasks' one filter
