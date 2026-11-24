@@ -234,7 +234,7 @@ export const KIN_LISTS = {
     filesFailed: "Couldn't load your files.",
     amountPlaceholder: "Amount, and its currency if it isn't yours",
     retiredField: "No longer used",
-    private: "Private. Only you see this.",
+    private: "Private. Only owners see this.",
     gone: {
       title: "This entry isn't here any more",
       detail: "Open its list to see what there is now.",
@@ -1552,8 +1552,8 @@ export const kinPrincipalValue = (who: KinWorkPrincipal) =>
   who._tag === "agent" ? `agent:${who.agentId}` : `person:${who.personId}`;
 
 /**
- * A private entry's line for an owner-level reader: every owner-level person sees it, so "you"
- * only for the person it is theirs; anyone else is told whose it is. Unknown reader: as before.
+ * A private entry's line for an owner-level reader: every owner-level person sees it, so it never
+ * says "only you"; a reader it isn't theirs is told whose it is.
  */
 export function kinEntryPrivateLine(
   owner: KinWorkPrincipal,

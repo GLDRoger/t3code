@@ -205,7 +205,7 @@ describe("a private entry", () => {
     const names = new Map([[rhea, "Rhea Kapoor"]]);
     const rheas = { _tag: "person", personId: rhea } as const;
     expect(kinEntryPrivateLine(rheas, { people: names, me: rhea })).toBe(
-      "Private. Only you see this.",
+      "Private. Only owners see this.",
     );
     expect(kinEntryPrivateLine(rheas, { people: names, me: meera })).toBe(
       "Private to Rhea Kapoor. Only owners see this.",
@@ -218,9 +218,9 @@ describe("a private entry", () => {
     expect(
       kinEntryPrivateLine({ _tag: "person", personId: meera }, { people: names, me: rhea }),
     ).toBe("Private. Only owners see this.");
-    // Before the host says who is reading: as it always read.
+    // Before the host says who is reading: no name, and still never "you".
     expect(kinEntryPrivateLine(rheas, { people: names, me: null })).toBe(
-      "Private. Only you see this.",
+      "Private. Only owners see this.",
     );
   });
 });
