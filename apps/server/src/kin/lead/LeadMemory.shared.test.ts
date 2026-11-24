@@ -775,6 +775,8 @@ it.effect(
           chat: KinChatId.make("owner-chat"),
           source_event: KinEventId.make(`event-${leads.o}`),
         }),
+        reminder("def-fail"),
+        reminder("def-sched"),
       ];
       yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
       VALUES (${orgId}, 'def-drop', 'armed', ${Date.parse("2026-11-19T10:00:00Z")}, 'remind', '{}', 0)`;
@@ -809,6 +811,15 @@ it.effect(
           item: { ...fields, ...change, body: item.body, sensitive: true },
         }).pipe(Effect.flatMap((input) => service.write(scopeOf(leads.o), input)));
       };
+      const routine = (sourceEventId: string) =>
+        decodeSchedule({
+          what: "Invented: check the payments each Monday",
+          at: "09:00",
+          days: [1],
+          chatId: KinChatId.make("owner-chat"),
+          sourceEventId,
+          replaces: KinMemoryItemId.make("def-sched"),
+        }).pipe(Effect.flatMap((input) => service.schedule(scopeOf(leads.o), input)));
 
       // The owner's search in his own turn names whose each reminder is.
       const found = yield* service.search(scopeOf(leads.o), { kind: "deferral" });
@@ -888,6 +899,8 @@ it.effect(
         [{ invalid_at: "2026-11-10T00:00:00+00:00" }, "invalidate"],
       ] as const)
         assert.strictEqual((yield* Effect.flip(rewrite("def-drop", change, op))).message, notMine);
+      // Nor a routine in its place without his own typed word.
+      assert.strictEqual((yield* Effect.flip(routine("copied-said"))).message, notMine);
       assert.lengthOf(staged, 0);
       assert.lengthOf(yield* told, 0);
 
@@ -904,11 +917,21 @@ it.effect(
       assert.deepStrictEqual(run, [{ state: "undone" }]);
       assert.isString((yield* move("def-move")).itemId);
       yield* cancel(leads.o, "def-drop");
+      // A replacement that is never stored tells Finance nothing.
+      state.stage = (_wakeup, content) =>
+        content?.includes("check the payment on Monday") === true
+          ? Effect.die("the writer refused it")
+          : Effect.void;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(move("def-fail"))));
+      state.stage = (wakeupId) => Effect.sync(() => void staged.push(wakeupId));
+      // A routine in place of his reminder, on his word: Finance is told once.
+      assert.isString((yield* routine("owner-said")).itemId);
       assert.deepStrictEqual(
         (yield* told).map((row) => row.body),
         [
           `${leads.o} cancelled the reminder "Invented def-drop" on Owner's word.`,
           `${leads.o} replaced the reminder "Invented def-move" on Owner's word.`,
+          `${leads.o} replaced the reminder "Invented def-sched" on Owner's word.`,
         ],
       );
       // memory_write still changes a lead's own reminder, and one with no maker, as before.

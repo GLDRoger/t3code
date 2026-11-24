@@ -843,8 +843,8 @@ const make = Effect.gen(function* () {
     other: { readonly chatId: KinChatId; readonly by: string; readonly asker: string },
     head: MemoryItemHead,
     replacing: boolean,
-    now: number,
   ) {
+    const now = yield* Clock.currentTimeMillis;
     const messageId = KinMessageId.make(`kin-reminder-changed:${head.id}`);
     const [told] = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${ctx.orgId}
       AND message_id = ${messageId}`;
@@ -1007,8 +1007,8 @@ const make = Effect.gen(function* () {
             : run === undefined || run.state === "disarmed"
               ? { outcome: already ? ("stopped" as const) : ("not_armed" as const) }
               : { outcome: "handed_off" as const, handedOff: handedOffBy(run) };
-        if (other !== undefined && !already && done.outcome !== "handed_off")
-          yield* tellMaker(ctx, other, head, replacing, now);
+        if (other !== undefined && !already && !replacing && done.outcome !== "handed_off")
+          yield* tellMaker(ctx, other, head, false);
         return done;
       }),
     );
@@ -1024,7 +1024,7 @@ const make = Effect.gen(function* () {
       note: cancelNote(allowed),
     };
     // Already cancelled, or past stopping: a cancel that stopped nothing changes nothing.
-    if (already || allowed.outcome === "handed_off") return cancelled;
+    if (already || allowed.outcome === "handed_off") return { ...cancelled, told: Effect.void };
     const { orgId: _org, path, ...frontMatter } = head;
     yield* receipt(
       ctx,
@@ -1036,7 +1036,9 @@ const make = Effect.gen(function* () {
         sourceEventId,
       }),
     );
-    return cancelled;
+    // A replace's maker is told by its caller, once the new item is staged.
+    const told = replacing && other !== undefined ? tellMaker(ctx, other, head, true) : Effect.void;
+    return { ...cancelled, told };
   });
   /** cancelOwn's rule for a native schedule: its own lead, asked from its chat or the owner chat. */
   const ownSchedule = Effect.fn("LeadMemory.ownSchedule")(function* (
@@ -1579,10 +1581,11 @@ const make = Effect.gen(function* () {
               ? undefined
               : yield* KinSchedules.readSchedule(sql, ctx.orgId, input.replaces);
           // A native schedule is cancelled only once its replacement is staged.
-          if (replaced === undefined) {
-            if (input.replaces !== undefined && !retried)
-              yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true);
-          } else if (replaced.deletedAt === null)
+          const cut =
+            replaced === undefined && input.replaces !== undefined && !retried
+              ? yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true)
+              : undefined;
+          if (replaced !== undefined && replaced.deletedAt === null)
             yield* ownSchedule(ctx, replaced, input.sourceEventId);
           const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
           const fields = {
@@ -1618,6 +1621,7 @@ const make = Effect.gen(function* () {
               sourceEventId: input.sourceEventId,
             }),
           );
+          if (cut !== undefined) yield* cut.told;
           // What it was set up after, as of now: a later read in this turn is not its source.
           yield* snapshotSource(ctx, id).pipe(provideSql);
           if (replaced !== undefined && replaced.deletedAt === null)
@@ -1792,9 +1796,12 @@ const make = Effect.gen(function* () {
             yield* snapshotSource(ctx, replaced.scheduleId, true).pipe(provideSql);
             return { itemId: replaced.scheduleId };
           }
-          if (input.replaces !== undefined)
-            yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true);
+          const cut =
+            input.replaces === undefined
+              ? undefined
+              : yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true);
           yield* receipt(ctx, `schedule:${id}`, { ...input, itemId: id }, save(id, false));
+          if (cut !== undefined) yield* cut.told;
           yield* snapshotSource(ctx, id).pipe(provideSql);
           return { itemId: id };
         }),
@@ -1809,11 +1816,14 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const { ctx } = yield* turn(scope);
           const schedule = yield* KinSchedules.readSchedule(sql, ctx.orgId, input.itemId);
-          if (schedule === undefined)
-            return {
-              itemId: input.itemId,
-              ...(yield* cancelOwn(ctx, input.itemId, input.sourceEventId)),
-            };
+          if (schedule === undefined) {
+            const { told: _told, ...cancelled } = yield* cancelOwn(
+              ctx,
+              input.itemId,
+              input.sourceEventId,
+            );
+            return { itemId: input.itemId, ...cancelled };
+          }
           yield* ownSchedule(ctx, schedule, input.sourceEventId, true);
           // Read first: the cancel deletes the native task, and Kin's tick then its row.
           const task = yield* KinSchedules.readNativeTask(sql, schedule.taskId);
