@@ -2345,6 +2345,14 @@ describe("KinChatService", () => {
         const asked = Option.getOrThrow(yield* repo.getMessage(card));
         assert.strictEqual(yield* mark, asked.seq);
         assert.strictEqual(yield* repo.unreadCount(member), 1);
+        // The chat's first backlog carries the viewer's own mark, never another member's.
+        const agentMember = (yield* repo.listMembers(chat)).find(
+          (row) => row.principal._tag === "agent",
+        )!;
+        yield* repo.markRead({ ...agentMember, seq: last.seq, updatedAt: asked.createdAt });
+        const opening = yield* Stream.runHead(service.subscribe(person, { chatId: chat.chatId }));
+        const backlog = Option.getOrThrow(opening);
+        assert.strictEqual(backlog._tag === "backlog" ? backlog.readSeq : null, asked.seq);
         // A reaction on an older message leaves the mark where it is.
         yield* service.react(person, { messageId: first.messageId, emoji: "❤️", on: true });
         assert.strictEqual(yield* mark, asked.seq);

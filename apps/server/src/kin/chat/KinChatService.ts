@@ -2884,6 +2884,10 @@ const make = Effect.gen(function* () {
                 ...(Option.isSome(presence)
                   ? yield* presence.value.snapshot(identity.orgId, input.chatId)
                   : {}),
+                readSeq: Option.match(yield* repo.getReadState(member), {
+                  onNone: () => 0,
+                  onSome: (read) => read.lastReadSeq,
+                }),
               };
           const messageChanges = new Map<string, number>();
           const revisions = new Map(
