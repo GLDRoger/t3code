@@ -66,6 +66,8 @@ export type AskInput = typeof AskInput.Type & {
   readonly whileOpen?: string;
   /** A sent-up draft's own words, which `detail` also carries: the card renders them. */
   readonly draft?: string;
+  /** A long draft's doc and the version that went up: `draft` is its opening. */
+  readonly draftDoc?: KinChoiceCardState["draftDoc"];
   /** An agent's open question: it takes taps until the question closes. */
   readonly untilAnswered?: true;
   /**
@@ -112,7 +114,7 @@ export const readAs = (label: string) =>
     .trim()
     .toLowerCase();
 
-const DETAIL_MAX = 2000;
+export const DETAIL_MAX = 2000;
 /**
  * An option that runs an action shows the server's button and line and has no yes/no kind, so no
  * reaction can pick it. The lines are in `detail` too, for clients that don't read `action`.
@@ -145,6 +147,7 @@ export const choiceCardState = (input: AskInput): KinChoiceCardState => {
     ...(input.askedBy === undefined ? {} : { askedBy: input.askedBy }),
     ...(input.whileOpen === undefined ? {} : { whileOpen: input.whileOpen }),
     ...(input.draft === undefined ? {} : { draft: input.draft }),
+    ...(input.draftDoc === undefined ? {} : { draftDoc: input.draftDoc }),
     ...(input.untilAnswered === true ? { untilAnswered: true as const } : {}),
     answer: null,
   };

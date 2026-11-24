@@ -30,6 +30,7 @@ import { askSlip, dayIn, linesBeforeTax } from "./money.ts";
 import { cashEstimate, cashPosition, outlook as outlookOf } from "./moneyAnswers.ts";
 import type { AlertBalance } from "./statements/bankAlerts.ts";
 import { KinRecords, requestHashOf } from "./KinRecords.ts";
+import { answeredByHand } from "./bills.ts";
 import { dueMillis, ownFiles, ownerWriter, theOwner } from "./ownerWork.ts";
 import { iso, notFound, type RecordRow, workFailure } from "./recordRows.ts";
 import { matchPartner as matchPartnerOf } from "./partnersOwed.ts";
@@ -488,9 +489,13 @@ export const newExpense = Effect.fn("KinMoneyAnswers.rpc.newExpense")(function* 
     ...(category === undefined ? {} : { category }),
     ...(Object.keys(fields).length === 0 ? {} : { fields }),
   });
-  // The files are checked and kept in one transaction, so none slips in between the two.
+  // The files are checked and kept in one transaction, so none slips in between the two. A
+  // bill's file answers that bill (`bills.ts`).
   const { row } = yield* sql.withTransaction(
-    ownFiles(person, "{}", fields).pipe(Effect.andThen(create)),
+    ownFiles(person, "{}", fields).pipe(
+      Effect.andThen(create),
+      Effect.tap(({ row }) => answeredByHand(input.orgId, row.recordId, input.receipt ?? [])),
+    ),
   );
   return { expense: row.key };
 }, workFailure);

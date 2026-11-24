@@ -11,6 +11,8 @@ import {
   KinMessageId,
   type KinOrgId,
   KinPersonId,
+  KinRecordId,
+  KinRecordKey,
   type KinWidget,
   KinWidgetId,
   ThreadId,
@@ -71,8 +73,11 @@ import {
   decodeStoredDraft,
   DRAFT_OPTIONS,
   draftDetail,
+  draftDocOf,
+  draftMoved,
   DRAFT_WORDS,
   type StoredDraft,
+  wholeDraft,
   writtenOnApprove,
 } from "./approval.ts";
 import { keySentSql } from "../chat/keySent.ts";
@@ -427,11 +432,12 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
     readonly via?: "tap" | "reaction";
     readonly now: number;
   },
-  chat: Pick<KinChatService["Service"], "notice" | "setDocCardChangesFirst">,
+  chat: Pick<KinChatService["Service"], "notice" | "setDocCardChangesFirst" | "setDocCardChanged">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const open = sql`org_id = ${input.orgId} AND person_id = ${input.personId} AND state = 'open'
     AND (widget_id = ${input.widgetId} OR raise_widget_id = ${input.widgetId})`;
+  // A reaction never answers a draft, nor finds one moved: only a tap does.
   if (input.via === "reaction") {
     const [draft] = yield* sql`SELECT 1 FROM kin_questions WHERE ${open} AND draft_json IS NOT NULL
       ORDER BY question_id LIMIT 1`;
@@ -440,6 +446,10 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
         reason: "not_allowed",
         message: "Tap Approve or Changes first on the card.",
       });
+  }
+  if (input.approves === true) {
+    const moved = yield* approvedTooLate(input, chat);
+    if (moved !== undefined) return moved;
   }
   const moved = yield* sql<{ questionId: string }>`UPDATE kin_questions SET state = 'answered',
       answer = ${input.label}, closed_at = ${input.now}
@@ -501,6 +511,80 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
   return { title: "Answered", text: `Sent to ${asker}.` } satisfies KinChoiceOutcome;
 });
 
+/** The title of an Approve that found its long draft changed since it went up. */
+const DRAFT_MOVED = "Not approved";
+
+/**
+ * An Approve on a long draft whose doc is gone, deleted or past the version that went up: the
+ * question closes unapproved, nothing goes back, and the teammate's cards for it may send it again.
+ */
+const approvedTooLate = Effect.fn("KinQuestions.approvedTooLate")(function* (
+  input: {
+    readonly orgId: KinOrgId;
+    readonly widgetId: string;
+    readonly personId: string;
+    readonly now: number;
+  },
+  chat: Pick<KinChatService["Service"], "setDocCardChanged">,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [asked] = yield* sql<{ questionId: string }>`SELECT question_id AS "questionId"
+    FROM kin_questions WHERE org_id = ${input.orgId} AND person_id = ${input.personId}
+      AND state = 'open' AND draft_json IS NOT NULL
+      AND (widget_id = ${input.widgetId} OR raise_widget_id = ${input.widgetId})
+    ORDER BY question_id LIMIT 1`;
+  const row = asked === undefined ? undefined : yield* readQuestion(input.orgId, asked.questionId);
+  if (row?.draft == null || !(yield* draftMoved(input.orgId, row.draft))) return undefined;
+  yield* sql`UPDATE kin_questions SET state = 'withdrawn', closed_at = ${input.now}
+    WHERE org_id = ${input.orgId} AND question_id = ${row.questionId} AND state = 'open'`;
+  // Sent again, it goes up as the doc is now: its title and client too (`draftCards.sendUp`).
+  const [doc] =
+    row.draft.doc === undefined
+      ? []
+      : yield* sql<{
+          title: string;
+          clientId: string | null;
+          clientKey: string | null;
+          clientTitle: string | null;
+        }>`SELECT r.title, c.record_id AS "clientId", c.key AS "clientKey",
+          c.title AS "clientTitle"
+        FROM kin_records r LEFT JOIN kin_records c ON c.org_id = r.org_id
+          AND c.record_id = r.party_id AND c.register_id = 'clients'
+        WHERE r.org_id = ${input.orgId} AND r.record_id = ${row.draft.doc.recordId}`;
+  if (row.forChatId !== null)
+    for (const { widgetId } of yield* draftCardsAbout(
+      input.orgId,
+      row.forChatId,
+      row.about,
+      "sent",
+    ))
+      yield* chat.setDocCardChanged({
+        orgId: input.orgId,
+        widgetId,
+        changed: { at: iso(input.now) },
+        ...(doc === undefined
+          ? {}
+          : {
+              now: {
+                title: doc.title,
+                client:
+                  doc.clientId === null || doc.clientKey === null || doc.clientTitle === null
+                    ? undefined
+                    : {
+                        recordId: KinRecordId.make(doc.clientId),
+                        key: KinRecordKey.make(doc.clientKey),
+                        title: doc.clientTitle,
+                      },
+              },
+            }),
+      });
+  return {
+    title: DRAFT_MOVED,
+    text: `The draft changed after it was sent, so nothing was approved. Ask ${row.draft.names.asker} to send it again.`,
+    refused: true,
+  } satisfies KinChoiceOutcome;
+});
+
 /** A sent-up draft answered Changes first: by the owner's tap, or taken from her words. */
 const isChangesFirst = (row: QuestionRow, said: string | null) =>
   row.draft !== null && said === CHANGES_FIRST;
@@ -556,16 +640,19 @@ const approveDraft = Effect.fn("KinQuestions.approveDraft")(function* (
       AND draft_json IS NOT NULL AND approved_at IS NULL
     RETURNING question_id`;
   if (marked.length === 0) return undefined;
-  if (writtenOnApprove(draft.kind))
+  if (writtenOnApprove(draft.kind)) {
+    const whole = yield* wholeDraft(orgId, draft);
+    if (whole === undefined) return yield* notSentBack;
     return {
       _tag: "written" as const,
       made: yield* writeApproved(orgId, {
         questionId: row.questionId,
         agentId: row.agentId,
         ownerChatId: agent.ownerChatId,
-        draft,
+        draft: whole,
       }),
     };
+  }
   const event = yield* decodeEvent({
     _tag: "deferral.due",
     eventId: approvalEventId(orgId, row.questionId),
@@ -1545,7 +1632,7 @@ const postHeldCard = Effect.fn("KinQuestions.postHeldCard")(function* (
       question: row.question,
       detail: card.detail,
       ...(card.askedBy === undefined ? {} : { askedBy: card.askedBy }),
-      ...(row.draft === null ? {} : { draft: row.draft.text }),
+      ...(row.draft === null ? {} : { draft: row.draft.text, ...draftDocOf(row.draft) }),
       options: card.options,
       untilAnswered: true,
       chatId: row.chatId,
@@ -1864,7 +1951,9 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
           ? said
           : `${by}\n${said}`,
     ...(by === undefined ? {} : { askedBy: by }),
-    ...(row.draft === null ? { whileOpen: said } : { draft: row.draft.text }),
+    ...(row.draft === null
+      ? { whileOpen: said }
+      : { draft: row.draft.text, ...draftDocOf(row.draft) }),
     options:
       row.draft !== null
         ? DRAFT_OPTIONS.map((one) => ({ ...one }))

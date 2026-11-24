@@ -560,6 +560,20 @@ describe("KinChatService", () => {
         for (const id of ids) assert.strictEqual(yield* read(reader, id), expected, id);
       assert.strictEqual(yield* read(session, ownersFile, Option.none()), "refused");
 
+      // A bill's file opens for the owner level whoever added it (`work/bills.ts`), never a member.
+      for (const [file, chatId, by] of [
+        [membersFile, own.chatId, memberId],
+        [ownersFile, chat.chatId, person.personId],
+      ] as const)
+        yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
+            name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
+            widget_id, added_by_person_id, added_at, state)
+          VALUES (${person.orgId}, ${by.padEnd(64, "0")}, ${file}, ${chatId},
+            'm', 'bill.png', 'image', 'image/png', 8, 'b', 0, ${agentId}, ${chatId}, 'w', ${by}, 0,
+            'read')`;
+      assert.strictEqual(yield* read(session, membersFile), "served");
+      assert.strictEqual(yield* read(memberSession, ownersFile), "refused");
+
       yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE chat_id = ${own.chatId} AND person_id = ${memberId}`;
       assert.strictEqual(yield* read(memberSession, membersFile), "refused");
 

@@ -172,9 +172,17 @@ import {
   teamPairs,
   viewerOfPeople,
   viewReadsWhole,
+  viewGuard,
   viewSees,
   viewVisible,
 } from "./teamView.ts";
+import {
+  heldBack,
+  type PrintedField,
+  PRINTED_FIELDS,
+  propose,
+  unconfirmedLines,
+} from "./unconfirmedFacts.ts";
 import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
 import { leadNamer, shownName, type ToolNamer } from "./toolNames.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
@@ -183,6 +191,7 @@ import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { DAY_MS } from "../durations.ts";
 import { withArticle } from "../article.ts";
+import { NOTES_MAX } from "../textLimits.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -206,7 +215,7 @@ const Steps = Schema.Array(
   Schema.Struct({ title: KinToolText(200), done: Schema.optional(Schema.Boolean) }),
 ).check(Schema.isMaxLength(30));
 const Title = KinToolText(280);
-const Notes = Schema.String.check(Schema.isMaxLength(4_000));
+const Notes = Schema.String.check(Schema.isMaxLength(NOTES_MAX));
 const List = KinListId.annotate({
   description:
     "work (default), clients, contacts, projects, milestones, goals, or a list defined with list_define, such as expenses, invoices or dates.",
@@ -251,6 +260,10 @@ const Audience = KinToolText(
   "A campaign's (a project with category campaign): the tag whose contacts are its list.",
 );
 const Terms = KinToolText(4_000);
+const HeardFrom = KinToolText(
+  200,
+  'Where a client\'s name, address, tax number, place of supply or terms came from when no person typed it here ("their mail of 3 Nov"); whoever confirms it sees this.',
+);
 const Repos = Schema.Array(KinRepoName).check(Schema.isMaxLength(20));
 
 export const QueryInput = Schema.Struct({
@@ -440,6 +453,8 @@ export const GetResult = Schema.Struct({
   ...Row.fields,
   /** A goal's progress, counted now. */
   progress: Schema.optional(Schema.String),
+  /** A client's printed details an agent proposed that wait for a person's tap. */
+  unconfirmed: Schema.optional(Schema.Array(Schema.String)),
   notes: Schema.String,
   assignedBy: Schema.optional(Schema.String),
   links: Schema.Array(
@@ -589,6 +604,7 @@ const CreateRow = Schema.Struct({
   address: Schema.optional(Address),
   gstin: Schema.optional(TaxId),
   placeOfSupply: Schema.optional(TaxId),
+  heardFrom: Schema.optional(HeardFrom),
   amount: Schema.optional(Amount),
   currency: Schema.optional(Currency),
   date: Schema.optional(Day),
@@ -661,6 +677,8 @@ export const CreateResult = Schema.Struct({
       /** Other contacts with the same email. */
       sameEmail: Schema.optional(Schema.Array(Named)),
       notWoken: Schema.optional(Schema.String),
+      /** A printed detail kept unconfirmed for a person's tap (`unconfirmedFacts.ts`). */
+      unconfirmed: Schema.optional(Schema.String),
     }),
   ),
 });
@@ -697,6 +715,7 @@ export const UpdateInput = Schema.Struct({
   address: Schema.optional(Schema.NullOr(Address)),
   gstin: Schema.optional(Schema.NullOr(TaxId)),
   placeOfSupply: Schema.optional(Schema.NullOr(TaxId)),
+  heardFrom: Schema.optional(HeardFrom),
   amount: Schema.optional(Schema.NullOr(Amount)),
   currency: Schema.optional(Currency),
   date: Schema.optional(Day),
@@ -741,6 +760,8 @@ const Updated = Schema.Struct({
   notesKept: Schema.optional(Schema.String),
   /** Agents put on a closed task: saved there, and never woken for it (`KinRecords.update`). */
   notWoken: Schema.optional(Schema.String),
+  /** A printed detail kept unconfirmed for a person's tap (`unconfirmedFacts.ts`). */
+  unconfirmed: Schema.optional(Schema.String),
   openSteps: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -770,6 +791,7 @@ export const UpdateResult = Schema.Struct({
   projectLeft: Updated.fields.projectLeft,
   notesKept: Updated.fields.notesKept,
   notWoken: Updated.fields.notWoken,
+  unconfirmed: Updated.fields.unconfirmed,
   openSteps: Updated.fields.openSteps,
   entries: Schema.optional(Schema.Array(Updated)),
 });
@@ -1633,6 +1655,40 @@ const fieldsFrom = (row: {
       ] as const
     ).flatMap((key) => (row[key] === undefined ? [] : [[key, row[key]]])),
   ) as Record<string, string | ReadonlyArray<string> | null>;
+
+/** A client's printed details a write sets, beside what it holds; a new client's name is its own. */
+const printedAsked = (
+  row: { readonly title?: string | undefined } & Partial<
+    Record<Exclude<PrintedField, "title">, string | null | undefined>
+  >,
+  before: RecordRow | undefined,
+) => {
+  const stored = before === undefined ? {} : parseFields(before.fieldsJson);
+  return PRINTED_FIELDS.flatMap((field) => {
+    const value = row[field];
+    if (value === undefined || (field === "title" && before === undefined)) return [];
+    const was = field === "title" ? (before?.title ?? null) : fieldText(stored, field);
+    return [{ field, value, before: was }];
+  });
+};
+
+/** A write without what waits for a person's tap (`unconfirmedFacts.ts`). */
+const withoutHeld = <P extends { readonly title?: string; readonly fields?: object }>(
+  patch: P,
+  held: ReadonlyArray<{ readonly field: string }>,
+): P => {
+  const out = new Set(held.map((one) => one.field));
+  const { title, fields, ...rest } = patch;
+  const left =
+    fields === undefined
+      ? {}
+      : Object.fromEntries(Object.entries(fields).filter(([key]) => !out.has(key)));
+  return {
+    ...rest,
+    ...(title === undefined || out.has("title") ? {} : { title }),
+    ...(Object.keys(left).length === 0 ? {} : { fields: left }),
+  } as P;
+};
 
 /**
  * Where a client came from, a client's or contact's tags and a campaign's audience, under the keys
@@ -2525,10 +2581,14 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     ...(invoicesOn ? [] : ["invoices", "quotes"]),
     ...(moneyOn ? [] : ["receipts"]),
   ]);
+  // A client's tax details are the owner level's, so only their turns read what waits on them.
+  const unconfirmed =
+    list === "clients" && team === undefined ? yield* unconfirmedLines(lead.orgId, row) : [];
   return {
     ...withDeal(deals, rowFor(view, row, now)),
     ...(mailed.length === 0 ? {} : { mailed }),
     ...(goal === undefined ? {} : { progress: goalLine(goal) }),
+    ...(unconfirmed.length === 0 ? {} : { unconfirmed }),
     ...(specChanged ? { specChanged: true as const } : {}),
     ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name, viewer, moneyOn) }),
     ...(page === undefined
@@ -2825,15 +2885,31 @@ const createRow = Effect.fnUntraced(function* (
   )
     return yield* invalid("A goal needs its measure and target, and due as its date.");
   const goal = yield* goalFields(lead.orgId, row);
-  const fields = {
+  const allFields = {
     ...fieldsFrom(row),
     ...partyWords(list, row),
     ...spineSet,
     ...goal,
     ...(from === undefined ? {} : { from }),
   };
+  const found = existing === undefined ? undefined : yield* records.get(lead.orgId, existing.key);
+  const held = list === "clients" ? yield* heldBack(lead, printedAsked(row, found)) : [];
+  // Who may make the whole row is decided as before; only then does a part wait for a tap.
+  if (held.length > 0 && writer.view !== undefined && crmFor === undefined) {
+    const whole = { list, fields: allFields };
+    yield* viewGuard(lead.orgId, writer.view, { row: found, changes: false, input: whole });
+  }
+  const fields: typeof allFields =
+    held.length === 0
+      ? allFields
+      : Object.fromEntries(
+          Object.entries(allFields).filter(([key]) => !held.some((one) => one.field === key)),
+        );
+  const unconfirmedOn = (record: RecordRow) =>
+    held.length === 0
+      ? Effect.succeed({})
+      : Effect.map(propose(lead, record, held, row.heardFrom), (unconfirmed) => ({ unconfirmed }));
   if (existing !== undefined) {
-    const found = yield* records.get(lead.orgId, existing.key);
     // The same details again is a retry; new ones are a change, which only record_update makes.
     const stored = found === undefined ? {} : parseFields(found.fieldsJson);
     const given = list === "contacts" ? contactFields({}, fields) : fields;
@@ -2854,6 +2930,7 @@ const createRow = Effect.fnUntraced(function* (
       created: false,
       ...(found === undefined ? {} : marksOf(lists, found)),
       ...(party?.also === undefined ? {} : { alsoNamed: party.also }),
+      ...(found === undefined ? {} : yield* unconfirmedOn(found)),
     };
   }
   // The same row from the same event is the same entry: a retry, or a repeat in one call.
@@ -2997,6 +3074,7 @@ const createRow = Effect.fnUntraced(function* (
     ...(alsoNamed === undefined ? {} : { alsoNamed }),
     ...(sameEmail === undefined ? {} : { sameEmail }),
     ...(created ? closedNotWoken(lead, [], stored) : {}),
+    ...(yield* unconfirmedOn(stored)),
   };
 });
 const DEAL_FIELDS = ["stage", "source", "lostReason", "concerns"];
@@ -3859,6 +3937,17 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...money,
     ...spine.at,
   };
+  const held =
+    listOf(before.registerId) === "clients"
+      ? yield* heldBack(lead, printedAsked(input, before))
+      : [];
+  // Who may make the whole change is decided as before; only then does a part wait for a tap.
+  if (held.length > 0 && team !== undefined)
+    yield* viewGuard(
+      lead.orgId,
+      { people: team.people, askers: team.askers },
+      { row: before, changes: true, input: written },
+    );
   const seenBefore = yield* teamPairs(lead.orgId, [before.recordId]);
   // `memberChangesContact` decided it, as their form's own write.
   const after = yield* records.update(
@@ -3867,9 +3956,11 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
       ? writer
       : { ...unguardedOf(viewWriter(owned, team)), namesSeenBy: contactFor },
     key,
-    written,
+    held.length === 0 ? written : withoutHeld(written, held),
     input.expectedRev,
   );
+  const unconfirmed =
+    held.length === 0 ? undefined : yield* propose(lead, after, held, input.heardFrom);
   const seenAfter = new Set(
     (yield* teamPairs(lead.orgId, [after.recordId])).map((p) => p.personId),
   );
@@ -3910,6 +4001,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
         ? { stateLabel: UNISSUED_INVOICE }
         : {}),
       changed,
+      ...(unconfirmed === undefined ? {} : { unconfirmed }),
       ...((holder?.note ?? waitsOn?.note) === undefined
         ? {}
         : { routed: holder?.note ?? waitsOn?.note }),

@@ -63,13 +63,20 @@ import {
 import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
+import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
 import { formatKinPicturesDay, KIN_TEXT_LOCALE, KinMoneySummary } from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
+import { BILLS_TOOLS } from "../../apps/server/src/kin/lead/billsOnly.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
 import { KinStatementToolkit } from "../../apps/server/src/kin/work/mcp/statementTools.ts";
+import { KinBillToolkit } from "../../apps/server/src/kin/work/mcp/billTools.ts";
+import { readAnswer } from "../../apps/server/src/kin/work/bills.ts";
+import { billTurnText } from "../../apps/server/src/kin/work/billTurn.ts";
+import { addAnswer } from "../../apps/server/src/kin/work/leadBills.ts";
+import { PRESETS } from "../../apps/server/src/kin/work/registers.ts";
 import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
@@ -173,6 +180,7 @@ export const KIN_TOOLKITS = [
   KinLeadToolkit,
   KinWorkToolkit,
   KinStatementToolkit,
+  KinBillToolkit,
   KinDocsToolkit,
   KinDocumentToolkit,
   KinPictureToolkit,
@@ -190,6 +198,8 @@ export type KinSeatOptions = {
   readonly kinShared?: boolean;
   /** The lead's remit is social media, so Social's tools join (AgentSession). */
   readonly kinSocial?: boolean;
+  /** Bills read in the background: a confined thread that lists `bill_read` alone (`billsOnly`). */
+  readonly kinBills?: boolean;
 };
 
 const names = (...toolkits: ReadonlyArray<{ readonly tools: object }>) =>
@@ -200,6 +210,7 @@ const LEAD = names(
   KinLeadToolkit,
   KinWorkToolkit,
   KinStatementToolkit,
+  KinBillToolkit,
   KinDocsToolkit,
   KinDocumentToolkit,
   KinPictureToolkit,
@@ -223,6 +234,7 @@ const ANY_KIN = names(
 
 /** Whether a T3 tool, by bare name, is listed to this turn as far as Kin decides (AgentSession). */
 export const kinToolVisible = (name: string, options: KinSeatOptions) => {
+  if (options.kinBills === true) return BILLS_TOOLS.has(name);
   // A turn others read runs on a shared thread, which lists only what it may run.
   if (options.kinShared === true && !listedOnSharedThread(name)) return false;
   if (options.kinAgent !== true && options.kinLead !== true) return !ANY_KIN.has(name);
@@ -236,6 +248,9 @@ export const kinToolVisible = (name: string, options: KinSeatOptions) => {
 };
 
 export const KIN_SHARED_PROMPT = /\{\{(SHARED_TURN|GROUP_RULES)\}\}/;
+/** A bills turn's section (`work/billTurn.ts`): the turn runs on the confined bills thread. */
+export const KIN_BILLS_PROMPT = /\{\{BILLS_TURN:/;
+export const kinBillsOf = ({ prompt }: McpToolUseCase) => KIN_BILLS_PROMPT.test(prompt);
 /**
  * A Kin lead's turn on a thread nobody else reads has the owner's seat, as `lead/turn/session.ts`
  * plans it; a case says `kinSession: false` only to model a turn without it on purpose.
@@ -244,7 +259,9 @@ export const kinSessionOf = ({ setup, prompt }: McpToolUseCase) => {
   const stated = setup.world?.kinSession;
   return typeof stated === "boolean"
     ? stated
-    : setup.world?.kinLead === true && !KIN_SHARED_PROMPT.test(prompt);
+    : setup.world?.kinLead === true &&
+        !KIN_SHARED_PROMPT.test(prompt) &&
+        !KIN_BILLS_PROMPT.test(prompt);
 };
 
 /**
@@ -266,7 +283,8 @@ export const kinLeadBase = <M, E>(input: {
   readonly isT3Name: (name: string) => boolean;
 }) => {
   const { options, t3 } = input;
-  const ownerSeat = options.kinSession === true && options.kinShared !== true;
+  const ownerSeat =
+    options.kinSession === true && options.kinShared !== true && options.kinBills !== true;
   const deferredKin = t3.filter(
     (tool) => !KIN_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
   );
@@ -278,7 +296,13 @@ export const kinLeadBase = <M, E>(input: {
   const deferred = [...deferredNative, ...deferredKin];
   return {
     model: input.model,
-    system: [text(kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"))],
+    system: [
+      text(
+        options.kinBills === true
+          ? kinInstructions("confined", "claudeAgent", false)
+          : kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"),
+      ),
+    ],
     reminders:
       deferred.length > 0 && input.deferredHeader !== undefined
         ? [text(`${input.deferredHeader}${deferred.map((tool) => tool.name).join("\n")}\n`)]
@@ -290,8 +314,11 @@ export const kinLeadBase = <M, E>(input: {
         ? input.templateTools.filter(
             (tool) => !input.isT3Name(tool.name) && !tool.name.endsWith("ToolSearch"),
           )
-        : // A confined Claude session keeps the provider's own web search (`claude.ts`).
-          [{ name: "WebSearch", ...input.nativeSchema("WebSearch") }]),
+        : // A confined Claude session keeps the provider's own web search (`claude.ts`), but
+          // for bills.
+          options.kinBills === true
+          ? []
+          : [{ name: "WebSearch", ...input.nativeSchema("WebSearch") }]),
       ...(deferred.length > 0 ? toolSearch : []),
       ...t3.filter((tool) => !deferredKin.includes(tool)),
     ],
@@ -495,6 +522,17 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
     .replaceAll("{{HEAD_START_WAKE}}", HEAD_START_WAKE)
+    // A quiet bills turn's section for files named as the bill ids Kin gives them (`billTurn.ts`).
+    .replace(/\{\{BILLS_TURN:([^}]+)\}\}/g, (_, names: string) =>
+      billTurnText(
+        names.split(",").map((name) => ({
+          id: name.split(".")[0]!,
+          image: !name.endsWith(".pdf"),
+          name,
+        })),
+        PRESETS.expenses.categories,
+      ),
+    )
     .replace(/\{\{DRAFT_DOCUMENT:([^}]+)\}\}/g, (_, name: string) => DRAFT_DOCUMENT(name))
     .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
@@ -600,6 +638,10 @@ const docReadAnswer = (input: {
 };
 
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
+  billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
+  billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>
+    readAnswer(input.bill, input.outcome),
   // numbers_watch's answer for numbers not watched yet: the owner's card lines, as Kin draws them.
   numbersWatch: (input: { numbers: unknown; feed: unknown }) =>
     proposedAnswer(
@@ -688,6 +730,9 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       message: countryFirstMessage(input.owner, input),
     },
   }),
+  // record_create or record_update's line for a client's printed detail kept unconfirmed.
+  unconfirmed: (input: { client: string; what: string; name: string; carded: boolean }) =>
+    waitingLine(input.client, input.what, input.name, input.carded),
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),
   cashUnknown: (input: { timeZone: string }) =>
@@ -1256,6 +1301,8 @@ export const kinTurnFiles = Effect.fn("evaluateMcpToolUse.kinTurnFiles")(functio
     const prepared = yield* (yield* KinTurnContent).prepare({
       text: PROMPT_MARK,
       attachments: stored,
+      // As the runner decides it (`WakeupRunner` `offersBillsAdd`): a lead's owner-only turn.
+      offersBillsAdd: testCase.setup.world?.kinLead === true && kinSessionOf(testCase),
     });
     const text = yield* providerMessageTextWithAttachmentPaths({
       text: prepared.text,

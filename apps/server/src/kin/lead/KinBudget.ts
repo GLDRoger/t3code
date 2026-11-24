@@ -620,6 +620,8 @@ const make = Effect.gen(function* () {
           // Each chat reads the time on the clock of the person who asked there.
           const chats = new Map<string, KinPersonId | undefined>();
           for (const event of input.events) {
+            // Bills read in the background say it on their batch's card (`Bills.paused`).
+            if (event._tag === "bills.read") continue;
             const chatId =
               "chatId" in event && event.chatId !== undefined ? event.chatId : lead.ownerChatId;
             const asker =

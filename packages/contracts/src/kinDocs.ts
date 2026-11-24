@@ -265,7 +265,16 @@ export const KinDocsListResult = Schema.Struct({
 export type KinDocsListResult = typeof KinDocsListResult.Type;
 
 export const KinDocGetInput = Schema.Union([
-  Schema.Struct({ orgId: KinOrgId, key: KinRecordKey, version: Schema.optional(PositiveInt) }),
+  Schema.Struct({
+    orgId: KinOrgId,
+    key: KinRecordKey,
+    version: Schema.optional(PositiveInt),
+    /**
+     * A long draft's chat card this read comes from: its viewer reads the version it holds
+     * without the Docs place, if they still see the doc.
+     */
+    card: Schema.optional(KinWidgetId),
+  }),
   Schema.Struct({
     orgId: KinOrgId,
     recordId: KinRecordId,
@@ -623,8 +632,28 @@ export const KinDocCardDraft = Schema.Struct({
   changesFirst: Schema.optional(Schema.Struct({ name: KinTrimmedText, at: IsoDateTime })),
   /** Kin can't post it: no account on this service is connected, and who can connect one. */
   noAccount: Schema.optional(Schema.Struct({ service: KinTrimmedText, by: KinNamedPerson })),
+  /**
+   * Set when `text` is only the draft's opening (and `kinDraftOpeningLine`): the whole is this
+   * version of the doc, this many characters long. Copy text fetches that version.
+   */
+  whole: Schema.optional(Schema.Struct({ version: PositiveInt, chars: PositiveInt })),
+  /** What went up changed before its owner approved it, so nothing was: it may go up again. */
+  changed: Schema.optional(Schema.Struct({ at: IsoDateTime })),
 });
 export type KinDocCardDraft = typeof KinDocCardDraft.Type;
+
+/**
+ * The line a long draft's card `text` ends with after its opening, for clients that read `text`
+ * as the whole draft; one that reads `whole` leaves it out (`kinDraftOpeningOf`).
+ */
+export const kinDraftOpeningLine = (key: string) =>
+  `This is only the opening. Open ${key} to read the whole draft.`;
+
+/** A long draft card's opening without the line `kinDraftOpeningLine` adds for older clients. */
+export const kinDraftOpeningOf = (text: string, key: string) => {
+  const line = `\n\n${kinDraftOpeningLine(key)}`;
+  return text.endsWith(line) ? text.slice(0, -line.length) : text;
+};
 
 export const KIN_DOC_CARD = "doc";
 /** The chat card an agent shows a doc with. Filled by the server from stored rows. */

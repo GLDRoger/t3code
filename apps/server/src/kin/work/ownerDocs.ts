@@ -1,6 +1,8 @@
 import { KEY_SENT } from "../chat/keySent.ts";
 import {
+  KIN_DOC_CARD,
   KinChatError,
+  KinDocCardState,
   type KinDocDeleteInput,
   type KinDocDetail,
   type KinDocDiffInput,
@@ -37,6 +39,8 @@ import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -102,6 +106,31 @@ const readerOf = Effect.fn("KinDocs.reader")(function* (
   const { personId } = viewer.person;
   if (!viewer.teammate) return { personId, team: undefined };
   if (refused.docs) return yield* noDocs;
+  return { personId, team: personId };
+});
+const decodeDocCard = Schema.decodeUnknownOption(Schema.fromJsonString(KinDocCardState));
+/**
+ * Without the Docs place, a long draft's card lets a person in its chat read the version it holds
+ * (Copy text, Open): as a teammate, so only while they still see the doc.
+ */
+const cardReader = Effect.fn("KinDocs.cardReader")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: {
+    readonly orgId: KinOrgId;
+    readonly key: string;
+    readonly version?: number | undefined;
+    readonly card: string;
+  },
+) {
+  const { viewer } = yield* placeRefusals(people, input.orgId);
+  const { personId } = viewer.person;
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ state: string }>`SELECT w.state_json AS state FROM kin_widgets w
+    JOIN kin_chat_members m ON m.org_id = w.org_id AND m.chat_id = w.chat_id
+      AND m.principal_kind = 'person' AND m.person_id = ${personId} AND m.left_at IS NULL
+    WHERE w.org_id = ${input.orgId} AND w.widget_id = ${input.card} AND w.type = ${KIN_DOC_CARD}`;
+  const card = row === undefined ? undefined : Option.getOrUndefined(decodeDocCard(row.state));
+  if (card?.key !== input.key || card.draft?.whole?.version !== input.version) return yield* noDocs;
   return { personId, team: personId };
 });
 const reader = (people: ReadonlyArray<PersonIdentity>, orgId: KinOrgId) =>
@@ -353,7 +382,15 @@ export const get = Effect.fn("KinDocs.get")(
     input: KinDocGetInput,
     options: { readonly keyed?: boolean } = {},
   ) {
-    const { personId, team } = yield* readerOf(people, input.orgId);
+    const { personId, team } = yield* readerOf(people, input.orgId).pipe(
+      Effect.catchIf(
+        (error) => error === noDocs && "key" in input && input.card !== undefined,
+        () =>
+          "key" in input && input.card !== undefined
+            ? cardReader(people, { ...input, card: input.card })
+            : noDocs,
+      ),
+    );
     const base = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]);
     return yield* detailOf(
       input.orgId,
