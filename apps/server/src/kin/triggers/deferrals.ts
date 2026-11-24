@@ -242,16 +242,38 @@ const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 
 /**
- * The lead a deferral's due work goes to: its chat's lead, else the chief of staff, else the first
- * lead. Its level is the one in its owner's direct chat, where a `deferral.due` wake-up runs,
- * capped by the chat the deferral was asked from.
+ * The live lead whose promise a deferral is: the one that made it (its source event's), else the
+ * chief of staff, else the first lead. One with no source event goes to its chat's lead first.
+ */
+export const promiserLead = Effect.fn("Deferrals.promiserLead")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  item: DeferralSource | undefined,
+) {
+  const [made] =
+    item?.source_event === undefined
+      ? []
+      : yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_events
+          WHERE org_id = ${orgId} AND event_id = ${item.source_event} ORDER BY event_id`;
+  return yield* liveLead(
+    sql,
+    orgId,
+    made === undefined
+      ? { chatId: item?.chat, prefer: CHIEF_OF_STAFF_DOMAIN }
+      : { agentId: made.agentId, prefer: CHIEF_OF_STAFF_DOMAIN },
+  );
+});
+
+/**
+ * The lead a deferral's due work goes to (`promiserLead`). Its level is the one in its owner's
+ * direct chat, where a `deferral.due` wake-up runs, capped by the chat the deferral was asked from.
  */
 export const deferralLead = Effect.fn("Deferrals.lead")(function* (
   sql: SqlClient.SqlClient,
   orgId: KinOrgId,
   item: DeferralSource | undefined,
 ) {
-  const lead = yield* liveLead(sql, orgId, { chatId: item?.chat, prefer: CHIEF_OF_STAFF_DOMAIN });
+  const lead = yield* promiserLead(sql, orgId, item);
   if (lead === undefined) return undefined;
   const origin = yield* firingOrigin(sql, orgId, item, lead);
   const level = yield* KinLevels.effectiveLevel({
@@ -396,7 +418,7 @@ export const makeDeferralStarter = Effect.gen(function* () {
     readonly now: number;
     /** The run state the caller read in this transaction. */
     readonly from: string;
-    /** The item: its chat's lead gets the work, capped by where it was asked from. */
+    /** The item: its maker gets the work (`promiserLead`), capped by where it was asked from. */
     readonly item: (DeferralSource & { readonly links?: ReadonlyArray<string> }) | undefined;
     /** A start after a dropped one (`DeferralSnapshot.restarts`). */
     readonly restarts?: number;
@@ -408,10 +430,7 @@ export const makeDeferralStarter = Effect.gen(function* () {
       )
     )
       return false;
-    const lead = yield* liveLead(sql, orgId, {
-      chatId: input.item?.chat,
-      prefer: CHIEF_OF_STAFF_DOMAIN,
-    });
+    const lead = yield* promiserLead(sql, orgId, input.item);
     if (lead === undefined) return false;
     const origin = yield* firingOrigin(sql, orgId, input.item, lead);
     // The turn that set it up: what it does when due answers whoever asked there.
