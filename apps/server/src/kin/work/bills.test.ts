@@ -561,6 +561,79 @@ describe("bills in bulk", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "an amount far above the rest of Expenses, or a date ahead or ten years back, is the owner's to check",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* (yield* KinRecords.KinRecords).create(
+          orgId,
+          { actor: { _tag: "person", personId: rhea }, via: "owner", askedBy: rhea },
+          {
+            list: "expenses",
+            originKey: "expense:usual",
+            title: "Sample Cloud, Oct 2026",
+            owner: { _tag: "person", personId: rhea },
+            state: "done",
+            amount: { minor: 118_000, currency: "INR" },
+            dateAt: Date.parse("2026-10-05T18:29:59.999Z"),
+            dateAllDay: true,
+            fields: { vendor: "Sample Cloud" },
+            confirmed: true,
+          },
+        );
+        const added = yield* Bills.add(
+          as(rhea),
+          {
+            orgId,
+            attachments: [
+              yield* upload("slip.png", "slip"),
+              yield* upload("old.png", "old"),
+              yield* upload("ahead.png", "ahead"),
+              yield* upload("backlog.png", "backlog"),
+              yield* upload("credit.png", "credit"),
+            ],
+            clientRequestId: "add",
+          },
+          TEST_UPLOAD_OWNER,
+        );
+        const { wakeupId } = yield* claimTurn(1);
+        const bill = (n: number, date: string, amount: string) =>
+          read({ bill: `B${n}`, vendor: "Tidewater Freight", date, amount, currency: "INR" });
+        // A million times the usual expense: a misplaced comma in a read.
+        yield* bill(1, "2026-11-03", "1180000000");
+        yield* bill(2, "1900-01-01", "450");
+        yield* bill(3, "2031-06-01", "451");
+        // Old bills are expected: the owner is entering a backlog.
+        yield* bill(4, "2017-03-01", "452");
+        // A printed credit is a suggestion below zero, as an agent's refund may be.
+        yield* bill(5, "2026-11-04", "-500");
+        yield* endTurn(wakeupId);
+        assert.deepStrictEqual(
+          (yield* billRows).map(({ name, state, problem }) => [name, state, problem]),
+          [
+            ["slip.png", "unreadable", "The amount is far above the rest of Expenses: check it."],
+            ["old.png", "unreadable", "The date is more than ten years back: check it."],
+            ["ahead.png", "unreadable", "The date is after today: check it."],
+            ["backlog.png", "read", null],
+            ["credit.png", "read", null],
+          ],
+        );
+        // What was read stays for the owner's own form.
+        assert.include(JSON.parse((yield* billRows)[0]!.readJson!), { amount: "1180000000" });
+        const kept = yield* Bills.keepRead(as(rhea), {
+          orgId,
+          batchId: added.batchId,
+          clientRequestId: "keep",
+        });
+        assert.lengthOf(kept.kept, 2);
+        assert.deepStrictEqual(
+          kept.skipped.map((one) => one.why),
+          Array.from({ length: 3 }, () => "It wasn't read cleanly."),
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("a photo no turn can show is told at once, and each id names the picture shown", () =>
     Effect.gen(function* () {
       yield* seed;

@@ -48,9 +48,9 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { shownAsPicture } from "../lead/turn/content.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
-import { countryFirst } from "./companyProfile.ts";
+import { countryFirst, homeCurrency } from "./companyProfile.ts";
 import { KinRecords, type Writer } from "./KinRecords.ts";
-import { currencyDigits, dayIn } from "./money.ts";
+import { currencyDigits, dayIn, farAbove, largestIn } from "./money.ts";
 import { fold } from "./nameMatch.ts";
 import { confirm, theOwner } from "./ownerWork.ts";
 import { endOfDay, ownerZone, workFailure } from "./recordRows.ts";
@@ -862,7 +862,15 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
   if (money === undefined || read.vendor === undefined || read.date === undefined)
     return yield* unreadable(COULD_NOT_READ);
   if (money.minor === 0) return yield* unreadable("It is for 0");
+  // What an agent's record_create or a person's form would question is the owner's to check.
+  const largest = yield* largestIn(orgId, "expenses", money.currency);
+  if (farAbove("Expenses", money, largest, yield* homeCurrency(orgId)) !== undefined)
+    return yield* unreadable("The amount is far above the rest of Expenses: check it.");
   const zone = yield* ownerZone(orgId);
+  const today = dayIn(now, zone);
+  if (read.date > today) return yield* unreadable("The date is after today: check it.");
+  if (read.date < `${Number(today.slice(0, 4)) - 10}${today.slice(4)}`)
+    return yield* unreadable("The date is more than ten years back: check it.");
   const twin = yield* sameExpense(orgId, row.sha256, read.vendor, read.date, money, zone);
   if (twin !== undefined) {
     yield* sql`UPDATE kin_bill_reads SET state = 'duplicate', read_json = ${json},
