@@ -67,6 +67,7 @@ import * as KinSchedules from "./kinSchedules.ts";
 import { makeFeeds } from "../numbers/feeds.ts";
 import { pauseTriggers } from "./KinTriggerStore.ts";
 import { MINUTE_MS } from "../durations.ts";
+import { recordSkips } from "../host/offlineSkips.ts";
 
 /** A run more than this late (the host was off) is skipped; the next slot runs as usual. */
 const SCHEDULED_RUN_LATE_MS = 2 * 60 * 60_000;
@@ -856,8 +857,12 @@ const make = Effect.gen(function* () {
         if (paused) return yield* skip("Kin is paused.");
         if (lead === undefined) return yield* skip("there is no agent to run it.");
         if (!admitted) return yield* skip("today's budget is used up.");
-        if (source.kind === "fire" && now - dueAt > SCHEDULED_RUN_LATE_MS)
+        if (source.kind === "fire" && now - dueAt > SCHEDULED_RUN_LATE_MS) {
+          yield* recordSkips(orgId, "scheduled", [
+            { ref: source.fire.fireId, reason: "time_passed", at: dueAt },
+          ]).pipe(Effect.provideService(SqlClient.SqlClient, sql));
           return yield* skip("it was due too long ago to run now.");
+        }
         const dedupeKey = `scheduled:${runId}`;
         const eventId = KinEventId.make(`scheduled_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`);
         const event = yield* decodeEvent({

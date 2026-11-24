@@ -376,6 +376,19 @@ it.effect(
         yield* sql`SELECT 1 FROM kin_trigger_inbox WHERE org_id = ${orgId} AND consumed_at IS NULL`,
         [],
       );
+      const [fire] = yield* sql<{ fireId: string }>`SELECT fire_id AS "fireId"
+        FROM kin_trigger_inbox WHERE org_id = ${orgId} ORDER BY fire_id`;
+      assert.deepStrictEqual(
+        yield* sql`SELECT kind, ref, reason, at FROM kin_offline_skips ORDER BY ref`,
+        [
+          {
+            kind: "scheduled",
+            ref: fire?.fireId,
+            reason: "time_passed",
+            at: Number(fire?.fireId.split(":").at(-1)),
+          },
+        ],
+      );
     }).pipe(Effect.provide(layer)),
 );
 
@@ -995,6 +1008,17 @@ it.effect("a check-in the host slept through fires once when Kin is back that da
       yield* sql`SELECT fire_id AS "fireId", consumed_at IS NOT NULL AS done
         FROM kin_trigger_inbox WHERE fire_id LIKE ${`ns:${evening.id}:%`}`,
       [{ fireId: `ns:${evening.id}:${opens}:scheduled`, done: 1 }],
+    );
+    // The next evening it wakes past the catch-up window: that slot alone is recorded, once.
+    const next = opens + 24 * 60 * 60_000;
+    yield* TestClock.setTime(next + 3 * 60 * 60_000 + 60_000);
+    yield* workers.get("scheduled-tasks")!;
+    yield* tick;
+    yield* tick;
+    assert.deepStrictEqual(
+      yield* sql`SELECT kind, ref, reason, at FROM kin_offline_skips
+        WHERE ref LIKE ${`ns:${evening.id}:%`} ORDER BY at`,
+      [{ kind: "check_in", ref: `ns:${evening.id}:${next}`, reason: "time_passed", at: next }],
     );
   }).pipe(Effect.provide(Layer.merge(layer, identity)));
 });
