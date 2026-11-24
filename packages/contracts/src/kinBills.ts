@@ -179,6 +179,8 @@ export const KinBillRow = Schema.Struct({
    * again reads the same.
    */
   readClean: Schema.optional(Schema.Boolean),
+  /** An unreadable photo of a kind Kin can't read: reading it again reads the same. */
+  wrongKind: Schema.optional(Schema.Boolean),
   /** With `readClean`: the figure the owner is to check. */
   check: Schema.optional(Schema.Literals(["amount", "date"])),
   /** The suggested expense made for it, as it stands now. */

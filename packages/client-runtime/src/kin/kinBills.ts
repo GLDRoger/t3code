@@ -249,8 +249,10 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
         ? ["addAnyway", "dismiss"]
         : ["addAnyway", "dismiss", "openDuplicate"];
     case "unreadable":
-      // A clean read whose amount or date is in question reads the same again.
-      return row.readClean === true ? ["byHand", "dismiss"] : ["byHand", "readAgain", "dismiss"];
+      // A clean read in question, or a photo Kin can't read, reads the same again.
+      return row.readClean === true || row.wrongKind === true
+        ? ["byHand", "dismiss"]
+        : ["byHand", "readAgain", "dismiss"];
     case "kept":
     case "dropped":
       return row.expense === undefined ? [] : ["openExpense"];

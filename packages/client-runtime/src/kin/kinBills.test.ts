@@ -74,11 +74,6 @@ describe("a bill on the review list", () => {
     // The host's own sentence, as it wrote it; Read again only where reading again can change it.
     const unread: ReadonlyArray<[string, "amount" | "date" | null, ReadonlyArray<string>]> = [
       [
-        "Kin can't read this kind of photo: add it as a JPEG or PNG.",
-        null,
-        ["byHand", "readAgain", "dismiss"],
-      ],
-      [
         "Couldn't read: currency. Finance: No currency printed.",
         null,
         ["byHand", "readAgain", "dismiss"],
@@ -108,6 +103,16 @@ describe("a bill on the review list", () => {
         actions,
       ]);
     }
+    // A photo of a kind Kin can't read reads the same again: entered by hand or dismissed.
+    const kind = kinBillRowView(
+      row({
+        state: "unreadable",
+        expense: undefined,
+        problem: "Kin can't read this kind of photo: add it as a JPEG or PNG.",
+        wrongKind: true,
+      }),
+    );
+    expect([kind.label, kind.actions]).toEqual(["Couldn't read this one", ["byHand", "dismiss"]]);
     expect(kinBillRowView(row({ state: "unreadable", problem: "It is for 0" })).problem).toBe(
       "It is for 0",
     );
