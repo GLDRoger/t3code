@@ -861,6 +861,8 @@ export const KinEvent = Schema.Union([
         dismissed: Schema.optional(Schema.Literal(true)),
         reopened: Schema.optional(Schema.Literal(true)),
         at: Schema.optional(NonNegativeInt),
+        // Asked for another chat, it lapsed unanswered: the turn there carries on without it.
+        lapsed: Schema.optional(Schema.Literal(true)),
       }),
       // One run of a scheduled task; `runId` names the fire or Run now tap that started it.
       Schema.Struct({

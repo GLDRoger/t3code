@@ -621,6 +621,17 @@ export const KinChoiceCardState = Schema.Struct({
           at: IsoDateTime,
         }),
       ),
+      /**
+       * Set when the question lapsed with nobody answering: who was asked, by name then, and
+       * when. `text` says the same for older clients.
+       */
+      lapsed: Schema.optionalKey(
+        Schema.Struct({
+          personId: KinPersonId,
+          name: KinTrimmedText.check(Schema.isMaxLength(200)),
+          at: IsoDateTime,
+        }),
+      ),
     }),
   ),
   // The first answer settles the card.
