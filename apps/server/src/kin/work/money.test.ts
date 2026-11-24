@@ -1995,15 +1995,19 @@ describe("invoices", () => {
       });
       const credits = () =>
         LeadWork.get(scope, { key: "INV-1" }).pipe(Effect.map((one) => one.bank?.credits));
-      assert.deepStrictEqual(yield* credits(), [
-        {
-          key: cited,
-          date: "2026-11-10",
-          amount: "₹60,000.00",
-          title: `NEFT CR-INVENTED ACME-${number}`,
-          reason: `cites ${number}`,
-        },
-      ]);
+      assert.deepStrictEqual((yield* LeadWork.get(scope, { key: "INV-1" })).bank, {
+        knownThrough: null,
+        note: `No bank statement is confirmed. Bank transactions has an unexplained credit that looks like this invoice's payment: ${cited}, ₹60,000.00 on 10 Nov. The invoice isn't recorded as paid until the owner confirms.`,
+        credits: [
+          {
+            key: cited,
+            date: "2026-11-10",
+            amount: "₹60,000.00",
+            title: `NEFT CR-INVENTED ACME-${number}`,
+            reason: `cites ${number}`,
+          },
+        ],
+      });
       const same = yield* credit("NEFT CR-INVENTED ACME", 60_000, "2026-11-09");
       for (const day of ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05"])
         yield* credit("UPI CR-INVENTED ACME", 10_000, day);

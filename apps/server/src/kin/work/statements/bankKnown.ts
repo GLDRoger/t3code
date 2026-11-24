@@ -1,4 +1,9 @@
-import type { KinBankKnown, KinOrgId } from "@t3tools/contracts";
+import {
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
+  type KinBankKnown,
+  type KinOrgId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -227,6 +232,9 @@ export const BankAnswer = Schema.Struct({
   credits: Schema.optional(Schema.Array(BankCredit)),
 });
 
+const shortDay = (day: string) =>
+  formatKinWhen(Date.parse(`${day}T00:00:00Z`), "date", { zone: "UTC", locale: KIN_TEXT_LOCALE });
+
 /**
  * How far Kin sees the bank, as an agent reads it beside a money answer; `accounts` adds each
  * account's run, and `credits` what Bank transactions holds that looks like one invoice's
@@ -239,9 +247,21 @@ export const bankAnswer = (
 ) => ({
   knownThrough: bank.through,
   note:
-    bank.through === null
-      ? "No bank statement is confirmed, so Kin can't see what reached the bank."
-      : `The confirmed bank statements cover every day to ${bank.through} on the accounts Kin has; Kin can't see the bank after that day.`,
+    credits.length > 0
+      ? `${
+          bank.through === null
+            ? "No bank statement is confirmed."
+            : `The confirmed bank statements cover every day to ${bank.through}.`
+        } Bank transactions has ${
+          credits.length === 1
+            ? "an unexplained credit that looks"
+            : "unexplained credits that look"
+        } like this invoice's payment: ${credits
+          .map((one) => `${one.key}, ${one.amount} on ${shortDay(one.date)}`)
+          .join("; ")}. The invoice isn't recorded as paid until the owner confirms.`
+      : bank.through === null
+        ? "No bank statement is confirmed, so Kin can't see what reached the bank."
+        : `The confirmed bank statements cover every day to ${bank.through} on the accounts Kin has; Kin can't see the bank after that day.`,
   ...(accounts && bank.accounts.length > 0
     ? {
         accounts: bank.accounts.map((one) => ({
