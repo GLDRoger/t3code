@@ -1285,6 +1285,7 @@ const rowView = (row: Row, records: ReadonlyMap<string, RecordBrief>): KinBillRo
     read: read as KinBillRead,
     ...(row.problem === null ? {} : { problem: row.problem }),
     ...(row.state === "unreadable" ? checkOf(row.problem) : {}),
+    ...(row.state === "unreadable" && row.problem === UNSHOWN_PHOTO ? { wrongKind: true } : {}),
     ...(record === undefined
       ? {}
       : { expense: { key: record.key, rev: record.rev, title: record.title } }),

@@ -673,10 +673,10 @@ describe("bills in bulk", () => {
         const checked = yield* card(added.batchId);
         assert.strictEqual(checked.text, "5 bills: 2 read, 3 need a check.");
         assert.deepInclude(checked.counts, { unreadable: 3, check: 3 });
-        assert.deepInclude(
-          (yield* Bills.list(as(rhea), { orgId })).batches[0]!.states,
-          { unreadable: 3, check: 3 },
-        );
+        assert.deepInclude((yield* Bills.list(as(rhea), { orgId })).batches[0]!.states, {
+          unreadable: 3,
+          check: 3,
+        });
         const sql = yield* SqlClient.SqlClient;
         const suggested = sql<{ title: string; confirmed: number }>`SELECT title, confirmed
           FROM kin_records WHERE origin_key LIKE 'bill:%' ORDER BY title, record_id`;
@@ -922,6 +922,8 @@ describe("bills in bulk", () => {
       // Not a read in question: reading it again is still offered.
       const [heic] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
       assert.isUndefined(heic!.readClean);
+      // Reading it again would read the same: the row offers no Read again.
+      assert.isTrue(heic!.wrongKind);
       const { events } = yield* claimTurn(1);
       const event = events[0]!;
       if (event._tag !== "bills.read") return assert.fail("no bills turn");
