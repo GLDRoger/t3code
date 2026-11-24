@@ -276,6 +276,36 @@ const invoiceCandidate = (
   };
 };
 
+/**
+ * Whether the matcher would offer `invoice` for one bank row, as it does on a statement's review,
+ * and why in one plain phrase: "cites INV/26-27/001", "same amount from Harbourline Logistics".
+ */
+export const invoiceOffered = (
+  row: StatementRow,
+  invoice: InvoiceCandidate,
+  currency: string,
+  withholdsAtSource: boolean,
+): string | undefined => {
+  const offered = invoiceCandidate(row, invoice, currency, withholdsAtSource);
+  if (offered === undefined || offered.score < PROPOSED) return undefined;
+  const cited = [invoice.number, invoice.key].find(
+    (one) =>
+      one !== null &&
+      (hasNumber(row.description, one) ||
+        (row.reference !== null && hasNumber(row.reference, one))),
+  );
+  if (cited !== undefined && cited !== null) return `cites ${cited}`;
+  const amount =
+    offered.fit === "exact"
+      ? "same amount"
+      : offered.fit === "foreign"
+        ? `same ${invoice.currency} amount`
+        : offered.fit === "tds"
+          ? `the amount less ${formatMinor(BigInt(offered.tdsMinor ?? 0), currency)} TDS`
+          : "part of what is owed";
+  return offered.why.includes("client named") ? `${amount} from ${invoice.client}` : amount;
+};
+
 const paymentCandidate = (
   row: StatementRow,
   payment: PaymentCandidate,

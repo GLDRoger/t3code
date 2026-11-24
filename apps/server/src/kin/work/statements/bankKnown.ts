@@ -210,18 +210,33 @@ export const bankKnown = Effect.fn("KinBankKnown.read")(function* (orgId: KinOrg
   return knownThrough(yield* confirmedCoverage(orgId), today);
 });
 
+const BankCredit = Schema.Struct({
+  key: Schema.String,
+  date: Schema.String,
+  amount: Schema.String,
+  title: Schema.String,
+  reason: Schema.String,
+});
+
 /** `bankAnswer` in a tool's result. */
 export const BankAnswer = Schema.Struct({
   knownThrough: Schema.NullOr(Schema.String),
   note: Schema.String,
   accounts: Schema.optional(Schema.Unknown),
+  /** An unpaid invoice's own read: unexplained credits that look like its payment, newest first. */
+  credits: Schema.optional(Schema.Array(BankCredit)),
 });
 
 /**
  * How far Kin sees the bank, as an agent reads it beside a money answer; `accounts` adds each
- * account's run. Every word is the server's.
+ * account's run, and `credits` what Bank transactions holds that looks like one invoice's
+ * payment. Every word is the server's.
  */
-export const bankAnswer = (bank: BankKnown, accounts = false) => ({
+export const bankAnswer = (
+  bank: BankKnown,
+  accounts = false,
+  credits: ReadonlyArray<typeof BankCredit.Type> = [],
+) => ({
   knownThrough: bank.through,
   note:
     bank.through === null
@@ -237,4 +252,5 @@ export const bankAnswer = (bank: BankKnown, accounts = false) => ({
         })),
       }
     : {}),
+  ...(credits.length === 0 ? {} : { credits }),
 });
