@@ -253,8 +253,8 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${orgId} AND status IN ('failed', 'succeeded')
       ORDER BY owner_date DESC LIMIT ${FAILED_NIGHTS_NOTICE + 1}`;
     const streak = recent.findIndex((row) => row.status !== "failed");
-    // Exactly the third failed night in a row: a longer streak was already told. Nothing is
-    // lost, so it is for whoever runs Kin, never a line in the owner's chat.
+    // Exactly the third failed night in a row: a longer streak was already told. This is the
+    // operator's log line; the owner's notice is the hourly `checkDreamNotice`.
     if ((streak === -1 ? recent.length : streak) === FAILED_NIGHTS_NOTICE)
       yield* notices.notify({ orgId, branch, reason: "Dream failed three nights in a row" });
   });

@@ -271,6 +271,53 @@ it.effect("one lead awake, with the others paused, is no notice", () =>
   }).pipe(Effect.provide(services)),
 );
 
+it.effect(
+  "tells the owner once the nightly dream has failed three nights in a row, outside quiet hours, and closes it when a night succeeds",
+  () =>
+    Effect.gen(function* () {
+      // 23:00 in Kolkata: inside the owner's quiet hours.
+      yield* TestClock.setTime(DAY_START + 13 * HOUR);
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const night = (day: number, status: "failed" | "succeeded", failure: string | null) =>
+        sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, head,
+            material_from, material_until, failure, started_at, ended_at)
+          VALUES (${orgId}, ${`2026-11-${day}`}, ${`dream_${day}`}, 0, ${status}, ${`dream/${day}`},
+            ${status === "succeeded" ? "abc" : null}, 0, ${NOW}, ${failure}, ${NOW}, ${NOW})`;
+      const told = sql<{ body: string; resolvedAt: string | null }>`SELECT m.body,
+          w.resolved_at AS "resolvedAt" FROM kin_messages m
+        JOIN kin_waiting w ON w.org_id = m.org_id AND w.message_id = m.message_id
+        WHERE m.org_id = ${orgId} AND m.message_id LIKE 'kin-dream-failed:%'
+        ORDER BY m.created_at, m.message_id`;
+      const failure =
+        "relationships/kestrel.md claims agent from kin-dream; the source was owner from rhea\nrelationships/kestrel.md quote: invented";
+      yield* night(10, "succeeded", null);
+      yield* night(11, "failed", failure);
+      yield* night(12, "failed", failure);
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* told, []);
+      yield* night(13, "failed", failure);
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* told, []);
+      // 10:00 the next morning.
+      yield* TestClock.adjust(11 * HOUR);
+      yield* HostBackupCheck.check();
+      yield* HostBackupCheck.check();
+      const body =
+        "Kin's nightly memory update has failed three nights in a row\n\nNothing Kin already remembered was lost, and it will try again tonight. What stopped it: A memory note claims agent from kin-dream; the source was owner from rhea.";
+      assert.deepStrictEqual(yield* told, [{ body, resolvedAt: null }]);
+      yield* night(14, "failed", "The dream session failed");
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* told, [{ body, resolvedAt: null }]);
+      yield* night(15, "succeeded", null);
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(
+        (yield* told).map((row) => row.resolvedAt !== null),
+        [true],
+      );
+    }).pipe(Effect.provide(services)),
+);
+
 const decodeCard = Schema.decodeUnknownSync(Schema.fromJsonString(KinHostTroubleCard));
 const cards = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
