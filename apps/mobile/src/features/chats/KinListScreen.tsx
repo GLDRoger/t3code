@@ -92,6 +92,7 @@ import {
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { kinTabBar, kinTabFoot, useKinTab } from "./components/KinTab";
 import { useKinAttention } from "./state/useKinAttention";
+import { useKinSectionOn } from "./state/useKinShell";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 
 export type KinListParams = {
@@ -437,6 +438,7 @@ function KinListEntries(
   );
   const narrowed = kinListFilterLabel(def, filter);
   const { clients } = useKinWorkChoices(props, true);
+  const clientsOn = useKinSectionOn(environmentId, "clients");
   const [table, setTable] = useState(false);
   const columns = kinListColumns(def, state.records);
   const groupings = kinListGroupings(def);
@@ -555,28 +557,30 @@ function KinListEntries(
                   <KinWorkStaleNotice environmentId={environmentId} onRetry={retry} />
                 </View>
               ) : null}
-              <View className="px-4">
-                <ListSection>
-                  <KinWorkPlacePicker
-                    target={props}
-                    noun="client"
-                    icon="person.2"
-                    label={KIN_LISTS.clientFilter}
-                    none={KIN_LISTS.anyClient}
-                    extra={NO_CLIENT}
-                    held={filter.noParty ? NO_CLIENT : filter.party}
-                    choices={clients}
-                    disabled={false}
-                    onPick={(party) =>
-                      entries.setFilter(
-                        party?.key === NO_CLIENT.key
-                          ? { ...filter, noParty: true, party: null }
-                          : { ...filter, noParty: false, party },
-                      )
-                    }
-                  />
-                </ListSection>
-              </View>
+              {!clientsOn ? null : (
+                <View className="px-4">
+                  <ListSection>
+                    <KinWorkPlacePicker
+                      target={props}
+                      noun="client"
+                      icon="person.2"
+                      label={KIN_LISTS.clientFilter}
+                      none={KIN_LISTS.anyClient}
+                      extra={NO_CLIENT}
+                      held={filter.noParty ? NO_CLIENT : filter.party}
+                      choices={clients}
+                      disabled={false}
+                      onPick={(party) =>
+                        entries.setFilter(
+                          party?.key === NO_CLIENT.key
+                            ? { ...filter, noParty: true, party: null }
+                            : { ...filter, noParty: false, party },
+                        )
+                      }
+                    />
+                  </ListSection>
+                </View>
+              )}
               {narrowed === null ? null : (
                 <View className="flex-row px-4">
                   <Chip
