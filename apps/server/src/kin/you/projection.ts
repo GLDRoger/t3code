@@ -96,7 +96,7 @@ export const taskRows = Effect.fn("KinYouProjection.taskRows")(function* (
 /** `get_task` and `set_task_state`: the row, its brief and its newest comments, by name. */
 export const taskSheet = Effect.fn("KinYouProjection.taskSheet")(function* (
   connection: CodingAgentConnection,
-  task: Task & Pick<KinRecordDetail, "notes">,
+  task: Task & Pick<KinRecordDetail, "notes" | "checklist">,
 ) {
   const { orgId, personId } = connection;
   const shown = (yield* latestComments(orgId, task.recordId, COMMENTS_SHOWN)).comments;
@@ -105,6 +105,7 @@ export const taskSheet = Effect.fn("KinYouProjection.taskSheet")(function* (
   return {
     ...(yield* row(connection, task, yield* ownerZone(orgId), names)),
     brief: task.notes,
+    checklist: task.checklist ?? [],
     material: MATERIAL,
     comments: shown.map((one) => ({
       by: toolName(one.by, names, reader),

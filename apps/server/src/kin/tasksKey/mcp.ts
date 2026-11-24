@@ -16,6 +16,12 @@ import {
   KinRecordKey,
   KinRecordState,
   KinTrimmedText,
+  KinWorkHandBackInput,
+  KinWorkHandBackResult,
+  KinWorkHandOverResult,
+  KinWorkNudgeResult,
+  KinWorkTickStepInput,
+  KinWorkSteps,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
@@ -26,6 +32,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import type * as Types from "effect/Types";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
@@ -63,6 +70,10 @@ import {
   createProject,
   createTask,
   getMine,
+  handTaskBack,
+  handOverTasks,
+  nudgeTask,
+  tickTaskStep,
   listMine,
   listSeenBy,
   setStateMine,
@@ -94,6 +105,7 @@ const TaskSummary = Schema.Struct({
 const TaskDetail = Schema.Struct({
   ...TaskSummary.fields,
   brief: Schema.String,
+  checklist: KinWorkSteps,
   material: Schema.String,
   comments: Schema.Array(
     Schema.Struct({ by: Schema.String, at: Schema.String, text: Schema.String }),
@@ -869,6 +881,50 @@ export const TasksKeyToolkit = Toolkit.make(
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
+  Tool.make("tick_task_step", {
+    ...shared,
+    description:
+      "Tick or untick one step of a task as the person may in Kin. Pass the step title and its zero-based index from get_task.",
+    parameters: KinWorkTickStepInput.mapFields(Struct.pick(["key", "index", "title", "done"])),
+    success: Schema.Struct({ key: KinRecordKey, checklist: KinWorkSteps, material: Schema.String }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("hand_task_back", {
+    ...shared,
+    description:
+      "Give a task the person holds back to whoever gave it to them, with an optional note.",
+    parameters: KinWorkHandBackInput.mapFields(Struct.pick(["key", "note"])),
+    success: KinWorkHandBackResult,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("nudge_task", {
+    ...shared,
+    description:
+      "Ask the person holding a task where it stands, at most once per day from this person. The holder sees it came from the caller’s coding agent.",
+    parameters: Schema.Struct({ key: TaskKey }),
+    success: KinWorkNudgeResult,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("hand_over_tasks", {
+    ...shared,
+    description:
+      "Give all reachable open tasks from one holder to another, by names from list_people. In Kin, only owners and co-owners can give someone else’s tasks away.",
+    parameters: Schema.Struct({ from: PersonName, to: PersonName }),
+    success: KinWorkHandOverResult,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   Tool.make("find", {
     ...shared,
     description:
@@ -1290,6 +1346,26 @@ const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
   set_task_state: McpToolAccess.reads(
     Effect.fn("KinTasksKeyTools.setState")((input) =>
       asHolder((holder) => setStateMine(holder, input)),
+    ),
+  ),
+  tick_task_step: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.tick_task_step")((input) =>
+      asHolder((holder) => tickTaskStep(holder, input)),
+    ),
+  ),
+  hand_task_back: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.hand_task_back")((input) =>
+      asHolder((holder) => handTaskBack(holder, input)),
+    ),
+  ),
+  nudge_task: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.nudge_task")((input) =>
+      asHolder((holder) => nudgeTask(holder, input.key)),
+    ),
+  ),
+  hand_over_tasks: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.hand_over_tasks")((input) =>
+      asHolder((holder) => handOverTasks(holder, input)),
     ),
   ),
   find: McpToolAccess.reads(
