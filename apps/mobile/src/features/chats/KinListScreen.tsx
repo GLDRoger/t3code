@@ -5,6 +5,7 @@ import {
   kinFailure,
 } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
+import { kinBillsEntry } from "@t3tools/client-runtime/kin/kinBills";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -60,6 +61,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -75,6 +77,7 @@ import {
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { KinDateRowLine } from "./KinWorkMoney";
 import { kinClient } from "./state/kinClient";
+import { useKinBillBatches } from "./state/useKinBills";
 import {
   useKinDates,
   useKinListContext,
@@ -557,6 +560,7 @@ function KinListEntries(
                   <KinWorkStaleNotice environmentId={environmentId} onRetry={retry} />
                 </View>
               ) : null}
+              {def.list === "expenses" ? <KinBillsAddedRow {...props} /> : null}
               {!clientsOn ? null : (
                 <View className="px-4">
                   <ListSection>
@@ -959,5 +963,34 @@ function KinDatesBody(props: KinWorkTarget) {
         </Text>
       ) : null}
     </KinWorkFrame>
+  );
+}
+
+/** On Expenses, once there are bills added in bulk: one quiet row to them. */
+function KinBillsAddedRow(props: KinWorkTarget) {
+  const navigation = useNavigation();
+  const { allowed, state } = useKinBillBatches(props);
+  const nowMs = useNowMinuteMs();
+  if (!allowed || state._tag !== "ready") return null;
+  const entry = kinBillsEntry(state.value.batches, new Date(nowMs));
+  if (entry === null) return null;
+  const { batchId } = entry;
+  return (
+    <View className="px-4">
+      <ListSection>
+        <ListRow
+          icon="doc.text"
+          label={entry.label}
+          description={entry.detail}
+          onPress={() =>
+            navigation.navigate("KinBills", {
+              environmentId: String(props.environmentId),
+              orgId: String(props.orgId),
+              ...(batchId === null ? {} : { batch: batchId }),
+            })
+          }
+        />
+      </ListSection>
+    </View>
   );
 }
