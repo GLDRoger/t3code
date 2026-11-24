@@ -34,6 +34,7 @@ import {
   sectionsOf,
 } from "./docBody.ts";
 import { keepDocFiles } from "./docFiles.ts";
+import { draftOnCard } from "./draftOpening.ts";
 import { KinRecords, type Writer } from "./KinRecords.ts";
 import { fieldText, listOf, parseFields } from "./lists.ts";
 import { guardPlaybook } from "./playbooks.ts";
@@ -476,7 +477,8 @@ const revise = Effect.fn("KinDocs.revise")(function* (
     [{ field: "version", from: String(current.version), to: String(version) }],
   );
   yield* guardPlaybook(orgId, row.recordId);
-  if (next.file === undefined) yield* refreshCards(orgId, row.recordId, next.body);
+  if (next.file === undefined)
+    yield* refreshCards(orgId, row.recordId, { text: next.body, version, key: row.key });
   return { ...(yield* settle(orgId, row.recordId)), created: true };
 });
 
@@ -484,14 +486,14 @@ const revise = Effect.fn("KinDocs.revise")(function* (
 const refreshCards = Effect.fn("KinDocs.refreshCards")(function* (
   orgId: KinOrgId,
   recordId: string,
-  text?: string,
+  next?: { readonly text: string; readonly version: number; readonly key: string },
 ) {
   const chats = yield* Effect.serviceOption(KinChatService);
   if (Option.isSome(chats))
     yield* chats.value.refreshDocCards({
       orgId,
       recordId,
-      ...(text === undefined ? {} : { text }),
+      ...(next === undefined ? {} : draftOnCard(next.text, next.version, next.key)),
     });
 });
 
