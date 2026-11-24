@@ -1531,6 +1531,128 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
   ),
 );
 
+// A card holds 2,000 characters with who asks, what was read and who a draft is for: an ask
+// whose card would hold more is refused before anything is made, with its limit and the way on.
+it.effect("an ask too long for its card is refused before anything is made, saying its limit", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, orgId, owner, chatOf, chiefChat, wakeOn, cardOf, widgetOf } = yield* askingTeam;
+      const made = sql<{ cards: number; chats: number; questions: number }>`SELECT
+          (SELECT COUNT(*) FROM kin_widgets WHERE org_id = ${orgId}) AS cards,
+          (SELECT COUNT(*) FROM kin_chats WHERE org_id = ${orgId}) AS chats,
+          (SELECT COUNT(*) FROM kin_questions WHERE org_id = ${orgId}) AS questions`.pipe(
+        Effect.map((rows) => rows[0]!),
+      );
+      const detailOf = (questionId: unknown) =>
+        cardOf(String(questionId)).pipe(
+          Effect.flatMap((row) => widgetOf(row.widgetId!)),
+          Effect.map((widget) => widget.state as { detail: string; draft?: string }),
+        );
+      const refusal = (answer: { readonly ok: boolean; readonly value: unknown }) => {
+        assert.isFalse(answer.ok);
+        return (answer.value as { message: string }).message;
+      };
+      const roomIn = (message: string) =>
+        Number(/holds at most (\d[\d,]*)/.exec(message)![1]!.replace(",", ""));
+
+      // Asked after reading a mail with a long subject, a question's detail has less room.
+      const reading = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Meera about the mail.");
+      yield* markOutside({ orgId, wakeupId: reading }, "conn-1", [
+        {
+          k: "mail",
+          id: "conn-1",
+          account: "Invented mail",
+          from: "Lena Ortiz <lena@brightwell.example>",
+          subject: "Updated terms ".repeat(30).trim(),
+        },
+      ]);
+      const before = yield* made;
+      const over = refusal(
+        yield* callAs("chief", "kin_ask_person", {
+          to: "Meera",
+          question: "Do the new terms stand?",
+          options: [{ label: "Yes" }, { label: "No" }],
+          detail: "x".repeat(1800),
+          intent: "mail terms",
+        }),
+      );
+      const room = roomIn(over);
+      assert.strictEqual(
+        over,
+        `detail is 1,800 characters, and this card holds at most ${room.toLocaleString("en-US")} of it: shorten detail and ask again. Nothing was asked.`,
+      );
+      assert.deepStrictEqual(yield* made, before);
+      assert.isFalse(
+        (yield* callAs("chief", "kin_ask_person", {
+          to: "Meera",
+          question: "Do the new terms stand?",
+          options: [{ label: "Yes" }, { label: "No" }],
+          detail: "x".repeat(room + 1),
+          intent: "mail terms",
+        })).ok,
+      );
+      const fits = yield* callAs("chief", "kin_ask_person", {
+        to: "Meera",
+        question: "Do the new terms stand?",
+        options: [{ label: "Yes" }, { label: "No" }],
+        detail: "x".repeat(room),
+        intent: "mail terms",
+      });
+      assert.isTrue(fits.ok, JSON.stringify(fits.value));
+      const posted = yield* detailOf(fits.value.questionId);
+      assert.lengthOf(posted.detail, 2000);
+      assert.isTrue(posted.detail.endsWith(`\n\n${"x".repeat(room)}`));
+
+      // A teammate's proposal goes up whole on its card, at most 1,800 characters of it, less
+      // when who asks and who it is for take more of the card's room.
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'clients', 'Clients', 'C', 1, 0) ON CONFLICT DO NOTHING`;
+      for (const [id, key, title] of [
+        ["rec_harbourline", "C-7", "Harbourline Hotels".padEnd(158, " and Resorts")],
+        ["rec_tidewater", "C-8", "Tidewater Freight"],
+      ] as const)
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at)
+          VALUES (${orgId}, ${id}, 'clients', ${key}, ${title}, 'person', ${owner.personId},
+            'person', ${id}, 0, 0)`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = 'zoya'`;
+      const zoyaChat = yield* chiefChat("zoya");
+      const proposal = (key: string, text: string) => ({
+        to: "Rhea",
+        question: "Approve the pilot proposal?",
+        detail: text,
+        intent: `pilot proposal ${key}`,
+        draft: { kind: "proposal", for: key },
+      });
+      const sendUp = Effect.fn("test.sendUp")(function* (key: string, text: string) {
+        yield* wakeOn("chief", "zoya", zoyaChat, `Can you draft this? ${text}`);
+        return yield* callAs("chief", "kin_ask_person", proposal(key, text));
+      });
+      const draftOf = (n: number) => `Pilot proposal. ${"x".repeat(n - 16)}`;
+      const way = (n: string, room: string) =>
+        `This draft is ${n} characters, and its card holds at most ${room} of it: file it with doc_create and draft instead, which keeps it whole and puts it to Rhea Rao from there. Nothing was asked.`;
+      const beforeDraft = yield* made;
+      // The 2,016-character proposal, and one whose card would be 2,016 characters with its client.
+      assert.strictEqual(refusal(yield* sendUp("C-8", draftOf(2016))), way("2,016", "1,800"));
+      assert.strictEqual(refusal(yield* sendUp("C-8", draftOf(1801))), way("1,801", "1,800"));
+      assert.strictEqual(refusal(yield* sendUp("C-7", draftOf(1800))), way("1,800", "1,784"));
+      assert.strictEqual(refusal(yield* sendUp("C-7", draftOf(1785))), way("1,785", "1,784"));
+      assert.deepStrictEqual(yield* made, beforeDraft);
+      for (const [key, n] of [
+        ["C-8", 1800],
+        ["C-7", 1784],
+      ] as const) {
+        const up = yield* sendUp(key, draftOf(n));
+        assert.isTrue(up.ok, JSON.stringify(up.value));
+        const card = yield* detailOf(up.value.questionId);
+        assert.strictEqual(card.draft, draftOf(n));
+        assert.include(card.detail, draftOf(n));
+      }
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 // The tap answers in the asked person's chat and the answer lands in the asker's: Kin's line
 // there, one turn of the asker there, and no turn in the chat of the person who tapped.
 it.effect("a tap on a question asked for someone goes back to the chat that asked, once", () =>

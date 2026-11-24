@@ -169,6 +169,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const drawn = yield* drawAll;
       const asked = { ...card, actions: drawn };
       const options = ChoiceCard.choiceCardState(asked).options;
+      const room = ChoiceCard.detailRoom(options);
+      if (card.detail !== undefined && card.detail.trim() !== "" && card.detail.length > room)
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: ChoiceCard.detailTooLong(card.detail.length, room),
+        });
       const plans = options.flatMap((option, index) => {
         const one = drawn[index];
         return one === undefined ? [] : [{ optionId: option.optionId, plan: one.plan }];

@@ -39,6 +39,7 @@ import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import { endOfDay, UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
 import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
+import { tooLongForCard } from "../../apps/server/src/kin/questions/askPerson.ts";
 import {
   ASKED,
   CALL_ARGUMENTS_REFUSAL,
@@ -700,6 +701,21 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     $error: { _tag: "KinChatError", reason: "not_allowed", message: ONE_ENTRY },
   }),
   // Anything but the approved make or a read, refused in an approved draft's turn.
+  // kin_ask_person's answer: words its card can't carry whole beside `header` characters of Kin's
+  // are refused with the way on (`askPerson.ts` tooLongForCard), else `posted`.
+  askTooLong: (input: { detail: unknown; header: number; owner?: string; posted: unknown }) => {
+    const detail = typeof input.detail === "string" ? input.detail : "";
+    const why = tooLongForCard(detail.length, input.header, input.owner);
+    return why === undefined
+      ? input.posted
+      : {
+          $error: {
+            _tag: "KinChatError",
+            reason: "not_allowed",
+            message: `${why} Nothing was asked.`,
+          },
+        };
+  },
   // kin_relay's answer for a line left for the owner's next check-in (`KinHandoff.relay`).
   relayLeft: (input: { to: string; title: string; when: string; asker: string }) => ({
     to: input.to,
