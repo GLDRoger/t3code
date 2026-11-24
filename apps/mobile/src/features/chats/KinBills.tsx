@@ -14,6 +14,7 @@ import {
   kinBillsButton,
   kinBillsCanKeepAll,
   kinBillsOutcome,
+  kinBillUploadBatch,
   kinBillUploadText,
   type KinBillAction,
   type KinBillRowView,
@@ -142,7 +143,10 @@ function AddBills(props: KinWorkTarget) {
   const button = kinBillsButton(state);
   const outcome = kinBillsOutcome(state);
   const held = state.files.filter(
-    (file) => file.upload._tag !== "added" && file.upload._tag !== "refused",
+    (file) =>
+      file.upload._tag !== "added" &&
+      file.upload._tag !== "already" &&
+      file.upload._tag !== "refused",
   ).length;
   const review = (batch: string) =>
     navigation.dispatch(
@@ -225,7 +229,11 @@ function AddBills(props: KinWorkTarget) {
           {state.files.map((file) => {
             const wrong = file.upload._tag === "failed" || file.upload._tag === "refused";
             const removable =
-              !busy && file.upload._tag !== "added" && file.upload._tag !== "uploading";
+              !busy &&
+              file.upload._tag !== "added" &&
+              file.upload._tag !== "already" &&
+              file.upload._tag !== "uploading";
+            const earlier = kinBillUploadBatch(file.upload);
             return (
               <View
                 key={file.id}
@@ -242,6 +250,16 @@ function AddBills(props: KinWorkTarget) {
                     {kinBillUploadText(file.upload)}
                   </Text>
                 </View>
+                {earlier === null ? null : (
+                  <Button
+                    size="compact"
+                    tone="text"
+                    label={KIN_BILLS.review}
+                    accessibilityLabel={`${KIN_BILLS.review} ${file.name}`}
+                    disabled={busy}
+                    onPress={() => review(earlier)}
+                  />
+                )}
                 {removable ? (
                   <IconButton
                     icon="xmark"
@@ -600,7 +618,7 @@ const BillRow = memo(function BillRow(props: {
         <View className="gap-0.5">
           {view.fields.map((field) => (
             <View key={field.key} className="min-h-4 flex-row gap-3">
-              <Text textRole="footnote" className="w-24 text-foreground-muted">
+              <Text textRole="footnote" className="w-28 text-foreground-muted">
                 {field.label}
               </Text>
               <Text textRole="footnote" numberOfLines={1} className="flex-1 text-foreground">

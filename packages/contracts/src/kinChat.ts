@@ -622,6 +622,8 @@ export const KinChoiceCardState = Schema.Struct({
       ),
       /** The tap was refused and did nothing, as the text says: nobody chose anything. */
       refused: Schema.optionalKey(Schema.Literal(true)),
+      /** The outcome is all the settled card says: its detail is cleared. */
+      alone: Schema.optionalKey(Schema.Literal(true)),
       /** Set when the person undid what a default Kin took: who, by name then, and when. */
       undone: Schema.optionalKey(
         Schema.Struct({
@@ -864,6 +866,11 @@ export const KinChatStreamEvent = Schema.Union([
     reactions: Schema.optional(Schema.Array(KinReaction)),
     presence: Schema.optional(Schema.Array(KinPresence)),
     drafts: Schema.optional(Schema.Array(KinDraft)),
+    /**
+     * On a stream's first backlog: the viewer's own read mark, which later `read` events for
+     * their member move. Never another member's. Absent from servers without it.
+     */
+    readSeq: Schema.optional(NonNegativeInt),
   }),
   Schema.TaggedStruct("reset", {
     lastSeq: NonNegativeInt,

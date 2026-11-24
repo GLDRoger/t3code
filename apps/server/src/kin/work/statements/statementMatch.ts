@@ -277,17 +277,40 @@ const invoiceCandidate = (
 };
 
 /**
- * Whether the matcher would offer `invoice` for one bank row, as it does on a statement's review,
- * and why in one plain phrase: "cites INV/26-27/001", "same amount from Harbourline Logistics".
+ * The candidates a statement's review keeps level with the best: within the margin that decides
+ * whether one is the answer on its own. Scores best first.
  */
-export const invoiceOffered = (
+export const levelWithBest = <A>(ranked: ReadonlyArray<A>, score: (one: A) => number) =>
+  ranked.filter((one) => score(ranked[0]!) - score(one) < MARGIN);
+
+/** Whether the matcher takes a credit for money already recorded on an invoice, as a review does. */
+export const paymentOffer = (row: StatementRow, payment: PaymentCandidate, currency: string) => {
+  const offered = paymentCandidate(row, payment, currency);
+  return offered === undefined || offered.score < PROPOSED ? undefined : offered;
+};
+
+/**
+ * Whether the matcher would offer `invoice` for one bank row, as it does on a statement's review:
+ * the candidate with its score, and why in one plain phrase: "cites INV/26-27/001", "same amount
+ * from Harbourline Logistics".
+ */
+export const invoiceOffer = (
   row: StatementRow,
   invoice: InvoiceCandidate,
   currency: string,
   withholdsAtSource: boolean,
-): string | undefined => {
+) => {
   const offered = invoiceCandidate(row, invoice, currency, withholdsAtSource);
   if (offered === undefined || offered.score < PROPOSED) return undefined;
+  return { candidate: offered, reason: offerReason(row, invoice, currency, offered) };
+};
+
+const offerReason = (
+  row: StatementRow,
+  invoice: InvoiceCandidate,
+  currency: string,
+  offered: Candidate,
+) => {
   const cited = [invoice.number, invoice.key].find(
     (one) =>
       one !== null &&

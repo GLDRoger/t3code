@@ -155,7 +155,12 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
-import { directionOf, findBankList } from "./statements/bankList.ts";
+import {
+  BANK_CREDIT_ORIGIN,
+  bankStates,
+  directionOf,
+  findBankList,
+} from "./statements/bankList.ts";
 import { markedKey } from "./keyCall.ts";
 import { keyRefusal, moneyOf } from "./keyGuard.ts";
 import { cleanTags } from "./tags.ts";
@@ -3547,8 +3552,10 @@ const make = Effect.gen(function* () {
           currency: string;
           paidOn: string;
           voidedAt: number | null;
+          originKey: string;
         }>`
-          SELECT amount_minor AS minor, currency, paid_on AS "paidOn", voided_at AS "voidedAt"
+          SELECT amount_minor AS minor, currency, paid_on AS "paidOn", voided_at AS "voidedAt",
+            origin_key AS "originKey"
           FROM kin_record_payments WHERE org_id = ${orgId} AND payment_id = ${paymentId}
             AND record_id = ${row.recordId}`;
         if (found === undefined)
@@ -3582,10 +3589,48 @@ const make = Effect.gen(function* () {
           ],
           now,
         );
+        if (found.originKey.startsWith(BANK_CREDIT_ORIGIN))
+          yield* reopenCredit(
+            orgId,
+            found.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]!,
+            now,
+          );
         const updated = yield* byId(orgId, row.recordId).pipe(provideSql);
         if (updated === undefined) return yield* unavailable;
         return updated;
       }),
+    );
+  });
+
+  /**
+   * A card's payment from a Bank transactions credit taken back: the credit is Unexplained again,
+   * written as Kin's own. The voided payment keeps that pair from being offered again
+   * (`invoiceCredits.ts`).
+   */
+  const reopenCredit = Effect.fn("KinRecords.reopenCredit")(function* (
+    orgId: KinOrgId,
+    bankRecordId: string,
+    now: number,
+  ) {
+    const def = yield* findBankList(orgId).pipe(provideSql);
+    const bank = yield* byId(orgId, bankRecordId).pipe(provideSql);
+    if (def === undefined || bank === undefined || bank.registerId !== def.id) return;
+    const states = bankStates(def);
+    if (bank.state !== states.explained) return;
+    const rev = bank.rev + 1;
+    yield* sql`UPDATE kin_records SET rev = ${rev}, updated_at = ${now}, state = ${states.open},
+        category = NULL, closed_at = NULL
+      WHERE org_id = ${orgId} AND record_id = ${bank.recordId}`;
+    yield* logChange(
+      orgId,
+      { actor: { _tag: "system" }, via: "import" },
+      { recordId: bank.recordId, key: bank.key, rev },
+      "updated",
+      [
+        { field: "state", from: bank.state, to: states.open },
+        ...(bank.category === null ? [] : [{ field: "category", from: bank.category, to: null }]),
+      ],
+      now,
     );
   });
 

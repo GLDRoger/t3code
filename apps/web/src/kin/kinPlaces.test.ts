@@ -199,9 +199,19 @@ describe("place addresses", () => {
         history: "1",
         open: "sheet",
         tab: "clients",
-        bills: "",
       }),
     ).toEqual({});
+  });
+
+  it("reads bills with no value as every batch, and a value that is no batch as no place", () => {
+    // The router hands a route its validated search over the raw one, so both reach `kinRecordOf`.
+    const placeOf = (raw: Record<string, unknown>) =>
+      kinRecordOf(Object.assign({}, raw, validateKinPlaceSearch(raw)));
+    expect(placeOf({ bills: "" })).toEqual({ bills: null });
+    expect(placeOf({ bills: true })).toEqual({ bills: null });
+    expect(placeOf({ bills: "b-3f9a" })).toEqual({ bills: "b-3f9a" });
+    expect(placeOf({ bills: 5 })).toBeNull();
+    expect(placeOf({ bills: "x".repeat(81) })).toBeNull();
   });
 
   it("opens an agent's page over the place and closes Settings", () => {

@@ -1281,3 +1281,14 @@ export const layer = Layer.effectDiscard(
     );
   }),
 );
+
+/**
+ * A fact told, and woken for, as if new: its card did nothing, so the next pass tells it again when
+ * it still holds, and nothing happens when it no longer does.
+ */
+export const retell = Effect.fn("KinPulse.retell")(function* (orgId: KinOrgId, factKey: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`DELETE FROM kin_pulse_told WHERE org_id = ${orgId} AND fact_key = ${factKey}`;
+  yield* sql`UPDATE kin_pulse_facts SET woke_at = NULL
+    WHERE org_id = ${orgId} AND fact_key = ${factKey}`;
+});

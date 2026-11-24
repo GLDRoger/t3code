@@ -28,7 +28,14 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
-import { type Redraft, redo, redoOf, redoRaised, redoRefused } from "../questions/askPerson.ts";
+import {
+  type Redraft,
+  redo,
+  redoOf,
+  redoRaised,
+  redoRefused,
+  redraftWaits,
+} from "../questions/askPerson.ts";
 import { effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { docHeadStart } from "../pulse/draftWake.ts";
@@ -605,6 +612,8 @@ const draftNote = (draft: KinDocCardDraft, key: string, placed: boolean) =>
           `No ${draft.noAccount.service} account is connected, so Kin can't post it; ${draft.noAccount.by.name} can connect one in Settings on a computer. Say so.`,
         ]),
   ].join(" ");
+const NOT_A_REDRAFT =
+  "Kin couldn't tie it to a draft waiting on Changes first here, so no Approve card was made for it: never say it waits to be approved.";
 const DRAFT_BLANK = "A draft needs its text. Nothing was written.";
 const DRAFT_CARD_FULL =
   "With who asks and who it is for, this draft is too long for the card it goes up on. Shorten it, or file it without draft. Nothing was written.";
@@ -792,8 +801,16 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     draft !== undefined || headStart !== undefined ? true : (input.card ?? "answer"),
     draft,
   );
+  const untied =
+    draft !== undefined &&
+    (yield* redraftWaits({
+      orgId: lead.orgId,
+      agentId: lead.agentId,
+      wakeupId: KinWakeupId.make(lead.wakeupId),
+    }));
   const notes = [
     ...(draft === undefined ? [] : [draftNote(draft, written.row.key, placed)]),
+    ...(untied ? [NOT_A_REDRAFT] : []),
     ...(back === undefined ? [] : [back.note]),
   ];
   return {

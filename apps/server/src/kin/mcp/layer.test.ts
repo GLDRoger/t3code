@@ -1754,6 +1754,9 @@ it.effect.each([true, false])(
           "Do not proceed without written approval\nQuote is valid for 30 days.\n\nThank you.";
         const headed =
           "To: Kabir <kabir@invented.example>\nSubject: Shoot moves\n\nHi Kabir,\nFriday now.";
+        // Filed as a doc, a mail opens with its section's title: the heading is below it.
+        const filed = `## Mail\n\n${headed}`;
+        const filedNoHeading = `## Mail\n\n${noHeading}`;
         const prepared = (subject: string, body: string, to = ["kabir@invented.example"]) => ({
           to,
           cc: [],
@@ -1775,6 +1778,10 @@ it.effect.each([true, false])(
           [headed, prepared("Re: the shoot", "Hi Kabir,\nFriday now."), true, true],
           [headed, prepared("Re: the shoot", headed), true, true],
           [headed, prepared("Re: the shoot", "Hi Kabir, Friday."), true, false],
+          [filed, prepared("Shoot moves", "Hi Kabir,\nFriday now."), false, true],
+          [filed, prepared("moves", "Hi Kabir,\nFriday now."), false, false],
+          [filed, prepared("Shoot moves", "## Mail\n\nHi Kabir,\nFriday now."), false, false],
+          [filedNoHeading, prepared("Anything", noHeading), false, true],
         ] as const)
           assert.strictEqual(
             mailKeepsDraft(mailed, draft, reply),

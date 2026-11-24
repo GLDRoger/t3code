@@ -21,7 +21,10 @@ import {
   kinMarkReadRearms,
   kinSeqToMarkRead,
   kinUnreadToMark,
+  kinNextNewLineHold,
+  kinOwnReadSeq,
   latestKinSeq,
+  type KinNewLineHold,
   type KinChatScreenState,
   type KinFeedRow,
   type KinFeedViewer,
@@ -624,6 +627,15 @@ function KinChatFeed(props: {
   const outbox = useAtomValue(kinOutbox.chatAtom(props.environmentId, props.chatId));
   const dayStart = new Date(nowMs);
   dayStart.setHours(0, 0, 0, 0);
+  const viewerMemberId = kinViewerMemberId(props.members, props.viewer.personId);
+  const [heldLine, setHeldLine] = useState<KinNewLineHold | null>(null);
+  const newLine = kinNextNewLineHold(
+    heldLine,
+    props.chatId,
+    kinOwnReadSeq(live, viewerMemberId),
+    latestKinSeq(live.messages),
+  );
+  if (newLine !== heldLine) setHeldLine(newLine);
   const feed = kinChatFeedView({
     chatId: props.chatId,
     live,
@@ -642,6 +654,7 @@ function KinChatFeed(props: {
     agentName: props.agentName,
     retired: props.retired !== null,
     readOnly: props.readOnly !== null,
+    newLine,
   });
   const { streamed, widgets, pending, rows, display, landIndex, followsEnd, unseen } = feed;
   const echoedKey = feed.echoed.join("\n");
@@ -651,7 +664,6 @@ function KinChatFeed(props: {
   }, [echoedKey]);
   const canReactHere = useAtomValue(kinClient.react.permissionAtom(props.environmentId));
   const react = useAtomCommand(kinClient.react, "react");
-  const viewerMemberId = kinViewerMemberId(props.members, props.viewer.personId);
   const canReact =
     canReactHere &&
     viewerMemberId !== null &&

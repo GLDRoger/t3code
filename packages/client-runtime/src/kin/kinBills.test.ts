@@ -13,6 +13,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   KIN_BILLS,
   kinBillBatchCardView,
+  kinBillBatchSentence,
   kinBillExpenseStart,
   kinBillFileRefusal,
   kinBillRowView,
@@ -22,6 +23,8 @@ import {
   kinBillsKeptAll,
   kinBillsOutcome,
   kinBillsSend,
+  kinBillUploadBatch,
+  kinBillUploadText,
   kinBillsStep,
   type KinBillsAdding,
   type KinBillsEvent,
@@ -71,33 +74,47 @@ describe("a bill on the review list", () => {
       expect(view.actions).toEqual(actions);
     }
     // The host's own sentence, as it wrote it; Read again only where reading again can change it.
-    const unread: ReadonlyArray<[string, boolean, ReadonlyArray<string>]> = [
-      [
-        "Kin can't read this kind of photo: add it as a JPEG or PNG.",
-        false,
-        ["byHand", "readAgain", "dismiss"],
-      ],
+    const unread: ReadonlyArray<[string, "amount" | "date" | null, ReadonlyArray<string>]> = [
       [
         "Couldn't read: currency. Finance: No currency printed.",
-        false,
+        null,
         ["byHand", "readAgain", "dismiss"],
       ],
-      ["Finance: The photo is blurred.", false, ["byHand", "readAgain", "dismiss"]],
-      ["The amount is far above the rest of Expenses: check it.", true, ["byHand", "dismiss"]],
-      ["The date is after today: check it.", true, ["byHand", "dismiss"]],
-      ["The date is more than ten years back: check it.", true, ["byHand", "dismiss"]],
+      ["Finance: The photo is blurred.", null, ["byHand", "readAgain", "dismiss"]],
+      ["The amount is far above the rest of Expenses: check it.", "amount", ["byHand", "dismiss"]],
+      ["The date is after today: check it.", "date", ["byHand", "dismiss"]],
+      ["The date is more than ten years back: check it.", "date", ["byHand", "dismiss"]],
     ];
-    for (const [problem, readClean, actions] of unread) {
+    const LABEL = {
+      amount: "Check the amount",
+      date: "Check the date",
+    } as const;
+    for (const [problem, check, actions] of unread) {
       const view = kinBillRowView(
         row({
           state: "unreadable",
           expense: undefined,
           problem,
-          ...(readClean ? { readClean } : {}),
+          ...(check === null ? {} : { readClean: true, check }),
         }),
       );
-      expect([view.problem, view.actions]).toEqual([problem, actions]);
+      // A clean read waiting on a check says which figure; only a bill not read says it couldn't be.
+      expect([view.label, view.problem, view.actions]).toEqual([
+        check === null ? "Couldn't read this one" : LABEL[check],
+        problem,
+        actions,
+      ]);
     }
+    // A photo of a kind Kin can't read reads the same again: entered by hand or dismissed.
+    const kind = kinBillRowView(
+      row({
+        state: "unreadable",
+        expense: undefined,
+        problem: "Kin can't read this kind of photo: add it as a JPEG or PNG.",
+        wrongKind: true,
+      }),
+    );
+    expect([kind.label, kind.actions]).toEqual(["Couldn't read this one", ["byHand", "dismiss"]]);
     expect(kinBillRowView(row({ state: "unreadable", problem: "It is for 0" })).problem).toBe(
       "It is for 0",
     );
@@ -137,6 +154,47 @@ describe("a bill on the review list", () => {
     expect(money({ amount: "1200.50", currency: "PKR" })).toEqual(["1200.50 PKR", null]);
     expect(money({ amount: "€20", currency: "INR" })).toEqual(["€20 INR", null]);
     expect(money({ amount: "  " })).toEqual([null, null]);
+  });
+
+  it("shows a kept or dropped bill as its expense stands, and one still to keep as read", () => {
+    const read = {
+      vendor: "Granite Furniture",
+      date: "2026-11-21",
+      amount: "980000000",
+      currency: "INR",
+      tax: "9",
+      number: "9042",
+    };
+    const expense = {
+      key: "EXP-8",
+      rev: 3,
+      title: "Granite Furniture, Nov 2026",
+      vendor: "Granite Furniture Mart",
+      date: "2026-11-20",
+      amount: { minor: 980_000, currency: "INR" },
+    };
+    const shown = (overrides: Partial<KinBillRow>) =>
+      kinBillRowView(row({ read, expense, ...overrides })).fields.map((field) => field.value);
+    const asExpense = ["Granite Furniture Mart", "Nov 20, 2026", "₹9,800.00", null, null, "9042"];
+    expect(shown({ state: "kept" })).toEqual(asExpense);
+    expect(shown({ state: "dropped" })).toEqual(asExpense);
+    expect(shown({ state: "read" })).toEqual([
+      "Granite Furniture",
+      "Nov 21, 2026",
+      "₹98,00,00,000.00",
+      "₹9.00",
+      null,
+      "9042",
+    ]);
+    // A host that sends no figures for the expense: what was read, as before.
+    expect(shown({ state: "kept", expense: { key: "EXP-8", rev: 3, title: "Granite" } })).toEqual([
+      "Granite Furniture",
+      "Nov 21, 2026",
+      "₹98,00,00,000.00",
+      "₹9.00",
+      null,
+      "9042",
+    ]);
   });
 
   it("carries why Keep all left it", () => {
@@ -290,23 +348,45 @@ describe("adding bills", () => {
   });
 
   it("says which file's expense was dropped, with that expense, and offers it no other add", async () => {
-    const held = harness(["a", "b"]);
+    const held = harness(["a", "b", "c"]);
     await kinBillsSend({
       ...held,
       upload: async (source) => attachment(source),
       add: async () => ({
         ok: true,
         value: {
-          ...answered([]),
+          ...answered(["c"]),
           already: [
-            { name: "a.jpg", sha256: SHA(3), expense: "EXP-4" as KinRecordKey },
-            { name: "b.jpg", sha256: SHA(4), expense: "EXP-5" as KinRecordKey, dropped: true },
+            {
+              name: "a.jpg",
+              sha256: SHA(3),
+              expense: "EXP-4" as KinRecordKey,
+              attachmentId: "a",
+              batchId: "b-0",
+            },
+            {
+              name: "b.jpg",
+              sha256: SHA(4),
+              expense: "EXP-5" as KinRecordKey,
+              dropped: true,
+              attachmentId: "b",
+            },
           ],
         },
       }),
     });
+    // Each file's line says what this add did with it: only "c" went in.
+    expect(
+      held
+        .state()
+        .files.map((file) => [kinBillUploadText(file.upload), kinBillUploadBatch(file.upload)]),
+    ).toEqual([
+      ["Already added before", "b-0"],
+      ["Already added before", null],
+      ["Added", null],
+    ]);
     expect(kinBillsOutcome(held.state())).toEqual({
-      review: null,
+      review: "b-1",
       close: false,
       lines: ["Already added before: a.jpg."],
       dropped: [
@@ -374,10 +454,18 @@ describe("a batch", () => {
     const one = summary("b-1", "2026-11-24T09:00:00", { read: 2, kept: 1, duplicate: 1 });
     expect(kinBillsEntry([one], now)).toEqual({
       batchId: "b-1",
-      // The day as the reader's locale writes it, without the year this year.
-      label: expect.stringMatching(/^Bills added on (24 Nov|Nov 24)$/),
+      // The day and time as the reader's locale writes them, without the year this year: two
+      // batches of one day read apart.
+      label: expect.stringMatching(/^Bills added on (24 Nov|Nov 24), (09:00|9:00\s?[AP]M)$/i),
       detail: "4 bills: 2 to keep, 1 looks like a duplicate, 1 kept.",
     });
+    // A clean read waiting on a check is not one that couldn't be read.
+    expect(
+      kinBillBatchSentence(
+        { reading: 0, read: 1, kept: 0, dropped: 0, duplicate: 0, unreadable: 3, check: 2 },
+        4,
+      ),
+    ).toBe("4 bills: 1 to keep, 1 couldn't be read, 2 need a check.");
     const older = summary("b-0", "2025-03-02T09:00:00", { read: 1, unreadable: 3 });
     expect(kinBillsEntry([one, older], now)).toEqual({
       batchId: null,
@@ -395,6 +483,15 @@ describe("a batch", () => {
       skipped: [{ sha256: SHA(5), key: "EXP-9", why: "Already kept." }],
     });
     expect(some.said).toBe("Kept 1 expense. 1 wasn't: why is on each.");
+    // Bills left for a check are counted as that, apart from the rest.
+    const checks = kinBillsKeptAll({
+      kept: ["EXP-1"],
+      skipped: [
+        { sha256: SHA(6), why: "Its amount needs a check.", check: true },
+        { sha256: SHA(7), why: "Still being read." },
+      ],
+    });
+    expect(checks.said).toBe("Kept 1 expense. 1 needs a check and 1 other wasn't: why is on each.");
     expect(some.skipped.get(SHA(5))).toBe("Already kept.");
   });
 

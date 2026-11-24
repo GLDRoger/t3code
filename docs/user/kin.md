@@ -73,6 +73,10 @@ desktop app it alerts you while Kin is open in a window you aren't looking at; o
 the phone's own notification settings. On Android those list Kin's kinds apart (Messages, Questions
 and approvals, Briefs, Devices and security), so you can silence one and keep the rest.
 
+Opening a chat clears its unread dot and takes its notifications away. A **New** line marks where
+the messages you hadn't seen begin, and stays there while the chat is open. An agent may still
+correct or take back what it said until you reply, react to it or answer its card.
+
 ### Adding a teammate (owner and co-owners)
 
 Choose **New**, then **Add teammate**, and give their name. Kin makes a link for you to send; it

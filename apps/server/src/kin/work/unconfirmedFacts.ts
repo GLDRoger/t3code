@@ -511,7 +511,11 @@ export const answerUnconfirmed = Effect.fn("KinUnconfirmed.answer")(function* (i
   if (!input.confirmed) {
     yield* sql`UPDATE kin_profile_changes SET declined_at = ${input.now}
       WHERE org_id = ${input.orgId} AND change_id = ${row.changeId}`;
-    return { title: "Not used", text: "You said no, so the client's details stay as they were." };
+    return {
+      title: "Not used",
+      text: "You said no, so the client's details stay as they were.",
+      alone: true,
+    } as const;
   }
   const proposal = yield* Effect.fromOption(decodeProposal(row.patch)).pipe(Effect.orDie);
   const records = yield* KinRecords;
@@ -550,5 +554,9 @@ export const answerUnconfirmed = Effect.fn("KinUnconfirmed.answer")(function* (i
     );
   yield* sql`UPDATE kin_profile_changes SET applied_at = ${input.now}
     WHERE org_id = ${input.orgId} AND change_id = ${row.changeId}`;
-  return { title: "Saved", text: "Saved. Invoices and quotes made from now on print it." };
+  return {
+    title: "Saved",
+    text: "Saved. Invoices and quotes made from now on print it.",
+    alone: true,
+  } as const;
 });

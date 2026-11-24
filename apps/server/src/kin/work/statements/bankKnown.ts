@@ -232,7 +232,7 @@ export const BankAnswer = Schema.Struct({
   credits: Schema.optional(Schema.Array(BankCredit)),
 });
 
-const shortDay = (day: string) =>
+export const shortDay = (day: string) =>
   formatKinWhen(Date.parse(`${day}T00:00:00Z`), "date", { zone: "UTC", locale: KIN_TEXT_LOCALE });
 
 /**

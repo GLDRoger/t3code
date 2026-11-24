@@ -7,15 +7,15 @@
   },
   "kinSharedInstructionsHash": "54afe362b6a22c04f6811e014b7afb26238ed81de2ee79cb5eac074d6daf9795",
   "kinLeadToolListJsonBytes": {
-    "engineering": 165425,
-    "engineeringBesideFinanceAndSales": 150363,
-    "finance": 145009,
-    "shared": 94649,
-    "social": 148082,
-    "socialBesideFinanceAndSales": 133020,
-    "support": 145009
+    "engineering": 165771,
+    "engineeringBesideFinanceAndSales": 150709,
+    "finance": 145355,
+    "shared": 94995,
+    "social": 148428,
+    "socialBesideFinanceAndSales": 133366,
+    "support": 145355
   },
-  "kinLeadAlwaysLoadedToolBytes": 72555,
+  "kinLeadAlwaysLoadedToolBytes": 72773,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -94,8 +94,8 @@
       "schema": 490
     },
     "kin_ask": {
-      "desc": 1047,
-      "schema": 735
+      "desc": 1248,
+      "schema": 752
     },
     "kin_ask_close": {
       "desc": 244,
@@ -242,11 +242,11 @@
       "schema": 1963
     },
     "message_replace": {
-      "desc": 529,
+      "desc": 593,
       "schema": 137
     },
     "message_withdraw": {
-      "desc": 605,
+      "desc": 669,
       "schema": 117
     },
     "money_query": {

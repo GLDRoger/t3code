@@ -15,6 +15,7 @@ import {
   type KinFileRef,
   type KinOrgId,
   type KinRecordKey,
+  type KinSignedMoney,
   type KinWidget,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -55,11 +56,13 @@ export const KIN_BILLS = {
     uploading: "Uploading…",
     uploaded: "Uploaded",
     added: "Added",
+    already: "Already added before",
   },
   review: "Review",
   /** On Expenses: where bills added in bulk are, once there are any. */
   added: "Bills added",
-  batchTitle: (addedAt: string, now: Date) => `Bills added on ${kinBillDay(addedAt, now)}`,
+  batchTitle: (addedAt: string, now: Date) =>
+    `Bills added on ${kinBillDay(addedAt, now)}, ${timeOfDay.format(new Date(addedAt))}`,
   newest: (addedAt: string, now: Date) => `Newest on ${kinBillDay(addedAt, now)}`,
   state: {
     reading: "Reading…",
@@ -67,6 +70,10 @@ export const KIN_BILLS = {
     kept: "Kept",
     dropped: "Dropped",
     unreadable: "Couldn't read this one",
+    /** Read cleanly, but its amount or date is the owner's to check. */
+    check: "Check this one",
+    checkAmount: "Check the amount",
+    checkDate: "Check the date",
     duplicate: (key: string, title: string) => `Looks like ${key} ${title}`.trim(),
   } as const,
   field: {
@@ -98,6 +105,8 @@ export const KIN_BILLS = {
     title: "Nothing left here",
     detail: "Every bill added that day was dismissed.",
   },
+  /** Above the batches when a link names one that isn't there. */
+  noBatch: "That batch isn't here.",
   gone: {
     title: "These bills aren't here any more",
     detail: "Open Money to see the bills added since.",
@@ -112,6 +121,7 @@ export const KIN_BILLS = {
 const dayOfYear = kinWhenFormat("dateYear", { zone: "UTC" });
 const dayInYear = kinWhenFormat("date");
 const dayWithYear = kinWhenFormat("dateYear");
+const timeOfDay = kinWhenFormat("time");
 
 /** "24 Nov" this year, "24 Nov 2025" before it, in the reader's own zone. */
 function kinBillDay(iso: string, now: Date) {
@@ -245,8 +255,10 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
         ? ["addAnyway", "dismiss"]
         : ["addAnyway", "dismiss", "openDuplicate"];
     case "unreadable":
-      // A clean read whose amount or date is in question reads the same again.
-      return row.readClean === true ? ["byHand", "dismiss"] : ["byHand", "readAgain", "dismiss"];
+      // A clean read in question, or a photo Kin can't read, reads the same again.
+      return row.readClean === true || row.wrongKind === true
+        ? ["byHand", "dismiss"]
+        : ["byHand", "readAgain", "dismiss"];
     case "kept":
     case "dropped":
       return row.expense === undefined ? [] : ["openExpense"];
@@ -256,9 +268,45 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
 }
 
 function kinBillStateLabel(row: KinBillRow) {
-  return row.state === "duplicate"
-    ? KIN_BILLS.state.duplicate(row.duplicateOf?.key ?? "", row.duplicateOf?.title ?? "")
-    : KIN_BILLS.state[row.state];
+  if (row.state === "duplicate")
+    return KIN_BILLS.state.duplicate(row.duplicateOf?.key ?? "", row.duplicateOf?.title ?? "");
+  if (row.state !== "unreadable" || row.readClean !== true) return KIN_BILLS.state[row.state];
+  return row.check === "amount"
+    ? KIN_BILLS.state.checkAmount
+    : row.check === "date"
+      ? KIN_BILLS.state.checkDate
+      : KIN_BILLS.state.check;
+}
+
+/** A kept or dropped bill is its expense now: that expense's figures, the bill's own number kept. */
+function kinBillExpenseFields(
+  row: KinBillRow,
+  categoryLabel: (category: string) => string = (category) => category,
+): ReadonlyArray<KinBillField> | null {
+  const expense = row.expense;
+  if ((row.state !== "kept" && row.state !== "dropped") || expense === undefined) return null;
+  if (expense.amount === undefined && expense.date === undefined && expense.vendor === undefined)
+    return null;
+  const category = blank(expense.category);
+  const money = (value: KinSignedMoney | undefined) =>
+    value === undefined ? null : kinMoneyText(value, true);
+  return [
+    { key: "vendor", label: KIN_BILLS.field.vendor, value: blank(expense.vendor) },
+    {
+      key: "date",
+      label: KIN_BILLS.field.date,
+      value:
+        expense.date === undefined ? null : dayOfYear.format(new Date(`${expense.date}T00:00:00Z`)),
+    },
+    { key: "amount", label: KIN_BILLS.field.amount, value: money(expense.amount) },
+    { key: "tax", label: KIN_BILLS.field.tax, value: money(expense.tax) },
+    {
+      key: "category",
+      label: KIN_BILLS.field.category,
+      value: category === null ? null : categoryLabel(category),
+    },
+    { key: "number", label: KIN_BILLS.field.number, value: blank(row.read.number) },
+  ];
 }
 
 export function kinBillRowView(
@@ -269,7 +317,9 @@ export function kinBillRowView(
   } = {},
 ): KinBillRowView {
   const label = kinBillStateLabel(row);
-  const fields = kinBillFields(row.read, options.categoryLabel);
+  const fields =
+    kinBillExpenseFields(row, options.categoryLabel) ??
+    kinBillFields(row.read, options.categoryLabel);
   const problem = row.state === "unreadable" ? (row.problem ?? null) : null;
   const read = fields.flatMap((field) =>
     field.value === null ? [] : [`${field.label} ${field.value}`],
@@ -300,7 +350,9 @@ export function kinBillRowView(
 
 export type KinBillCounts = KinBillBatchSummary["states"];
 
-export const kinBillCounts = (rows: ReadonlyArray<Pick<KinBillRow, "state">>): KinBillCounts => {
+export const kinBillCounts = (
+  rows: ReadonlyArray<Pick<KinBillRow, "state" | "readClean">>,
+): KinBillCounts => {
   const count = (state: KinBillState) => rows.filter((row) => row.state === state).length;
   return {
     reading: count("reading"),
@@ -309,17 +361,20 @@ export const kinBillCounts = (rows: ReadonlyArray<Pick<KinBillRow, "state">>): K
     dropped: count("dropped"),
     duplicate: count("duplicate"),
     unreadable: count("unreadable"),
+    check: rows.filter((row) => row.state === "unreadable" && row.readClean === true).length,
   };
 };
 
 /** "12 bills: 5 to keep, 1 looks like a duplicate, 3 kept." The host writes no line for this. */
 export function kinBillBatchSentence(counts: KinBillCounts, bills: number) {
+  const check = counts.check ?? 0;
   const parts = [
     counts.read === 0 ? null : `${counts.read} to keep`,
     counts.duplicate === 0
       ? null
       : `${counts.duplicate} ${counts.duplicate === 1 ? "looks like a duplicate" : "look like duplicates"}`,
-    counts.unreadable === 0 ? null : `${counts.unreadable} couldn't be read`,
+    counts.unreadable - check === 0 ? null : `${counts.unreadable - check} couldn't be read`,
+    check === 0 ? null : `${check} ${check === 1 ? "needs" : "need"} a check`,
     counts.reading === 0 ? null : `${counts.reading} being read`,
     counts.kept === 0 ? null : `${counts.kept} kept`,
     counts.dropped === 0 ? null : `${counts.dropped} dropped`,
@@ -357,14 +412,20 @@ export function kinBillsEntry(batches: ReadonlyArray<KinBillBatchSummary>, now: 
 /** After Keep all: how many were kept, and each skipped bill's reason by its file. */
 export function kinBillsKeptAll(result: KinBillsKeepReadResult) {
   const kept = result.kept.length;
-  const skipped = result.skipped.length;
+  const check = result.skipped.filter((one) => one.check === true).length;
+  const other = result.skipped.length - check;
   const said =
     kept === 0 ? "None were kept." : kept === 1 ? "Kept 1 expense." : `Kept ${kept} expenses.`;
+  const left = [
+    check === 0 ? null : `${check} ${check === 1 ? "needs" : "need"} a check`,
+    other === 0
+      ? null
+      : check === 0
+        ? `${other === 1 ? "1 wasn't" : `${other} weren't`}`
+        : `${other === 1 ? "1 other wasn't" : `${other} others weren't`}`,
+  ].filter((part) => part !== null);
   return {
-    said:
-      skipped === 0
-        ? said
-        : `${said} ${skipped === 1 ? "1 wasn't" : `${skipped} weren't`}: why is on each.`,
+    said: left.length === 0 ? said : `${said} ${left.join(" and ")}: why is on each.`,
     skipped: new Map(result.skipped.map((one) => [one.sha256, one.why])),
   };
 }
@@ -407,8 +468,10 @@ export type KinBillUpload =
   | { readonly _tag: "uploading" }
   | { readonly _tag: "uploaded"; readonly attachment: KinAttachment }
   | { readonly _tag: "failed"; readonly problem: string }
-  /** Sent in an add the host answered. */
+  /** Sent in an add the host answered, and put in to be read. */
   | { readonly _tag: "added" }
+  /** Sent, but the host had it as a bill already: in `batchId`, when the host says. */
+  | { readonly _tag: "already"; readonly batchId: string | null }
   /** Not a photo or a PDF: never uploaded. */
   | { readonly _tag: "refused"; readonly reason: string };
 
@@ -454,7 +517,8 @@ export const kinBillsAddingStart = <F>(): KinBillsAdding<F> => ({
   problem: null,
 });
 
-const live = (upload: KinBillUpload) => upload._tag !== "added" && upload._tag !== "refused";
+const live = (upload: KinBillUpload) =>
+  upload._tag !== "added" && upload._tag !== "already" && upload._tag !== "refused";
 const sentKey = (attachments: ReadonlyArray<KinAttachment>) =>
   attachments.map((attachment) => attachment.id).join(",");
 
@@ -512,17 +576,29 @@ export function kinBillsStep<F>(state: KinBillsAdding<F>, event: KinBillsEvent<F
           : event.freshId;
       return { ...state, phase: "adding" as const, attempt: { requestId, sent } };
     }
-    case "added":
+    case "added": {
+      // A host that doesn't name the file it had already leaves every sent file "added".
+      const already = new Map(
+        event.result.already.flatMap((one) =>
+          one.attachmentId === undefined ? [] : [[one.attachmentId, one.batchId ?? null] as const],
+        ),
+      );
       return {
         ...state,
         phase: "choosing" as const,
         attempt: null,
         result: event.result,
         problem: null,
-        files: state.files.map((file) =>
-          file.upload._tag === "uploaded" ? { ...file, upload: { _tag: "added" as const } } : file,
-        ),
+        files: state.files.map((file): KinBillDraft<F> => {
+          if (file.upload._tag !== "uploaded") return file;
+          const batchId = already.get(file.upload.attachment.id);
+          return {
+            ...file,
+            upload: batchId === undefined ? { _tag: "added" } : { _tag: "already", batchId },
+          };
+        }),
       };
+    }
     case "addFailed":
       return { ...state, phase: "choosing" as const, problem: event.problem };
   }
@@ -545,6 +621,10 @@ export function kinBillsButton<F>(state: KinBillsAdding<F>) {
     disabled: count === 0 || state.phase !== "choosing",
   };
 }
+
+/** The batch a file already added before is in, to open from its line. */
+export const kinBillUploadBatch = (upload: KinBillUpload) =>
+  upload._tag === "already" ? upload.batchId : null;
 
 export function kinBillUploadText(upload: KinBillUpload) {
   switch (upload._tag) {

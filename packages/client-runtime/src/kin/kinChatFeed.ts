@@ -393,6 +393,9 @@ const messageRowKey = (message: KinMessage) =>
 
 // A card tap shows as the button's label, never its JSON, and never repeats the card it answered.
 const shownMessage = (message: KinMessage): KinMessage => {
+  // Bills added from Money ride on their card's message; they show in its review list.
+  if (isSystem(message) && message.widgetId?.startsWith("bills:") === true)
+    return { ...message, body: "", attachments: [] };
   // A host card's body is its inbox summary; the card says the same, so it isn't repeated.
   if (isSystem(message) && message.widgetId !== null)
     return message.body === "" ? message : { ...message, body: "" };
@@ -856,6 +859,57 @@ export function kinUnseenCount(
     if (!own && message.status !== "dismissed" && !isSystem(message)) count += 1;
   }
   return count;
+}
+
+/** The viewer's own seen mark: the stream's opening one, moved by their member's read events. */
+export function kinOwnReadSeq(
+  state: Pick<KinChatState, "readSeq" | "reads">,
+  viewerMemberId: string | null,
+): number | null {
+  if (state.readSeq === null) return null;
+  const moved = viewerMemberId === null ? 0 : (state.reads[viewerMemberId] ?? 0);
+  return Math.max(state.readSeq, moved);
+}
+
+/** The mark the "New" line was placed from, and the latest seq held then: later arrivals fall below it. */
+export type KinNewLineHold = {
+  readonly chatId: string;
+  readonly mark: number;
+  readonly upTo: number;
+};
+
+/**
+ * The line is placed once, from the viewer's seen mark as the chat opens, and stays there while it
+ * is open: opening moves that mark at once, and a later move never places it again.
+ */
+export function kinNextNewLineHold(
+  held: KinNewLineHold | null,
+  chatId: string,
+  mark: number | null,
+  latestSeq: number,
+): KinNewLineHold | null {
+  if (held !== null && held.chatId === chatId) return held;
+  if (mark === null) return null;
+  return { chatId, mark, upTo: Math.max(latestSeq, mark) };
+}
+
+/**
+ * The message the "New" line goes above: the first after the mark, up to `upTo`, that the viewer
+ * did not write. Null when there is none, or when what has loaded starts after the mark.
+ */
+export function kinNewLineSeq(
+  messages: ReadonlyArray<KinMessage>,
+  hold: KinNewLineHold | null,
+  viewerPersonId: KinPersonId | null,
+): number | null {
+  if (hold === null || messages.length === 0 || messages[0]!.seq > hold.mark + 1) return null;
+  for (const message of messages) {
+    if (message.seq <= hold.mark) continue;
+    if (message.seq > hold.upTo) return null;
+    const own = message.author._tag === "human" && message.author.personId === viewerPersonId;
+    if (!own && message.status === "posted") return message.seq;
+  }
+  return null;
 }
 
 export const latestKinSeq = (messages: ReadonlyArray<KinMessage>) =>

@@ -261,17 +261,18 @@ it.effect("an agent takes back or puts right only its own message that no one ha
     TestClock.setTime(IST_MON_0930),
     Effect.gen(function* () {
       const { sql, chats, repo, owner, orgId, chatOf, say, wake } = yield* ambermill;
+      // Her reply reads all before it, so Finance's words come after it.
+      const asked = yield* chats.send(owner, {
+        chatId: chatOf("finance"),
+        body: "ok",
+        clientMessageId: "m1",
+      });
       const chase = yield* say(
         "finance",
         "m-chase",
         "Lumen Grove still owes INV-14 (₹85,000), 12 days late.",
       );
       yield* say("finance", "m-gst", "The October GST return is due Thursday 26 Nov.");
-      const asked = yield* chats.send(owner, {
-        chatId: chatOf("finance"),
-        body: "ok",
-        clientMessageId: "m1",
-      });
       yield* wake("finance");
       const withdraw = (agent: string, messageId: string, why = "Lumen Grove paid") =>
         callAs(agent, "message_withdraw", { messageId, why });
@@ -384,10 +385,18 @@ it.effect("an agent takes back or puts right only its own message that no one ha
         edited: replacedAt,
       });
 
-      // Once Rhea has read it, it is hers as written: both tools refuse and name her.
-      const [latest] = yield* sql<{ seq: number }>`SELECT MAX(seq) AS seq FROM kin_messages
-        WHERE chat_id = ${chatOf("finance")}`;
+      // Rhea only opening the chat leaves it Finance's to put right.
+      const [latest] = yield* sql<{ seq: number; messageId: KinMessageId }>`SELECT seq,
+          message_id AS "messageId" FROM kin_messages WHERE chat_id = ${chatOf("finance")}
+        ORDER BY seq DESC LIMIT 1`;
       yield* chats.markRead(owner, { chatId: chatOf("finance"), seq: latest!.seq });
+      const again = yield* callAs("finance", "message_replace", {
+        messageId: "m-gst",
+        body: "The October GST return is due Friday 27 Nov, filed by Meera.",
+      });
+      assert.isTrue(again.ok, again.text);
+      // Once Rhea reacts at or past it, it is hers as written: both tools refuse and name her.
+      yield* chats.react(owner, { messageId: latest!.messageId, emoji: "❤️", on: true });
       const read = OWN_MESSAGE_REFUSALS.read("Rhea Rao");
       refused(yield* withdraw("finance", "m-gst"), read);
       refused(yield* callAs("finance", "message_replace", { messageId: "m-gst", body: "x" }), read);
@@ -542,15 +551,14 @@ it.effect("a review wake needs time unread, a change since, and no review pendin
         (yield* sweep(tuesday0945 + 3)).map((one) => one.agentId),
         ["chief"],
       );
-      // Once read, nothing is reviewed.
+      // Once answered, nothing is reviewed.
       yield* sql`UPDATE kin_events SET state = 'done' WHERE dedupe_key LIKE 'review:%'`;
       yield* moved(tuesday0945 + 4);
-      const [latest] = yield* sql<{ seq: number }>`SELECT MAX(seq) AS seq FROM kin_messages
-        WHERE chat_id = ${chatOf("finance")}`;
       const services = Option.getOrThrow((yield* Kin.KinServer).services);
-      yield* Context.get(services, KinChatService).markRead(owner, {
+      yield* Context.get(services, KinChatService).send(owner, {
         chatId: chatOf("finance"),
-        seq: latest!.seq,
+        body: "Noted.",
+        clientMessageId: "rhea-noted",
       });
       assert.deepStrictEqual(yield* sweep(tuesday0945 + 5), []);
     }).pipe(Effect.provide(layer)),
@@ -725,90 +733,95 @@ it.effect("an agent changes only a plain message of its own that no one has read
   ),
 );
 
-it.effect("a shared turn changes only what its history shows, and once read is read for good", () =>
-  Effect.andThen(
-    TestClock.setTime(IST_MON_0930),
-    Effect.gen(function* () {
-      const { sql, repo, owner, orgId, chatOf, say, wake } = yield* ambermill;
-      const chat = chatOf("finance");
-      const org = KinOrgId.make(orgId);
-      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+it.effect(
+  "a shared turn changes only what its history shows, and once answered is answered for good",
+  () =>
+    Effect.andThen(
+      TestClock.setTime(IST_MON_0930),
+      Effect.gen(function* () {
+        const { sql, repo, owner, orgId, chatOf, say, wake } = yield* ambermill;
+        const chat = chatOf("finance");
+        const org = KinOrgId.make(orgId);
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
         VALUES ('dev', ${orgId}, 'dev', 'Dev Patel', ${at}, 'member')`;
-      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
           owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
         VALUES (${orgId}, 'rec-inv14', 'invoices', 'INV-14', 'Lumen Grove retainer', 'person',
           ${owner.personId}, 'person', 'inv14', 0, 0, '{"number":"INV/26-27/014"}')`;
-      // Written for Rhea alone, before Dev joined.
-      yield* say("finance", "m-old", "Rhea, your salary draft is ready.");
-      const devMember = KinMemberId.make("dev-member");
-      yield* repo.addMember({
-        orgId,
-        chatId: chat,
-        memberId: devMember,
-        principal: { _tag: "person", personId: KinPersonId.make("dev") },
-        role: "member",
-        joinedAt: at,
-        leftAt: null,
-        mutedUntil: null,
-      });
-      yield* say("finance", "m-new", "Lumen Grove still owes INV-14.", "chat");
-      yield* say("finance", "m-later", "The site copy is due Friday.", "chat");
-      const turn = yield* wake("finance");
-      const withdraw = (messageId: string) =>
-        callAs("finance", "message_withdraw", { messageId, why: "No longer so" });
-
-      const built = yield* Effect.flatMap(KinLeadPrompt, (prompt) =>
-        prompt.build({
+        // Written for Rhea alone, before Dev joined.
+        yield* say("finance", "m-old", "Rhea, your salary draft is ready.");
+        const devMember = KinMemberId.make("dev-member");
+        yield* repo.addMember({
           orgId,
-          agentId: KinAgentId.make("finance"),
-          wakeupId: turn,
-          events: [],
-          memoryHead: "fixture",
-          lane: { chatId: chat, mode: "reply" },
-        }),
-      ).pipe(Effect.provide(promptLayer));
-      const listed = unreadSection(built)!;
-      assert.include(listed, "- m-new,");
-      assert.notInclude(listed, "m-old");
-      const old = yield* withdraw("m-old");
-      assert.isFalse(old.ok, old.text);
-      assert.include(old.text, OWN_MESSAGE_REFUSALS.unknown);
+          chatId: chat,
+          memberId: devMember,
+          principal: { _tag: "person", personId: KinPersonId.make("dev") },
+          role: "member",
+          joinedAt: at,
+          leftAt: null,
+          mutedUntil: null,
+        });
+        yield* say("finance", "m-new", "Lumen Grove still owes INV-14.", "chat");
+        yield* say("finance", "m-later", "The site copy is due Friday.", "chat");
+        const turn = yield* wake("finance");
+        const withdraw = (messageId: string) =>
+          callAs("finance", "message_withdraw", { messageId, why: "No longer so" });
 
-      // An invoice Dev can't see changing wakes no review of a chat Dev reads.
-      yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
+        const built = yield* Effect.flatMap(KinLeadPrompt, (prompt) =>
+          prompt.build({
+            orgId,
+            agentId: KinAgentId.make("finance"),
+            wakeupId: turn,
+            events: [],
+            memoryHead: "fixture",
+            lane: { chatId: chat, mode: "reply" },
+          }),
+        ).pipe(Effect.provide(promptLayer));
+        const listed = unreadSection(built)!;
+        assert.include(listed, "- m-new,");
+        assert.notInclude(listed, "m-old");
+        const old = yield* withdraw("m-old");
+        assert.isFalse(old.ok, old.text);
+        assert.include(old.text, OWN_MESSAGE_REFUSALS.unknown);
+
+        // An invoice Dev can't see changing wakes no review of a chat Dev reads.
+        yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
           via, kind, fields_json)
         VALUES (${orgId}, 'rec-inv14', 2, ${IST_MON_0930 + HOUR}, 'person', ${owner.personId},
           'owner', 'updated', '[{"field":"state","from":"waiting","to":"done"}]')`;
-      const due = IST_MON_0930 + REVIEW_UNREAD_MS + HOUR;
-      yield* TestClock.setTime(due);
-      assert.deepStrictEqual(yield* reviewWakes({ orgId: org, at: due }), []);
+        const due = IST_MON_0930 + REVIEW_UNREAD_MS + HOUR;
+        yield* TestClock.setTime(due);
+        assert.deepStrictEqual(yield* reviewWakes({ orgId: org, at: due }), []);
 
-      // Dev sees the withdrawn line, never its words; Rhea sees both.
-      const later = yield* withdraw("m-later");
-      assert.isTrue(later.ok, later.text);
-      const line = Option.getOrThrow(
-        yield* repo.getMessage({ orgId: org, messageId: KinMessageId.make("m-later") }),
-      );
-      const [forDev] = yield* withLinks(
-        org,
-        { _tag: "person", personId: KinPersonId.make("dev") },
-        [line],
-      );
-      assert.isUndefined(forDev!.withdrawn?.said);
-      const [forRhea] = yield* withLinks(org, { _tag: "person", personId: owner.personId }, [line]);
-      assert.strictEqual(forRhea!.withdrawn?.said, "The site copy is due Friday.");
+        // Dev sees the withdrawn line, never its words; Rhea sees both.
+        const later = yield* withdraw("m-later");
+        assert.isTrue(later.ok, later.text);
+        const line = Option.getOrThrow(
+          yield* repo.getMessage({ orgId: org, messageId: KinMessageId.make("m-later") }),
+        );
+        const [forDev] = yield* withLinks(
+          org,
+          { _tag: "person", personId: KinPersonId.make("dev") },
+          [line],
+        );
+        assert.isUndefined(forDev!.withdrawn?.said);
+        const [forRhea] = yield* withLinks(org, { _tag: "person", personId: owner.personId }, [
+          line,
+        ]);
+        assert.strictEqual(forRhea!.withdrawn?.said, "The site copy is due Friday.");
 
-      // Dev read it, then left: it stays read.
-      const [mark] = yield* sql<{ seq: number }>`SELECT seq FROM kin_messages
+        // Dev answered it, then left: it stays answered.
+        const [mark] = yield* sql<{ seq: number }>`SELECT seq FROM kin_messages
         WHERE message_id = 'm-new'`;
-      yield* sql`INSERT INTO kin_read_state (chat_id, member_id, org_id, last_read_seq, updated_at)
-        VALUES (${chat}, ${devMember}, ${orgId}, ${mark!.seq}, ${at})`;
-      yield* repo.leaveChat({ orgId, chatId: chat, memberId: devMember, leftAt: at });
-      const left = yield* withdraw("m-new");
-      assert.isFalse(left.ok, left.text);
-      assert.include(left.text, OWN_MESSAGE_REFUSALS.read("Dev Patel"));
-    }).pipe(Effect.provide(layer)),
-  ),
+        yield* sql`INSERT INTO kin_read_state (chat_id, member_id, org_id, last_read_seq,
+          answered_seq, updated_at)
+        VALUES (${chat}, ${devMember}, ${orgId}, ${mark!.seq}, ${mark!.seq}, ${at})`;
+        yield* repo.leaveChat({ orgId, chatId: chat, memberId: devMember, leftAt: at });
+        const left = yield* withdraw("m-new");
+        assert.isFalse(left.ok, left.text);
+        assert.include(left.text, OWN_MESSAGE_REFUSALS.read("Dev Patel"));
+      }).pipe(Effect.provide(layer)),
+    ),
 );
 
 it.effect("a review wake names only entries matched exactly that its turn may read", () =>
@@ -869,15 +882,15 @@ it.effect("a review wake names only entries matched exactly that its turn may re
       assert.isDefined(made);
       assert.include(made!.changed.join("\n"), "INV-42 (Orbit retainer)");
       assert.notInclude(made!.text, "Orbit");
-      // Read before its turn starts: nothing is left for it.
+      // Opened, it is still due; reacted to before its turn starts, nothing is left for it.
       assert.isTrue(yield* reviewStillDue(org, event));
-      const [latest] = yield* sql<{ seq: number }>`SELECT MAX(seq) AS seq FROM kin_messages
-        WHERE chat_id = ${chatOf("finance")}`;
-      const services = Option.getOrThrow((yield* Kin.KinServer).services);
-      yield* Context.get(services, KinChatService).markRead(owner, {
-        chatId: chatOf("finance"),
-        seq: latest!.seq,
-      });
+      const [latest] = yield* sql<{ seq: number; messageId: KinMessageId }>`SELECT seq,
+          message_id AS "messageId" FROM kin_messages WHERE chat_id = ${chatOf("finance")}
+        ORDER BY seq DESC LIMIT 1`;
+      const chats = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinChatService);
+      yield* chats.markRead(owner, { chatId: chatOf("finance"), seq: latest!.seq });
+      assert.isTrue(yield* reviewStillDue(org, event));
+      yield* chats.react(owner, { messageId: latest!.messageId, emoji: "❤️", on: true });
       assert.isFalse(yield* reviewStillDue(org, event));
       yield* done;
     }).pipe(Effect.provide(layer)),

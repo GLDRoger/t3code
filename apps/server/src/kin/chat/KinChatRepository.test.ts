@@ -479,6 +479,7 @@ describe("KinChatRepository", () => {
         assert.deepStrictEqual(Option.getOrThrow(yield* repo.getReadState(scope)), {
           ...scope,
           lastReadSeq: 1,
+          answeredSeq: 0,
           updatedAt: timestamp,
         });
         const waiting = {
@@ -1433,15 +1434,17 @@ describe("KinChatRepository", () => {
       yield* Effect.all(
         [
           repo.markRead({ ...scope, seq: 3, updatedAt: later }),
-          repo.markRead({ ...scope, seq: 1, updatedAt: later }),
+          repo.markRead({ ...scope, seq: 1, updatedAt: later, answered: true }),
           repo.markRead({ ...scope, seq: 2, updatedAt: later }),
         ],
         { concurrency: "unbounded" },
       );
-      yield* repo.markRead({ ...scope, seq: 0, updatedAt: timestamp });
+      yield* repo.markRead({ ...scope, seq: 0, updatedAt: timestamp, answered: true });
+      // Seen and answered each move only forward, on their own.
       assert.deepStrictEqual(Option.getOrThrow(yield* repo.getReadState(scope)), {
         ...scope,
         lastReadSeq: 3,
+        answeredSeq: 1,
         updatedAt: later,
       });
       assert.strictEqual(yield* repo.unreadCount(scope), 0);

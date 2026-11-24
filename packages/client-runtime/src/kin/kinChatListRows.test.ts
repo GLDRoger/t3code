@@ -40,6 +40,8 @@ function row(
     readonly teamId?: string;
     readonly unread?: number;
     readonly working?: boolean;
+    /** The Team room's quiet "new" dot. */
+    readonly fresh?: boolean;
     /** The viewer's own member row: a pin or a mute. */
     readonly mine?: object;
   } = {},
@@ -69,6 +71,7 @@ function row(
             },
       unread: extra.unread ?? 0,
       ...(extra.working === undefined ? {} : { working: extra.working }),
+      ...(extra.fresh === undefined ? {} : { fresh: extra.fresh }),
     },
     waitingCount: extra.fold === "needsYou" ? 1 : 0,
     fold: extra.fold ?? "rest",
@@ -349,6 +352,15 @@ describe("kinChatListFold", () => {
       name: "a muted chat with unread words still comes up",
       rows: [chief, row("books", said, { agentId: "books", unread: 1, mine: muted })],
       up: ["chief", "books"],
+      settled: [],
+    },
+    {
+      name: "the muted Team room with new words comes up, though it has no count",
+      rows: [
+        chief,
+        row("team", said, { kind: "team_group", teamId: "team-room", fresh: true, mine: muted }),
+      ],
+      up: ["chief", "team"],
       settled: [],
     },
     {
