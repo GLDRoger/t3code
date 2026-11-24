@@ -1732,7 +1732,10 @@ describe("KinConnections", () => {
           (yield* connections.offer(scope, { service: "google" })).note,
           "Google is already connected, as Owner's own mailbox: it is read in a turn that is theirs alone, in their own chat with an agent. Nothing to connect.",
         );
-        assert.strictEqual((yield* connections.offer(scope, { service: "microsoft" })).note, OFFERED);
+        assert.strictEqual(
+          (yield* connections.offer(scope, { service: "microsoft" })).note,
+          OFFERED,
+        );
       }),
     ),
   );

@@ -700,135 +700,141 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("on the owner's word in his own chat, an agent drops or moves another agent's reminder for him", () =>
-  Effect.gen(function* () {
-    yield* setup;
-    const sql = yield* SqlClient.SqlClient;
-    const finance = "lead-f";
-    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at) VALUES
+it.effect(
+  "on the owner's word in his own chat, an agent drops or moves another agent's reminder for him",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const sql = yield* SqlClient.SqlClient;
+      const finance = "lead-f";
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at) VALUES
       ('fixture-coowner', ${orgId}, 'fixture-coowner', 'Coowner', 'co_owner', ${at}),
       ('fixture-stranger', ${orgId}, 'fixture-stranger', 'Stranger', NULL, ${at})`;
-    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key) VALUES
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key) VALUES
       ('fin-chat', ${orgId}, 'direct', 0, ${at}, 'fin-direct'),
       ('member-fin', ${orgId}, 'direct', 0, ${at}, ${`fixture-member:${finance}`}),
       ('stranger-chat', ${orgId}, 'direct', 0, ${at}, 'stranger-direct')`;
-    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES
       ('owner-in-fin', ${orgId}, 'fin-chat', 'person', ${ownerId}, 'owner', ${at}),
       ('member-in-fin', ${orgId}, 'member-fin', 'person', 'fixture-member', 'member', ${at})`;
-    for (const [agent, owner, chat] of [
-      [finance, ownerId, "fin-chat"],
-      ["lead-x", "fixture-stranger", "stranger-chat"],
-    ] as const) {
-      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+      for (const [agent, owner, chat] of [
+        [finance, ownerId, "fin-chat"],
+        ["lead-x", "fixture-stranger", "stranger-chat"],
+      ] as const) {
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
         VALUES (${agent}, ${orgId}, ${agent}, 'lead', ${owner}, ${at})`;
-      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, thread_id, models_json, worker_projects_json, owner_chat_id)
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, thread_id, models_json, worker_projects_json, owner_chat_id)
         VALUES (${agent}, ${orgId}, ${agent}, 'L1', 0, ${`${agent}-thread`}, '{}', '[]', ${chat})`;
-      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
         VALUES (${`set-by-${agent}`}, ${orgId}, ${agent}, 'chat.message', 'P0', '{}', 0, 0, 'done', NULL)`;
-    }
-    state.sources = [
-      [
-        "owner-said",
-        { saidBy: "fixture-owner", trust: "owner", source: "kin:chat:owner-chat:message:owner-message" },
-      ],
-    ];
-    const staged: Array<string> = [];
-    state.stage = (wakeupId) => Effect.sync(() => void staged.push(wakeupId));
-    const reminder = (id: string, fields: Partial<MemoryItemHead> = {}): MemoryItem => ({
-      head: head(id, {
-        kind: "deferral",
-        due: "2026-11-19T10:00:00+00:00",
-        on_due: "remind",
-        chat: KinChatId.make("fin-chat"),
-        source_event: KinEventId.make(`set-by-${finance}`),
-        sensitive: true,
-        path: `deferrals/${id}.md`,
-        ...fields,
-      }),
-      body,
-    });
-    state.items = [
-      reminder("def-drop"),
-      reminder("def-move"),
-      reminder("def-quiet"),
-      reminder("def-coowners", { said_by: "fixture-coowner" }),
-      reminder("def-teammates", {
-        chat: KinChatId.make("member-fin"),
-        said_by: "fixture-member",
-        trust: "member",
-      }),
-      reminder("def-group", { chat: KinChatId.make("group-chat"), for_chat: true }),
-      reminder("def-strangers", {
-        chat: KinChatId.make("stranger-chat"),
-        source_event: KinEventId.make("set-by-lead-x"),
-      }),
-    ];
-    yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
+      }
+      state.sources = [
+        [
+          "owner-said",
+          {
+            saidBy: "fixture-owner",
+            trust: "owner",
+            source: "kin:chat:owner-chat:message:owner-message",
+          },
+        ],
+      ];
+      const staged: Array<string> = [];
+      state.stage = (wakeupId) => Effect.sync(() => void staged.push(wakeupId));
+      const reminder = (id: string, fields: Partial<MemoryItemHead> = {}): MemoryItem => ({
+        head: head(id, {
+          kind: "deferral",
+          due: "2026-11-19T10:00:00+00:00",
+          on_due: "remind",
+          chat: KinChatId.make("fin-chat"),
+          source_event: KinEventId.make(`set-by-${finance}`),
+          sensitive: true,
+          path: `deferrals/${id}.md`,
+          ...fields,
+        }),
+        body,
+      });
+      state.items = [
+        reminder("def-drop"),
+        reminder("def-move"),
+        reminder("def-quiet"),
+        reminder("def-coowners", { said_by: "fixture-coowner" }),
+        reminder("def-teammates", {
+          chat: KinChatId.make("member-fin"),
+          said_by: "fixture-member",
+          trust: "member",
+        }),
+        reminder("def-group", { chat: KinChatId.make("group-chat"), for_chat: true }),
+        reminder("def-strangers", {
+          chat: KinChatId.make("stranger-chat"),
+          source_event: KinEventId.make("set-by-lead-x"),
+        }),
+      ];
+      yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
       VALUES (${orgId}, 'def-drop', 'armed', ${Date.parse("2026-11-19T10:00:00Z")}, 'remind', '{}', 0)`;
-    const service = yield* Lead.LeadMemory;
-    const cancel = (lead: string, itemId: string, sourceEventId = "owner-said") =>
-      service.cancel(scopeOf(lead), { itemId: KinMemoryItemId.make(itemId), sourceEventId });
-    const move = (itemId: string) =>
-      decodeDefer({
-        what: "Invented: check the payment on Monday",
-        due: "2026-11-23T10:00:00+00:00",
-        onDue: "remind",
-        chatId: "owner-chat",
-        sourceEventId: "owner-said",
-        replaces: itemId,
-      }).pipe(Effect.flatMap((input) => service.defer(scopeOf(leads.o), input)));
-    const told = sql<{ body: string }>`SELECT body FROM kin_messages
+      const service = yield* Lead.LeadMemory;
+      const cancel = (lead: string, itemId: string, sourceEventId = "owner-said") =>
+        service.cancel(scopeOf(lead), { itemId: KinMemoryItemId.make(itemId), sourceEventId });
+      const move = (itemId: string) =>
+        decodeDefer({
+          what: "Invented: check the payment on Monday",
+          due: "2026-11-23T10:00:00+00:00",
+          onDue: "remind",
+          chatId: "owner-chat",
+          sourceEventId: "owner-said",
+          replaces: itemId,
+        }).pipe(Effect.flatMap((input) => service.defer(scopeOf(leads.o), input)));
+      const told = sql<{ body: string }>`SELECT body FROM kin_messages
       WHERE org_id = ${orgId} AND chat_id = 'fin-chat' ORDER BY seq`;
-    const notMine =
-      "Only the agent that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.";
+      const notMine =
+        "Only the agent that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.";
 
-    // The owner's search in his own turn names whose each reminder is.
-    const found = yield* service.search(scopeOf(leads.o), { kind: "deferral" });
-    assert.deepInclude(found[0], { id: KinMemoryItemId.make("def-drop"), agent: finance });
+      // The owner's search in his own turn names whose each reminder is.
+      const found = yield* service.search(scopeOf(leads.o), { kind: "deferral" });
+      assert.deepInclude(found[0], { id: KinMemoryItemId.make("def-drop"), agent: finance });
 
-    // Not after outside text, whether read in this turn or followed from another.
-    yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+      // Not after outside text, whether read in this turn or followed from another.
+      yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
       VALUES (${orgId}, ${`wake-${leads.o}`}, 0, 'mail:invented')`;
-    assert.strictEqual((yield* Effect.flip(cancel(leads.o, "def-drop"))).message, notMine);
-    yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE org_id = ${orgId}`;
-    yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
+      assert.strictEqual((yield* Effect.flip(cancel(leads.o, "def-drop"))).message, notMine);
+      yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE org_id = ${orgId}`;
+      yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
       VALUES (${orgId}, ${`follows:wake-${leads.o}`}, 'mail:invented')`;
-    assert.strictEqual((yield* Effect.flip(cancel(leads.o, "def-drop"))).message, notMine);
-    yield* sql`DELETE FROM kin_event_outside WHERE org_id = ${orgId}`;
-    // Not in a wake nobody started: the routine's own event is no one's word.
-    assert.strictEqual(
-      (yield* Effect.flip(cancel(leads.o, "def-drop", `event-${leads.o}`))).message,
-      notMine,
-    );
-    // Not from a teammate's chat, nor in a turn a member reads.
-    for (const lead of [leads.a, leads.b])
+      assert.strictEqual((yield* Effect.flip(cancel(leads.o, "def-drop"))).message, notMine);
+      yield* sql`DELETE FROM kin_event_outside WHERE org_id = ${orgId}`;
+      // Not in a wake nobody started: the routine's own event is no one's word.
       assert.strictEqual(
-        (yield* Effect.flip(cancel(lead, "def-drop", `event-${lead}`))).message,
-        SHARED_REFUSAL,
+        (yield* Effect.flip(cancel(leads.o, "def-drop", `event-${leads.o}`))).message,
+        notMine,
       );
-    // Not someone else's: a co-owner's own, a teammate's, a group's, another owner's agent's.
-    for (const itemId of ["def-coowners", "def-teammates", "def-group", "def-strangers"]) {
-      assert.strictEqual((yield* Effect.flip(cancel(leads.o, itemId))).message, notMine, itemId);
-      assert.strictEqual((yield* Effect.flip(move(itemId))).message, notMine, itemId);
-    }
-    assert.lengthOf(staged, 0);
-    assert.lengthOf(yield* told, 0);
+      // Not from a teammate's chat, nor in a turn a member reads.
+      for (const lead of [leads.a, leads.b])
+        assert.strictEqual(
+          (yield* Effect.flip(cancel(lead, "def-drop", `event-${lead}`))).message,
+          SHARED_REFUSAL,
+        );
+      // Not someone else's: a co-owner's own, a teammate's, a group's, another owner's agent's.
+      for (const itemId of ["def-coowners", "def-teammates", "def-group", "def-strangers"]) {
+        assert.strictEqual((yield* Effect.flip(cancel(leads.o, itemId))).message, notMine, itemId);
+        assert.strictEqual((yield* Effect.flip(move(itemId))).message, notMine, itemId);
+      }
+      assert.lengthOf(staged, 0);
+      assert.lengthOf(yield* told, 0);
 
-    // His own word, in his own chat: dropped and moved, and Finance is told each once.
-    assert.strictEqual((yield* cancel(leads.o, "def-drop")).outcome, "stopped");
-    const run = yield* sql<{ state: string }>`SELECT state FROM kin_deferral_runs
+      // His own word, in his own chat: dropped and moved, and Finance is told each once.
+      assert.strictEqual((yield* cancel(leads.o, "def-drop")).outcome, "stopped");
+      const run = yield* sql<{ state: string }>`SELECT state FROM kin_deferral_runs
       WHERE org_id = ${orgId} AND item_id = 'def-drop'`;
-    assert.deepStrictEqual(run, [{ state: "undone" }]);
-    assert.isString((yield* move("def-move")).itemId);
-    yield* cancel(leads.o, "def-drop");
-    assert.deepStrictEqual(
-      (yield* told).map((row) => row.body),
-      [
-        `${leads.o} cancelled the reminder "Invented def-drop" on Owner's word.`,
-        `${leads.o} replaced the reminder "Invented def-move" on Owner's word.`,
-      ],
-    );
-  }).pipe(Effect.provide(layer)),
+      assert.deepStrictEqual(run, [{ state: "undone" }]);
+      assert.isString((yield* move("def-move")).itemId);
+      yield* cancel(leads.o, "def-drop");
+      assert.deepStrictEqual(
+        (yield* told).map((row) => row.body),
+        [
+          `${leads.o} cancelled the reminder "Invented def-drop" on Owner's word.`,
+          `${leads.o} replaced the reminder "Invented def-move" on Owner's word.`,
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect(
