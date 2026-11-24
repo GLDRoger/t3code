@@ -117,6 +117,7 @@ const identity = Layer.mock(KinIdentity)({
 // No chat to show a card in: a proposal stands on the owner's typed answer.
 const gate = Layer.mock(KinLevelGate)({
   ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
+  askTo: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
 });
 const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinEventQueue.layer),
@@ -127,6 +128,8 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
+const SAID =
+  "Set up the invented client: Invented retainer, monthly; then Invented fee. Invented Apex is at 1 Invented Road, Pune. Rename it Invented Acme Ltd.";
 /** The owner, a teammate, one lead with its direct chat, and a running turn the owner woke. */
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -146,10 +149,11 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
       worker_projects_json, owner_chat_id)
     VALUES (${lead}, ${orgId}, 'Lead lead', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
+  // The owner types the details a lead writes onto a client, so they go straight in.
   yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
       author_member_id, author_role, kind, body, mentions_json, status, created_at)
     VALUES ('ask', ${orgId}, 'lead-chat', 1, 'human', ${ownerId}, 'lead-chat-owner', 'owner',
-      'text', 'Set up the invented client', '[]', 'posted', ${at})`;
+      'text', ${SAID}, '[]', 'posted', ${at})`;
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status,
       event_ids, audience)
     VALUES ('wake', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '["ask-event"]', 'owner_only')`;
