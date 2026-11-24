@@ -167,7 +167,7 @@ export const countryFirstMessage = (owner: string, ask: CountryAsk = {}) =>
       ? "and Kin records no money until an owner chooses it in Settings, Company details."
       : `so Kin can't tell its currency or tax. ${
           ask.answeringChooser === true
-            ? "The person you're answering chooses it themselves, in Settings, Company details: tell them so in your reply, and to tell you once it is chosen: nothing wakes you then, so promise nothing before they do. No question or tool of yours can set it."
+            ? "The person you're answering chooses it themselves, in Settings, Company details: tell them so in your reply. Kin wakes you here once it is chosen, so they needn't tell you. No question or tool of yours can set it."
             : `Ask ${owner} to choose it in Settings, Company details.`
         }`
   }`;
