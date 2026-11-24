@@ -393,6 +393,9 @@ const messageRowKey = (message: KinMessage) =>
 
 // A card tap shows as the button's label, never its JSON, and never repeats the card it answered.
 const shownMessage = (message: KinMessage): KinMessage => {
+  // Bills added from Money ride on their card's message; they show in its review list.
+  if (isSystem(message) && message.widgetId?.startsWith("bills:") === true)
+    return { ...message, body: "", attachments: [] };
   // A host card's body is its inbox summary; the card says the same, so it isn't repeated.
   if (isSystem(message) && message.widgetId !== null)
     return message.body === "" ? message : { ...message, body: "" };

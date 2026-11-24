@@ -622,6 +622,8 @@ export const KinChoiceCardState = Schema.Struct({
       ),
       /** The tap was refused and did nothing, as the text says: nobody chose anything. */
       refused: Schema.optionalKey(Schema.Literal(true)),
+      /** The outcome is all the settled card says: its detail is cleared. */
+      alone: Schema.optionalKey(Schema.Literal(true)),
       /** Set when the person undid what a default Kin took: who, by name then, and when. */
       undone: Schema.optionalKey(
         Schema.Struct({

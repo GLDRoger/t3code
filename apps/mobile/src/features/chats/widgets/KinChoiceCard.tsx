@@ -723,11 +723,11 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       </View>
     );
 
-  const grouped = fromPicker === null && shownEdit === null;
+  const grouped = fromPicker === null && shownEdit === null && choice.draft?.open == null;
   return (
     <View className="gap-2.5 rounded-[20px] border border-border bg-card-alt p-4">
       <View
-        // Grouped for VoiceOver, except while Change or the editor sits inside: a group hides them.
+        // Grouped for VoiceOver, except around Change, the editor or a draft's Open: a group hides them.
         accessible={grouped}
         accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? null, edited, {
           message: true,

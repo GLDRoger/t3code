@@ -1668,6 +1668,7 @@ const make = Effect.gen(function* () {
         personId: identity.personId,
         name: (yield* requireRecord(repo.getPerson(identity))).displayName,
       };
+      const outcome = changed ?? handled;
       // Compare-and-set on the revision the tap saw: the first answer settles the card.
       const answered = yield* repo.updateWidget({
         ...widget,
@@ -1675,7 +1676,10 @@ const make = Effect.gen(function* () {
         state: {
           ...answer,
           decidedBy,
-          ...((changed ?? handled) === undefined ? {} : { outcome: changed ?? handled }),
+          ...(outcome === undefined ? {} : { outcome }),
+          ...(outcome !== undefined && "alone" in outcome && outcome.alone === true
+            ? { detail: null }
+            : {}),
         },
         awaiting: [],
         closedAt: answer.answer?.answeredAt ?? (yield* now),
