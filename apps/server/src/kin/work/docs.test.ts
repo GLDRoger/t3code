@@ -2599,7 +2599,7 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
       SELECT category, sensitive, marked_by_person_id AS marked FROM kin_records
       WHERE org_id = ${orgId} AND key = ${first.key}`;
     assert.deepStrictEqual(kept, { category: "proposal", sensitive: 1, marked: null });
-    // A coding agent's key acting as her never carries it (`readDoc` refuses what `keyHidden` names).
+    // A coding agent's key acting as her never carries it (`Docs.docRow` refuses what `keyHidden` names).
     const [firstRow] = yield* sql<{ id: string }>`SELECT record_id AS id FROM kin_records
       WHERE org_id = ${orgId} AND key = ${first.key}`;
     assert.isTrue((yield* keyHidden(orgId, [firstRow!.id])).has(firstRow!.id));

@@ -286,6 +286,20 @@ it.effect(
         (yield* OwnerDocs.list(rhea, { orgId: seeded.orgId })).docs.map((one) => one.key),
         auditNotes.key,
       );
+      // Every read that takes keyed leaves out what a key never carries, by key or by id.
+      assert.notInclude(
+        (yield* OwnerDocs.list(rhea, { orgId: seeded.orgId }, { keyed: true })).docs.map(
+          (one) => one.key,
+        ),
+        auditNotes.key,
+      );
+      for (const ref of [{ key: auditNotes.key }, { recordId: auditNotes.recordId }])
+        assert.strictEqual(
+          (yield* Effect.flip(
+            OwnerDocs.get(rhea, { orgId: seeded.orgId, ...ref }, { keyed: true }),
+          )).reason,
+          "not_found",
+        );
       assert.notInclude(
         (yield* listClients(seeded.rhea.key, {})).clients.map((one) => one.key),
         kilns.key,
