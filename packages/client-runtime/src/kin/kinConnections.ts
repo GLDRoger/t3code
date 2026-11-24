@@ -1028,6 +1028,21 @@ export const KIN_MY_MAILBOX_COPY = {
   teammatesFooter:
     "Which address each person connected. Kin never shows you what is in it or sends from it for you.",
   teammateNeedsSignIn: "Needs signing in again",
+  /** Whose a connected mailbox is, said beside it. */
+  companys: "The company's",
+  yours: "Yours",
+  makeMine: "Make this my own mailbox",
+  makeMineRow: "Kin stops watching it for the company. Your sign-in stays.",
+  makeMineTitle: (address: string) => `Make ${address} your own mailbox?`,
+  makeMineDetail:
+    "Kin will stop watching this mailbox for the company, and no bank alert is read from it. Only you, in your own chat with an agent, can have it read, and only you confirm what goes from it. Cards waiting to send from it close unsent. What Kin already made from it stays the company's.",
+  makeMineAction: "Make it mine",
+  makeCompanys: "Make this the company's mailbox",
+  makeCompanysTitle: (address: string) => `Make ${address} the company's mailbox?`,
+  makeCompanysDetail:
+    "The company's agents will be able to read everything in it, older mail included, and what goes from it needs an owner's or co-owner's Confirm. Kin watches it for the company from now on: mail that came while it was yours isn't noticed. Cards waiting to send from it close unsent. What you sent from it stays yours.",
+  makeCompanysAction: "Make it the company's",
+  moving: "move this mailbox",
 } as const;
 
 /** What Your mailbox shows: none yet, connected, or connected and needing a sign-in. */

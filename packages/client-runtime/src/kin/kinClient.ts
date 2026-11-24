@@ -953,6 +953,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.connections.mineRemove",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
     }),
+    /** The owner level moves a mailbox between the company's and their own, on its sign-in. */
+    mailboxMove: createKinRpcCommand(runtime, {
+      label: "kin:mailbox:move",
+      tag: "kin.connections.moveMailbox",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
+    }),
     connectionSetSignInClient: createKinRpcCommand(runtime, {
       label: "kin:connection:setSignInClient",
       tag: "kin.connections.setSignInClient",

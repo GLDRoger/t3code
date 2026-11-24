@@ -223,6 +223,16 @@ export type KinMyMailbox = typeof KinMyMailbox.Type;
 
 export const KinConnectionRef = Schema.Struct({ orgId: KinOrgId, connectionId: KinConnectionId });
 export type KinConnectionRef = typeof KinConnectionRef.Type;
+/**
+ * Moves a connected mailbox, keeping its sign-in: a company one to the caller's own (`mine`), or
+ * the caller's own to the company's. The owner level's alone, and only ever the caller's own.
+ */
+export const KinMailboxMoveInput = Schema.Struct({
+  orgId: KinOrgId,
+  connectionId: KinConnectionId,
+  to: Schema.Literals(["mine", "company"]),
+});
+export type KinMailboxMoveInput = typeof KinMailboxMoveInput.Type;
 export const KinConnectionDetail = Schema.Struct({
   connection: KinConnection,
   tools: Schema.Array(KinConnectionTool),
@@ -886,6 +896,11 @@ export const KinConnectionRpcs = [
     success: KinMyMailbox,
     error: KinError,
   }),
+  Rpc.make("kin.connections.moveMailbox", {
+    payload: KinMailboxMoveInput,
+    success: KinMyMailbox,
+    error: KinError,
+  }),
   Rpc.make("kin.github.connect.status", {
     payload: KinGitHubInput,
     success: KinGitHubStatus,
@@ -971,6 +986,7 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.connections.mineSignInStart": AuthKinChatScope,
   "kin.connections.mineSignInFinish": AuthKinChatScope,
   "kin.connections.mineRemove": AuthKinChatScope,
+  "kin.connections.moveMailbox": AuthKinChatScope,
   "kin.github.connect.status": AuthKinChatScope,
   "kin.github.connect.start": AuthKinChatScope,
   "kin.github.connect.cancel": AuthKinChatScope,

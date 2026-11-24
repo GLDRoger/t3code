@@ -228,10 +228,13 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         // Keeping them on the card unsent is for the same people.
         assert.isFalse(yield* allowed("ravi", "kin.connections.sendEdited"));
         assert.isFalse(yield* allowed("ravi", "kin.connections.saveEdited"));
+        // Moving a mailbox into or out of the company's is the owner level's, as they stand now.
+        assert.isFalse(yield* allowed("ravi", "kin.connections.moveMailbox"));
         yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = 'meera'`;
         assert.isTrue(yield* allowed("meera", "kin.work.recordPayment"));
         assert.isTrue(yield* allowed("meera", "kin.connections.sendEdited"));
         assert.isTrue(yield* allowed("meera", "kin.connections.saveEdited"));
+        assert.isTrue(yield* allowed("meera", "kin.connections.moveMailbox"));
         // The picture service's key and monthly limit spend the company's money: owner level only.
         for (const method of ["kin.pictures.get", "kin.pictures.set"]) {
           assert.isFalse(yield* allowed("ravi", method));

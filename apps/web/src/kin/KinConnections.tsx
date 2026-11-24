@@ -2,6 +2,7 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   KIN_CONNECTIONS_COPY as COPY,
   KIN_MAIL_COPY as MAIL,
+  KIN_MY_MAILBOX_COPY as MINE,
   KIN_MAIL_PERMISSIONS,
   createKinConnectionActions,
   KIN_OWNER_CLIENT_SETUP,
@@ -385,7 +386,11 @@ function ConnectionsBody(
                 account.label === address || account.label === kinConnectionProvider(account)
                   ? undefined
                   : account.label;
-              return openRow(account, address, label);
+              return openRow(
+                account,
+                address,
+                label === undefined ? MINE.companys : `${label} · ${MINE.companys}`,
+              );
             })}
           </KinSettingsSection>
         ))}

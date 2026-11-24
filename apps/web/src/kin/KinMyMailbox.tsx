@@ -6,6 +6,7 @@ import {
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import type {
   EnvironmentId,
+  KinConnectionId,
   KinConnectionPreset,
   KinOrgId,
   KinPersonMailbox,
@@ -16,6 +17,7 @@ import { useState } from "react";
 
 import { Button } from "../components/ui/button";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinConfirm } from "./KinConfirm";
 import { openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
 import { kinClient } from "./kinClient";
 import {
@@ -41,6 +43,9 @@ export function KinMyMailbox(props: Target) {
   const start = useAtomCommand(kinClient.myMailboxSignInStart, { reportFailure: false });
   const finish = useAtomCommand(kinClient.myMailboxSignInFinish, { reportFailure: false });
   const remove = useAtomCommand(kinClient.myMailboxRemove, { reportFailure: false });
+  const move = useAtomCommand(kinClient.mailboxMove, { reportFailure: false });
+  const canMove = useAtomValue(kinClient.mailboxMove.permissionAtom(environmentId));
+  const [moving, setMoving] = useState(false);
   const [waiting, setWaiting] = useState<{ host: string; url: string; opened: boolean } | null>(
     null,
   );
@@ -87,6 +92,13 @@ export function KinMyMailbox(props: Target) {
     if (!AsyncResult.isSuccess(done)) setProblem(kinFailureText(done, "disconnect your mailbox"));
   };
   const connected = view.mailbox;
+  const giveToCompany = async (connectionId: KinConnectionId) => {
+    setBusy(true);
+    setProblem(null);
+    const done = await move({ environmentId, input: { orgId, connectionId, to: "company" } });
+    setBusy(false);
+    if (!AsyncResult.isSuccess(done)) setProblem(kinFailureText(done, COPY.moving));
+  };
   return (
     <KinSettingsSection title={COPY.title} description={line.text} problem={problem}>
       {connected === null ? (
@@ -111,6 +123,7 @@ export function KinMyMailbox(props: Target) {
       ) : (
         <KinSettingsRow
           title={connected.account ?? COPY.title}
+          detail={COPY.yours}
           status={
             line._tag === "signIn" ? (
               <KinSettingsStatus tone="attention">{COPY.signInAgain}</KinSettingsStatus>
@@ -128,6 +141,11 @@ export function KinMyMailbox(props: Target) {
                   {COPY.signInAgain}
                 </Button>
               ) : null}
+              {canMove ? (
+                <Button size="xs" variant="outline" disabled={busy} onClick={() => setMoving(true)}>
+                  {COPY.makeCompanys}
+                </Button>
+              ) : null}
               <Button size="xs" variant="ghost" disabled={busy} onClick={() => void disconnect()}>
                 {COPY.disconnect}
               </Button>
@@ -135,6 +153,21 @@ export function KinMyMailbox(props: Target) {
           }
         />
       )}
+      <KinConfirm
+        ask={
+          moving && connected !== null
+            ? {
+                title: COPY.makeCompanysTitle(connected.account ?? COPY.title),
+                detail: COPY.makeCompanysDetail,
+                action: COPY.makeCompanysAction,
+              }
+            : null
+        }
+        onConfirm={() => {
+          if (connected !== null) void giveToCompany(connected.connectionId);
+        }}
+        onClose={() => setMoving(false)}
+      />
       {waiting === null ? null : (
         <div className="px-4 py-3">
           <SignInWaiting

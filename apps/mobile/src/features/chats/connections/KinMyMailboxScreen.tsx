@@ -13,6 +13,7 @@ import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../../components/ui/AppBar";
+import * as Dialog from "../../../components/ui/Dialog";
 import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { ListSection } from "../../../components/ui/ListSection";
 import { Notice } from "../../../components/ui/Notice";
@@ -48,6 +49,8 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
   const start = useAtomCommand(kinClient.myMailboxSignInStart, { reportFailure: false });
   const finish = useAtomCommand(kinClient.myMailboxSignInFinish, { reportFailure: false });
   const remove = useAtomCommand(kinClient.myMailboxRemove, { reportFailure: false });
+  const move = useAtomCommand(kinClient.mailboxMove, { reportFailure: false });
+  const canMove = useAtomValue(kinClient.mailboxMove.permissionAtom(environmentId));
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -80,6 +83,26 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
 
   const line = view === null ? null : kinMyMailboxLine(view);
   const connected = view?.mailbox ?? null;
+  const confirmGive = () => {
+    if (connected === null) return;
+    Dialog.alert(COPY.makeCompanysTitle(connected.account ?? COPY.title), COPY.makeCompanysDetail, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: COPY.makeCompanysAction,
+        onPress: () => {
+          setBusy(true);
+          setProblem(null);
+          void move({
+            environmentId,
+            input: { orgId, connectionId: connected.connectionId, to: "company" },
+          }).then((done) => {
+            setBusy(false);
+            if (!AsyncResult.isSuccess(done)) setProblem(kinFailureText(done, COPY.moving));
+          });
+        },
+      },
+    ]);
+  };
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar title={COPY.title} onBack={() => navigation.goBack()} />
@@ -114,13 +137,19 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
               ))}
             </ListSection>
           ) : (
-            <ListSection title={connected.account ?? COPY.title} footer={line.text}>
+            <ListSection
+              title={`${connected.account ?? COPY.title} · ${COPY.yours}`}
+              footer={line.text}
+            >
               {line._tag === "signIn" && connected.preset !== null ? (
                 <ListActionRow
                   label={COPY.signInAgain}
                   loading={busy}
                   onPress={() => void signIn(connected.preset!)}
                 />
+              ) : null}
+              {canMove ? (
+                <ListActionRow label={COPY.makeCompanys} loading={busy} onPress={confirmGive} />
               ) : null}
               <ListActionRow
                 label={COPY.disconnect}
