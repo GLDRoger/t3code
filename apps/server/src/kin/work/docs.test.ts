@@ -2704,26 +2704,33 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     const client = yield* home("clients");
     const project = yield* home("projects");
     const all = [quote.key, proposal.key, theirs.key, privated.key];
-    const listers = {
-      docs: (who: typeof mate) => OwnerDocs.list([who], { orgId }),
-      client: (who: typeof mate) => OwnerDocs.list([who], { orgId, party: client.row.key }),
-      project: (who: typeof mate) => OwnerDocs.list([who], { orgId, project: project.row.key }),
-      search: (who: typeof mate) =>
-        OwnerDocs.search([who], { orgId, text: "invented listed scope", everything: true }).pipe(
-          Effect.map((found) => ({ docs: found.hits })),
-        ),
-    };
-    for (const [name, list] of Object.entries(listers)) {
+    for (const name of ["docs", "client", "project", "search"] as const) {
       yield* sql`UPDATE kin_records SET
           party_id = ${name === "client" ? client.row.recordId : null},
           project_id = ${name === "project" ? project.row.recordId : null}
         WHERE org_id = ${orgId} AND key IN ${sql.in(all)}`;
-      const keys = (who: typeof mate) =>
-        list(who).pipe(
-          Effect.map((page) => page.docs.map((doc) => doc.key).filter((key) => all.includes(key))),
+      for (const [who, wanted] of [
+        [mate, [quote.key, proposal.key]],
+        [owner, all],
+      ] as const) {
+        const keys =
+          name === "search"
+            ? (yield* OwnerDocs.search([who], {
+                orgId,
+                text: "invented listed scope",
+                everything: true,
+              })).hits.map((hit) => hit.key)
+            : (yield* OwnerDocs.list([who], {
+                orgId,
+                ...(name === "client" ? { party: client.row.key } : {}),
+                ...(name === "project" ? { project: project.row.key } : {}),
+              })).docs.map((doc) => doc.key);
+        assert.sameMembers(
+          keys.filter((key) => all.includes(key)),
+          [...wanted],
+          `${name} for ${who.personId}`,
         );
-      assert.sameMembers(yield* keys(mate), [quote.key, proposal.key], name);
-      assert.sameMembers(yield* keys(owner), all, name);
+      }
     }
   }).pipe(Effect.provide(layer)),
 );

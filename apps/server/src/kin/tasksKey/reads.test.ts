@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import {
   type KinMoney,
   type KinPersonId,
+  KinRecordId,
   KinRecordKey,
   MemoryItemHead,
   type KinChatError,
@@ -293,13 +294,15 @@ it.effect(
         ),
         auditNotes.key,
       );
-      for (const ref of [{ key: auditNotes.key }, { recordId: auditNotes.recordId }])
-        assert.strictEqual(
-          (yield* Effect.flip(
-            OwnerDocs.get(rhea, { orgId: seeded.orgId, ...ref }, { keyed: true }),
-          )).reason,
-          "not_found",
-        );
+      for (const opened of [
+        OwnerDocs.get(rhea, { orgId: seeded.orgId, key: auditNotes.key }, { keyed: true }),
+        OwnerDocs.get(
+          rhea,
+          { orgId: seeded.orgId, recordId: KinRecordId.make(auditNotes.recordId) },
+          { keyed: true },
+        ),
+      ])
+        assert.strictEqual((yield* Effect.flip(opened)).reason, "not_found");
       assert.notInclude(
         (yield* listClients(seeded.rhea.key, {})).clients.map((one) => one.key),
         kilns.key,
