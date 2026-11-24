@@ -567,7 +567,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
     readonly records: KinRecords["Service"];
     readonly chat: Pick<
       KinChatService["Service"],
-      "closeReplaced" | "reopenClosed" | "notice" | "setDocCardChangesFirst"
+      "closeReplaced" | "reopenClosed" | "notice" | "setDocCardChangesFirst" | "setDocCardChanged"
     >;
   },
 ) {

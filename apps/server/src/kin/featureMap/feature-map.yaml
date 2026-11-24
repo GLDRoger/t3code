@@ -1764,6 +1764,7 @@ unlisted:
   "web:settings/sections": The app's settings address for Sections; opens Kin's Settings → Sections.
   "web:settings/kin-profile": Where app Settings search lands for quiet hours, working hours, away and GitHub username; opens Kin's Settings → Profile.
   "web:?v": Picks the version of the open doc; not a screen.
+  "web:?card": The draft card a doc was opened from, so its reader reads that version without the Docs place; not a screen.
   "web:?tab": Switches the Clients place between its Clients, Deals and Projects lists; not a screen.
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.

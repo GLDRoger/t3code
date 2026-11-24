@@ -775,7 +775,8 @@ export class KinLeadPrompt extends Context.Service<
             }
             replyDue = true;
             events.push(
-              `${eventQuote}\n\n${made.text}\n\n${quote(QUOTE_LABELS.approvedDraft, made.data, true)}`,
+              // The approved draft goes in whole: the make must hold every word of it.
+              `${eventQuote}\n\n${made.text}\n\n${quote(QUOTE_LABELS.approvedDraft, made.data, { whole: ["draft"] })}`,
             );
             continue;
           }
