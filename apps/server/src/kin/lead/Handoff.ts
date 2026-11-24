@@ -56,6 +56,7 @@ import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { signedIn } from "../people/signedIn.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import { leftKind, nextCheckIn } from "../pulse/leftForCheckIn.ts";
 import { relayPrefix } from "../reply/promises.ts";
 import { heldUntil, holdFor, holdLine, theirTime, urgentNow } from "../triggers/quietHold.ts";
 import { unreadableBy } from "../work/teamView.ts";
@@ -142,6 +143,10 @@ export const RelayInput = Schema.Struct({
         "Only when it can't wait for their quiet hours to end: why, in a few words. Logged; it skips quiet hours and rings them.",
     }),
   ),
+  checkIn: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "true: not now but at the owner's next check-in with you, which Kin gives it to tell him once. Only to the owner.",
+  }),
 });
 export const RelayResult = Schema.Struct({
   to: Schema.String,
@@ -150,6 +155,13 @@ export const RelayResult = Schema.Struct({
   // After an outside read: what it went with, as this turn may name it.
   source: Schema.optional(Schema.String),
 });
+/** What the agent tells the asker of a line left for the owner's check-in (`leftForCheckIn.ts`). */
+export const leftNote = (
+  name: string,
+  next: { readonly title: string; readonly when: string },
+  asker: string,
+) =>
+  `Left for ${name}'s next check-in with you (${next.title}, ${next.when} on the company's clock), which Kin gives it to tell once; if none tells it by the day after, it is sent as a message. Tell ${asker} ${name} hears it then.`;
 /** What `relay` posts with: the gate's message to one person (`KinLevelGate.postTo`). */
 type PostTo = KinLevelGate["Service"]["postTo"];
 
@@ -944,8 +956,19 @@ const make = Effect.gen(function* () {
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
       WHERE l.org_id = ${ctx.orgId} AND l.agent_id = ${ctx.agentId} ORDER BY l.agent_id`;
     if (self === undefined) return yield* missing();
+    const hash = NodeCrypto.createHash("sha256").update(to.personId).digest("hex").slice(0, 16);
+    const next =
+      input.checkIn === true ? yield* nextCheckIn(ctx.orgId, ctx.agentId).pipe(access) : undefined;
+    if (input.checkIn === true && to.personId !== self.owner)
+      return yield* refuse(
+        `Only the owner has check-ins with you: leave out checkIn to send it to ${to.name} now.`,
+      );
+    if (input.checkIn === true && next === undefined)
+      return yield* refuse(
+        `None of your check-ins with ${to.name} is on: leave out checkIn to send it now.`,
+      );
     const messageId = KinMessageId.make(
-      `${relayPrefix(ctx.wakeupId)}${NodeCrypto.createHash("sha256").update(to.personId).digest("hex").slice(0, 16)}`,
+      next === undefined ? `${relayPrefix(ctx.wakeupId)}${hash}` : leftKind(ctx.wakeupId, hash),
     );
     const toOwnerSide =
       (yield* ownerLevel(ctx.orgId, to.personId).pipe(access)) || to.personId === self.owner;
@@ -1016,6 +1039,37 @@ const make = Effect.gen(function* () {
     if (ownerTurn) {
       const direct = { chatId: theirChat };
       // Whose words these are: the one person the turn acts for, drawn as sent by them.
+      const sentBy =
+        sender === null
+          ? {}
+          : {
+              relay: {
+                kind: "sent_by" as const,
+                agentId: ctx.agentId,
+                personId: KinPersonId.make(sender),
+                ...(senderRow === undefined ? {} : { personName: senderRow.name }),
+                ...afterReading,
+              },
+            };
+      if (next !== undefined) {
+        yield* holdLine({
+          orgId: ctx.orgId,
+          chatId: direct.chatId,
+          personId: to.personId,
+          key: messageId,
+          body: input.text,
+          audience: "chat",
+          at: next.fallbackAt,
+          agentId: ctx.agentId,
+          ...sentBy,
+        }).pipe(access);
+        return {
+          to: to.name,
+          sent: true as const,
+          note: `${leftNote(to.name, next, "the asker")}${sentAs}`,
+          ...named,
+        };
+      }
       const posted = yield* postTo(
         { ...ctx, wakeupId: KinWakeupId.make(ctx.wakeupId) },
         to.personId,
@@ -1025,17 +1079,7 @@ const make = Effect.gen(function* () {
           body: input.text,
           intent: "answer",
           urgent: input.urgent,
-          ...(sender === null
-            ? {}
-            : {
-                relay: {
-                  kind: "sent_by" as const,
-                  agentId: ctx.agentId,
-                  personId: KinPersonId.make(sender),
-                  ...(senderRow === undefined ? {} : { personName: senderRow.name }),
-                  ...afterReading,
-                },
-              }),
+          ...sentBy,
         },
       );
       if (isHeld(posted))
@@ -1121,6 +1165,24 @@ const make = Effect.gen(function* () {
               AND (asked_message_id IS NULL OR asked_message_id = ${messageId})
             RETURNING message_id`;
           if (claimed.length === 0) return yield* refuse(askedAlready);
+        }
+        if (next !== undefined) {
+          yield* holdLine({
+            ...where,
+            key: messageId,
+            body,
+            audience: "chat",
+            at: next.fallbackAt,
+            waits: true,
+            agentId: ctx.agentId,
+            relay,
+          }).pipe(access);
+          return {
+            to: to.name,
+            sent: true as const,
+            note: `${leftNote(to.name, next, who?.name ?? "the asker")}${sentAs}`,
+            ...named,
+          };
         }
         const replaced =
           input.urgent === undefined

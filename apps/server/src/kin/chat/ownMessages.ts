@@ -25,12 +25,15 @@ export const OWN_UNREAD_SHOWN = 20;
 /** How much of each one's text a turn shows. */
 const OWN_UNREAD_CLIP = 200;
 
-/** A person, in the chat now or once, has a read mark at or past message `m`: read for good. */
-const everRead = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1 FROM kin_chat_members p
+/**
+ * A person, in the chat now or once, has answered at or past message `m` (a send, a reaction, a
+ * card answer): answered for good. Only opening the chat is not answering it.
+ */
+const everAnswered = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1 FROM kin_chat_members p
     JOIN kin_read_state r ON r.org_id = p.org_id AND r.chat_id = p.chat_id
       AND r.member_id = p.member_id
     WHERE p.org_id = m.org_id AND p.chat_id = m.chat_id AND p.principal_kind = 'person'
-      AND r.last_read_seq >= m.seq)`;
+      AND r.answered_seq >= m.seq)`;
 
 /** Someone is in `m`'s chat now to read it. */
 export const someoneThere = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1
@@ -52,12 +55,12 @@ const onlyOwnOpenQuestion = (sql: SqlClient.SqlClient) => sql`NOT EXISTS (SELECT
 
 /**
  * Message `m` is one its agent may still take back: its own posted words, with no card but its
- * own open question, that no person has ever read. The turn's list, the review sweep and both
+ * own open question, that no person has ever answered. The turn's list, the review sweep and both
  * tools read this one rule; replace further takes no card at all.
  */
 export const amendable = (sql: SqlClient.SqlClient) => sql`m.author_kind = 'agent'
   AND m.status = 'posted' AND m.silent = 0 AND m.kind = 'text' AND ${wordsOnly(sql)}
-  AND ${onlyOwnOpenQuestion(sql)} AND NOT ${everRead(sql)}`;
+  AND ${onlyOwnOpenQuestion(sql)} AND NOT ${everAnswered(sql)}`;
 
 /** In a shared turn, `m` is at or past its chat's history floor (`historyFloor`). */
 const withinView = (sql: SqlClient.SqlClient, shared: boolean) =>
@@ -74,7 +77,7 @@ export interface OwnUnread {
 
 /**
  * This agent's messages in these chats it may still change (`amendable`), newest first, at most
- * `OWN_UNREAD_SHOWN`, and how many in all. From stored rows: read marks, never notifications.
+ * `OWN_UNREAD_SHOWN`, and how many in all. From stored rows: answered marks, never notifications.
  */
 export const ownUnread = Effect.fn("KinOwnMessages.unread")(function* (input: {
   readonly orgId: KinOrgId;
@@ -187,7 +190,7 @@ type Turn = {
 
 /**
  * The message, checked as the agent's own, in a chat it is in, within what the turn's history
- * shows; `reader` is the first person who ever read it, in the chat now or not.
+ * shows; `reader` is the first person who ever answered it, in the chat now or not.
  */
 const ownMessage = Effect.fnUntraced(function* (
   input: Turn & { readonly messageId: KinMessageId },
@@ -223,7 +226,7 @@ const ownMessage = Effect.fnUntraced(function* (
       AND r.member_id = c.member_id
     JOIN kin_people p ON p.org_id = c.org_id AND p.person_id = c.person_id
     WHERE c.org_id = ${input.orgId} AND c.chat_id = ${row.chatId} AND c.principal_kind = 'person'
-      AND r.last_read_seq >= ${row.seq}
+      AND r.answered_seq >= ${row.seq}
     ORDER BY r.updated_at, p.display_name LIMIT 1`;
   return { ...row, chatId: KinChatId.make(row.chatId), reader: reader?.name };
 });
@@ -363,7 +366,7 @@ export const withdrawOwn = Effect.fn("KinOwnMessages.withdraw")(function* (
 
 /**
  * `message_replace`: the agent puts the current version in place of its own plain message that no
- * person has read. It shows in place, marked updated (`editedAt`). Its words are named as a new
+ * person has answered. It shows in place, marked updated (`editedAt`). Its words are named as a new
  * post's are. Run inside the post gate's transaction (`KinLevelGate.amend`).
  */
 export const replaceOwn = Effect.fn("KinOwnMessages.replace")(function* (

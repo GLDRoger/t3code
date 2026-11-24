@@ -1278,6 +1278,98 @@ it.effect(
         );
         assert.lengthOf(sent, 2);
 
+        // Zoya asks that the owner hear it at his check-in, not now: only to the owner, only
+        // while a check-in is on, and then held for that check-in instead of posted.
+        const atCheckIn = {
+          to: me,
+          text: "The kickoff moved to Tue 1 Dec, 11:00.",
+          sourceEventId: "zoya-event",
+          checkIn: true,
+        };
+        assert.strictEqual(
+          (yield* Effect.flip(handoff.relay(scopeFor(chief), { ...atCheckIn, to: "Dev" }, postTo)))
+            .message,
+          "Only the owner has check-ins with you: leave out checkIn to send it to Dev Kulkarni now. Nothing was passed on.",
+        );
+        assert.strictEqual(
+          (yield* Effect.flip(handoff.relay(scopeFor(chief), atCheckIn, postTo))).message,
+          `None of your check-ins with ${me} is on: leave out checkIn to send it now. Nothing was passed on.`,
+        );
+        yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
+            project_id, workspace_strategy_json, model_selection_json, runtime_mode,
+            interaction_mode, created_by, creation_source, created_at, updated_at,
+            last_run_status, run_count, next_run_at)
+          VALUES ('task-afternoon', 'Afternoon check-in', 'Check in', 1,
+            '{"type":"fixed_time","timeOfDay":"15:30","weekdays":[1,2,3,4,5]}', 'project', '{}',
+            '{}', 'approval-required', 'plan', 'system', 'server', ${at}, ${at}, 'never', 0,
+            '2026-11-17T23:30:00.000Z')`;
+        yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+            source_event, said_by, audience, content_sha256, inbox_thread_id, created_at,
+            updated_at, check_in)
+          VALUES ('task-afternoon', ${orgId}, 'checkin-afternoon', ${chief}, ${ctx.chiefChat},
+            'kin-seed', ${owner.personId}, 'owner_only', 'hash', 'inbox', 0, 0, 1)`;
+        assert.deepStrictEqual(yield* handoff.relay(scopeFor(chief), atCheckIn, postTo), {
+          to: me,
+          sent: true,
+          note: `Left for ${me}'s next check-in with you (Afternoon check-in, Tue 17 Nov, 15:30 on the company's clock), which Kin gives it to tell once; if none tells it by the day after, it is sent as a message. Tell Zoya Sheikh ${me} hears it then.`,
+        });
+        assert.deepStrictEqual(
+          yield* sql`SELECT chat_id AS "chatId", person_id AS "personId", body FROM kin_held_posts
+            WHERE org_id = ${orgId} AND kind GLOB 'kin-relay:*:checkin-*'`,
+          [
+            {
+              chatId: ctx.chiefChat,
+              personId: owner.personId,
+              body: 'Zoya Sheikh asked Chief of staff:\n"The kickoff moved to Tue 1 Dec, 11:00."',
+            },
+          ],
+        );
+        assert.lengthOf(yield* passedOn(ctx.chiefChat), 1);
+        // A co-owner's own word for the owner's check-in is held as hers, as she wrote it.
+        const hers = (yield* chatOf("meera"))!;
+        const [meeraMember] = yield* sql<{ memberId: string }>`SELECT member_id AS "memberId"
+          FROM kin_chat_members WHERE chat_id = ${hers} AND person_id = 'meera'`;
+        const moved = yield* ctx.chats.send(
+          { _tag: "person", orgId, personId: "meera" as KinPersonId },
+          {
+            chatId: hers as KinChatId,
+            body: "The kickoff moved to Tuesday 11:00. Don't message Rhea now.",
+            clientMessageId: "meera-moved",
+          },
+        );
+        yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = NULL
+          WHERE org_id = ${orgId} AND event_id = 'zoya-event'`;
+        // Her own turn, as a new wake-up's would be: a shared one stays shared, and a relay's
+        // key is per wake-up, so Zoya's line would answer as its retry.
+        yield* sql`UPDATE kin_wakeups SET audience = NULL WHERE wakeup_id = ${`${chief}-wake`}`;
+        yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId}`;
+        yield* ctx.claim("meera-event", chief, {
+          provenance: { _tag: "human", personId: "meera", memberId: meeraMember!.memberId },
+          chatId: hers,
+          messageId: moved.messageId,
+        });
+        assert.include(
+          (yield* handoff.relay(
+            scopeFor(chief),
+            {
+              ...atCheckIn,
+              text: "The kickoff moved to Tue 1 Dec, 11:00.",
+              sourceEventId: "meera-event",
+            },
+            postTo,
+          )).note,
+          `Left for ${me}'s next check-in with you`,
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT body, json_extract(relay_json, '$.personName') AS "from"
+            FROM kin_held_posts WHERE org_id = ${orgId} AND chat_id = ${ctx.chiefChat}
+              AND kind GLOB 'kin-relay:*:checkin-*'`,
+          [{ body: "The kickoff moved to Tue 1 Dec, 11:00.", from: "Meera Shah" }],
+        );
+        assert.lengthOf(sent, 2);
+        yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = NULL
+          WHERE org_id = ${orgId} AND event_id = 'meera-event'`;
+
         // The owner answers her relayed request: work his turn starts is remembered as hers,
         // until anyone else speaks there first.
         const go = yield* ctx.chats.send(owner, {

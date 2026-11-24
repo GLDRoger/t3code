@@ -124,6 +124,7 @@ import { latestComments, projectNoteOf } from "./recordComments.ts";
 import {
   endOfDay,
   byNumber,
+  dueWhenText,
   iso,
   isSuggestion,
   notBouncedBack,
@@ -679,6 +680,8 @@ export const CreateResult = Schema.Struct({
       notWoken: Schema.optional(Schema.String),
       /** A printed detail kept unconfirmed for a person's tap (`unconfirmedFacts.ts`). */
       unconfirmed: Schema.optional(Schema.String),
+      /** A task given a due or a time: its date as its page shows it. */
+      shows: Schema.optional(Schema.String),
     }),
   ),
 });
@@ -762,6 +765,8 @@ const Updated = Schema.Struct({
   notWoken: Schema.optional(Schema.String),
   /** A printed detail kept unconfirmed for a person's tap (`unconfirmedFacts.ts`). */
   unconfirmed: Schema.optional(Schema.String),
+  /** A task given a due or a time: its date as its page shows it. */
+  shows: Schema.optional(Schema.String),
   openSteps: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -792,6 +797,7 @@ export const UpdateResult = Schema.Struct({
   notesKept: Updated.fields.notesKept,
   notWoken: Updated.fields.notWoken,
   unconfirmed: Updated.fields.unconfirmed,
+  shows: Updated.fields.shows,
   openSteps: Updated.fields.openSteps,
   entries: Schema.optional(Schema.Array(Updated)),
 });
@@ -1057,6 +1063,29 @@ const spineOf = Effect.fnUntraced(function* (
     team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
     { who: (text) => resolveWho(lead, text), at: atOf, currency: def.currency },
   );
+});
+
+/** A task's time is its due, which its page shows; `at` is only a meeting's start. */
+const timeIsDue = <
+  Row extends { readonly at?: string | null | undefined; readonly due?: string | null | undefined },
+>(
+  list: string,
+  category: string | null | undefined,
+  row: Row,
+): Row =>
+  list !== "work" || category === "meeting" || typeof row.at !== "string"
+    ? row
+    : { ...row, at: undefined, due: row.at };
+
+/** A plain task's date as its page shows it ("Due: No date" too), so the agent says the same. */
+export const dueShows = (dueAt: number | null, allDay: boolean, zone: string) =>
+  `Due: ${dueAt === null ? "No date" : dueWhenText(dueAt, allDay, zone, { zone, locale: KIN_TEXT_LOCALE })}`;
+const shownDue = Effect.fn("KinWorkTools.shownDue")(function* (
+  orgId: KinOrgId,
+  row: Pick<RecordRow, "registerId" | "category" | "dueAt" | "dueAllDay">,
+) {
+  if (listOf(row.registerId) !== "work" || row.category === "meeting") return {};
+  return { shows: dueShows(row.dueAt, row.dueAllDay === 1, yield* ownerZone(orgId)) };
 });
 
 const dueOf = Effect.fn("KinWorkTools.dueOf")(function* (orgId: KinOrgId, due: string | null) {
@@ -2770,10 +2799,13 @@ const createRow = Effect.fnUntraced(function* (
     (asked.category ?? "obligation") !== "obligation"
   )
     return yield* invalid("A row on a deal is a promise: category obligation.");
-  const row =
+  const row = timeIsDue(
+    list,
+    asked.deal !== undefined ? "obligation" : asked.category,
     list === "work" && asked.deal !== undefined
       ? { ...asked, category: "obligation" as const }
-      : asked;
+      : asked,
+  );
   if (row.next !== undefined) return yield* NEXT_IS_A_DEALS;
   // For a teammate alone in the turn, a prospect or a contact is what their own Clients form adds
   // (`memberAdds`, `memberAddsContact`).
@@ -3071,6 +3103,7 @@ const createRow = Effect.fnUntraced(function* (
         ? { state: stored.state, stateLabel: UNISSUED_INVOICE }
         : {}),
     ...marksOf(lists, stored),
+    ...(row.due === undefined ? {} : yield* shownDue(lead.orgId, stored)),
     ...(created && alsoOpen.length > 0 ? { alsoOpen } : {}),
     ...(alsoNamed === undefined ? {} : { alsoNamed }),
     ...(sameEmail === undefined ? {} : { sameEmail }),
@@ -3803,15 +3836,20 @@ const runUpdateMany = Effect.fnUntraced(function* (lead: Lead, input: typeof Upd
     entries: done.map((one) => one.result),
   };
 });
-const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: Change) {
-  yield* admitted(lead, "record_update", { ...input, key });
+const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: Change) {
+  yield* admitted(lead, "record_update", { ...asked, key });
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
-  yield* sourceOf(lead, input.sourceEventId);
+  yield* sourceOf(lead, asked.sourceEventId);
   const owned = yield* writerFor(lead);
   const writer = team === undefined ? owned : viewWriter(owned, team);
   const before = yield* records.get(lead.orgId, key);
   if (before === undefined) return yield* notFound(key);
+  const input = timeIsDue(
+    listOf(before.registerId),
+    asked.category === undefined ? before.category : asked.category,
+    asked,
+  );
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(key);
   const beforeFields = parseFields(before.fieldsJson);
@@ -4002,6 +4040,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
         ? { stateLabel: UNISSUED_INVOICE }
         : {}),
       changed,
+      ...(input.due === undefined ? {} : yield* shownDue(lead.orgId, after)),
       ...(unconfirmed === undefined ? {} : { unconfirmed }),
       ...((holder?.note ?? waitsOn?.note) === undefined
         ? {}
