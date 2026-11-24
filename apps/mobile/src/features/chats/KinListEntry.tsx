@@ -17,6 +17,7 @@ import { kinRecordHeld } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import {
   KIN_YES_NO,
   KIN_LISTS,
+  kinEntryPrivateLine,
   KIN_LIST_LABEL_MAX,
   kinListEditDraftOf,
   kinListEditInput,
@@ -711,7 +712,7 @@ export function KinListEntryBody(
       {entry.fields.length === 0 ? null : (
         <ListSection
           {...(view.privacy.private && ownerLevel && !view.shared
-            ? { footer: KIN_LISTS.entry.private }
+            ? { footer: kinEntryPrivateLine(item.owner, props.directory.names) }
             : {})}
         >
           {entry.fields

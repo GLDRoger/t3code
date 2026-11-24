@@ -23,6 +23,8 @@ import {
   kinBillsKeptAll,
   kinBillsOutcome,
   kinBillsSend,
+  kinBillUploadBatch,
+  kinBillUploadText,
   kinBillsStep,
   type KinBillsAdding,
   type KinBillsEvent,
@@ -152,6 +154,47 @@ describe("a bill on the review list", () => {
     expect(money({ amount: "1200.50", currency: "PKR" })).toEqual(["1200.50 PKR", null]);
     expect(money({ amount: "€20", currency: "INR" })).toEqual(["€20 INR", null]);
     expect(money({ amount: "  " })).toEqual([null, null]);
+  });
+
+  it("shows a kept or dropped bill as its expense stands, and one still to keep as read", () => {
+    const read = {
+      vendor: "Granite Furniture",
+      date: "2026-11-21",
+      amount: "980000000",
+      currency: "INR",
+      tax: "9",
+      number: "9042",
+    };
+    const expense = {
+      key: "EXP-8",
+      rev: 3,
+      title: "Granite Furniture, Nov 2026",
+      vendor: "Granite Furniture Mart",
+      date: "2026-11-20",
+      amount: { minor: 980_000, currency: "INR" },
+    };
+    const shown = (overrides: Partial<KinBillRow>) =>
+      kinBillRowView(row({ read, expense, ...overrides })).fields.map((field) => field.value);
+    const asExpense = ["Granite Furniture Mart", "Nov 20, 2026", "₹9,800.00", null, null, "9042"];
+    expect(shown({ state: "kept" })).toEqual(asExpense);
+    expect(shown({ state: "dropped" })).toEqual(asExpense);
+    expect(shown({ state: "read" })).toEqual([
+      "Granite Furniture",
+      "Nov 21, 2026",
+      "₹98,00,00,000.00",
+      "₹9.00",
+      null,
+      "9042",
+    ]);
+    // A host that sends no figures for the expense: what was read, as before.
+    expect(shown({ state: "kept", expense: { key: "EXP-8", rev: 3, title: "Granite" } })).toEqual([
+      "Granite Furniture",
+      "Nov 21, 2026",
+      "₹98,00,00,000.00",
+      "₹9.00",
+      null,
+      "9042",
+    ]);
   });
 
   it("carries why Keep all left it", () => {
@@ -305,23 +348,45 @@ describe("adding bills", () => {
   });
 
   it("says which file's expense was dropped, with that expense, and offers it no other add", async () => {
-    const held = harness(["a", "b"]);
+    const held = harness(["a", "b", "c"]);
     await kinBillsSend({
       ...held,
       upload: async (source) => attachment(source),
       add: async () => ({
         ok: true,
         value: {
-          ...answered([]),
+          ...answered(["c"]),
           already: [
-            { name: "a.jpg", sha256: SHA(3), expense: "EXP-4" as KinRecordKey },
-            { name: "b.jpg", sha256: SHA(4), expense: "EXP-5" as KinRecordKey, dropped: true },
+            {
+              name: "a.jpg",
+              sha256: SHA(3),
+              expense: "EXP-4" as KinRecordKey,
+              attachmentId: "a",
+              batchId: "b-0",
+            },
+            {
+              name: "b.jpg",
+              sha256: SHA(4),
+              expense: "EXP-5" as KinRecordKey,
+              dropped: true,
+              attachmentId: "b",
+            },
           ],
         },
       }),
     });
+    // Each file's line says what this add did with it: only "c" went in.
+    expect(
+      held
+        .state()
+        .files.map((file) => [kinBillUploadText(file.upload), kinBillUploadBatch(file.upload)]),
+    ).toEqual([
+      ["Already added before", "b-0"],
+      ["Already added before", null],
+      ["Added", null],
+    ]);
     expect(kinBillsOutcome(held.state())).toEqual({
-      review: null,
+      review: "b-1",
       close: false,
       lines: ["Already added before: a.jpg."],
       dropped: [
