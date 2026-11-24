@@ -49,7 +49,7 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { personHoldNow } from "../triggers/quietHold.ts";
 import { textLocale } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
-import { offlineCatchUpWords } from "./offlineWords.ts";
+import { offlineCatchUpWords, type OfflineCounts } from "./offlineWords.ts";
 
 /** How long a held turn waits before it tries again by itself, by cause. */
 export const HOLD_MS: Readonly<Partial<Record<KinTroubleCause, number>>> = {
@@ -214,7 +214,7 @@ export class KinHostCare extends Context.Service<
     ) => Effect.Effect<void>;
     readonly postOfflineNotice: (
       orgId: KinOrgId,
-      notice: { readonly from: number; readonly to: number; readonly caughtUp: number },
+      notice: OfflineCounts & { readonly from: number; readonly to: number },
     ) => Effect.Effect<boolean, KinChatError>;
     readonly status: (orgId: KinOrgId) => Effect.Effect<KinHostStatus, KinChatError>;
     readonly freeSpace: (orgId: KinOrgId) => Effect.Effect<KinHostFreeSpaceResult, KinChatError>;
@@ -621,7 +621,10 @@ const make = Effect.gen(function* () {
   });
 
   const postOfflineNotice = Effect.fn("KinHostCare.postOfflineNotice")(
-    function* (orgId: KinOrgId, notice: { from: number; to: number; caughtUp: number }) {
+    function* (
+      orgId: KinOrgId,
+      notice: OfflineCounts & { readonly from: number; readonly to: number },
+    ) {
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           const messageId = KinMessageId.make(`kin-offline:${notice.from}`);

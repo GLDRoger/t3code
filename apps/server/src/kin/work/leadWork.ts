@@ -53,6 +53,7 @@ import { sentMail, SentMailView } from "../connections/Sending.ts";
 import {
   countryFirst,
   countryRefusal,
+  rememberRefused,
   homeCurrency,
   isCountryFirst,
   notRegisteredFact,
@@ -177,6 +178,7 @@ import {
 import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
 import { leadNamer, shownName, type ToolNamer } from "./toolNames.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
+import { invoiceCredits } from "./statements/invoiceCredits.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { DAY_MS } from "../durations.ts";
@@ -1946,10 +1948,29 @@ export const leadTool = <I, A, E, R>(
     // A refusal's own write rolled back, so its mark is made here, after it.
     const result = yield* body(lead, input).pipe(
       Effect.tapError((error) => (isSensitiveRefusal(error) ? marked : Effect.void)),
+      Effect.tapError((error) =>
+        isKinChatError(error) && isCountryFirst(error) ? refusedForCountry(lead) : Effect.void,
+      ),
     );
     if (showsSensitive(result)) yield* marked;
     return result;
   });
+
+/** Kin wakes this agent in this turn's chat once the company's country is chosen. */
+const refusedForCountry = Effect.fn("KinWorkTools.refusedForCountry")(
+  function* (lead: Lead) {
+    const chat = yield* turnChat(lead);
+    if (chat === undefined) return;
+    yield* rememberRefused({
+      orgId: lead.orgId,
+      agentId: lead.agentId,
+      chatId: chat.chatId,
+      personId: yield* turnAsker(lead),
+      wakeupId: lead.wakeupId,
+    });
+  },
+  Effect.catchCause((cause) => Effect.logWarning("Kin couldn't note a country refusal", cause)),
+);
 
 const NAMED_REFUSALS = 25;
 type Refusal = { readonly label: string; readonly error: KinChatError };
@@ -2567,7 +2588,16 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
           })),
         }),
     ...(moneyOn && (list === "invoices" || page !== undefined)
-      ? { bank: bankAnswer(yield* bankKnown(lead.orgId)) }
+      ? {
+          bank: bankAnswer(
+            yield* bankKnown(lead.orgId),
+            false,
+            // Bank transactions are the owner level's alone (`teamView.ts`).
+            team === undefined && list === "invoices"
+              ? yield* invoiceCredits(lead.orgId, row.recordId)
+              : [],
+          ),
+        }
       : {}),
     ...(taxNote === undefined ? {} : { taxNote }),
     notes: detail.notes,

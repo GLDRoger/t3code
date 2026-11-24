@@ -266,7 +266,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_cancel", {
     ...shared,
     description:
-      "Cancel a reminder, follow-up or scheduled task you set up, by itemId; the result says whether it stopped. To move one, use kin_defer with replaces.",
+      "Cancel a reminder, follow-up or scheduled task you set up, or another agent's reminder the owner tells you to drop in his own chat with you, by itemId; the result says whether it stopped. To move one, use kin_defer with replaces.",
     parameters: Lead.CancelInput,
     success: Lead.CancelResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

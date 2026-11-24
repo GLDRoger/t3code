@@ -40,6 +40,7 @@ import * as Stop from "../lead/KinStop.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import { KinIdentity, KinIdentityConfig } from "../chat/KinIdentity.ts";
 import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { personClock } from "../questions/openQuestions.ts";
 import { personHoldNow } from "../triggers/quietHold.ts";
 import { newCompanyProfileJson, readProfile, setProfile } from "../work/companyProfile.ts";
 import * as Records from "../work/KinRecords.ts";
@@ -1875,6 +1876,25 @@ it.effect(
       assert.deepStrictEqual(yield* ownerAway, { shown: "2026-11-19", held: "away" });
       yield* TestClock.setTime(Date.parse("2026-11-18T18:30:00.000Z"));
       assert.deepStrictEqual(yield* ownerAway, { shown: undefined, held: undefined });
+      // His working hours, a night shift included, are on his own clock too, while he holds to
+      // them, once back: 21:00 Thursday in Kolkata he is off, and midnight is Thursday's shift.
+      yield* service.updateProfile(ownerSession, {
+        orgId,
+        personId: owner.personId,
+        workHours: { days: [1, 2, 3, 4, 5], start: "22:00", end: "06:00" },
+        holdOutsideHours: true,
+      });
+      assert.strictEqual((yield* personClock(orgId, owner.personId)).zone, "Asia/Kolkata");
+      yield* TestClock.setTime(Date.parse("2026-11-19T15:30:00.000Z"));
+      assert.strictEqual(yield* personHoldNow(orgId, owner.personId), "off");
+      yield* TestClock.setTime(Date.parse("2026-11-19T18:30:00.000Z"));
+      assert.isUndefined(yield* personHoldNow(orgId, owner.personId));
+      yield* service.updateProfile(ownerSession, {
+        orgId,
+        personId: owner.personId,
+        workHours: null,
+        holdOutsideHours: false,
+      });
       yield* sql`DELETE FROM kin_agents WHERE org_id = ${orgId} AND agent_id = 'chief-of-staff'`;
       yield* TestClock.setTime(Date.parse("2026-11-16T12:00:00.000Z"));
       // Every minute of every day is no hours: saved as not set, read as not set if stored, and

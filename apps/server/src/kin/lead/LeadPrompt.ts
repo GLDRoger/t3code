@@ -57,6 +57,7 @@ import {
 } from "./Audience.ts";
 import { sectionsOf } from "../work/docBody.ts";
 import { budgetFlags } from "../work/budgets.ts";
+import { countryChosenLine } from "../work/companyProfile.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { moneySection, moneySummaryForAgent } from "../work/moneyViews.ts";
 import {
@@ -540,7 +541,7 @@ export class KinLeadPrompt extends Context.Service<
             }
             replyDue = true;
             events.push(
-              `This reminder is due now.\n\n${quote(
+              `This reminder is due now. A check in it is yours to do, from Kin's records and your tools, before asking anyone.\n\n${quote(
                 QUOTE_LABELS.reminder,
                 {
                   event: event.eventId,
@@ -851,6 +852,15 @@ export class KinLeadPrompt extends Context.Service<
             replyDue = true;
             events.push(
               `${eventQuote}\n\n${due.text}\n\n${quote(QUOTE_LABELS.openQuestion, due.data, true)}`,
+            );
+            continue;
+          }
+          // The company's country was chosen after a write of this agent's was refused for it.
+          if (event._tag === "deferral.due" && event.subject.type === "country") {
+            fromOwner = false;
+            replyDue = true;
+            events.push(
+              `${quote(QUOTE_LABELS.eventData, { event: event.eventId })}\n\n${countryChosenLine(event.subject.country, event.subject.currency)}`,
             );
             continue;
           }
@@ -1447,7 +1457,12 @@ export class KinLeadPrompt extends Context.Service<
         // them too (`privateTurn.ts`), marked before anything of it is read.
         const sources: Array<string> = [];
         for (const event of input.events) {
-          if (event._tag !== "deferral.due" || event.subject.type === "question") continue;
+          if (
+            event._tag !== "deferral.due" ||
+            event.subject.type === "question" ||
+            event.subject.type === "country"
+          )
+            continue;
           if (event.subject.type === "scheduled_task") {
             const run = yield* nativeRun(orgId, event.subject.itemId).pipe(Effect.option);
             const source = Option.getOrUndefined(run)?.sourceEvent;

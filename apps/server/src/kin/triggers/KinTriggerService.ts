@@ -32,12 +32,12 @@ import {
   deferralWidgetId,
   planDeferral,
   makeDeferralCards,
+  promiserLead,
   type DeferralPhase,
   type DeferralPlan,
 } from "./deferrals.ts";
 import { type GithubLinkState, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
 import { askerOf, cardChatFor, sharedChatOf, wordsReadable } from "./deferralOrigin.ts";
-import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isScheduledTask, syncScheduledTasks } from "./scheduledTasks.ts";
 import { pauseTriggers } from "./KinTriggerStore.ts";
 
@@ -283,10 +283,7 @@ const make = Effect.gen(function* () {
     let chatId: KinChatId | null = own?.open === true ? own.chatId : null;
     if (item.chat !== undefined && (plan.onDue === "start" || plan.onDue === "chase")) {
       // Once its chat was shared, the card goes to the owner chat of the lead it fires with.
-      const lead = yield* liveLead(sql, orgId, {
-        chatId: item.chat,
-        prefer: CHIEF_OF_STAFF_DOMAIN,
-      });
+      const lead = yield* promiserLead(sql, orgId, item);
       chatId = yield* cardChatFor(sql, orgId, item.chat, lead?.ownerChatId ?? null);
       if (chatId === null)
         yield* Effect.logWarning("Deferral chat is not in its organization", { orgId, itemId });
