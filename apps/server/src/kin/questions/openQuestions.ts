@@ -1427,11 +1427,9 @@ type SettleDeps = {
 };
 
 /**
- * Settles each question whose day came, once: a safe default is taken (its own action run, else
- * the asker's turn queued, as it is marked), one with none is raised once more on the next working
- * morning, a text question lapses. One asked for another chat lapses at its raise's own day, or
- * instead of its raise when its person hasn't signed in (`lapseAsked`). Conditional updates make
- * a rerun do nothing. Then each person a default was taken for is told, once.
+ * Settles each question whose day came, once (conditional updates): a safe default is taken, one
+ * with none is raised once more, a text question lapses, and one asked for another chat lapses at
+ * its raise's day or, its person never signed in, instead of a raise (`lapseAsked`).
  */
 export const settleDue = Effect.fn("KinQuestions.settleDue")(function* (
   orgId: KinOrgId,
@@ -1968,14 +1966,14 @@ const dayOf = (at: number, zone: string) =>
 const shortQuote = (text: string) => `“${oneLine(text, 80)}”`;
 
 /** What a lapsed question's card says to a client that doesn't read `lapsed`. */
-export const lapsedCardText = (who: string, day: string) =>
+const lapsedCardText = (who: string, day: string) =>
   `Lapsed on ${day}: ${who} didn't answer.`;
 
 /**
  * Kin's one line in the chat a question was asked for, once it lapsed: who, what and since when.
  * `question` is null where that chat's person may no longer read it.
  */
-export const lapsedNotice = (input: {
+const lapsedNotice = (input: {
   readonly who: string;
   readonly question: string | null;
   readonly asked: string;
