@@ -3,7 +3,9 @@ import {
   KIN_MY_MAILBOX_COPY as COPY,
   kinMyMailboxes,
   kinMyMailboxLine,
+  kinOwnMailboxReads,
 } from "@t3tools/client-runtime/kin/kinConnections";
+import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import type {
   EnvironmentId,
@@ -20,6 +22,7 @@ import { useState } from "react";
 
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
+import { connectionAtomRuntime } from "../connection/runtime";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
@@ -50,6 +53,7 @@ export function KinMyMailbox(props: Target) {
   const remove = useAtomCommand(kinClient.myMailboxRemove, { reportFailure: false });
   const move = useAtomCommand(kinClient.mailboxMove, { reportFailure: false });
   const canMove = useAtomValue(kinClient.mailboxMove.permissionAtom(environmentId));
+  const viewer = useAtomValue(kinAccessAtom(connectionAtomRuntime, environmentId));
   const [moving, setMoving] = useState<KinOwnMailbox | null>(null);
   const [waiting, setWaiting] = useState<{ host: string; url: string; opened: boolean } | null>(
     null,
@@ -119,7 +123,7 @@ export function KinMyMailbox(props: Target) {
   return (
     <KinSettingsSection
       title={COPY.title}
-      description={line.text}
+      description={all.length === 0 ? line.text : `${line.text} ${kinOwnMailboxReads(viewer)}`}
       problem={problem}
       action={
         all.length === 0 ? undefined : (

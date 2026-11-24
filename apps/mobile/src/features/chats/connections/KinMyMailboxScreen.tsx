@@ -1,10 +1,12 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinFailureText, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_MY_MAILBOX_COPY as COPY,
   kinMyMailboxes,
   kinMyMailboxLine,
+  kinOwnMailboxReads,
 } from "@t3tools/client-runtime/kin/kinConnections";
 import type { KinConnectionId, KinConnectionPreset, KinOwnMailbox } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -20,6 +22,7 @@ import { ListSection } from "../../../components/ui/ListSection";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
+import { connectionAtomRuntime } from "../../../connection/runtime";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import { kinSignInInApp, kinSignInReturn } from "./kinConnectionSignIn";
@@ -52,6 +55,7 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
   const remove = useAtomCommand(kinClient.myMailboxRemove, { reportFailure: false });
   const move = useAtomCommand(kinClient.mailboxMove, { reportFailure: false });
   const canMove = useAtomValue(kinClient.mailboxMove.permissionAtom(environmentId));
+  const viewer = useAtomValue(kinAccessAtom(connectionAtomRuntime, environmentId));
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -160,7 +164,9 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
                 <ListSection
                   key={mailbox.connectionId}
                   title={`${mailbox.account ?? COPY.title} · ${COPY.yours}`}
-                  {...(index === all.length - 1 ? { footer: line.text } : {})}
+                  {...(index === all.length - 1
+                    ? { footer: `${line.text} ${kinOwnMailboxReads(viewer)}` }
+                    : {})}
                 >
                   {mailbox.state === "needs_sign_in" && mailbox.preset !== null ? (
                     <ListActionRow
