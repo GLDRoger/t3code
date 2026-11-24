@@ -391,7 +391,7 @@ describe("bills in bulk", () => {
             bill: "B1",
             vendor: "Sample Cloud",
             date: "2026-11-03",
-            amount: "1,180.00",
+            amount: "1180.00",
             currency: "INR",
             tax: "180",
             category: "Software",
@@ -489,6 +489,76 @@ describe("bills in bulk", () => {
           kept,
         );
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("an amount is a plain number in the printed currency; anything else is not read", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const names = ["cad", "pkr", "eur", "symbol", "dots", "commas", "none", "paise"];
+      yield* Bills.add(
+        as(rhea),
+        {
+          orgId,
+          attachments: yield* Effect.forEach(names, (name) => upload(`${name}.png`, name)),
+          clientRequestId: "add",
+        },
+        TEST_UPLOAD_OWNER,
+      );
+      const printed = (vendor: string, amount: string, currency?: string) => ({
+        vendor,
+        date: "2026-11-03",
+        amount,
+        ...(currency === undefined ? {} : { currency }),
+      });
+      const answers = new Map([
+        ["cad.png", printed("Maple Hosting", "1200.50", "CAD")],
+        // Kin's rupees of Pakistan have no minor unit (`kinCurrency`): a whole figure.
+        ["pkr.png", printed("Indus Couriers", "1200", "PKR")],
+        ["eur.png", printed("Rhein Papier", "1200.50", "EUR")],
+        ["symbol.png", printed("Maple Hosting", "$120.00", "CAD")],
+        ["dots.png", printed("Rhein Papier", "1.200", "EUR")],
+        ["commas.png", printed("Indus Couriers", "1,200", "PKR")],
+        ["none.png", printed("Tidewater Freight", "1200.50")],
+        ["paise.png", printed("Indus Couriers", "1200.50", "PKR")],
+      ]);
+      // Eight bills are two turns, claimed in either order: each answers its own by file.
+      for (const n of [1, 2]) {
+        const { wakeupId, events } = yield* claimTurn(n);
+        const event = events[0]!;
+        if (event._tag !== "bills.read") return assert.fail("no bills turn");
+        for (const [index, hash] of event.bills.entries()) {
+          const [row] = yield* sql<{ name: string }>`SELECT name FROM kin_bill_reads
+              WHERE org_id = ${orgId} AND sha256 = ${hash}`;
+          yield* read({ bill: `B${index + 1}`, ...answers.get(row!.name)! });
+        }
+        yield* endTurn(wakeupId);
+      }
+      assert.deepStrictEqual(
+        yield* sql`SELECT b.state, b.problem, r.amount_minor AS amount, r.currency
+            FROM kin_bill_reads b LEFT JOIN kin_records r ON r.org_id = b.org_id
+              AND r.record_id = b.record_id
+            WHERE b.org_id = ${orgId} ORDER BY b.position`,
+        [
+          { state: "read", problem: null, amount: 120_050, currency: "CAD" },
+          { state: "read", problem: null, amount: 1_200, currency: "PKR" },
+          { state: "read", problem: null, amount: 120_050, currency: "EUR" },
+          ...Array.from({ length: 3 }, () => ({
+            state: "unreadable",
+            problem: "Couldn't read: amount",
+            amount: null,
+            currency: null,
+          })),
+          {
+            state: "unreadable",
+            problem: "Couldn't read: currency",
+            amount: null,
+            currency: null,
+          },
+          { state: "unreadable", problem: "Couldn't read: amount", amount: null, currency: null },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("a photo no turn can show is told at once, and each id names the picture shown", () =>

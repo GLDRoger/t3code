@@ -24,6 +24,7 @@ import {
   type KinOrgId,
   KinPersonId,
   KinWidgetId,
+  isKinCurrency,
   parseKinMoney,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -49,7 +50,7 @@ import { ownerLevelSql } from "../people/KinAccess.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
 import { countryFirst } from "./companyProfile.ts";
 import { KinRecords, type Writer } from "./KinRecords.ts";
-import { dayIn } from "./money.ts";
+import { currencyDigits, dayIn } from "./money.ts";
 import { fold } from "./nameMatch.ts";
 import { confirm, theOwner } from "./ownerWork.ts";
 import { endOfDay, ownerZone, workFailure } from "./recordRows.ts";
@@ -94,6 +95,23 @@ const isPdf = (file: Pick<ChatAttachment, "mimeType" | "name">) =>
 const isBillFile = (file: Pick<ChatAttachment, "type" | "mimeType" | "name">) =>
   file.type === "image" || mimeOf(file).startsWith("image/") || isPdf(file);
 const NOT_A_BILL = "Only photos and PDFs are read as bills.";
+
+/**
+ * `bill_read`'s figures are plain numbers, a dot for decimals, with no more decimals than the
+ * currency has: "1.200" in euros reads two ways, so it is not read.
+ */
+const PLAIN_NUMBER = /^-?\d+(?:\.(\d+))?$/u;
+const plainNumber = (figure: string | undefined, currency: string | undefined) => {
+  const found = figure === undefined ? null : PLAIN_NUMBER.exec(figure.trim());
+  if (found === null) return undefined;
+  if (
+    currency !== undefined &&
+    isKinCurrency(currency) &&
+    (found[1]?.length ?? 0) > currencyDigits(currency)
+  )
+    return undefined;
+  return found[0];
+};
 
 const ReadJson = Schema.fromJsonString(
   Schema.Struct({
@@ -816,17 +834,18 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
   const read = answer.read;
   const json = yield* encodeRead(read).pipe(Effect.orDie);
   const missing: Array<string> = [];
+  const amount = plainNumber(read.amount, read.currency);
   if (read.vendor === undefined || notAVendor(read.vendor)) missing.push("who was paid");
   if (read.date === undefined) missing.push("date");
-  if (read.amount === undefined) missing.push("amount");
+  if (amount === undefined) missing.push("amount");
   if (read.currency === undefined) missing.push("currency");
+  if (read.tax !== undefined && plainNumber(read.tax, read.currency) === undefined)
+    missing.push("tax");
   const parsed =
-    read.amount === undefined || read.currency === undefined
+    amount === undefined || read.currency === undefined
       ? undefined
-      : parseKinMoney(read.amount, read.currency);
+      : parseKinMoney(amount, read.currency);
   if (parsed !== undefined && "error" in parsed) missing.push("amount");
-  else if (parsed !== undefined && parsed.money.currency !== read.currency)
-    missing.push("currency");
   const money = parsed !== undefined && "money" in parsed ? parsed.money : undefined;
   const unreadable = (problem: string) =>
     sql`UPDATE kin_bill_reads SET state = 'unreadable', read_json = ${json}, problem = ${problem},
@@ -916,10 +935,11 @@ const makeExpense = Effect.fn("KinBills.makeExpense")(function* (
     read.category === undefined
       ? undefined
       : def.categories.find((one) => one.toLowerCase() === read.category!.toLowerCase());
+  const printedTax = plainNumber(read.tax, read.currency);
   const tax =
-    read.tax === undefined || read.currency === undefined
+    printedTax === undefined || read.currency === undefined
       ? undefined
-      : parseKinMoney(read.tax, read.currency);
+      : parseKinMoney(printedTax, read.currency);
   const [adder] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
     WHERE org_id = ${orgId} AND person_id = ${row.addedBy}`;
   const writer: Writer = {
@@ -1284,10 +1304,11 @@ export const addAnyway = Effect.fn("KinBills.addAnyway")(function* (
       if (row.state !== "duplicate" || row.recordId !== null)
         return yield* invalid("Only a bill that looks like a duplicate is added anyway.");
       const read = Option.getOrElse(decodeRead(row.readJson ?? "{}"), () => ({})) as KinBillRead;
+      const amount = plainNumber(read.amount, read.currency);
       const money =
-        read.amount === undefined || read.currency === undefined
+        amount === undefined || read.currency === undefined
           ? undefined
-          : parseKinMoney(read.amount, read.currency);
+          : parseKinMoney(amount, read.currency);
       if (money === undefined || "error" in money) return yield* invalid("Its amount is unread.");
       const zone = yield* ownerZone(input.orgId);
       const made = yield* makeExpense(input.orgId, row, read, money.money, zone, { requestHash });
