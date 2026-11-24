@@ -53,7 +53,7 @@ export const KinBillRead = Schema.Struct({
   /** Who was paid. */
   vendor: Schema.optional(Label),
   date: Schema.optional(KinDay),
-  /** The printed figures, never converted, in `currency`. */
+  /** The printed figures as plain numbers (`1200.50`), never converted, in `currency`. */
   amount: Schema.optional(Label),
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
   tax: Schema.optional(Label),

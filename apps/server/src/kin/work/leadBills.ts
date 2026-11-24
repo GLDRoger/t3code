@@ -61,11 +61,14 @@ export const ReadInput = Schema.Struct({
   }),
   vendor: Printed(200, "Who was paid, as printed."),
   date: Schema.optional(KinDay),
-  amount: Printed(60, "The total, as printed."),
+  amount: Printed(
+    60,
+    "The total as a plain number, dot for decimals, no symbol or separators: 1200.50.",
+  ),
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))).annotate({
     description: "ISO code of the printed currency; left out when the bill doesn't show one.",
   }),
-  tax: Printed(60, "The tax, as printed."),
+  tax: Printed(60, "The tax as a plain number, as amount."),
   category: Printed(60, "One of Expenses' categories."),
   number: Printed(80, "The bill's own number."),
   cannotRead: Printed(300, "What you couldn't read, in plain words."),
