@@ -12,6 +12,7 @@ Members == {"ana", "ben"}
 Everyone == People \cup {"agent"}
 
 VARIABLES
+  kept,      \* kin_records.confirmed: the holder has no assignment until Keep
   holder,    \* kin_records.owner: exactly one principal
   byAgent,   \* assigned_by_agent_id: the agent gave it on its own (cleared by a hand-back)
   byPerson,  \* assigned_by_person_id: who asked for it to be given, or "none"
@@ -29,7 +30,7 @@ VARIABLES
   helper,    \* one teammate also on the task, distinct from its holder
   moves, edits
 
-vars == <<handedBack, backs, holder, byAgent, byPerson, asked, state, private, inProject, alert, bounced, pingpong,
+vars == <<kept, handedBack, backs, holder, byAgent, byPerson, asked, state, private, inProject, alert, bounced, pingpong,
           told, owed, moves, edits, helper>>
 
 (* work/teamView.ts personSees, for a teammate: a task they hold; unlabelled, one they made or
@@ -42,14 +43,18 @@ Sees(p) ==
   \/ ~private /\ inProject /\ p = "ben"
 
 Init ==
-  /\ holder = "owner" /\ byAgent = FALSE /\ byPerson = "none" /\ asked = "none" /\ state = "open"
+  /\ kept \in BOOLEAN
+  /\ IF kept THEN holder = "owner" ELSE holder \in Everyone
+  /\ byAgent = FALSE /\ byPerson = "none" /\ asked = "none" /\ state = "open"
   /\ private = FALSE /\ inProject = FALSE /\ alert = "none" /\ bounced = {} /\ backs = {}
   /\ handedBack = "none" /\ helper = "none"
   /\ pingpong = FALSE /\ told = 0 /\ owed = FALSE /\ moves = 0 /\ edits = 0
 
 \* Each hand-off tells its receiver once: a person by the agent's line (assignNotices.ts
 \* tellPeople) or, moved by a person, one banner (tellOnTasks); an agent by a wake-up.
-Tell(to, actor, n) == /\ owed' = (to # actor) /\ told' = IF to # actor THEN n ELSE 0
+Tell(to, actor, active) ==
+  /\ owed' = (active /\ to # actor)
+  /\ told' = IF (active \/ Broken = "suggested-wakes") /\ to # actor THEN 1 ELSE 0
 
 (* KinRecords.update with an owner patch. The owner on his screen (ownerWork.ts assign; "take
    back" is to: null, to himself), a teammate giving a task they hold, or the lead agent with
@@ -73,9 +78,9 @@ Give(actor, to, asker) ==
   /\ state' = "open"
   \* "mark-stays": given again, the row still says it was handed back.
   /\ handedBack' = IF Broken = "mark-stays" THEN handedBack ELSE "none"
-  /\ Tell(to, actor, 1)
+  /\ Tell(to, actor, kept)
   /\ moves' = moves + 1
-  /\ UNCHANGED <<backs, private, inProject, alert, edits>>
+  /\ UNCHANGED <<kept, backs, private, inProject, alert, edits>>
 
 (* KinRecords.handBack, from record_hand_back (leadWork.ts runHandBack) or the holder's screen
    (ownerWork.ts handBack): to the agent that gave it, else whoever asked, else the owner; never
@@ -91,17 +96,25 @@ HandBack ==
        /\ bounced' = IF Broken = "last-change-only" THEN {holder} ELSE bounced \cup {holder}
        /\ backs' = backs \cup {holder}
        /\ handedBack' = holder
-       /\ IF Broken = "screen-hand-back-silent" /\ holder \in Members /\ to \in People
+       /\ IF kept /\ Broken = "screen-hand-back-silent" /\ holder \in Members /\ to \in People
             THEN /\ owed' = TRUE /\ told' = 0
-            ELSE Tell(to, holder, 1)
+            ELSE Tell(to, holder, kept)
   /\ moves' = moves + 1
-  /\ UNCHANGED <<byPerson, asked, private, inProject, alert, pingpong, edits>>
+  /\ UNCHANGED <<kept, byPerson, asked, private, inProject, alert, pingpong, edits>>
+
+(* KinRecords.update confirmed: a person keeps the suggestion; the current holder hears it. *)
+Keep ==
+  /\ ~kept /\ state # "done"
+  /\ kept' = TRUE
+  /\ Tell(holder, "owner", TRUE)
+  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, state, private, inProject,
+                 alert, bounced, pingpong, moves, edits, helper>>
 
 (* Starting it is how a holder takes it on (state doing); no one is told. *)
 Start ==
   /\ state = "open" /\ holder # "agent"
   /\ state' = "doing"
-  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, private, inProject, alert, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<kept, handedBack, backs, holder, byAgent, byPerson, asked, private, inProject, alert, bounced, pingpong, told, owed,
                  moves, edits, helper>>
 
 (* A change on it that isn't a hand-off: its notes, due day or title (KinRecords.update). *)
@@ -109,7 +122,7 @@ Edit ==
   /\ edits < 1
   /\ bounced' = {} /\ backs' = {}
   /\ edits' = edits + 1
-  /\ UNCHANGED <<handedBack, holder, byAgent, byPerson, asked, state, private, inProject, alert, pingpong, told, owed,
+  /\ UNCHANGED <<kept, handedBack, holder, byAgent, byPerson, asked, state, private, inProject, alert, pingpong, told, owed,
                  moves, helper>>
 
 (* KinRecords.alsoOnFor and update: an authorized writer puts one teammate on the task or they
@@ -120,32 +133,32 @@ ChangeHelper(p) ==
   /\ edits < 1
   /\ bounced' = {} /\ backs' = {}
   /\ edits' = edits + 1
-  /\ UNCHANGED <<handedBack, holder, byAgent, byPerson, asked, state, private, inProject, alert,
+  /\ UNCHANGED <<kept, handedBack, holder, byAgent, byPerson, asked, state, private, inProject, alert,
                  pingpong, told, owed, moves>>
 
 MarkDone ==
   /\ state # "done"
   /\ state' = "done"
   /\ handedBack' = "none"
-  /\ UNCHANGED <<backs, holder, byAgent, byPerson, asked, private, inProject, alert, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<kept, backs, holder, byAgent, byPerson, asked, private, inProject, alert, bounced, pingpong, told, owed,
                  moves, edits, helper>>
 
 (* Reopened by its holder or the owner: KinRecords.update state; nothing makes done final. *)
 Reopen ==
   /\ state = "done" /\ Broken # "done-final"
   /\ state' = "open"
-  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, private, inProject, alert, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<kept, handedBack, backs, holder, byAgent, byPerson, asked, private, inProject, alert, bounced, pingpong, told, owed,
                  moves, edits, helper>>
 
 MakePrivate ==
   /\ ~private
   /\ private' = TRUE
-  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, state, inProject, alert, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<kept, handedBack, backs, holder, byAgent, byPerson, asked, state, inProject, alert, bounced, pingpong, told, owed,
                  moves, edits, helper>>
 
 MoveProject ==
   /\ inProject' = ~inProject
-  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, state, private, alert, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<kept, handedBack, backs, holder, byAgent, byPerson, asked, state, private, alert, bounced, pingpong, told, owed,
                  moves, edits, helper>>
 
 (* pulse/senses/work.ts task_late raises it while it is open past due; KinPulse hold keeps it
@@ -153,19 +166,19 @@ MoveProject ==
 AlertRaised ==
   /\ alert = "none" /\ state # "done"
   /\ alert' = "raised"
-  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, state, private, inProject, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<kept, handedBack, backs, holder, byAgent, byPerson, asked, state, private, inProject, bounced, pingpong, told, owed,
                  moves, edits, helper>>
 
 AlertHeld ==
   /\ alert = "raised"
   /\ alert' = "held"
-  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, state, private, inProject, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<kept, handedBack, backs, holder, byAgent, byPerson, asked, state, private, inProject, bounced, pingpong, told, owed,
                  moves, edits, helper>>
 
 Next ==
   \/ \E actor \in Everyone, to \in Everyone, asker \in People \cup {"none"} : Give(actor, to, asker)
   \/ \E p \in Members \cup {"none"} : ChangeHelper(p)
-  \/ HandBack \/ Start \/ Edit \/ MarkDone \/ Reopen \/ MakePrivate \/ MoveProject
+  \/ HandBack \/ Keep \/ Start \/ Edit \/ MarkDone \/ Reopen \/ MakePrivate \/ MoveProject
   \/ AlertRaised \/ AlertHeld
 
 Spec == Init /\ [][Next]_vars
@@ -177,6 +190,7 @@ PrivateStaysPrivate == private => \A p \in Members : Sees(p) => p \in {holder, h
 HelperSees == helper \in Members => (helper # holder /\ Sees(helper))
 DoneReversible == state = "done" => ENABLED Reopen
 OneNoticePerHandOff == owed => told = 1
+NoSuggestedNotice == ~kept => told = 0
 \* Whoever asked the agent for the hand-off gave it, so a hand-back goes to them.
 AskerIsGiver == asked \in People => (~byAgent /\ byPerson = asked)
 \* "Handed back by X" shows only on an open task X handed to its holder.

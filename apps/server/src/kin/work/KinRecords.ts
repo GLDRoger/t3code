@@ -3155,41 +3155,40 @@ const make = Effect.gen(function* () {
             team,
           );
         }
-        // Kept, a suggestion given to an agent is given now, once: not if its work already began.
-        if (
-          keeping &&
-          reassigned === undefined &&
-          !isClosed(state) &&
-          before.owner._tag === "agent"
-        )
-          if (!(yield* alreadyGiven(orgId, row.recordId, before.owner.agentId)))
+        if (keeping) {
+          const holder = reassigned ?? before.owner;
+          if (
+            !isClosed(state) &&
+            holder._tag === "agent" &&
+            !(yield* alreadyGiven(orgId, row.recordId, holder.agentId))
+          )
+            yield* wakeLead(orgId, writer, row, holder, textBy(writer), seq, now);
+        } else if (!isSuggestion(row) && !unkeeping) {
+          if (reassigned !== undefined && patch.handedBack !== undefined)
             yield* wakeLead(
               orgId,
               writer,
               row,
-              before.owner,
-              row.assignedBy === null ? textBy(writer) : KinPersonId.make(row.assignedBy),
+              reassigned,
+              row.assignedBy === null
+                ? yield* agentOwner(orgId, reassigned)
+                : KinPersonId.make(row.assignedBy),
+              seq,
+              now,
+              "handed_back",
+              patch.handedBack.note,
+            );
+          else if (reassigned !== undefined || reopened || undoneFor)
+            yield* wakeLead(
+              orgId,
+              writer,
+              row,
+              reassigned ?? before.owner,
+              writer.askedBy ?? null,
               seq,
               now,
             );
-        if (reassigned !== undefined && patch.handedBack !== undefined)
-          yield* wakeLead(
-            orgId,
-            writer,
-            row,
-            reassigned,
-            row.assignedBy === null
-              ? yield* agentOwner(orgId, reassigned)
-              : KinPersonId.make(row.assignedBy),
-            seq,
-            now,
-            "handed_back",
-            patch.handedBack.note,
-          );
-        else if (reassigned !== undefined)
-          yield* wakeLead(orgId, writer, row, reassigned, writer.askedBy ?? null, seq, now);
-        if (reopened || undoneFor)
-          yield* wakeLead(orgId, writer, row, before.owner, writer.askedBy ?? null, seq, now);
+        }
         // A lead never keeps working an open entry a person closed or took from it; a suggestion
         // nobody kept was never its work.
         const withdrawnFrom: Principal | undefined =

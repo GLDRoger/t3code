@@ -16,7 +16,8 @@ export const rules: Record<string, string> = {
     "A task you mark private can be seen by you, your co-owners, whoever holds it and anyone also on it.",
   DoneReversible: "A task marked done can always be reopened.",
   OneNoticePerHandOff:
-    "Every hand-off tells whoever receives it exactly once, unless they moved it themselves.",
+    "Every kept hand-off tells whoever receives it exactly once, unless they moved it themselves. Keeping a suggestion tells its current holder.",
+  NoSuggestedNotice: "A suggested task does not wake or notify its holder before you keep it.",
   AskerIsGiver:
     "When someone asks the agent to give a task, they gave it, so handing it back returns it to them; the agent is the giver only on its own.",
   HandedBackShown:
@@ -24,6 +25,11 @@ export const rules: Record<string, string> = {
 };
 
 export const variants = [
+  {
+    name: "suggested-wakes",
+    breaks: "NoSuggestedNotice",
+    what: "moving a task before Keep wakes or notifies the new holder",
+  },
   {
     name: "helper-cannot-see",
     breaks: "HelperSees",
@@ -83,7 +89,7 @@ export const state = (vars: Vars) => {
   const holder = String(vars["holder"]);
   const where =
     vars["state"] === "done" ? "done" : vars["state"] === "doing" ? "started" : "not started";
-  return `${holds[holder] ?? holder}, ${where}`;
+  return `${holds[holder] ?? holder}, ${vars["kept"] === false ? "suggested" : where}`;
 };
 
 export const step = (action: string, from: Vars, to: Vars) => {
@@ -102,6 +108,8 @@ export const step = (action: string, from: Vars, to: Vars) => {
       const giver = names[String(to["byPerson"])] ?? "Someone";
       return `${giver} ${giver === "You" ? "give" : "gives"} it to ${receiver}`;
     }
+    case "Keep":
+      return "You keep it";
     case "HandBack":
       return `${names[String(from["holder"])] ?? "Its holder"} hands it back with a note`;
     case "ChangeHelper":
@@ -130,7 +138,7 @@ export const charts = [
   {
     title: "Who holds it",
     guide:
-      "Each box is who holds the task. Each arrow is a hand-off; every one tells whoever receives it once. The agent never gives it straight back to someone who handed it back, unless something on it changed or you said so.",
+      "Each box is who holds the task. Each arrow is a hand-off; each kept hand-off tells whoever receives it once. The agent never gives it straight back to someone who handed it back, unless something on it changed or you said so.",
     state: (vars: Vars) => holds[String(vars["holder"])] ?? String(vars["holder"]),
     step: only(["Give", "HandBack"]),
   },
