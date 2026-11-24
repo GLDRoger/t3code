@@ -538,7 +538,7 @@ export class KinLeadPrompt extends Context.Service<
             }
             replyDue = true;
             events.push(
-              `This reminder is due now.\n\n${quote(
+              `This reminder is due now. A check in it is yours to do, from Kin's records and your tools, before asking anyone.\n\n${quote(
                 QUOTE_LABELS.reminder,
                 {
                   event: event.eventId,

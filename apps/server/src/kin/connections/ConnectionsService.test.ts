@@ -1714,6 +1714,25 @@ describe("KinConnections", () => {
         );
         const unknown = yield* connections.offer(scope, { service: "myspace" }).pipe(Effect.flip);
         assert.instanceOf(unknown, KinChatError);
+        // An owner-level person's own mailbox is connected: never offered. A member's is theirs.
+        const sql = yield* SqlClient.SqlClient;
+        for (const [person, preset] of [
+          [ownerId, "google"],
+          [mateId, "microsoft"],
+        ] as const)
+          yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+              url_host, auth, reach, state, created_at, updated_at, person_id)
+            VALUES (${orgId}, ${`own-${preset}`}, ${preset}, ${preset}, 'builtin',
+              'https://invented.example', 'invented.example', 'oauth', 'open', 'active', 0, 0,
+              ${person})`;
+        const canConnect = (yield* connections.tools(scope, {})).canConnect ?? [];
+        assert.notInclude(canConnect, "google");
+        assert.include(canConnect, "microsoft");
+        assert.strictEqual(
+          (yield* connections.offer(scope, { service: "google" })).note,
+          "Google is already connected, as Owner's own mailbox: it is read in a turn that is theirs alone, in their own chat with an agent. Nothing to connect.",
+        );
+        assert.strictEqual((yield* connections.offer(scope, { service: "microsoft" })).note, OFFERED);
       }),
     ),
   );

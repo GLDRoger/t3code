@@ -143,7 +143,7 @@ import {
   SIGN_IN_PRESETS,
 } from "./presets.ts";
 import { resultSource, resultText } from "./ResultText.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { ownerLevel, ownerLevelSql } from "../people/KinAccess.ts";
 import { viewVisible } from "../work/teamView.ts";
 import {
   attachmentOf,
@@ -2453,6 +2453,16 @@ const make = Effect.gen(function* () {
   const unreached = (reach: Effect.Success<ReturnType<typeof turnMailboxes>>) =>
     fail("not_allowed", reach.alone !== null ? NO_OWN_MAILBOX : SHARED_CONNECTIONS);
 
+  /** Owner-level people's own mailboxes: connected, though not the company's (`liveConnections`). */
+  const ownersMailboxes = (orgId: KinOrgId) =>
+    sql<{ preset: string | null; name: string }>`SELECT k.preset, p.display_name AS name
+      FROM kin_connections k
+      JOIN kin_people p ON p.org_id = k.org_id AND p.person_id = k.person_id
+        AND p.removed_at IS NULL
+      WHERE k.org_id = ${orgId} AND k.removed_at IS NULL AND k.person_id IS NOT NULL
+        AND ${sql.literal(ownerLevelSql("k.org_id", "k.person_id"))}
+      ORDER BY k.person_id, k.created_at, k.connection_id`;
+
   const leadOp = <I, A, E>(
     name: string,
     run: (scope: McpInvocationScope, input: I) => Effect.Effect<A, E>,
@@ -2509,9 +2519,10 @@ const make = Effect.gen(function* () {
         );
         // A teammate's own turn hears of their mailbox alone: no company sends, offers or notes.
         if (!ownerOnly) return { connections, note: "Call with connection to see its tools." };
-        const connected = new Set(
-          rows.filter((row) => row.personId == null).map((row) => row.preset),
-        );
+        const connected = new Set([
+          ...rows.filter((row) => row.personId == null).map((row) => row.preset),
+          ...(yield* ownersMailboxes(turn.orgId)).map((row) => row.preset),
+        ]);
         const recentlySent = yield* sentMail({ orgId: turn.orgId, limit: 10 }).pipe(provideSql);
         const several =
           rows.filter((row) => mailProviderOf(row) !== undefined).length > 1
@@ -4602,6 +4613,13 @@ const make = Effect.gen(function* () {
       if (connected)
         return {
           note: `${service.label} is already connected. kin_connection_tools lists its tools.`,
+        };
+      const own = (yield* ownersMailboxes(turn.orgId)).find(
+        (row) => row.preset === service.service,
+      );
+      if (own !== undefined)
+        return {
+          note: `${service.label} is already connected, as ${own.name}'s own mailbox: it is read in a turn that is theirs alone, in their own chat with an agent. Nothing to connect.`,
         };
       yield* record(turn, { ...entry, status: "offered" });
       return { note: OFFERED };
