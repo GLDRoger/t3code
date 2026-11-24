@@ -208,6 +208,13 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           ],
         );
         assert.deepStrictEqual(table.member, MEMBER);
+        // Bills become the company's expenses: the owner level's, never a member's.
+        const bills = methods.filter((method) => method.startsWith("kin.bills."));
+        assert.lengthOf(bills, 6);
+        assert.deepStrictEqual(
+          bills.filter((method) => !table.coOwner.includes(method) || MEMBER.includes(method)),
+          [],
+        );
         // Every method is in the table, so a new one can't slip past the gate unlisted.
         assert.deepStrictEqual(
           methods.filter((method) => kinRpcAccess(method) === undefined),

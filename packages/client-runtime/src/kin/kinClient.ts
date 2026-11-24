@@ -5,6 +5,7 @@ import {
   KIN_PEOPLE_WS_METHODS,
   type EnvironmentId,
   type KinApprovalsOrgInput,
+  type KinBillsListInput,
   type KinChatHistoryInput,
   type KinChatId,
   type KinChatMembersInput,
@@ -424,6 +425,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.work.money",
   });
   const readWorkMoney = kinGuardedRead(workMoneyRead);
+  const billsRead = createKinRpcCommand(runtime, {
+    label: "kin:bills:read",
+    tag: "kin.bills.list",
+  });
+  const readBills = kinGuardedRead(billsRead);
   const workCashRead = createKinRpcCommand(runtime, {
     label: "kin:work:cash:read",
     tag: "kin.work.cash",
@@ -496,6 +502,13 @@ export function makeKinClient<R, ER>(
       ),
   });
   const kinWorkRefreshOn = createKinWorkRefreshTriggers(runtime, workLive);
+  // Counts this app's adds of bills per company: a bill that came back leaves the batch an earlier
+  // read listed it in, and no expense moves to say so.
+  const billsAddedFamily = Atom.family((_key: string) => Atom.make(0).pipe(Atom.keepAlive));
+  const billsAdded = (target: {
+    readonly environmentId: EnvironmentId;
+    readonly input: { readonly orgId: KinOrgId };
+  }) => billsAddedFamily(`${target.environmentId}:${target.input.orgId}`);
 
   const workFilesRead = createKinRpcCommand(runtime, {
     label: "kin:work:files:read",
@@ -1862,6 +1875,8 @@ export function makeKinClient<R, ER>(
       tag: "kin.docs.delete",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    /** One version of a doc, read once: a long draft's Copy text takes its whole text. */
+    docVersion: docRead,
     /** A teammate's own draft goes up to the agent's owner to approve; a second tap finds the first. */
     docSendUp: createKinRpcCommand(runtime, {
       label: "kin:docs:sendUp",
@@ -2050,6 +2065,48 @@ export function makeKinClient<R, ER>(
       label: "kin:work:new-expense",
       tag: "kin.work.newExpense",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    /** Its `permissionAtom` says whether this session may see bills added in bulk at all. */
+    billsRead,
+    /** Bumped after an add: every list of the company's bills reads again. */
+    billsAdded,
+    /** Bills added in bulk: the batches, newest first, or one batch's bills in the order added. */
+    bills: createKinQueryAtomFamily(runtime, {
+      label: "kin:bills",
+      execute: Effect.fn("KinClient.bills")(function* (input: KinBillsListInput) {
+        return yield* readBills(input);
+      }),
+      staleTimeMs: 30_000,
+      // Expenses move as bills are read and kept; the screen follows the batch's card for the rest.
+      refreshTrigger: kinWorkRefreshOn(["expenses"], billsAdded),
+    }),
+    billsAdd: createKinRpcCommand(runtime, {
+      label: "kin:bills:add",
+      tag: "kin.bills.add",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    billsKeepRead: createKinRpcCommand(runtime, {
+      label: "kin:bills:keep-read",
+      tag: "kin.bills.keepRead",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    billsAddAnyway: createKinRpcCommand(runtime, {
+      label: "kin:bills:add-anyway",
+      tag: "kin.bills.addAnyway",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    billsDismiss: createKinRpcCommand(runtime, {
+      label: "kin:bills:dismiss",
+      tag: "kin.bills.dismiss",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.sha256 },
+    }),
+    billsReadAgain: createKinRpcCommand(runtime, {
+      label: "kin:bills:read-again",
+      tag: "kin.bills.readAgain",
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ input }) => input.sha256 ?? input.batchId ?? "",
+      },
     }),
     /** In order per address: a second pick runs after the first and says if nothing is left. */
     workMatchPartner: createKinRpcCommand(runtime, {

@@ -1,5 +1,4 @@
 import {
-  getProviderAttachmentLimitError,
   KIN_COMPANY_CHAT_TEAM_ID,
   KIN_TEAM_ROOM_TEAM_ID,
   KinOrgId,
@@ -57,6 +56,7 @@ import {
 } from "./Audience.ts";
 import { sectionsOf } from "../work/docBody.ts";
 import { budgetFlags } from "../work/budgets.ts";
+import { countryChosenLine } from "../work/companyProfile.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { moneySection, moneySummaryForAgent } from "../work/moneyViews.ts";
 import {
@@ -92,6 +92,7 @@ import {
 import { OFFERINGS_NONE, offeringsArchived, offeringsPromptIndex } from "../work/offerings.ts";
 import { playbookIndex } from "../work/playbooks.ts";
 import { issuedNumber } from "../work/recordRows.ts";
+import { billTurn } from "../work/billTurn.ts";
 import { entriesShown, sensitiveShown, sourcesShown } from "../work/sensitiveReads.ts";
 import { KIN_OWNER_LEVEL, listNumberSeenBy, personSees, viewerOfPeople } from "../work/teamView.ts";
 import { personConnections, promptLine as connectionsLine } from "../connections/ConnectionRows.ts";
@@ -540,7 +541,7 @@ export class KinLeadPrompt extends Context.Service<
             }
             replyDue = true;
             events.push(
-              `This reminder is due now.\n\n${quote(
+              `This reminder is due now. A check in it is yours to do, from Kin's records and your tools, before asking anyone.\n\n${quote(
                 QUOTE_LABELS.reminder,
                 {
                   event: event.eventId,
@@ -774,7 +775,8 @@ export class KinLeadPrompt extends Context.Service<
             }
             replyDue = true;
             events.push(
-              `${eventQuote}\n\n${made.text}\n\n${quote(QUOTE_LABELS.approvedDraft, made.data, true)}`,
+              // The approved draft goes in whole: the make must hold every word of it.
+              `${eventQuote}\n\n${made.text}\n\n${quote(QUOTE_LABELS.approvedDraft, made.data, { whole: ["draft"] })}`,
             );
             continue;
           }
@@ -854,6 +856,15 @@ export class KinLeadPrompt extends Context.Service<
             );
             continue;
           }
+          // The company's country was chosen after a write of this agent's was refused for it.
+          if (event._tag === "deferral.due" && event.subject.type === "country") {
+            fromOwner = false;
+            replyDue = true;
+            events.push(
+              `${quote(QUOTE_LABELS.eventData, { event: event.eventId })}\n\n${countryChosenLine(event.subject.country, event.subject.currency)}`,
+            );
+            continue;
+          }
           if (event._tag === "record.changed") {
             fromOwner = false;
             const text = yield* workEventText({
@@ -914,6 +925,20 @@ export class KinLeadPrompt extends Context.Service<
             const names = forWhom.join(" and ");
             events.push(
               `${quote(QUOTE_LABELS.eventData, eventFacts(event), true)}\n\n${workForText(names)}`,
+            );
+            continue;
+          }
+          // Bills someone added, read in a quiet turn that posts nothing (`work/bills.ts`).
+          if (event._tag === "bills.read") {
+            fromOwner = false;
+            const turn = yield* billTurn(orgId, event).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin bills unreadable", cause).pipe(Effect.as(undefined)),
+              ),
+            );
+            events.push(
+              `${quote(QUOTE_LABELS.eventData, { event: event.eventId, bills: turn?.ids ?? [] })}\n\n${turn?.text ?? `These bills are already answered. Write exactly ${SILENT_REPLY}.`}`,
             );
             continue;
           }
@@ -1254,6 +1279,21 @@ export class KinLeadPrompt extends Context.Service<
           (left, right) =>
             DateTime.toEpochMillis(left.receivedAt) - DateTime.toEpochMillis(right.receivedAt),
         )) {
+          if (event._tag === "bills.read") {
+            const turn = yield* billTurn(input.orgId, event).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.mapError(
+                (cause) =>
+                  new KinLeadPromptError({
+                    orgId: input.orgId,
+                    reason: "Could not read the bills",
+                    cause,
+                  }),
+              ),
+            );
+            found.push(...(turn?.attachments ?? []));
+            continue;
+          }
           if (event._tag !== "chat.message") continue;
           const stored = yield* chat
             .getMessage({ orgId: input.orgId, messageId: event.messageId })
@@ -1276,7 +1316,7 @@ export class KinLeadPrompt extends Context.Service<
             found.push(...(own.length > 0 ? own : yield* retriedFiles(stored.value)));
           }
         }
-        return turnAttachments(found);
+        return found;
       });
       const steer = Effect.fn("KinLeadPrompt.steer")(function* (
         input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "wakeupId" | "events"> & {
@@ -1447,7 +1487,12 @@ export class KinLeadPrompt extends Context.Service<
         // them too (`privateTurn.ts`), marked before anything of it is read.
         const sources: Array<string> = [];
         for (const event of input.events) {
-          if (event._tag !== "deferral.due" || event.subject.type === "question") continue;
+          if (
+            event._tag !== "deferral.due" ||
+            event.subject.type === "question" ||
+            event.subject.type === "country"
+          )
+            continue;
           if (event.subject.type === "scheduled_task") {
             const run = yield* nativeRun(orgId, event.subject.itemId).pipe(Effect.option);
             const source = Option.getOrUndefined(run)?.sourceEvent;
@@ -2831,8 +2876,6 @@ const spoken = (message: KinMessage) =>
       })
     : message.body;
 
-/** One wake-up may batch several messages; past this many files the oldest are only named. */
-const TURN_ATTACHMENT_LIMIT = 20;
 const ATTACHED_NAME_LIMIT = 80;
 /** The names of a message's files: the model's only trace of one it is not handed. */
 const attachedNames = (message: KinMessage) =>
@@ -2845,17 +2888,6 @@ const attachedNames = (message: KinMessage) =>
             : `${attachment.name.slice(0, ATTACHED_NAME_LIMIT)}…`,
         ),
       };
-/** The newest files that fit what one provider turn takes, in the order they were sent. */
-const turnAttachments = (found: ReadonlyArray<KinAttachment>) => {
-  let kept: ReadonlyArray<KinAttachment> = [];
-  for (const attachment of found.toReversed()) {
-    const next = [attachment, ...kept];
-    if (next.length > TURN_ATTACHMENT_LIMIT || getProviderAttachmentLimitError(next) !== undefined)
-      break;
-    kept = next;
-  }
-  return kept;
-};
 
 /** `2026-11-10T19:36:48+05:30 Tue`: what a `due` needs, to the second, in the owner's zone. */
 const ownerClock = (at: number, timeZone: string | undefined) => {

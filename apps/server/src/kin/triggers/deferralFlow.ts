@@ -63,6 +63,7 @@ import {
   decisionActions,
   deferralFingerprint,
   deferralLead,
+  promiserLead,
   makeDeferralRedraw,
   deferredSectionOff,
   startsAtLevel,
@@ -389,10 +390,7 @@ const make = Effect.gen(function* () {
     item: MemoryItemHead | undefined,
   ) {
     if (item?.chat !== undefined) {
-      const lead = yield* liveLead(sql, orgId, {
-        chatId: item.chat,
-        prefer: CHIEF_OF_STAFF_DOMAIN,
-      });
+      const lead = yield* promiserLead(sql, orgId, item);
       const chatId = yield* cardChatFor(sql, orgId, item.chat, lead?.ownerChatId ?? null);
       if (chatId !== null) return chatId;
     }
@@ -488,7 +486,7 @@ const make = Effect.gen(function* () {
     const handle = item.owner ?? item.said_by;
     const [person] = yield* sql<{ personId: string }>`SELECT person_id AS "personId"
       FROM kin_people WHERE org_id = ${orgId} AND handle = ${handle} ORDER BY person_id`;
-    const owner = yield* liveLead(sql, orgId, { chatId: item.chat, prefer: CHIEF_OF_STAFF_DOMAIN });
+    const owner = yield* promiserLead(sql, orgId, item);
     if (person === undefined || owner === undefined || item.chat === undefined)
       return `I couldn't chase ${handle}`;
     const put = yield* pings

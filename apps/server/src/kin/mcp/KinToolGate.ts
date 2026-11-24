@@ -22,6 +22,7 @@ import { toolAdmitted } from "../lead/SharedTools.ts";
 import { readCallArguments } from "../connections/callArguments.ts";
 import { PRIVATE_WRITE, privateRefusal } from "../connections/privateTurn.ts";
 import { REVIEW_REFUSAL, reviewToolAllowed } from "../lead/outsideReview.ts";
+import { BILLS_REFUSAL, billToolAllowed } from "../lead/billsOnly.ts";
 import { APPROVED_REFUSAL, approvedRefusal, approvedToolAllowed } from "../lead/approvedDraft.ts";
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
@@ -235,17 +236,26 @@ const turnEvents = McpToolPolicy.toolCallPrepare(
 /** An outside review's turn refuses what it may not call with the review's own refusal. */
 const reviewOnly: Check = (turn, tool, args) =>
   reviewToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
+/** A bills turn refuses all but `bill_read` with its own refusal. */
+const billsOnlyCheck: Check = (turn, tool, args) =>
+  billToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
 /** An approved draft's turn refuses what it may not call with its own refusal. */
 const approvedOnly: Check = (turn, tool, args) =>
   approvedToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
-/** A confined turn (an outside review, an approved draft) is decided by its own gate alone. */
+/** A confined turn (an outside review, bills, an approved draft) is decided by its own gate alone. */
 const confinedDecides = (turn: Parameters<Check>[0], tool: string, args: unknown) =>
   reviewToolAllowed(turn, tool, args).pipe(
     Effect.flatMap((review) =>
       review !== undefined
         ? Effect.succeed(true)
-        : approvedToolAllowed(turn, tool, args).pipe(
-            Effect.map((approved) => approved !== undefined),
+        : billToolAllowed(turn, tool, args).pipe(
+            Effect.flatMap((bills) =>
+              bills !== undefined
+                ? Effect.succeed(true)
+                : approvedToolAllowed(turn, tool, args).pipe(
+                    Effect.map((approved) => approved !== undefined),
+                  ),
+            ),
           ),
     ),
   );
@@ -407,6 +417,7 @@ const outside = besideReview(outsideToolAllowed);
 
 const kinChecks = [
   [reviewOnly, REVIEW_REFUSAL],
+  [billsOnlyCheck, BILLS_REFUSAL],
   [approvedOnly, APPROVED_REFUSAL],
   [toolAdmitted, SHARED_REFUSAL],
   [outsideToolAllowed, OUTSIDE_REFUSAL],
@@ -494,7 +505,7 @@ export const callCounts = Layer.unwrap(
 /**
  * Every Kin MCP call passes here first, whatever registered it: nothing to another machine, where
  * none of these checks follow; only the review in a stranger's pull request's turn
- * (`outsideReview`), only the one approved make in an approved draft's (`approvedDraft`); nothing reaches the owner's context in a turn others read (`SharedTools`); no
+ * (`outsideReview`), only `bill_read` in a bills turn (`billsOnly`), only the one approved make in an approved draft's (`approvedDraft`); nothing reaches the owner's context in a turn others read (`SharedTools`); no
  * run outside text could steer (`OutsideContent`); no task past the limit (or off `helperModels`).
  */
 export const layer = ReadTools.layer.pipe(
@@ -508,6 +519,7 @@ export const layer = ReadTools.layer.pipe(
         REMOTE_REFUSAL,
       ),
       McpToolPolicy.toolCallGate(gate("KinToolGate.review", reviewOnly), REVIEW_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.bills", billsOnlyCheck), BILLS_REFUSAL),
       McpToolPolicy.toolCallRefusal(
         Effect.succeed(inRunningTurn("KinToolGate.approved", approvedRefusal, APPROVED_REFUSAL)),
       ),

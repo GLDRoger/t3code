@@ -27,6 +27,8 @@ import {
   KinWakeupId,
   KinWidgetId,
 } from "./kinChat.ts";
+import { KinCountryCode } from "./kinFinance.ts";
+import { KinCurrency } from "./kinMoney.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
 import { KinRecordId, KinRecordKey, KinRecordState, KinWorkPrincipal } from "./kinWork.ts";
 import { ModelSelection } from "./modelSelection.ts";
@@ -870,6 +872,13 @@ export const KinEvent = Schema.Union([
         itemId: KinMemoryItemId,
         runId: TrimmedNonEmptyString,
       }),
+      // A new company's country was chosen after a write of this agent's was refused for want of
+      // it (`companyProfile.ts`): the turn answers in the chat that write was asked in.
+      Schema.Struct({
+        type: Schema.Literal("country"),
+        country: KinCountryCode,
+        currency: KinCurrency,
+      }),
     ]),
     lateByMs: NonNegativeInt,
     // The chat the deferral was asked from, when it isn't the running lead's owner chat. The
@@ -971,6 +980,17 @@ export const KinEvent = Schema.Union([
     ...EventBase,
     pendingActionId: TrimmedNonEmptyString,
     outcome: Schema.Literals(["executed", "rejected", "expired", "failed"]),
+  }),
+  // A few of the bills a person added at once (`kinBills.ts`), for the reading agent to read in a
+  // quiet turn that answers each with `bill_read` and posts nothing. `chatId` holds the batch's card.
+  Schema.TaggedStruct("bills.read", {
+    ...EventBase,
+    chatId: KinChatId,
+    batchId: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+    bills: Schema.Array(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(10),
+    ),
   }),
   Schema.TaggedStruct("resume", {
     ...EventBase,

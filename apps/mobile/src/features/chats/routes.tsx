@@ -54,6 +54,7 @@ import { KinGoalFormScreen } from "./KinGoals";
 import { KinInviteScreen } from "./KinInviteScreen";
 import { KinReceiptApplyScreen, KinReceiptNewScreen } from "./KinInvoice";
 import { KinExpenseNewScreen, KinInvoiceNewScreen } from "./KinMoneyForms";
+import { KinBillsAddScreen, KinBillsScreen } from "./KinBills";
 import { KinJoinScreen } from "./KinJoinScreen";
 import { KinBudgetScreen } from "./KinMoneyAnswers";
 import { KinTeamScreen } from "./KinTeamScreen";
@@ -145,6 +146,15 @@ export const KIN_SCREENS = {
   KinExpenseNew: createNativeStackScreen({
     screen: KinExpenseNewScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinBillsAdd: createNativeStackScreen({
+    screen: KinBillsAddScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinBills: createNativeStackScreen({
+    screen: KinBillsScreen,
+    linking: "kin/:environmentId/:orgId/bills",
+    options: pageRoute({ title: "Bills added" }),
   }),
   KinReceiptApply: createNativeStackScreen({
     screen: KinReceiptApplyScreen,

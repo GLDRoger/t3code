@@ -17,6 +17,9 @@ const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
 const isKinOnly = KIN_ONLY_BUILT || repoEnv.EXPO_PUBLIC_KIN_ONLY === "1";
 // The share extension and the widgets feed coding threads, so a Kin-only app ships neither.
 const shipsCodingExtensions = !isIosPersonalTeamBuild && !isKinOnly;
+// One camera permission on iOS serves both the QR scanner and Kin's photos of bills.
+const CAMERA_PURPOSE =
+  "Allow T3 Code to access your camera so you can scan pairing QR codes and take photos of bills.";
 const kinApprovalKeyOptions = {
   appAttestEnvironment: isIosPersonalTeamBuild
     ? null
@@ -413,7 +416,7 @@ const config: ExpoConfig = {
     [
       "expo-camera",
       {
-        cameraPermission: "Allow T3 Code to access your camera so you can scan pairing QR codes.",
+        cameraPermission: CAMERA_PURPOSE,
         microphonePermission: false,
         barcodeScannerEnabled: true,
         recordAudioAndroid: false,
@@ -423,6 +426,7 @@ const config: ExpoConfig = {
       "expo-image-picker",
       {
         photosPermission: false,
+        cameraPermission: CAMERA_PURPOSE,
         // `false` makes this plugin add RECORD_AUDIO to blockedPermissions, breaking Android dictation.
         microphonePermission: "Allow T3 Code to use your microphone for voice input.",
       },

@@ -37,7 +37,8 @@ import { remakeForEntry } from "../gendocs/make.ts";
 import { issueEntry } from "../gendocs/amounts.ts";
 import * as Numbers from "../gendocs/numbering.ts";
 import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts.ts";
-import { readProfile, setProfile } from "./companyProfile.ts";
+import { readProfile, setProfile, waitingOnCountry } from "./companyProfile.ts";
+import { wakeRefused } from "./countryWake.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { dates as datesView, moneySummary } from "./moneyViews.ts";
 import { found, ownerWriter, placeRefusals, theOwner } from "./ownerWork.ts";
@@ -94,6 +95,7 @@ export const lists = Effect.fn("KinMoney.lists")(function* (
           (!refused.money && def.builtIn === null && open.has(def.id)),
       )
       .map((def) => toDefinition(def, open.get(def.id) ?? 0, input.accept)),
+    billToByName: true,
   };
 }, workFailure);
 
@@ -556,7 +558,22 @@ export const setCompanyProfile = Effect.fn("KinMoney.setCompanyProfile")(functio
 ) {
   const person = yield* theOwner(people, input.orgId);
   const { orgId, rev, ...patch } = input;
-  return yield* setProfile(orgId, { _tag: "person", personId: person.personId }, patch, rev);
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const before = yield* waitingOnCountry(orgId);
+      const saved = yield* setProfile(
+        orgId,
+        { _tag: "person", personId: person.personId },
+        patch,
+        rev,
+      );
+      // The save that chose a new company's country cleared its list: each on it is woken once.
+      if (before.pending && saved.country !== null)
+        yield* wakeRefused(orgId, before.waiting, saved.country, saved.homeCurrency);
+      return saved;
+    }),
+  );
 }, workFailure);
 
 /** Receipts for Money: newest first, each with its number, who it was from and what for. */

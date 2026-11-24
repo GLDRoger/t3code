@@ -1495,6 +1495,7 @@ const make = Effect.gen(function* () {
       readonly cause?: KinTroubleCause;
       readonly told?: boolean;
     }) {
+      if (input.lane.bills === true) return;
       if (
         input.outcome === "signin" ||
         input.outcome === "access" ||

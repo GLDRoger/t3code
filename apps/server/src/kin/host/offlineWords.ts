@@ -1,13 +1,12 @@
-export const offlineCatchUpWords = (
-  from: string,
-  to: string,
-  counts: {
-    readonly caughtUp: number;
-    readonly older?: number;
-    readonly scheduled?: number;
-    readonly checkIns?: number;
-  },
-) => {
+/** An absent skip count is unknown, which the line leaves out; 0 is known to be none. */
+export type OfflineCounts = {
+  readonly caughtUp: number;
+  readonly older?: number;
+  readonly scheduled?: number;
+  readonly checkIns?: number;
+};
+
+export const offlineCatchUpWords = (from: string, to: string, counts: OfflineCounts) => {
   const opening = `Kin was offline from ${from} to ${to}.`;
   const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
   const skipped = [

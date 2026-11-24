@@ -40,10 +40,13 @@ import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import {
   answerChange,
   changeLines,
+  COUNTRY_NEEDED,
+  countryChosenLine,
   countryFirstMessage,
   countryNeeded,
   newCompanyProfileJson,
   readProfile,
+  rememberRefused,
   setProfile,
 } from "./companyProfile.ts";
 import * as Goals from "./goals.ts";
@@ -1964,6 +1967,65 @@ describe("invoices", () => {
         knownThrough: null,
         note: "No bank statement is confirmed, so Kin can't see what reached the bank.",
       });
+      // Unexplained credits the statement matcher would offer for it are named beside the bank;
+      // an explained, ignored, other-currency or outgoing one isn't, and at most five, newest first.
+      const number = String(read.fields?.number);
+      const bankList = yield* ensureBankList(orgId, NOW);
+      const credit = (
+        title: string,
+        rupees: number,
+        day: string,
+        more: { state?: "done" | "dropped"; currency?: string; direction?: string } = {},
+      ) =>
+        Effect.flatMap(KinRecords.KinRecords, (records) =>
+          records.create(orgId, system, {
+            list: bankList.id,
+            originKey: `credit:${title}:${day}:${JSON.stringify(more)}`,
+            title,
+            owner: { _tag: "person", personId: ownerId },
+            amount: { minor: rupees * 100, currency: more.currency ?? "INR" },
+            dateAt: Date.parse(`${day}T06:00:00.000Z`),
+            fields: { direction: more.direction ?? "credit" },
+            ...(more.state === undefined ? {} : { state: more.state }),
+          }),
+        ).pipe(Effect.map(({ row }) => row.key));
+      const cited = yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-10");
+      yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-11", { state: "done" });
+      yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-11", { state: "dropped" });
+      yield* credit(`SWIFT CR-INVENTED ACME-${number}`, 600, "2026-11-11", { currency: "USD" });
+      yield* credit(`NEFT DR-INVENTED ACME-${number}`, 60_000, "2026-11-11", {
+        direction: "debit",
+      });
+      const credits = () =>
+        LeadWork.get(scope, { key: "INV-1" }).pipe(Effect.map((one) => one.bank?.credits));
+      assert.deepStrictEqual((yield* LeadWork.get(scope, { key: "INV-1" })).bank, {
+        knownThrough: null,
+        note: `No bank statement is confirmed. Bank transactions has an unexplained credit that looks like this invoice's payment: ${cited}, ₹60,000.00 on 10 Nov. The invoice isn't recorded as paid until the owner confirms.`,
+        credits: [
+          {
+            key: cited,
+            date: "2026-11-10",
+            amount: "₹60,000.00",
+            title: `NEFT CR-INVENTED ACME-${number}`,
+            reason: `cites ${number}`,
+          },
+        ],
+      });
+      const same = yield* credit("NEFT CR-INVENTED ACME", 60_000, "2026-11-09");
+      for (const day of ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05"])
+        yield* credit("UPI CR-INVENTED ACME", 10_000, day);
+      const five = yield* credits();
+      assert.deepStrictEqual(
+        five?.map((one) => [one.date, one.reason]),
+        [
+          ["2026-11-10", `cites ${number}`],
+          ["2026-11-09", "same amount from Invented Acme"],
+          ["2026-11-05", "part of what is owed from Invented Acme"],
+          ["2026-11-04", "part of what is owed from Invented Acme"],
+          ["2026-11-03", "part of what is owed from Invented Acme"],
+        ],
+      );
+      assert.deepStrictEqual([five?.[0]?.key, five?.[1]?.key], [cited, same]);
       const stored = yield* (yield* KinRecords.KinRecords).detail(
         (yield* (yield* KinRecords.KinRecords).get(orgId, "INV-1"))!,
       );
@@ -2052,6 +2114,7 @@ describe("invoices", () => {
         paidOn: "2026-11-06",
       });
       assert.deepStrictEqual([rest.balance, rest.state], ["₹0.00", "done"]);
+      assert.isUndefined(yield* credits());
       yield* LeadMoney.payment(scope, {
         sourceEventId: paid,
         key: "INV-1",
@@ -2069,6 +2132,24 @@ describe("invoices", () => {
       }).pipe(Effect.flip);
       assert.include(voidedRetry, { reason: "conflict" });
       assert.strictEqual((yield* records.get(orgId, "INV-1"))!.paid, 6_000_000);
+
+      // A turn a teammate reads gets the invoice and the bank's line, never Bank transactions.
+      assert.lengthOf((yield* credits()) ?? [], 4);
+      const sqlTeam = yield* SqlClient.SqlClient;
+      yield* sqlTeam`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, sees_money)
+        VALUES ('banker-mate', ${orgId}, 'banker-mate', 'Banker Mate', ${at}, 1)`;
+      yield* sqlTeam`UPDATE kin_records SET team_shared = 1 WHERE org_id = ${orgId} AND key = 'INV-1'`;
+      yield* sqlTeam`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at, joined_seq)
+        VALUES ('lead-chat-banker', ${orgId}, 'lead-chat', 'person', 'banker-mate', 'member', ${at}, 4)`;
+      yield* turn(5, "Did Acme pay?");
+      const teamRead = yield* LeadWork.get(scope, { key: "INV-1" });
+      assert.deepStrictEqual(teamRead.bank, {
+        knownThrough: null,
+        note: "No bank statement is confirmed, so Kin can't see what reached the bank.",
+      });
+      yield* sqlTeam`DELETE FROM kin_chat_members WHERE member_id = 'lead-chat-banker'`;
+      yield* sqlTeam`UPDATE kin_records SET team_shared = 0 WHERE org_id = ${orgId} AND key = 'INV-1'`;
 
       // A refusal that quotes what is owed or received marks the turn as having read figures.
       const sql = yield* SqlClient.SqlClient;
@@ -4508,7 +4589,7 @@ describe("the company profile", () => {
       const answeredSaved = countryFirstMessage("Owner", { saved: true, answeringChooser: true });
       assert.include(
         answered,
-        "The person you're answering chooses it themselves, in Settings, Company details: tell them so in your reply, and to tell you once it is chosen: nothing wakes you then, so promise nothing before they do.",
+        "The person you're answering chooses it themselves, in Settings, Company details: tell them so in your reply, naming no currency for the amount. Kin wakes you here once it is chosen, so they needn't tell you.",
       );
       assert.notInclude(answered, "Ask Owner");
       // A budget's limit is a change to a setting: nothing was saved.
@@ -4681,6 +4762,183 @@ describe("the company profile", () => {
       // Once chosen, it never waits again, even saved with no country.
       yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: yield* rev(), country: null });
       assert.isFalse(yield* countryNeeded(orgId));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("wakes each agent refused for want of the country once, where it was refused", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      for (const org of [orgId, otherOrg])
+        yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+            updated_by_kind, updated_by_id)
+          VALUES (${org}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${ownerId})`;
+      // A co-owner's own chat with the lead.
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('co-chat', ${orgId}, 'direct', 'co:lead', 1, ${at})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('co-owner', ${orgId}, 'co', 'Co', ${at}, 'co_owner')`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('co-chat-co', ${orgId}, 'co-chat', 'person', 'co-owner', 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('co-chat-lead', ${orgId}, 'co-chat', 'agent', ${lead}, 'member', ${at})`;
+      const expense = (sourceEventId: string) =>
+        LeadWork.create(scope, {
+          sourceEventId,
+          records: [{ title: "Invented fonts", amount: "40" }],
+        }).pipe(Effect.flip);
+
+      const asked = yield* turn(1, "Record the fonts, 40");
+      // The agent reads no currency, country, year or tax Kin would only have assumed.
+      const read = yield* LeadMoney.profile(scope, {});
+      for (const key of ["homeCurrency", "country", "financialYearStartMonth", "tax", "rates"])
+        assert.notProperty(read.profile, key);
+      assert.strictEqual(
+        JSON.stringify(read),
+        JSON.stringify({
+          profile: {
+            brand: { primaryColor: null, secondaryColor: null, font: null, footer: null },
+          },
+          rev: 0,
+          countryNeeded: COUNTRY_NEEDED,
+          sensitive: true,
+        }),
+      );
+
+      // Refused twice in the owner's chat and once in the co-owner's: each chat is noted once,
+      // although every call failed.
+      assert.include(yield* expense(asked), { reason: "invalid_state" });
+      assert.include(yield* expense(asked), { reason: "invalid_state" });
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+          created_at)
+        VALUES ('msg-co', ${orgId}, 'co-chat', 1, 'human', 'co-owner', 'co-chat-co', 'owner',
+          'text', 'Record the printing, 90', '[]', 'posted', ${at})`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+          status, event_ids, audience)
+        VALUES ('wake-co', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
+          '["event-co"]', 'owner_only')`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id)
+        VALUES ('event-co', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify({
+          _tag: "chat.message",
+          orgId,
+          agentId: lead,
+          eventId: "event-co",
+          receivedAt: at,
+          dedupeKey: null,
+          provenance: { _tag: "human", personId: "co-owner", memberId: "co-chat-co" },
+          chatId: "co-chat",
+          messageId: "msg-co",
+        })}, 0, 0, 'claimed', 'wake-co')`;
+      assert.include(yield* expense("event-co"), { reason: "invalid_state" });
+      const waiting = sql<{ waiting: string | null }>`SELECT json_extract(profile_json,
+          '$.countryWaiting') AS waiting FROM kin_company_profile WHERE org_id = ${orgId}`;
+      const noted = [
+        { agentId: lead, chatId: "lead-chat", personId: ownerId, wakeupId: "wake-1" },
+        { agentId: lead, chatId: "co-chat", personId: "co-owner", wakeupId: "wake-co" },
+      ];
+      assert.deepStrictEqual(JSON.parse((yield* waiting)[0]!.waiting!), noted);
+      const wakes = sql<{ json: string }>`SELECT json FROM kin_events
+        WHERE tag = 'deferral.due' ORDER BY event_id`;
+
+      // A save that sets no country wakes nobody and keeps the list.
+      const rev = () => readProfile(orgId).pipe(Effect.map((one) => one.rev));
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: yield* rev(), address: "1 Road" });
+      assert.lengthOf(yield* wakes, 0);
+      assert.deepStrictEqual(JSON.parse((yield* waiting)[0]!.waiting!), noted);
+
+      // Another company waits too.
+      yield* rememberRefused({
+        orgId: otherOrg,
+        agentId: "their-lead",
+        chatId: "their-chat",
+        personId: null,
+        wakeupId: "their-wake",
+      });
+      const theirs = yield* sql`SELECT profile_json AS json
+        FROM kin_company_profile WHERE org_id = ${otherOrg}`;
+
+      // Choosing it wakes each once, in the chat it was refused in, and clears the list.
+      const chosen = { orgId, rev: yield* rev(), country: "GB" } as const;
+      yield* OwnerMoney.setCompanyProfile(people, chosen);
+      const woken = () =>
+        Effect.map(wakes, (rows) =>
+          rows.map((row) => {
+            const { eventId: _id, receivedAt: _at, ...event } = JSON.parse(row.json);
+            return event;
+          }),
+        );
+      const subject = { type: "country", country: "GB", currency: "GBP" };
+      const expected = [
+        {
+          _tag: "deferral.due",
+          orgId,
+          agentId: lead,
+          provenance: { _tag: "system" },
+          dedupeKey: "country-chosen:lead:co-chat",
+          subject,
+          lateByMs: 0,
+          askedIn: ["wake-co"],
+          chatId: "co-chat",
+          origin: { agentId: lead, chatId: "co-chat", personId: "co-owner" },
+        },
+        {
+          _tag: "deferral.due",
+          orgId,
+          agentId: lead,
+          provenance: { _tag: "system" },
+          dedupeKey: "country-chosen:lead:lead-chat",
+          subject,
+          lateByMs: 0,
+          askedIn: ["wake-1"],
+        },
+      ];
+      assert.sameDeepMembers(yield* woken(), expected);
+      assert.deepStrictEqual(yield* waiting, [{ waiting: null }]);
+      assert.strictEqual(
+        countryChosenLine("GB", "GBP"),
+        "This company's country is chosen now: GB, so Kin keeps its books in GBP. What Kin refused you before for want of it can be recorded now.",
+      );
+
+      // The same save again, and a later one, wake nobody more; nor is the other company touched.
+      yield* OwnerMoney.setCompanyProfile(people, chosen);
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* rev(),
+        tradeName: "Ambermill",
+      });
+      assert.sameDeepMembers(yield* woken(), expected);
+      assert.deepStrictEqual(
+        yield* sql`SELECT profile_json AS json FROM kin_company_profile WHERE org_id = ${otherOrg}`,
+        theirs,
+      );
+
+      // Its turn, woken in the owner's chat, records what was refused, in pounds.
+      const [own] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+        WHERE dedupe_key = 'country-chosen:lead:lead-chat'`;
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+          status, event_ids, audience)
+        VALUES ('wake-country', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
+          ${JSON.stringify([own!.eventId])}, 'owner_only')`;
+      yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'wake-country'
+        WHERE event_id = ${own!.eventId}`;
+      yield* LeadWork.create(scope, {
+        sourceEventId: own!.eventId,
+        records: [{ title: "Invented fonts", amount: "40" }],
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT amount_minor AS minor, currency FROM kin_records
+          WHERE amount_minor IS NOT NULL`,
+        [{ minor: 4000, currency: "GBP" }],
+      );
+      // Once chosen, the agent reads the company's currency and country as any company's.
+      const after = yield* LeadMoney.profile(scope, {});
+      assert.notProperty(after, "countryNeeded");
+      assert.propertyVal(after.profile, "homeCurrency", "GBP");
+      assert.propertyVal(after.profile, "country", "GB");
     }).pipe(Effect.provide(layer)),
   );
 
@@ -4889,7 +5147,24 @@ describe("the company profile", () => {
       assert.include(stale, { reason: "conflict" });
       const asked = yield* turn(1, "What is the weather?");
       const read = yield* LeadMoney.profile(scope, {});
-      assert.isTrue(read.sensitive);
+      // A company made before countries reads as it always did, key for key.
+      assert.strictEqual(
+        JSON.stringify(read),
+        JSON.stringify({
+          profile: {
+            legalName: "Invented Private Limited",
+            gstin: "29ABCDE1234F1Z5",
+            brand: { primaryColor: null, secondaryColor: null, font: null, footer: null },
+            homeCurrency: "INR",
+            rates: [],
+            country: "IN",
+            financialYearStartMonth: 4,
+            bank: { ifsc: "ABCD0123456" },
+          },
+          rev: 1,
+          sensitive: true,
+        }),
+      );
       // A lead's set writes nothing: it shows the owner the exact change, old beside new.
       const change = {
         pan: "ABCDE1234F",

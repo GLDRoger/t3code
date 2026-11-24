@@ -630,6 +630,49 @@ describe("KinBudget", () => {
       assert.include(yield* budget.get(orgId), { ownerUnits: 111, teammateUnits: 111 });
     }).pipe(Effect.provide(layer)),
   );
+  it.effect("bills held by the limit add no line to the chat: their batch's card says it", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const budget = yield* Budget.KinBudget;
+      const queue = yield* Queue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '09:00', '18:00', '02:00', 0, 1, '10:00', '{}')`;
+      yield* budget.set(owner, { orgId, limits: { leadUnits: 0, workerUnits: 0 } });
+      const event = {
+        _tag: "bills.read",
+        orgId,
+        agentId,
+        eventId: KinEventId.make("bills"),
+        receivedAt: DateTime.makeUnsafe(0),
+        dedupeKey: null,
+        provenance: { _tag: "system" },
+        chatId: KinChatId.make("owner-chat"),
+        batchId: "b-1",
+        bills: ["a".repeat(64)],
+      } as const;
+      yield* queue.enqueue(event);
+      yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
+        VALUES (${orgId}, 'held', ${agentId}, 'cheap', 0, 'running', json_array('bills'))`;
+      yield* sql`UPDATE kin_events SET wakeup_id = 'held', state = 'claimed' WHERE event_id = 'bills'`;
+      const { nextReset } = yield* budget.admit(orgId, "P3", "owner");
+      yield* budget.defer({
+        orgId,
+        agentId,
+        wakeupId: KinWakeupId.make("held"),
+        events: [event],
+        heldBy: "org",
+        nextReset,
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT state, budget_deferred FROM kin_events WHERE event_id = 'bills'`,
+        [{ state: "queued", budget_deferred: 1 }],
+      );
+      // The owner's one notice of the day's limit stands; no "will pick this up" line.
+      assert.deepStrictEqual(yield* sql`SELECT message_id FROM kin_messages ORDER BY message_id`, [
+        { message_id: `kin-budget:${orgId}:1970-01-01` },
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
   it.effect("a crash between holding work and saying so leaves neither, then says both once", () =>
     Effect.gen(function* () {
       yield* seed;

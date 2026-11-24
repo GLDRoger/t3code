@@ -37,6 +37,7 @@ import * as Chat from "./chat/KinChatService.ts";
 import * as HostBackupCheck from "./host/backupCheck.ts";
 import * as KinHostCare from "./host/KinHostCare.ts";
 import * as OfflineCatchUp from "./host/offlineCatchUp.ts";
+import { recordSkips } from "./host/offlineSkips.ts";
 import { offlineCatchUpWords } from "./host/offlineWords.ts";
 import { troubleCause, troubleDetail } from "./host/troubleCauses.ts";
 import * as HostBackup from "./hostBackup.ts";
@@ -991,10 +992,35 @@ it.effect("posts once after more than three hours, then once for a separate down
     yield* OfflineCatchUp.deliverPending();
     assert.deepStrictEqual(yield* notices, []);
 
+    const sql = yield* SqlClient.SqlClient;
+    const from = DAY_START + 3 * HOUR - minute;
+    yield* recordSkips(orgId, "message", [
+      { ref: "a-month-ago", reason: "older_than_a_day", at: from - 31 * 24 * HOUR },
+      { ref: "at-the-last-heartbeat", reason: "older_than_a_day", at: from },
+    ]);
     yield* TestClock.adjust(3 * HOUR + minute);
     yield* OfflineCatchUp.markStarted();
-    const sql = yield* SqlClient.SqlClient;
     const start = DAY_START + 6 * HOUR;
+    // Skipped while it was off: counted. At the last heartbeat or after the restart: recorded only.
+    const older = [1, 2, 3].map((n) => ({
+      ref: `old-${n}`,
+      reason: "older_than_a_day" as const,
+      at: from + n * minute,
+    }));
+    yield* recordSkips(orgId, "message", [...older, ...older]);
+    yield* recordSkips(orgId, "scheduled", [
+      { ref: "routine:1", reason: "time_passed", at: from + HOUR },
+      { ref: "routine:2", reason: "time_passed", at: start },
+      { ref: "routine:3", reason: "time_passed", at: start + 1 },
+    ]);
+    yield* recordSkips(orgId, "check_in", [
+      { ref: "ns:evening:1", reason: "outside_hours", at: from + 2 * HOUR },
+    ]);
+    assert.deepStrictEqual(
+      yield* sql`SELECT ref FROM kin_offline_skips WHERE ref = 'a-month-ago'`,
+      [],
+      "a skip older than the keep goes at start",
+    );
     yield* sql`INSERT INTO kin_events (org_id, event_id, agent_id, tag, priority, json, received_at, queued_at)
       VALUES
         (${orgId}, 'caught-chief', 'chief', 'chat.message', 'P2', '{"messageId":"same"}', ${start - HOUR}, ${start}),
@@ -1024,7 +1050,8 @@ it.effect("posts once after more than three hours, then once for a separate down
         'owner', 'text', 'Question', '[]', 'posted',
         ${DateTime.formatIso(DateTime.makeUnsafe(start - HOUR))}, 'TD-1')`;
     yield* OfflineCatchUp.deliverPending();
-    const first = "Kin was offline from 12:59 pm to 4:00 pm. Caught up 3 messages.";
+    const first =
+      "Kin was offline from 12:59 pm to 4:00 pm. Caught up 3 messages; 3 older messages, 2 scheduled runs and 1 check-in were skipped.";
     assert.deepStrictEqual(yield* notices, [first]);
 
     yield* TestClock.adjust(minute / 2);
@@ -1035,7 +1062,10 @@ it.effect("posts once after more than three hours, then once for a separate down
     yield* TestClock.adjust(4 * HOUR);
     yield* OfflineCatchUp.markStarted();
     yield* OfflineCatchUp.deliverPending();
-    assert.deepStrictEqual(yield* notices, [first, "Kin was offline from 4:00 pm to 8:00 pm."]);
+    assert.deepStrictEqual(yield* notices, [
+      first,
+      "Kin was offline from 4:00 pm to 8:00 pm. Nothing arrived while it was off.",
+    ]);
     assert.deepStrictEqual(yield* cards, []);
     assert.lengthOf(yield* sql`SELECT event_id FROM kin_events`, 4);
   }).pipe(Effect.provide(services)),
@@ -1050,10 +1080,22 @@ it.effect("holds the offline notice during the same quiet hours as the backup no
     yield* OfflineCatchUp.markStarted();
     yield* OfflineCatchUp.deliverPending();
     assert.lengthOf(yield* notices, 0);
+    // Counted once: a skip recorded after that does not change what the held notice says.
+    yield* recordSkips(orgId, "check_in", [
+      { ref: "ns:late", reason: "time_passed", at: NOW - HOUR },
+    ]);
+    // Held from before skips were recorded: its skips stay unknown.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_org_state SET offline_notices_json = json_insert(offline_notices_json,
+      '$[#]', json_object('from', ${NOW - 8 * HOUR}, 'to', ${NOW - 7 * HOUR}, 'caughtUp', 2))
+      WHERE org_id = ${orgId}`;
     yield* TestClock.setTime(DAY_START);
     yield* OfflineCatchUp.deliverPending();
     yield* OfflineCatchUp.deliverPending();
-    assert.lengthOf(yield* notices, 1);
+    assert.deepStrictEqual(
+      (yield* notices).map((body) => body.replace(/^Kin was offline from .+? to .+?\./, "")),
+      [" Nothing arrived while it was off.", " Caught up 2 messages."],
+    );
     assert.lengthOf(yield* cards, 0);
   }).pipe(Effect.provide(services)),
 );
@@ -1124,6 +1166,10 @@ it.effect("publishes the bare system line after the chat and scheduled startup p
     assert.isDefined(initialPass);
     if (initialPass === undefined) return;
     yield* initialPass.started;
+    // Recorded by a first pass: the line is read only after a pass begun once they all ended.
+    yield* recordSkips(orgId, "message", [
+      { ref: "older", reason: "older_than_a_day", at: DAY_START - HOUR },
+    ]);
 
     const scheduler = yield* Layer.build(Scheduler.layer);
     const sql = yield* SqlClient.SqlClient;
@@ -1136,6 +1182,8 @@ it.effect("publishes the bare system line after the chat and scheduled startup p
     yield* initialPass.sourcesRegistered(true);
     assert.lengthOf(yield* notices, 0);
     yield* initialPass.chatDone;
+    // Two ticks of the five-second scheduler: the second begins after every first pass ended.
+    yield* TestClock.adjust("10 seconds");
     const posted = yield* Queue.take(events);
     assert.strictEqual(posted.type, "message.posted");
     if (posted.type === "message.posted") {
@@ -1143,7 +1191,7 @@ it.effect("publishes the bare system line after the chat and scheduled startup p
       assert.strictEqual(posted.message.widgetId, null);
       assert.strictEqual(
         posted.message.body,
-        "Kin was offline from 6:00 am to 10:00 am. Caught up 1 message.",
+        "Kin was offline from 6:00 am to 10:00 am. Caught up 1 message; 1 older message was skipped.",
       );
     }
   }).pipe(Effect.scoped, Effect.provide(services)),

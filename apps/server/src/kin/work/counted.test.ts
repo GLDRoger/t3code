@@ -40,6 +40,8 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "work/leadMoney.ts": 1,
   // Duplicate and paired-entry candidates, including the two sign filters for undated refunds.
   "work/leadWork.ts": 4,
+  // The expenses one bill may already be, by its own amount; nothing summed.
+  "work/bills.ts": 1,
   // A statement's own rows, and the entries and recorded payments one row may match.
   "work/statements/bankList.ts": 1,
   // The entries one bank alert may already be, and a statement's alert entries listed one by

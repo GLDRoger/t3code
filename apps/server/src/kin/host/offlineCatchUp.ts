@@ -14,6 +14,7 @@ import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { HOUR_MS } from "../durations.ts";
 import { KinHostCare } from "./KinHostCare.ts";
+import { SKIP_KEEP_MS } from "./offlineSkips.ts";
 
 const OFFLINE_MS = 3 * HOUR_MS;
 
@@ -23,6 +24,9 @@ const pendingNotices = Schema.fromJsonString(
       from: Schema.Int,
       to: Schema.Int,
       caughtUp: Schema.optionalKey(Schema.Int),
+      older: Schema.optionalKey(Schema.Int),
+      scheduled: Schema.optionalKey(Schema.Int),
+      checkIns: Schema.optionalKey(Schema.Int),
     }),
   ),
 );
@@ -37,6 +41,8 @@ export const markStarted = Effect.fn("KinOfflineCatchUp.markStarted")(function* 
       json_object('from', last_alive_at, 'to', ${now}))
     WHERE last_alive_at < ${now - OFFLINE_MS}`.pipe(
     Effect.andThen(writeHeartbeat(now)),
+    // Every company's: the keep is the same for all.
+    Effect.andThen(sql`DELETE FROM kin_offline_skips WHERE at < ${now - SKIP_KEEP_MS}`),
     sql.withTransaction,
   );
 });
@@ -76,6 +82,18 @@ const countCaughtUp = Effect.fn("KinOfflineCatchUp.countCaughtUp")(function* (
   return row?.total ?? 0;
 });
 
+const countSkipped = Effect.fn("KinOfflineCatchUp.countSkipped")(function* (
+  orgId: KinOrgId,
+  { from, to }: { readonly from: number; readonly to: number },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ kind: string; total: number }>`SELECT kind, COUNT(*) AS total
+    FROM kin_offline_skips WHERE org_id = ${orgId} AND at > ${from} AND at <= ${to}
+    GROUP BY kind ORDER BY kind`;
+  const total = (kind: string) => rows.find((row) => row.kind === kind)?.total ?? 0;
+  return { older: total("message"), scheduled: total("scheduled"), checkIns: total("check_in") };
+});
+
 export const deliverPending = Effect.fn("KinOfflineCatchUp.deliverPending")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const care = yield* KinHostCare;
@@ -91,9 +109,16 @@ export const deliverPending = Effect.fn("KinOfflineCatchUp.deliverPending")(func
           const pending = yield* decodeNotices(row.pending);
           const stillPending = [];
           for (const notice of pending) {
-            const caughtUp = notice.caughtUp ?? (yield* countCaughtUp(orgId, notice));
-            if (!(yield* care.postOfflineNotice(orgId, { ...notice, caughtUp })))
-              stillPending.push({ ...notice, caughtUp });
+            // A notice counted before skips were recorded keeps its skips unknown.
+            const counted =
+              notice.caughtUp === undefined
+                ? {
+                    ...notice,
+                    caughtUp: yield* countCaughtUp(orgId, notice),
+                    ...(yield* countSkipped(orgId, notice)),
+                  }
+                : { ...notice, caughtUp: notice.caughtUp };
+            if (!(yield* care.postOfflineNotice(orgId, counted))) stillPending.push(counted);
           }
           const next = yield* encodeNotices(stillPending);
           if (next !== row.pending)
@@ -134,7 +159,13 @@ export const layer = Layer.effect(
     const started = yield* Deferred.make<void>();
     const chatDone = yield* Deferred.make<void>();
     const sourcesRegistered = yield* Deferred.make<boolean>();
-    const sources: Array<Deferred.Deferred<void>> = [];
+    // A source's first pass, then one begun after every first pass: the first passes hand on
+    // work (a trigger's fire, a drained run) that only a later pass finishes or skips.
+    const sources: Array<{
+      readonly first: Deferred.Deferred<void>;
+      readonly after: Deferred.Deferred<void>;
+    }> = [];
+    const firstsDone = yield* Deferred.make<void>();
 
     yield* Effect.gen(function* () {
       yield* markStarted().pipe(
@@ -148,8 +179,11 @@ export const layer = Layer.effect(
         Effect.forkScoped,
       );
       yield* Deferred.await(chatDone);
-      if (yield* Deferred.await(sourcesRegistered))
-        yield* Effect.forEach(sources, Deferred.await, { discard: true });
+      if (yield* Deferred.await(sourcesRegistered)) {
+        yield* Effect.forEach(sources, (source) => Deferred.await(source.first), { discard: true });
+        yield* Deferred.succeed(firstsDone, undefined);
+        yield* Effect.forEach(sources, (source) => Deferred.await(source.after), { discard: true });
+      }
       yield* deliverPending().pipe(
         Effect.provideService(KinHostCare, care.value),
         Effect.catch((cause) => Effect.logWarning("Kin offline notice scan failed", { cause })),
@@ -167,13 +201,22 @@ export const layer = Layer.effect(
         Scheduler.Scheduler.of({
           register: Effect.fn("KinOfflineCatchUp.observePass")(function* (name, run) {
             if (!catchUpSources.has(name)) return yield* scheduler.register(name, run);
-            const done = yield* Deferred.make<void>();
-            sources.push(done);
+            const source = {
+              first: yield* Deferred.make<void>(),
+              after: yield* Deferred.make<void>(),
+            };
+            sources.push(source);
             yield* scheduler.register(
               name,
               Deferred.await(started).pipe(
-                Effect.andThen(run),
-                Effect.ensuring(Deferred.succeed(done, undefined)),
+                Effect.andThen(Deferred.isDone(firstsDone)),
+                Effect.flatMap((late) =>
+                  run.pipe(
+                    Effect.ensuring(
+                      Deferred.succeed(late ? source.after : source.first, undefined),
+                    ),
+                  ),
+                ),
               ),
             );
           }),

@@ -46,13 +46,15 @@ export const kinBilledName = (record: {
 }) => record.party?.title ?? kinBillToName(record.fields);
 
 /**
- * Whether this host takes a name to bill: its invoices or quotes list has the field. An older host
- * has neither, and before a company's first invoice or quote there is no list to tell by.
+ * Whether this host takes a name to bill: it says so, or (a host from before it said) its invoices
+ * or quotes list has the field. An older host has neither.
  */
-export const kinBillToOffered = (
-  lists: ReadonlyArray<Pick<KinListDefinition, "list" | "fields">>,
-) =>
-  lists.some(
+export const kinBillToOffered = (read: {
+  readonly lists: ReadonlyArray<Pick<KinListDefinition, "list" | "fields">>;
+  readonly billToByName?: boolean | undefined;
+}) =>
+  read.billToByName === true ||
+  read.lists.some(
     (def) =>
       (def.list === "invoices" || def.list === "quotes") &&
       def.fields.some((field) => field.key === KIN_BILL_TO_NAME),

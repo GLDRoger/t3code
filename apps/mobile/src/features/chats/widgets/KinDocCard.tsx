@@ -4,9 +4,11 @@ import {
   kinDocCardDraft,
   kinDocCardLine,
   kinDocSendUpProblem,
+  kinDocWholeCopy,
+  type KinDocCardDraftView,
   type KinDocCardView,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import type { EnvironmentId } from "@t3tools/contracts";
+import { type EnvironmentId, KinRecordKey } from "@t3tools/contracts";
 import { memo, useState } from "react";
 import { Pressable, View } from "react-native";
 
@@ -42,14 +44,44 @@ export const KinDocCard = memo(function KinDocCard(props: {
   const openRecord = useKinWorkLink();
   const line = kinDocCardLine(doc, props.agentNames ?? NO_NAMES, new Date(useNowMinuteMs()));
   const where = { environmentId: props.environmentId, orgId: props.orgId, doc: doc.key };
-  const open = () => openRecord("KinDoc", where);
   const { previousVersion } = doc;
   const draft = kinDocCardDraft(doc, props.ownerLevel, props.readOnly);
+  // A long draft opens at the version its card holds, which the card lets its reader read.
+  const open = () =>
+    openRecord(
+      "KinDoc",
+      draft?.long === undefined
+        ? where
+        : { ...where, v: String(draft.long.version), card: doc.widgetId },
+    );
   const sendUp = useAtomCommand(kinClient.docSendUp, { reportFailure: false });
+  const readVersion = useAtomCommand(kinClient.docVersion, { reportFailure: false });
   const [sending, setSending] = useState(false);
+  const [copying, setCopying] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
   const copy = async (text: string) => {
     if (await tryCopyTextWithHaptic(text, { target: "text" })) setSaid(KIN_DOCS.textCopied);
+  };
+  // A long draft's card holds its opening: Copy text takes the whole of that version.
+  const copyDraft = async (shown: KinDocCardDraftView) => {
+    if (shown.long === undefined) return copy(shown.copyText);
+    if (copying) return;
+    setCopying(true);
+    setSaid(null);
+    const got = kinDocWholeCopy(
+      await readVersion({
+        environmentId: props.environmentId,
+        input: {
+          orgId: doc.orgId,
+          key: KinRecordKey.make(doc.key),
+          version: shown.long.version,
+          card: doc.widgetId,
+        },
+      }),
+    );
+    setCopying(false);
+    if ("problem" in got) return setSaid(got.problem);
+    await copy(got.text);
   };
   const send = async () => {
     if (sending) return;
@@ -105,6 +137,11 @@ export const KinDocCard = memo(function KinDocCard(props: {
           {draft.noAccount}
         </Text>
       )}
+      {draft?.long === undefined ? null : (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {draft.long.line}
+        </Text>
+      )}
       {draft?.sent == null ? null : (
         <Text textRole="footnote" className="text-foreground">
           {draft.sent}
@@ -122,7 +159,12 @@ export const KinDocCard = memo(function KinDocCard(props: {
       <View className="flex-row flex-wrap gap-2 pt-1">
         <Chip size="small" label="Open" onPress={open} />
         {draft === null ? null : (
-          <Chip size="small" label={KIN_DOCS.copyText} onPress={() => void copy(draft.copyText)} />
+          <Chip
+            size="small"
+            label={copying ? KIN_DOCS.copying : KIN_DOCS.copyText}
+            disabled={copying}
+            onPress={() => void copyDraft(draft)}
+          />
         )}
         {draft?.sendTo == null ? null : (
           <Chip

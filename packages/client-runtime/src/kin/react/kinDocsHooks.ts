@@ -8,6 +8,7 @@ import type {
   KinOrgId,
   KinRecordKey,
   KinSearchKind,
+  KinWidgetId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -240,11 +241,22 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
   }
 
   /** One doc at a version, kept current when the host says it changed. */
-  function useKinDoc(target: KinScreenTarget, key: KinRecordKey, version: number | null) {
+  /** `card`: the long draft card it was opened from, which reads it without the Docs place. */
+  function useKinDoc(
+    target: KinScreenTarget,
+    key: KinRecordKey,
+    version: number | null,
+    card: KinWidgetId | null = null,
+  ) {
     const { environmentId, orgId } = target;
     const atom = kinClient.doc({
       environmentId,
-      input: { orgId, key, ...(version === null ? {} : { version }) },
+      input: {
+        orgId,
+        key,
+        ...(version === null ? {} : { version }),
+        ...(card === null ? {} : { card }),
+      },
     });
     const state = kinWorkReadState<KinDocDetail>(useAtomValue(atom));
     const { live } = useKinDocsLive(target);
