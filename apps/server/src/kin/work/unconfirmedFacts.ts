@@ -236,11 +236,9 @@ const rowId = Effect.fn("KinUnconfirmed.rowId")(function* (
 });
 
 /**
- * Keeps an agent's held-back values on the record as unconfirmed, and asks the person who
- * confirms on one card in their own chat with the agent. A newer proposal for the client takes in
- * the older card's other fields and replaces it once its own card is shown; the same values again
- * ask nothing. A value too long for the card to show whole waits on the record with no card.
- * Returns the line the agent's tool answer carries.
+ * Keeps held-back values on the record and asks who confirms on one card in their chat with the
+ * agent; a newer card takes in the older one's other fields and replaces it once shown. A value
+ * too long for the card waits with no card. Returns the line the agent's tool answer carries.
  */
 export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
   lead: Lead,
@@ -266,14 +264,16 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
     heardFrom?.trim() ||
     (stamp === undefined ? null : renderSource(stamp, false, who?.personId)) ||
     null;
-  const store = (changeId: string, items: ReadonlyArray<UnconfirmedItem>) =>
-    Effect.gen(function* () {
-      const patch = yield* encodeProposal({ recordId: record.recordId, items });
-      yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id,
-          patch_json, base_rev, proposed_at)
-        VALUES (${orgId}, ${changeId}, ${lead.agentId}, ${lead.wakeupId}, ${patch}, 0, ${now})
-        ON CONFLICT (org_id, change_id) DO NOTHING`;
-    }).pipe(Effect.orDie);
+  const store = Effect.fn("KinUnconfirmed.store")(function* (
+    changeId: string,
+    items: ReadonlyArray<UnconfirmedItem>,
+  ) {
+    const patch = yield* encodeProposal({ recordId: record.recordId, items }).pipe(Effect.orDie);
+    yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id,
+        patch_json, base_rev, proposed_at)
+      VALUES (${orgId}, ${changeId}, ${lead.agentId}, ${lead.wakeupId}, ${patch}, 0, ${now})
+      ON CONFLICT (org_id, change_id) DO NOTHING`;
+  });
   const decline = (rows: ReadonlyArray<{ readonly changeId: string }>) =>
     rows.length === 0
       ? Effect.void
