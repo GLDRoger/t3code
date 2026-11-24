@@ -314,8 +314,8 @@ export function KinListEntryBody(
   const clients = held?.clients ?? [];
   const projects = held?.projects ?? [];
   const clientsOn = useKinSectionOn(environmentId, "clients");
-  // Clients off: an invoice's or quote's client and project are names alone, with no link or picker.
-  const billing = clientsOn || !["invoices", "quotes"].includes(item.list ?? "");
+  // Clients off: an entry's client and project are names alone, with no link or picker.
+  const billing = clientsOn;
   const { billTo } = entry;
   const billsByName = billTo !== null && item.party === undefined && (billTo.typed || !clientsOn);
   const canName = billTo !== null && canDraft && billTo.editable;

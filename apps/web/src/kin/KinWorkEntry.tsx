@@ -554,8 +554,8 @@ export function KinListEntry(
 ) {
   const { item, view, environmentId } = props;
   const clientsOn = useKinSectionOn(environmentId, "clients");
-  // Clients off: an invoice's or quote's client and project are names alone, with no link or picker.
-  const billing = clientsOn || !["invoices", "quotes"].includes(item.list ?? "");
+  // Clients off: an entry's client and project are names alone, with no link or picker.
+  const billing = clientsOn;
   const opensClients = useKinOpensClients(environmentId) && billing;
   const [naming, setNaming] = useState(false);
   const lists = useKinLists(props, { enabled: true, archived: true });
