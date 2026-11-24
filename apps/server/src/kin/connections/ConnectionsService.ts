@@ -100,7 +100,6 @@ import {
   peopleMailboxes,
   personConnections,
   canonicalAddress,
-  datedAfter,
   ownUntil,
   resolveAmong,
   resolveConnection,
@@ -133,6 +132,7 @@ import {
   type MailChange,
   type MailMessage,
   type MailProvider,
+  receivedAfter,
 } from "./MailProvider.ts";
 import { MAIL_PRESETS, mailProviderOf } from "./mailProviders.ts";
 import * as OAuth from "./OAuth.ts";
@@ -224,7 +224,14 @@ export const OWN_CONFIRM_ONLY =
   "Only the person whose mailbox this is confirms what Kin sends from it, so nothing was sent.";
 /** Why a card from a person's own mailbox closed when the mailbox went. */
 export const MAILBOX_GONE = "The mailbox it would go from was disconnected, so nothing was sent.";
+/** Why a card closed when its mailbox moved (`moveMailbox`), to someone's own or the company's. */
+export const MAILBOX_MOVED = {
+  own: "The mailbox it would go from is now someone's own mailbox, so nothing was sent from it.",
+  company: "The mailbox it would go from is now the company's, so nothing was sent from it.",
+} as const;
 const MOVE_MAIL_ONLY = "Only a Google or Microsoft mailbox can move. Nothing changed.";
+export const MOVE_ADDRESS_TWICE = (address: string) =>
+  `${address} is connected twice in Kin. Disconnect the other one first. Nothing changed.`;
 /** Kin keeps no record of who signed a company mailbox in, so only the owner takes one. */
 export const MOVE_OWNER_ONLY =
   "Only the owner makes a company mailbox their own. If this is your personal account, disconnect it here and connect it again under Your mailboxes. Nothing changed.";
@@ -420,6 +427,8 @@ export type KinMailChanges =
       readonly addresses: ReadonlyArray<string>;
       /** A message the vendor received before this is existing mail. */
       readonly floor: number;
+      /** A message received at or before this came while it was someone's own (`ownUntil`). */
+      readonly ownUntil: number | null;
       readonly changes: ReadonlyArray<MailChange>;
       /** What `changesSeen` keeps once these are handled. */
       readonly cursor: MailCursor;
@@ -1842,6 +1851,9 @@ const make = Effect.gen(function* () {
    * sends stale, cards closed, cursors gone) and a new row of the other kind takes the sign-in, so
    * every ask, call and arrival made on the old row keeps the kind it was made under.
    */
+  /** A row's address key, its stored one or, for an older unkeyed row, its address. */
+  const keyOf = (alias: string) =>
+    sql.literal(`COALESCE(${alias}.account_key, NULLIF(lower(trim(${alias}.account_label)), ''))`);
   const moveMailbox = Effect.fn("KinConnections.moveMailbox")(function* (
     people: People,
     input: KinMailboxMoveInput,
@@ -1903,14 +1915,21 @@ const make = Effect.gen(function* () {
                 instructions_text, instructions_digest, instructions_accepted_text,
                 instructions_accepted_digest, created_at, updated_at, listed_at, last_ok_at,
                 last_error, paused_at, removed_at, person_id, account_key)
-              SELECT org_id, ${connectionId}, preset, label, kind, url, url_host, auth,
-                auth_header, reach, state, account_label, sign_in_gen, note, send_as_json, issuer,
-                resource, protocol_version, instructions_text, instructions_digest,
-                instructions_accepted_text, instructions_accepted_digest, ${now}, ${now},
-                listed_at, last_ok_at, last_error, paused_at, NULL, ${to}, account_key
-              FROM kin_connections WHERE org_id = ${orgId} AND connection_id = ${row.connectionId}
+              SELECT o.org_id, ${connectionId}, o.preset, o.label, o.kind, o.url, o.url_host,
+                o.auth, o.auth_header, o.reach, o.state, o.account_label, o.sign_in_gen, o.note,
+                o.send_as_json, o.issuer, o.resource, o.protocol_version, o.instructions_text,
+                o.instructions_digest, o.instructions_accepted_text, o.instructions_accepted_digest,
+                o.created_at, ${now}, o.listed_at, o.last_ok_at, o.last_error, o.paused_at, NULL,
+                ${to},
+                ${keyOf("o")}
+              FROM kin_connections o
+              WHERE o.org_id = ${orgId} AND o.connection_id = ${row.connectionId}
+                -- An older row may be unkeyed: the new one is keyed, and its address live once.
+                AND NOT EXISTS (SELECT 1 FROM kin_connections d WHERE d.org_id = o.org_id
+                  AND d.removed_at IS NULL AND d.account_key = ${keyOf("o")})
               RETURNING connection_id`;
-            if (made.length === 0) return yield* notFound;
+            if (made.length === 0)
+              return yield* fail("invalid_state", MOVE_ADDRESS_TWICE(row.accountLabel ?? ""));
             // An own mailbox's tools are on as Kin marks them, as at its sign-in (`insertConnection`).
             const own = to === null ? 0 : 1;
             yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
@@ -1938,9 +1957,17 @@ const make = Effect.gen(function* () {
                   AND connection_id = ${row.connectionId}`;
             yield* sql`DELETE FROM kin_connection_cursors
               WHERE org_id = ${orgId} AND connection_id = ${row.connectionId}`;
+            // Its state worked out again as the new kind; an own one's instructions are Kin's.
+            if (to !== null)
+              yield* sql`UPDATE kin_connections SET last_error = NULL,
+                  instructions_accepted_text = instructions_text,
+                  instructions_accepted_digest = instructions_digest
+                WHERE org_id = ${orgId} AND connection_id = ${connectionId}`;
+            yield* restate(orgId, connectionId, now);
+            const why = to === null ? MAILBOX_MOVED.company : MAILBOX_MOVED.own;
             yield* close(
-              yield* staleAsksOn(orgId, [row.connectionId], MAILBOX_GONE, now).pipe(provideSql),
-              MAILBOX_GONE,
+              yield* staleAsksOn(orgId, [row.connectionId], why, now).pipe(provideSql),
+              why,
             );
           }),
         );
@@ -2381,6 +2408,8 @@ const make = Effect.gen(function* () {
       const read = yield* readableTools(orgId, row.connectionId);
       const mail = mailReadOn(read);
       const calendar = read.has(MAIL_TOOL.events);
+      // Nothing it received while it was someone's own mailbox reaches the company's watch.
+      const floor = yield* ownUntil(orgId, row.accountLabel).pipe(provideSql);
       const found =
         mail || calendar
           ? yield* withSignIn(orgId, row, (force) =>
@@ -2393,6 +2422,7 @@ const make = Effect.gen(function* () {
                     since,
                     cursor?.calendarCursor ?? null,
                     until,
+                    floor,
                   ),
                 ),
               ),
@@ -2410,8 +2440,6 @@ const make = Effect.gen(function* () {
             readUntil,
           },
         );
-      // Nothing from while it was someone's own mailbox reaches the company's watch.
-      const floor = yield* ownUntil(orgId, row.accountLabel).pipe(provideSql);
       return {
         _tag: "mail",
         connectionId: row.connectionId,
@@ -2419,7 +2447,7 @@ const make = Effect.gen(function* () {
         until: readUntil,
         account: row.accountLabel,
         cursor: found.cursor,
-        mail: mail ? found.mail.filter((one) => datedAfter(one.date, floor)) : [],
+        mail: mail ? found.mail : [],
         calendar: calendar ? found.calendar : [],
       } as const;
     }
@@ -2469,6 +2497,7 @@ const make = Effect.gen(function* () {
     const read = {
       _tag: "read",
       addresses: [...(row.accountLabel === null ? [] : [row.accountLabel]), ...mailbox.addresses],
+      ownUntil: yield* ownUntil(orgId, row.accountLabel).pipe(provideSql),
     } as const;
     const afresh = (gap: { readonly from: number; readonly to: number } | null) =>
       withSignIn(orgId, row, (force) =>
@@ -2555,7 +2584,7 @@ const make = Effect.gen(function* () {
         Effect.flatMap((token) => provider.messages(http, token, mailboxOf(row), threadId)),
       ),
     );
-    return messages.filter((message) => datedAfter(message.date, floor));
+    return messages.filter((message) => receivedAfter(message.receivedAt, floor));
   }, settle);
 
   const changesSeen = Effect.fn("KinConnections.changesSeen")(function* (
@@ -4137,10 +4166,17 @@ const make = Effect.gen(function* () {
     stale: StaleAsk,
     now: number,
   ) {
-    // A person's own mailbox that was disconnected never brings a card back.
+    // A person's own mailbox that was disconnected, or any mailbox that moved (its address live
+    // again on a newer row), never brings a card back on its old row.
+    const retired =
+      (yield* connectionById(orgId, stale.row.connectionId).pipe(provideSql)) === undefined
+        ? yield* connectionEverById(orgId, stale.row.connectionId).pipe(provideSql)
+        : undefined;
     const disconnected =
-      (yield* connectionById(orgId, stale.row.connectionId).pipe(provideSql)) === undefined &&
-      (yield* connectionEverById(orgId, stale.row.connectionId).pipe(provideSql))?.personId != null;
+      retired !== undefined &&
+      (retired.personId != null ||
+        (yield* sql`SELECT 1 FROM kin_connections WHERE org_id = ${orgId} AND removed_at IS NULL
+          AND account_key = ${canonicalAddress(retired.accountLabel ?? "")} LIMIT 1`).length > 0);
     // A correction the agent made meanwhile stands; the older mail does not come back beside it.
     if (disconnected || (yield* superseded(orgId, stale.row.askId))) {
       yield* settled(orgId, stale.row.askId);

@@ -75,6 +75,8 @@ import {
   ASKED_OWN,
   type CloseCards,
   MAILBOX_GONE,
+  MAILBOX_MOVED,
+  MOVE_ADDRESS_TWICE,
   MOVE_OWNER_ONLY,
   MOVE_PAUSED,
   NO_OWN_MAILBOX,
@@ -1999,6 +2001,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const secrets = yield* ConnectionSecrets.KinConnectionSecrets;
           const records = yield* KinRecords.KinRecords;
           const accounts = yield* connect(fake, "google", ACCOUNTS);
+          yield* TestClock.adjust("1 minute");
           // He already has a mailbox of his own: the move takes another beside it.
           fake.addAccount({ provider: "google", address: ARJUN_OWN, name: "Arjun" });
           const arjun = yield* connectOwn(fake, owner, ARJUN_OWN);
@@ -2012,13 +2015,25 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             const row = yield* records.get(orgId, "INV-1");
             return ((yield* records.detail(row!)).sent ?? []).map((one) => one.subject);
           });
-          const deliver = (subject: string) =>
+          /** A client mail and a bank alert, each in the thread of `after`'s when given. */
+          const deliver = (
+            subject: string,
+            after?: { readonly mail: { threadId: string }; readonly alert: { threadId: string } },
+          ) =>
             Effect.gen(function* () {
               yield* TestClock.adjust("2 minutes");
               const at = yield* Clock.currentTimeMillis;
-              fake.deliver({ to: ACCOUNTS, from: CLIENT, subject, body: "Ravi", at });
-              fake.deliver({
+              const mail = fake.deliver({
                 to: ACCOUNTS,
+                from: CLIENT,
+                subject,
+                body: "Ravi",
+                at,
+                ...(after === undefined ? {} : { threadId: after.mail.threadId }),
+              });
+              const alert = fake.deliver({
+                to: ACCOUNTS,
+                ...(after === undefined ? {} : { threadId: after.alert.threadId }),
                 from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
                 subject: "You have done a UPI txn. Check details!",
                 body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
@@ -2027,6 +2042,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
                   "mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net",
                 ],
               });
+              return { mail, alert };
             });
           const closed: Array<string> = [];
           const collect: CloseCards = (ids, text) =>
@@ -2052,14 +2068,15 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             collect,
           );
           const own = moved.mailboxes!.find((one) => one.account === ACCOUNTS)!.connectionId;
-          // The single field still names the oldest of his, as an older phone reads it.
-          assert.strictEqual(moved.mailbox?.connectionId, arjun);
+          // A move keeps when it was first connected, before his other one: the single field, as
+          // an older phone reads it, names it as the oldest.
+          assert.strictEqual(moved.mailbox?.connectionId, own);
           assert.deepStrictEqual(
             moved.mailboxes?.map((one) => one.connectionId),
-            [arjun, own],
+            [own, arjun],
           );
-          // Its waiting card closed as a disconnect closes one, and sends nothing.
-          assert.deepStrictEqual(closed, [`${waiting.widgetId}: ${MAILBOX_GONE}`]);
+          // Its waiting card closed saying where the mailbox went, and sends nothing.
+          assert.deepStrictEqual(closed, [`${waiting.widgetId}: ${MAILBOX_MOVED.own}`]);
           assert.strictEqual(
             (yield* tap(waiting.widgetId, owner).pipe(Effect.flip)).reason,
             "widget_changed",
@@ -2081,8 +2098,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const listed = yield* connections.list(people(owner), { orgId });
           assert.deepStrictEqual(listed.connections, []);
           assert.deepStrictEqual(listed.mailboxes, [
-            { personId: owner, connectionId: arjun, account: ARJUN_OWN, state: "active" },
             { personId: owner, connectionId: own, account: ACCOUNTS, state: "active" },
+            { personId: owner, connectionId: arjun, account: ARJUN_OWN, state: "active" },
           ]);
 
           // A company turn is offered nothing on it; his own turn reads it with no new sign-in.
@@ -2096,13 +2113,13 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           yield* wake({ person: owner });
           assert.deepStrictEqual(
             (yield* connections.tools(scope, {})).connections?.map((one) => one.connection),
-            [arjun, own],
+            [own, arjun],
           );
           yield* callTool(ACCOUNTS, "mail_search", { query: "November" });
 
           // Mail that comes while it is his: no notice, no bank transaction, no arrival.
           const arrived = yield* arrivalRows;
-          yield* deliver("While it was his");
+          const was = yield* deliver("While it was his");
           const whileHis = yield* outside.read(orgId);
           assert.deepStrictEqual([whileHis.lines, whileHis.seen], [[], []]);
           yield* watchMail();
@@ -2132,8 +2149,9 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             Redacted.value(Option.getOrThrow(yield* secrets.getSignIn(arjun))),
             arjunSignIn,
           );
-          assert.deepStrictEqual(closed, [`${ownCard.widgetId}: ${MAILBOX_GONE}`]);
+          assert.deepStrictEqual(closed, [`${ownCard.widgetId}: ${MAILBOX_MOVED.company}`]);
           const company = (yield* connections.list(people(owner), { orgId })).connections[0]!;
+          assert.strictEqual(company.createdAt, NOW);
           assert.strictEqual(company.accountLabel, ACCOUNTS);
           yield* wake({ person: owner });
           yield* callTool(ARJUN_OWN, "mail_search", { query: "November" });
@@ -2154,10 +2172,19 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           yield* outside.seen(orgId, after.seen);
           assert.lengthOf((yield* readMail(company.connectionId)).recorded, 0);
           assert.deepStrictEqual(yield* alerts, [{ count: 0 }]);
-          yield* deliver("After the move back");
-          assert.include(JSON.stringify((yield* outside.read(orgId)).lines), "After the move back");
+          // New mail in the threads of the mail from while it was his, which is put back in the
+          // Inbox too: only the new is noticed, and the line names the new mail, not the old.
+          fake.relabel(was.mail.id);
+          yield* deliver("After the move back", was);
+          const lines = JSON.stringify((yield* outside.read(orgId)).lines);
+          assert.include(lines, "After the move back");
+          assert.notInclude(lines, "While it was his");
           assert.deepStrictEqual(yield* alerts, [{ count: 1 }]);
-          assert.lengthOf((yield* readMail(company.connectionId)).recorded, 2);
+          const recorded = yield* readMail(company.connectionId);
+          assert.lengthOf(recorded.recorded, 2);
+          const arrivals = (yield* arrivalRows).map((row) => row.messageId);
+          assert.notInclude(arrivals, was.mail.id);
+          assert.notInclude(arrivals, was.alert.id);
         }),
       ),
   );
@@ -2320,6 +2347,284 @@ describe("Kin mail end to end, on a fake mailbox", () => {
       ),
   );
 
+  for (const [service, address] of [
+    ["google", ACCOUNTS],
+    ["microsoft", HELLO],
+  ] as const)
+    it.effect(
+      `a ${service} mailbox back with the company: the watch keeps by when it was received`,
+      () =>
+        setUp((fake) =>
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const connections = yield* KinConnections;
+            const outside = fromConnections(connections, sql, yield* alertsOnMail(connections));
+            const alerts = sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_bank_alerts
+              WHERE org_id = ${orgId}`;
+            const alertAt = (at: number, threadId?: string) =>
+              fake.deliver({
+                to: address,
+                ...(threadId === undefined ? {} : { threadId }),
+                from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+                subject: "You have done a UPI txn. Check details!",
+                body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
+                at,
+                authResults: [
+                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net",
+                ],
+              });
+            const first = yield* connect(fake, service, address);
+            yield* readMail(first);
+            const moved = yield* connections.moveMailbox(people(owner), {
+              orgId,
+              connectionId: first,
+              to: "mine",
+            });
+            // While it is his: a client mail, and an alert.
+            yield* TestClock.adjust("2 minutes");
+            const stampedAt = yield* Clock.currentTimeMillis;
+            const his = fake.deliver({
+              to: address,
+              from: CLIENT,
+              subject: "While it was his",
+              body: "Ravi",
+              at: stampedAt,
+            });
+            const hisAlert = alertAt(stampedAt);
+            yield* TestClock.adjust("2 minutes");
+            const back = yield* connections.moveMailbox(people(owner), {
+              orgId,
+              connectionId: moved.mailbox!.connectionId,
+              to: "company",
+            });
+            assert.isNull(back.mailbox);
+            const company = (yield* connections.list(people(owner), { orgId })).connections[0]!;
+            yield* readMail(company.connectionId);
+            yield* TestClock.adjust("1 minute");
+            const at = yield* Clock.currentTimeMillis;
+            // Received after the move: one its sender stamped before it, one with a date header
+            // JavaScript can't read, and an alert in the thread of the one from while it was his.
+            const stamped = fake.deliver({
+              to: address,
+              from: CLIENT,
+              subject: "Stamped before",
+              body: "x",
+              at,
+              // NOW and two minutes, when the mail from while it was his came.
+              dateHeader: "Mon, 16 Nov 2026 09:02:00 GMT",
+            });
+            const odd = fake.deliver({
+              to: address,
+              from: CLIENT,
+              subject: "Odd date",
+              body: "x",
+              at,
+              dateHeader: "Tue, 24 Nov 2026 10:00:00 IST",
+            });
+            const after = alertAt(at, hisAlert.threadId);
+            // Its own-era mail put back in the Inbox (snoozed, or moved in by a rule).
+            fake.relabel(his.id);
+
+            const lines = JSON.stringify((yield* outside.read(orgId)).lines);
+            assert.include(lines, "Stamped before");
+            assert.include(lines, "Odd date");
+            assert.notInclude(lines, "While it was his");
+            assert.deepStrictEqual(yield* alerts, [{ count: 1 }]);
+            yield* readMail(company.connectionId);
+            const arrived = (yield* arrivalRows).map((row) => row.messageId);
+            for (const id of [stamped.id, odd.id, after.id]) assert.include(arrived, id);
+            for (const id of [his.id, hisAlert.id]) assert.notInclude(arrived, id);
+          }),
+        ),
+    );
+
+  it.effect(
+    "an older unkeyed company row moves keyed: its address live once, and its floor held",
+    () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const connections = yield* KinConnections;
+          const outside = fromConnections(connections, sql, yield* alertsOnMail(connections));
+          const alertAt = (at: number, threadId?: string) =>
+            fake.deliver({
+              to: ACCOUNTS,
+              ...(threadId === undefined ? {} : { threadId }),
+              from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+              subject: "You have done a UPI txn. Check details!",
+              body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
+              at,
+              authResults: ["mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net"],
+            });
+          const accounts = yield* connect(fake, "google", ACCOUNTS);
+          yield* readMail(accounts);
+          // An older host's second, unkeyed row of the same address can't move beside the first.
+          yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+            url_host, auth, reach, state, account_label, created_at, updated_at)
+          SELECT org_id, 'conn_000000000000000000000001', preset, label, kind, url, url_host,
+            auth, reach, state, account_label, created_at, updated_at
+          FROM kin_connections WHERE connection_id = ${accounts}`;
+          const twice = yield* connections
+            .moveMailbox(people(owner), {
+              orgId,
+              connectionId: "conn_000000000000000000000001" as never,
+              to: "mine",
+            })
+            .pipe(Effect.flip);
+          assert.strictEqual(twice.message, MOVE_ADDRESS_TWICE(ACCOUNTS));
+          yield* sql`DELETE FROM kin_connections WHERE connection_id = 'conn_000000000000000000000001'`;
+          // A row whose address Kin learned after its sign-in has no key either.
+          yield* sql`UPDATE kin_connections SET account_key = NULL WHERE connection_id = ${accounts}`;
+          const moved = yield* connections.moveMailbox(people(owner), {
+            orgId,
+            connectionId: accounts,
+            to: "mine",
+          });
+          const live = sql<{ key: string | null }>`SELECT account_key AS key FROM kin_connections
+          WHERE org_id = ${orgId} AND removed_at IS NULL ORDER BY connection_id`;
+          assert.deepStrictEqual(yield* live, [{ key: ACCOUNTS }]);
+          yield* TestClock.adjust("2 minutes");
+          const his = alertAt(yield* Clock.currentTimeMillis);
+          yield* TestClock.adjust("2 minutes");
+          yield* connections.moveMailbox(people(owner), {
+            orgId,
+            connectionId: moved.mailbox!.connectionId,
+            to: "company",
+          });
+          assert.deepStrictEqual(yield* live, [{ key: ACCOUNTS }]);
+          yield* TestClock.adjust("1 minute");
+          alertAt(yield* Clock.currentTimeMillis, his.threadId);
+          yield* outside.read(orgId);
+          // The alert from while it was his is not a Bank transaction; the new one is.
+          assert.deepStrictEqual(
+            yield* sql`SELECT COUNT(*) AS count FROM kin_bank_alerts WHERE org_id = ${orgId}`,
+            [{ count: 1 }],
+          );
+        }),
+      ),
+  );
+
+  it.effect("a turn Kin starts for the owner alone reads his own mailbox, privately", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const connections = yield* KinConnections;
+        const accounts = yield* connect(fake, "google", ACCOUNTS);
+        yield* connections.moveMailbox(people(owner), {
+          orgId,
+          connectionId: accounts,
+          to: "mine",
+        });
+        const event = {
+          _tag: "pulse",
+          orgId,
+          agentId: lead,
+          eventId: "pulse-head-start",
+          receivedAt: stamp,
+          dedupeKey: "head-start:owner",
+          provenance: { _tag: "system" },
+          factKeys: [],
+          chatId: "cos-owner",
+        };
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state)
+          VALUES ('pulse-head-start', ${orgId}, ${lead}, 'pulse', 'P2', ${JSON.stringify(event)},
+            0, 0, 'queued')`;
+        yield* wake({ eventId: "pulse-head-start" });
+        const [running] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+          FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running'`;
+        const turn = { orgId, agentId: lead, wakeupId: running!.wakeupId };
+        // Nobody asked: the turn is his alone, in his chat, and reads his own mailbox there.
+        assert.deepStrictEqual(
+          (yield* connections.tools(scope, {})).connections?.map((one) => one.account),
+          [ACCOUNTS],
+        );
+        yield* callTool(ACCOUNTS, "mail_search", { query: "November" });
+        assert.strictEqual(yield* privateTo(turn), owner);
+        assert.strictEqual(
+          yield* privateRefusal(turn, "memory_write", {}),
+          PRIVATE_MEMORY("Arjun"),
+        );
+      }),
+    ),
+  );
+
+  it.effect(
+    "a moved mailbox's state is worked out again; a failed send on its old row stays off",
+    () =>
+      setUp((fake, cards) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const connections = yield* KinConnections;
+          // A company send the mailbox refused owes a fresh card; once the mailbox moved, none comes.
+          const accounts = yield* connect(fake, "google", ACCOUNTS);
+          yield* wake({ person: owner });
+          yield* callTool(ACCOUNTS, "mail_send", {
+            to: ["ravi@lumen.example"],
+            subject: "Hi",
+            body: "x",
+          });
+          fake.failWith(ACCOUNTS, 400);
+          const failed = yield* tap(cards.at(-1)!.widgetId, owner);
+          fake.failWith(ACCOUNTS, null);
+          if (failed === undefined || !("state" in failed) || failed.fresh === undefined)
+            return assert.fail("no fresh card after a failed send");
+          yield* connections.moveMailbox(people(owner), {
+            orgId,
+            connectionId: accounts,
+            to: "mine",
+          });
+          assert.isUndefined(yield* connections.freshAsk(orgId, failed.fresh, NOW));
+
+          // Waiting for a review, or in error, as the company's: it arrives as an own one that works.
+          let at = yield* connect(fake, "microsoft", HELLO);
+          const own = (state: string) =>
+            Effect.gen(function* () {
+              const moved = yield* connections.moveMailbox(people(owner), {
+                orgId,
+                connectionId: at as never,
+                to: "mine",
+              });
+              const mine = moved.mailboxes!.find((one) => one.account === HELLO)!;
+              assert.strictEqual(mine.state, state);
+              const back = yield* connections.moveMailbox(people(owner), {
+                orgId,
+                connectionId: mine.connectionId,
+                to: "company",
+              });
+              assert.isNull(back.mailboxes!.find((one) => one.account === HELLO) ?? null);
+              at = (yield* connections.list(people(owner), { orgId })).connections.find(
+                (one) => one.accountLabel === HELLO,
+              )!.connectionId;
+              return mine.connectionId;
+            });
+          yield* sql`UPDATE kin_connections SET state = 'needs_review', instructions_digest = 'changed'
+          WHERE connection_id = ${at}`;
+          yield* own("active");
+          yield* sql`UPDATE kin_connections SET state = 'error', last_error = 'It failed.'
+          WHERE connection_id = ${at}`;
+          yield* own("active");
+          // One that needs a sign-in still does, and its own Sign in again starts.
+          yield* sql`UPDATE kin_connections SET state = 'needs_sign_in' WHERE connection_id = ${at}`;
+          const moved = yield* connections.moveMailbox(people(owner), {
+            orgId,
+            connectionId: at as never,
+            to: "mine",
+          });
+          const lapsed = moved.mailboxes!.find((one) => one.account === HELLO)!;
+          assert.strictEqual(lapsed.state, "needs_sign_in");
+          assert.isString(
+            (yield* connections.mineSignInStart(people(owner), {
+              orgId,
+              service: "microsoft",
+              returnTo: "web",
+              connectionId: lapsed.connectionId,
+            })).authorizationUrl,
+          );
+        }),
+      ),
+  );
+
   it.effect("only the owner takes a company mailbox, and owner level gives only their own", () =>
     setUp((fake, _cards, gates) =>
       Effect.gen(function* () {
@@ -2327,6 +2632,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         const connections = yield* KinConnections;
         fake.addAccount({ provider: "google", address: MEERA, name: "Meera" });
         const accounts = yield* connect(fake, "google", ACCOUNTS);
+        yield* TestClock.adjust("1 minute");
         const hello = yield* connect(fake, "microsoft", HELLO);
         const meera = yield* connectOwn(fake, member, MEERA);
         const refused = (by: KinPersonId, connectionId: string, to: "mine" | "company") =>
@@ -2392,7 +2698,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         });
         assert.deepStrictEqual(
           second.mailboxes?.map((one) => one.account),
-          [HELLO, ACCOUNTS],
+          [ACCOUNTS, HELLO],
         );
         // A co-owner gives her own to the company, but not once she is no longer owner level.
         fake.addAccount({ provider: "google", address: ASHA_OWN, name: "Asha" });

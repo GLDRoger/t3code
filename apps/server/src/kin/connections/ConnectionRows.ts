@@ -391,9 +391,5 @@ export const ownUntil = Effect.fn("KinConnectionRows.ownUntil")(function* (
       AND person_id IS NOT NULL AND removed_at IS NOT NULL`;
   return row?.until ?? null;
 });
-/** Whether a mail dated `date` came after `floor` (`ownUntil`); an undated one can't show it did. */
-export const datedAfter = (date: string | null, floor: number | null) =>
-  floor === null || (date !== null && Date.parse(date) > floor);
-
 /** A mail address as Kin keys it: one live connection per address in a company. */
 export const canonicalAddress = (address: string) => address.trim().toLowerCase();

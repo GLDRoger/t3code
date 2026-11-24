@@ -116,6 +116,12 @@ const automationOf = (message: unknown) => ({
   bulk: BULK_LABELS.some((label) => list(field(message, "labelIds")).includes(label)),
 });
 
+/** When Gmail received it (`internalDate`), never the sender's `Date` header. */
+const receivedOf = (message: unknown) => {
+  const at = Number(text(field(message, "internalDate")) ?? Number.NaN);
+  return Number.isSafeInteger(at) ? at : null;
+};
+
 /** A Gmail message; its body only in `full` format. */
 const messageOf =
   (full: boolean, watch = false) =>
@@ -131,6 +137,7 @@ const messageOf =
       headerValues(message, name).flatMap(addressesIn),
     ),
     date: header(message, "Date"),
+    receivedAt: receivedOf(message),
     subject: header(message, "Subject") ?? "",
     preview: htmlToText(text(field(message, "snippet")) ?? ""),
     unread: list(field(message, "labelIds")).includes("UNREAD"),
