@@ -165,7 +165,7 @@ function MyMailbox(props: { readonly target: KinConnectionsTarget }) {
                   key={mailbox.connectionId}
                   title={`${mailbox.account ?? COPY.title} · ${COPY.yours}`}
                   {...(index === all.length - 1
-                    ? { footer: `${line.text} ${kinOwnMailboxReads(viewer)}` }
+                    ? { footer: `${line.text} ${kinOwnMailboxReads(viewer, all.length)}` }
                     : {})}
                 >
                   {mailbox.state === "needs_sign_in" && mailbox.preset !== null ? (
