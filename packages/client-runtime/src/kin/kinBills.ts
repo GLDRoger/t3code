@@ -56,6 +56,7 @@ export const KIN_BILLS = {
     uploading: "Uploading…",
     uploaded: "Uploaded",
     added: "Added",
+    already: "Already added before",
   },
   review: "Review",
   /** On Expenses: where bills added in bulk are, once there are any. */
@@ -465,8 +466,10 @@ export type KinBillUpload =
   | { readonly _tag: "uploading" }
   | { readonly _tag: "uploaded"; readonly attachment: KinAttachment }
   | { readonly _tag: "failed"; readonly problem: string }
-  /** Sent in an add the host answered. */
+  /** Sent in an add the host answered, and put in to be read. */
   | { readonly _tag: "added" }
+  /** Sent, but the host had it as a bill already: in `batchId`, when the host says. */
+  | { readonly _tag: "already"; readonly batchId: string | null }
   /** Not a photo or a PDF: never uploaded. */
   | { readonly _tag: "refused"; readonly reason: string };
 
@@ -512,7 +515,8 @@ export const kinBillsAddingStart = <F>(): KinBillsAdding<F> => ({
   problem: null,
 });
 
-const live = (upload: KinBillUpload) => upload._tag !== "added" && upload._tag !== "refused";
+const live = (upload: KinBillUpload) =>
+  upload._tag !== "added" && upload._tag !== "already" && upload._tag !== "refused";
 const sentKey = (attachments: ReadonlyArray<KinAttachment>) =>
   attachments.map((attachment) => attachment.id).join(",");
 
@@ -570,17 +574,29 @@ export function kinBillsStep<F>(state: KinBillsAdding<F>, event: KinBillsEvent<F
           : event.freshId;
       return { ...state, phase: "adding" as const, attempt: { requestId, sent } };
     }
-    case "added":
+    case "added": {
+      // A host that doesn't name the file it had already leaves every sent file "added".
+      const already = new Map(
+        event.result.already.flatMap((one) =>
+          one.attachmentId === undefined ? [] : [[one.attachmentId, one.batchId ?? null] as const],
+        ),
+      );
       return {
         ...state,
         phase: "choosing" as const,
         attempt: null,
         result: event.result,
         problem: null,
-        files: state.files.map((file) =>
-          file.upload._tag === "uploaded" ? { ...file, upload: { _tag: "added" as const } } : file,
-        ),
+        files: state.files.map((file): KinBillDraft<F> => {
+          if (file.upload._tag !== "uploaded") return file;
+          const batchId = already.get(file.upload.attachment.id);
+          return {
+            ...file,
+            upload: batchId === undefined ? { _tag: "added" } : { _tag: "already", batchId },
+          };
+        }),
       };
+    }
     case "addFailed":
       return { ...state, phase: "choosing" as const, problem: event.problem };
   }
@@ -603,6 +619,10 @@ export function kinBillsButton<F>(state: KinBillsAdding<F>) {
     disabled: count === 0 || state.phase !== "choosing",
   };
 }
+
+/** The batch a file already added before is in, to open from its line. */
+export const kinBillUploadBatch = (upload: KinBillUpload) =>
+  upload._tag === "already" ? upload.batchId : null;
 
 export function kinBillUploadText(upload: KinBillUpload) {
   switch (upload._tag) {

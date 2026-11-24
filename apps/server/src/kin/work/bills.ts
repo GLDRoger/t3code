@@ -712,7 +712,12 @@ const alreadyAdded = Effect.fn("KinBills.alreadyAdded")(function* (
 });
 
 type Prepared = {
-  readonly accepted: ReadonlyArray<{ readonly attachment: KinAttachment; readonly sha256: string }>;
+  readonly accepted: ReadonlyArray<{
+    readonly attachment: KinAttachment;
+    readonly sha256: string;
+    /** The id the person sent it under, before the claim renamed it. */
+    readonly sentId?: string | undefined;
+  }>;
   readonly refused: ReadonlyArray<{ readonly name: string; readonly reason: string }>;
 };
 
@@ -747,6 +752,8 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
         sha256: file.sha256,
         ...(prior?.expense === undefined ? {} : { expense: prior.expense }),
         ...(prior?.dropped === true ? { dropped: true } : {}),
+        ...(file.sentId === undefined ? {} : { attachmentId: file.sentId }),
+        batchId: prior?.batchId ?? input.batchId,
       });
       continue;
     }
@@ -858,11 +865,11 @@ export const add = Effect.fn("KinBills.add")(function* (
       : yield* store.value.claim(wanted, uploader);
   const sql = yield* SqlClient.SqlClient;
   const batchId = batchIdFor(`${input.orgId}:${person.personId}:${input.clientRequestId}`);
-  const accepted = yield* prepareFiles(claimed?.attachments ?? []).pipe(
+  const accepted = (yield* prepareFiles(claimed?.attachments ?? []).pipe(
     Effect.onError(() =>
       claimed === undefined || Option.isNone(store) ? Effect.void : store.value.release(claimed),
     ),
-  );
+  )).map((file, index) => ({ ...file, sentId: wanted[index]?.id }));
   const result = yield* sql
     .withTransaction(
       Effect.gen(function* () {

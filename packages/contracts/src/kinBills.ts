@@ -128,6 +128,10 @@ export const KinBillsAddResult = Schema.Struct({
       expense: Schema.optional(KinRecordKey),
       /** That expense was dropped: restoring it brings it back; this file makes no other. */
       dropped: Schema.optional(Schema.Boolean),
+      /** The id this add sent the file under, so a client can tell which chosen file it is. */
+      attachmentId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+      /** The batch the earlier bill is in. */
+      batchId: Schema.optional(KinBillBatchId),
     }),
   ),
   /** Files that are neither an image nor a PDF, each with why. */

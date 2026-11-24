@@ -23,6 +23,8 @@ import {
   kinBillsKeptAll,
   kinBillsOutcome,
   kinBillsSend,
+  kinBillUploadBatch,
+  kinBillUploadText,
   kinBillsStep,
   type KinBillsAdding,
   type KinBillsEvent,
@@ -346,23 +348,45 @@ describe("adding bills", () => {
   });
 
   it("says which file's expense was dropped, with that expense, and offers it no other add", async () => {
-    const held = harness(["a", "b"]);
+    const held = harness(["a", "b", "c"]);
     await kinBillsSend({
       ...held,
       upload: async (source) => attachment(source),
       add: async () => ({
         ok: true,
         value: {
-          ...answered([]),
+          ...answered(["c"]),
           already: [
-            { name: "a.jpg", sha256: SHA(3), expense: "EXP-4" as KinRecordKey },
-            { name: "b.jpg", sha256: SHA(4), expense: "EXP-5" as KinRecordKey, dropped: true },
+            {
+              name: "a.jpg",
+              sha256: SHA(3),
+              expense: "EXP-4" as KinRecordKey,
+              attachmentId: "a",
+              batchId: "b-0",
+            },
+            {
+              name: "b.jpg",
+              sha256: SHA(4),
+              expense: "EXP-5" as KinRecordKey,
+              dropped: true,
+              attachmentId: "b",
+            },
           ],
         },
       }),
     });
+    // Each file's line says what this add did with it: only "c" went in.
+    expect(
+      held
+        .state()
+        .files.map((file) => [kinBillUploadText(file.upload), kinBillUploadBatch(file.upload)]),
+    ).toEqual([
+      ["Already added before", "b-0"],
+      ["Already added before", null],
+      ["Added", null],
+    ]);
     expect(kinBillsOutcome(held.state())).toEqual({
-      review: null,
+      review: "b-1",
       close: false,
       lines: ["Already added before: a.jpg."],
       dropped: [

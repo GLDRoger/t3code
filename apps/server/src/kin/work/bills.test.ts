@@ -1170,15 +1170,13 @@ describe("bills in bulk", () => {
         const sql = yield* SqlClient.SqlClient;
         const add = (requestId: string, files: ReadonlyArray<[string, string]>) =>
           Effect.gen(function* () {
-            return yield* Bills.add(
+            const attachments = yield* Effect.forEach(files, ([name, text]) => upload(name, text));
+            const result = yield* Bills.add(
               as(rhea),
-              {
-                orgId,
-                attachments: yield* Effect.forEach(files, ([name, text]) => upload(name, text)),
-                clientRequestId: requestId,
-              },
+              { orgId, attachments, clientRequestId: requestId },
               TEST_UPLOAD_OWNER,
             );
+            return { ...result, sent: attachments.map((file) => file.id) };
           });
         const first = yield* add("add", [
           ["blurred.png", "blurred"],
@@ -1217,8 +1215,16 @@ describe("bills in bulk", () => {
           [blurred!, lost!],
         );
         // The dropped expense is said, and this file makes no other.
+        // Told by the id it was sent under, with the batch the earlier bill is in.
         assert.deepStrictEqual(again.already, [
-          { name: "freight-again.png", sha256: freight!, expense: expense!.key, dropped: true },
+          {
+            name: "freight-again.png",
+            sha256: freight!,
+            expense: expense!.key,
+            dropped: true,
+            attachmentId: again.sent[1]!,
+            batchId: first.batchId,
+          },
         ]);
         assert.deepStrictEqual(
           (yield* Bills.list(as(rhea), { orgId, batchId: again.batchId })).bills.map((bill) => [

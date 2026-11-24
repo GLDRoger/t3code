@@ -9,6 +9,7 @@ import {
   kinBillsCanKeepAll,
   kinBillsEntry,
   kinBillsOutcome,
+  kinBillUploadBatch,
   kinBillUploadText,
   type KinBillAction,
   type KinBillRowView,
@@ -231,7 +232,11 @@ export function KinAddBillsDialog(
                 {state.files.map((file) => {
                   const wrong = file.upload._tag === "failed" || file.upload._tag === "refused";
                   const removable =
-                    !busy && file.upload._tag !== "added" && file.upload._tag !== "uploading";
+                    !busy &&
+                    file.upload._tag !== "added" &&
+                    file.upload._tag !== "already" &&
+                    file.upload._tag !== "uploading";
+                  const earlier = kinBillUploadBatch(file.upload);
                   return (
                     <li key={file.id} className="flex min-h-9 items-center gap-3 py-1 text-sm">
                       <span className="min-w-0 flex-1 truncate text-foreground">{file.name}</span>
@@ -245,6 +250,18 @@ export function KinAddBillsDialog(
                       >
                         {kinBillUploadText(file.upload)}
                       </span>
+                      {earlier === null ? null : (
+                        <Button
+                          variant="link"
+                          size="xs"
+                          className="shrink-0"
+                          aria-label={`${KIN_BILLS.review} ${file.name}`}
+                          disabled={busy}
+                          onClick={() => review(earlier)}
+                        >
+                          {KIN_BILLS.review}
+                        </Button>
+                      )}
                       <span className="size-7 shrink-0">
                         {removable ? (
                           <Button
