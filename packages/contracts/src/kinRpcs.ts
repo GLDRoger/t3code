@@ -48,6 +48,7 @@ import { KinOpenRpcs, KIN_OPEN_RPC_SCOPES } from "./kinOpen.ts";
 import { KinRecommendationRpcs, KIN_RECOMMENDATION_RPC_SCOPES } from "./kinRecommendations.ts";
 import { KinHostRpcs, KIN_HOST_RPC_SCOPES } from "./kinHostCare.ts";
 import { KinWatchRpcs, KIN_WATCH_RPC_SCOPES } from "./kinWatches.ts";
+import { KinBillRpcs, KIN_BILL_RPC_SCOPES } from "./kinBills.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -225,6 +226,7 @@ export const KinRpcs = [
   ...KinRecommendationRpcs,
   ...KinHostRpcs,
   ...KinWatchRpcs,
+  ...KinBillRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
@@ -254,6 +256,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_RECOMMENDATION_RPC_SCOPES,
   ...KIN_HOST_RPC_SCOPES,
   ...KIN_WATCH_RPC_SCOPES,
+  ...KIN_BILL_RPC_SCOPES,
   "kin.budget.get": AuthKinChatScope,
   "kin.budget.set": AuthKinChatScope,
   "kin.org.get": AuthKinChatScope,
@@ -485,6 +488,12 @@ const KIN_RPC_ACCESS = {
   "kin.work.statementRows": "owner_level",
   "kin.work.statementPasswords": "owner_level",
   "kin.work.statementForgetAccount": "owner_level",
+  "kin.bills.add": "owner_level",
+  "kin.bills.list": "owner_level",
+  "kin.bills.keepRead": "owner_level",
+  "kin.bills.addAnyway": "owner_level",
+  "kin.bills.dismiss": "owner_level",
+  "kin.bills.readAgain": "owner_level",
   "kin.push.registerDevice": "person",
   "kin.push.unregisterDevice": "person",
   "kin.push.watch": "person",
@@ -822,6 +831,12 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.statementRows": "kin-work",
   "kin.work.statementPasswords": "kin-work",
   "kin.work.statementForgetAccount": "kin-work",
+  "kin.bills.add": "kin-work",
+  "kin.bills.list": "kin-work",
+  "kin.bills.keepRead": "kin-work",
+  "kin.bills.addAnyway": "kin-work",
+  "kin.bills.dismiss": "kin-work",
+  "kin.bills.readAgain": "kin-work",
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
   "kin.push.watch": "kin-push",

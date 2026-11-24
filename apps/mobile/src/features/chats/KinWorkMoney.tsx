@@ -1,3 +1,4 @@
+import { KIN_BILLS } from "@t3tools/client-runtime/kin/kinBills";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkReadUnreachable } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -128,6 +129,7 @@ function AreaFrame(props: {
   const canExpense = useAtomValue(
     kinClient.workNewExpense.permissionAtom(props.target.environmentId),
   );
+  const canBills = useAtomValue(kinClient.billsAdd.permissionAtom(props.target.environmentId));
   const base = {
     environmentId: String(props.target.environmentId),
     orgId: String(props.target.orgId),
@@ -166,6 +168,17 @@ function AreaFrame(props: {
               onPress: () => agent.ask("Log an expense: "),
             },
           ]),
+    ...(canBills
+      ? [
+          {
+            id: "bills",
+            title: KIN_BILLS.add,
+            subtitle: KIN_BILLS.addDetail,
+            icon: "photo" as const,
+            onPress: () => navigation.navigate("KinBillsAdd", base),
+          },
+        ]
+      : []),
     ...(canReceipt
       ? [
           {

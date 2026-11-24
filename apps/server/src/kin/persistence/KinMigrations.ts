@@ -137,6 +137,7 @@ import PushSent from "./migrations/K213_PushSent.ts";
 import MessageWithdrawn from "./migrations/K214_MessageWithdrawn.ts";
 import OfflineCatchUp from "./migrations/K215_OfflineCatchUp.ts";
 import OfflineSkips from "./migrations/K216_OfflineSkips.ts";
+import BillReads from "./migrations/K217_BillReads.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -354,6 +355,7 @@ const migrations = {
   "214_MessageWithdrawn": MessageWithdrawn,
   "215_OfflineCatchUp": OfflineCatchUp,
   "216_OfflineSkips": OfflineSkips,
+  "217_BillReads": BillReads,
 };
 const loader = Migrator.fromRecord(migrations);
 

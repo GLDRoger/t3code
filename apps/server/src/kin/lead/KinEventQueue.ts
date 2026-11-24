@@ -88,9 +88,11 @@ const SteerInput = Schema.Struct({
 /**
  * An event's lane, the chat a wake-up answers (asking chat, else the owner chat). Other chats'
  * deferrals, GitHub triggers, approved drafts, follow-ups (`draftWake.ts`), reviews
- * (`reviewWake.ts`) and Kin's head starts each get their own lanes: nothing else mixes in.
+ * (`reviewWake.ts`), Kin's head starts and each group of bills to read get their own lanes:
+ * nothing else mixes in.
  */
-const LANE_OF = `CASE WHEN e.tag = 'github' AND json_extract(e.json, '$.trigger.key') IS NOT NULL
+const LANE_OF = `CASE WHEN e.tag = 'bills.read' THEN 'bills:' || e.event_id
+  WHEN e.tag = 'github' AND json_extract(e.json, '$.trigger.key') IS NOT NULL
   THEN 'github:' || json_extract(e.json, '$.trigger.key')
   WHEN e.tag = 'deferral.due' AND json_extract(e.json, '$.subject.approved') IS NOT NULL
   THEN 'approved:' || json_extract(e.json, '$.subject.questionId')
@@ -484,6 +486,8 @@ const make = Effect.gen(function* () {
             case "routine":
               if (event.routine === "owner_check") priority = "P3";
               break;
+            // Bills read in the background wait for anyone's message to that agent.
+            case "bills.read":
             case "watchdog":
               priority = "P3";
               break;

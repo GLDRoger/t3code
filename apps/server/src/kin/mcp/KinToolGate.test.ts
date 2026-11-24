@@ -26,6 +26,7 @@ import { TURN_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import { KinPulseToolkit } from "../pulse/mcp.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
+import { KinBillToolkit } from "../work/mcp/billTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { callCounts, helperModels } from "./KinToolGate.ts";
@@ -37,6 +38,7 @@ it("fills the event of every Kin tool that takes one, and of no other", () => {
     KinWorkToolkit,
     KinDocsToolkit,
     KinStatementToolkit,
+    KinBillToolkit,
     KinDocumentToolkit,
     KinPulseToolkit,
   ].flatMap((toolkit) =>

@@ -66,6 +66,7 @@ import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
+import { BILLS_THREAD_PREFIX } from "./billsOnly.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import * as HostCare from "../host/KinHostCare.ts";
@@ -495,6 +496,31 @@ describe("WakeupRunner", () => {
         assert.strictEqual(reviewed?.audience, "shared");
         assert.isTrue(reviewed!.threadId.startsWith(REVIEW_THREAD_PREFIX));
         assert.deepStrictEqual(kept(reviewed!.wakeupId), []);
+        // Bills to read run on a confined thread of their own too, which no other turn takes.
+        yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
+            name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
+            widget_id, added_by_person_id, added_at, state, event_id, reads)
+          VALUES ('org', ${"a".repeat(64)}, 'kin-chat-00000000-0000-4000-8000-000000000001', 'owner-chat',
+            'bills:b-1', 'IMG_0001.png', 'image', 'image/png', 68, 'b-1', 0, ${agentId},
+            'owner-chat', 'bills:b-1', 'owner', 0, 'reading', 'bills-1', 1)`;
+        yield* (yield* KinEventQueue.KinEventQueue).enqueue(
+          decodeEvent({
+            _tag: "bills.read",
+            orgId,
+            agentId,
+            eventId: "bills-1",
+            receivedAt: at,
+            dedupeKey: null,
+            provenance: { _tag: "system" },
+            chatId: "owner-chat",
+            batchId: "b-1",
+            bills: ["a".repeat(64)],
+          }),
+        );
+        yield* Fiber.join(yield* run());
+        const [billsTurn] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId"
+          FROM kin_wakeups WHERE event_ids LIKE '%bills-1%'`;
+        assert.isTrue(billsTurn!.threadId.startsWith(BILLS_THREAD_PREFIX));
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'teammate-member'`;
         assert.strictEqual((yield* turn("after-review")).threadId, shared.threadId);
       }).pipe(Effect.provide(harness({ writer })), provideDeterministicTestRuntime);
