@@ -861,7 +861,7 @@ export function kinUnseenCount(
   return count;
 }
 
-/** The viewer's own read mark: the stream's opening one, moved by their member's read events. */
+/** The viewer's own seen mark: the stream's opening one, moved by their member's read events. */
 export function kinOwnReadSeq(
   state: Pick<KinChatState, "readSeq" | "reads">,
   viewerMemberId: string | null,
@@ -878,15 +878,18 @@ export type KinNewLineHold = {
   readonly upTo: number;
 };
 
-/** The line stays where the chat opened it; only a move of the viewer's own mark places it again. */
+/**
+ * The line is placed once, from the viewer's seen mark as the chat opens, and stays there while it
+ * is open: opening moves that mark at once, and a later move never places it again.
+ */
 export function kinNextNewLineHold(
   held: KinNewLineHold | null,
   chatId: string,
   mark: number | null,
   latestSeq: number,
 ): KinNewLineHold | null {
+  if (held !== null && held.chatId === chatId) return held;
   if (mark === null) return null;
-  if (held !== null && held.chatId === chatId && held.mark === mark) return held;
   return { chatId, mark, upTo: Math.max(latestSeq, mark) };
 }
 
@@ -913,9 +916,8 @@ export const latestKinSeq = (messages: ReadonlyArray<KinMessage>) =>
   messages[messages.length - 1]?.seq ?? 0;
 
 /**
- * The seq to tell the host the reader has seen, or null; seeing clears banners, not unread. Only
- * while the reader sees the end, past the last seq sent or already tried, and while the inbox
- * counts anything unread (`null` while the inbox hasn't loaded).
+ * The seq to mark read, or null. Only while the reader sees the end, past the last seq marked or
+ * already tried, and while the inbox counts anything unread (`null` while the inbox hasn't loaded).
  * A refused seq stays tried until the caller rearms it, so a failing host isn't asked on every render.
  */
 export function kinSeqToMarkRead(input: {
