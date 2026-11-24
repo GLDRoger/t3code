@@ -94,6 +94,7 @@ export const lists = Effect.fn("KinMoney.lists")(function* (
           (!refused.money && def.builtIn === null && open.has(def.id)),
       )
       .map((def) => toDefinition(def, open.get(def.id) ?? 0, input.accept)),
+    billToByName: true,
   };
 }, workFailure);
 
