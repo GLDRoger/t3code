@@ -72,6 +72,15 @@ class T3WorkspaceNavigationModule : Module() {
       Prop("titles") { view: T3WorkspaceNavigationView, value: Map<String, String> ->
         view.titles = value
       }
+      Prop("tabTitles") { view: T3WorkspaceNavigationView, value: Map<String, String> ->
+        view.tabTitles = value
+      }
+      Prop("expandedTabTitles") { view: T3WorkspaceNavigationView, value: Map<String, String> ->
+        view.expandedTabTitles = value
+      }
+      Prop("newThreadTitle") { view: T3WorkspaceNavigationView, value: String ->
+        view.newThreadTitle = value
+      }
       Prop("selectedTab") { view: T3WorkspaceNavigationView, value: String ->
         view.selectedTab = value
       }
@@ -130,6 +139,9 @@ class T3WorkspaceNavigationView(
   private val onNewThread by EventDispatcher()
   private val onOverlayChange by EventDispatcher()
   var tabs by mutableStateOf(listOf("threads", "pullRequests", "issues", "usage", "settings"))
+  var tabTitles by mutableStateOf(emptyMap<String, String>())
+  var expandedTabTitles by mutableStateOf(emptyMap<String, String>())
+  var newThreadTitle by mutableStateOf("New thread")
   var selectedTab by mutableStateOf("threads")
   /** Titles for tabs this bar doesn't name itself, such as a company list shown as a section. */
   var titles by mutableStateOf(mapOf<String, String>())
@@ -361,7 +373,7 @@ class T3WorkspaceNavigationView(
         .height(FAB_SIZE)
         .width(lerp(FAB_SIZE, EXPANDED_RAIL_WIDTH - RAIL_INSET * 2, fraction))
         .alpha(if (newEnabled) 1f else DISABLED_ALPHA)
-        .semantics { contentDescription = "New thread" },
+        .semantics { contentDescription = newThreadTitle },
     ) {
       Row(
         Modifier.padding(start = (FAB_SIZE - ICON_SIZE) / 2).clipToBounds(),
@@ -369,7 +381,7 @@ class T3WorkspaceNavigationView(
       ) {
         Icon(painterResource(R.drawable.t3_new_thread), contentDescription = null)
         Text(
-          "New thread",
+          newThreadTitle,
           Modifier.padding(start = 12.dp).alpha(labelAlpha(fraction)).clearAndSetSemantics {},
           style = MaterialTheme.typography.labelLarge,
           fontSize = (14 * textScale).sp,
@@ -417,10 +429,11 @@ class T3WorkspaceNavigationView(
     }
   }
 
-  private fun tabTitle(tab: String) = titles[tab] ?: when (tab) {
+  private fun tabTitle(tab: String) = titles[tab] ?: tabTitles[tab] ?: when (tab) {
     "threads" -> "Chats"
     "pullRequests" -> "Pulls"
     "issues" -> "Issues"
+    "workflows" -> "Workflows"
     "usage" -> "Usage"
     "tasks" -> "Tasks"
     "money" -> "Money"
@@ -430,7 +443,7 @@ class T3WorkspaceNavigationView(
   }
 
   private fun expandedTabTitle(tab: String) =
-    if (tab == "pullRequests") "Pull Requests" else tabTitle(tab)
+    expandedTabTitles[tab] ?: if (tab == "pullRequests") "Pull requests" else tabTitle(tab)
 
   @Composable
   private fun tabIconPainter(tab: String) = painterResource(
@@ -438,6 +451,7 @@ class T3WorkspaceNavigationView(
       "threads" -> R.drawable.t3_chats
       "pullRequests" -> R.drawable.t3_pull_requests
       "issues" -> R.drawable.t3_issues
+      "workflows" -> R.drawable.t3_workflows
       "usage" -> R.drawable.t3_usage
       "tasks" -> R.drawable.t3_tasks
       "money" -> R.drawable.t3_money

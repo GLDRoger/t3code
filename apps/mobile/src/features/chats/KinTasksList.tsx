@@ -123,6 +123,7 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 /** Task lists kept while their screen is away, so coming back reads nothing the stream brought. */
 const kinTaskLists = createKinListKeeper<KinWorkList, KinWorkListState>(Date.now);
@@ -174,7 +175,8 @@ export function KinTasksList(
         createKinWorkList({
           orgId,
           initial: props.initial,
-          read: (input) => kinClient.workList.run(appAtomRegistry, { environmentId, input }),
+          read: (input) =>
+            runKinCommand(appAtomRegistry, kinClient.workList, { environmentId, input }),
           onChange,
           now: Date.now,
           // The first counts are in before the list exists, and say which filters the host has.

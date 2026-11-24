@@ -41,9 +41,9 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   private lazy var tabBarTrailing = tabBar.trailingAnchor.constraint(equalTo: trailingAnchor)
   private var itemsByTab: [String: UITabBarItem] = [:]
   private let labels = [
-    "threads": "Chats", "pullRequests": "PRs", "issues": "Issues", "usage": "Usage",
-    "settings": "Settings", "tasks": "Tasks", "money": "Money", "clients": "Clients",
-    "docs": "Docs",
+    "threads": "Chats", "pullRequests": "PRs", "issues": "Issues", "workflows": "Workflows",
+    "usage": "Usage", "settings": "Settings", "tasks": "Tasks", "money": "Money",
+    "clients": "Clients", "docs": "Docs",
   ]
   var tabs = ["threads", "pullRequests", "issues", "usage", "settings"] {
     didSet { if tabs != oldValue { updateItems() } }
@@ -122,7 +122,8 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
     let pullRequestIcon = UIImage(named: "pull-request", in: iconBundle, compatibleWith: nil)?.withRenderingMode(.alwaysTemplate)
     let issueIcon = UIImage(named: "issue", in: iconBundle, compatibleWith: nil)?.withRenderingMode(.alwaysTemplate)
     let symbols = [
-      "threads": "text.bubble", "usage": "chart.bar.xaxis", "settings": "gearshape",
+      "threads": "text.bubble", "workflows": "point.3.connected.trianglepath.dotted",
+      "usage": "chart.bar.xaxis", "settings": "gearshape",
       "tasks": "checkmark.circle", "money": "banknote", "clients": "person.2", "docs": "doc.text",
     ]
     for (tab, label) in labels {

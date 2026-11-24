@@ -1,5 +1,10 @@
-import { selectedNavigationTab, visibleNavigationTabs } from "./navigation-tab-order";
+import {
+  NAVIGATION_TAB_LABELS,
+  selectedNavigationTab,
+  visibleNavigationTabs,
+} from "./navigation-tab-order";
 import { requireNativeView } from "expo";
+import { msg, useGT, useMessages } from "gt-react-native";
 import { CommonActions, useNavigation } from "@react-navigation/native";
 import {
   Keyboard,
@@ -32,6 +37,9 @@ interface NativeNavigationProps extends ViewProps {
   readonly rail: boolean;
   readonly floating: boolean;
   readonly tabs: readonly string[];
+  readonly tabTitles: Readonly<Record<string, string>>;
+  readonly expandedTabTitles: Readonly<Record<string, string>>;
+  readonly newThreadTitle: string;
   readonly selectedTab: string;
   /** Titles for tabs the bar doesn't name itself, drawn with a list icon. */
   readonly titles?: Readonly<Record<string, string>>;
@@ -52,6 +60,12 @@ interface NativeNavigationProps extends ViewProps {
   readonly onOverlayChange: (event: NativeSyntheticEvent<{ readonly overlay: boolean }>) => void;
 }
 
+const TAB_TITLES = {
+  ...NAVIGATION_TAB_LABELS,
+  threads: msg("Chats", { $context: "navigation tab, list of chat threads" }),
+  settings: msg("Settings"),
+};
+
 const NativeNavigation = requireNativeView<NativeNavigationProps>("T3WorkspaceNavigation");
 
 function nativeColor(value: string) {
@@ -70,6 +84,8 @@ export function AndroidWorkspaceNavigation(props: {
   readonly onOverlayChange?: (overlay: boolean) => void;
 }) {
   const workspace = useWorkspaceTabs()!;
+  const gt = useGT();
+  const m = useMessages();
   const order = useNavigationTabOrder();
   const hidden = useHiddenNavigationTabs();
   const root = useAndroidWorkspaceRoot();
@@ -117,6 +133,9 @@ export function AndroidWorkspaceNavigation(props: {
         rail={rail}
         floating={floating}
         tabs={tabs}
+        tabTitles={Object.fromEntries(tabs.map((tab) => [tab, m(TAB_TITLES[tab])]))}
+        expandedTabTitles={{ pullRequests: gt("Pull requests") }}
+        newThreadTitle={gt("New thread")}
         selectedTab={selectedTab}
         dark={themeAppearance === "dark"}
         textScale={scale}
@@ -214,6 +233,9 @@ export function AndroidTabBar<Tab extends string>(props: {
         floating={false}
         tabs={props.tabs}
         selectedTab={props.selectedTab}
+        tabTitles={{}}
+        expandedTabTitles={{}}
+        newThreadTitle=""
         titles={props.titles ?? {}}
         dark={themeAppearance === "dark"}
         textScale={scale}

@@ -52,7 +52,7 @@ Verified on branch `kin` (upstream `main`, 7 Nov 2026).
 
 Webhook secrets come in either as `secret` or as a `secretRef` from `request_secret`.
 
-**Running a host.** `docs/user/background-service.md`: `t3 up`, `t3 service install`; on macOS the service runs only while the user is logged in; "Keep the Mac logged in and awake". `docs/user/install.md`: a source build runs as `node apps/server/dist/bin.mjs`, and "`t3 update` and the background service do not apply to a server run this way". `docs/user/remote-access.md` and `docs/internals/remote.md` cover T3 Connect, LAN/Tailscale pairing (`t3 pair`), routes, and peer links (`apps/server/src/peer/PeerLinks.ts`, behind the Linked environments beta). State lives at `~/.t3/userdata/statev2.sqlite`, secrets at `~/.t3/userdata/secrets/*.bin` (`apps/server/src/config.ts`, `auth/ServerSecretStore.ts`). The production relay URL comes from `.env` (`.env.example`: `T3CODE_RELAY_URL=https://relay.t3.codes`).
+**Running a host.** `docs/user/background-service.md`: `t3 up`, `t3 service install`; on macOS the service runs only while the user is logged in; "Keep the Mac logged in and awake". `docs/user/install.md`: a source build runs as `node apps/server/dist/bin.mjs`, and "`t3 update` and the background service do not apply to a server run this way". `docs/user/remote-access.md` and `docs/internals/05_remote.md` cover T3 Connect, LAN/Tailscale pairing (`t3 pair`), routes, and peer links (`apps/server/src/peer/PeerLinks.ts`, behind the Linked environments beta). State lives at `~/.t3/userdata/statev2.sqlite`, secrets at `~/.t3/userdata/secrets/*.bin` (`apps/server/src/config.ts`, `auth/ServerSecretStore.ts`). The production relay URL comes from `.env` (`.env.example`: `T3CODE_RELAY_URL=https://relay.t3.codes`).
 
 ## Design
 
@@ -443,7 +443,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 
 - On the host, as `kin`, run `node ~/kin-current/apps/server/dist/bin.mjs connect link --base-dir ~/.t3 --headless`, approve the code from any device, then `systemctl --user restart kin-server`. Don't use `up --connect`: on Linux with systemd it installs the upstream background service (it downloads the matching upstream release and writes `t3.service`), which would be a second server on kin's state. `connect link` only authorizes the environment.
 - On the laptop (T3 desktop) and phone (Kin mobile), sign in to the same T3 Connect account and pick the host.
-- On the home network or tailnet, set `T3CODE_LAN=true` in `~/.t3/service.env`, `systemctl --user restart kin-server`, then pair a client with `node ~/kin-current/apps/server/dist/bin.mjs pair --base-dir ~/.t3`. That gives a direct route. Don't use `up --lan`: like `up --connect`, it installs the upstream service. Clients learn LAN and tailnet routes and prefer them (`docs/internals/remote.md`). The account allows 3 machines.
+- On the home network or tailnet, set `T3CODE_LAN=true` in `~/.t3/service.env`, `systemctl --user restart kin-server`, then pair a client with `node ~/kin-current/apps/server/dist/bin.mjs pair --base-dir ~/.t3`. That gives a direct route. Don't use `up --lan`: like `up --connect`, it installs the upstream service. Clients learn LAN and tailnet routes and prefer them (`docs/internals/05_remote.md`). The account allows 3 machines.
 - To let the laptop's agents hand work to the host, use a peer link (Linked environments beta, `t3_environment_link`).
 
 **Keep it up:**
@@ -505,7 +505,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 
 ## Tests and acceptance criteria
 
-- `cd apps/server && vp test run src/kin/triggers src/kin/memory src/kin/dreaming` passes. Use `TestClock`; no sleeps (`docs/internals/testing.md`).
+- `cd apps/server && vp test run src/kin/triggers src/kin/memory src/kin/dreaming` passes. Use `TestClock`; no sleeps (`docs/internals/15_testing.md`).
 - **Scheduler:** a deferral due 09:00 +05:30 fires once at 09:00. Two ticks at the same instant give one inbox row. Advancing the clock 10 h with the scheduler stopped, then starting it, gives one inbox fire with `lateByMs = 10 h`; the deferral consumer (TRIG-8) posts the "This was due at 9:00" card. Recurring downtime emits one stored slot, not every missed occurrence.
 - **Timezone:** with the server zone `UTC` and the org zone `Asia/Kolkata`, the dream fires at 21:30 UTC. A 09:00 routine in `America/New_York` stays at 09:00 across both DST transitions; weekdays are owner-local. Two orgs with different zones fire independently; changing one org's zone or routine times recomputes only its schedules.
 - **Sink:** a signed GitHub `pull_request` request through the real `ScheduledTaskService` gives exactly one inbox row and no thread launch. A replay gives `duplicate` and no new row. A bot-sender request gives `filtered`. A non-Kin task still launches normally.

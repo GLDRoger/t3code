@@ -10,6 +10,7 @@ const host = vi.hoisted(() => ({
 }));
 
 vi.mock(import("./kinClient"), async (importOriginal) => {
+  const { commandRun } = await import("../../test/commandRun");
   const real = await importOriginal();
   const { AsyncResult, Atom } = await import("effect/reactivity");
   const allowed = Atom.make(true);
@@ -31,8 +32,9 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
   const command = <I,>(label: string, run: (input: I) => unknown) => ({
     label,
     permissionAtom: () => allowed,
-    run: async (_registry: never, { input }: { readonly input: I }) =>
+    run: commandRun(async (_registry: never, { input }: { readonly input: I }) =>
       AsyncResult.success(run(input)),
+    ),
   });
   return {
     ...real,
