@@ -21,11 +21,7 @@ export const KinBillBatchCard = memo(function KinBillBatchCard(props: {
   return (
     <View className="gap-2 rounded-[20px] border border-border bg-card-alt p-4">
       {/* Only the words are one element: an accessible card would hide Review from VoiceOver. */}
-      <View
-        accessible
-        accessibilityLabel={`${KIN_BILLS.added}: ${bills.text}`}
-        className="gap-2"
-      >
+      <View accessible accessibilityLabel={`${KIN_BILLS.added}: ${bills.text}`} className="gap-2">
         <View className="flex-row items-baseline justify-between gap-3">
           <Text textRole="caption" className="font-t3-medium text-foreground-muted">
             {KIN_BILLS.added}
