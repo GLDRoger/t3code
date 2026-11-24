@@ -24,7 +24,10 @@ export type Lane = {
   readonly leadName: string;
   /** A Team-room turn: it speaks only through `team_say`, and passing says nothing. */
   readonly team?: true;
-  /** An outsider's pull request's review: Kin tells the owner from the post (`askedFor.ts`). */
+  /**
+   * An outsider's pull request's review (Kin tells the owner from the post, `askedFor.ts`), or
+   * bills read in the background: nothing the model writes reaches a chat.
+   */
   readonly quiet?: true;
 };
 
@@ -59,6 +62,20 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
     if (chatId === undefined) return Option.none<Lane>();
     // Nothing the model writes there reaches a chat, so no reply can become a question either.
     if ((yield* outsideReview(input)) !== undefined)
+      return Option.some<Lane>({
+        chatId: KinChatId.make(chatId),
+        mode: "notice",
+        owed: false,
+        leadName: lead?.name ?? "Agent",
+        quiet: true,
+      });
+    // Bills read in the background (`work/bills.ts`): their batch's card tells what came of them.
+    const [bills] = yield* sql<{ others: number }>`SELECT COUNT(event_id) FILTER (
+        WHERE tag != 'bills.read') AS others FROM kin_events
+      WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}
+        AND wakeup_id = ${input.wakeupId}
+      HAVING COUNT(event_id) FILTER (WHERE tag = 'bills.read') > 0`;
+    if (bills !== undefined && bills.others === 0)
       return Option.some<Lane>({
         chatId: KinChatId.make(chatId),
         mode: "notice",

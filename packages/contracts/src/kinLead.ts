@@ -972,6 +972,17 @@ export const KinEvent = Schema.Union([
     pendingActionId: TrimmedNonEmptyString,
     outcome: Schema.Literals(["executed", "rejected", "expired", "failed"]),
   }),
+  // A few of the bills a person added at once (`kinBills.ts`), for the reading agent to read in a
+  // quiet turn that answers each with `bill_read` and posts nothing. `chatId` holds the batch's card.
+  Schema.TaggedStruct("bills.read", {
+    ...EventBase,
+    chatId: KinChatId,
+    batchId: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+    bills: Schema.Array(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(10),
+    ),
+  }),
   Schema.TaggedStruct("resume", {
     ...EventBase,
     pausedAt: CanonicalUtcTimestamp,

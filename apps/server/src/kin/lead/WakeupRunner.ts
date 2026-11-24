@@ -67,6 +67,7 @@ import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
 import { dismissalGone } from "../questions/dismissed.ts";
 import { writeQueuedApproval } from "../questions/sentUpDraft.ts";
+import * as Bills from "../work/bills.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
@@ -270,6 +271,16 @@ const make = Effect.gen(function* () {
       status,
       ...(holdUntil === undefined ? {} : { holdUntil }),
     });
+    // Its bills left unanswered are told as unread once the turn is over for good.
+    if (Option.isSome(chatRepository) && Option.isSome(chatHub))
+      yield* Bills.turnEnded(row.orgId, row.wakeupId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(Repository.KinChatRepository, chatRepository.value),
+        Effect.provideService(KinChatHub, chatHub.value),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't settle a bills turn", { cause }),
+        ),
+      );
     // Quiet only when the turn really went back to wait, untouched: after something visible,
     // its unanswered events stopped instead, and that is said.
     if (quiet && (finished.stranded > 0 || finished.replied > 0)) quiet = false;
@@ -578,6 +589,9 @@ const make = Effect.gen(function* () {
         return !(yield* reviewStillDue(orgId, event));
       // A person's own task: no longer theirs and due, or this agent may no longer draft it.
       if (event._tag === "pulse" && isDraftWake(event)) return yield* draftWakeGone(orgId, event);
+      // Bills someone added, every one answered or taken back since they were queued.
+      if (event._tag === "bills.read")
+        return !(yield* Bills.stillToRead(orgId, event.bills).pipe(provideSql));
       // A head start Kin woke it for, on a fact handled or no longer true since it was queued.
       if (isPrepareWake(event))
         return (

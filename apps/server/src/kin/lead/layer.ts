@@ -57,6 +57,7 @@ import * as Toolchain from "../gendocs/toolchain.ts";
 import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
+import * as Bills from "../work/bills.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
@@ -221,6 +222,17 @@ const memorySync = Effect.fn("KinMemory.syncDue")(function* (
   });
 });
 
+/** At start, then every five minutes: bills a stopped host left mid-read are queued again. */
+const billsSweep = () => {
+  let due = 0;
+  return Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (now < due) return;
+    due = now + 5 * 60_000;
+    yield* Bills.sweep();
+  });
+};
+
 const runner = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
@@ -283,6 +295,7 @@ const runner = Layer.effectDiscard(
           "kin-team-sweep",
           team.value.sweep(),
         );
+      yield* Context.get(context, Scheduler.Scheduler).register("kin-bills", billsSweep());
       yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(
         Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
       );
