@@ -11,9 +11,9 @@ import { cutAt } from "../work/draftOpening.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
 
 /** The most edits one night reads, newest first; the material says how many it left out. */
-export const EDITS_PER_NIGHT = 20;
+const EDITS_PER_NIGHT = 20;
 /** Each side of an edit is given whole up to this; a longer one is cut and says so. */
-export const EDIT_SIDE_MAX = 6_000;
+const EDIT_SIDE_MAX = 6_000;
 
 export type DraftEdit = {
   readonly ref: string;
