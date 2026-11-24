@@ -3945,6 +3945,12 @@ it.effect("a question asked for someone that nobody answers lapses, and its chat
       assert.deepInclude((yield* outcomeOf(toZoya.questionId)).outcome as object, {
         text: "Lapsed on Thu 19 Nov: Zoya Sheikh didn't answer.",
       });
+      // Its raised card no longer says it is still open, nor what held while it was.
+      const raised = yield* widgetOf((yield* questionRow(sql, toZoya.questionId)).raiseWidget!);
+      assert.deepInclude(raised.state as object, {
+        question: "Did the client approve the quote?",
+        whileOpen: "Chief of staff asked on Monday. Nothing happens until you answer.",
+      });
       // The Chief of staff is woken once for each, in Dev's chat and at his level.
       assert.deepStrictEqual(
         (yield* lapsedWakes).map((wake) => [wake.chatId, wake.origin]),

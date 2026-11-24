@@ -1878,7 +1878,7 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
           ? said
           : `${by}\n${said}`,
     ...(by === undefined ? {} : { askedBy: by }),
-    ...(row.draft === null ? {} : { draft: row.draft.text }),
+    ...(row.draft === null ? { whileOpen: said } : { draft: row.draft.text }),
     options:
       row.draft !== null
         ? DRAFT_OPTIONS.map((one) => ({ ...one }))
@@ -2018,6 +2018,7 @@ const lapseAsked = Effect.fn("KinQuestions.lapseAsked")(function* (
     yield* deps.chat.closeReplaced({
       orgId,
       widgetId: KinWidgetId.make(widgetId),
+      question: oneLine(row.question, 240),
       outcome: {
         title: "Lapsed",
         text: lapsedCardText(who, dayOf(now, clock.zone)),
