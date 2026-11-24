@@ -194,7 +194,7 @@ const TONE: Record<KinBillState, KinBillTone> = {
 };
 
 /** A printed amount in its own currency, never converted; as printed when it won't read as one. */
-export function kinBillAmountText(amount: string | undefined, currency: string | undefined) {
+function kinBillAmountText(amount: string | undefined, currency: string | undefined) {
   if (amount === undefined || amount.trim() === "") return null;
   if (currency === undefined) return amount.trim();
   const read = parseKinMoney(amount, currency);
@@ -207,7 +207,7 @@ const blank = (value: string | undefined) =>
   value === undefined || value.trim() === "" ? null : value.trim();
 
 /** What the reader read off the bill, every field in its place, a blank left empty. */
-export function kinBillFields(
+function kinBillFields(
   read: KinBillRead,
   categoryLabel: (category: string) => string = (category) => category,
 ): ReadonlyArray<KinBillField> {
@@ -253,7 +253,7 @@ function actionsOf(row: KinBillRow): ReadonlyArray<KinBillAction> {
   }
 }
 
-export function kinBillStateLabel(row: KinBillRow) {
+function kinBillStateLabel(row: KinBillRow) {
   return row.state === "duplicate"
     ? KIN_BILLS.state.duplicate(row.duplicateOf?.key ?? "", row.duplicateOf?.title ?? "")
     : KIN_BILLS.state[row.state];
@@ -453,10 +453,10 @@ const live = (upload: KinBillUpload) => upload._tag !== "added" && upload._tag !
 const sentKey = (attachments: ReadonlyArray<KinAttachment>) =>
   attachments.map((attachment) => attachment.id).join(",");
 
-export const kinBillsToUpload = <F>(state: KinBillsAdding<F>) =>
+const kinBillsToUpload = <F>(state: KinBillsAdding<F>) =>
   state.files.filter((file) => file.upload._tag === "waiting" || file.upload._tag === "failed");
 
-export const kinBillsUploaded = <F>(state: KinBillsAdding<F>): ReadonlyArray<KinAttachment> =>
+const kinBillsUploaded = <F>(state: KinBillsAdding<F>): ReadonlyArray<KinAttachment> =>
   state.files.flatMap((file) => (file.upload._tag === "uploaded" ? [file.upload.attachment] : []));
 
 export function kinBillsStep<F>(state: KinBillsAdding<F>, event: KinBillsEvent<F>) {

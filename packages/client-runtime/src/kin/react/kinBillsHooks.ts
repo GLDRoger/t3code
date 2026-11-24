@@ -34,6 +34,12 @@ const NO_ROWS: ReadonlyArray<KinBillRow> = [];
 type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
 const noChat: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 
+/** The batch a card or address names, from the batches the host listed; null before it loads. */
+const kinBillBatchOf = (
+  batches: ReadonlyArray<KinBillBatchSummary>,
+  batchId: string,
+): KinBillBatchSummary | null => batches.find((batch) => batch.batchId === batchId) ?? null;
+
 export type KinBillTap = "keep" | "drop" | "addAnyway" | "dismiss" | "readAgain";
 
 /** Bills added in bulk on one app's client: the batches, one batch's bills, its taps, and adding. */
@@ -243,9 +249,3 @@ export function makeKinBillsHooks<R, ER>(app: KinHookApp<R, ER>) {
 
   return { useKinBillBatches, useKinBillBatch, useKinBillActions, useKinBillsAdd };
 }
-
-/** The batch a card or address names, from the batches the host listed; null before it loads. */
-export const kinBillBatchOf = (
-  batches: ReadonlyArray<KinBillBatchSummary>,
-  batchId: string,
-): KinBillBatchSummary | null => batches.find((batch) => batch.batchId === batchId) ?? null;
