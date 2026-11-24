@@ -107,10 +107,18 @@ const headerValues = (message: unknown, name: string) =>
     .flatMap((header) => text(field(header, "value")) ?? []);
 const header = (message: unknown, name: string) => headerValues(message, name)[0] ?? null;
 const RECIPIENT_HEADERS = ["To", "Cc", "X-Original-To", "Delivered-To"];
+const AUTOMATION_HEADERS = ["List-Unsubscribe", "Precedence", "Auto-Submitted"];
+const BULK_LABELS = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"];
+const automationOf = (message: unknown) => ({
+  listUnsubscribe: header(message, "List-Unsubscribe") !== null,
+  precedence: header(message, "Precedence"),
+  autoSubmitted: header(message, "Auto-Submitted"),
+  bulk: BULK_LABELS.some((label) => list(field(message, "labelIds")).includes(label)),
+});
 
 /** A Gmail message; its body only in `full` format. */
 const messageOf =
-  (full: boolean) =>
+  (full: boolean, watch = false) =>
   (message: unknown): MailMessage => ({
     threadId: text(field(message, "threadId")) ?? "",
     from: header(message, "From"),
@@ -129,6 +137,7 @@ const messageOf =
     messageId: header(message, "Message-ID"),
     references: header(message, "References"),
     authResults: headerValues(message, "Authentication-Results"),
+    ...(watch ? { automation: automationOf(message) } : {}),
     body: full ? messageBody(field(message, "payload")) : null,
   });
 
@@ -154,14 +163,20 @@ const threadsOf = Effect.fn("KinGoogle.threads")(function* (
   return { threads, nextPage: text(field(page, "nextPageToken")) ?? null };
 });
 
-const threadsById = (context: MailContext, ids: ReadonlyArray<string>) =>
+const threadsById = (context: MailContext, ids: ReadonlyArray<string>, watch = false) =>
   Effect.forEach(
     ids,
     (id) =>
       api(context, `${GMAIL}/threads/${encodeURIComponent(id)}`, {
         format: "metadata",
-        metadataHeaders: ["From", "Subject", "Date", ...RECIPIENT_HEADERS],
-      }).pipe(Effect.map((thread) => list(field(thread, "messages")).map(messageOf(false)))),
+        metadataHeaders: [
+          "From",
+          "Subject",
+          "Date",
+          ...RECIPIENT_HEADERS,
+          ...(watch ? AUTOMATION_HEADERS : []),
+        ],
+      }).pipe(Effect.map((thread) => list(field(thread, "messages")).map(messageOf(false, watch)))),
     { concurrency: 5 },
   );
 
@@ -211,7 +226,7 @@ const inboxSince = Effect.fn("KinGoogle.inboxSince")(function* (
     }
     if (full) yield* Effect.logInfo("Kin read a full second of Gmail; the rest comes next read");
     return {
-      threads: yield* threadsById(context, ids),
+      threads: yield* threadsById(context, ids, true),
       until: before * 1000 < now ? before * 1000 : undefined,
     };
   }
@@ -247,12 +262,9 @@ const FEED_HEADERS = [
   ...RECIPIENT_HEADERS,
   "Message-ID",
   "Authentication-Results",
-  "List-Unsubscribe",
-  "Precedence",
-  "Auto-Submitted",
+  ...AUTOMATION_HEADERS,
   "Content-Type",
 ];
-const BULK_LABELS = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"];
 const HISTORY_PAGE = 100;
 
 /**
@@ -327,7 +339,6 @@ const arrivalOf = Effect.fn("KinGoogle.arrival")(function* (
     !Number.isSafeInteger(receivedAt)
   )
     return yield* failure("protocol", `${GOOGLE.name} sent an answer Kin couldn't read.`);
-  const labels = list(field(message, "labelIds"));
   return {
     messageId,
     threadId,
@@ -343,10 +354,7 @@ const arrivalOf = Effect.fn("KinGoogle.arrival")(function* (
     date: header(message, "Date"),
     internetId: header(message, "Message-ID"),
     authResults: headerValues(message, "Authentication-Results"),
-    listUnsubscribe: header(message, "List-Unsubscribe") !== null,
-    precedence: header(message, "Precedence"),
-    autoSubmitted: header(message, "Auto-Submitted"),
-    bulk: BULK_LABELS.some((label) => labels.includes(label)),
+    ...automationOf(message),
     hasFile: /^\s*multipart\/mixed\b/i.test(header(message, "Content-Type") ?? ""),
   } satisfies MailArrival;
 });

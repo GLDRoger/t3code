@@ -2,6 +2,7 @@
 import {
   EnvironmentId,
   KinAgentId,
+  KinListId,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -26,6 +27,7 @@ import {
   kinTaskActivity,
   kinTaskControls,
   kinTaskOrigin,
+  kinRecordHeld,
   kinTaskPeopleRows,
   kinTaskWith,
   kinTaskWithChoices,
@@ -433,6 +435,17 @@ describe("kinTaskPeopleRows", () => {
     expect(rows(task(), names, false).held.opens).toBe(false);
     const retired = { ...names, retired: new Set([chief.agentId]) };
     expect(rows(task({ owner: chief }), retired).held.name).toBe("Chief of staff (retired)");
+    // A company list's entry is given by the same rule: its holder or owner level, never a member.
+    const entry = task({ key: "BK-3", list: KinListId.make("bookings"), owner: zoya });
+    const held = (item: KinRecordDetail, who: KinWorkNames) =>
+      kinRecordHeld({
+        item,
+        view: kinWorkItemView(item, who, now, 50, place),
+        names: who,
+        give: true,
+      });
+    expect(held(entry, asZoya)).toMatchObject({ name: "Zoya (you)", opens: true });
+    expect(held({ ...entry, can: readOnly }, asZoya).opens).toBe(false);
   });
 
   it("says who else is on it, Add someone when nobody, and opens only what the reader may do", () => {
