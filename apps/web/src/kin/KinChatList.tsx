@@ -72,7 +72,7 @@ import { KinWaitsForFolds } from "./KinWaitsFor";
 import { kinWaitingAskView } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { KinStandInLine } from "./KinStandInLine";
 import { kinAccessCopy } from "./kinTeammateMark";
-import { useKinInbox } from "./useKinHost";
+import { useKinInboxOpen } from "./useKinInboxOpen";
 import { useKinOpenAgentChat } from "./useKinOpenChat";
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 
@@ -102,7 +102,7 @@ const STATE_COPY: Record<
 export function KinChatList() {
   const params = useParams({ strict: false });
   const openChatId = "chatId" in params ? (params.chatId ?? null) : null;
-  const { host, state, retry, reread } = useKinInbox();
+  const { host, state, retry, reread } = useKinInboxOpen();
   const nowMs = useNowMinuteMs();
   const { isMobile, setOpenMobile } = useSidebar();
   if (state._tag === "loading") {

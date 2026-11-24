@@ -7,6 +7,7 @@ import { kinWorkLiveAtom } from "./useKinWork";
 
 export const {
   useKinAttention,
+  useKinOpen,
   useKinTasksNeedsYou,
   useKinAttentionHandle,
   useKinAskAbout,

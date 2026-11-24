@@ -8,6 +8,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinAttention";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
+import { kinOpenNeeds } from "@t3tools/client-runtime/kin/kinOpenList";
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import {
   KIN_WORK_HOME,
@@ -32,10 +33,10 @@ import {
 } from "./KinAttention";
 import { KinWaitsForFolds } from "./KinWaitsFor";
 import { KinWorkSection } from "./KinWorkParts";
-import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
+import { useKinAttention, useKinAttentionHandle, useKinOpen } from "./useKinAttention";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
-import { useKinInbox } from "./useKinHost";
+import { useKinInboxOpen } from "./useKinInboxOpen";
 import { kinListsOf, useKinLists, useKinMoneySummary } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
@@ -53,9 +54,10 @@ export interface KinNeedsYouGo {
 }
 
 /**
- * What needs attention and what needs you, read for one screen: the attention rows, then your
- * late tasks, what clients owe past due, what an agent waits on you for, and your tasks today.
- * Null while `mine` is (still loading, or not asked for: then nothing is read).
+ * What needs attention and what needs you, read for one screen: the host's open list where it
+ * streams one, in its order. Else, as composed here: the attention rows, then your late tasks,
+ * what clients owe past due, what an agent waits on you for, and your tasks today. Null while
+ * `mine` is (still loading, or not asked for: then nothing is read), or the list is.
  */
 function useKinNeedsRows(
   props: KinWorkTarget & { readonly names: KinWorkNames },
@@ -66,17 +68,20 @@ function useKinNeedsRows(
   const now = new Date(useNowMinuteMs());
   const money = useKinMoneySummary(props, { enabled: asked });
   const lists = useKinLists(props, { enabled: asked });
-  const inbox = useKinInbox();
+  const inbox = useKinInboxOpen();
+  const open = useKinOpen(asked ? props : null);
   const [expanded, setExpanded] = useState(false);
-  // The first page until See all; then everything, the page standing in until it arrives.
+  // The first page until See all; then everything, the page standing in until it arrives. With
+  // the open list these give only what was handled or set aside, which isn't in it.
   const pagedRead = useKinAttention(props, asked, true);
   const fullRead = useKinAttention(props, asked && expanded);
   const attentionRead = expanded && fullRead !== null ? fullRead : pagedRead;
   const handler = useKinAttentionHandle(props);
-  if (mine === null) return null;
+  if (mine === null || open === null) return null;
+  const attentionNames = kinAttentionNames(names);
   const attention = kinAttention(attentionRead, {
     scope: { type: "all" },
-    names: kinAttentionNames(names),
+    names: attentionNames,
     now,
   });
   const ready =
@@ -95,11 +100,28 @@ function useKinNeedsRows(
     names,
     now,
   });
+  const listed =
+    open === undefined
+      ? null
+      : kinOpenNeeds(open, {
+          owed: before.find((row) => row.id === "money:overdue") ?? null,
+          chats: ready?.inbox.value.chats ?? [],
+          agentNames: kinDirectory(inbox.host).agentNames,
+          names,
+          now,
+        });
+  const listedOpen =
+    listed === null
+      ? null
+      : kinAttention(listed.facts, { scope: { type: "all" }, names: attentionNames, now }).open;
   // Money's own rows live on Money; here they are one row that opens it.
-  const split = kinTasksAttention(attention.open, attentionRead);
+  const split =
+    listedOpen === null
+      ? kinTasksAttention(attention.open, attentionRead)
+      : kinTasksAttention(listedOpen);
   const needs: ReadonlyArray<KinNeedsYouRow> = [
     ...(split.moneyRow === null ? [] : [split.moneyRow]),
-    ...kinNeedsYouBeside(before, attention, attentionRead),
+    ...(listed === null ? kinNeedsYouBeside(before, attention, attentionRead) : listed.needs),
   ];
   return {
     attention: split.rows,
@@ -111,7 +133,7 @@ function useKinNeedsRows(
     }),
     chats: ready?.inbox.value.chats ?? [],
     inboxDirectory: kinDirectory(inbox.host),
-    hidden: split.hidden,
+    hidden: listed === null ? split.hidden : listed.hidden,
     handled: attention.handled,
     asides: attention.asides,
     notListed: attention.more,
