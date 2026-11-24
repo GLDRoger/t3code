@@ -264,8 +264,8 @@ it.effect("an agent's printed client detail goes straight in only as a person ty
       readonly said: string | null;
       readonly how?: Road;
       readonly set: Partial<
-        Record<"title" | "gstin" | "terms" | "address" | "placeOfSupply", string | null>
-      >;
+        Record<"gstin" | "terms" | "address" | "placeOfSupply", string | null>
+      > & { readonly title?: string };
       readonly straight: boolean;
     }> = [
       {
