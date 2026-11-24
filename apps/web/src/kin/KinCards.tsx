@@ -3,6 +3,7 @@ import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useAtomValue } from "@effect/atom-react";
+import { KIN_BILLS, type KinBillBatchCardView } from "@t3tools/client-runtime/kin/kinBills";
 import {
   KIN_MISSING_CARD_TEXT,
   kinCardView,
@@ -82,12 +83,20 @@ import {
   kinDocCardDraft,
   kinDocCardLine,
   kinDocSendUpProblem,
+  kinDocWholeCopy,
   KIN_DOCS,
+  type KinDocCardDraftView,
   type KinDocCardView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinListedModelName } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, KinPersonId, KinSendTry, KinWidget } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type KinPersonId,
+  KinRecordKey,
+  type KinSendTry,
+  type KinWidget,
+} from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import ChatMarkdown from "../components/ChatMarkdown";
 import type { KinPlaceSearch } from "./kinPlaces";
@@ -266,6 +275,14 @@ export const KinCard = memo(function KinCard(props: {
       return (
         <KinStatementPasswordCard password={view.password} environmentId={props.environmentId} />
       );
+    case "bill_batch":
+      return (
+        <KinBillBatchCard
+          bills={view.bills}
+          environmentId={props.environmentId}
+          ownerLevel={ownerLevel !== false}
+        />
+      );
     case "social_week":
       return <KinSocialWeekCard week={view.week} environmentId={props.environmentId} />;
     case "social_pack":
@@ -361,13 +378,54 @@ function KinDocCard(props: {
   const { doc } = props;
   const draft = kinDocCardDraft(doc, props.ownerLevel, props.readOnly);
   const sendUp = useAtomCommand(kinClient.docSendUp, { reportFailure: false });
+  const readVersion = useAtomCommand(kinClient.docVersion, { reportFailure: false });
   const [sending, setSending] = useState(false);
+  const [copying, setCopying] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const copy = (text: string) => {
     void navigator.clipboard.writeText(text).then(
       () => toastManager.add({ type: "success", title: KIN_DOCS.textCopied }),
       () => undefined,
     );
+  };
+  // A long draft's card holds its opening: Copy text takes the whole of that version. The
+  // clipboard gets a pending item within the press, as Safari copies only inside one.
+  const copyDraft = (shown: KinDocCardDraftView) => {
+    if (shown.long === undefined) return copy(shown.copyText);
+    if (copying) return;
+    setCopying(true);
+    setProblem(null);
+    let failed: string = KIN_DOCS.copyFailed;
+    const text = readVersion({
+      environmentId: props.environmentId,
+      input: {
+        orgId: doc.orgId,
+        key: KinRecordKey.make(doc.key),
+        version: shown.long.version,
+        card: doc.widgetId,
+      },
+    }).then((result) => {
+      const got = kinDocWholeCopy(result);
+      if ("problem" in got) {
+        failed = got.problem;
+        return Promise.reject(new Error(got.problem));
+      }
+      return got.text;
+    });
+    const written =
+      typeof ClipboardItem === "undefined"
+        ? text.then((whole) => navigator.clipboard.writeText(whole))
+        : navigator.clipboard.write([
+            new ClipboardItem({
+              "text/plain": text.then((whole) => new Blob([whole], { type: "text/plain" })),
+            }),
+          ]);
+    void written
+      .then(
+        () => toastManager.add({ type: "success", title: KIN_DOCS.textCopied }),
+        () => setProblem(failed),
+      )
+      .finally(() => setCopying(false));
   };
   const send = async () => {
     if (sending) return;
@@ -401,6 +459,9 @@ function KinDocCard(props: {
       {draft?.noAccount == null ? null : (
         <p className="text-xs text-muted-foreground">{draft.noAccount}</p>
       )}
+      {draft?.long === undefined ? null : (
+        <p className="text-xs text-muted-foreground">{draft.long.line}</p>
+      )}
       {draft?.sent == null ? null : <p className="text-xs text-foreground">{draft.sent}</p>}
       {problem === null ? null : (
         <p role="alert" className="text-xs text-destructive-foreground">
@@ -409,8 +470,8 @@ function KinDocCard(props: {
       )}
       <div className="flex flex-wrap items-center gap-2">
         {draft === null ? null : (
-          <Button size="xs" variant="outline" onClick={() => copy(draft.copyText)}>
-            {KIN_DOCS.copyText}
+          <Button size="xs" variant="outline" disabled={copying} onClick={() => copyDraft(draft)}>
+            {copying ? KIN_DOCS.copying : KIN_DOCS.copyText}
           </Button>
         )}
         {draft?.sendTo == null ? null : (
@@ -422,7 +483,15 @@ function KinDocCard(props: {
           size="xs"
           variant="outline"
           render={
-            <Link to="/kin/$environmentId/$orgId/docs" params={params} search={{ doc: doc.key }} />
+            <Link
+              to="/kin/$environmentId/$orgId/docs"
+              params={params}
+              search={
+                draft?.long === undefined
+                  ? { doc: doc.key }
+                  : { doc: doc.key, v: draft.long.version, card: doc.widgetId }
+              }
+            />
           }
         >
           Open
@@ -443,6 +512,46 @@ function KinDocCard(props: {
           </Button>
         )}
       </div>
+    </CardFrame>
+  );
+}
+
+/**
+ * Bills added in bulk: the host's own sentence and, while Kin reads, how far it got; once done,
+ * Review opens the batch's list under Money. Nothing is kept from the card itself.
+ */
+function KinBillBatchCard(props: {
+  readonly bills: KinBillBatchCardView;
+  readonly environmentId: EnvironmentId;
+  readonly ownerLevel: boolean;
+}) {
+  const { bills } = props;
+  return (
+    <CardFrame label={`${KIN_BILLS.added}: ${bills.text}`}>
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-xs font-medium text-muted-foreground">{KIN_BILLS.added}</p>
+        {bills.progress === null ? null : (
+          <p className="text-xs text-muted-foreground tabular-nums">{bills.progress}</p>
+        )}
+      </div>
+      <p className="text-foreground">{bills.text}</p>
+      {bills.reading || !props.ownerLevel ? null : (
+        <div>
+          <Button
+            size="xs"
+            variant="outline"
+            render={
+              <Link
+                to="/kin/$environmentId/$orgId/money"
+                params={{ environmentId: props.environmentId, orgId: bills.orgId }}
+                search={{ bills: bills.batchId }}
+              />
+            }
+          >
+            {KIN_BILLS.review}
+          </Button>
+        </div>
+      )}
     </CardFrame>
   );
 }
@@ -663,7 +772,7 @@ function KinChoiceCard(props: {
           }
         />
       ) : choice.draft !== null ? (
-        <KinChoiceDraft draft={choice.draft} environmentId={environmentId} />
+        <KinChoiceDraft draft={choice.draft} environmentId={environmentId} orgId={choice.orgId} />
       ) : choice.detail === null ? null : (
         <p className="whitespace-pre-line text-xs text-muted-foreground">{choice.detail}</p>
       )}
@@ -1159,6 +1268,7 @@ function KinChoiceOpenLink(props: {
 function KinChoiceDraft(props: {
   readonly draft: KinChoiceDraftView;
   readonly environmentId: EnvironmentId;
+  readonly orgId: string;
 }) {
   const { draft } = props;
   const [open, setOpen] = useState(false);
@@ -1182,6 +1292,23 @@ function KinChoiceDraft(props: {
         ) : null}
       </div>
       {line(draft.after)}
+      {draft.open === null ? null : (
+        <div>
+          <Button
+            size="xs"
+            variant="outline"
+            render={
+              <Link
+                to="/kin/$environmentId/$orgId/docs"
+                params={{ environmentId: props.environmentId, orgId: props.orgId }}
+                search={{ doc: draft.open.key, v: draft.open.version }}
+              />
+            }
+          >
+            {KIN_CHOICE_OPEN_LABEL}
+          </Button>
+        </div>
+      )}
     </>
   );
 }

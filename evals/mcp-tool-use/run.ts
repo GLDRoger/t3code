@@ -81,6 +81,7 @@ import {
   kinLeadInstructions,
   kinLoadedBefore,
   type KinSeatOptions,
+  kinBillsOf,
   kinSessionOf,
   kinCallRead,
   KIN_KEY_PREFIX,
@@ -3314,6 +3315,7 @@ const main = Effect.gen(function* () {
     kinSession = false,
     kinShared = false,
     kinSocial = false,
+    kinBills = false,
   ): Effect.Effect<Base, Schema.SchemaError> =>
     replay
       ? decodeCodexCapture(template).pipe(
@@ -3330,6 +3332,7 @@ const main = Effect.gen(function* () {
               kinSession,
               kinShared,
               kinSocial,
+              kinBills,
               deviceAccess,
               browserAccess,
             }),
@@ -3349,6 +3352,7 @@ const main = Effect.gen(function* () {
               kinSession,
               kinShared,
               kinSocial,
+              kinBills,
               deviceAccess,
               browserAccess,
             });
@@ -3363,11 +3367,11 @@ const main = Effect.gen(function* () {
   // A Kin turn others read carries Kin's shared-turn line, as the server's prompt does.
   const baseKey = (testCase: McpToolUseCase) => {
     const { setup, prompt } = testCase;
-    return `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${kinSessionOf(testCase)}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}`;
+    return `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${kinSessionOf(testCase)}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}:${kinBillsOf(testCase)}`;
   };
   const base = yield* buildFor("top", true, true, false, true);
   const bases = new Map<string, Base>([
-    ["top:true:true:false:true:false:false:false:false:false", base],
+    ["top:true:true:false:true:false:false:false:false:false:false", base],
   ]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
@@ -3383,8 +3387,10 @@ const main = Effect.gen(function* () {
       kinSession,
       kinShared,
       kinSocial,
+      kinBills,
     ] = key.split(":") as [
       McpToolUseCase["setup"]["role"],
+      string,
       string,
       string,
       string,
@@ -3408,6 +3414,7 @@ const main = Effect.gen(function* () {
         kinSession === "true",
         kinShared === "true",
         kinSocial === "true",
+        kinBills === "true",
       ),
     );
   }

@@ -1,4 +1,10 @@
-import { type KinDocKind, KinEventId, type KinOrgId, KinPersonId } from "@t3tools/contracts";
+import {
+  kinApproveOpeningNote,
+  type KinDocKind,
+  KinEventId,
+  type KinOrgId,
+  KinPersonId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -7,6 +13,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeCrypto from "node:crypto";
 
 import { ownerLevelSql } from "../people/KinAccess.ts";
+import { PLATFORM_RULES } from "../social/rows.ts";
+import { MAIL_BODY_MAX, NOTES_MAX } from "../textLimits.ts";
 
 /** What a teammate's draft sent up to the owner is (`askPerson`'s `draft`). */
 export const DRAFT_KINDS = ["proposal", "quote", "invoice", "terms", "mail", "post"] as const;
@@ -54,6 +62,18 @@ const StoredDraftJson = Schema.fromJsonString(
     on: Schema.optional(Schema.String),
     /** The owner's redraft (`redo`): on her card only, never held to the teammate. */
     redo: Schema.optional(Schema.Literal(true)),
+    /**
+     * A long draft: `text` is its opening, and the draft is this version of this doc, which an
+     * Approve approves only while the doc is still at it (`draftMoved`).
+     */
+    doc: Schema.optional(
+      Schema.Struct({
+        recordId: Schema.String,
+        key: Schema.String,
+        version: Schema.Number,
+        chars: Schema.Number,
+      }),
+    ),
     names: Schema.Struct({ owner: Schema.String, asker: Schema.String, agent: Schema.String }),
   }),
 );
@@ -70,8 +90,48 @@ export const DRAFT_OPTIONS = [
 export const CHANGES_FIRST = DRAFT_OPTIONS[1].label;
 
 /** A sent-up draft's card text from its stored payload: who asks, the draft, then Kin's line. */
-export const draftDetail = (head: string, draft: Pick<StoredDraft, "text" | "line">) =>
-  `${head}\n\n${draft.text}\n\n${draft.line}`;
+export const draftDetail = (head: string, draft: Pick<StoredDraft, "text" | "line" | "doc">) =>
+  `${head}\n\n${draft.text}\n\n${draft.doc === undefined ? "" : `${kinApproveOpeningNote(draft.doc.key)}\n\n`}${draft.line}`;
+
+/** The card's own fields for a long draft's doc and version; none for a short one. */
+export const draftDocOf = (draft: Pick<StoredDraft, "doc">) =>
+  draft.doc === undefined
+    ? {}
+    : {
+        draftDoc: {
+          recordId: draft.doc.recordId,
+          key: draft.doc.key,
+          version: draft.doc.version,
+        },
+      };
+
+/** Why an Approve on a long draft finds its doc no longer as it went up: gone, deleted, or moved on. */
+export const draftMoved = Effect.fn("KinApproval.draftMoved")(function* (
+  orgId: string,
+  draft: Pick<StoredDraft, "doc">,
+) {
+  if (draft.doc === undefined) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const [doc] = yield* sql<{ state: string; version: number | null }>`SELECT r.state,
+      (SELECT MAX(v.version) FROM kin_doc_versions v
+        WHERE v.org_id = r.org_id AND v.record_id = r.record_id) AS version
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.record_id = ${draft.doc.recordId} AND r.register_id = 'docs'`;
+  return doc === undefined || doc.state === "dropped" || doc.version !== draft.doc.version;
+});
+
+/** The draft with its whole text: a long one's from its doc at the version that went up. */
+export const wholeDraft = Effect.fn("KinApproval.wholeDraft")(function* (
+  orgId: string,
+  draft: StoredDraft,
+) {
+  if (draft.doc === undefined) return draft;
+  const sql = yield* SqlClient.SqlClient;
+  const [version] = yield* sql<{ body: string }>`SELECT body FROM kin_doc_versions
+    WHERE org_id = ${orgId} AND record_id = ${draft.doc.recordId}
+      AND version = ${draft.doc.version} AND body_kind = 'markdown'`;
+  return version === undefined ? undefined : { ...draft, text: version.body };
+});
 
 /** The card's last line: what it is, where a post goes, and for whom. */
 export const draftLine = (kind: DraftKind, on: string | undefined, party: string | undefined) => {
@@ -93,13 +153,16 @@ const addresses = (values: ReadonlyArray<string>) =>
   new Set(values.flatMap((value) => value.toLowerCase().match(ADDRESS) ?? []));
 const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) =>
   a.size === b.size && [...a].every((one) => b.has(one));
+/** A draft filed as a doc opens with its section's title ("## Mail"), which is not the mail's. */
+const TITLE = /^#{1,6}[ \t]+[^\n]*\n[ \t]*\n/;
+const untitled = (draft: string) => asWords(draft).replace(TITLE, "");
 
 /**
  * A mail draft's own heading: consecutive `Subject:`, `To:` or `Cc:` lines at its very start,
  * ended by its first blank line, and the rest below it. Undefined when it opens with none.
  */
 const headingOf = (draft: string) => {
-  const lines = asWords(draft).split("\n");
+  const lines = untitled(draft).split("\n");
   const blank = lines.findIndex((line) => line.trim() === "");
   if (blank <= 0) return undefined;
   const fields = lines.slice(0, blank).map((line) => HEADER.exec(line));
@@ -112,6 +175,34 @@ const headingOf = (draft: string) => {
     cc: values("cc"),
     rest: lines.slice(blank + 1).join("\n"),
   };
+};
+
+const count = (n: number) => n.toLocaleString("en-US");
+/**
+ * Why a draft's destination would refuse its whole text, by the limits Kin already holds: a post's
+ * caption on its service, a mail's body, a quote's or invoice's notes. Undefined when it fits.
+ */
+export const destinationRefusal = (kind: DraftKind, text: string, on?: string) => {
+  if (kind === "post") {
+    const rule = Object.values(PLATFORM_RULES).find((one) => one.label === on);
+    const length = asWords(text).length;
+    return rule === undefined || length <= rule.caption
+      ? undefined
+      : `This post is ${count(length)} characters, and ${rule.label} takes at most ${count(rule.caption)}. Shorten it, then send it again.`;
+  }
+  if (kind === "mail") {
+    const length = asWords(headingOf(text)?.rest ?? text).length;
+    return length <= MAIL_BODY_MAX
+      ? undefined
+      : `This mail is ${count(length)} characters, and a mail holds at most ${count(MAIL_BODY_MAX)}. Shorten it, then send it again.`;
+  }
+  if (kind === "quote" || kind === "invoice") {
+    const length = asWords(text).length;
+    return length <= NOTES_MAX
+      ? undefined
+      : `This ${DRAFT_WORDS[kind]} is ${count(length)} characters, and its notes hold at most ${count(NOTES_MAX)}. Shorten it, then send it again.`;
+  }
+  return undefined;
 };
 
 /**
@@ -130,7 +221,8 @@ export const mailKeepsDraft = (
   reply: boolean,
 ) => {
   const heading = headingOf(draft);
-  if (heading === undefined) return keepsDraft(mail.body, draft);
+  if (heading === undefined)
+    return keepsDraft(mail.body, draft) || keepsDraft(mail.body, untitled(draft));
   if (!keepsDraft(mail.body, heading.rest) && !(reply && keepsDraft(mail.body, draft)))
     return false;
   if (!reply && heading.subject.some((subject) => subject !== mail.subject.trim())) return false;
@@ -243,7 +335,9 @@ export const approvalOf = Effect.fn("KinApproval.of")(function* (turn: Turn) {
       AND q.draft_json IS NOT NULL AND q.for_person_id IS NOT NULL AND q.for_chat_id IS NOT NULL
       AND q.person_id = a.owner_person_id
       AND ${sql.literal(ownerLevelSql("q.org_id", "q.person_id"))}`;
-  const draft = row === undefined ? undefined : Option.getOrUndefined(decodeStoredDraft(row.draft));
+  const stored =
+    row === undefined ? undefined : Option.getOrUndefined(decodeStoredDraft(row.draft));
+  const draft = stored === undefined ? undefined : yield* wholeDraft(turn.orgId, stored);
   if (row === undefined || draft === undefined) return invalid;
   return {
     _tag: "approved",

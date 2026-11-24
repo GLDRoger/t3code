@@ -30,6 +30,7 @@ import { formatMoney } from "../work/money.ts";
 import { listDef, stateLabel } from "../work/registers.ts";
 import { seenBy } from "../work/teamView.ts";
 import { logTouch } from "../work/touches.ts";
+import { MAIL_BODY_MAX } from "../textLimits.ts";
 import { KinGatewayError } from "./McpGateway.ts";
 import { MAIL_TOOL, type Mailbox, type MailProvider } from "./MailProvider.ts";
 
@@ -120,7 +121,7 @@ const refused = (message: string) => new KinGatewayError({ reason: "protocol", m
 
 const MAX_RECIPIENTS = 10;
 const MAX_INVITEES = 50;
-const MAX_BODY = 20_000;
+const MAX_BODY = MAIL_BODY_MAX;
 const MAX_ATTACHMENTS = 5;
 // Providers take the message inline as base64; a few invoices fit well inside their limits.
 const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;

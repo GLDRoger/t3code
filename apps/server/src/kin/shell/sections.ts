@@ -87,6 +87,8 @@ export const SECTIONS = {
     numbers_watch: null,
     statement_read: "money",
     statement_rows: "money",
+    bills_add: "money",
+    bill_read: "money",
     kin_document: null,
     kin_picture: null,
     kin_recipes: null,

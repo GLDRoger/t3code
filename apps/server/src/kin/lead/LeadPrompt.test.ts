@@ -1830,6 +1830,66 @@ it.effect("hands the turn the files on its messages and only names an older mess
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a reader handed another lead's bills builds their turn in a chat it isn't in", () =>
+  Effect.gen(function* () {
+    const repo = yield* leadWithOwner;
+    const sql = yield* SqlClient.SqlClient;
+    // The bills' card is in the owner's chat with a retired Finance lead; this lead isn't in it.
+    const cardChat = KinChatId.make("owner-finance");
+    yield* repo.createChat({
+      orgId,
+      chatId: cardChat,
+      kind: "direct",
+      title: null,
+      teamId: null,
+      lastMessageAt: null,
+      createdAt: timestamp,
+      archivedAt: null,
+      directKey: `${personId}:finance`,
+    });
+    yield* repo.addMember({
+      orgId,
+      chatId: cardChat,
+      memberId: KinMemberId.make("owner-finance-person"),
+      principal: { _tag: "person", personId },
+      role: "owner",
+      joinedAt: timestamp,
+      leftAt: null,
+      mutedUntil: null,
+    });
+    const bills = decodeEvent({
+      _tag: "bills.read",
+      orgId,
+      agentId,
+      eventId: "bills-1",
+      receivedAt: timestamp,
+      dedupeKey: null,
+      provenance: { _tag: "system" },
+      chatId: cardChat,
+      batchId: "b-1",
+      bills: ["a".repeat(64)],
+    });
+    yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
+        name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
+        widget_id, added_by_person_id, added_at, state, event_id, reads)
+      VALUES (${orgId}, ${"a".repeat(64)}, 'kin-chat-00000000-0000-4000-8000-000000000001',
+        ${cardChat}, 'bills:b-1', 'IMG_0001.png', 'image', 'image/png', 68, 'b-1', 0, ${agentId},
+        ${cardChat}, 'bills:b-1', ${personId}, 0, 'reading', 'bills-1', 1)`;
+    yield* stored(input.wakeupId, [bills]);
+    const prompt = yield* KinLeadPrompt;
+    expect(
+      (yield* prompt.attachments({ orgId, events: [bills] })).map((file) => file.name),
+    ).toEqual(["B1.png"]);
+    const built = yield* prompt.build({
+      ...input,
+      events: [bills],
+      lane: { chatId: cardChat, mode: "notice" },
+    });
+    expect(built).toContain("Bills someone added to read in the background: B1 is image 1.");
+    expect(built).toContain("write exactly NO_REPLY.");
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("quotes a choice tap as the owner's words, not its JSON", () =>
   Effect.gen(function* () {
     const repo = yield* seed;

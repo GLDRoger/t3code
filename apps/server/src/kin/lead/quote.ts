@@ -33,10 +33,14 @@ const controls: Readonly<Record<string, string>> = {
 export const cappedText = (field: string, limit = textFieldLimit) =>
   cut(field, limit).replace(unsafeCharacter, unicodeEscape);
 
-export function encoded(value: unknown, capText = false): string {
+/** Text fields cut past their limits, but for those named in `whole`, which go in whole. */
+export type CapText = boolean | { readonly whole: ReadonlyArray<string> };
+
+export function encoded(value: unknown, capText: CapText = false): string {
+  const whole = typeof capText === "object" ? capText.whole : [];
   const json =
     JSON.stringify(value, (key, field: unknown) =>
-      !capText || typeof field !== "string"
+      !capText || typeof field !== "string" || whole.includes(key)
         ? field
         : cut(field, key === "body" ? messageBodyLimit : textFieldLimit),
     ) ?? "null";
@@ -48,6 +52,6 @@ export function encoded(value: unknown, capText = false): string {
 export const quoteLines = (label: string, lines: ReadonlyArray<string>) =>
   `> BEGIN QUOTE: ${label}\n${lines.map((line) => `> ${line}`).join("\n")}\n> END QUOTE`;
 
-export function quote(label: string, value: unknown, capText = false): string {
+export function quote(label: string, value: unknown, capText: CapText = false): string {
   return quoteLines(label, [encoded(value, capText)]);
 }

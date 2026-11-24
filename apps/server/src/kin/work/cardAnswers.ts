@@ -35,6 +35,7 @@ import { receiptDocument } from "../gendocs/receipts.ts";
 import { answerCurrencyCard } from "./statements/statementReview.ts";
 import * as CardActions from "../widgets/cardActions.ts";
 import { KinRecords } from "./KinRecords.ts";
+import { answerUnconfirmed } from "./unconfirmedFacts.ts";
 
 /**
  * The owner's answer on a choice card Kin asked for itself, run in the tap's transaction. Work
@@ -73,6 +74,15 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
         });
   // A numbers card applies here, before anything else the tap answers, so a refusal stops it all.
   const watched = yield* answerNumbersChange({
+    orgId: input.orgId,
+    widgetId: input.widget.widgetId,
+    personId: input.personId,
+    confirmed: input.option.kind === "yes",
+    via: input.via,
+    now: input.now,
+  });
+  // A client's unconfirmed details are written here, as this tap, or dropped.
+  const details = yield* answerUnconfirmed({
     orgId: input.orgId,
     widgetId: input.widget.widgetId,
     personId: input.personId,
@@ -124,7 +134,13 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   // A cancelled mail's Tasks row stops offering it.
   if (asked?._tag === "declined") yield* sql.afterCommit(tasksReread(input.orgId));
   // An agent's question the owner level answered is a decision; Kin's own cards record elsewhere.
-  if (asked === undefined && made === undefined && currency === undefined)
+  // An Approve that found its long draft changed decided nothing.
+  if (
+    asked === undefined &&
+    made === undefined &&
+    currency === undefined &&
+    !(sentBack !== undefined && "refused" in sentBack)
+  )
     yield* followOn("Kin couldn't prepare the card decision", saveDecision(input, scope));
   if (made?._tag === "made")
     yield* sql.afterCommit(
@@ -141,6 +157,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
     );
   if (ran !== undefined) return ran;
   if (watched !== undefined) return watched;
+  if (details !== undefined) return details;
   if (made?._tag === "made") return made.outcome;
   if (made?._tag === "declined")
     return { title: "Not recorded", text: "You said no, so nothing was recorded or numbered." };

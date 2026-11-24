@@ -20,6 +20,7 @@ import {
   type KinWidget,
   type KinWidgetsActInput,
   formatKinWhen,
+  kinApproveOpeningNote,
   kinChoiceActionNote,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -71,6 +72,8 @@ export interface KinChoiceCardView {
     readonly text: string;
     /** Where what it made lives, to open from the card: a list, in its place. */
     readonly open: KinChoiceOpen | null;
+    /** The tap did nothing: nobody chose, and nothing waits to be approved. */
+    readonly refused: boolean;
   } | null;
   /** Who settled it, by name then; null from a host that doesn't say. */
   readonly decidedBy: { readonly personId: KinPersonId; readonly name: string } | null;
@@ -117,6 +120,8 @@ export interface KinChoiceDraftView {
   /** Long, it opens to its first blocks under Show all; `preview` is those blocks. */
   readonly folds: boolean;
   readonly preview: string;
+  /** Only the opening of a longer draft: the doc and version that went up, to open and read. */
+  readonly open: { readonly key: string; readonly version: number } | null;
 }
 
 export const KIN_CHOICE_DRAFT_COPY = { showAll: "Show all", showLess: "Show less" } as const;
@@ -125,20 +130,33 @@ const DRAFT_FOLD_LINES = 12;
 const DRAFT_PREVIEW_LINES = 8;
 
 /** The draft's place in the card's detail, which carries it for older clients. */
-function choiceDraft(detail: string | null, draft: string | undefined): KinChoiceDraftView | null {
+function choiceDraft(
+  detail: string | null,
+  draft: string | undefined,
+  doc: KinChoiceCardState["draftDoc"],
+  refused: boolean,
+): KinChoiceDraftView | null {
   if (draft === undefined || detail === null) return null;
   const at = detail.indexOf(draft);
   if (at < 0) return null;
   const around = (text: string) => (text.trim() === "" ? null : text.trim());
+  // Refused, there is nothing to approve, so no line asks for it to be read first.
+  const note = doc === undefined || !refused ? null : kinApproveOpeningNote(doc.key);
   const lines = draft.trim().split("\n");
   // Folded at a blank line where it can be, so no list or table is cut through.
   const cut = lines.findLastIndex((text, index) => index <= DRAFT_PREVIEW_LINES && text === "");
   return {
     before: around(detail.slice(0, at)),
     markdown: draft.trim(),
-    after: around(detail.slice(at + draft.length)),
-    folds: lines.length > DRAFT_FOLD_LINES,
+    after: around(
+      note === null
+        ? detail.slice(at + draft.length)
+        : detail.slice(at + draft.length).replace(note, ""),
+    ),
+    // An opening never folds: Show all would read as the whole draft.
+    folds: doc === undefined && lines.length > DRAFT_FOLD_LINES,
     preview: lines.slice(0, cut > 0 ? cut : DRAFT_PREVIEW_LINES).join("\n"),
+    open: doc === undefined ? null : { key: doc.key, version: doc.version },
   };
 }
 
@@ -484,6 +502,7 @@ export function kinChoiceCardView(
             title: line(card.outcome.title),
             text: card.outcome.text.trim(),
             open: card.outcome.open ?? null,
+            refused: card.outcome.refused === true,
           },
     undone:
       card.outcome?.undone === undefined
@@ -494,7 +513,12 @@ export function kinChoiceCardView(
             atMs: Date.parse(card.outcome.undone.at),
           },
     detail: own === null || own.trim() === "" ? null : own.trim(),
-    draft: choiceDraft(own, card.draft),
+    draft: choiceDraft(
+      own,
+      card.draft,
+      card.draftDoc,
+      card.answer !== null && card.outcome?.refused === true,
+    ),
     options,
     image: card.image === undefined ? null : card.image,
     send,
@@ -695,7 +719,7 @@ export function kinChoiceDecidedLine(
   viewerPersonId: KinPersonId | null,
 ): string | null {
   const { answer, decidedBy } = view;
-  if (answer === null || decidedBy === null) return null;
+  if (answer === null || decidedBy === null || view.outcome?.refused === true) return null;
   const mine = decidedBy.personId === viewerPersonId;
   if (mine && view.outcome === null && view.send === null) return null;
   const who = mine ? "You" : decidedBy.name;

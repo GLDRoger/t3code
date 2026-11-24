@@ -1,4 +1,5 @@
 import {
+  KinBillRpcs,
   KinChatError,
   KinDealRpcs,
   KinDocsRpcs,
@@ -44,6 +45,7 @@ import * as Money from "./ownerMoney.ts";
 import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as MoneyStream from "./moneyStream.ts";
 import * as Statements from "./ownerStatements.ts";
+import * as Bills from "./bills.ts";
 import * as Work from "./ownerWork.ts";
 import * as Comments from "./workComments.ts";
 import * as WorkStream from "./workStream.ts";
@@ -53,6 +55,7 @@ const finance = RpcGroup.make(...KinFinanceRpcs);
 const answers = RpcGroup.make(...KinMoneyAnswerRpcs);
 const moneyLive = RpcGroup.make(...KinMoneyLiveRpcs);
 const statements = RpcGroup.make(...KinStatementRpcs);
+const bills = RpcGroup.make(...KinBillRpcs);
 const refreshes = RpcGroup.make(...KinRefreshRpcs);
 const pulse = RpcGroup.make(...KinPulseRpcs);
 const open = RpcGroup.make(...KinOpenRpcs);
@@ -446,6 +449,26 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
           return yield* call((people) => Statements.forgetAccount(people, input));
         },
       ),
+    }),
+    ...bills.of({
+      "kin.bills.add": Effect.fn("KinWork.rpc.billsAdd")(function* (input) {
+        return yield* call((people) => Bills.add(people, input, sessionUploadOwner(session)));
+      }),
+      "kin.bills.list": Effect.fn("KinWork.rpc.billsList")(function* (input) {
+        return yield* call((people) => Bills.list(people, input));
+      }),
+      "kin.bills.keepRead": Effect.fn("KinWork.rpc.billsKeepRead")(function* (input) {
+        return yield* call((people) => Bills.keepRead(people, input));
+      }),
+      "kin.bills.addAnyway": Effect.fn("KinWork.rpc.billsAddAnyway")(function* (input) {
+        return yield* call((people) => Bills.addAnyway(people, input));
+      }),
+      "kin.bills.dismiss": Effect.fn("KinWork.rpc.billsDismiss")(function* (input) {
+        return yield* call((people) => Bills.dismiss(people, input));
+      }),
+      "kin.bills.readAgain": Effect.fn("KinWork.rpc.billsReadAgain")(function* (input) {
+        return yield* call((people) => Bills.readAgain(people, input));
+      }),
     }),
     ...refreshes.of({
       "kin.refreshes.subscribe": (input) => stream((people) => subscribeRefreshes(people, input)),

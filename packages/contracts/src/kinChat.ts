@@ -551,6 +551,13 @@ export const KinChoiceCardState = Schema.Struct({
    * `detail` carries the same words for older clients.
    */
   draft: Schema.optionalKey(KinText.check(Schema.isMaxLength(2000))),
+  /**
+   * Set when `draft` is only the opening of a longer one: the doc and the version that went up,
+   * which is the one an Approve approves. `detail` says so for older clients.
+   */
+  draftDoc: Schema.optionalKey(
+    Schema.Struct({ recordId: KinTrimmedText, key: KinRefKey, version: PositiveInt }),
+  ),
   // An agent's kin_ask offers at most four; Kin's own cards, such as a statement's currency, up to eight.
   options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
   /** A picture of what is asked about, such as a new logo: a file in this card's chat. */
@@ -613,6 +620,10 @@ export const KinChoiceCardState = Schema.Struct({
           subscriptions: Schema.optionalKey(Schema.Literal(true)),
         }),
       ),
+      /** The tap was refused and did nothing, as the text says: nobody chose anything. */
+      refused: Schema.optionalKey(Schema.Literal(true)),
+      /** The outcome is all the settled card says: its detail is cleared. */
+      alone: Schema.optionalKey(Schema.Literal(true)),
       /** Set when the person undid what a default Kin took: who, by name then, and when. */
       undone: Schema.optionalKey(
         Schema.Struct({
@@ -647,6 +658,10 @@ export const KinChoiceCardState = Schema.Struct({
 });
 export type KinChoiceCardState = typeof KinChoiceCardState.Type;
 export type KinChoiceOutcome = NonNullable<KinChoiceCardState["outcome"]>;
+
+/** The line under a long draft's opening on its Approve card (`KinChoiceCardState.draftDoc`). */
+export const kinApproveOpeningNote = (key: string) =>
+  `This is only the opening. Open ${key} to read the whole draft before you approve.`;
 
 export const KinPresenceState = Schema.Literals([
   // Older servers only; clients show no line for it.

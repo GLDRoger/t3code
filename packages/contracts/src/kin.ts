@@ -31,6 +31,7 @@ export * from "./kinWorkMove.ts";
 export * from "./kinFinance.ts";
 export * from "./kinMoneyAnswers.ts";
 export * from "./kinStatements.ts";
+export * from "./kinBills.ts";
 export * from "./kinPush.ts";
 
 export * from "./kinRpcs.ts";

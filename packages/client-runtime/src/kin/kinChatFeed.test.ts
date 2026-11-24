@@ -354,6 +354,17 @@ describe("rows", () => {
           author: { _tag: "system" },
           widgetId: "memory-changes:w1" as KinMessage["widgetId"],
         }),
+        // Bills added from Money: their files ride on the card's message for who may open
+        // them, and show in the card's review list, not in the chat.
+        agentMessage(7, {
+          kind: "system",
+          author: { _tag: "system" },
+          widgetId: "bills:b-1" as KinMessage["widgetId"],
+          body: "8 bills: 8 read.",
+          attachments: [
+            { type: "image", id: "bill-1", name: "b1.jpg", mimeType: "image/jpeg", sizeBytes: 9 },
+          ],
+        }),
         agentMessage(6, {
           kind: "system",
           author: { _tag: "system" },
@@ -378,6 +389,7 @@ describe("rows", () => {
       true,
       true,
       false,
+      false,
     ]);
     expect(rows[1]!.type).toBe("system");
     // A host card is a system message with a widget; it draws as its card, not a line.
@@ -385,8 +397,12 @@ describe("rows", () => {
       type: "message",
       message: { widgetId: "memory-changes:w1", body: "" },
     });
-    // A worker's screenshots draw as a message with its words and the images.
     expect(rows[4]).toMatchObject({
+      type: "message",
+      message: { widgetId: "bills:b-1", body: "", attachments: [] },
+    });
+    // A worker's screenshots draw as a message with its words and the images.
+    expect(rows[5]).toMatchObject({
       type: "message",
       message: { body: "Screenshots from Test PR 7", attachments: [{ name: "01-home.png" }] },
     });
