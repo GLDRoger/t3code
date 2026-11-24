@@ -400,12 +400,8 @@ const make = Effect.gen(function* () {
   const chatRepository = yield* Effect.serviceOption(Repository.KinChatRepository);
   const chatHub = yield* Effect.serviceOption(KinChatHub);
   /** A batch's card redrawn (`work/bills.ts`); a card that can't be is no reason to stop a turn. */
-  const onCards = (
-    effect: Effect.Effect<
-      void,
-      unknown,
-      SqlClient.SqlClient | Repository.KinChatRepository | KinChatHub
-    >,
+  const onCards = <E>(
+    effect: Effect.Effect<void, E, SqlClient.SqlClient | Repository.KinChatRepository | KinChatHub>,
   ) =>
     Option.isNone(chatRepository) || Option.isNone(chatHub)
       ? Effect.void
