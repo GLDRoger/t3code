@@ -111,6 +111,8 @@ export interface KinChoiceDraftView {
   /** Long, it opens to its first blocks under Show all; `preview` is those blocks. */
   readonly folds: boolean;
   readonly preview: string;
+  /** Only the opening of a longer draft: the doc and version that went up, to open and read. */
+  readonly open: { readonly key: string; readonly version: number } | null;
 }
 
 export const KIN_CHOICE_DRAFT_COPY = { showAll: "Show all", showLess: "Show less" } as const;
@@ -119,7 +121,11 @@ const DRAFT_FOLD_LINES = 12;
 const DRAFT_PREVIEW_LINES = 8;
 
 /** The draft's place in the card's detail, which carries it for older clients. */
-function choiceDraft(detail: string | null, draft: string | undefined): KinChoiceDraftView | null {
+function choiceDraft(
+  detail: string | null,
+  draft: string | undefined,
+  doc: KinChoiceCardState["draftDoc"],
+): KinChoiceDraftView | null {
   if (draft === undefined || detail === null) return null;
   const at = detail.indexOf(draft);
   if (at < 0) return null;
@@ -131,8 +137,10 @@ function choiceDraft(detail: string | null, draft: string | undefined): KinChoic
     before: around(detail.slice(0, at)),
     markdown: draft.trim(),
     after: around(detail.slice(at + draft.length)),
-    folds: lines.length > DRAFT_FOLD_LINES,
+    // An opening never folds: Show all would read as the whole draft.
+    folds: doc === undefined && lines.length > DRAFT_FOLD_LINES,
     preview: lines.slice(0, cut > 0 ? cut : DRAFT_PREVIEW_LINES).join("\n"),
+    open: doc === undefined ? null : { key: doc.key, version: doc.version },
   };
 }
 
@@ -488,7 +496,7 @@ export function kinChoiceCardView(
             atMs: Date.parse(card.outcome.undone.at),
           },
     detail: own === null || own.trim() === "" ? null : own.trim(),
-    draft: choiceDraft(own, card.draft),
+    draft: choiceDraft(own, card.draft, card.draftDoc),
     options,
     image: card.image === undefined ? null : card.image,
     send,

@@ -253,7 +253,10 @@ function SendDetail(props: {
 
 /** A mail's whole body, folded under its card's first screen so Confirm is in reach. */
 /** A teammate's sent-up draft, rendered as a doc is; a long one opens under Show all. */
-function ChoiceDraft(props: { readonly draft: KinChoiceDraftView }) {
+function ChoiceDraft(props: {
+  readonly draft: KinChoiceDraftView;
+  readonly onOpen: (open: NonNullable<KinChoiceDraftView["open"]>) => void;
+}) {
   const { draft } = props;
   const [open, setOpen] = useState(false);
   const styles = useMarkdownPreviewStyles();
@@ -284,6 +287,16 @@ function ChoiceDraft(props: { readonly draft: KinChoiceDraftView }) {
         ) : null}
       </View>
       {line(draft.after)}
+      {draft.open === null ? null : (
+        <View className="flex-row">
+          <Button
+            tone="text"
+            size="compact"
+            label={KIN_CHOICE_OPEN_LABEL}
+            onPress={() => draft.open !== null && props.onOpen(draft.open)}
+          />
+        </View>
+      )}
     </View>
   );
 }
@@ -750,7 +763,17 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         ) : choice.send !== null ? (
           <SendDetail send={choice.send} edited={edited} pickFrom={fromPicker} />
         ) : choice.draft !== null ? (
-          <ChoiceDraft draft={choice.draft} />
+          <ChoiceDraft
+            draft={choice.draft}
+            onOpen={(open) =>
+              navigation.navigate("KinDoc", {
+                environmentId: String(environmentId),
+                orgId: String(choice.orgId),
+                doc: open.key,
+                v: String(open.version),
+              })
+            }
+          />
         ) : choice.detail === null ? null : (
           <Text textRole="footnote" className="text-foreground-secondary">
             {choice.detail}

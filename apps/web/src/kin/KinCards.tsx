@@ -81,12 +81,20 @@ import {
   kinDocCardDraft,
   kinDocCardLine,
   kinDocSendUpProblem,
+  kinDocWholeCopy,
   KIN_DOCS,
+  type KinDocCardDraftView,
   type KinDocCardView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinListedModelName } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, KinPersonId, KinSendTry, KinWidget } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type KinPersonId,
+  KinRecordKey,
+  type KinSendTry,
+  type KinWidget,
+} from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import ChatMarkdown from "../components/ChatMarkdown";
 import type { KinPlaceSearch } from "./kinPlaces";
@@ -360,12 +368,33 @@ function KinDocCard(props: {
   const { doc } = props;
   const draft = kinDocCardDraft(doc, props.ownerLevel, props.readOnly);
   const sendUp = useAtomCommand(kinClient.docSendUp, { reportFailure: false });
+  const readVersion = useAtomCommand(kinClient.docVersion, { reportFailure: false });
   const [sending, setSending] = useState(false);
+  const [copying, setCopying] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const copy = (text: string) => {
     void navigator.clipboard.writeText(text).then(
       () => toastManager.add({ type: "success", title: KIN_DOCS.textCopied }),
       () => undefined,
+    );
+  };
+  // A long draft's card holds its opening: Copy text takes the whole of that version.
+  const copyDraft = async (shown: KinDocCardDraftView) => {
+    if (shown.long === undefined) return copy(shown.copyText);
+    if (copying) return;
+    setCopying(true);
+    setProblem(null);
+    const got = kinDocWholeCopy(
+      await readVersion({
+        environmentId: props.environmentId,
+        input: { orgId: doc.orgId, key: KinRecordKey.make(doc.key), version: shown.long.version },
+      }),
+    );
+    setCopying(false);
+    if ("problem" in got) return setProblem(got.problem);
+    await navigator.clipboard.writeText(got.text).then(
+      () => toastManager.add({ type: "success", title: KIN_DOCS.textCopied }),
+      () => setProblem(KIN_DOCS.copyFailed),
     );
   };
   const send = async () => {
@@ -400,6 +429,9 @@ function KinDocCard(props: {
       {draft?.noAccount == null ? null : (
         <p className="text-xs text-muted-foreground">{draft.noAccount}</p>
       )}
+      {draft?.long === undefined ? null : (
+        <p className="text-xs text-muted-foreground">{draft.long.line}</p>
+      )}
       {draft?.sent == null ? null : <p className="text-xs text-foreground">{draft.sent}</p>}
       {problem === null ? null : (
         <p role="alert" className="text-xs text-destructive-foreground">
@@ -408,8 +440,13 @@ function KinDocCard(props: {
       )}
       <div className="flex flex-wrap items-center gap-2">
         {draft === null ? null : (
-          <Button size="xs" variant="outline" onClick={() => copy(draft.copyText)}>
-            {KIN_DOCS.copyText}
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={copying}
+            onClick={() => void copyDraft(draft)}
+          >
+            {copying ? KIN_DOCS.copying : KIN_DOCS.copyText}
           </Button>
         )}
         {draft?.sendTo == null ? null : (
@@ -662,7 +699,7 @@ function KinChoiceCard(props: {
           }
         />
       ) : choice.draft !== null ? (
-        <KinChoiceDraft draft={choice.draft} environmentId={environmentId} />
+        <KinChoiceDraft draft={choice.draft} environmentId={environmentId} orgId={choice.orgId} />
       ) : choice.detail === null ? null : (
         <p className="whitespace-pre-line text-xs text-muted-foreground">{choice.detail}</p>
       )}
@@ -1156,6 +1193,7 @@ function KinChoiceOpenLink(props: {
 function KinChoiceDraft(props: {
   readonly draft: KinChoiceDraftView;
   readonly environmentId: EnvironmentId;
+  readonly orgId: string;
 }) {
   const { draft } = props;
   const [open, setOpen] = useState(false);
@@ -1179,6 +1217,23 @@ function KinChoiceDraft(props: {
         ) : null}
       </div>
       {line(draft.after)}
+      {draft.open === null ? null : (
+        <div>
+          <Button
+            size="xs"
+            variant="outline"
+            render={
+              <Link
+                to="/kin/$environmentId/$orgId/docs"
+                params={{ environmentId: props.environmentId, orgId: props.orgId }}
+                search={{ doc: draft.open.key, v: draft.open.version }}
+              />
+            }
+          >
+            {KIN_CHOICE_OPEN_LABEL}
+          </Button>
+        </div>
+      )}
     </>
   );
 }

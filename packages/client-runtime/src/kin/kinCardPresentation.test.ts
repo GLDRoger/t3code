@@ -368,6 +368,33 @@ describe("choice cards", () => {
     return view.choice;
   };
 
+  // A sent-up draft renders as a doc between the card's own lines; a long one's opening never
+  // folds under Show all and opens the version that went up. An older host's has no doc: as before.
+  it("a sent-up draft: short as written, a long one's opening opens its version", () => {
+    const head = "Zoya Sheikh asks, through Chief of staff.";
+    const text = Array.from({ length: 14 }, (_, n) => `Phase ${n + 1} is priced as agreed.`).join(
+      "\n",
+    );
+    const note = "This is only the opening. Open D-12 to read the whole draft before you approve.";
+    const sentUp = (draftDoc?: object, more = "") =>
+      choice({
+        state: {
+          ...choiceState(),
+          detail: `${head}\n\n${text}\n\n${more}Proposal for Harbourline Hotels`,
+          draft: text,
+          ...(draftDoc === undefined ? {} : { draftDoc }),
+        },
+      }).draft;
+    const short = sentUp();
+    expect(short).toMatchObject({ before: head, folds: true, open: null });
+    expect(sentUp({ recordId: "rec-d12", key: "D-12", version: 4 }, `${note}\n\n`)).toEqual({
+      ...short,
+      after: `${note}\n\nProposal for Harbourline Hotels`,
+      folds: false,
+      open: { key: "D-12", version: 4 },
+    });
+  });
+
   it("takes taps until it is answered, closed or a day old", () => {
     const open = choice();
     expect(open.question).toBe("Ship today?");

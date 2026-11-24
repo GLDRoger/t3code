@@ -179,6 +179,10 @@ export const KIN_DOCS = {
   sentTo: (name: string) => `Sent to ${name} to approve.`,
   sentHeld: (name: string) => `Sent. ${name} gets it to approve when they're back.`,
   changesFirst: (name: string) => `${name} asked for changes first.`,
+  changedSinceSent: "It changed after it was sent, so it wasn't approved. Send it again.",
+  longDraft: "A long draft. Open it to read all of it.",
+  copying: "Copying…",
+  copyFailed: "Couldn't copy the text.",
   sendFailed: "Couldn't send it.",
   sendOffline: "You're offline. Send it when the connection is back.",
   noAccount: (service: string, by: string | null) =>
@@ -1263,6 +1267,11 @@ export function kinDocCardView(widget: KinWidget): KinDocCardView | null {
 export interface KinDocCardDraftView {
   /** The draft as clean text, without the markdown marks (Copy text). */
   readonly copyText: string;
+  /**
+   * Set when the card holds only a long draft's opening: the line saying so, and the doc version
+   * whose whole text Copy text fetches instead of `copyText`.
+   */
+  readonly long?: { readonly line: string; readonly version: number };
   /** The "Send to" button's label, or null when this reader has nothing to send up. */
   readonly sendTo: string | null;
   /** That it went up, and to whom, once sent; or that its owner asked for changes first. */
@@ -1283,17 +1292,25 @@ export function kinDocCardDraft(
 ): KinDocCardDraftView | null {
   const { draft } = card;
   if (draft === null) return null;
+  const changed =
+    draft.changed !== undefined &&
+    (draft.changesFirst === undefined || draft.changed.at > draft.changesFirst.at);
   return {
     copyText: kinDocCopyText(draft.text),
+    ...(draft.whole === undefined
+      ? {}
+      : { long: { line: KIN_DOCS.longDraft, version: draft.whole.version } }),
     sendTo:
       draft.sendTo === undefined || draft.sent !== undefined || ownerLevel || readOnly
         ? null
         : KIN_DOCS.sendTo(draft.sendTo.name),
     sent:
       draft.sent === undefined
-        ? draft.changesFirst === undefined
-          ? null
-          : KIN_DOCS.changesFirst(draft.changesFirst.name)
+        ? changed
+          ? KIN_DOCS.changedSinceSent
+          : draft.changesFirst === undefined
+            ? null
+            : KIN_DOCS.changesFirst(draft.changesFirst.name)
         : draft.sent.held === true
           ? KIN_DOCS.sentHeld(draft.sent.name)
           : KIN_DOCS.sentTo(draft.sent.name),
@@ -1302,6 +1319,15 @@ export function kinDocCardDraft(
         ? null
         : KIN_DOCS.noAccount(draft.noAccount.service, ownerLevel ? null : draft.noAccount.by.name),
   };
+}
+
+/** What a long draft's Copy text came to: the whole version's text to copy, or why not. */
+export function kinDocWholeCopy(
+  result: AtomCommandResult<Pick<KinDocDetail, "body">, unknown>,
+): { readonly text: string } | { readonly problem: string } {
+  return AsyncResult.isSuccess(result)
+    ? { text: kinDocCopyText(result.value.body) }
+    : { problem: KIN_DOCS.copyFailed };
 }
 
 /** What a "Send to" tap came to: nothing to say once sent (the card says it), else why not. */

@@ -497,6 +497,22 @@ describe("kinDocCopyText", () => {
       sent: "Sent to Rhea to approve.",
     });
     expect(kinDocCardDraft({ draft: null }, false, false)).toBeNull();
+    // A long draft's card holds its opening: it says so, and Copy text fetches its version; from
+    // an older host the same text is a short draft's. Changed after it went up, it may go again.
+    const long = { ...draft, whole: { version: 3, chars: 6200 } };
+    expect(kinDocCardDraft({ draft: long }, false, false)).toEqual({
+      ...teammate,
+      long: { line: "A long draft. Open it to read all of it.", version: 3 },
+    });
+    const { whole: _whole, ...older } = long;
+    expect(kinDocCardDraft({ draft: older }, false, false)).toEqual(teammate);
+    const changed = { at: "2026-11-16T08:00:00.000Z" };
+    expect(
+      kinDocCardDraft({ draft: { ...long, changesFirst, changed } }, false, false),
+    ).toMatchObject({
+      sendTo: "Send to Rhea",
+      sent: "It changed after it was sent, so it wasn't approved. Send it again.",
+    });
   });
 });
 

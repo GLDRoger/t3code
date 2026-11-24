@@ -1863,6 +1863,8 @@ export function makeKinClient<R, ER>(
       tag: "kin.docs.delete",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    /** One version of a doc, read once: a long draft's Copy text takes its whole text. */
+    docVersion: docRead,
     /** A teammate's own draft goes up to the agent's owner to approve; a second tap finds the first. */
     docSendUp: createKinRpcCommand(runtime, {
       label: "kin:docs:sendUp",
