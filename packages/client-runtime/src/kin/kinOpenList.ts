@@ -20,13 +20,13 @@ import { kinNeedsWaitingRow, type KinNeedsYouRow } from "./kinWorkHome.ts";
  */
 
 /** The list as a pulse page of its facts, for the screens that draw facts (`kinAttention`). */
-export function kinOpenFacts(read: KinOpenRead): KinPulseScreenRead {
+function kinOpenFacts(read: KinOpenRead): KinPulseScreenRead {
   const facts = read.rows.flatMap((row) => (row.item._tag === "fact" ? [row.item.fact] : []));
   return { asOf: read.asOf, total: facts.length, facts };
 }
 
 /** What waits in chats, the viewer's own and others' to look at, in the list's order. */
-export const kinOpenWaitingItems = (read: KinOpenRead): ReadonlyArray<KinWaitingItem> =>
+const kinOpenWaitingItems = (read: KinOpenRead): ReadonlyArray<KinWaitingItem> =>
   read.rows.flatMap((row) => (row.item._tag === "waiting" ? [row.item.waiting] : []));
 
 const inboxCache = new WeakMap<KinInboxState, WeakMap<KinOpenRead, KinInboxState>>();
