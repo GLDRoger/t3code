@@ -16,6 +16,7 @@ import {
   type KinReactionEmoji,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -672,6 +673,8 @@ describe("ChatWake", () => {
       const { attempts, settle } = yield* start();
       yield* settle;
       assert.deepStrictEqual(keys(attempts), ["chat-message:a-direct:lead-a"]);
+      // Nor is any of them a skipped message: no lead would have answered them.
+      assert.deepStrictEqual(yield* sql`SELECT ref FROM kin_offline_skips ORDER BY ref`, []);
     }).pipe(Effect.provide(services)),
   );
 
@@ -683,6 +686,16 @@ describe("ChatWake", () => {
         yield* storeMessage(message("a", `m${String(seq).padStart(3, "0")}`, { seq }));
       // Sorts below org a's ids, so a single global limit would drop it.
       yield* storeMessage(message("b", "b-quiet"));
+      // A day and a half old is skipped; two months old is past what is kept at all.
+      const dayAndHalf = -36 * 60 * 60_000;
+      for (const [id, at, seq] of [
+        ["old", dayAndHalf, 300],
+        ["ancient", -60 * 24 * 60 * 60_000, 301],
+      ] as const)
+        yield* storeMessage({
+          ...message("a", id, { seq }),
+          createdAt: DateTime.formatIso(DateTime.makeUnsafe(at)),
+        });
       const { results, settle } = yield* start();
       yield* settle;
       const woken = results.map((result) => result.event);
@@ -690,6 +703,15 @@ describe("ChatWake", () => {
       assert.deepStrictEqual(keys(woken.filter((event) => event.orgId === "b")), [
         "chat-message:b-quiet:lead-b",
       ]);
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(
+        yield* sql`SELECT org_id AS "orgId", kind, ref, reason, at FROM kin_offline_skips
+          ORDER BY at`,
+        [
+          { orgId: "a", kind: "message", ref: "old", reason: "older_than_a_day", at: dayAndHalf },
+          { orgId: "a", kind: "message", ref: "m001", reason: "over_the_count", at: 0 },
+        ],
+      );
     }).pipe(Effect.provide(services)),
   );
 
