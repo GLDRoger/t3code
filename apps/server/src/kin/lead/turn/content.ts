@@ -25,10 +25,10 @@ export const TURN_TEXT_CHARS = 200_000;
  * A turn's own files, newest kept: past 20 images a request's images shrink on Claude, and its
  * adapter carries 28 MB of base64, which 20 MB of images (PDF pages counted after them) fits.
  */
-export const TURN_FILES = { count: 20, imageBytes: PDF_PAGE_IMAGES.bytesPerTurn };
+const TURN_FILES = { count: 20, imageBytes: PDF_PAGE_IMAGES.bytesPerTurn };
 
 /** The files of `files` a turn takes, newest kept, in the order they were sent; and how many not. */
-export const turnFiles = <A extends Pick<ChatAttachment, "type" | "mimeType" | "sizeBytes">>(
+const turnFiles = <A extends Pick<ChatAttachment, "type" | "mimeType" | "sizeBytes">>(
   files: ReadonlyArray<A>,
 ) => {
   const newest: Array<A> = [];

@@ -730,6 +730,9 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_agents: "agent_id owner_person_id retired_by_person_id",
   kin_arrivals: "agent_id",
   kin_bank_statements: "agent_id applied_by",
+  // Who added a bill stays its record; a retired reader's bills go to the next reader (`bills.ts`).
+  kin_bill_reads: "added_by_person_id agent_id",
+  kin_bill_requests: "person_id",
   kin_chat_levels: "agent_id",
   kin_chat_members: "agent_id member_id person_id",
   kin_chats: "lead_agent_id",

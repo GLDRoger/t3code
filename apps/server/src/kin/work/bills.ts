@@ -63,11 +63,11 @@ import { notAVendor } from "./vendorName.ts";
 
 const FINANCE_DOMAIN = "finance";
 /** Bills a quiet turn reads at most, within the turn's image budget (`TURN_FILES`). */
-export const BILLS_PER_TURN = 5;
+const BILLS_PER_TURN = 5;
 const GROUP_IMAGE_BYTES = 20 * 1024 * 1024;
 /** Kin queues a bill on its own at most this often; the owner's Read again is beside it. */
 const AUTO_READS = 2;
-export const COULD_NOT_READ = "Kin could not read this one";
+const COULD_NOT_READ = "Kin could not read this one";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
@@ -80,16 +80,16 @@ const retryConflict = new KinChatError({
 const sha256 = (bytes: Uint8Array | string) =>
   NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
-export const billWidgetId = (batchId: string) => KinWidgetId.make(`bills:${batchId}`);
+const billWidgetId = (batchId: string) => KinWidgetId.make(`bills:${batchId}`);
 const batchIdFor = (key: string) => `b-${sha256(key).slice(0, 24)}`;
 
 const extensionOf = (name: string) => name.split(".").at(-1)?.toLowerCase() ?? "";
 const mimeOf = (file: Pick<ChatAttachment, "mimeType">) =>
   file.mimeType.toLowerCase().split(";", 1)[0]?.trim() ?? "";
-export const isPdf = (file: Pick<ChatAttachment, "mimeType" | "name">) =>
+const isPdf = (file: Pick<ChatAttachment, "mimeType" | "name">) =>
   mimeOf(file) === "application/pdf" || extensionOf(file.name) === "pdf";
 /** A bill is a photo or a PDF; anything else is refused on its own. */
-export const isBillFile = (file: Pick<ChatAttachment, "type" | "mimeType" | "name">) =>
+const isBillFile = (file: Pick<ChatAttachment, "type" | "mimeType" | "name">) =>
   file.type === "image" || mimeOf(file).startsWith("image/") || isPdf(file);
 const NOT_A_BILL = "Only photos and PDFs are read as bills.";
 
@@ -160,7 +160,7 @@ const billRow = Effect.fn("KinBills.billRow")(function* (orgId: KinOrgId, hash: 
 });
 
 /** The company's live Finance agent, else its Chief of staff, else its first live agent. */
-export const readerOf = Effect.fn("KinBills.readerOf")(function* (orgId: KinOrgId) {
+const readerOf = Effect.fn("KinBills.readerOf")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const finance = yield* liveLead(sql, orgId, { prefer: FINANCE_DOMAIN });
   if (finance === undefined || finance.domain === FINANCE_DOMAIN) return finance;
@@ -224,7 +224,7 @@ const cardChat = Effect.fn("KinBills.cardChat")(function* (
 
 const countText = (count: number) => `${count} bill${count === 1 ? "" : "s"}`;
 /** The card's words, the whole truth for a client that draws no card. */
-export const cardText = (card: Omit<KinBillBatchCard, "text">) => {
+const cardText = (card: Omit<KinBillBatchCard, "text">) => {
   if (card.status === "reading") return `Reading ${countText(card.total)}: ${card.done} done.`;
   const parts = [
     card.counts.read > 0 ? `${card.counts.read} read` : undefined,
@@ -335,29 +335,43 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
     const reads = Math.max(...group.map((row) => row.reads)) + 1;
     const key = `${orgId}:${batchId}:${group.map((row) => row.sha256).join(",")}:${reads}`;
     const eventId = hashedEventId("bills", key);
-    yield* queue
-      .enqueue({
-        _tag: "bills.read",
-        orgId,
-        agentId: KinAgentId.make(first.agentId),
-        eventId,
-        receivedAt: DateTime.makeUnsafe(now),
-        dedupeKey: null,
-        provenance: { _tag: "system" },
-        chatId: KinChatId.make(first.cardChatId),
-        batchId,
-        bills: group.map((row) => row.sha256),
-      })
-      .pipe(
-        Effect.catchTags({
-          KinEventQueueRetiredAgent: () => Effect.void,
-          KinEventQueueUnknownAgent: () => Effect.void,
-        }),
-      );
+    const hashes = group.map((row) => row.sha256);
+    const send = (agentId: KinAgentId) =>
+      queue
+        .enqueue({
+          _tag: "bills.read",
+          orgId,
+          agentId,
+          eventId,
+          receivedAt: DateTime.makeUnsafe(now),
+          dedupeKey: null,
+          provenance: { _tag: "system" },
+          chatId: KinChatId.make(first.cardChatId),
+          batchId,
+          bills: hashes,
+        })
+        .pipe(
+          Effect.as(true),
+          Effect.catchTags({
+            KinEventQueueRetiredAgent: () => Effect.succeed(false),
+            KinEventQueueUnknownAgent: () => Effect.succeed(false),
+          }),
+        );
+    let reader = KinAgentId.make(first.agentId);
+    // A retired reader's bills go to the company's reader now; with none, they can't be read.
+    if (!(yield* send(reader))) {
+      const next = yield* readerOf(orgId);
+      if (next === undefined || next.agentId === reader || !(yield* send(next.agentId))) {
+        yield* sql`UPDATE kin_bill_reads SET state = 'unreadable', problem = ${COULD_NOT_READ},
+            read_at = ${now}
+          WHERE org_id = ${orgId} AND sha256 IN ${sql.in(hashes)} AND state = 'waiting'`;
+        continue;
+      }
+      reader = next.agentId;
+    }
     yield* sql`UPDATE kin_bill_reads SET state = 'reading', event_id = ${eventId},
-        reads = reads + 1
-      WHERE org_id = ${orgId} AND sha256 IN ${sql.in(group.map((row) => row.sha256))}
-        AND state = 'waiting'`;
+        reads = reads + 1, agent_id = ${reader}
+      WHERE org_id = ${orgId} AND sha256 IN ${sql.in(hashes)} AND state = 'waiting'`;
   }
   return waiting.length;
 });
@@ -397,10 +411,7 @@ const recordsById = Effect.fn("KinBills.recordsById")(function* (
  * Redraws a batch's card from its rows: progress while Kin reads, the counts when done. Once done
  * it waits on the adder while a bill still needs them, which rings them once; else it closes.
  */
-export const refreshCard = Effect.fn("KinBills.refreshCard")(function* (
-  orgId: KinOrgId,
-  batchId: string,
-) {
+const refreshCard = Effect.fn("KinBills.refreshCard")(function* (orgId: KinOrgId, batchId: string) {
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
   const sql = yield* SqlClient.SqlClient;
@@ -761,7 +772,7 @@ export const addFromMessage = Effect.fn("KinBills.addFromMessage")(function* (in
 }, workFailure);
 
 /** A turn's bills, each by the short id the turn names it with: B1, B2… in the event's order. */
-export const turnBills = Effect.fn("KinBills.turnBills")(function* (
+const turnBills = Effect.fn("KinBills.turnBills")(function* (
   orgId: KinOrgId,
   agentId: string,
   wakeupId: string,
@@ -778,7 +789,7 @@ export const turnBills = Effect.fn("KinBills.turnBills")(function* (
 });
 
 /** One bill's answer, by plain rules: a clean read becomes one suggested expense or a duplicate. */
-export const settleRead = Effect.fn("KinBills.settleRead")(function* (
+const settleRead = Effect.fn("KinBills.settleRead")(function* (
   orgId: KinOrgId,
   row: Row,
   answer: {

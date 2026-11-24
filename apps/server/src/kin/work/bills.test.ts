@@ -642,6 +642,21 @@ describe("bills in bulk", () => {
         (yield* billRows).map(({ state, problem }) => [state, problem]),
         [["unreadable", "Kin could not read this one"]],
       );
+      // Finance retired: Read again goes to the company's reader now, the Chief of staff.
+      yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE agent_id = ${finance}`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id,
+          created_at) VALUES ('chief', ${orgId}, 'Chief of staff', 'lead', ${rhea}, ${at})`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, domain, level_since, models_json,
+          worker_projects_json, owner_chat_id)
+        VALUES ('chief', ${orgId}, 'Chief of staff', 'chief-of-staff', 0, '{}', '[]',
+          'rhea-finance')`;
+      const [bill] = yield* sql<{ sha256: string }>`SELECT sha256 FROM kin_bill_reads`;
+      yield* Bills.readAgain(as(rhea), { orgId, sha256: bill!.sha256 });
+      assert.deepStrictEqual(
+        yield* sql`SELECT b.state, b.agent_id, e.agent_id AS queued_to FROM kin_bill_reads b
+          JOIN kin_events e ON e.event_id = b.event_id`,
+        [{ state: "reading", agent_id: "chief", queued_to: "chief" }],
+      );
     }).pipe(Effect.provide(layer)),
   );
 });

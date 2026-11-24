@@ -324,6 +324,16 @@ features:
       - apps/server/src/kin/work/statements/statements.test.ts
       - apps/server/src/kin/work/statements/statementMatch.test.ts
 
+  - id: bills
+    name: Read many bills at once into suggested expenses
+    tab: chats
+    web: [chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [bills_add, bill_read]
+    proof:
+      - apps/server/src/kin/work/bills.test.ts
+
   - id: groups
     name: Start a group chat
     tab: chats
@@ -1768,6 +1778,12 @@ unlisted:
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.
+  "rpc:kin.bills.add": Served; Money's Add bills screen is the next job.
+  "rpc:kin.bills.list": Served; the bills list screen is the next job.
+  "rpc:kin.bills.keepRead": Served; the bills list's Keep all that read cleanly is the next job.
+  "rpc:kin.bills.addAnyway": Served; the bills list's Add anyway is the next job.
+  "rpc:kin.bills.dismiss": Served; the bills list's Dismiss is the next job.
+  "rpc:kin.bills.readAgain": Served; the bills list's Read again is the next job.
   "rpc:kin.lead.access.list": Served; no client shows an agent's access grants yet.
   "rpc:kin.lead.access.grant": Served; no client grants an agent access yet.
   "rpc:kin.lead.access.revoke": Served; no client revokes an agent's access yet.

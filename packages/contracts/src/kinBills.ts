@@ -22,7 +22,7 @@ import { KinRecordKey } from "./kinWork.ts";
 
 export const KIN_BILL_BATCH_CARD = "bill_batch";
 /** Files one add takes, as one chat message does. */
-export const KIN_BILLS_MAX_FILES = 100;
+const KIN_BILLS_MAX_FILES = 100;
 
 const Text = Schema.String.check(Schema.isMaxLength(300));
 const Label = Schema.String.check(Schema.isMaxLength(200));
@@ -215,7 +215,7 @@ export type KinBillsReadAgainInput = typeof KinBillsReadAgainInput.Type;
 export const KinBillsReadAgainResult = Schema.Struct({ queued: NonNegativeInt });
 export type KinBillsReadAgainResult = typeof KinBillsReadAgainResult.Type;
 
-export const KIN_BILL_WS_METHODS = {
+const KIN_BILL_WS_METHODS = {
   add: "kin.bills.add",
   list: "kin.bills.list",
   keepRead: "kin.bills.keepRead",
