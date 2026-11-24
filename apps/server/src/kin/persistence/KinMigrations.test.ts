@@ -59,6 +59,8 @@ const tableNames = [
   "kin_bank_alerts",
   "kin_bank_statement_entries",
   "kin_bank_statements",
+  "kin_bill_reads",
+  "kin_bill_requests",
   "kin_budget",
   "kin_budget_charges",
   "kin_budget_limits",
@@ -588,6 +590,9 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(indexes, [
           { name: "idx_kin_agents_org_agent" },
           { name: "idx_kin_auth_session_keys_revoked" },
+          { name: "idx_kin_bill_reads_attachment" },
+          { name: "idx_kin_bill_reads_batch" },
+          { name: "idx_kin_bill_reads_event" },
           { name: "idx_kin_chat_members_agent" },
           { name: "idx_kin_chat_members_person" },
           { name: "idx_kin_chats_org_chat" },
@@ -1935,7 +1940,7 @@ describe("Kin migrations", () => {
           (yield* runKinMigrations()).map(([id]) => id),
           [
             196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213, 214, 215,
+            213, 214, 215, 219,
           ],
         );
         assert.deepStrictEqual(yield* receipts, [
@@ -1987,7 +1992,7 @@ describe("Kin migrations", () => {
         (yield* runKinMigrations()).map(([id]) => id),
         [
           197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-          215,
+          215, 219,
         ],
       );
       const all = [
@@ -2006,7 +2011,7 @@ describe("Kin migrations", () => {
       );
       for (const from of [
         197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-        215,
+        215, 219,
       ]) {
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
@@ -2642,7 +2647,7 @@ describe("Kin migrations", () => {
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 215`;
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
       yield* sql`INSERT INTO kin_org_state (org_id) VALUES ('org')`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[215, "OfflineCatchUp"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(215));
       const rows = sql`SELECT paused, stop_managed, last_alive_at, offline_notices_json FROM kin_org_state`;
       assert.deepStrictEqual(yield* rows, [
         { paused: 0, stop_managed: 1, last_alive_at: null, offline_notices_json: "[]" },
