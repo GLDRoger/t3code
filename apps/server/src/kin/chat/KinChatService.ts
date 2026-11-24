@@ -1648,6 +1648,7 @@ const make = Effect.gen(function* () {
           ...answer,
           decidedBy,
           ...((changed ?? handled) === undefined ? {} : { outcome: changed ?? handled }),
+          ...((changed ?? handled)?.alone === true ? { detail: null } : {}),
         },
         awaiting: [],
         closedAt: answer.answer?.answeredAt ?? (yield* now),
