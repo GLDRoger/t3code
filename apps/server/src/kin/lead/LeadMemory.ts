@@ -1531,8 +1531,10 @@ const make = Effect.gen(function* () {
             itemId: id,
             scheduled,
             note: `No question was posted. Planned for its due time: ${set}; Kin checks then who and what still stand.${
-              back === undefined ? "" : ` Recorded return date: ${back}.`
-            }`,
+              scheduled === "start" || scheduled === "due_card"
+                ? " Nothing starts on its own then, so confirm that they will be asked, not that it will start."
+                : ""
+            }${back === undefined ? "" : ` Recorded return date: ${back}.`}`,
             ...(person === undefined
               ? {}
               : { asks: { name: person.name, ...(back === undefined ? {} : { back }) } }),

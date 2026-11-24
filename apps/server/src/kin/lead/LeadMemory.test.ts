@@ -683,7 +683,7 @@ it.live(
         assert.strictEqual(first.scheduled, "due_card");
         assert.strictEqual(
           first.note,
-          "No question was posted. Planned for its due time: a card asking to start, move or cancel it; Kin checks then who and what still stand.",
+          "No question was posted. Planned for its due time: a card asking to start, move or cancel it; Kin checks then who and what still stand. Nothing starts on its own then, so confirm that they will be asked, not that it will start.",
         );
         // A due start asks first while LEAD-11's stop switch is unbuilt: the note says so.
         for (const [onDue, ask, scheduled, asks, planned] of [
