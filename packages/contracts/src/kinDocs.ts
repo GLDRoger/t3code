@@ -221,6 +221,17 @@ export const KinDocDetail = Schema.Struct({
   embeds: Schema.optional(Schema.Array(KinDocEmbed)),
   /** This reader may change a section by hand (`kin.docs.editSection`); the host decides again. */
   editable: Schema.optional(Schema.Literal(true)),
+  /**
+   * Private by its kind alone, no person's label. `reader`: the teammate whose priced draft it is,
+   * while they still read it; `you` when that is this reader. Absent from older hosts.
+   */
+  kindLabel: Schema.optional(
+    Schema.Struct({
+      reader: Schema.optional(
+        Schema.Struct({ name: Schema.String, you: Schema.optional(Schema.Literal(true)) }),
+      ),
+    }),
+  ),
 });
 export type KinDocDetail = typeof KinDocDetail.Type;
 

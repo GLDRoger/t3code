@@ -20,6 +20,7 @@ import * as Reach from "../lead/Reach.ts";
 import type { KinPushSender } from "../push/KinPushSender.ts";
 import { aboutOf, noteAbout } from "../push/pushAbout.ts";
 import { factsStand } from "../pulse/factState.ts";
+import { reservedByCheckIn } from "../pulse/leftForCheckIn.ts";
 import { heldGivenBody, isGivenHeld, TASK_NEWS } from "../work/assignNotices.ts";
 import { ANSWERS_WITHIN_MS, personQuietUntil, relayWakeup, sameAsk } from "./quietHold.ts";
 
@@ -66,6 +67,7 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
     WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
       AND substr(kind, 1, ${TASK_NEWS.length}) != ${TASK_NEWS}
       AND substr(kind, 1, ${DM_NEWS.length}) != ${DM_NEWS}
+      AND NOT ${reservedByCheckIn(sql)}
     ORDER BY held_at, rowid`;
   const groups = new Map<string, Array<(typeof rows)[number]>>();
   for (const row of rows) {

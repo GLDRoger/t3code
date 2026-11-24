@@ -42,6 +42,7 @@ import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "
 import { indexRecord } from "./searchIndex.ts";
 import {
   KIN_OWNER_LEVEL,
+  MONEY_DOC_KINDS,
   PICTURE_DOC_ORIGIN,
   pictureVersionSeen,
   viewerOfPeople,
@@ -375,7 +376,6 @@ const settle = Effect.fn("KinDocs.settle")(function* (orgId: KinOrgId, recordId:
  * Kinds that carry prices or terms: private from the start. Any other doc is private only by its
  * own label, never by what the turn that wrote it had read; agents keep prices out of the rest.
  */
-const MONEY_DOC_KINDS: ReadonlyArray<KinDocKind> = ["quote", "proposal"];
 const moneyKind = (kind: KinDocKind | undefined) =>
   kind !== undefined && MONEY_DOC_KINDS.includes(kind);
 

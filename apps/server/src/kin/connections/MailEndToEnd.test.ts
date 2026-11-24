@@ -1491,7 +1491,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* connect(fake, "google", ACCOUNTS);
         const text =
-          "To: Ravi <ravi@lumen.example>\nSubject: The redesign\n\nHi Ravi,\nThe quote is attached.\n\nMeera";
+          "To: Ravi <ravi@lumen.example>\nSubject: The redesign\n\nHi Ravi,\nThe quote is **attached**:\n\n- [the quote](https://lumen.example/quote)\n\nMeera";
         const draft = JSON.stringify({
           kind: "mail",
           for: null,
@@ -1519,7 +1519,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             lateByMs: 0,
           })}, 0, 0, 'queued', ${approvalDedupeKey("q-mail")})`;
         yield* wake({ eventId });
-        const body = "Hi Ravi,\nThe quote is attached.\n\nMeera";
+        const body =
+          "Hi Ravi,\nThe quote is **attached**:\n\n- [the quote](https://lumen.example/quote)\n\nMeera";
         const send = (changed: Record<string, unknown>) =>
           callTool(ACCOUNTS, "mail_send", {
             to: ["ravi@lumen.example"],
@@ -1564,7 +1565,11 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         // As approved: its Confirm card is made, and it is the approval's one result.
         yield* callTool(ACCOUNTS, "mail_send", asText(approved));
         assert.lengthOf(cards, before + 1);
-        assert.deepInclude(cards.at(-1)!.send, { subject: "The redesign", body });
+        // It goes as plain text: the approved words, without their markdown marks.
+        assert.deepInclude(cards.at(-1)!.send, {
+          subject: "The redesign",
+          body: "Hi Ravi,\nThe quote is attached:\n\n- the quote (https://lumen.example/quote)\n\nMeera",
+        });
         const [made] = yield* sql<{ made: string }>`SELECT draft_made_json AS made
           FROM kin_questions WHERE question_id = 'q-mail'`;
         assert.include(made!.made, '"kind":"mail"');

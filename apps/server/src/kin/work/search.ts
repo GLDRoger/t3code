@@ -9,7 +9,7 @@ import { latestOf } from "./docs.ts";
 import { listOf } from "./lists.ts";
 import { inheritedSensitive, sensitiveNow } from "./recordRows.ts";
 import { docKindWords, searchIndexed, stepText, teamListSearchText } from "./searchIndex.ts";
-import { seenBy, teamLists, type KinViewer } from "./teamView.ts";
+import { ownMoneyDraft, seenBy, teamLists, type KinViewer } from "./teamView.ts";
 
 /**
  * One search over entries and docs. `team` is what a teammate may find (design 9.1): nothing of
@@ -80,6 +80,11 @@ const around = (text: string, words: ReadonlyArray<string>) => {
   return `${start > 0 ? "…" : ""}${shown}${start + 160 < text.length ? "…" : ""}`;
 };
 
+const ownDraftOf = (sql: SqlClient.SqlClient, scope: KinViewer) =>
+  scope._tag === "people" && scope.people.length === 1
+    ? ownMoneyDraft(sql, scope.people[0]!)
+    : sql`0`;
+
 export const search = Effect.fn("KinSearch.search")(function* (
   orgId: KinOrgId,
   input: {
@@ -115,9 +120,13 @@ export const search = Effect.fn("KinSearch.search")(function* (
     sql`r.org_id = ${orgId}`,
     sql`r.register_id IN ${sql.in([...registers, ...shared])}`,
     ...(input.closed === true ? [] : [sql`r.state NOT IN ('done', 'dropped')`]),
-    // A money list labels every entry private, so a teammate finds what Money shows them.
+    // A money list labels every entry private, so a teammate finds what Money shows them, and
+    // their own priced draft as they read it.
     ...(input.viewer === "team"
-      ? [sql`(r.register_id IN ${sql.in([...MONEY])} OR NOT ${sensitiveNow(sql)})`]
+      ? [
+          sql`(r.register_id IN ${sql.in([...MONEY])} OR NOT ${sensitiveNow(sql)}
+            OR ${ownDraftOf(sql, input.scope)})`,
+        ]
       : []),
     seenBy(sql, input.scope),
   ];

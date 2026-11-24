@@ -33,9 +33,10 @@ import {
 } from "../../apps/server/src/kin/lead/instructions.ts";
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
-import { alreadyOnIt } from "../../apps/server/src/kin/lead/Handoff.ts";
+import { alreadyOnIt, leftNote } from "../../apps/server/src/kin/lead/Handoff.ts";
+import { dueShows } from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
-import { UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
+import { endOfDay, UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
 import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
 import {
@@ -115,7 +116,11 @@ import {
   ownMailboxLine,
   workForText,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
-import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
+import {
+  CHECK_IN_PULSE_RULE,
+  LEFT_RULE,
+  PULSE_RULE,
+} from "../../apps/server/src/kin/pulse/prompt.ts";
 import { HEAD_START_WAKE } from "../../apps/server/src/kin/pulse/prepareWake.ts";
 import { DRAFT_DOCUMENT } from "../../apps/server/src/kin/pulse/draftWake.ts";
 import { KIN_OWN_REFUSAL } from "../../apps/server/src/kin/people/KinAccess.ts";
@@ -523,6 +528,7 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
+    .replaceAll("{{LEFT_RULE}}", LEFT_RULE)
     .replaceAll("{{HEAD_START_WAKE}}", HEAD_START_WAKE)
     // A quiet bills turn's section for files named as the bill ids Kin gives them (`billTurn.ts`).
     .replace(/\{\{BILLS_TURN:([^}]+)\}\}/g, (_, names: string) =>
@@ -704,6 +710,28 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     $error: { _tag: "KinChatError", reason: "not_allowed", message: ONE_ENTRY },
   }),
   // Anything but the approved make or a read, refused in an approved draft's turn.
+  // kin_relay's answer for a line left for the owner's next check-in (`KinHandoff.relay`).
+  relayLeft: (input: { to: string; title: string; when: string; asker: string }) => ({
+    to: input.to,
+    sent: true,
+    note: leftNote(input.to, input, input.asker),
+  }),
+  // record_update's answer for a task given a due or a time (`leadWork.ts` dueOf, shownDue).
+  taskUpdate: (input: { key: string; rev: number; state: string; due: unknown; zone: string }) => {
+    const due = typeof input.due === "string" ? input.due : "";
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(due);
+    const at = day ? endOfDay(due, input.zone) : Date.parse(due);
+    if (!Number.isFinite(at))
+      return {
+        $error: {
+          _tag: "KinChatError",
+          reason: "invalid_state",
+          message: `due ${due.slice(0, 40)} is not a day or a time.`,
+        },
+      };
+    const { due: _due, zone, ...head } = input;
+    return { ...head, changed: ["due"], shows: dueShows(at, day, zone) };
+  },
   approvedRefusal: () => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: APPROVED_REFUSAL },
   }),
