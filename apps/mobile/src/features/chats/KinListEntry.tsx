@@ -348,8 +348,9 @@ export function KinListEntryBody(
   return (
     <>
       <View className="gap-3 px-2">
+        {/* The bar names the list, so the line above the title is the entry's key alone. */}
         <Text textRole="footnote" selectable className="text-foreground-muted">
-          {entry.heading}
+          {item.key}
         </Text>
         <Text
           textRole="headline"
