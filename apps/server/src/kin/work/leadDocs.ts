@@ -681,10 +681,11 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
   const context = yield* writeContext(lead, "doc_create", input);
   // A doc head start's one doc is filed for its task's holder, linked to that task.
   const headStart = yield* docHeadStart(lead.orgId, lead.agentId, lead.wakeupId);
-  const writer =
-    headStart === undefined
-      ? context.writer
-      : { ...context.writer, headStartFor: headStart.personId };
+  const writer = {
+    ...context.writer,
+    ...(headStart === undefined ? {} : { headStartFor: headStart.personId }),
+    ...(input.draft === undefined ? {} : { draftCard: true as const }),
+  };
   const links =
     headStart === undefined
       ? (input.links ?? [])

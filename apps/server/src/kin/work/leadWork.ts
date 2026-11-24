@@ -2925,7 +2925,8 @@ const createRow = Effect.fnUntraced(function* (
     ...(from === undefined ? {} : { from }),
   };
   const found = existing === undefined ? undefined : yield* records.get(lead.orgId, existing.key);
-  const held = list === "clients" ? yield* heldBack(lead, printedAsked(row, found)) : [];
+  const held =
+    list === "clients" ? yield* heldBack(lead, printedAsked(row, found), found?.recordId) : [];
   // Who may make the whole row is decided as before; only then does a part wait for a tap.
   if (held.length > 0 && writer.view !== undefined && crmFor === undefined) {
     const whole = { list, fields: allFields };
@@ -3977,7 +3978,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: 
   };
   const held =
     listOf(before.registerId) === "clients"
-      ? yield* heldBack(lead, printedAsked(input, before))
+      ? yield* heldBack(lead, printedAsked(input, before), before.recordId)
       : [];
   // Who may make the whole change is decided as before; only then does a part wait for a tap.
   if (held.length > 0 && team !== undefined)

@@ -66,7 +66,12 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
-import { approvedFor, madeUnderApproval, mailKeepsDraft } from "../questions/approval.ts";
+import {
+  approvedFor,
+  madeUnderApproval,
+  mailKeepsDraft,
+  plainMail,
+} from "../questions/approval.ts";
 import { approvedWords } from "../lead/approvedDraft.ts";
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -3086,7 +3091,7 @@ const make = Effect.gen(function* () {
           ),
         );
     }
-    const prepared: Prepared =
+    const called: Prepared =
       provider !== undefined
         ? yield* prepareMail({
             provider,
@@ -3110,33 +3115,32 @@ const make = Effect.gen(function* () {
         : { _tag: "call", args };
     if (
       row.personId != null &&
-      (yield* confirmRefusal(turn.orgId, row, row.personId, prepared).pipe(provideSql)) !== null
+      (yield* confirmRefusal(turn.orgId, row, row.personId, called).pipe(provideSql)) !== null
     )
       return yield* refuse(turn, entry, fail("not_allowed", MONEY_CONFIRM));
     // A card from their own mailbox shows only files they may read: checked before it is drawn.
     if (
       row.personId != null &&
-      !(yield* filesReadable(turn.orgId, row.personId, prepared).pipe(provideSql))
+      !(yield* filesReadable(turn.orgId, row.personId, called).pipe(provideSql))
     )
       return yield* refuse(turn, entry, fail("not_allowed", UNREADABLE_FILE));
-    // An approved mail's Confirm card shows the mail the owner approved, as it will go.
-    if (
-      prepared._tag === "email" &&
-      MAIL_SEND_TOOL_NAMES.has(tool.name) &&
-      row.kind === "builtin"
-    ) {
-      const approval = yield* approvedFor(turn).pipe(provideSql);
-      if (
-        approval?.draft.kind === "mail" &&
-        approval.made === null &&
-        !mailKeepsDraft(prepared, approval.draft.text, tool.name === MAIL_TOOL.reply)
-      )
-        return yield* refuse(
-          turn,
-          entry,
-          fail("invalid_state", approvedWords("kin_connection_call")),
-        );
-    }
+    // An approved mail's Confirm card shows the mail the owner approved, as it will go: plain text.
+    const approval =
+      called._tag === "email" && MAIL_SEND_TOOL_NAMES.has(tool.name) && row.kind === "builtin"
+        ? yield* approvedFor(turn).pipe(provideSql)
+        : undefined;
+    const approvedMail =
+      called._tag === "email" && approval?.draft.kind === "mail" && approval.made === null;
+    if (approvedMail && !mailKeepsDraft(called, approval.draft.text, tool.name === MAIL_TOOL.reply))
+      return yield* refuse(
+        turn,
+        entry,
+        fail("invalid_state", approvedWords("kin_connection_call")),
+      );
+    const prepared: Prepared =
+      approvedMail && called._tag === "email"
+        ? { ...called, body: plainMail(called.body) }
+        : called;
     if (prepared._tag === "call" && toJson(args).length > MAX_CARD_ARGS)
       return yield* refuse(
         turn,

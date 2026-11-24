@@ -47,6 +47,7 @@ import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
 import {
+  accessSql,
   KIN_OWN_REFUSAL,
   kinOwnTurn,
   ownerLevel,
@@ -228,6 +229,8 @@ export type Writer = {
   readonly teamShared?: boolean;
   /** The holder whose doc head start this turn is (`docHeadStart`): its one new doc is theirs. */
   readonly headStartFor?: KinPersonId;
+  /** A draft filed to go up from its card (`doc_create` with draft): `draftDoc` decides its label. */
+  readonly draftCard?: true;
   /** A lead's turn others read: `viewGuard` decides the write inside its transaction. */
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- a write's guard, not a read; absent is an owner-level writer.
   readonly view?: {
@@ -1970,7 +1973,8 @@ const make = Effect.gen(function* () {
         givenAway && writer.actor._tag === "agent" && writer.askedBy == null
           ? writer.actor.agentId
           : null,
-      marked_by_person_id: input.sensitive === true ? author : null,
+      // A teammate's draft keeps its kind's label, not theirs: they can't lift it (`teamRule`).
+      marked_by_person_id: input.sensitive === true && guarded === undefined ? author : null,
       asked_by_person_id: author,
       steps_json: steps.length === 0 ? null : yield* encodeSteps(steps),
       urgent: input.urgent === true ? 1 : null,
@@ -2039,6 +2043,7 @@ const make = Effect.gen(function* () {
                   agentId: writer.actor.agentId,
                   wakeupId: writer.wakeupId,
                   headStartFor: writer.headStartFor,
+                  draftCard: writer.draftCard,
                 }
               : undefined,
           ).pipe(provideSql);
@@ -3051,13 +3056,23 @@ const make = Effect.gen(function* () {
           set("confirmed", patch.confirmed ? 1 : 0);
         }
         // Anyone may raise a label; only a person lowers one, and only the owner reaches here so.
+        // An owner-level label on a doc with no one to name is the owner's: it ends a draft's read.
+        const labelBy = Effect.gen(function* () {
+          const by = textBy(writer);
+          if (by !== null || row.registerId !== "docs") return by;
+          if (writer.view !== undefined || writer.teammate === true) return by;
+          const [owner] = yield* sql<{ id: string }>`SELECT p.person_id AS id FROM kin_people p
+            WHERE p.org_id = ${orgId} AND ${sql.literal(accessSql("p"))} = 'owner'
+            ORDER BY p.access = 'owner' DESC, p.person_id LIMIT 1`;
+          return owner === undefined ? null : KinPersonId.make(owner.id);
+        });
         if (patch.sensitive === true && row.sensitive === 0) {
           changes.push({ field: "sensitive", from: "false", to: "true" });
           set("sensitive", 1);
-          set("marked_by_person_id", textBy(writer));
+          set("marked_by_person_id", yield* labelBy);
         } else if (patch.sensitive === true && row.markedBy === null) {
           // Labelled only by its list's default until now: whose label it is now is recorded.
-          set("marked_by_person_id", textBy(writer));
+          set("marked_by_person_id", yield* labelBy);
         } else if (
           patch.sensitive === false &&
           row.sensitive === 1 &&

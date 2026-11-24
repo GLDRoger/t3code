@@ -8,6 +8,7 @@ import {
   KinChatError,
   KinOrgId,
   KinPersonId,
+  KinWakeupId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -30,7 +31,7 @@ import { billedParty } from "./billTo.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadWork from "./leadWork.ts";
 import { fieldText, parseFields } from "./lists.ts";
-import { answerUnconfirmed } from "./unconfirmedFacts.ts";
+import { answerUnconfirmed, declinedAsked, heldBack } from "./unconfirmedFacts.ts";
 
 // Invented company, people, clients and numbers only.
 const orgId = KinOrgId.make("org");
@@ -482,7 +483,7 @@ it.effect(
       const again = yield* Effect.flip(answer(card!.widgetId, ownerId, true));
       assert.isTrue(isChatError(again) && again.reason === "widget_changed");
 
-      // Not this drops it: the address stays, and the record says nothing waits.
+      // Not this drops it: the address stays, and the record says nothing waits, only who said no.
       yield* LeadWork.update(scope, {
         key: "C-2",
         sourceEventId: yield* turn(null),
@@ -497,7 +498,9 @@ it.effect(
       });
       const kept = yield* LeadWork.get(scope, { key: "C-2" });
       assert.strictEqual(kept.address, "Invented 1 Quay Road");
-      assert.isUndefined(kept.unconfirmed);
+      assert.deepStrictEqual(kept.unconfirmed, [
+        `Declined Billing address: "Invented 9 Dock Lane": Rhea said no to it on Kin's card today. Don't propose it or ask about it again unless the owner or a co-owner types it to you in their own chat.`,
+      ]);
 
       // A field changed since it was proposed no longer waits: Rhea typed the same number, so
       // its card's Use it leaves it as it is; another number since refuses the card.
@@ -605,6 +608,71 @@ it.effect(
       assert.include(repeated.unconfirmed, "Rhea said no to");
       assert.lengthOf(yield* forSaltmarsh, 0);
       assert.strictEqual((yield* stored("C-4")).gstin, NEW);
+      // In any later turn the same value, however spaced, is told with who said no and when, and
+      // no card is drawn; the client's read says so; a question naming it about them is refused.
+      const later = yield* LeadWork.update(scope, {
+        key: "C-4",
+        sourceEventId: yield* turn(null),
+        gstin: "29ccccc 2222 c1z5",
+      });
+      assert.include(
+        later.unconfirmed,
+        `Rhea said no to GSTIN "29ccccc 2222 c1z5" on Kin's card today,`,
+      );
+      assert.notInclude(later.unconfirmed, "2026-11-24");
+      assert.lengthOf(yield* forSaltmarsh, 0);
+      assert.include(
+        ((yield* LeadWork.get(scope, { key: "C-4" })).unconfirmed ?? []).join("\n"),
+        `"${refusedValue}": Rhea said no to it`,
+      );
+      yield* turn(null);
+      const asking = { orgId, agentId: lead, wakeupId: KinWakeupId.make(`wake-${turns}`) };
+      const named = (question: string, to = ownerId, turned = asking) =>
+        declinedAsked(turned, to, ["C-4"], [question]);
+      assert.strictEqual(
+        yield* named(`Use ${refusedValue.toLowerCase()} for Saltmarsh?`),
+        `Rhea said no to GSTIN "${refusedValue}" for Invented Saltmarsh on Kin's card today, so Kin doesn't put it on a card again. If Invented Saltmarsh asked for it again, tell Rhea so in plain words, with no card: it goes on the record only when the owner or a co-owner types it to you in their own chat. A question that doesn't name "${refusedValue}" is fine to ask.`,
+      );
+      assert.isUndefined(yield* named("Use their new address for Saltmarsh?"));
+      // The no is about asking the owner level again: a question to a teammate, or one in a turn
+      // a teammate reads (her own relayed request), is asked as before and tells nothing of it.
+      assert.isUndefined(yield* named(`Use ${refusedValue} for Saltmarsh?`, mateId));
+      yield* turn("Saltmarsh asked me for their new number again, can we?", "mate");
+      const relayed = { orgId, agentId: lead, wakeupId: KinWakeupId.make(`wake-${turns}`) };
+      assert.isUndefined(yield* named(`Use ${refusedValue} for Saltmarsh?`, ownerId, relayed));
+      // Days back, it says the day, never a stamp.
+      yield* TestClock.adjust("3 days");
+      assert.include(
+        yield* named(`Use ${refusedValue} for Saltmarsh?`),
+        "for Invented Saltmarsh on Kin's card on Tuesday, so",
+      );
+      yield* TestClock.setTime(NOW);
+      // Another value is asked. Only an owner-level person's own word in their chat lifts the no;
+      // Meera typing it in the team room doesn't, though her typing goes for any other value.
+      yield* LeadWork.update(scope, {
+        key: "C-4",
+        sourceEventId: yield* turn(null),
+        gstin: "29DDDDD3333D1Z5",
+      });
+      assert.lengthOf(yield* forSaltmarsh, 1);
+      const heldAfter = Effect.fn("test.heldAfter")(function* (
+        said: string,
+        who: "owner" | "mate",
+        value = refusedValue,
+      ) {
+        yield* turn(said, who);
+        return yield* heldBack(
+          { orgId, agentId: lead, wakeupId: `wake-${turns}` },
+          [{ field: "gstin", value, before: NEW }],
+          saltmarsh,
+        );
+      });
+      assert.lengthOf(yield* heldAfter(`Yes, use ${refusedValue} after all`, "owner"), 0);
+      assert.lengthOf(yield* heldAfter(`Saltmarsh's number is ${refusedValue}`, "mate"), 1);
+      assert.lengthOf(
+        yield* heldAfter("Saltmarsh's number is 29EEEEE4444E1Z5", "mate", "29EEEEE4444E1Z5"),
+        0,
+      );
       // A dropped client's card writes nothing.
       yield* LeadWork.update(scope, { key: "C-5", sourceEventId: yield* turn(null), gstin: NEW });
       const reema = (yield* stored("C-5")).row.recordId;
@@ -657,6 +725,39 @@ it.effect(
       assert.lengthOf(more2, 0);
       assert.include(waits, `Unconfirmed Terms: "Net 30. Payment`);
       assert.include(waits, `… (${tail.length} more characters)"`);
+      // A no to its name, or to a value that is words of its name, never blocks a question about
+      // the client; a no on a card that held several values declines none of them for later.
+      const forHarbourline = Effect.map(cards, (all) =>
+        all.filter((one) => one.recordId === harbourline),
+      );
+      for (const change of [
+        { title: "Invented Harbourline Pvt Ltd" },
+        { address: "Harbourline" },
+        { address: "Invented 4 Pier Road", gstin: "29FFFFF5555F1Z5" },
+      ]) {
+        yield* LeadWork.update(scope, { key: "C-1", sourceEventId: yield* turn(null), ...change });
+        const [card, ...others] = yield* forHarbourline;
+        assert.lengthOf(others, 0);
+        assert.strictEqual((yield* answer(card!.widgetId, ownerId, false))?.title, "Not used");
+      }
+      yield* turn(null);
+      const harbourAsk = { orgId, agentId: lead, wakeupId: KinWakeupId.make(`wake-${turns}`) };
+      for (const question of [
+        "Is Invented Harbourline Pvt Ltd their right name now?",
+        "Should Harbourline's invoices go to the new office?",
+        "Bill Harbourline at Invented 4 Pier Road from now on?",
+        "Use 29FFFFF5555F1Z5 for Harbourline?",
+      ])
+        assert.isUndefined(
+          yield* declinedAsked(harbourAsk, ownerId, ["C-1"], [question]),
+          question,
+        );
+      yield* LeadWork.update(scope, {
+        key: "C-1",
+        sourceEventId: yield* turn(null),
+        address: "Invented 4 Pier Road",
+      });
+      assert.lengthOf(yield* forHarbourline, 1);
     }).pipe(Effect.provide(layer)),
 );
 

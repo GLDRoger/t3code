@@ -3169,6 +3169,114 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
         "not_allowed",
       );
 
+      // Filed as a proposal, a money kind, it keeps its label and goes up as any long draft:
+      // of the team only Zoya reads it, through her own card, which shows it to her whole.
+      const PRICED = long(4200, 900);
+      const priced = yield* LeadDocs.create(scopeOf("chief"), {
+        sourceEventId: asked.eventId,
+        title: "Harbourline priced proposal",
+        body: PRICED,
+        client: "C-7",
+        kind: "proposal",
+        draft: { kind: "proposal" },
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.deepInclude(priced, { kind: "proposal", sensitive: true, version: 1 });
+      const pricedCard = yield* cardOf(priced.key);
+      assert.deepStrictEqual(pricedCard.state.draft.whole, { version: 1, chars: 4200 });
+      assert.strictEqual(pricedCard.state.draft.sendTo.name, "Rhea Rao");
+      assert.strictEqual(
+        (yield* readAsZoya(priced.key, 1, pricedCard.widgetId)).body.trim(),
+        PRICED,
+      );
+      const zoyasPage = Effect.fn("test.zoyasPage")(function* () {
+        const page = yield* chats.history(person("zoya"), {
+          chatId: zoyaChat,
+          beforeSeq: 1000,
+          limit: 100,
+        });
+        return page.widgets.find((widget) => widget.widgetId === pricedCard.widgetId)!.state;
+      });
+      assert.deepInclude(yield* zoyasPage(), { title: "Harbourline priced proposal" });
+      assert.property(yield* zoyasPage(), "draft");
+      assert.deepStrictEqual(yield* press(pricedCard.widgetId), { to: "Rhea Rao", held: false });
+      const [pricedUp] = yield* upFor(priced.key);
+      assert.deepInclude(JSON.parse(pricedUp!.draft).doc, { key: priced.key, version: 1 });
+      assert.deepInclude((yield* ownersCard(pricedUp!.questionId)).draftDoc, {
+        key: priced.key,
+        version: 1,
+      });
+      yield* tap(owner, pricedUp!.questionId, "option-1", "rhea-approve-priced");
+      assert.strictEqual((yield* made(pricedUp!.questionId))[0]!.body.trim(), PRICED);
+      // Arjun, with Docs, Clients and Money on and its link on his own project, reads none of it.
+      yield* sql`UPDATE kin_people SET sees_docs = 1, sees_clients = 1, sees_money = 1
+        WHERE person_id = 'arjun'`;
+      yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation, created_at)
+        SELECT org_id, record_id, 'record', 'rec_shoot', 'relates', 0 FROM kin_records
+        WHERE org_id = ${orgId} AND key = ${priced.key}`;
+      const arjun = [person("arjun")];
+      assert.strictEqual(
+        (yield* Effect.flip(OwnerDocs.get(arjun, { orgId, key: KinRecordKey.make(priced.key) })))
+          .reason,
+        "not_found",
+      );
+      // The same search finds it for Zoya, whose draft it is, so Arjun's finding nothing counts.
+      const found = (who: string) =>
+        OwnerDocs.search([person(who)], { orgId, text: "priced proposal", everything: true }).pipe(
+          Effect.map((page) => page.hits.map((hit) => hit.key)),
+        );
+      yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = 'zoya'`;
+      assert.include(yield* found("zoya"), priced.key);
+      yield* sql`UPDATE kin_people SET sees_docs = 0 WHERE person_id = 'zoya'`;
+      assert.notInclude(
+        (yield* OwnerDocs.list(arjun, { orgId })).docs.map((doc) => doc.key),
+        priced.key,
+      );
+      assert.notInclude(yield* found("arjun"), priced.key);
+      assert.notInclude(
+        JSON.stringify((yield* OwnerWork.get(arjun, { orgId, key: "P-4" })).linkedFrom ?? []),
+        priced.key,
+      );
+      // Without Docs or a project he leads, and in her chat, his read with her card's id takes the
+      // card's own path, which reads as him: refused all the same.
+      yield* sql`UPDATE kin_people SET sees_docs = 0 WHERE person_id = 'arjun'`;
+      yield* sql`UPDATE kin_records SET owner_id = ${owner.personId} WHERE record_id = 'rec_shoot'`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at)
+        VALUES ('zoya-chat-arjun', ${orgId}, ${zoyaChat}, 'person', 'arjun', 'member', ${at})`;
+      assert.strictEqual(
+        (yield* Effect.flip(
+          OwnerDocs.get(arjun, {
+            orgId,
+            key: KinRecordKey.make(priced.key),
+            version: 1,
+            card: KinWidgetId.make(pricedCard.widgetId),
+          }),
+        )).reason,
+        "not_found",
+      );
+      yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'zoya-chat-arjun'`;
+      // Rhea's own edit after it went up takes Zoya's read and her card's text back.
+      const pricedPage = yield* OwnerDocs.get([owner], {
+        orgId,
+        key: KinRecordKey.make(priced.key),
+      });
+      const pricedTop = sectionsOf(pricedPage.body).find((one) => one.id === "top")!;
+      yield* OwnerDocs.editSection([owner], {
+        orgId,
+        key: KinRecordKey.make(priced.key),
+        section: pricedTop.id,
+        hash: pricedTop.hash,
+        text: `${PRICED}\n\nOur cost is invented.`,
+        clientRequestId: `hand:${priced.key}:cost`,
+      });
+      // Her card now holds version 2's opening, and that is what she may no longer open.
+      assert.deepInclude((yield* cardOf(priced.key)).state.draft.whole, { version: 2 });
+      assert.strictEqual(
+        (yield* Effect.flip(readAsZoya(priced.key, 2, pricedCard.widgetId))).reason,
+        "not_found",
+      );
+      assert.notProperty(yield* zoyasPage(), "draft");
+
       // A co-owner's tap on it does what it does on a short draft's card.
       yield* press((yield* cardOf(short.key)).widgetId);
       const [shortUp] = yield* upFor(short.key);
@@ -3739,7 +3847,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
           author: "agent",
         },
         {
-          body: "Rhea Rao changed the proposal; the new one is with Rhea Rao to approve.",
+          body: "Rhea Rao asked for changes; the new proposal is with Rhea Rao to approve.",
           author: "system",
         },
       ]);
@@ -3797,7 +3905,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.deepStrictEqual(yield* team.answeredWakes, []);
       assert.deepStrictEqual((yield* team.kinLines(zoyaChat)).slice(-2), [
         "Rhea Rao wants changes first; the new proposal goes back to Rhea Rao to approve.",
-        "Rhea Rao changed the proposal; the new one is with Rhea Rao to approve.",
+        "Rhea Rao asked for changes; the new proposal is with Rhea Rao to approve.",
       ]);
 
       // Approve on the redraft writes it in the tap, word for word, and Zoya hears so, as on the

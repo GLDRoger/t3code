@@ -26,6 +26,12 @@ describe("readCallArguments", () => {
       ["the swallowed reason", swallowed(told), undefined, { arguments: mail, reason: told }],
       ["a reason also given", swallowed(told), "Own", { arguments: mail, reason: "Own" }],
       [
+        "the swallowed reason with its last brace dropped",
+        swallowed(told).slice(0, -1),
+        undefined,
+        { arguments: mail, reason: told },
+      ],
+      [
         "a long swallowed reason",
         swallowed(long),
         undefined,
