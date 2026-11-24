@@ -124,7 +124,8 @@ const shownCards: Array<string> = [];
 const gate = Layer.unwrap(
   Effect.map(SqlClient.SqlClient, (sql) =>
     Layer.mock(KinLevelGate)({
-      askTo: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
+      askTo: () =>
+        Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
       showCard: (_agent, input) =>
         Effect.sync(() => {
           shownCards.push(String(Reflect.get(input.state as object, "key")));

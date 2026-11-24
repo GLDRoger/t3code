@@ -259,7 +259,7 @@ const Audience = KinToolText(
 const Terms = KinToolText(4_000);
 const HeardFrom = KinToolText(
   200,
-  "Where a client's name, address, tax number, place of supply or terms came from when no person typed it here (\"their mail of 3 Nov\"); whoever confirms it sees this.",
+  'Where a client\'s name, address, tax number, place of supply or terms came from when no person typed it here ("their mail of 3 Nov"); whoever confirms it sees this.',
 );
 const Repos = Schema.Array(KinRepoName).check(Schema.isMaxLength(20));
 
@@ -2861,10 +2861,8 @@ const createRow = Effect.fnUntraced(function* (
     ...goal,
     ...(from === undefined ? {} : { from }),
   };
-  const found =
-    existing === undefined ? undefined : yield* records.get(lead.orgId, existing.key);
-  const held =
-    list === "clients" ? yield* heldBack(lead, printedAsked(row, found)) : [];
+  const found = existing === undefined ? undefined : yield* records.get(lead.orgId, existing.key);
+  const held = list === "clients" ? yield* heldBack(lead, printedAsked(row, found)) : [];
   // Who may make the whole row is decided as before; only then does a part wait for a tap.
   if (held.length > 0 && writer.view !== undefined && crmFor === undefined) {
     const whole = { list, fields: allFields };
@@ -3909,7 +3907,9 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...spine.at,
   };
   const held =
-    listOf(before.registerId) === "clients" ? yield* heldBack(lead, printedAsked(input, before)) : [];
+    listOf(before.registerId) === "clients"
+      ? yield* heldBack(lead, printedAsked(input, before))
+      : [];
   // Who may make the whole change is decided as before; only then does a part wait for a tap.
   if (held.length > 0 && team !== undefined)
     yield* viewGuard(

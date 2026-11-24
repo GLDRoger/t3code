@@ -329,7 +329,11 @@ it.effect(
       // Meera may not change a client's tax details, typed or not: refused as before, nothing asked.
       for (const said of [`Their GSTIN is ${NEW}`, "Use the number from their mail"]) {
         const refused = yield* Effect.flip(
-          LeadWork.update(scope, { key: "C-4", sourceEventId: yield* turn(said, "mate"), gstin: NEW }),
+          LeadWork.update(scope, {
+            key: "C-4",
+            sourceEventId: yield* turn(said, "mate"),
+            gstin: NEW,
+          }),
         );
         assert.isTrue(isChatError(refused), said);
         assert.lengthOf(yield* cards, 0, said);

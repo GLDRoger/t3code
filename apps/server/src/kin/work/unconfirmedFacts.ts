@@ -16,7 +16,12 @@ import * as NodeCrypto from "node:crypto";
 
 import { keySentSql } from "../chat/keySent.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { followsOutsideRead, outsideRead, outsideStamp, renderSource } from "../lead/OutsideContent.ts";
+import {
+  followsOutsideRead,
+  outsideRead,
+  outsideStamp,
+  renderSource,
+} from "../lead/OutsideContent.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
 import { companyMoney } from "./companyProfile.ts";
@@ -28,22 +33,22 @@ import { regionOf } from "./region.ts";
 import { orgOwner } from "./toolNames.ts";
 
 /**
- * A client's details that print on its invoices and quotes (`gendocs/facts.ts`, `billTo.ts`), as
- * an agent writes them. A value no person of the company typed in the turn waits, unconfirmed, for
- * an owner-level person's tap on one card; until then the record keeps what it had, and documents
- * print that. Proposals live in `kin_profile_changes` under `uf_` ids, as the shell's and numbers'
- * cards do under theirs: one row per card, its fields in `patch_json`.
+ * A client's printed details (`gendocs/facts.ts`) an agent writes that no person typed in the turn
+ * wait for an owner-level tap on one card; documents print the old value until then. Proposals
+ * live in `kin_profile_changes` under `uf_`, one row per card, beside the shell's and numbers'.
  */
-
-export const UNCONFIRMED_CHANGE = "uf_";
+const UNCONFIRMED_CHANGE = "uf_";
 
 const PRINTED = ["title", "address", "gstin", "placeOfSupply", "terms"] as const;
 export type PrintedField = (typeof PRINTED)[number];
 export const PRINTED_FIELDS: ReadonlyArray<PrintedField> = PRINTED;
 
 /** Case, spaces and punctuation ignored: "29 abcde-1234f1z5" is "29ABCDE1234F1Z5". */
-export const loose = (text: string | null) =>
-  (text ?? "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+const loose = (text: string | null) =>
+  (text ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]/gu, "");
 
 const Item = Schema.Struct({
   field: Schema.Literals(PRINTED),
@@ -91,7 +96,8 @@ export const heldBack = Effect.fn("KinUnconfirmed.heldBack")(function* (
   }>,
 ) {
   const changing = asked.filter(
-    (one) => loose(one.value) !== loose(one.before) || (one.value === null) !== (one.before === null),
+    (one) =>
+      loose(one.value) !== loose(one.before) || (one.value === null) !== (one.before === null),
   );
   if (changing.length === 0) return [];
   const words = yield* ownWords(turn);
@@ -162,7 +168,9 @@ const pendingRows = Effect.fn("KinUnconfirmed.pending")(function* (
 });
 
 const sameItem = (a: UnconfirmedItem, b: Pick<UnconfirmedItem, "field" | "value">) =>
-  a.field === b.field && loose(a.value) === loose(b.value) && (a.value === null) === (b.value === null);
+  a.field === b.field &&
+  loose(a.value) === loose(b.value) &&
+  (a.value === null) === (b.value === null);
 
 /**
  * Keeps an agent's held-back values on the record as one unconfirmed proposal, and asks the person
@@ -213,7 +221,9 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
   ];
   const patch = yield* encodeProposal({ recordId: record.recordId, items }).pipe(Effect.orDie);
   const changeId = `${UNCONFIRMED_CHANGE}${NodeCrypto.createHash("sha256")
-    .update(`${orgId}|${lead.agentId}|${lead.wakeupId}|${stableStringify(items.map(({ at: _at, ...one }) => one))}`)
+    .update(
+      `${orgId}|${lead.agentId}|${lead.wakeupId}|${stableStringify(items.map(({ at: _at, ...one }) => one))}`,
+    )
     .digest("hex")
     .slice(0, 32)}`;
   yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id, patch_json,
@@ -254,7 +264,7 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
                   ),
           )
           // The value is kept either way; a card that can't be shown now is asked for in words.
-          .pipe(Effect.catchTag("KinChatError", () => Effect.undefined));
+          .pipe(Effect.catchTags({ KinChatError: () => Effect.undefined }));
   const widgets = replaced.flatMap((row) => (row.widgetId === null ? [] : [row.widgetId]));
   if (widgets.length > 0 && gate !== undefined)
     yield* gate
@@ -263,7 +273,7 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
         widgets,
         ...(posted === undefined || "_tag" in posted ? [] : [posted.widgetId]),
       )
-      .pipe(Effect.catchTag("KinChatError", () => Effect.void));
+      .pipe(Effect.catchTags({ KinChatError: () => Effect.void }));
   return waitingLine(record.title, what, name, posted !== undefined && !("_tag" in posted));
 });
 
