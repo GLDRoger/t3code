@@ -17,7 +17,8 @@ import {
   kinWaitingRowView,
   kinWaitsForDetail,
 } from "@t3tools/client-runtime/kin/kinScreenState";
-import { useKinInboxOpen } from "./state/useKinInboxOpen";
+import { useKinInboxShown } from "./state/useKinAttention";
+import { useKinInbox } from "./state/useKinInbox";
 import { kinWaitingAskView } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { useNowMinuteMs } from "../../lib/clock";
 import { KinWaitingAsk } from "./components/KinWaitingAsk";
@@ -32,7 +33,16 @@ import { KinApprovalCard } from "./widgets/KinApprovalCard";
  */
 export function KinWaitingScreen() {
   const navigation = useNavigation();
-  const { host, state, retry, reread } = useKinInboxOpen();
+  const inbox = useKinInbox();
+  const { host, retry, reread } = inbox;
+  const orgId =
+    host._tag === "host" && host.probe._tag === "ready"
+      ? (host.probe.orgs.me[0]?.orgId ?? null)
+      : null;
+  const state = useKinInboxShown(
+    inbox.state,
+    host._tag === "host" && orgId !== null ? { environmentId: host.environmentId, orgId } : null,
+  );
   const { agentNames } = kinDirectory(host);
   const nowMs = useNowMinuteMs();
   return (

@@ -33,10 +33,15 @@ import {
 } from "./KinAttention";
 import { KinWaitsForFolds } from "./KinWaitsFor";
 import { KinWorkSection } from "./KinWorkParts";
-import { useKinAttention, useKinAttentionHandle, useKinOpen } from "./useKinAttention";
+import {
+  useKinAttention,
+  useKinAttentionHandle,
+  useKinInboxShown,
+  useKinOpen,
+} from "./useKinAttention";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
-import { useKinInboxOpen } from "./useKinInboxOpen";
+import { useKinInbox } from "./useKinHost";
 import { kinListsOf, useKinLists, useKinMoneySummary } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
@@ -68,7 +73,8 @@ function useKinNeedsRows(
   const now = new Date(useNowMinuteMs());
   const money = useKinMoneySummary(props, { enabled: asked });
   const lists = useKinLists(props, { enabled: asked });
-  const inbox = useKinInboxOpen();
+  const held = useKinInbox();
+  const inbox = { ...held, state: useKinInboxShown(held.state, props) };
   const open = useKinOpen(asked ? props : null);
   const [expanded, setExpanded] = useState(false);
   // The first page until See all; then everything, the page standing in until it arrives. With

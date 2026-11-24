@@ -21,7 +21,13 @@ import {
   type KinAttentionScope,
   KIN_GOALS,
 } from "../kinAttention.ts";
-import { kinOpenAttention, kinOpenShown, kinOpenTasksCount } from "../kinOpenList.ts";
+import {
+  kinInboxScreenWithOpen,
+  kinOpenAttention,
+  kinOpenShown,
+  kinOpenTasksCount,
+} from "../kinOpenList.ts";
+import type { KinInboxScreenState } from "../kinScreenState.ts";
 import { kinAskAboutAgent, type KinScreenTarget } from "../kinScreenReads.ts";
 import { kinNeedsYouCount, kinTasksDealFactsOf } from "../kinTasksList.ts";
 import { kinWorkReadState } from "../kinWorkForms.ts";
@@ -119,6 +125,14 @@ export function makeKinAttentionHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinAt
     if (target === null || streamed === false) return undefined;
     const read = Option.getOrNull(AsyncResult.value(live));
     return read === null ? null : kinOpenShown(read, new Set(answered));
+  }
+
+  /** A screen's inbox with Waiting on you as the open list has it (`kinInboxWithOpen`). */
+  function useKinInboxShown(
+    state: KinInboxScreenState,
+    target: KinScreenTarget | null,
+  ): KinInboxScreenState {
+    return kinInboxScreenWithOpen(state, target?.orgId ?? null, useKinOpen(target));
   }
 
   /**
@@ -279,6 +293,7 @@ export function makeKinAttentionHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinAt
   return {
     useKinAttention,
     useKinOpen,
+    useKinInboxShown,
     useKinTasksNeedsYou,
     useKinAttentionHandle,
     useKinAskAbout,

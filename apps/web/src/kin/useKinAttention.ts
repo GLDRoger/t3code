@@ -8,6 +8,7 @@ import { kinWorkLiveAtom } from "./useKinWork";
 export const {
   useKinAttention,
   useKinOpen,
+  useKinInboxShown,
   useKinTasksNeedsYou,
   useKinAttentionHandle,
   useKinAskAbout,
