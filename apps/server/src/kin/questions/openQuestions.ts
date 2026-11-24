@@ -2229,15 +2229,21 @@ export const openQuestionsSection = Effect.fn("KinQuestions.section")(function* 
         asker === undefined ? "another chat" : yield* personName(input.orgId, asker),
       );
     }
+  const lapsing = open.some((row) => row.forChatId !== null && row.draft === null);
+  const signed = lapsing && (yield* signedIn(input.orgId, personId));
   const lines = open.slice(-8).map((row) => {
     const tail =
       row.kind === "text"
         ? "asked in text: their next message in that chat answers it"
         : row.defaultLabel !== null && row.safe
           ? `default “${row.defaultLabel}” ${dayWord(row.dueAt, input.now, clock.zone)}`
-          : row.raisedAt === null
-            ? `no safe default: raised once more ${dayWord(row.actAt, input.now, clock.zone)}, then it waits for them`
-            : "no safe default: waits for them";
+          : row.forChatId !== null && row.draft === null
+            ? row.raisedAt === null && signed
+              ? `no safe default: raised once more ${dayWord(row.actAt, input.now, clock.zone)}, then it lapses`
+              : `no safe default: lapses ${dayWord(row.actAt, input.now, clock.zone)} unanswered`
+            : row.raisedAt === null
+              ? `no safe default: raised once more ${dayWord(row.actAt, input.now, clock.zone)}, then it waits for them`
+              : "no safe default: waits for them";
     const about = input.ownerOnly && row.about.length > 0 ? ` (about ${row.about.join(", ")})` : "";
     const asker = row.forChatId === null ? "" : ` for ${forWhom.get(row.forChatId)}`;
     return `- ${row.questionId}, ${row.agentName}${asker}, ${dayWord(row.askedAt, input.now, clock.zone).replace(/^on /, "")}: “${row.question}”${about}; ${tail}`;

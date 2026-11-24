@@ -1281,13 +1281,13 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       // Rhea, in her own chat with the Chief of staff.
       const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
       const toDev = yield* askFor("chief", rhea, { to: "Dev" });
-      // Dev never signed in: it still waits in his chat, and the result says no one was alerted.
+      // Dev never signed in: it still waits in his chat, and the result says it lapses at its day.
       assert.deepInclude(toDev, {
         to: "Dev Malhotra",
         state: "posted",
         retry: false,
         signedIn: false,
-        note: "Dev Malhotra hasn't signed in to Kin yet: it waits in their chat with you and reaches them when they do. Nobody was alerted. Their answer comes back here.",
+        note: "Dev Malhotra hasn't signed in to Kin yet: it waits in their chat with you, and if they haven't signed in by its day, it lapses and this chat is told. Their answer comes back here.",
       });
       const devChat = yield* chiefChat("dev");
       const stored = yield* cardOf(toDev.questionId);
@@ -3761,7 +3761,7 @@ it.effect("a question asked for someone away waits for them, then is raised once
       assert.strictEqual(asked.state, "held");
       assert.strictEqual(
         asked.note,
-        "Dev Malhotra hasn't signed in to Kin yet: it waits in their chat with you and reaches them when they do. Nobody was alerted. Their answer comes back here.",
+        "Dev Malhotra hasn't signed in to Kin yet: it waits in their chat with you, and if they haven't signed in by its day, it lapses and this chat is told. Their answer comes back here.",
       );
       assert.isNull((yield* team.cardOf(asked.questionId)).widgetId);
       assert.lengthOf(yield* cardsFor(devChat), 0);
@@ -3887,6 +3887,20 @@ it.effect("a question asked for someone that nobody answers lapses, and its chat
             outcome: (card.state as { outcome?: unknown }).outcome,
           };
         });
+
+      // Each agent reads what comes next: Zoya is raised once more, Arjun, never signed in, isn't.
+      for (const [person, question, tail] of [
+        ["zoya", toZoya.questionId, "raised once more on Wednesday, then it lapses"],
+        ["arjun", toArjun.questionId, "lapses on Wednesday unanswered"],
+      ] as const) {
+        const section = yield* Questions.openQuestionsSection({
+          orgId: KinOrgId.make(orgId),
+          chatId: yield* chiefChat(person),
+          ownerOnly: false,
+          now: IST_MON_1130,
+        });
+        assert.match(section!.body, new RegExp(`- ${question}, .*; no safe default: ${tail}`));
+      }
 
       // Wednesday 10:30 IST, the morning after its day: Zoya is asked once more; Arjun, never
       // signed in, can't be, so his lapses now, as does Meera's.
