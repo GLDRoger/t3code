@@ -58,8 +58,8 @@ export function KinSettingsSection(props: {
       className="flex flex-col gap-2 outline-none"
     >
       {hasHeader ? (
-        <div className="flex min-h-7 items-end justify-between gap-3 px-1">
-          <div className="flex min-w-0 flex-col gap-0.5">
+        <div className="flex min-h-7 flex-wrap items-end justify-between gap-x-3 gap-y-2 px-1">
+          <div className="flex min-w-0 flex-1 basis-48 flex-col gap-0.5">
             {props.title === undefined ? null : (
               <h3 className="text-sm font-semibold text-foreground">{props.title}</h3>
             )}
@@ -67,7 +67,9 @@ export function KinSettingsSection(props: {
               <p className="text-pretty text-xs text-muted-foreground">{props.description}</p>
             )}
           </div>
-          {props.action === undefined ? null : <div className="shrink-0">{props.action}</div>}
+          {props.action === undefined ? null : (
+            <div className="ml-auto shrink-0">{props.action}</div>
+          )}
         </div>
       ) : null}
       <SettingsGroup variant={props.plain === true ? "plain" : "grouped"}>
