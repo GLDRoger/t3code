@@ -510,6 +510,16 @@ describe("bills in bulk", () => {
           }),
           kept,
         );
+        // A bill already kept (or dropped) is no longer one to keep, so it isn't "skipped".
+        const again = yield* Bills.keepRead(as(meera), {
+          orgId,
+          batchId: added.batchId,
+          clientRequestId: "keep-again",
+        });
+        assert.deepStrictEqual(
+          [again.kept, again.skipped.map((one) => one.why)],
+          [[], ["It wasn't read cleanly.", "It wasn't read cleanly."]],
+        );
       }).pipe(Effect.provide(layer)),
   );
 

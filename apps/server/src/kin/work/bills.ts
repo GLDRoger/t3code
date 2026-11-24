@@ -1399,6 +1399,7 @@ export const keepRead = Effect.fn("KinBills.keepRead")(function* (
       for (const row of rows) {
         const record = row.recordId === null ? undefined : records.get(row.recordId);
         const shown = shownState(row, record);
+        if (shown === "kept" || shown === "dropped") continue;
         const why =
           row.state !== "read" || record === undefined
             ? shown === "reading"
@@ -1408,13 +1409,9 @@ export const keepRead = Effect.fn("KinBills.keepRead")(function* (
                 : shown === "unreadable"
                   ? "It wasn't read cleanly."
                   : "It has no expense of its own."
-            : record.confirmed === 1
-              ? "Already kept."
-              : record.state === "dropped"
-                ? "Dropped."
-                : record.state !== "done"
-                  ? "Its state was changed."
-                  : undefined;
+            : record.state !== "done"
+              ? "Its state was changed."
+              : undefined;
         if (why !== undefined || record === undefined) {
           skipped.push({
             sha256: row.sha256,
