@@ -53,6 +53,7 @@ import { signed } from "./agentMark.ts";
 import { outsideLine, postedLine, unfinishedLine } from "./askedFor.ts";
 import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr, runGh } from "./fakeGitHub.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
+import { setRepo } from "./githubWatchStore.ts";
 import { headKey, POSTING } from "./boundReview.ts";
 import { ASK_REFUSAL, POST_REFUSAL, PULL_REFUSAL } from "./reviewAsk.ts";
 import { KIN_OWN_REFUSAL } from "../people/KinAccess.ts";
@@ -244,7 +245,8 @@ const ambermill = Effect.fn("test.ambermill")(function* (github: FakeGitHub) {
       VALUES (${agentId}, ${orgId}, ${name}, 0, ${threadId}, '{}', '[]', ${chatId}, ${domain})`;
   }
   // The watch has looked once, a minute after the PRs opened, so Kin knows the company's repos
-  // (a fork isn't watched) and the PRs are older than the watch: GitHub's review request is new.
+  // (the fork is switched off) and the PRs are older than the watch: GitHub's review request is new.
+  yield* setRepo({ orgId, repo: FORK, watched: false }, 0);
   yield* TestClock.adjust(60_000);
   const watch = yield* GitHubWatch.make.pipe(
     Effect.provideService(GitHubWatch.KinGitHubApi, watchApi(github)),

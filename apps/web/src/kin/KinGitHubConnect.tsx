@@ -1053,7 +1053,7 @@ function RepoList(props: {
         ))}
       </ul>
       <GuardOutcome outcome={guard.outcome} />
-      {repos.some((repo) => !repo.watched && !repo.fork) ? (
+      {repos.some((repo) => !repo.watched) ? (
         <div>
           <Button
             size="xs"
