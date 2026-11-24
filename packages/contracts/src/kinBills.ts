@@ -11,7 +11,7 @@ import {
   KinPersonId,
   KinWidgetId,
 } from "./kinChat.ts";
-import { KinDay, KinFileRef } from "./kinMoney.ts";
+import { KinDay, KinFileRef, KinSignedMoney } from "./kinMoney.ts";
 import { KinRecordKey } from "./kinWork.ts";
 
 /**
@@ -185,7 +185,17 @@ export const KinBillRow = Schema.Struct({
   check: Schema.optional(Schema.Literals(["amount", "date"])),
   /** The suggested expense made for it, as it stands now. */
   expense: Schema.optional(
-    Schema.Struct({ key: KinRecordKey, rev: NonNegativeInt, title: Schema.String }),
+    Schema.Struct({
+      key: KinRecordKey,
+      rev: NonNegativeInt,
+      title: Schema.String,
+      /** Its own figures, which a kept or dropped bill shows in place of what was read. */
+      vendor: Schema.optional(Label),
+      date: Schema.optional(KinDay),
+      amount: Schema.optional(KinSignedMoney),
+      tax: Schema.optional(KinSignedMoney),
+      category: Schema.optional(Label),
+    }),
   ),
   /** The expense it looks like, for a duplicate. */
   duplicateOf: Schema.optional(Schema.Struct({ key: KinRecordKey, title: Schema.String })),

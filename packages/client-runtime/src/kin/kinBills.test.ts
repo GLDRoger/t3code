@@ -154,6 +154,47 @@ describe("a bill on the review list", () => {
     expect(money({ amount: "  " })).toEqual([null, null]);
   });
 
+  it("shows a kept or dropped bill as its expense stands, and one still to keep as read", () => {
+    const read = {
+      vendor: "Granite Furniture",
+      date: "2026-11-21",
+      amount: "980000000",
+      currency: "INR",
+      tax: "9",
+      number: "9042",
+    };
+    const expense = {
+      key: "EXP-8",
+      rev: 3,
+      title: "Granite Furniture, Nov 2026",
+      vendor: "Granite Furniture Mart",
+      date: "2026-11-20",
+      amount: { minor: 980_000, currency: "INR" },
+    };
+    const shown = (overrides: Partial<KinBillRow>) =>
+      kinBillRowView(row({ read, expense, ...overrides })).fields.map((field) => field.value);
+    const asExpense = ["Granite Furniture Mart", "Nov 20, 2026", "₹9,800.00", null, null, "9042"];
+    expect(shown({ state: "kept" })).toEqual(asExpense);
+    expect(shown({ state: "dropped" })).toEqual(asExpense);
+    expect(shown({ state: "read" })).toEqual([
+      "Granite Furniture",
+      "Nov 21, 2026",
+      "₹98,00,00,000.00",
+      "₹9.00",
+      null,
+      "9042",
+    ]);
+    // A host that sends no figures for the expense: what was read, as before.
+    expect(shown({ state: "kept", expense: { key: "EXP-8", rev: 3, title: "Granite" } })).toEqual([
+      "Granite Furniture",
+      "Nov 21, 2026",
+      "₹98,00,00,000.00",
+      "₹9.00",
+      null,
+      "9042",
+    ]);
+  });
+
   it("carries why Keep all left it", () => {
     const skipped = new Map([[SHA(1), "Already kept."]]);
     expect(kinBillRowView(row(), { skipped }).skipped).toBe("Already kept.");

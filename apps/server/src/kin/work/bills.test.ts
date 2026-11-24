@@ -1147,11 +1147,18 @@ describe("bills in bulk", () => {
           title: "Pune courier",
           amount: { minor: 30_000, currency: "INR" },
           paidOn: "2026-11-07",
+          vendor: "Swift Courier",
           receipt: [blurred!.file.attachmentId],
           clientRequestId: "typed",
         });
         const byHand = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills[1]!;
         assert.deepStrictEqual([byHand.state, byHand.expense?.key], ["kept", typed.expense]);
+        // The row reads as its expense stands, not as the bill was read.
+        assert.deepInclude(byHand.expense, {
+          vendor: "Swift Courier",
+          date: "2026-11-07",
+          amount: { minor: 30_000, currency: "INR" },
+        });
       }).pipe(Effect.provide(layer)),
   );
 

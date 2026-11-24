@@ -15,6 +15,7 @@ import {
   type KinFileRef,
   type KinOrgId,
   type KinRecordKey,
+  type KinSignedMoney,
   type KinWidget,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -274,6 +275,37 @@ function kinBillStateLabel(row: KinBillRow) {
       : KIN_BILLS.state.check;
 }
 
+/** A kept or dropped bill is its expense now: that expense's figures, the bill's own number kept. */
+function kinBillExpenseFields(
+  row: KinBillRow,
+  categoryLabel: (category: string) => string = (category) => category,
+): ReadonlyArray<KinBillField> | null {
+  const expense = row.expense;
+  if ((row.state !== "kept" && row.state !== "dropped") || expense === undefined) return null;
+  if (expense.amount === undefined && expense.date === undefined && expense.vendor === undefined)
+    return null;
+  const category = blank(expense.category);
+  const money = (value: KinSignedMoney | undefined) =>
+    value === undefined ? null : kinMoneyText(value, true);
+  return [
+    { key: "vendor", label: KIN_BILLS.field.vendor, value: blank(expense.vendor) },
+    {
+      key: "date",
+      label: KIN_BILLS.field.date,
+      value:
+        expense.date === undefined ? null : dayOfYear.format(new Date(`${expense.date}T00:00:00Z`)),
+    },
+    { key: "amount", label: KIN_BILLS.field.amount, value: money(expense.amount) },
+    { key: "tax", label: KIN_BILLS.field.tax, value: money(expense.tax) },
+    {
+      key: "category",
+      label: KIN_BILLS.field.category,
+      value: category === null ? null : categoryLabel(category),
+    },
+    { key: "number", label: KIN_BILLS.field.number, value: blank(row.read.number) },
+  ];
+}
+
 export function kinBillRowView(
   row: KinBillRow,
   options: {
@@ -282,7 +314,9 @@ export function kinBillRowView(
   } = {},
 ): KinBillRowView {
   const label = kinBillStateLabel(row);
-  const fields = kinBillFields(row.read, options.categoryLabel);
+  const fields =
+    kinBillExpenseFields(row, options.categoryLabel) ??
+    kinBillFields(row.read, options.categoryLabel);
   const problem = row.state === "unreadable" ? (row.problem ?? null) : null;
   const read = fields.flatMap((field) =>
     field.value === null ? [] : [`${field.label} ${field.value}`],

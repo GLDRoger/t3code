@@ -24,6 +24,7 @@ import {
   KinMessageId,
   type KinOrgId,
   KinPersonId,
+  KinSignedMoney,
   KinWidgetId,
   formatKinWhen,
   isKinCurrency,
@@ -449,6 +450,12 @@ type RecordBrief = {
   readonly title: string;
   readonly state: string;
   readonly confirmed: number;
+  readonly minor: number | null;
+  readonly currency: string | null;
+  readonly dateAt: number | null;
+  readonly category: string | null;
+  readonly vendor: unknown;
+  readonly taxJson: unknown;
 };
 const recordsById = Effect.fn("KinBills.recordsById")(function* (
   orgId: KinOrgId,
@@ -457,7 +464,9 @@ const recordsById = Effect.fn("KinBills.recordsById")(function* (
   if (ids.length === 0) return new Map<string, RecordBrief>();
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<RecordBrief>`SELECT record_id AS "recordId", key, rev, title, state,
-      confirmed FROM kin_records
+      confirmed, amount_minor AS minor, currency, date_at AS "dateAt", category,
+      json_extract(fields_json, '$.vendor') AS vendor, json_extract(fields_json, '$.tax') AS "taxJson"
+    FROM kin_records
     WHERE org_id = ${orgId} AND record_id IN ${sql.in([...new Set(ids)])} ORDER BY record_id`;
   return new Map(rows.map((row) => [row.recordId, row]));
 });
@@ -1275,7 +1284,27 @@ export const sweep = Effect.fn("KinBills.sweep")(function* () {
   return orphans.length;
 });
 
-const rowView = (row: Row, records: ReadonlyMap<string, RecordBrief>): KinBillRow => {
+const decodeTax = Schema.decodeUnknownOption(Schema.fromJsonString(KinSignedMoney));
+/** The expense as it stands: what a kept or dropped bill shows in place of its read. */
+const expenseView = (record: RecordBrief, zone: string) => {
+  const tax = typeof record.taxJson === "string" ? decodeTax(record.taxJson) : Option.none();
+  return {
+    key: record.key,
+    rev: record.rev,
+    title: record.title,
+    ...(typeof record.vendor === "string" && record.vendor.trim() !== ""
+      ? { vendor: record.vendor.trim().slice(0, 200) }
+      : {}),
+    ...(record.dateAt === null ? {} : { date: dayIn(record.dateAt, zone) }),
+    ...(record.minor === null || record.currency === null
+      ? {}
+      : { amount: { minor: record.minor, currency: record.currency } }),
+    ...(Option.isSome(tax) ? { tax: tax.value } : {}),
+    ...(record.category === null ? {} : { category: record.category.slice(0, 200) }),
+  };
+};
+
+const rowView = (row: Row, records: ReadonlyMap<string, RecordBrief>, zone: string): KinBillRow => {
   const record = row.recordId === null ? undefined : records.get(row.recordId);
   const twin = row.duplicateOf === null ? undefined : records.get(row.duplicateOf);
   const read = Option.getOrElse(decodeRead(row.readJson ?? "{}"), () => ({}));
@@ -1294,9 +1323,7 @@ const rowView = (row: Row, records: ReadonlyMap<string, RecordBrief>): KinBillRo
     ...(row.problem === null ? {} : { problem: row.problem }),
     ...(row.state === "unreadable" ? checkOf(row.problem) : {}),
     ...(row.state === "unreadable" && row.problem === UNSHOWN_PHOTO ? { wrongKind: true } : {}),
-    ...(record === undefined
-      ? {}
-      : { expense: { key: record.key, rev: record.rev, title: record.title } }),
+    ...(record === undefined ? {} : { expense: expenseView(record, zone) }),
     ...(twin === undefined ? {} : { duplicateOf: { key: twin.key, title: twin.title } }),
     addedAt: iso(row.addedAt),
   };
@@ -1321,6 +1348,7 @@ export const list = Effect.fn("KinBills.list")(function* (
     }
     yield* sql.withTransaction(refreshCard(input.orgId, input.batchId));
     const shown = all.slice(offset, offset + PAGE);
+    const zone = yield* ownerZone(input.orgId);
     const records = yield* recordsById(
       input.orgId,
       shown.flatMap((row) =>
@@ -1329,7 +1357,7 @@ export const list = Effect.fn("KinBills.list")(function* (
     );
     return {
       batches: [],
-      bills: shown.map((row) => rowView(row, records)),
+      bills: shown.map((row) => rowView(row, records, zone)),
       ...(offset + PAGE < all.length ? { next: offset + PAGE } : {}),
     };
   }
