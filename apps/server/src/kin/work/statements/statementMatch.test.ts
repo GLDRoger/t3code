@@ -598,6 +598,23 @@ describe("statement matching", () => {
         ],
       ],
     );
+    // Expenses can't record a repayment: a partner who is owed isn't told "owed nothing".
+    const [unrecordable] = matchRows([debit(0, "2026-10-08", "NEFT DR-MEERA RAO", 30_000)], {
+      currency: "INR",
+      withholdsAtSource: true,
+      invoices: [],
+      expenses: [],
+      partners: [],
+      repayable: false,
+      payees: [{ name: "Meera Rao", repaid: [] }],
+      ownAccounts: [],
+      known: [],
+      bank: null,
+    });
+    assert.deepStrictEqual(unrecordable!.suggestion, {
+      action: "later",
+      why: "It names Meera Rao, but a repayment can't be recorded: Reimbursement or Repaid on is retired or missing from Expenses",
+    });
     // A line can't pay back what was spent after it.
     assert.deepStrictEqual(
       placed(debit(0, "2026-10-08", "NEFT DR-MEERA RAO", 10_000), [

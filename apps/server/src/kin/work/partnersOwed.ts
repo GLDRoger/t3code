@@ -16,6 +16,7 @@ import {
   partnerAddress,
   partnerFunded,
   REIMBURSEMENT,
+  REPAID_ON,
   unsaidImport,
 } from "./reimbursement.ts";
 
@@ -162,6 +163,17 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
 export const fundable = Effect.fn("KinPartnersOwed.fundable")(function* (orgId: KinOrgId) {
   const def = yield* listDef(orgId, "expenses");
   return def?.fields.some((one) => one.key === FUNDED_BY && one.retired !== true) === true;
+});
+
+/**
+ * Whether Expenses can record a repayment: Reimbursement and Repaid on are there and not retired.
+ * Without them a bank line can't mark an expense repaid, so a statement offers no repayment.
+ */
+export const repayable = Effect.fn("KinPartnersOwed.repayable")(function* (orgId: KinOrgId) {
+  const def = yield* listDef(orgId, "expenses");
+  return [REIMBURSEMENT, REPAID_ON].every(
+    (key) => def?.fields.some((one) => one.key === key && one.retired !== true) === true,
+  );
 });
 
 /** Paid expenses an import says a partner paid, by address, until the owner says who and whether owed. */

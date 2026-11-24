@@ -38,7 +38,7 @@ import { companyMoney, homeCurrency } from "../companyProfile.ts";
 import { regionOf } from "../region.ts";
 import { dayIn } from "../money.ts";
 import { keptEntry, ownerZone } from "../recordRows.ts";
-import { partnerPayees, partnersOwed } from "../partnersOwed.ts";
+import { partnerPayees, partnersOwed, repayable } from "../partnersOwed.ts";
 import { listDef } from "../registers.ts";
 import { fundingOf } from "../reimbursement.ts";
 import { type AlertCheck, alertCheck } from "./bankAlerts.ts";
@@ -356,8 +356,10 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     WHERE org_id = ${orgId} AND register_id = 'expenses' AND state = 'done'
       AND json_extract(fields_json, '$.vendor') IS NOT NULL
     ORDER BY updated_at DESC LIMIT 500`;
-  // A debit must name its partner; the expenses of one Kin can't name can't be told apart.
-  const partners = (yield* partnersOwed(orgId, home))
+  // A debit must name its partner; the expenses of one Kin can't name can't be told apart. With
+  // no live Reimbursement or Repaid on to mark, Confirm couldn't record one: none is offered.
+  const canRepay = yield* repayable(orgId);
+  const partners = (canRepay ? yield* partnersOwed(orgId, home) : [])
     .filter((partner) => partner.personId !== null || partner.address !== null)
     .flatMap((partner) =>
       [...new Set(partner.entries.map((one) => one.money.currency))].map((currency) => ({
@@ -386,6 +388,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     invoices: yield* invoiceCandidates(orgId, statementId),
     payments,
     partners,
+    repayable: canRepay,
     payees,
     // A partner's expense left their own account, never this one; it is repaid instead.
     expenses: expenseRows
