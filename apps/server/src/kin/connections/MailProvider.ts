@@ -58,6 +58,13 @@ export type ReplyTarget = {
 };
 
 /** What arrived and changed since a time, as metadata only. */
+/**
+ * Whether the vendor received a message after `floor`. One it gave no receipt time for is kept:
+ * the company silently losing mail is worse than a rare extra one.
+ */
+export const receivedAfter = (receivedAt: number | null | undefined, floor: number | null) =>
+  floor === null || receivedAt == null || !Number.isFinite(receivedAt) || receivedAt > floor;
+
 /** The most one activity read takes from a mailbox; the next read goes on from where it stopped. */
 export const ACTIVITY_MAIL = 100;
 export const ACTIVITY_EVENTS = 200;
@@ -165,6 +172,8 @@ export type MailMessage = {
   /** Every address it was delivered to, so the tools can say which of the account's got it. */
   readonly deliveredTo: ReadonlyArray<string>;
   readonly date: string | null;
+  /** When the vendor received it, its own clock; null when it didn't say. */
+  readonly receivedAt?: number | null;
   readonly subject: string;
   /** Plain text. */
   readonly preview: string;
@@ -350,6 +359,7 @@ export interface MailProvider {
     args: Readonly<Record<string, unknown>>,
     now: number,
   ) => Call<McpSchema.CallToolResult>;
+  /** `floor`: only messages the vendor received after it count (`KinConnectionRows.ownUntil`). */
   readonly activity: (
     http: HttpClient.HttpClient,
     token: string,
@@ -357,6 +367,7 @@ export interface MailProvider {
     since: number,
     cursor: string | null,
     now: number,
+    floor?: number | null,
   ) => Call<MailActivity>;
   /** The arrival feed's reads (`arrivals/ArrivalFeed.ts`): server use only, metadata only. */
   readonly mailStart: (http: HttpClient.HttpClient, token: string, now: number) => Call<string>;

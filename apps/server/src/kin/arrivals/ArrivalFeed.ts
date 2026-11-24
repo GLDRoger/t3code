@@ -156,8 +156,11 @@ const make = Effect.gen(function* () {
               continue;
             }
             // Received well before the feed's last read: an update or a move back, not new mail.
-            const floor =
-              retried === undefined ? found.floor : retried.noticedAt - MAIL_FEED_WINDOW.marginMs;
+            // Nor is anything received while the mailbox was someone's own, put back or parked.
+            const floor = Math.max(
+              retried === undefined ? found.floor : retried.noticedAt - MAIL_FEED_WINDOW.marginMs,
+              found.ownUntil === null ? Number.NEGATIVE_INFINITY : found.ownUntil + 1,
+            );
             if (result.arrival.receivedAt < floor) {
               if (retried !== undefined)
                 yield* ArrivalStore.settleNothing(

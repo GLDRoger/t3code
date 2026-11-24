@@ -97,7 +97,7 @@ export const liveConnections = Effect.fn("KinConnectionRows.live")(function* (or
     ORDER BY created_at, connection_id`;
 });
 
-/** `personId`'s own live mailbox connections: at most one, by `KinConnections.mineSignInFinish`. */
+/** `personId`'s own live mailbox connections, oldest first. */
 export const personConnections = Effect.fn("KinConnectionRows.person")(function* (
   orgId: KinOrgId,
   personId: string,
@@ -375,5 +375,21 @@ export const revokeMailboxes = Effect.fn("KinConnectionRows.revokeMailboxes")(fu
   return { connectionIds, cards: yield* staleAsksOn(orgId, connectionIds, reason, now) };
 });
 
+/**
+ * When this account last stopped being someone's own mailbox, or null if it never was one. The
+ * company's watch reads no mail dated at or before it (`KinConnections.activity`, `readThread`).
+ */
+export const ownUntil = Effect.fn("KinConnectionRows.ownUntil")(function* (
+  orgId: KinOrgId,
+  account: string | null,
+) {
+  const key = canonicalAddress(account ?? "");
+  if (key === "") return null;
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ until: number | null }>`SELECT MAX(removed_at) AS until
+    FROM kin_connections WHERE org_id = ${orgId} AND account_key = ${key}
+      AND person_id IS NOT NULL AND removed_at IS NOT NULL`;
+  return row?.until ?? null;
+});
 /** A mail address as Kin keys it: one live connection per address in a company. */
 export const canonicalAddress = (address: string) => address.trim().toLowerCase();

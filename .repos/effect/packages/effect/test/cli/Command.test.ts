@@ -14,6 +14,7 @@ import {
 import { toImpl } from "effect/cli/internal/command"
 import { ChildProcessSpawner } from "effect/process"
 import { TestConsole } from "effect/testing"
+import { withIgnoredProperties } from "../utils/structFields.ts"
 import * as Cli from "./fixtures/ComprehensiveCli.ts"
 import * as MockTerminal from "./services/MockTerminal.ts"
 import * as TestActions from "./services/TestActions.ts"
@@ -161,7 +162,7 @@ describe("Command", () => {
         yield* MockTerminal.inputKey("enter")
         yield* Fiber.join(fiber)
 
-        assert.deepStrictEqual(captured, [["greet", "--name", "Alice", "2"]])
+        assert.deepStrictEqual(captured, [["greet", "--name", "Alice", "--", "2"]])
       }).pipe(Effect.provide(TestLayer)))
 
     it.effect("should run wizard-generated arguments with --wizard", () =>
@@ -361,6 +362,60 @@ describe("Command", () => {
         assert.deepStrictEqual(captured, ["selected"])
       }).pipe(Effect.provide(TestLayer)))
 
+    it.effect("should replace typed flags and arguments with wizard answers", () =>
+      Effect.gen(function*() {
+        const captured: Array<readonly [string, string]> = []
+        const command = Command.make("demo", {
+          name: Flag.String("name"),
+          value: Argument.String("value")
+        }, ({ name, value }) => Effect.sync(() => captured.push([name, value])))
+
+        const fiber = yield* Command.runWith(command, { version: "1.0.0" })([
+          "--name",
+          "typed",
+          "typed",
+          "--wizard"
+        ]).pipe(Effect.forkChild)
+        yield* MockTerminal.inputText("prompted")
+        yield* MockTerminal.inputKey("enter")
+        yield* MockTerminal.inputText("prompted")
+        yield* MockTerminal.inputKey("enter")
+        yield* MockTerminal.inputKey("enter")
+        yield* Fiber.join(fiber)
+
+        assert.deepStrictEqual(captured, [["prompted", "prompted"]])
+      }).pipe(Effect.provide(TestLayer)))
+
+    it.effect("should preserve inherited clustered flags before a boolean-looking wizard answer", () =>
+      Effect.gen(function*() {
+        const captured: Array<readonly [boolean, boolean, string]> = []
+        const root = Command.make("root").pipe(
+          Command.withSharedFlags({
+            silent: Flag.Boolean("silent").pipe(Flag.withAlias("s")),
+            ipv4: Flag.Boolean("ipv4").pipe(Flag.withAlias("4"))
+          })
+        )
+        const child = Command.make("child", { value: Argument.String("value") }, ({ value }) =>
+          Effect.gen(function*() {
+            const { silent, ipv4 } = yield* root
+            captured.push([silent, ipv4, value])
+          }))
+        const command = root.pipe(Command.withSubcommands([child]))
+
+        const fiber = yield* Command.runWith(command, { version: "1.0.0" })([
+          "child",
+          "-s4",
+          "typed",
+          "--wizard"
+        ]).pipe(Effect.forkChild)
+        yield* MockTerminal.inputText("false")
+        yield* MockTerminal.inputKey("enter")
+        yield* MockTerminal.inputKey("enter")
+        yield* Fiber.join(fiber)
+
+        assert.deepStrictEqual(captured, [[true, true, "false"]])
+      }).pipe(Effect.provide(TestLayer)))
+
     it.effect("should reject --completions without a shell", () =>
       Effect.gen(function*() {
         let invoked = false
@@ -535,6 +590,28 @@ describe("Command", () => {
           command: "users create",
           details: { username, email: Option.some(email), role, notify: true }
         })
+      }).pipe(Effect.provide(TestLayer)))
+
+    it.effect("preserves enumerable symbol fields in nested and shared command configs", () =>
+      Effect.gen(function*() {
+        const nested = Symbol("nested")
+        const count = Symbol("count")
+        const shared = Symbol("shared")
+        const received: Array<unknown> = []
+        const command = Command.make(
+          "test",
+          withIgnoredProperties({
+            name: Flag.String("name"),
+            [nested]: withIgnoredProperties({ [count]: Flag.Int("count") })
+          })
+        ).pipe(
+          Command.withSharedFlags(withIgnoredProperties({ [shared]: Flag.String("format") })),
+          Command.withHandler((config) => Effect.sync(() => received.push(config)))
+        )
+
+        yield* Command.runWith(command, { version: "1.0.0" })(["--name", "value", "--count", "2", "--format", "json"])
+
+        assert.deepStrictEqual(received, [{ name: "value", [nested]: { [count]: 2 }, [shared]: "json" }])
       }).pipe(Effect.provide(TestLayer)))
 
     it.effect("should work with effectful handlers", () =>

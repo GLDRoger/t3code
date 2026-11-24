@@ -741,6 +741,7 @@ const reach: Readonly<Record<string, ReadonlyArray<string> | string>> = {
   "kin.connections.mineSignInStart": "stays in the app: 4 (connections, sign-ins, keys)",
   "kin.connections.mineSignInFinish": "stays in the app: 4 (connections, sign-ins, keys)",
   "kin.connections.mineRemove": "stays in the app: 4 (connections, sign-ins, keys) / 6",
+  "kin.connections.moveMailbox": "stays in the app: 4 (connections, sign-ins, keys)",
   "kin.github.connect.status": "stays in the app: 4 (connections, sign-ins, keys)",
   "kin.github.connect.start": "stays in the app: 4 (connections, sign-ins, keys)",
   "kin.github.connect.cancel": "stays in the app: 4 (connections, sign-ins, keys)",

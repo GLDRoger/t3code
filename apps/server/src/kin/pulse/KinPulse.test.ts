@@ -1035,8 +1035,25 @@ describe("KinPulse", () => {
             ${mate})`;
         assert.strictEqual(
           (yield* draftWakeText(orgId, made!))?.text,
-          DRAFT_FROM_MAILBOX("Meera", "meera@invented.example"),
+          DRAFT_FROM_MAILBOX("Meera", ["meera@invented.example"]),
         );
+        // With two that can send, it names both and how to pick: not whichever is oldest.
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+            url_host, auth, reach, state, account_label, created_at, updated_at, person_id)
+          VALUES (${orgId}, 'conn-mate-2', 'google', 'meera.home@invented.example', 'builtin',
+            'gmail.googleapis.com', 'oauth', 'closed', 'active', 'meera.home@invented.example',
+            1, 1, ${mate})`;
+        const both = yield* draftWakeText(orgId, made!);
+        assert.strictEqual(
+          both?.text,
+          DRAFT_FROM_MAILBOX("Meera", ["meera@invented.example", "meera.home@invented.example"]),
+        );
+        assert.include(both?.text, "the one earlier mail with this contact went through");
+        assert.deepStrictEqual(both !== undefined && "from" in both.data ? both.data.from : null, [
+          "meera@invented.example",
+          "meera.home@invented.example",
+        ]);
+        yield* sql`DELETE FROM kin_connections WHERE connection_id = 'conn-mate-2'`;
         // Her next day in Los Angeles: one more.
         yield* TestClock.setTime(NOON_LA + DAY);
         assert.lengthOf((yield* KinPulse.tick(orgId, NOON_LA + DAY)).drafted, 1);
@@ -2020,13 +2037,16 @@ describe("KinPulse", () => {
         pick("invoice_overdue", "INV-1"),
         pick("task_late", "W-1"),
       ];
-      const section = () =>
+      const section = (
+        ownAccounts: ReadonlyArray<{ readonly connection: string; readonly account: string }> = [],
+      ) =>
         buildPulseSection({
           orgId,
           agentId: finance,
           now: at,
           wokeFor: [],
           checkIn: new Set(keys),
+          ownAccounts,
         });
       const rows = (shown: Effect.Success<ReturnType<typeof section>>) =>
         new Map(
@@ -2096,6 +2116,9 @@ describe("KinPulse", () => {
       yield* sql`UPDATE kin_records SET fields_json = '{"email":"anita@lumen.example"}'
         WHERE org_id = ${orgId} AND record_id = 'r-K-2'`;
       assert.strictEqual((yield* section())?.mailFrom, "no mail account is connected");
+      // In a turn that may use the owner's own mailboxes, those are where a draft can go from.
+      const own = { connection: "conn-own", account: "rhea.home@ambermill.example" };
+      assert.deepStrictEqual((yield* section([own]))?.mailFrom, [{ ...own, own: true }]);
     }).pipe(Effect.provide(layer)),
   );
 

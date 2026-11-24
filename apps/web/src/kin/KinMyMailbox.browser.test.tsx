@@ -10,14 +10,12 @@ const host = vi.hoisted(() => ({
 }));
 
 vi.mock(import("./kinClient"), async (importOriginal) => {
+  const { commandRun } = await import("../../test/commandRun");
   const real = await importOriginal();
   const { AsyncResult, Atom } = await import("effect/reactivity");
   const allowed = Atom.make(true);
-  let asks = 0;
-  const view = Atom.make(0).pipe(Atom.keepAlive);
-  const mine = Atom.make((get) => {
-    get(view);
-    return AsyncResult.success({
+  const mine = Atom.make(() =>
+    AsyncResult.success({
       orgId: "org-1",
       mailbox:
         host.mailbox === null
@@ -28,18 +26,15 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
         { service: "microsoft", label: "Microsoft", ready: false },
       ],
       signInAddress: "https://kin.invented/oauth/return",
-    });
-  });
-  const bump = (registry: { readonly set: (atom: unknown, value: unknown) => void }) =>
-    registry.set(view, ++asks);
+    }),
+  );
+  // A member's host sends no "connections" refresh: the screen must read its list again itself.
   const command = <I,>(label: string, run: (input: I) => unknown) => ({
     label,
     permissionAtom: () => allowed,
-    run: async (registry: never, { input }: { readonly input: I }) => {
-      const value = run(input);
-      bump(registry);
-      return AsyncResult.success(value);
-    },
+    run: commandRun(async (_registry: never, { input }: { readonly input: I }) =>
+      AsyncResult.success(run(input)),
+    ),
   });
   return {
     ...real,
@@ -118,6 +113,9 @@ describe("Your mailbox", () => {
     await using _screen = await render(screen());
     await expect.element(page.getByText("needs signing in again", { exact: false })).toBeVisible();
     await userEvent.click(page.getByRole("button", { name: "Sign in again" }).last());
-    expect(host.started).toEqual([{ orgId: "org-1", service: "google", returnTo: "web" }]);
+    // The row's own mailbox, by id: several may be connected.
+    expect(host.started).toEqual([
+      { orgId: "org-1", service: "google", returnTo: "web", connectionId: "conn-mine" },
+    ]);
   });
 });

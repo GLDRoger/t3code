@@ -75,6 +75,8 @@ export const KIN_CODING_SETTING_ROWS: ReadonlySet<string> = new Set([
   // Environments
   "load-balancing",
   "pull-request-routing",
+  // Connections: the browser preview's tunnel, for the Browser page Kin hides
+  "preview-tunnel",
   // Maintenance
   "git-fetch-interval",
   // Labs
@@ -84,6 +86,8 @@ export const KIN_CODING_SETTING_ROWS: ReadonlySet<string> = new Set([
   "prompt-suggestions-beta",
   "simlock-hosts",
   "worktree-fast-checkout",
+  "workflows-beta",
+  "agent-feedback",
   // About: T3 Code's CLI, and T3 Code's phone app in the stores
   "cli-command",
   "mobile-app",

@@ -12,6 +12,7 @@ import { KinPeoplePickerHost, openKinPeoplePicker } from "./KinPeopleChat";
 const host = vi.hoisted(() => ({ opened: [] as Array<string> }));
 
 vi.mock("./kinClient", async () => {
+  const { commandRun } = await import("../../test/commandRun");
   const { Atom: A, AsyncResult: R } = await import("effect/reactivity");
   const leads = A.make(
     R.success({
@@ -39,12 +40,14 @@ vi.mock("./kinClient", async () => {
     kinClient: {
       leads: () => leads,
       chatWithAgent: {
-        run: async (_registry: unknown, { input }: { readonly input: { agentId: string } }) => {
-          host.opened.push(input.agentId);
-          return R.success({ chatId: `arjun-${input.agentId}` });
-        },
+        run: commandRun(
+          async (_registry: unknown, { input }: { readonly input: { agentId: string } }) => {
+            host.opened.push(input.agentId);
+            return R.success({ chatId: `arjun-${input.agentId}` });
+          },
+        ),
       },
-      chatWithPerson: { run: async () => R.success({ chatId: "arjun-zoya" }) },
+      chatWithPerson: { run: commandRun(async () => R.success({ chatId: "arjun-zoya" })) },
     },
   };
 });

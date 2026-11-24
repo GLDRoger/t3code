@@ -25,6 +25,10 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import { McpSchema } from "effect/ai";
+import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
+import { WorkflowToolkit } from "../../mcp/toolkits/workflow/tools.ts";
+import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -1277,7 +1281,16 @@ describe("KinActionExecutor", () => {
       ["speech/native.ts", ["import(moduleUrl)"]],
       // Inside the hostile test page's text, which only a sealed browser page runs.
       ["kin/visualSeal.testkit.ts", ['import("${http}/dynamic-import")']],
+      // A workflow file from Labs → Workflows, which only the CLI or an outside client starts;
+      // pinned below: no thread lists the workflow tool.
+      ["workflows/WorkflowRuntime.ts", ["import(url)"]],
     ]);
+    const workflowTool = WorkflowToolkit.tools.t3_workflow;
+    assert.strictEqual(
+      Context.getOrUndefined(workflowTool.annotations, McpSchema.EnabledWhen),
+      McpInvocationContext.hiddenFromThreads,
+    );
+    assert.notInclude(LEAD_T3_TOOLS as ReadonlyArray<string>, workflowTool.name);
     const unfollowable: Array<string> = [];
     const imports = (file: string) => {
       const text = source(file);
@@ -1325,10 +1338,20 @@ describe("KinActionExecutor", () => {
         ],
       ],
       ["outboundHttp.ts", ["const requireUndici = NodeModule.createRequire(import.meta.url);"]],
+      // Only forgets a workflow file from require's cache before it loads again; requires nothing.
+      [
+        "workflows/WorkflowRuntime.ts",
+        ["const required = NodeModule.createRequire(import.meta.url);"],
+      ],
       // Only resolves where a chart library's file is on disk; nothing is loaded into the server.
       [
         "kin/visualLibraries.ts",
         ["const requireFromHere = NodeModule.createRequire(import.meta.url);"],
+      ],
+      // Loads ffi-rs and @napi-rs/keyring by package name, as the check below pins.
+      [
+        "provider/antigravityUsageLimits.ts",
+        ["const requireExternal = NodeModule.createRequire(import.meta.url);"],
       ],
       [
         "policy/ManagedPolicy.ts",

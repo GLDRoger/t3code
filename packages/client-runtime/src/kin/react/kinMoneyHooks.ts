@@ -39,6 +39,7 @@ import {
   type KinPagedListState,
 } from "../kinWorkList.ts";
 import type { KinHookApp, KinUseMoneyLive, KinUseOpenChat } from "./kinHookApp.ts";
+import { runKinCommand } from "../kinRunCommand.ts";
 
 /** The app's own hooks and atoms Money's hooks read through. */
 export interface KinMoneyUses {
@@ -200,7 +201,10 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
         onChange: setState,
         schedule,
         read: async (input, filter) => {
-          const result = await kinClient.workList.run(registry, { environmentId, input });
+          const result = await runKinCommand(registry, kinClient.workList, {
+            environmentId,
+            input,
+          });
           if (AsyncResult.isSuccess(result) && result.value.totals !== undefined)
             setTotals({ filter, totals: result.value.totals });
           return result;
@@ -250,12 +254,15 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
     useEffect(() => {
       if (from === null || to === null) return;
       let current = true;
-      void kinReadDates((input) => kinClient.workDates.run(registry, { environmentId, input }), {
-        orgId,
-        from,
-        to,
-        ...(openOnly ? { open: true } : {}),
-      }).then((result) => {
+      void kinReadDates(
+        (input) => runKinCommand(registry, kinClient.workDates, { environmentId, input }),
+        {
+          orgId,
+          from,
+          to,
+          ...(openOnly ? { open: true } : {}),
+        },
+      ).then((result) => {
         if (!current) return;
         setHeld((before) =>
           AsyncResult.isSuccess(result)
@@ -363,18 +370,16 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
       let current = true;
       const cancel = schedule(
         () =>
-          void kinClient.workFiles
-            .run(registry, {
-              environmentId,
-              input: { orgId, limit: 50, ...(words === "" ? {} : { text: words }) },
-            })
-            .then((result) => {
-              if (current)
-                setHeld({
-                  request,
-                  files: AsyncResult.isSuccess(result) ? result.value.files : null,
-                });
-            }),
+          void runKinCommand(registry, kinClient.workFiles, {
+            environmentId,
+            input: { orgId, limit: 50, ...(words === "" ? {} : { text: words }) },
+          }).then((result) => {
+            if (current)
+              setHeld({
+                request,
+                files: AsyncResult.isSuccess(result) ? result.value.files : null,
+              });
+          }),
         words === "" ? 0 : 250,
       );
       return () => {

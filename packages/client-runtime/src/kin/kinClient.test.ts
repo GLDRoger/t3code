@@ -23,6 +23,7 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 
+import { runKinCommand } from "./kinRunCommand.ts";
 import {
   AVAILABLE_CONNECTION_STATE,
   PrimaryConnectionTarget,
@@ -162,7 +163,7 @@ describe("makeKinClient", () => {
         });
         const create = (orgId: KinOrgId, domain: string) =>
           Effect.promise(() =>
-            kinClient.leadCreate.run(registry, {
+            runKinCommand(registry, kinClient.leadCreate, {
               environmentId: env,
               input: { orgId, name: "Finance", domain, charter: "Keeps the books." } as never,
             }),
@@ -291,7 +292,7 @@ describe("makeKinClient", () => {
         expect(registry.get(kinClient.agentDefaultsSet.permissionAtom(env))).toBe(false);
         // The hidden control is a courtesy: a call still goes, and the host's answer is the answer.
         const outcome = yield* Effect.promise(() =>
-          kinClient.agentDefaultsSet.run(registry, {
+          runKinCommand(registry, kinClient.agentDefaultsSet, {
             environmentId: env,
             input: { orgId: org } as never,
           }),

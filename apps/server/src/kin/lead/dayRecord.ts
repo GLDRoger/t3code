@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail } from "../connections/Sending.ts";
 import { formatMoney } from "../work/money.ts";
-import { countedPayment, recordName } from "../work/recordRows.ts";
+import { countedPayment, dueText, ownerZone, recordName } from "../work/recordRows.ts";
 import { listMoneySeenBy, seenBy, type KinViewer } from "../work/teamView.ts";
 import { leadNamer, toolNameOfText } from "../work/toolNames.ts";
 
@@ -49,7 +49,13 @@ const STATE_WORDS: Record<string, string> = {
 
 const decodeFields = Schema.decodeUnknownOption(
   Schema.fromJsonString(
-    Schema.Array(Schema.Struct({ field: Schema.String, to: Schema.NullOr(Schema.String) })),
+    Schema.Array(
+      Schema.Struct({
+        field: Schema.String,
+        from: Schema.optional(Schema.NullOr(Schema.String)),
+        to: Schema.NullOr(Schema.String),
+      }),
+    ),
   ),
 );
 const excerpt = (text: string) => {
@@ -93,6 +99,7 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, from, until, viewer } = input;
   const name = yield* leadNamer(orgId, input.agentId);
+  const zone = yield* ownerZone(orgId);
   const principalName = (shown: string | null) =>
     shown === null ? "nobody" : toolNameOfText(shown, name);
   const nameOf = (kind: string, id: string | null) =>
@@ -105,13 +112,16 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
     list: string;
     state: string;
     confirmed: number;
+    dueAllDay: number;
     kind: string;
+    codingAgent: number;
     actorKind: string;
     actorId: string | null;
     fieldsJson: string;
   }>`SELECT c.record_id AS "recordId", r.key, r.title, r.register_id AS list, r.state,
-      r.confirmed, c.kind, c.actor_kind AS "actorKind", c.actor_id AS "actorId",
-      c.fields_json AS "fieldsJson"
+      r.confirmed, r.due_all_day AS "dueAllDay", c.kind, c.actor_kind AS "actorKind",
+      c.actor_id AS "actorId", c.fields_json AS "fieldsJson",
+      c.coding_agent_key IS NOT NULL AS "codingAgent"
     FROM kin_record_changes c JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
     WHERE c.org_id = ${orgId} AND c.at >= ${from} AND c.at < ${until} AND ${seenBy(sql, viewer)}
     ORDER BY c.seq`;
@@ -125,20 +135,28 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
   for (const rows of byRecord.values()) {
     const first = rows[0]!;
     const named = `${first.key} ${first.title}`;
+    const listWord = LIST_WORDS[first.list] ?? first.list;
     const created = rows.find((row) => row.kind === "created");
     if (created !== undefined)
       made.push(
-        `${named} (${LIST_WORDS[first.list] ?? first.list}${first.confirmed === 1 ? "" : ", suggested, not kept yet"}), by ${nameOf(created.actorKind, created.actorId)}`,
+        `${named} (${listWord}${first.confirmed === 1 ? "" : ", suggested, not kept yet"}), by ${nameOf(created.actorKind, created.actorId)}`,
       );
     const moves: Array<string> = [];
     let doneBy: string | undefined;
+    // The day's due moves as one: from where it stood before the first to where the last left it.
+    let due:
+      | { readonly from: string | null; readonly to: string | null; readonly who: string }
+      | undefined;
     for (const row of rows) {
       if (row.kind !== "updated") continue;
       const who = nameOf(row.actorKind, row.actorId);
       for (const field of Option.getOrElse(decodeFields(row.fieldsJson), () => [])) {
         if (field.field === "notes") notes.push(`${named}: notes edited by ${who}`);
         if (!(WORK_LISTS as ReadonlyArray<string>).includes(first.list)) continue;
-        if (field.field === "state" && field.to === "done") doneBy = who;
+        if (field.field === "state" && field.to === "done")
+          doneBy = row.codingAgent === 1 ? `${who} (through a coding agent)` : who;
+        else if (field.field === "due")
+          due = { from: due === undefined ? (field.from ?? null) : due.from, to: field.to, who };
         else if (field.field === "state")
           moves.push(`now ${STATE_WORDS[field.to ?? ""] ?? field.to} by ${who}`);
         else if (field.field === "owner")
@@ -147,9 +165,15 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
           moves.push(`marked waiting on ${principalName(field.to)} by ${who}`);
       }
     }
+    if (due !== undefined && due.from !== due.to)
+      moves.push(
+        due.to === null
+          ? `due date taken off by ${due.who}`
+          : `due moved to ${dueText(Date.parse(due.to), first.dueAllDay === 1, zone)} by ${due.who}`,
+      );
     // Finished and still done now; one reopened since reads as a change.
     if (doneBy !== undefined && first.state === "done")
-      finished.push(`${named}, done by ${doneBy}`);
+      finished.push(`${named} (${listWord}): marked done by ${doneBy}`);
     else if (doneBy !== undefined) moves.push(`was done by ${doneBy}`);
     if (moves.length > 0) changed.push(`${named}: ${moves.join(", ")}`);
   }
