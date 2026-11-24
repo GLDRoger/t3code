@@ -404,7 +404,7 @@ it.effect("an agent's printed client detail goes straight in only as a person ty
       records: [{ list: "clients", title: "Invented Keelson", gstin: NEW }],
     });
     assert.include(made.records[0], { title: "Invented Keelson", created: true });
-    assert.include(made.records[0]?.unconfirmed, "never give it as Invented Keelson's");
+    assert.include(made.records[0]?.unconfirmed, "or give it as Invented Keelson's.");
     assert.isNull((yield* stored(made.records[0]!.key)).gstin);
   }).pipe(Effect.provide(layer)),
 );
@@ -425,7 +425,7 @@ it.effect(
       });
       assert.strictEqual(
         first.unconfirmed,
-        `Kept unconfirmed, not saved: no one here typed GSTIN "${NEW}", so Rhea confirms it on a card Kin showed them. Until they tap Use it, Invented Harbourline's invoices and quotes print what they had. Say in one line it needs Rhea's confirmation, and never give it as Invented Harbourline's.`,
+        `Not saved, and nothing on Invented Harbourline changed: no one here typed GSTIN "${NEW}", so Rhea confirms it on a card Kin showed them. Until they tap Use it, invoices and quotes print what they had. Say in one line that it needs Rhea's confirmation; never say it is added or on the record, or give it as Invented Harbourline's.`,
       );
       // The same value again, in a later turn, asks nothing more.
       yield* LeadWork.update(scope, {

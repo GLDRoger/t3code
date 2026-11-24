@@ -435,16 +435,19 @@ const cardDetail = (
     "Invoices and quotes print it only after you tap Use it.",
   ].join("\n\n");
 
+/** Each answer line opens with what is true of the record and ends with what to say. */
+const DONT = "never say it is added or on the record, or give it as";
+
 export const saidNoLine = (client: string, what: string, name: string) =>
-  `Not saved: ${name} said no to ${what} on Kin's card in this turn, so nothing is asked again now. ${client}'s invoices and quotes print what they had; never give it as ${client}'s.`;
+  `Not saved, and nothing on ${client} changed: ${name} said no to ${what} on Kin's card in this turn, so nothing is asked again now. Invoices and quotes print what they had. Say in one line that ${name} said no to it; ${DONT} ${client}'s.`;
 
 export const tooLongLine = (client: string, labels: ReadonlyArray<string>, name: string) =>
-  `Kept unconfirmed, not saved: the ${labels.join(" and ")} you gave ${labels.length === 1 ? "is" : "are"} too long to confirm on a card, so ${name} sets it on ${client}'s page. Until then ${client}'s invoices and quotes print what they had. Tell ${name} so in one line, and never give it as ${client}'s.`;
+  `Not saved, and nothing on ${client} changed: the ${labels.join(" and ")} you gave ${labels.length === 1 ? "is" : "are"} too long to confirm on a card, so ${name} sets it on ${client}'s page. Until they do, invoices and quotes print what they had. Say in one line that ${name} sets it there; ${DONT} ${client}'s.`;
 
 export const waitingLine = (client: string, what: string, name: string, carded: boolean) =>
   carded
-    ? `Kept unconfirmed, not saved: no one here typed ${what}, so ${name} confirms it on a card Kin showed them. Until they tap Use it, ${client}'s invoices and quotes print what they had. Say in one line it needs ${name}'s confirmation, and never give it as ${client}'s.`
-    : `Kept unconfirmed, not saved: no one here typed ${what}, so it waits for ${name} to confirm it, and Kin couldn't show them a card now. Until then ${client}'s invoices and quotes print what they had. Ask ${name} to confirm it when you next speak, and never give it as ${client}'s.`;
+    ? `Not saved, and nothing on ${client} changed: no one here typed ${what}, so ${name} confirms it on a card Kin showed them. Until they tap Use it, invoices and quotes print what they had. Say in one line that it needs ${name}'s confirmation; ${DONT} ${client}'s.`
+    : `Not saved, and nothing on ${client} changed: no one here typed ${what}, so ${name} confirms it, and Kin couldn't show them a card now. Until they do, invoices and quotes print what they had. Ask ${name} in one line to confirm it; ${DONT} ${client}'s.`;
 
 /**
  * What waits unconfirmed on a client, as its read answer says it: never as the client's own. A
