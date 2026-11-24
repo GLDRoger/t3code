@@ -240,7 +240,8 @@ export const MONEY_DOC_KINDS: ReadonlyArray<string> = ["quote", "proposal"];
 
 /**
  * `r` is a priced draft filed at this person's own ask to go up from their card (`draftDoc`): it
- * keeps its kind's label, and they read it until a person labels it themselves.
+ * keeps its kind's label, and they read it while a person has not labelled it themselves and every
+ * version is theirs: by their hand, or an agent's in a turn others read (it passed their view).
  */
 export const ownMoneyDraft = (
   sql: SqlClient.SqlClient,
@@ -248,7 +249,11 @@ export const ownMoneyDraft = (
 ) =>
   sql`COALESCE(r.register_id = 'docs' AND r.sensitive = 1 AND r.marked_by_person_id IS NULL
     AND r.category IN ${sql.in(MONEY_DOC_KINDS)}
-    AND json_extract(r.fields_json, '$.draftFor') = ${personId} AND NOT ${inheritedSensitive(sql)}, 0)`;
+    AND json_extract(r.fields_json, '$.draftFor') = ${personId} AND NOT ${inheritedSensitive(sql)}
+    AND NOT EXISTS (SELECT 1 FROM kin_doc_versions ov
+      WHERE ov.org_id = r.org_id AND ov.record_id = r.record_id
+        AND NOT ((ov.actor_kind = 'person' AND ov.actor_id = ${personId})
+          OR (ov.actor_kind = 'agent' AND ov.audience = 'shared'))), 0)`;
 
 /**
  * What a non-owner-level person sees: a picture by `pictureReader` alone; else a task they hold, are
@@ -617,9 +622,8 @@ const ROOM_FIELDS: ReadonlySet<string> = new Set(LISTS.work.fields);
 const DRAFT_DOC_FIELDS: ReadonlySet<string> = new Set(["list", "source", "partyId", "projectId"]);
 /** Kinds whose text sets how Kin works for everyone (`playbooks.ts`): the owner level's to file. */
 const COMPANY_DOC_KINDS: ReadonlyArray<unknown> = ["playbook", "policy"];
-/** A new priced draft to go up from its card keeps its kind's label (`ownMoneyDraft`). */
+/** A priced draft to send up from its card, or its repeat, keeps its kind's label. */
 const moneyDraftLabel = (write: Parameters<typeof teamGuard>[2], turn: HeadStartTurn | undefined) =>
-  write.row === undefined &&
   turn?.draftCard === true &&
   write.input.sensitive === true &&
   MONEY_DOC_KINDS.some((kind) => kind === write.input.category);

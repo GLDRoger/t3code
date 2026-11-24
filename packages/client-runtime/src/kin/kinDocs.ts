@@ -115,8 +115,10 @@ export const KIN_DOCS = {
   restore: "Restore this version",
   restoring: "Restoring…",
   compare: "Compare with the latest",
-  private: "Private. Only you can see this.",
-  privateInherited: "Private, because its client or project is. Only you can see this.",
+  private: "Private. Only owners see this.",
+  privateYours: "Private. Only you and the owners see this.",
+  privateDraft: (name: string) => `Private. Only owners and ${name}, whose draft it is, see this.`,
+  privateInherited: "Private, because its client or project is. Only owners see this.",
   top: "Introduction",
   empty: {
     title: "No docs yet",
@@ -841,15 +843,16 @@ export function kinDocOutline(
 export const kinDocHasContents = (outline: ReadonlyArray<KinDocSection>) =>
   outline.filter((section) => section.id !== "top").length > 1;
 
-/** Why a doc is marked private, in words; null when the whole team may read it. */
+/** Why a doc is marked private, and who reads it, in words; null when the whole team may read it. */
 export const kinDocPrivacy = (
-  doc: Pick<KinDocListRow, "sensitive" | "sensitiveInherited">,
-): string | null =>
-  doc.sensitive
-    ? KIN_DOCS.private
-    : doc.sensitiveInherited === true
-      ? KIN_DOCS.privateInherited
-      : null;
+  doc: Pick<KinDocListRow, "sensitive" | "sensitiveInherited"> &
+    Partial<Pick<KinDocDetail, "kindLabel">>,
+): string | null => {
+  const reader = doc.kindLabel?.reader;
+  if (!doc.sensitive) return doc.sensitiveInherited === true ? KIN_DOCS.privateInherited : null;
+  if (reader === undefined) return KIN_DOCS.private;
+  return reader.you === true ? KIN_DOCS.privateYours : KIN_DOCS.privateDraft(reader.name);
+};
 
 export type KinDocReadState =
   | { readonly _tag: "loading" }

@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
-import type { KinRecipe, KinRecordDetail } from "@t3tools/contracts";
+import type { KinDocDetail, KinRecipe, KinRecordDetail } from "@t3tools/contracts";
 
 import { formatKinTime } from "./kinScreenState.ts";
 import { kinWorkActorName, type KinWorkNames } from "./kinWork.ts";
@@ -168,12 +168,28 @@ export function kinNotesVersions(
   });
 }
 
-/** The doc menu's way to raise or lower its private label; none while its client's label holds it. */
+/**
+ * The doc menu's way to raise or lower its private label; none while its client's label holds it.
+ * A label only its kind gave is first made yours, which ends a teammate's read of their draft.
+ */
 export function kinDocLabelAction(doc: {
   readonly sensitive: boolean;
   readonly sensitiveInherited?: true | undefined;
+  readonly kindLabel?: KinDocDetail["kindLabel"];
 }) {
   if (doc.sensitiveInherited === true) return null;
+  if (doc.sensitive && doc.kindLabel !== undefined) {
+    const reader = doc.kindLabel.reader;
+    return {
+      sensitive: true,
+      label: "Mark as private",
+      title: "Mark this doc as private?",
+      detail:
+        reader === undefined
+          ? "Only owners will be able to read it, whatever its kind, and agents only in your own chats."
+          : `${reader.name} won't be able to read it any more. Only owners will, and agents only in your own chats.`,
+    };
+  }
   return doc.sensitive
     ? {
         sensitive: false,

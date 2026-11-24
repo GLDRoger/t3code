@@ -3219,22 +3219,30 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
           .reason,
         "not_found",
       );
+      // The same search finds it for Zoya, whose draft it is, so Arjun's finding nothing counts.
+      const found = (who: string) =>
+        OwnerDocs.search([person(who)], { orgId, text: "priced proposal", everything: true }).pipe(
+          Effect.map((page) => page.hits.map((hit) => hit.key)),
+        );
+      yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = 'zoya'`;
+      assert.include(yield* found("zoya"), priced.key);
+      yield* sql`UPDATE kin_people SET sees_docs = 0 WHERE person_id = 'zoya'`;
       assert.notInclude(
         (yield* OwnerDocs.list(arjun, { orgId })).docs.map((doc) => doc.key),
         priced.key,
       );
-      assert.notInclude(
-        (yield* OwnerDocs.search(arjun, {
-          orgId,
-          text: "priced proposal",
-          everything: true,
-        })).hits.map((hit) => hit.key),
-        priced.key,
-      );
+      assert.notInclude(yield* found("arjun"), priced.key);
       assert.notInclude(
         JSON.stringify((yield* OwnerWork.get(arjun, { orgId, key: "P-4" })).linkedFrom ?? []),
         priced.key,
       );
+      // Without Docs or a project he leads, and in her chat, his read with her card's id takes the
+      // card's own path, which reads as him: refused all the same.
+      yield* sql`UPDATE kin_people SET sees_docs = 0 WHERE person_id = 'arjun'`;
+      yield* sql`UPDATE kin_records SET owner_id = ${owner.personId} WHERE record_id = 'rec_shoot'`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at)
+        VALUES ('zoya-chat-arjun', ${orgId}, ${zoyaChat}, 'person', 'arjun', 'member', ${at})`;
       assert.strictEqual(
         (yield* Effect.flip(
           OwnerDocs.get(arjun, {
@@ -3246,14 +3254,23 @@ it.effect("a long draft goes up as its opening and is approved only at the versi
         )).reason,
         "not_found",
       );
-      // Rhea marking it "Only me" herself takes Zoya's read and her card's text back.
-      yield* OwnerDocs.label([owner], {
+      yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'zoya-chat-arjun'`;
+      // Rhea's own edit after it went up takes Zoya's read and her card's text back.
+      const pricedPage = yield* OwnerDocs.get([owner], { orgId, key: KinRecordKey.make(priced.key) });
+      const pricedTop = sectionsOf(pricedPage.body).find((one) => one.id === "top")!;
+      yield* OwnerDocs.editSection([owner], {
         orgId,
         key: KinRecordKey.make(priced.key),
-        sensitive: true,
+        section: pricedTop.id,
+        hash: pricedTop.hash,
+        text: `${PRICED}\n\nOur cost is invented.`,
+        clientRequestId: `hand:${priced.key}:cost`,
       });
-      assert.isTrue(
-        Exit.isFailure(yield* Effect.exit(readAsZoya(priced.key, 1, pricedCard.widgetId))),
+      // Her card now holds version 2's opening, and that is what she may no longer open.
+      assert.deepInclude((yield* cardOf(priced.key)).state.draft.whole, { version: 2 });
+      assert.strictEqual(
+        (yield* Effect.flip(readAsZoya(priced.key, 2, pricedCard.widgetId))).reason,
+        "not_found",
       );
       assert.notProperty(yield* zoyasPage(), "draft");
 
