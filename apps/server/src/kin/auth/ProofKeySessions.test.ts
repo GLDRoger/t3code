@@ -37,6 +37,14 @@ const makeLayer = (enabled: boolean) =>
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-keys-" })),
   );
 const layer = makeLayer(true);
+const kinOffCli = <A, E, R>(runtime: Layer.Layer<A, E, R>) =>
+  runtime.pipe(
+    Layer.provide(
+      Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
+    ),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-cli-off-" })),
+    Layer.orDie,
+  );
 const metadata = { deviceType: "mobile" } as const;
 
 const recordRepair = (thumbprint: string, linkId: string) =>
@@ -96,7 +104,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
     }),
   );
 
-  it.effect.each(["server", "cli"] as const)(
+  // `cli` is Kin's host CLI runtime; `t3` is T3's, which `t3 thread` and `t3 feedback` take.
+  it.effect.each(["server", "cli", "t3"] as const)(
     "Kin disabled %s neither migrates nor blocks revoked keys",
     (runtime) =>
       Effect.gen(function* () {
@@ -123,19 +132,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
         yield* sessions.revoke((yield* sessions.verify(first.access_token)).sessionId);
         yield* exchange();
         expect(yield* sql`SELECT name FROM sqlite_master WHERE name GLOB 'kin_*'`).toEqual([]);
-      }).pipe(
-        Effect.provide(
-          runtime === "server"
-            ? makeLayer(false)
-            : CliAuth.layerRuntime.pipe(
-                Layer.provide(
-                  Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
-                ),
-                Layer.provide(
-                  ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-cli-off-" }),
-                ),
-              ),
-        ),
+      }).pipe((test) =>
+        runtime === "server"
+          ? Effect.provide(test, makeLayer(false))
+          : runtime === "cli"
+            ? Effect.provide(test, kinOffCli(CliAuth.layerRuntime))
+            : Effect.provide(test, kinOffCli(EnvironmentAuth.layerRuntime)),
       ),
   );
 

@@ -1,4 +1,5 @@
-import { authHooks, cliAuthHooks } from "../kin/auth/authHooks.ts";
+import { authHooks } from "../kin/auth/authHooks.ts";
+import { cliAuthHooks } from "../kin/auth/sessionHooks.ts";
 import {
   AuthAccessTokenType,
   AuthAccessWriteScope,
