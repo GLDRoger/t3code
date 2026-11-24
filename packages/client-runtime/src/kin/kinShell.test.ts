@@ -16,6 +16,7 @@ import {
   kinDockWithLists,
   kinListCanBeSection,
   kinListSections,
+  kinListSectionDocked,
   kinShellChanged,
   kinShellSwitched,
 } from "./kinShell.ts";
@@ -68,12 +69,8 @@ describe("kinSectionOn follows what each section needs, as the host's sectionOn"
   it.each([
     // shell, clients, deals, money, invoices
     ["all on", defaults, [true, true, true, true]],
-    [
-      "Clients off: Deals and Invoices go with it",
-      off("clients", "invoices"),
-      [false, false, true, false],
-    ],
-    ["Clients off, Deals still stored on", off("clients"), [false, false, true, false]],
+    ["Clients off: Deals goes with it, Invoices stays", off("clients"), [false, false, true, true]],
+    ["Clients and Invoices off", off("clients", "invoices"), [false, false, true, false]],
     [
       "Money off: Invoices goes with it, though stored on",
       off("money"),
@@ -90,8 +87,9 @@ describe("kinSectionOn follows what each section needs, as the host's sectionOn"
   it("says why a section whose own switch is on reads as off", () => {
     expect(kinSectionHeldOffLine(off("money"), "invoices")).toBe("Off because Money is off.");
     expect(kinSectionHeldOffLine(off("clients", "money"), "invoices")).toBe(
-      "Off because Clients and Money are off.",
+      "Off because Money is off.",
     );
+    expect(kinSectionHeldOffLine(off("clients"), "invoices")).toBeNull();
     expect(kinSectionHeldOffLine(off("clients"), "deals")).toBe("Off because Clients is off.");
     expect(kinSectionHeldOffLine(defaults, "deals")).toBeNull();
     // Its own switch is off too: turning Money on would not bring it back.
@@ -360,6 +358,16 @@ describe("a company's own lists as sections", () => {
       full: false,
     });
     expect(kinDockRoom(clientsOff({ id: "list:stock", on: true, dock: true })).full).toBe(true);
+    // Marked for the dock but past its room: not in the dock, as the phone draws it.
+    const two = clientsOff(
+      { id: "list:stock", on: true, dock: true },
+      { id: "list:bookings", on: true, dock: true },
+    );
+    expect(kinListSectionDocked(two, "list:stock")).toBe(true);
+    expect(kinListSectionDocked(two, "list:bookings")).toBe(false);
+    expect(
+      kinListSectionDocked(withLists({ id: "list:stock", on: true, dock: true }), "list:stock"),
+    ).toBe(false);
   });
 
   it("switches, docks, adds and removes a list section with every other section as held", () => {

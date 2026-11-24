@@ -11,6 +11,7 @@ import {
   kinSectionOn,
   kinSectionRenamed,
   kinDockRoom,
+  kinListSectionDocked,
   kinListCanBeSection,
   kinListSectionId,
   kinListSections,
@@ -370,7 +371,9 @@ function KinListSectionRows(props: {
 }) {
   const { section } = props;
   // A docked section may always leave the dock; a new one needs a place Money or Clients left.
-  const dockFull = kinDockRoom(props.shell).full && !(section.on && section.dock);
+  // One marked for the dock that doesn't fit reads as off, and nothing is saved until it is touched.
+  const docked = kinListSectionDocked(props.shell, section.id);
+  const dockFull = kinDockRoom(props.shell).full && !docked;
   return (
     <ListSection
       {...(props.title === undefined ? {} : { title: props.title })}
@@ -386,7 +389,7 @@ function KinListSectionRows(props: {
         label={KIN_LIST_SECTIONS.dock}
         {...(dockFull ? { description: KIN_LIST_SECTIONS.dockFull } : {})}
         disabled={props.busy || dockFull}
-        value={section.dock}
+        value={docked}
         onValueChange={(dock) => props.onChange({ id: section.id, dock })}
       />
       <ListActionRow

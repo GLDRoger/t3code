@@ -1,3 +1,4 @@
+import { kinBilledName } from "./kinBillTo.ts";
 import {
   KinSacCode,
   type KinCash,
@@ -694,7 +695,7 @@ export function kinQuoteRow(record: KinRecord, rates: KinRates | null, now: Date
   return {
     key: record.key,
     number: kinRecordName(record.key, record.fields?.number),
-    party: record.party?.title ?? KIN_QUOTES.noClient,
+    party: kinBilledName(record) ?? KIN_QUOTES.noClient,
     title: record.title,
     amount: record.amount === undefined ? null : kinMoneyText(record.amount),
     estimate:

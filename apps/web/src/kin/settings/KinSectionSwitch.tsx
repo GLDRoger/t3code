@@ -12,6 +12,7 @@ import {
   kinSectionRenamed,
   kinSectionSwitchOn,
   kinDockRoom,
+  kinListSectionDocked,
   kinListCanBeSection,
   kinListSectionId,
   kinListSections,
@@ -449,7 +450,9 @@ function KinListSectionRows(props: {
     setBusy(false);
   };
   // A docked section may always leave the dock; a new one needs a place Money or Clients left.
-  const dockFull = kinDockRoom(props.shell).full && !(section.on && section.dock);
+  // One marked for the dock that doesn't fit reads as off, and nothing is saved until it is touched.
+  const docked = kinListSectionDocked(props.shell, section.id);
+  const dockFull = kinDockRoom(props.shell).full && !docked;
   return (
     <KinSettingsSection problem={problem}>
       <KinSettingsRow
@@ -472,7 +475,7 @@ function KinListSectionRows(props: {
           <Switch
             aria-label={`${props.name}: ${KIN_LIST_SECTIONS.dock}`}
             aria-busy={busy}
-            checked={section.dock}
+            checked={docked}
             disabled={busy || dockFull}
             onCheckedChange={(dock) => void send({ id: section.id, dock })}
           />
