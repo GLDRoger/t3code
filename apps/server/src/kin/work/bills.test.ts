@@ -10,6 +10,7 @@ import {
   KinAgentId,
   KinBillBatchCard,
   type KinBillRead,
+  type KinChatError,
   KinChatId,
   KinEventId,
   KinMemberId,
@@ -76,7 +77,7 @@ const identity = Layer.mock(KinIdentity)({
 });
 const documents = Layer.succeed(
   DocumentText.DocumentText,
-  DocumentText.DocumentText.of({ ensure: () => Effect.succeed(undefined) }),
+  DocumentText.DocumentText.of({ ensure: () => Effect.undefined }),
 );
 const layer = Layer.mergeAll(KinRecords.layer, identity, KinChatHub.layer, KinFloor.layer).pipe(
   Layer.provideMerge(AttachmentStore.layer),
@@ -292,15 +293,28 @@ describe("bills in bulk", () => {
         assert.lengthOf(yield* billRows, 3);
 
         // A member reaches none of it.
-        for (const refused of [
-          Bills.add(as(zoya), { ...input, clientRequestId: "zoya" }, TEST_UPLOAD_OWNER),
-          Bills.list(as(zoya), { orgId }),
-          Bills.keepRead(as(zoya), { orgId, batchId: added.batchId, clientRequestId: "k" }),
-          Bills.addAnyway(as(zoya), { orgId, sha256: "a".repeat(64), clientRequestId: "a" }),
-          Bills.dismiss(as(zoya), { orgId, sha256: "a".repeat(64) }),
-          Bills.readAgain(as(zoya), { orgId, batchId: added.batchId }),
-        ])
-          assert.include(yield* refused.pipe(Effect.flip), { reason: "not_allowed" });
+        const reason = <A, R>(effect: Effect.Effect<A, KinChatError, R>) =>
+          effect.pipe(
+            Effect.flip,
+            Effect.map((error) => error.reason),
+          );
+        assert.deepStrictEqual(
+          [
+            yield* reason(
+              Bills.add(as(zoya), { ...input, clientRequestId: "zoya" }, TEST_UPLOAD_OWNER),
+            ),
+            yield* reason(Bills.list(as(zoya), { orgId })),
+            yield* reason(
+              Bills.keepRead(as(zoya), { orgId, batchId: added.batchId, clientRequestId: "k" }),
+            ),
+            yield* reason(
+              Bills.addAnyway(as(zoya), { orgId, sha256: "a".repeat(64), clientRequestId: "a" }),
+            ),
+            yield* reason(Bills.dismiss(as(zoya), { orgId, sha256: "a".repeat(64) })),
+            yield* reason(Bills.readAgain(as(zoya), { orgId, batchId: added.batchId })),
+          ],
+          Array.from({ length: 6 }, () => "not_allowed"),
+        );
       }).pipe(Effect.provide(layer)),
   );
 
