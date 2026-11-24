@@ -20,29 +20,27 @@ const rows: ReadonlyArray<readonly [string, string]> = [
   ["emoji between words", `Hello ${family} there `.repeat(12)],
 ];
 
+const cases = [7, 20, 33].flatMap((max) =>
+  rows.map(([name, text]) => ({ name: `${name}, at most ${max}`, text, max })),
+);
+
 describe("draftOpening", () => {
-  for (const max of [7, 20, 33]) {
-    for (const [name, text] of rows) {
-      it(`${name}, at most ${max}`, () => {
-        const opening = draftOpening(text, max);
-        const cut = opening.endsWith("…") && !text.includes("…");
-        const kept = cut ? opening.slice(0, -1) : opening;
-        assert.isAtMost(opening.length, max);
-        assert.isAbove(kept.length, 0);
-        assert.isTrue(text.trim().startsWith(kept));
-        assert.notMatch(opening, LONE_SURROGATE);
-        // It ends where a character ends, unless one character alone is longer than the opening.
-        const head = clusters(kept);
-        if (clusters(text.trim())[0]!.length < max)
-          assert.deepStrictEqual(clusters(text.trim()).slice(0, head.length), head);
-        // Only a first word too long for the opening is cut inside, and it says so.
-        if (!cut)
-          assert.isTrue(
-            /^(\s|$)/.test(text.trim().slice(kept.length)) || /[.!?。！？]$/.test(kept),
-          );
-      });
-    }
-  }
+  it.each(cases)("$name", ({ text, max }) => {
+    const opening = draftOpening(text, max);
+    const cut = opening.endsWith("…") && !text.includes("…");
+    const kept = cut ? opening.slice(0, -1) : opening;
+    assert.isAtMost(opening.length, max);
+    assert.isAbove(kept.length, 0);
+    assert.isTrue(text.trim().startsWith(kept));
+    assert.notMatch(opening, LONE_SURROGATE);
+    // It ends where a character ends, unless one character alone is longer than the opening.
+    const head = clusters(kept);
+    if (clusters(text.trim())[0]!.length < max)
+      assert.deepStrictEqual(clusters(text.trim()).slice(0, head.length), head);
+    // Only a first word too long for the opening is cut inside, and it says so.
+    if (!cut)
+      assert.isTrue(/^(\s|$)/.test(text.trim().slice(kept.length)) || /[.!?。！？]$/.test(kept));
+  });
 
   it("cuts a first word longer than the opening with a visible …", () => {
     assert.strictEqual(draftOpening(`${"x".repeat(30)} more`, 10), `${"x".repeat(9)}…`);

@@ -389,11 +389,11 @@ function KinDocCard(props: {
     const text = readVersion({
       environmentId: props.environmentId,
       input: {
-          orgId: doc.orgId,
-          key: KinRecordKey.make(doc.key),
-          version: shown.long.version,
-          card: doc.widgetId,
-        },
+        orgId: doc.orgId,
+        key: KinRecordKey.make(doc.key),
+        version: shown.long.version,
+        card: doc.widgetId,
+      },
     }).then((result) => {
       const got = kinDocWholeCopy(result);
       if ("problem" in got) {

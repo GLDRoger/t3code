@@ -662,6 +662,10 @@ const raiseRedraft = (redrafting: Redrafting, text: string, written?: Docs.Writt
         },
   ).pipe(Effect.map((asked) => redoRaised(redrafting.of, asked.state)));
 
+/** A redraft the ask refused: what the turn is told, and it is filed as any doc. */
+const refusedBy = (of: Redraft) => (error: KinChatError) =>
+  Effect.succeed({ _tag: "refused" as const, note: redoRefused(of, error) });
+
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   if (input.whatWeSell === true) return yield* runStartOfferings(lead, input);
   if (input.draft !== undefined && input.body.trim() === "") return yield* invalid(DRAFT_BLANK);
@@ -723,8 +727,6 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
           { kind: input.draft.kind, partyId: partyId ?? null },
           input.draft.kind === "post" ? input.draft.on : undefined,
         );
-  const refusedBy = (of: Redraft) => (error: KinChatError) =>
-    Effect.succeed({ _tag: "refused" as const, note: redoRefused(of, error) });
   const back =
     redrafting === undefined
       ? undefined
@@ -742,10 +744,10 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
                 return { _tag: "filed" as const, written, note };
               }),
             )
-            .pipe(Effect.catchTag("KinChatError", refusedBy(redrafting.of)))
+            .pipe(Effect.catchTags({ KinChatError: refusedBy(redrafting.of) }))
         : yield* raiseRedraft(redrafting, input.body).pipe(
             Effect.map((note) => ({ _tag: "raised" as const, note })),
-            Effect.catchTag("KinChatError", refusedBy(redrafting.of)),
+            Effect.catchTags({ KinChatError: refusedBy(redrafting.of) }),
           );
   if (back?._tag === "filed")
     return { ...writeResult(back.written, back.written.created), note: `This is ${back.note}` };
@@ -906,9 +908,7 @@ const putBackOrShow = Effect.fnUntraced(function* (
           isLongDraft(written.version.body) ? written : undefined,
         ).pipe(
           Effect.map((note) => ({ _tag: "raised" as const, note })),
-          Effect.catchTag("KinChatError", (error) =>
-            Effect.succeed({ _tag: "refused" as const, note: redoRefused(redrafting.of, error) }),
-          ),
+          Effect.catchTags({ KinChatError: refusedBy(redrafting.of) }),
         );
   if (back?._tag !== "raised") yield* shown(lead, written, card);
   return {

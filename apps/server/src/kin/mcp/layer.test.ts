@@ -1802,7 +1802,11 @@ it.effect.each([true, false])(
             [`${whole}\n\nAnd one more line.`, approvedWords(name)],
             [whole, undefined],
           ] as const)
-            assert.strictEqual(yield* refusedWith(name, args(text)), answer, `${kind} ${text.length}`);
+            assert.strictEqual(
+              yield* refusedWith(name, args(text)),
+              answer,
+              `${kind} ${text.length}`,
+            );
         }
         for (const [body, kept] of [
           [opening, false],
