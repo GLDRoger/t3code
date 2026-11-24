@@ -632,6 +632,42 @@ it.effect(
         assert.deepEqual((yield* answer(byKey, "record_get", { key })).content, `{"key":"${key}"}`);
       const other = yield* answer(byKey, "record_get", { key: "W-9" });
       assert.deepEqual([other.is_error, other.content], [true, "No entry W-9."]);
+      // A connection call's text arguments are read as Kin reads them before mocks match and calls
+      // are graded; text that holds no object is Kin's own refusal, never a mock's answer.
+      const mail = { to: ["kabir@tidewater.example"], body: 'Hi Kabir, "reason": {ours}' };
+      const swallowed = `${JSON.stringify(mail)},"reason":"Send Kabir's mail"}`;
+      const toKabir = (args: unknown) => ({
+        connection: "conn-g1",
+        tool: "mail_send",
+        arguments: args,
+      });
+      const staged = kinCase({
+        mocks: {
+          kin_connection_call: {
+            $when: [
+              { args: { "arguments.body": "~Hi Kabir", reason: "~Send Kabir" }, result: "staged" },
+            ],
+            $else: "unread",
+          },
+        },
+      });
+      assert.deepEqual(
+        normalizeToolInput("mcp__t3-code__kin_connection_call", toKabir(swallowed)),
+        {
+          ...toKabir(mail),
+          reason: "Send Kabir's mail",
+        },
+      );
+      const fromText = yield* answer(staged, "kin_connection_call", toKabir(swallowed));
+      assert.deepEqual([fromText.is_error, fromText.content], [undefined, "staged"]);
+      const refused = yield* answer(staged, "kin_connection_call", toKabir("[1]"));
+      assert.deepEqual(
+        [refused.is_error, refused.content],
+        [
+          true,
+          '{"_tag":"KinChatError","reason":"invalid_state","message":"arguments must be an object matching the tool\'s input schema."}',
+        ],
+      );
       // A T3 tool with no mock answers as before.
       const t3Base = buildBase(template, {
         model: "claude-sonnet-5-5",
