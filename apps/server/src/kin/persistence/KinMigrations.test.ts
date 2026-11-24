@@ -1943,7 +1943,7 @@ describe("Kin migrations", () => {
           (yield* runKinMigrations()).map(([id]) => id),
           [
             196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213, 214, 215, 216, 217, 218,
+            213, 214, 215, 216, 217, 218, 219,
           ],
         );
         assert.deepStrictEqual(yield* receipts, [
@@ -1995,7 +1995,7 @@ describe("Kin migrations", () => {
         (yield* runKinMigrations()).map(([id]) => id),
         [
           197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-          215, 216, 217, 218,
+          215, 216, 217, 218, 219,
         ],
       );
       const all = [
@@ -2523,7 +2523,7 @@ describe("Kin migrations", () => {
         "kin_connections_live_account",
         "kin_connections_live_person",
       ])
-        yield* sql.unsafe(`DROP INDEX ${index}`);
+        yield* sql.unsafe(`DROP INDEX IF EXISTS ${index}`);
       for (const [table, column] of [
         ["kin_connections", "person_id"],
         ["kin_connections", "account_key"],
@@ -2658,6 +2658,35 @@ describe("Kin migrations", () => {
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 218`;
       assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(218));
       assert.deepStrictEqual(yield* marks, [{ last_read_seq: 9, answered_seq: 7 }]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K219 lets a person have several own mailboxes, keeps rows, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`CREATE UNIQUE INDEX kin_connections_live_person
+        ON kin_connections (org_id, person_id) WHERE removed_at IS NULL AND person_id IS NOT NULL`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 219`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Ambermill', 1)`;
+      const own = (id: string, address: string) =>
+        sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+            url_host, auth, reach, state, account_label, created_at, updated_at, person_id,
+            account_key)
+          VALUES ('org', ${id}, 'google', ${address}, 'builtin', NULL, 'g', 'oauth', 'closed',
+            'active', ${address}, 1, 1, 'rhea', ${address})`;
+      yield* own("c-1", "rhea@ambermill.example");
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(own("c-2", "rhea.home@ambermill.example"))));
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(219));
+      yield* own("c-2", "rhea.home@ambermill.example");
+      // An address is still live only once in the company.
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(own("c-3", "rhea.home@ambermill.example"))));
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 219`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(219));
+      assert.deepStrictEqual(
+        yield* sql`SELECT connection_id AS id FROM kin_connections ORDER BY connection_id`,
+        [{ id: "c-1" }, { id: "c-2" }],
+      );
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 

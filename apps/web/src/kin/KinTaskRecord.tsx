@@ -45,7 +45,6 @@ import {
 } from "lucide-react";
 import { type ClipboardEvent, type KeyboardEvent, useId, useRef, useState } from "react";
 
-import { ComposerAttachButton } from "../components/chat/ComposerAttachmentStrip";
 import { shouldHandleComposerAttachmentPaste } from "../components/chat/composerAttachmentFiles";
 import { ComposerSurface } from "../components/chat/ComposerSurface";
 import { ExpandedImageDialogHost } from "../components/chat/ExpandedImageDialog";
@@ -66,7 +65,11 @@ import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
-import { KinComposerAttachmentStrip, useKinComposerAttachments } from "./KinComposerAttachments";
+import {
+  KinComposerAttachmentStrip,
+  useKinComposerAttachments,
+  KinAttachButton,
+} from "./KinComposerAttachments";
 import { KinMessageAttachments } from "./KinMessageAttachments";
 import { kinClient } from "./kinClient";
 import { kinDraftAtom, kinDraftKey } from "./kinDraft";
@@ -776,7 +779,7 @@ export function KinTaskNoteComposer(props: TaskTarget) {
               />
               <div className="flex items-end gap-1 p-1.5">
                 {files.canAttach ? (
-                  <ComposerAttachButton
+                  <KinAttachButton
                     addComposerAttachments={(picked) => files.add(picked)}
                     focusComposer={() => textareaRef.current?.focus()}
                   />

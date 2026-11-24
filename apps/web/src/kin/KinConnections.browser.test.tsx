@@ -26,6 +26,7 @@ vi.mock(
   () => ({ KinMyMailbox: () => null, KinPeopleMailboxes: () => null }) as never,
 );
 vi.mock(import("./kinClient"), async (importOriginal) => {
+  const { commandRun } = await import("../../test/commandRun");
   const real = await importOriginal();
   const { AsyncResult, Atom } = await import("effect/reactivity");
   const Cause = await import("effect/Cause");
@@ -61,16 +62,18 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
       connectionAdd: {
         label: "test:connectionAdd",
         permissionAtom: () => allowed,
-        run: async (_registry: unknown, { input }: { readonly input: Record<string, unknown> }) => {
-          host.adds.push(input);
-          if (host.refuse !== null)
-            return AsyncResult.failure(
-              Cause.fail(new Refused({ reason: "unavailable", message: host.refuse })),
-            );
-          const connection = made(String(input.label ?? "Sentry"));
-          host.connections = [connection];
-          return AsyncResult.success({ connection, tools: [] });
-        },
+        run: commandRun(
+          async (_registry: unknown, { input }: { readonly input: Record<string, unknown> }) => {
+            host.adds.push(input);
+            if (host.refuse !== null)
+              return AsyncResult.failure(
+                Cause.fail(new Refused({ reason: "unavailable", message: host.refuse })),
+              );
+            const connection = made(String(input.label ?? "Sentry"));
+            host.connections = [connection];
+            return AsyncResult.success({ connection, tools: [] });
+          },
+        ),
       },
     } as never,
   };

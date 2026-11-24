@@ -517,6 +517,16 @@ GitHub, and others. Each mail account reads, and sends only on your Confirm. Tel
 account is for ("accounts@ is for invoices") and it sends from the right one. A reply always goes
 from the account and thread the email is in.
 
+Anyone can also connect their own mail under **Settings → Connections → Your mailboxes**, one
+account or several (**Connect another mailbox**). Agents read them only when working for that person
+alone: in their own direct chats, and for the owner also when Kin prepares something for him. Never
+in a shared or group chat, and Kin never watches them for the company. Only they confirm what goes
+from them. The owner can make an account connected as the company's his own without a new sign-in:
+open it on the computer and choose **Make this my own mailbox**; a co-owner whose own account sits
+there disconnects it and connects it under Your mailboxes. **Make this the company's mailbox** on one
+of Your mailboxes gives it to the company (owner or co-owner). From then on Kin watches it, or stops
+watching it, for the company; notes, tasks and drafts it already made from that mail stay.
+
 Google and Microsoft each need a sign-in client set up once; Settings shows the steps. If your
 company already has one for a mail app (a Google client, or a Microsoft app with a Web redirect and
 a client secret), use it instead: add the return address Settings shows and paste its ID and secret.

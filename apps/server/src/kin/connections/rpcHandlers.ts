@@ -305,6 +305,8 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       call((c, people) => c.mineSignInFinish(people, input)),
     "kin.connections.mineRemove": (input) =>
       call((c, people, chat) => c.mineRemove(people, input, closing(input.orgId, chat))),
+    "kin.connections.moveMailbox": (input) =>
+      call((c, people, chat) => c.moveMailbox(people, input, closing(input.orgId, chat))),
     "kin.connections.calls": (input) => call((c, people) => c.calls(people, input)),
     "kin.connections.signInStart": (input) => call((c, people) => c.signInStart(people, input)),
     "kin.connections.signInFinish": (input) => call((c, people) => c.signInFinish(people, input)),

@@ -1,5 +1,5 @@
 {
-  "mcpToolListJsonBytes": 60364,
+  "mcpToolListJsonBytes": 64767,
   "kinToolListJsonBytes": 3044,
   "kinInstructionsBytes": {
     "owner": 39352,
@@ -7,15 +7,15 @@
   },
   "kinSharedInstructionsHash": "b43b2040a44f885ba00ebb2cf7a2df4ba0773516e969647779191aaf536bfc80",
   "kinLeadToolListJsonBytes": {
-    "engineering": 165773,
-    "engineeringBesideFinanceAndSales": 150711,
-    "finance": 145357,
-    "shared": 94997,
-    "social": 148430,
-    "socialBesideFinanceAndSales": 133368,
-    "support": 145357
+    "engineering": 166441,
+    "engineeringBesideFinanceAndSales": 151379,
+    "finance": 145619,
+    "shared": 94999,
+    "social": 148692,
+    "socialBesideFinanceAndSales": 133630,
+    "support": 145619
   },
-  "kinLeadAlwaysLoadedToolBytes": 72775,
+  "kinLeadAlwaysLoadedToolBytes": 72777,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -138,7 +138,7 @@
       "schema": 98
     },
     "kin_connection_tools": {
-      "desc": 972,
+      "desc": 974,
       "schema": 120
     },
     "kin_defer": {

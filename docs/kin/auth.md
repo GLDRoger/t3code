@@ -1,6 +1,6 @@
 # Kin's sign-in rules
 
-What Kin changes in [environment authentication](../internals/environment-auth.md) and [T3 Connect](../internals/t3-connect.md). Read it with them before changing auth on a Kin host.
+What Kin changes in [environment authentication](../internals/04_environment-auth.md) and [T3 Connect](../internals/06_t3-connect.md). Read it with them before changing auth on a Kin host.
 
 ## Two scopes
 

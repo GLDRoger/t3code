@@ -10,6 +10,7 @@ import { appAtomRegistry } from "../../../state/atom-registry";
 import { getComposerDraftSnapshot, setComposerDraftText } from "../../../state/use-composer-drafts";
 import { kinDraftKey } from "./kinDraftKey";
 import { kinClient } from "./kinClient";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 /** Opens a Kin chat, with `draft` ready in its box when given: an Ask of its own (`kinAskDraft`). */
 export function useKinOpenChat() {
@@ -40,7 +41,7 @@ export function useKinOpenAgentChat() {
     agentId: KinAgentId,
     draft?: string,
   ) => {
-    const result = await kinClient.chatWithAgent.run(appAtomRegistry, {
+    const result = await runKinCommand(appAtomRegistry, kinClient.chatWithAgent, {
       environmentId,
       input: { orgId, agentId },
     });

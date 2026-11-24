@@ -199,20 +199,25 @@ export const KinConnectionsView = Schema.Struct({
 });
 export type KinConnectionsView = typeof KinConnectionsView.Type;
 
+/** One of a person's own mailboxes, as they see it. */
+export const KinOwnMailbox = Schema.Struct({
+  connectionId: KinConnectionId,
+  preset: Schema.NullOr(KinConnectionPreset),
+  account: Schema.NullOr(Schema.String),
+  state: KinConnectionState,
+});
+export type KinOwnMailbox = typeof KinOwnMailbox.Type;
+
 /**
- * Settings › Connections › Your mailbox, for anyone: their own mailbox, if connected, and the mail
- * services they may sign in with (only those the owner has set up).
+ * Settings › Connections › Your mailboxes, for anyone: their own mailboxes, and the mail services
+ * they may sign in with (only those the owner has set up).
  */
 export const KinMyMailbox = Schema.Struct({
   orgId: KinOrgId,
-  mailbox: Schema.NullOr(
-    Schema.Struct({
-      connectionId: KinConnectionId,
-      preset: Schema.NullOr(KinConnectionPreset),
-      account: Schema.NullOr(Schema.String),
-      state: KinConnectionState,
-    }),
-  ),
+  /** The oldest-connected own mailbox, or null: what a build from before several reads. */
+  mailbox: Schema.NullOr(KinOwnMailbox),
+  /** Every own mailbox, oldest first; absent from servers before several. */
+  mailboxes: Schema.optional(Schema.Array(KinOwnMailbox)),
   services: Schema.Array(
     Schema.Struct({ service: KinConnectionPreset, label: Schema.String, ready: Schema.Boolean }),
   ),
@@ -223,6 +228,16 @@ export type KinMyMailbox = typeof KinMyMailbox.Type;
 
 export const KinConnectionRef = Schema.Struct({ orgId: KinOrgId, connectionId: KinConnectionId });
 export type KinConnectionRef = typeof KinConnectionRef.Type;
+/**
+ * Moves a connected mailbox, keeping its sign-in: a company one to the caller's own (`mine`), or
+ * the caller's own to the company's. The owner level's alone, and only ever the caller's own.
+ */
+export const KinMailboxMoveInput = Schema.Struct({
+  orgId: KinOrgId,
+  connectionId: KinConnectionId,
+  to: Schema.Literals(["mine", "company"]),
+});
+export type KinMailboxMoveInput = typeof KinMailboxMoveInput.Type;
 export const KinConnectionDetail = Schema.Struct({
   connection: KinConnection,
   tools: Schema.Array(KinConnectionTool),
@@ -371,8 +386,18 @@ export const KinMyMailboxSignInStartInput = Schema.Struct({
   orgId: KinOrgId,
   service: KinConnectionPreset,
   returnTo: KinConnectionSignInReturn,
+  /** Sign in again to this own mailbox. */
+  connectionId: Schema.optional(KinConnectionId),
+  /** Connect another own mailbox. With neither, the oldest one's sign-in again, or a first one. */
+  another: Schema.optional(Schema.Boolean),
 });
 export type KinMyMailboxSignInStartInput = typeof KinMyMailboxSignInStartInput.Type;
+/** Disconnects this own mailbox; without an id, the oldest (`KinMyMailbox.mailbox`). */
+export const KinMyMailboxRemoveInput = Schema.Struct({
+  orgId: KinOrgId,
+  connectionId: Schema.optional(KinConnectionId),
+});
+export type KinMyMailboxRemoveInput = typeof KinMyMailboxRemoveInput.Type;
 export const KinConnectionSignInStart = Schema.Struct({
   signInId: Schema.String,
   /** The service's sign-in page, opened in the device's browser. */
@@ -882,7 +907,12 @@ export const KinConnectionRpcs = [
     error: KinError,
   }),
   Rpc.make("kin.connections.mineRemove", {
-    payload: KinConnectionsInput,
+    payload: KinMyMailboxRemoveInput,
+    success: KinMyMailbox,
+    error: KinError,
+  }),
+  Rpc.make("kin.connections.moveMailbox", {
+    payload: KinMailboxMoveInput,
     success: KinMyMailbox,
     error: KinError,
   }),
@@ -971,6 +1001,7 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.connections.mineSignInStart": AuthKinChatScope,
   "kin.connections.mineSignInFinish": AuthKinChatScope,
   "kin.connections.mineRemove": AuthKinChatScope,
+  "kin.connections.moveMailbox": AuthKinChatScope,
   "kin.github.connect.status": AuthKinChatScope,
   "kin.github.connect.start": AuthKinChatScope,
   "kin.github.connect.cancel": AuthKinChatScope,

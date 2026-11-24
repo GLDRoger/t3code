@@ -206,6 +206,7 @@ import {
 } from "../threads/floating-working-control";
 import { KinWorkingSheet, useKinWorkingStop } from "./components/KinWorkingSheet";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 type KinChatParams = {
   readonly environmentId: string;
@@ -406,20 +407,19 @@ function KinLiveChat(props: {
           environmentId === null || summary === undefined || ownedAgentId === null || !canInterrupt
             ? null
             : (wakeupId) =>
-                kinClient.leadInterrupt
-                  .run(appAtomRegistry, {
-                    environmentId,
-                    input: { orgId: summary.orgId, wakeupId: wakeupId as KinWakeupId },
-                  })
-                  .then((result) => result._tag === "Success")
+                runKinCommand(appAtomRegistry, kinClient.leadInterrupt, {
+                  environmentId,
+                  input: { orgId: summary.orgId, wakeupId: wakeupId as KinWakeupId },
+                }).then((result) => result._tag === "Success")
         }
         markRead={
           environmentId === null || chatId === null
             ? null
             : (seq) =>
-                kinClient.markRead
-                  .run(appAtomRegistry, { environmentId, input: { chatId, seq } })
-                  .then((result) => result._tag === "Success")
+                runKinCommand(appAtomRegistry, kinClient.markRead, {
+                  environmentId,
+                  input: { chatId, seq },
+                }).then((result) => result._tag === "Success")
         }
         state={state}
         viewer={group ? { ...viewer, memberNames: kinMemberNames(groupMembers) } : viewer}

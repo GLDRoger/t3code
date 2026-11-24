@@ -49,6 +49,7 @@ export interface HeadStart {
 export const headStarts = Effect.fn("KinPulse.headStarts")(function* (
   orgId: KinOrgId,
   facts: ReadonlyArray<KinPulseFact>,
+  own: ReadonlyArray<{ readonly connection: string; readonly account: string }> = [],
 ) {
   const sql = yield* SqlClient.SqlClient;
   const recordIds = [
@@ -180,18 +181,19 @@ export const headStarts = Effect.fn("KinPulse.headStarts")(function* (
     if (Object.keys(start).length > 0) byFact.set(fact.key, start);
   }
   const wantsMail = [...byFact.values()].some((start) => typeof start.writeTo === "object");
-  return { byFact, mail: wantsMail ? yield* mailAccounts(orgId) : undefined };
+  return { byFact, mail: wantsMail ? yield* mailAccounts(orgId, own) : undefined };
 });
 
-/** The mail accounts a draft can go from now, or that there is none. */
-const mailAccounts = Effect.fn("KinPulse.mailAccounts")(function* (orgId: KinOrgId) {
-  const ready = (yield* liveConnections(orgId)).filter(
-    (row) => mailProviderOf(row) !== undefined && row.pausedAt === null && row.state === "active",
-  );
-  return ready.length === 0
-    ? "no mail account is connected"
-    : ready.map((row) => ({
-        connection: row.connectionId,
-        account: row.accountLabel ?? row.label,
-      }));
+/** The mail accounts a draft can go from now, the turn's own mailboxes after, or that there is none. */
+const mailAccounts = Effect.fn("KinPulse.mailAccounts")(function* (
+  orgId: KinOrgId,
+  own: ReadonlyArray<{ readonly connection: string; readonly account: string }>,
+) {
+  const ready = (yield* liveConnections(orgId))
+    .filter(
+      (row) => mailProviderOf(row) !== undefined && row.pausedAt === null && row.state === "active",
+    )
+    .map((row) => ({ connection: row.connectionId, account: row.accountLabel ?? row.label }));
+  const all = [...ready, ...own.map((one) => ({ ...one, own: true as const }))];
+  return all.length === 0 ? "no mail account is connected" : all;
 });

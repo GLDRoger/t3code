@@ -46,6 +46,8 @@ export type FakeMailMessage = {
   readonly headers?: Readonly<Record<string, string>>;
   /** More Gmail labels, such as `CATEGORY_PROMOTIONS`. */
   readonly labels?: ReadonlyArray<string>;
+  /** The sender's `Date` header, when it isn't the delivery time. */
+  readonly dateHeader?: string;
 };
 
 export type FakeMailFile = {
@@ -294,6 +296,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     readonly at: number;
     readonly files?: ReadonlyArray<FakeMailFile>;
     readonly headers?: Readonly<Record<string, string>>;
+    readonly dateHeader?: string;
     readonly labels?: ReadonlyArray<string>;
     /** The Message-ID header, as the sender's server wrote it. */
     readonly messageId?: string;
@@ -327,6 +330,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         unread: true,
         sent: false,
         ...(input.headers === undefined ? {} : { headers: input.headers }),
+        ...(input.dateHeader === undefined ? {} : { dateHeader: input.dateHeader }),
         ...(input.labels === undefined ? {} : { labels: input.labels }),
       };
       const stored = { ...message, revs: [++state.seq] };
@@ -437,6 +441,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   const gmailMessage = (message: FakeMailMessage) => ({
     id: message.id,
     threadId: message.threadId,
+    internalDate: String(message.at),
     labelIds: [
       ...(message.sent ? ["SENT"] : ["INBOX", ...(message.unread ? ["UNREAD"] : [])]),
       ...(message.labels ?? []),
@@ -450,7 +455,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         ...(message.cc.length === 0 ? [] : [{ name: "Cc", value: message.cc.join(", ") }]),
         ...(message.sent ? [] : [{ name: "Delivered-To", value: message.account }]),
         { name: "Subject", value: message.subject },
-        { name: "Date", value: rfc2822(message.at) },
+        { name: "Date", value: message.dateHeader ?? rfc2822(message.at) },
         { name: "Message-ID", value: message.messageId },
         ...(message.references === null ? [] : [{ name: "References", value: message.references }]),
         ...authHeaders(message),

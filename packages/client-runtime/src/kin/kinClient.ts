@@ -69,7 +69,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
-import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
+import { Atom, AtomRegistry } from "effect/reactivity";
 
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
@@ -130,19 +130,13 @@ export function kinGuardedRead<Input, A, E>(command: {
   readonly run: (
     registry: AtomRegistry.AtomRegistry,
     target: { readonly environmentId: EnvironmentId; readonly input: Input },
-  ) => Promise<AsyncResult.AsyncResult<A, E>>;
+  ) => Effect.Effect<A, E>;
 }) {
   return (input: Input) =>
     Effect.gen(function* () {
       const registry = yield* AtomRegistry.AtomRegistry;
       const environmentId = yield* currentEnvironmentId;
-      // A caller's timeout abandons this promise without cancelling the request; the session bounds it.
-      const result = yield* Effect.promise(() => command.run(registry, { environmentId, input }));
-      return yield* result._tag === "Success"
-        ? Effect.succeed(result.value)
-        : result._tag === "Failure"
-          ? Effect.failCause(result.cause)
-          : Effect.never;
+      return yield* command.run(registry, { environmentId, input });
     });
 }
 
@@ -953,6 +947,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.connections.mineRemove",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
     }),
+    /** The owner level moves a mailbox between the company's and their own, on its sign-in. */
+    mailboxMove: createKinRpcCommand(runtime, {
+      label: "kin:mailbox:move",
+      tag: "kin.connections.moveMailbox",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
+    }),
     connectionSetSignInClient: createKinRpcCommand(runtime, {
       label: "kin:connection:setSignInClient",
       tag: "kin.connections.setSignInClient",
@@ -1211,14 +1211,9 @@ export function makeKinClient<R, ER>(
     /** One "Load earlier" page, read fresh every time so a retry after a failure refetches. */
     readHistoryPage: (environmentId: EnvironmentId, input: KinChatHistoryInput) =>
       Effect.runPromiseExit(
-        Effect.promise(() => historyRead.run(registry, { environmentId, input })).pipe(
-          Effect.flatMap((result) =>
-            result._tag === "Success"
-              ? Effect.succeed(result.value)
-              : Effect.failCause(result.cause),
-          ),
-          Effect.timeout(KIN_HISTORY_PAGE_TIMEOUT),
-        ),
+        historyRead
+          .run(registry, { environmentId, input })
+          .pipe(Effect.timeout(KIN_HISTORY_PAGE_TIMEOUT)),
       ),
     send: createKinRpcCommand(runtime, {
       label: "kin:send",
