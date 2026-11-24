@@ -154,6 +154,7 @@ function KinListEntries(
     readonly initial: KinListFilter;
     readonly openKey: KinRecordKey | null;
     readonly onOpenKey: (key: KinRecordKey) => void;
+    readonly titled?: boolean;
   },
 ) {
   const { def } = props;
