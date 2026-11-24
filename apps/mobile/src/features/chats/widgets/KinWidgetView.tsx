@@ -20,6 +20,7 @@ import {
   kinCardView,
 } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { KinApprovalCard } from "./KinApprovalCard";
+import { KinBillBatchCard } from "./KinBillBatchCard";
 import { KinChart } from "./KinChart";
 import { KinChoiceCard } from "./KinChoiceCard";
 import { KinDeferralCard } from "./KinDeferralCard";
@@ -123,6 +124,14 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
     case "statement_password":
       return (
         <KinStatementPasswordCard password={view.password} environmentId={props.environmentId} />
+      );
+    case "bill_batch":
+      return (
+        <KinBillBatchCard
+          bills={view.bills}
+          environmentId={String(props.environmentId)}
+          ownerLevel={access === null || kinOwnerLevel(access)}
+        />
       );
     case "social_week":
       return <KinSocialWeekCard week={view.week} environmentId={props.environmentId} />;

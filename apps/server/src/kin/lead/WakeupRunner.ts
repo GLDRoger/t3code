@@ -67,6 +67,7 @@ import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
 import { dismissalGone } from "../questions/dismissed.ts";
 import { writeQueuedApproval } from "../questions/sentUpDraft.ts";
+import * as Bills from "../work/bills.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
@@ -81,6 +82,8 @@ import {
   turnChat,
 } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
+import { BILLS_THREAD_PREFIX, billsOnly } from "./billsOnly.ts";
+import { leadListsTool } from "./seatHome.ts";
 import { KinLeadPrompt, STEER_CLOSING, stillJoined } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
@@ -270,6 +273,16 @@ const make = Effect.gen(function* () {
       status,
       ...(holdUntil === undefined ? {} : { holdUntil }),
     });
+    // Its bills left unanswered are told as unread once the turn is over for good.
+    if (Option.isSome(chatRepository) && Option.isSome(chatHub))
+      yield* Bills.turnEnded(row.orgId, row.wakeupId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(Repository.KinChatRepository, chatRepository.value),
+        Effect.provideService(KinChatHub, chatHub.value),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't settle a bills turn", { cause }),
+        ),
+      );
     // Quiet only when the turn really went back to wait, untouched: after something visible,
     // its unanswered events stopped instead, and that is said.
     if (quiet && (finished.stranded > 0 || finished.replied > 0)) quiet = false;
@@ -386,6 +399,20 @@ const make = Effect.gen(function* () {
   const records = yield* Effect.serviceOption(KinRecords);
   const chatRepository = yield* Effect.serviceOption(Repository.KinChatRepository);
   const chatHub = yield* Effect.serviceOption(KinChatHub);
+  /** A batch's card redrawn (`work/bills.ts`); a card that can't be is no reason to stop a turn. */
+  const onCards = <E>(
+    effect: Effect.Effect<void, E, SqlClient.SqlClient | Repository.KinChatRepository | KinChatHub>,
+  ) =>
+    Option.isNone(chatRepository) || Option.isNone(chatHub)
+      ? Effect.void
+      : effect.pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(Repository.KinChatRepository, chatRepository.value),
+          Effect.provideService(KinChatHub, chatHub.value),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't redraw a bills card", { cause }),
+          ),
+        );
   const scope = yield* Effect.scope;
   const spaceChecks = new Set<KinOrgId>();
   const spaceFolders = Option.map(yield* Effect.serviceOption(ServerConfig), (config) =>
@@ -448,6 +475,17 @@ const make = Effect.gen(function* () {
     Effect.forever,
     Effect.forkScoped,
   );
+  /** Whether a turn's files left out are named to `bills_add`: only where the turn can call it. */
+  const offersBillsAdd = Effect.fn("WakeupRunner.offersBillsAdd")(function* (
+    turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
+    shared: boolean,
+  ) {
+    if (shared || (yield* billsOnly(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql))))
+      return false;
+    return yield* leadListsTool(turn.orgId, turn.agentId, "bills_add").pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+  });
   /** Who each finished-task event's work was for (`WorkFor.workFor`), by event id. */
   const finishedFor = Effect.fn("WakeupRunner.finishedFor")(function* (
     orgId: KinOrgId,
@@ -578,6 +616,9 @@ const make = Effect.gen(function* () {
         return !(yield* reviewStillDue(orgId, event));
       // A person's own task: no longer theirs and due, or this agent may no longer draft it.
       if (event._tag === "pulse" && isDraftWake(event)) return yield* draftWakeGone(orgId, event);
+      // Bills someone added, every one answered or taken back since they were queued.
+      if (event._tag === "bills.read")
+        return !(yield* Bills.stillToRead(orgId, event.bills).pipe(provideSql));
       // A head start Kin woke it for, on a fact handled or no longer true since it was queued.
       if (isPrepareWake(event))
         return (
@@ -753,9 +794,11 @@ const make = Effect.gen(function* () {
         threadId,
         threadKind: threadId.startsWith(REVIEW_THREAD_PREFIX)
           ? "review"
-          : threadId.startsWith(SHARED_THREAD_PREFIX)
-            ? "shared"
-            : "owner",
+          : threadId.startsWith(BILLS_THREAD_PREFIX)
+            ? "bills"
+            : threadId.startsWith(SHARED_THREAD_PREFIX)
+              ? "shared"
+              : "owner",
         seat:
           lead === undefined
             ? null
@@ -840,6 +883,7 @@ const make = Effect.gen(function* () {
         for (const group of (yield* admitEvents(orgId, agentId, events)).held) {
           const ids = new Set(group.events.map((event) => event.eventId));
           yield* budget.defer({ orgId, agentId, wakeupId, ...group });
+          yield* onCards(Bills.paused(orgId, group.events, group.nextReset));
           events = events.filter((event) => !ids.has(event.eventId));
         }
         if (events.length === 0) return;
@@ -875,6 +919,10 @@ const make = Effect.gen(function* () {
               first,
             }),
             attachments: yield* prompt.attachments({ orgId, events }),
+            offersBillsAdd: yield* offersBillsAdd(
+              row,
+              (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared",
+            ),
           });
           yield* holdFloor;
           if (Option.isSome(bridge))
@@ -1404,6 +1452,7 @@ const make = Effect.gen(function* () {
                   heldBy: group.heldBy,
                   nextReset: group.nextReset,
                 });
+                yield* onCards(Bills.paused(orgId, waits, group.nextReset));
                 events = events.filter((event) => !deferred.has(event.eventId));
               }
             }
@@ -1431,6 +1480,7 @@ const make = Effect.gen(function* () {
               yield* queue.finish({ orgId, wakeupId, status: "completed" });
               return;
             }
+            yield* onCards(Bills.resumed(orgId, events));
             const budgetContext = yield* budget.promptContext(orgId);
             const lane = Option.isSome(bridge)
               ? Option.getOrUndefined(yield* bridge.value.lane({ orgId, agentId, wakeupId }))
@@ -1593,15 +1643,16 @@ const make = Effect.gen(function* () {
               workFor,
               ...(lane === undefined ? {} : { lane }),
             });
+            // The prompt recorded who reads this turn; a shared one runs without file tools.
+            const shared =
+              (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
             // What the people in the chat attached to the messages this turn answers, as text and
             // pictures every provider reads alike.
             const { text, attachments } = yield* turnContent.prepare({
               text: built,
               attachments: yield* prompt.attachments({ orgId, events }),
+              offersBillsAdd: yield* offersBillsAdd(row, shared),
             });
-            // The prompt recorded who reads this turn; a shared one runs without file tools.
-            const shared =
-              (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
             // A project per lead, since its root is the provider's cwd: the lead's own checkout.
             const { project } = yield* bootstrapLeadProject(projects, {
               orgId,
@@ -1615,15 +1666,22 @@ const make = Effect.gen(function* () {
             // registered again.
             const alone = !shared && (yield* ownerAlone(row).pipe(provideSql));
             const chatId = alone ? null : ((yield* turnChat(row).pipe(provideSql))?.chatId ?? null);
-            // A stranger's pull request is reviewed on a thread that lists only its review tools.
+            // A stranger's pull request is reviewed, and bills are read, on a thread that lists
+            // only that turn's tools.
             const review = shared && (yield* outsideReview(row).pipe(provideSql)) !== undefined;
-            const prefix = review ? REVIEW_THREAD_PREFIX : shared ? SHARED_THREAD_PREFIX : "kin:";
+            const confined = review
+              ? REVIEW_THREAD_PREFIX
+              : (yield* billsOnly(row).pipe(provideSql))
+                ? BILLS_THREAD_PREFIX
+                : undefined;
+            const prefix = confined ?? (shared ? SHARED_THREAD_PREFIX : "kin:");
             const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
               FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
                 AND ended_at IS NULL AND chat_id IS ${chatId}
                 AND substr(thread_id, 1, ${prefix.length}) = ${prefix}
-                AND (${review ? 1 : 0} = 1
-                  OR substr(thread_id, 1, ${REVIEW_THREAD_PREFIX.length}) <> ${REVIEW_THREAD_PREFIX})
+                AND (${confined === undefined ? 0 : 1} = 1
+                  OR (substr(thread_id, 1, ${REVIEW_THREAD_PREFIX.length}) <> ${REVIEW_THREAD_PREFIX}
+                    AND substr(thread_id, 1, ${BILLS_THREAD_PREFIX.length}) <> ${BILLS_THREAD_PREFIX}))
               ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
             let existingThreadId = !alone && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {

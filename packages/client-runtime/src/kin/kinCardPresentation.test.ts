@@ -133,6 +133,16 @@ describe("kinCardView", () => {
       kind: "unknown",
       text: null,
     });
+    // A bills card from before this build, or one it can't read, says the host's own sentence.
+    const bills = { text: "Reading 12 bills: 4 done.", batchId: "b-1", status: "reading" };
+    expect(kinCardView(widget({ type: "bill_batch_v2", state: bills }), HOST, known())).toEqual({
+      kind: "unknown",
+      text: "Reading 12 bills: 4 done.",
+    });
+    expect(kinCardView(widget({ type: "bill_batch", state: bills }), HOST, known())).toEqual({
+      kind: "unknown",
+      text: "Reading 12 bills: 4 done.",
+    });
     // A chart from a newer host, of a kind this build can't draw, still says its title.
     const pie = widget({ type: "chart", state: { chart: "pie", title: "Spend by team" } });
     expect(kinCardView(pie, HOST, known())).toEqual({ kind: "unknown", text: "Spend by team" });

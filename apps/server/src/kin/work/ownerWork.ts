@@ -33,7 +33,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { sectionOnFor } from "../shell/KinShell.ts";
-import { mayActAsOwner } from "../people/KinAccess.ts";
+import { mayActAsOwner, ownerLevelSql } from "../people/KinAccess.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { readableFrom } from "../chat/sharing.ts";
@@ -1546,7 +1546,7 @@ export const removeLink = (people: ReadonlyArray<PersonIdentity>, input: KinWork
 
 /**
  * The files an owner's edit adds are ones the owner can read: each on a message, not deleted, in
- * a chat the owner is in. Anything else looks like no file at all.
+ * a chat the owner is in, or a bill's file for the owner level. Anything else looks like no file.
  */
 export const ownFiles = Effect.fn("KinWork.ownFiles")(function* (
   person: PersonIdentity,
@@ -1574,7 +1574,11 @@ export const ownFiles = Effect.fn("KinWork.ownFiles")(function* (
       AND c.principal_kind = 'person' AND c.person_id = ${person.personId} AND c.left_at IS NULL
     WHERE a.org_id = ${person.orgId} AND a.attachment_id IN ${sql.in(added)}
       AND kin_messages.status <> 'deleted'
-      AND ${readableFrom(sql, person.orgId, sql`COALESCE(c.joined_seq, 0)`)}`;
+      AND ${readableFrom(sql, person.orgId, sql`COALESCE(c.joined_seq, 0)`)}
+    UNION SELECT b.attachment_id FROM kin_bill_reads b
+    JOIN kin_people p ON p.org_id = b.org_id AND p.person_id = ${person.personId}
+    WHERE b.org_id = ${person.orgId} AND b.attachment_id IN ${sql.in(added)}
+      AND ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}`;
   if (mine.length !== added.length)
     return yield* new KinChatError({ reason: "not_found", message: "No such file in your chats." });
 });

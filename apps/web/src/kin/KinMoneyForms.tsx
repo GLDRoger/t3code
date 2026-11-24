@@ -27,7 +27,7 @@ import { KIN_AMOUNT_SLIP } from "@t3tools/client-runtime/kin/kinLists";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkDayOf } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
-import { KIN_DEFAULT_HOME_CURRENCY, type KinRecordKey } from "@t3tools/contracts";
+import { KIN_DEFAULT_HOME_CURRENCY, type KinFileRef, type KinRecordKey } from "@t3tools/contracts";
 import { ChevronDownIcon } from "lucide-react";
 import { useId, useState } from "react";
 
@@ -548,10 +548,15 @@ export function KinNewExpenseDialog(
   props: KinWorkTarget & {
     readonly onOpenKey: (key: KinRecordKey) => void;
     readonly onClose: () => void;
+    /** A bill Kin couldn't read, typed by hand: its file as the receipt and what was read. */
+    readonly start?: {
+      readonly draft: Partial<KinExpenseDraft>;
+      readonly receipt: KinFileRef;
+    };
   },
 ) {
   const today = kinWorkDayOf(new Date(useNowMinuteMs()));
-  const [opened] = useState(() => kinExpenseDraft(today));
+  const [opened] = useState(() => ({ ...kinExpenseDraft(today), ...props.start?.draft }));
   const [draft, setDraft] = useState<KinExpenseDraft>(opened);
   const [problem, setProblem] = useState<string | null>(null);
   const [requestId] = useState(randomUUID);
@@ -566,7 +571,13 @@ export function KinNewExpenseDialog(
     directory.names.people,
   );
   const files = useKinWorkFiles(props, "");
-  const held = files.state._tag === "ready" ? files.state.files : [];
+  const chatFiles = files.state._tag === "ready" ? files.state.files : [];
+  // A bill's file may be in a chat this person isn't in; it is offered all the same.
+  const start = props.start?.receipt;
+  const held =
+    start === undefined || chatFiles.some((file) => file.attachmentId === start.attachmentId)
+      ? chatFiles
+      : [start, ...chatFiles];
   const ids = {
     what: useId(),
     amount: useId(),
