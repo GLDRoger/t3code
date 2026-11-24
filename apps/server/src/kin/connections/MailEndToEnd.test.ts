@@ -921,10 +921,11 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             body: "There is a disconnection scheduled.",
             at: NOW + 62_000,
           });
+          const taxSubject = `Tax notice ${"🧾".repeat(170)}`;
           fake.deliver({
             to: ACCOUNTS,
             from: "Billing Robot <billing@gmail-vendor.example>",
-            subject: "Tax notice",
+            subject: taxSubject,
             body: "A tax notice sent to the accounts mailbox.",
             headers: { "List-Unsubscribe": "<mailto:stop@gmail-vendor.example>" },
             at: NOW + 64_000,
@@ -971,7 +972,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               ["Final notice: disconnection of service", lead],
               [subject, finance],
               ["Payment failed for your subscription", lead],
-              ["Tax notice", finance],
+              [taxSubject.slice(0, 299), finance],
             ].sort(),
           );
           const event = pulses.find((pulse) => pulse.outside?.[0]?.subject === subject)!;

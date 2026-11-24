@@ -47,8 +47,12 @@ export const noOutside: OutsideSource = {
   seen: () => Effect.void,
 };
 
-const cut = (text: string | null | undefined, max: number) =>
-  text === null || text === undefined ? null : Array.from(text).slice(0, max).join("");
+const cut = (text: string | null | undefined, max: number) => {
+  if (text == null) return null;
+  if (text.length <= max) return text;
+  const last = text.charCodeAt(max - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
+};
 const isoOf = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 export const mailLine = (
