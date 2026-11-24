@@ -302,10 +302,7 @@ export const readDoc = Effect.fn("KinTasksKeyReads.readDoc")(function* (
   },
 ) {
   const doc = yield* readAs(holder, (people) =>
-    Docs.get(people, { orgId: holder.orgId, key: input.key }, keyed).pipe(
-      Effect.mapError(hidden),
-      Effect.tap((found) => reachable(holder, found.recordId)),
-    ),
+    Docs.get(people, { orgId: holder.orgId, key: input.key }, keyed).pipe(Effect.mapError(hidden)),
   );
   if (doc.bodyKind === "file")
     return yield* new KinChatError({

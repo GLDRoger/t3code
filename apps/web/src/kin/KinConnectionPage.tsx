@@ -2,6 +2,8 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   KIN_CONNECTIONS_COPY as COPY,
   KIN_MAIL_COPY as MAIL,
+  KIN_MY_MAILBOX_COPY as MINE,
+  kinTakesMailbox,
   KIN_MAIL_PERMISSIONS,
   kinAcceptAll,
   kinConnectionStatus,
@@ -19,6 +21,8 @@ import {
   type KinMailPermission,
   type KinToolRow,
 } from "@t3tools/client-runtime/kin/kinConnections";
+import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_SETTINGS_COPY } from "@t3tools/client-runtime/kin/kinSettingsSpread";
 import {
   KinConnectionKey,
@@ -36,6 +40,7 @@ import { useState } from "react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Switch } from "../components/ui/switch";
+import { connectionAtomRuntime } from "../connection/runtime";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
@@ -98,6 +103,10 @@ export function KinConnectionPage(props: {
   const update = useAtomCommand(kinClient.connectionUpdate, { reportFailure: false });
   const setReach = useAtomCommand(kinClient.connectionSetReach, { reportFailure: false });
   const setKey = useAtomCommand(kinClient.connectionSetKey, { reportFailure: false });
+  const move = useAtomCommand(kinClient.mailboxMove, { reportFailure: false });
+  const canMove = useAtomValue(kinClient.mailboxMove.permissionAtom(environmentId));
+  const takes = kinTakesMailbox(useAtomValue(kinAccessAtom(connectionAtomRuntime, environmentId)));
+  const [taking, setTaking] = useState(false);
   const save = useKinSettingsSave();
   const [place, setPlace] = useState<Place | null>(null);
   const [waiting, setWaiting] = useState<Waiting | null>(null);
@@ -488,6 +497,26 @@ export function KinConnectionPage(props: {
             </Button>
           }
         />
+        {mail && canMove && !takes ? (
+          <KinSettingsRow title={MINE.makeMine} wrap detail={MINE.takeAsCoOwner} />
+        ) : null}
+        {mail && canMove && takes ? (
+          <KinSettingsRow
+            title={MINE.makeMine}
+            wrap
+            detail={MINE.makeMineRow}
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={save.busy !== null}
+                onClick={() => setTaking(true)}
+              >
+                {MINE.makeMineAction}
+              </Button>
+            }
+          />
+        ) : null}
         <KinSettingsRow
           title={mail ? MAIL.removeAccount : MAIL.removeService}
           wrap
@@ -572,6 +601,29 @@ export function KinConnectionPage(props: {
           });
         }}
         onClose={() => setConfirming(false)}
+      />
+      <KinConfirm
+        ask={
+          taking
+            ? {
+                title: MINE.makeMineTitle(address),
+                detail: MINE.makeMineDetail,
+                action: MINE.makeMineAction,
+              }
+            : null
+        }
+        onConfirm={() => {
+          setPlace("end");
+          setAside(null);
+          void move({
+            environmentId,
+            input: { orgId, connectionId: connection.connectionId, to: "mine" },
+          }).then((done) => {
+            if (AsyncResult.isSuccess(done)) props.onRemoved();
+            else setAside(kinFailureText(done, MINE.moving));
+          });
+        }}
+        onClose={() => setTaking(false)}
       />
     </KinSettingsPage>
   );

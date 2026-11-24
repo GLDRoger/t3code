@@ -247,6 +247,49 @@ describe("statement matching", () => {
     assert.strictEqual(result!.candidates[0]?.fit, fit);
   });
 
+  it.each([
+    ["INV-2", null, "NEFT TIDEWATER FREIGHT INV/2026/015", null, false],
+    ["INV-1", "INV/2026/015", "NEFT TIDEWATER FREIGHT INV/2026/015", null, true],
+    ["INV-1", null, "NEFT TIDEWATER FREIGHT INV-12", null, false],
+    ["INV-2", null, "INV2 PAYMENT", null, true],
+    ["INV-2", null, "NEFT INV26", null, false],
+    ["INV-2", null, "NEFT INV-002", null, false],
+    ["INV-2", null, "NEFT INV-2A", null, false],
+    ["INV-2", null, "NEFT XINV-2", null, false],
+    ["INV-2", null, "NEFT TIDEWATER", "INV-26", false],
+    ["INV-2", null, "NEFT TIDEWATER", "REF INV 2", true],
+    ["INV-3", "चालान-2026/15", "NEFT चालान 2026/15 भुगतान", null, true],
+    ["INV-3", "चालान-2026/15", "NEFT चालान 2026/150", null, false],
+  ] as const)(
+    "an invoice %s printed %s is numbered in %s (reference %s): %s",
+    (key, number, description, reference, numbered) => {
+      const [result] = match(
+        [row({ description, reference, amountMinor: 100 })],
+        [invoice({ key, number, amountMinor: 100 })],
+      );
+      assert.strictEqual(
+        result!.candidates[0]?.why.includes("invoice number in the narration"),
+        numbered,
+      );
+    },
+  );
+
+  it.each([
+    ["REFUND EXP 1", true],
+    ["NEFT-EXP-12", false],
+    ["NEFT-EXP-1B", false],
+  ] as const)("an expense's key is numbered in %s: %s", (description, numbered) => {
+    const [result] = match(
+      [row({ description, amountMinor: 500 })],
+      [],
+      [expense({ amountMinor: -500 })],
+    );
+    assert.strictEqual(
+      result!.candidates[0]?.why.includes("expense reference in the narration"),
+      numbered,
+    );
+  });
+
   it("records the TDS deducted, and gives one entry to one row", () => {
     const [tds] = match(
       [row({ description: "NEFT CR-NORTHWIND", amountMinor: 9_000_000 })],

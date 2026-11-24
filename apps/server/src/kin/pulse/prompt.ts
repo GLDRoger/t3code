@@ -34,7 +34,7 @@ export const MORNING_RULE =
   "This is the morning check-in. Besides the pulse: what is due today, overdue promises, what waits on the owner, reviews and red checks, objectives this week and stuck tasks. The owner reads it as a page under a greeting the app writes, so write no greeting and put everything under headings, each on its own line: `## Needs you`, `## Money`, `## Clients`, `## Work`, `## Coming up`. Use only the ones you have something for, Needs you first, a few short lines under each, and tell every pulse fact under the heading it belongs to, as the pulse rule says. It is sent on a quiet morning too: when nothing here needs them, say so in a line under `## Needs you`, then `## Coming up` only if something is.";
 /** The evening check-in, which took over the evening summary's sections. */
 export const EVENING_RULE =
-  "This is the evening summary: the day as these facts have it, what got done, what moved or slipped, and what is still open and carries to tomorrow. Like the morning page it reads under a greeting the app writes, so write no greeting and put it under headings, each on its own line, a few short lines under each. `today` is Kin's own record of what happened in the company today, whatever an earlier message already told him: sum it up, and never call a day quiet or say nothing was done while it has lines. Anything else he was told today, tell again only where it changed.";
+  "This is the evening summary: the day as these facts have it, what got done, what moved or slipped, and what is still open and carries to tomorrow. A line marked done says a person or agent marked a task done: say it that way, naming who when the line does, and never retell the task's title as something that happened. Like the morning page it reads under a greeting the app writes, so write no greeting and put it under headings, each on its own line, a few short lines under each. `today` is Kin's own record of what happened in the company today, whatever an earlier message already told him: sum it up, and never call a day quiet or say nothing was done while it has lines. Anything else he was told today, tell again only where it changed.";
 const SECTION_CAP = 30;
 const MAILED_SENSES = new Set<KinPulseFact["sense"]>(["invoice_overdue", "quote_unanswered"]);
 const CHECK_IN_CAP = 200;
@@ -53,6 +53,8 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   readonly checkIn?: ReadonlySet<string> | undefined;
   /** The check-in events, so a fact first told since its hold ended says it was set aside. */
   readonly checkInEvents?: ReadonlyArray<string> | undefined;
+  /** The own mailboxes this turn may use, its person's alone (`turnMailboxes`). */
+  readonly ownAccounts?: ReadonlyArray<{ readonly connection: string; readonly account: string }>;
 }) {
   const tell = input.checkIn;
   const checkIn = tell !== undefined;
@@ -103,7 +105,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         fact.subject.recordId,
         yield* clientHistory(input.orgId, fact.subject.recordId, input.now),
       );
-  const starts = yield* headStarts(input.orgId, shown);
+  const starts = yield* headStarts(input.orgId, shown, input.ownAccounts ?? []);
   const zone = yield* ownerZone(input.orgId);
   const ended = checkIn
     ? yield* asideEnded(input.orgId, input.agentId, input.now, shown, input.checkInEvents ?? [])

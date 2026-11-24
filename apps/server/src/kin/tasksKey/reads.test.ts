@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import {
   type KinMoney,
   type KinPersonId,
+  KinRecordId,
   KinRecordKey,
   MemoryItemHead,
   type KinChatError,
@@ -286,6 +287,22 @@ it.effect(
         (yield* OwnerDocs.list(rhea, { orgId: seeded.orgId })).docs.map((one) => one.key),
         auditNotes.key,
       );
+      // Every read that takes keyed leaves out what a key never carries, by key or by id.
+      assert.notInclude(
+        (yield* OwnerDocs.list(rhea, { orgId: seeded.orgId }, { keyed: true })).docs.map(
+          (one) => one.key,
+        ),
+        auditNotes.key,
+      );
+      for (const opened of [
+        OwnerDocs.get(rhea, { orgId: seeded.orgId, key: auditNotes.key }, { keyed: true }),
+        OwnerDocs.get(
+          rhea,
+          { orgId: seeded.orgId, recordId: KinRecordId.make(auditNotes.recordId) },
+          { keyed: true },
+        ),
+      ])
+        assert.strictEqual((yield* Effect.flip(opened)).reason, "not_found");
       assert.notInclude(
         (yield* listClients(seeded.rhea.key, {})).clients.map((one) => one.key),
         kilns.key,

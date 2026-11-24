@@ -39,9 +39,11 @@ import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import { endOfDay, UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
 import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
+import { tooLongForCard } from "../../apps/server/src/kin/questions/askPerson.ts";
 import {
   ASKED,
   CALL_ARGUMENTS_REFUSAL,
+  SEVERAL_ACCOUNTS,
 } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
 import { readCallArguments } from "../../apps/server/src/kin/connections/callArguments.ts";
 import { microsoftMail } from "../../apps/server/src/kin/connections/Microsoft.ts";
@@ -112,6 +114,7 @@ import {
   REPLY_SHAPE,
   SHARED_TURN_LINE,
   joinedWork,
+  ownMailboxLine,
   workForText,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import {
@@ -561,6 +564,7 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{APPROVED_TURN_TEXT}}", APPROVED_TURN_TEXT)
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
+    .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
     // The wake's line once a new company's country is chosen (`{{COUNTRY_CHOSEN:GB|GBP}}`).
     .replace(
@@ -571,6 +575,13 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
       REVIEW_WAKE_TEXT({ who: who.split(", "), count: Number(count) }),
     )
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names))
+    // The turn person's own mailboxes as the prompt names them (`{{OWN_MAILBOXES:owner|a, b}}`).
+    .replace(/\{\{OWN_MAILBOXES:(owner|member)\|([^}]+)\}\}/g, (_, who: string, list: string) =>
+      ownMailboxLine(
+        list.split(", ").map((address) => JSON.stringify(address)),
+        who === "owner",
+      ),
+    )
     .replace(/\{\{JOINED_WORK:([^|}]+)\|([^}]+)\}\}/g, (_, adder: string, holder: string) =>
       joinedWork(adder, holder),
     )
@@ -700,6 +711,21 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     $error: { _tag: "KinChatError", reason: "not_allowed", message: ONE_ENTRY },
   }),
   // Anything but the approved make or a read, refused in an approved draft's turn.
+  // kin_ask_person's answer: words its card can't carry whole beside `header` characters of Kin's
+  // are refused with the way on (`askPerson.ts` tooLongForCard), else `posted`.
+  askTooLong: (input: { detail: unknown; header: number; owner?: string; posted: unknown }) => {
+    const detail = typeof input.detail === "string" ? input.detail : "";
+    const why = tooLongForCard(detail.length, input.header, input.owner);
+    return why === undefined
+      ? input.posted
+      : {
+          $error: {
+            _tag: "KinChatError",
+            reason: "not_allowed",
+            message: `${why} Nothing was asked.`,
+          },
+        };
+  },
   // kin_relay's answer for a line left for the owner's next check-in (`KinHandoff.relay`).
   relayLeft: (input: { to: string; title: string; when: string; asker: string }) => ({
     to: input.to,

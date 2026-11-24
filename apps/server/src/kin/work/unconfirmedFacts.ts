@@ -159,7 +159,8 @@ export const heldBack = Effect.fn("KinUnconfirmed.heldBack")(function* (
 /**
  * Values a person said no to on Kin's card (Not this) for these clients, newest first, for every
  * agent while the field doesn't hold them: who said no is kept on the row (`answerUnconfirmed`).
- * Only a card that proposed one value: a no to several may have been to any one of them.
+ * Only a card that proposed one value: a no to several may have been to any one of them. A no is
+ * over once an owner-level person set that field by hand after it; only a new Not this counts.
  */
 const declinedFor = Effect.fn("KinUnconfirmed.declined")(function* (
   orgId: KinOrgId,
@@ -183,6 +184,11 @@ const declinedFor = Effect.fn("KinUnconfirmed.declined")(function* (
     WHERE c.org_id = ${orgId} AND substr(c.change_id, 1, 3) = ${UNCONFIRMED_CHANGE}
       AND c.declined_at IS NOT NULL AND json_extract(c.patch_json, '$.declinedBy') IS NOT NULL
       AND r.record_id IN ${sql.in([...new Set(recordIds)])}
+      AND NOT EXISTS (SELECT 1 FROM kin_record_changes ch, json_each(ch.fields_json) f
+        WHERE ch.org_id = c.org_id AND ch.record_id = r.record_id AND ch.at > c.declined_at
+          AND ch.actor_kind = 'person'
+          AND ${sql.literal(ownerLevelSql("ch.org_id", "ch.actor_id"))}
+          AND json_extract(f.value, '$.field') = json_extract(c.patch_json, '$.items[0].field'))
     ORDER BY c.declined_at DESC, c.rowid DESC`;
   return rows.flatMap((row) =>
     Option.toArray(decodeProposal(row.patch)).flatMap((proposal) =>

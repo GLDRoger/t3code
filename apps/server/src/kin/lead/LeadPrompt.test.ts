@@ -130,7 +130,7 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
-it.effect("shows active own mailboxes only in the teammate's direct turn", () =>
+it.effect("shows active own mailboxes only in their person's own direct turn", () =>
   Effect.gen(function* () {
     yield* leadWithOwner;
     const sql = yield* SqlClient.SqlClient;
@@ -195,14 +195,22 @@ it.effect("shows active own mailboxes only in the teammate's direct turn", () =>
         'Their own mailbox "mate@ambermill.example" is connected: a mail they ask you to write is drafted from it with kin_connection_call mail_send and waits on a Confirm card for them, not for the owner. Nothing goes until they tap Confirm: never say it was sent.',
       ),
     );
-    expect(yield* prompt.build(owner)).toBe(ownerBefore);
+    // The owner's own turn names his too, so his agent knows them without calling a tool.
+    const ownerLine =
+      'Their own mailbox "owner@ambermill.example" is connected too: in this chat you can read it and draft from it with kin_connection_tools and kin_connection_call; a mail from it waits on a Confirm card for them alone.';
+    const ownerNow = yield* prompt.build(owner);
+    expect(ownerNow).toContain(ownerLine);
+    expect(
+      ownerNow
+        .split("\n")
+        .filter((line) => line !== ownerLine)
+        .join("\n"),
+    ).toBe(ownerBefore);
     expect(yield* prompt.build(room)).toBe(groupBefore);
 
     yield* sql`UPDATE kin_connections SET paused_at = 1 WHERE org_id = ${orgId} AND person_id = ${teammateId}`;
     expect(yield* prompt.build(mate)).toBe(before);
     yield* sql`UPDATE kin_connections SET paused_at = NULL WHERE org_id = ${orgId} AND person_id = ${teammateId}`;
-    // The live schema allows only one; exercise the requested wording without changing that limit.
-    yield* sql`DROP INDEX kin_connections_live_person`;
     yield* addMailbox(teammateId, "second@ambermill.example");
     expect(yield* prompt.build(mate)).toBe(
       after(

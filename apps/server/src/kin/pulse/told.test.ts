@@ -280,6 +280,24 @@ const lateTask = (days: number) =>
     sense: "task_late",
     measure: { value: days * 24, unit: "hours", threshold: 0, from: { _tag: "default" } },
   });
+const lateEntry = (days: number) =>
+  fact({
+    sense: "entry_late",
+    key: "entry_late:LIC-4:due=1",
+    measure: { value: days * 24, unit: "hours", threshold: 24, from: { _tag: "default" } },
+  });
+const entrySoon = (hours: number) =>
+  fact({
+    sense: "entry_late",
+    key: "entry_late:LIC-4:soon=1",
+    measure: { value: hours, unit: "hours", threshold: 72, from: { _tag: "default" } },
+  });
+const offCheck = (days: number) =>
+  fact({
+    sense: "entry_check",
+    key: "entry_check:STK-2",
+    measure: { value: days * 24, unit: "hours", threshold: 24, from: { _tag: "default" } },
+  });
 const dueIn = (hours: number) =>
   fact({
     sense: "task_due_soon",
@@ -300,6 +318,13 @@ describe("what a told fact is compared on", () => {
     { name: "a late task from day three to six", a: lateTask(3), b: lateTask(6), same: true },
     { name: "a late task reaches day seven", a: lateTask(6), b: lateTask(7), same: false },
     { name: "a late task reaches day fourteen", a: lateTask(13), b: lateTask(14), same: false },
+    { name: "a late list entry from day one to two", a: lateEntry(1), b: lateEntry(2), same: true },
+    { name: "a late list entry reaches day three", a: lateEntry(2), b: lateEntry(3), same: false },
+    { name: "a late list entry reaches day seven", a: lateEntry(6), b: lateEntry(7), same: false },
+    { name: "a late list entry a week on", a: lateEntry(13), b: lateEntry(14), same: false },
+    { name: "a late list entry within its week", a: lateEntry(8), b: lateEntry(13), same: true },
+    { name: "a list entry coming due, a day on", a: entrySoon(60), b: entrySoon(36), same: true },
+    { name: "a list entry off its check for days", a: offCheck(1), b: offCheck(9), same: true },
     { name: "a day older, same chase interval", a: overdue(8), b: overdue(13), same: true },
     { name: "past another chase interval", a: overdue(13), b: overdue(14), same: false },
     { name: "due tomorrow, then due today", a: dueIn(30), b: dueIn(5), same: false },

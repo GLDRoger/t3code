@@ -42,6 +42,7 @@ import { chatShared } from "../chat/sharing.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import type * as Routines from "../triggers/routines.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
+import { checkLeadNoticeNow } from "../hostBackup.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import * as Queue from "./KinEventQueue.ts";
 import { hashedEventId } from "./eventIds.ts";
@@ -368,6 +369,7 @@ const make = Effect.gen(function* () {
       }),
     );
     yield* publish(input.orgId, result.messages);
+    yield* checkLeadNoticeNow(input.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     if (result.state.paused)
       yield* fanOut(
         input.orgId,
@@ -474,6 +476,7 @@ const make = Effect.gen(function* () {
             Effect.provideService(SqlClient.SqlClient, sql),
           );
       if (attached !== undefined) yield* attached.resume(input.orgId);
+      yield* checkLeadNoticeNow(input.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     }
     return yield* state(input.orgId);
   });

@@ -124,7 +124,7 @@ import { latestComments, projectNoteOf } from "./recordComments.ts";
 import {
   endOfDay,
   byNumber,
-  dueWhenText,
+  dueText,
   iso,
   isSuggestion,
   notBouncedBack,
@@ -1079,7 +1079,7 @@ const timeIsDue = <
 
 /** A plain task's date as its page shows it ("Due: No date" too), so the agent says the same. */
 export const dueShows = (dueAt: number | null, allDay: boolean, zone: string) =>
-  `Due: ${dueAt === null ? "No date" : dueWhenText(dueAt, allDay, zone, { zone, locale: KIN_TEXT_LOCALE })}`;
+  `Due: ${dueAt === null ? "No date" : dueText(dueAt, allDay, zone)}`;
 const shownDue = Effect.fn("KinWorkTools.shownDue")(function* (
   orgId: KinOrgId,
   row: Pick<RecordRow, "registerId" | "category" | "dueAt" | "dueAllDay">,

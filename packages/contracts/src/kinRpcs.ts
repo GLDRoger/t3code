@@ -579,6 +579,8 @@ const KIN_RPC_ACCESS = {
   "kin.connections.mineSignInStart": "person",
   "kin.connections.mineSignInFinish": "person",
   "kin.connections.mineRemove": "person",
+  // Both ways are the owner level's; the service moves only the caller's own (`moveMailbox`).
+  "kin.connections.moveMailbox": "owner_level",
   "kin.github.connect.status": "owner_level",
   "kin.github.connect.start": "owner_level",
   "kin.github.connect.cancel": "owner_level",
@@ -867,6 +869,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.connections.mineSignInStart": "kin-connections",
   "kin.connections.mineSignInFinish": "kin-connections",
   "kin.connections.mineRemove": "kin-connections",
+  "kin.connections.moveMailbox": "kin-connections",
   "kin.github.connect.status": "kin-connections",
   "kin.github.connect.start": "kin-connections",
   "kin.github.connect.cancel": "kin-connections",
