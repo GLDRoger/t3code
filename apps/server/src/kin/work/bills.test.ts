@@ -46,6 +46,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Bills from "./bills.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { moneySummary } from "./moneyViews.ts";
+import { newExpense } from "./ownerMoneyAnswers.ts";
 import { defineList, PRESETS, presetDefinition } from "./registers.ts";
 import { KIN_OWNER_LEVEL } from "./teamView.ts";
 
@@ -573,6 +574,20 @@ describe("bills in bulk", () => {
         );
         assert.strictEqual((yield* card(added.batchId)).text, "Reading 3 bills: 2 done.");
 
+        // An unread one typed by hand with its file as the receipt is answered by that expense.
+        const again = yield* claimTurn(2);
+        yield* read({ bill: "B1", readable: false });
+        yield* endTurn(again.wakeupId);
+        const typed = yield* newExpense(as(rhea), {
+          orgId,
+          title: "Pune courier",
+          amount: { minor: 30_000, currency: "INR" },
+          paidOn: "2026-11-07",
+          receipt: [blurred!.file.attachmentId],
+          clientRequestId: "typed",
+        });
+        const byHand = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills[1]!;
+        assert.deepStrictEqual([byHand.state, byHand.expense?.key], ["kept", typed.expense]);
       }).pipe(Effect.provide(layer)),
   );
 

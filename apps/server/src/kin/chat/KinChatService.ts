@@ -3311,6 +3311,19 @@ const make = Effect.gen(function* () {
         const identity =
           "_tag" in caller ? caller : caller.find((viewer) => viewer.orgId === owner.value.orgId);
         if (identity === undefined || identity.orgId !== owner.value.orgId) return false;
+        // A bill's file is for the owner level of its company, whoever added it (`work/bills.ts`).
+        const bill = yield* sql`SELECT 1 FROM kin_bill_reads
+          WHERE org_id = ${identity.orgId} AND attachment_id = ${attachmentId} LIMIT 1`.pipe(
+          Effect.mapError(toPersistenceSqlError("KinChatService.attachmentReadable")),
+        );
+        if (
+          bill.length > 0 &&
+          (yield* ownerLevel(identity.orgId, identity.personId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(toPersistenceSqlError("KinChatService.attachmentReadable")),
+          ))
+        )
+          return true;
         const members = yield* repo.listMembers(owner.value);
         const member = members.find(
           (member) =>
