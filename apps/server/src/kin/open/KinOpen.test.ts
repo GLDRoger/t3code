@@ -333,7 +333,7 @@ it.effect("its tasks are the ones Tasks counts under Needs you, in Tasks' order"
         at: NOW,
       });
       const counted = tasks.moves.filter((move) => move.group === "needsYou" && !move.under);
-      const late = (key: string) => tasks.rows.find((row) => row.key === key)?.late === true;
+      const late = (key: string) => (tasks.rows.find((row) => row.key === key)?.dueAt ?? NOW) < NOW;
       assert.strictEqual(read.counts.tasks, tasks.counts.needsYou);
       // Each is a row of its own unless its fact stands for it.
       const covered = new Set(

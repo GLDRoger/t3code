@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures read due days against a fixed date.
 import {
   KinOrgId,
   KinPersonId,
