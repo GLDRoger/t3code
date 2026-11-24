@@ -115,7 +115,7 @@ const TaskSummary = Schema.Struct({
 const TaskDetail = Schema.Struct({
   ...TaskSummary.fields,
   brief: Schema.String,
-  checklist: KinWorkSteps,
+  checklist: Schema.optional(KinWorkSteps),
   material: Schema.String,
   comments: Schema.Array(
     Schema.Struct({ by: Schema.String, at: Schema.String, text: Schema.String }),
@@ -1560,7 +1560,7 @@ const listed = toolVisibility(
   Effect.fnUntraced(function* (name, method) {
     const gate =
       GATED[name] ?? (OWNER_LISTED.has(name) && method !== "tools/call" ? readsMemory : undefined);
-    // A direct call meets the same gates as the listing: a tool not listed is not there.
+    // New owner tools let the app service explain a direct refusal using its usual wording.
     const section = TOOL_SECTIONS[name];
     if (gate === undefined && section === undefined) return true;
     return yield* asHolder((holder) =>
