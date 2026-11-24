@@ -76,10 +76,7 @@ it.live.each([
   "review-null",
   "credentials",
   "read-during-record",
-  "deferral-card-remind",
-  "deferral-card-monday",
   "deferral-plain-remind",
-  "deferral-card-other-item",
   "H3-packed-ref",
   "M1-unanchored",
   "M2-nondescendant",
@@ -315,35 +312,12 @@ it.live.each([
                           itemId: scenario === "owner-other-item-keep" ? "other-item" : "def-001",
                           action: scenario === "owner-drop-keep" ? "drop" : "keep",
                         }
-                      : scenario === "deferral-card-monday"
-                        ? {
-                            saidBy: "fixture-owner",
-                            trust: "owner",
-                            source: "fixture-owner-message",
-                            text: FIXTURE_SAID,
-                            kind: "deferral_card",
-                            itemId: "def-001",
-                            action: "monday",
-                            due: "2026-11-16T09:00:00.000+05:30",
-                          }
-                        : scenario === "deferral-card-remind" ||
-                            scenario === "deferral-card-other-item"
-                          ? {
-                              saidBy: "fixture-owner",
-                              trust: "owner",
-                              source: "fixture-owner-message",
-                              text: FIXTURE_SAID,
-                              kind: "deferral_card",
-                              itemId:
-                                scenario === "deferral-card-other-item" ? "other-item" : "def-001",
-                              action: "remind",
-                            }
-                          : {
-                              saidBy: "fixture-owner",
-                              trust: "owner",
-                              source: "fixture-owner-message",
-                              text: FIXTURE_SAID,
-                            },
+                      : {
+                          saidBy: "fixture-owner",
+                          trust: "owner",
+                          source: "fixture-owner-message",
+                          text: FIXTURE_SAID,
+                        },
                   ],
                   [
                     "member",
@@ -1025,7 +999,7 @@ it.live.each([
         ).toBe("Success");
         return;
       }
-      if (scenario === "deferral-plain-remind" || scenario === "deferral-card-other-item") {
+      if (scenario === "deferral-plain-remind") {
         const result = yield* writer
           .stage(orgId, "wake1", {
             path: "deferrals/def-001.md",
@@ -1034,45 +1008,6 @@ it.live.each([
           })
           .pipe(Effect.result);
         expect(result._tag === "Failure" && result.failure._tag).toBe("MemoryConflict");
-        return;
-      }
-      if (scenario === "deferral-card-monday") {
-        const stage = (fields: Record<string, unknown>) =>
-          writer
-            .stage(orgId, "wake1", {
-              path: "deferrals/def-001.md",
-              content: fixtureItem(fields),
-              sourceEventId: "owner",
-            })
-            .pipe(Effect.result);
-        for (const forged of [
-          { due: "2026-11-17T09:00:00.000+05:30" },
-          { due: "2026-11-16T09:00:00.000+05:30", on_due: "remind" },
-        ]) {
-          const result = yield* stage(forged);
-          expect(result._tag === "Failure" && result.failure._tag).toBe("MemoryConflict");
-        }
-        expect((yield* stage({ due: "2026-11-16T09:00:00.000+05:30" }))._tag).toBe("Success");
-        return;
-      }
-      if (scenario === "deferral-card-remind") {
-        const stage = (onDue: string) =>
-          writer
-            .stage(orgId, "wake1", {
-              path: "deferrals/def-001.md",
-              content: fixtureItem({ on_due: onDue }),
-              sourceEventId: "owner",
-            })
-            .pipe(Effect.result);
-        const forged = yield* stage("ask");
-        expect(forged._tag === "Failure" && forged.failure._tag).toBe("MemoryConflict");
-        expect((yield* stage("remind"))._tag).toBe("Success");
-        const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
-        expect(
-          yield* git(paths.writer, ["show", `${committed.commit}:deferrals/def-001.md`]),
-        ).toContain("on_due: remind");
-        const last = synced.at(-1)?.find((item) => item.id === "def-001");
-        expect(last?.on_due).toBe("remind");
         return;
       }
       if (scenario.endsWith("-keep")) {

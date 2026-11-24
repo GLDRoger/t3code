@@ -2501,7 +2501,14 @@ const make = Effect.gen(function* () {
         if (billToPatch !== undefined) {
           const client =
             newParty ?? (partyId === null ? undefined : yield* target(orgId, partyId, "clients"));
-          yield* validateBillTo(gstCompany(orgId), row.key, client, billToPatch, name, partyChanged);
+          yield* validateBillTo(
+            gstCompany(orgId),
+            row.key,
+            client,
+            billToPatch,
+            name,
+            partyChanged,
+          );
         }
         const clearBilling =
           hasBillTo(list) &&

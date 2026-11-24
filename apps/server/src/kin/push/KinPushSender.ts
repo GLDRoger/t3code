@@ -935,7 +935,7 @@ const make = Effect.gen(function* () {
             : row.phase === "heads_up"
               ? ({
                   category: "kin.deferral.heads_up",
-                  body: "A deferred task starts soon",
+                  body: "A deferred task is due soon.",
                 } as const)
               : undefined;
     if (kind === undefined) return undefined;

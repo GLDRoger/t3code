@@ -66,6 +66,8 @@ import {
   type KinChatsClearResult,
   type KinPersonId,
   type KinOrgId,
+  KinMemoryItemId,
+  kinDeferralItemIdFromWidgetId,
   type KinReaction,
   type KinReactionEmoji,
   type KinWaitingItem,
@@ -96,7 +98,8 @@ import * as SqlError from "effect/sql/SqlError";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { validateState } from "../widgets/registry.ts";
-import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferralCard.ts";
+import * as DeferralCard from "../widgets/deferralCard.ts";
+import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import * as ChartCard from "../widgets/chartCard.ts";
 import * as VisualCard from "../widgets/visualCard.ts";
 import * as CardPlans from "../widgets/cardPlans.ts";
@@ -175,6 +178,11 @@ export type ChoiceRefusedHandler = (input: {
  * Server work an owner's answer on a choice card carries out, in the tap's own transaction:
  * attached by the layer that has records and documents, which the chat layer sits under.
  */
+/** A deferral's committed item, or none when memory no longer has it. */
+export type DeferralItemReader = (
+  orgId: KinOrgId,
+  itemId: KinMemoryItemId,
+) => Effect.Effect<DeferralCard.DeferralCommitted, { readonly _tag: string }>;
 export type ChoiceAnswerHandler = (input: {
   readonly orgId: KinOrgId;
   readonly widget: KinWidget;
@@ -220,6 +228,13 @@ export class KinChatService extends Context.Service<
       handler: ChoiceAnswerHandler,
       refused?: ChoiceRefusedHandler,
       dismissed?: ChoiceDismissHandler,
+    ) => Effect.Effect<void, never, Scope.Scope>;
+    /**
+     * Reads a deferral's committed item for a card tap, attached by the lead runtime that owns
+     * memory. The tap reads it before its transaction, so it never waits on the memory lock there.
+     */
+    readonly attachDeferralItems: (
+      read: DeferralItemReader,
     ) => Effect.Effect<void, never, Scope.Scope>;
     readonly notice: (input: {
       readonly messageId: KinMessageId;
@@ -576,6 +591,17 @@ const chatOwnAsker = (widget: KinWidget) =>
 /** Matches the choice card's window and the wake-up catch-up: older messages are not worth a wake. */
 const SOFT_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const encodeAction = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const DEFERRAL_DECISIONS: ReadonlySet<string> = new Set(["start_now", "monday", "cancel"]);
+const decodeTapBody = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      widgetId: Schema.String,
+      revision: Schema.Number,
+      actionId: Schema.String,
+      value: Schema.optional(Schema.Unknown),
+    }),
+  ),
+);
 const invalidState = new KinChatError({ reason: "invalid_state", message: "Invalid chat input." });
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 /** How a dismissed card's waiting rows read as resolved. */
@@ -683,6 +709,8 @@ const make = Effect.gen(function* () {
   // Absent where no attachments directory exists; a send with files is then refused.
   const attachmentStore = yield* Effect.serviceOption(KinAttachmentStore);
   const stop = yield* Effect.serviceOption(KinStop);
+  // A deferral card's [Start now] hands its work to the lead's queue in the tap's transaction.
+  const queue = yield* Effect.serviceOption(KinEventQueue);
   /** For a stream event; left out of a chat that was never cleared. */
   const clearedAt = (clearedSeq: number) => (clearedSeq > 0 ? { clearedSeq } : {});
   const sql = yield* SqlClient.SqlClient;
@@ -693,6 +721,7 @@ const make = Effect.gen(function* () {
   let onChoice: ChoiceAnswerHandler | undefined;
   let onRefused: ChoiceRefusedHandler | undefined;
   let onDismiss: ChoiceDismissHandler | undefined;
+  let deferralItems: DeferralItemReader | undefined;
   const instanceClock = yield* Clock.Clock;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql.withTransaction(effect).pipe(
@@ -1293,8 +1322,30 @@ const make = Effect.gen(function* () {
     widget: KinWidget,
     request: KinWidgetsActInput,
     reaction: { readonly emoji: KinReactionEmoji } | null,
+    committed?: DeferralCard.DeferralCommitted,
   ) {
     if (widget.type === "chart" || widget.type === KIN_VISUAL_CARD_TYPE) return yield* invalidState;
+    // A deferral tap that committed answers its exact repeat as it did, whatever the card shows now.
+    if (widget.type === "deferral") {
+      const repeat = yield* repo.findClientMessage({
+        ...member,
+        kind: "act",
+        clientId: request.clientActionId,
+      });
+      const sent = Option.flatMap(repeat, (message) => decodeTapBody(message.body));
+      if (
+        Option.isSome(repeat) &&
+        Option.isSome(sent) &&
+        repeat.value.author._tag === "human" &&
+        repeat.value.author.personId === identity.personId &&
+        repeat.value.widgetId === request.widgetId &&
+        sent.value.widgetId === request.widgetId &&
+        sent.value.revision === request.revision &&
+        sent.value.actionId === request.actionId &&
+        sent.value.value === request.value
+      )
+        return repeat.value;
+    }
     const choice = widget.type === "choice" ? yield* ChoiceCard.readChoice(widget, request) : null;
     const reminder =
       widget.type === "reminder"
@@ -1316,7 +1367,11 @@ const make = Effect.gen(function* () {
       widget.type === KIN_SOCIAL_PACK_CARD
         ? yield* SocialCards.describePackTap(widget, request.actionId)
         : null;
-    const tap = choice ?? reminder ?? scheduled ?? socialTap ?? packTap;
+    const deferral =
+      widget.type === "deferral" && request.actionId !== "undo"
+        ? yield* DeferralCard.describeDeferralTap(widget, request.actionId, request.value)
+        : null;
+    const tap = choice ?? reminder ?? scheduled ?? socialTap ?? packTap ?? deferral;
     // An option that runs a fixed action runs it for a tap only, never for a reaction.
     const sealed =
       choice === null
@@ -1347,7 +1402,9 @@ const make = Effect.gen(function* () {
       ...(request.value === undefined ? {} : { value: request.value }),
       ...(tap === null ? {} : { text: tap.text }),
       // The server finished this tap itself, so it doesn't wake the lead.
-      ...((reminder ?? scheduled ?? socialTap ?? packTap)?.wake === false || runs
+      ...((reminder ?? scheduled ?? socialTap ?? packTap)?.wake === false ||
+      runs ||
+      deferral !== null
         ? { handled: true }
         : {}),
     }).pipe(Effect.mapError(() => invalidState));
@@ -1415,6 +1472,32 @@ const make = Effect.gen(function* () {
       yield* sql.afterCommit(
         hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
       );
+    }
+    if (deferral !== null) {
+      if (Option.isNone(queue))
+        return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+      const refused = yield* DeferralCard.applyDeferralTap(
+        widget,
+        deferral,
+        {
+          personId: identity.personId,
+          memberId: member.memberId,
+          // By company access, not chat role: an agent's owner who is a teammate starts nothing.
+          owner: yield* ownerLevel(identity.orgId, identity.personId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ),
+        },
+        committed,
+        yield* Clock.currentTimeMillis,
+      ).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(Repository.KinChatRepository, repo),
+        Effect.provideService(Hub.KinChatHub, hub),
+        Effect.provideService(KinEventQueue, queue.value),
+        Effect.mapError(dismissError),
+      );
+      // The card was drawn again from its item: that commits, and the tap is refused after.
+      if (refused !== undefined) return refused;
     }
     const ownerCard = socialTap !== null || packTap !== null;
     if (reminder !== null || scheduled !== null || ownerCard) {
@@ -1560,6 +1643,108 @@ const make = Effect.gen(function* () {
         yield* tellReplaced(answered, { name: decidedBy.name, label: choice.option.label });
     }
     return message;
+  });
+  /** A tap's own checks and effects, inside its transaction (`act` reads memory before it). */
+  const actInside = Effect.fnUntraced(function* (
+    caller: PersonCaller,
+    input: KinWidgetsActInput,
+    committed: DeferralCard.DeferralCommitted | undefined,
+  ) {
+    const identity = yield* personFor(caller, input);
+    const request = yield* decodeAct(input).pipe(Effect.mapError(() => invalidState));
+    const { widget, member } = yield* tapTarget(identity, request.widgetId);
+    if (
+      widget.type === "choice" &&
+      widget.closedAt === null &&
+      widget.awaiting.includes(identity.personId) &&
+      (request.actionId === KIN_CHOICE_CARD_ACTION ||
+        request.actionId === KIN_CHOICE_DISMISS_ACTION)
+    ) {
+      const outcome = yield* terminalChoiceOutcome(widget);
+      const dismiss = request.actionId === KIN_CHOICE_DISMISS_ACTION;
+      if (outcome !== undefined && (!dismiss || !Predicate.hasProperty(widget.state, "send"))) {
+        yield* closeTerminalChoice(widget, outcome);
+        if (dismiss) return yield* requireRecord(repo.getMessage(widget));
+        // The refusal is sent after commit so the card closes even though the tap did not answer it.
+        return new KinChatError({ reason: "widget_changed", message: outcome.text });
+      }
+    }
+    if (
+      widget.type === "choice" &&
+      (request.actionId === KIN_CHOICE_DISMISS_ACTION ||
+        request.actionId === KIN_CHOICE_UNDISMISS_ACTION)
+    )
+      return yield* dismissOn(identity, widget, request);
+    if (widget.type === "approval")
+      return yield* new KinChatError({
+        reason: "use_approvals",
+        message: "Use the signed approvals service.",
+      });
+    const owning = yield* ownerSide(identity, member);
+    if (widget.type === "owner_check") {
+      if (!owning) return yield* notAllowed;
+      const card = yield* decodeOwnerCheckCard(widget.state).pipe(
+        Effect.mapError(() => invalidState),
+      );
+      if (
+        !["keep", "update", "drop"].includes(request.actionId) ||
+        !card.items.some((item) => item.itemId === request.value)
+      )
+        return yield* invalidState;
+    }
+    // A shared chat's own reminder or routine is its asker's, the owner's or a co-owner's.
+    const asker = chatOwnAsker(widget);
+    // A shared chat's own: its setter, or the owner or a co-owner by their live access.
+    if (
+      asker !== undefined &&
+      asker.personId !== identity.personId &&
+      !(yield* ownerLevel(identity.orgId, identity.personId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      ))
+    )
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: KIN_ASKER_ONLY_REFUSAL,
+      });
+    // Reminders and scheduled tasks act for the owner, so only the owner taps them, except a
+    // reminder in someone's own direct chat: theirs to finish or snooze.
+    if (
+      (widget.type === "reminder" ||
+        widget.type === "scheduled_task" ||
+        widget.type === KIN_SOCIAL_WEEK_CARD ||
+        widget.type === KIN_SOCIAL_PACK_CARD) &&
+      !owning &&
+      asker === undefined &&
+      !(widget.type === "reminder" && (yield* ownDirectChat(identity, widget.chatId)))
+    )
+      return yield* notAllowed;
+    // A deferral is the company's: its taps are a live owner's or co-owner's, by company access,
+    // never by owning the chat. Its asker may only Undo their own shared-chat reminder.
+    if (
+      widget.type === "deferral" &&
+      !(request.actionId === "undo" && asker?.personId === identity.personId) &&
+      !(yield* ownerLevel(identity.orgId, identity.personId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      ))
+    )
+      return yield* notAllowed;
+    return yield* actOn(identity, member, widget, request, null, committed);
+  });
+  /** Before the tap's transaction: the committed item a deferral card's decision tap acts on. */
+  const committedDeferral = Effect.fn("KinChatService.committedDeferral")(function* (
+    caller: PersonCaller,
+    input: KinWidgetsActInput,
+  ) {
+    const read = deferralItems;
+    if (read === undefined || !DEFERRAL_DECISIONS.has(input.actionId)) return undefined;
+    const identity = yield* personFor(caller, input).pipe(Effect.option);
+    if (Option.isNone(identity)) return undefined;
+    const itemId = kinDeferralItemIdFromWidgetId(identity.value.orgId, input.widgetId);
+    if (itemId === null) return undefined;
+    return yield* read(identity.value.orgId, KinMemoryItemId.make(itemId)).pipe(
+      Effect.map((item): DeferralCard.DeferralCommitted | undefined => item),
+      Effect.orElseSucceed(() => undefined),
+    );
   });
   /** The cards a newer one replaced say what was chosen on it, once (`closeReplaced`'s `by`). */
   const tellReplaced = Effect.fn("KinChatService.tellReplaced")(function* (
@@ -3694,86 +3879,21 @@ const make = Effect.gen(function* () {
       yield* hub.publish({ type: "widget.updated", orgId: identity.orgId, widget });
       return widget;
     }, transaction),
-    act: Effect.fn("KinChatService.act")(function* (identity, input) {
-      identity = yield* personFor(identity, input);
-      const request = yield* decodeAct(input).pipe(Effect.mapError(() => invalidState));
-      const { widget, member } = yield* tapTarget(identity, request.widgetId);
-      if (
-        widget.type === "choice" &&
-        widget.closedAt === null &&
-        widget.awaiting.includes(identity.personId) &&
-        (request.actionId === KIN_CHOICE_CARD_ACTION ||
-          request.actionId === KIN_CHOICE_DISMISS_ACTION)
-      ) {
-        const outcome = yield* terminalChoiceOutcome(widget);
-        const dismiss = request.actionId === KIN_CHOICE_DISMISS_ACTION;
-        if (outcome !== undefined && (!dismiss || !Predicate.hasProperty(widget.state, "send"))) {
-          yield* closeTerminalChoice(widget, outcome);
-          if (dismiss) return yield* requireRecord(repo.getMessage(widget));
-          // The refusal is sent after commit so the card closes even though the tap did not answer it.
-          return new KinChatError({ reason: "widget_changed", message: outcome.text });
-        }
-      }
-      if (
-        widget.type === "choice" &&
-        (request.actionId === KIN_CHOICE_DISMISS_ACTION ||
-          request.actionId === KIN_CHOICE_UNDISMISS_ACTION)
-      )
-        return yield* dismissOn(identity, widget, request);
-      if (widget.type === "approval")
-        return yield* new KinChatError({
-          reason: "use_approvals",
-          message: "Use the signed approvals service.",
-        });
-      const owning = yield* ownerSide(identity, member);
-      if (widget.type === "owner_check") {
-        if (!owning) return yield* notAllowed;
-        const card = yield* decodeOwnerCheckCard(widget.state).pipe(
-          Effect.mapError(() => invalidState),
-        );
-        if (
-          !["keep", "update", "drop"].includes(request.actionId) ||
-          !card.items.some((item) => item.itemId === request.value)
-        )
-          return yield* invalidState;
-      }
-      // A shared chat's own reminder or routine is its asker's, the owner's or a co-owner's.
-      const asker = chatOwnAsker(widget);
-      // A shared chat's own: its setter, or the owner or a co-owner by their live access.
-      if (
-        asker !== undefined &&
-        asker.personId !== identity.personId &&
-        !(yield* ownerLevel(identity.orgId, identity.personId).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-        ))
-      )
-        return yield* new KinChatError({
-          reason: "not_allowed",
-          message: KIN_ASKER_ONLY_REFUSAL,
-        });
-      // Reminders and scheduled tasks act for the owner, so only the owner taps them, except a
-      // reminder in someone's own direct chat: theirs to finish or snooze.
-      if (
-        (widget.type === "reminder" ||
-          widget.type === "scheduled_task" ||
-          widget.type === KIN_SOCIAL_WEEK_CARD ||
-          widget.type === KIN_SOCIAL_PACK_CARD) &&
-        !owning &&
-        asker === undefined &&
-        !(widget.type === "reminder" && (yield* ownDirectChat(identity, widget.chatId)))
-      )
-        return yield* notAllowed;
-      // Any writing member of the card's chat may undo; the other taps wait on the dispatcher.
-      if (
-        widget.type === "deferral" &&
-        request.actionId !== "undo" &&
-        (!owning ||
-          !deferralCardActionsReady ||
-          !deferralCardActions.some((action) => action === request.actionId))
-      )
-        return yield* notAllowed;
-      return yield* actOn(identity, member, widget, request, null);
-    }, refusedAfter),
+    act: Effect.fn("KinChatService.act")(function* (caller, input) {
+      const committed = yield* committedDeferral(caller, input);
+      return yield* refusedAfter(actInside(caller, input, committed), caller, input);
+    }),
+    attachDeferralItems: Effect.fn("KinChatService.attachDeferralItems")(function* (read) {
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          deferralItems = read;
+        }),
+        () =>
+          Effect.sync(() => {
+            if (deferralItems === read) deferralItems = undefined;
+          }),
+      );
+    }),
     canTap: Effect.fn("KinChatService.canTap")(function* (identity, input) {
       yield* tapTarget(identity, input.widgetId);
     }),
