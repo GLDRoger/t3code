@@ -220,6 +220,8 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         ownerLevelAsked:
           (yield* wordOf({ orgId: lead.orgId, agentId: lead.agentId, wakeupId }))?.ownerLevel ===
           true,
+        wakeupId,
+        detail: card.detail,
       });
       // Asked in a task's own turn, the card is about that task too: it can't close under it.
       const turn = { orgId: lead.orgId, agentId: lead.agentId, wakeupId };

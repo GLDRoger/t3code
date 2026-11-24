@@ -8,6 +8,7 @@ import {
   KinChatError,
   KinOrgId,
   KinPersonId,
+  KinWakeupId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -30,7 +31,7 @@ import { billedParty } from "./billTo.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadWork from "./leadWork.ts";
 import { fieldText, parseFields } from "./lists.ts";
-import { answerUnconfirmed } from "./unconfirmedFacts.ts";
+import { answerUnconfirmed, declinedAsked, heldBack } from "./unconfirmedFacts.ts";
 
 // Invented company, people, clients and numbers only.
 const orgId = KinOrgId.make("org");
@@ -482,7 +483,7 @@ it.effect(
       const again = yield* Effect.flip(answer(card!.widgetId, ownerId, true));
       assert.isTrue(isChatError(again) && again.reason === "widget_changed");
 
-      // Not this drops it: the address stays, and the record says nothing waits.
+      // Not this drops it: the address stays, and the record says nothing waits, only who said no.
       yield* LeadWork.update(scope, {
         key: "C-2",
         sourceEventId: yield* turn(null),
@@ -497,7 +498,9 @@ it.effect(
       });
       const kept = yield* LeadWork.get(scope, { key: "C-2" });
       assert.strictEqual(kept.address, "Invented 1 Quay Road");
-      assert.isUndefined(kept.unconfirmed);
+      assert.deepStrictEqual(kept.unconfirmed, [
+        `Declined Billing address: "Invented 9 Dock Lane": Rhea said no to it on Kin's card at 2026-11-24T06:00:00.000Z. Don't propose it or ask about it again unless the owner or a co-owner types it to you in their own chat.`,
+      ]);
 
       // A field changed since it was proposed no longer waits: Rhea typed the same number, so
       // its card's Use it leaves it as it is; another number since refuses the card.
@@ -605,6 +608,54 @@ it.effect(
       assert.include(repeated.unconfirmed, "Rhea said no to");
       assert.lengthOf(yield* forSaltmarsh, 0);
       assert.strictEqual((yield* stored("C-4")).gstin, NEW);
+      // In any later turn the same value, however spaced, is told with who said no and when, and
+      // no card is drawn; the client's read says so; a question naming it about them is refused.
+      const later = yield* LeadWork.update(scope, {
+        key: "C-4",
+        sourceEventId: yield* turn(null),
+        gstin: "29ccccc 2222 c1z5",
+      });
+      assert.include(later.unconfirmed, "Rhea said no to");
+      assert.include(later.unconfirmed, "2026-11-24T06:00:00.000Z");
+      assert.lengthOf(yield* forSaltmarsh, 0);
+      assert.include(
+        ((yield* LeadWork.get(scope, { key: "C-4" })).unconfirmed ?? []).join("\n"),
+        `"${refusedValue}": Rhea said no to it`,
+      );
+      yield* turn(null);
+      const asking = { orgId, agentId: lead, wakeupId: KinWakeupId.make(`wake-${turns}`) };
+      const named = (question: string) => declinedAsked(asking, ["C-4"], [question]);
+      assert.include(
+        yield* named(`Use ${refusedValue.toLowerCase()} for Saltmarsh?`),
+        "Rhea said no to",
+      );
+      assert.isUndefined(yield* named("Use their new address for Saltmarsh?"));
+      // Another value is asked. Only an owner-level person's own word in their chat lifts the no;
+      // Meera typing it in the team room doesn't, though her typing goes for any other value.
+      yield* LeadWork.update(scope, {
+        key: "C-4",
+        sourceEventId: yield* turn(null),
+        gstin: "29DDDDD3333D1Z5",
+      });
+      assert.lengthOf(yield* forSaltmarsh, 1);
+      const heldAfter = Effect.fn("test.heldAfter")(function* (
+        said: string,
+        who: "owner" | "mate",
+        value = refusedValue,
+      ) {
+        yield* turn(said, who);
+        return yield* heldBack(
+          { orgId, agentId: lead, wakeupId: `wake-${turns}` },
+          [{ field: "gstin", value, before: NEW }],
+          saltmarsh,
+        );
+      });
+      assert.lengthOf(yield* heldAfter(`Yes, use ${refusedValue} after all`, "owner"), 0);
+      assert.lengthOf(yield* heldAfter(`Saltmarsh's number is ${refusedValue}`, "mate"), 1);
+      assert.lengthOf(
+        yield* heldAfter("Saltmarsh's number is 29EEEEE4444E1Z5", "mate", "29EEEEE4444E1Z5"),
+        0,
+      );
       // A dropped client's card writes nothing.
       yield* LeadWork.update(scope, { key: "C-5", sourceEventId: yield* turn(null), gstin: NEW });
       const reema = (yield* stored("C-5")).row.recordId;

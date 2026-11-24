@@ -53,6 +53,7 @@ import { ownerZone } from "../work/recordRows.ts";
 import { unreadableBy } from "../work/teamView.ts";
 import { allLists } from "../work/registers.ts";
 import { leadNamer } from "../work/toolNames.ts";
+import { declinedAsked } from "../work/unconfirmedFacts.ts";
 import {
   dayWord,
   defaultDue,
@@ -284,6 +285,9 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   readonly held?: "repeats" | "handed_back" | undefined;
   /** Woken by an owner-level person's own message: they may be asked about what is set aside. */
   readonly ownerLevelAsked?: boolean | undefined;
+  /** The asking turn and the card's other words, checked for a value a person said no to. */
+  readonly wakeupId?: string | undefined;
+  readonly detail?: string | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const wanted = input.default.trim().toLowerCase();
@@ -329,6 +333,15 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
       const text = yield* dismissedRepeat({ ...input, personId, intent, about }, clock.zone);
       if (text !== undefined) return yield* refuse(text);
     }
+    const no =
+      input.wakeupId === undefined
+        ? undefined
+        : yield* declinedAsked(
+            { orgId: input.orgId, agentId: input.agentId, wakeupId: input.wakeupId },
+            about,
+            [input.question, input.detail, ...input.labels],
+          );
+    if (no !== undefined) return yield* refuse(`${no} Nothing was asked.`);
   }
   return {
     questionId,

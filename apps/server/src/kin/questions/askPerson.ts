@@ -47,6 +47,7 @@ import { laneFor } from "../reply/replyLane.ts";
 import { choiceCardState, DETAIL_MAX } from "../widgets/choiceCard.ts";
 import { draftOpening, OPENING_MAX } from "../work/draftOpening.ts";
 import { personSees, unreadableBy, viewVisible } from "../work/teamView.ts";
+import { declinedAsked } from "../work/unconfirmedFacts.ts";
 import {
   DRAFT_KINDS,
   answeredEventId,
@@ -618,6 +619,15 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         return yield* refuse(
           "Say what it is for (intent) or which records it is about (about), so Kin can tell it from any other question.",
         );
+      const no =
+        turn === null || sentUp !== undefined
+          ? undefined
+          : yield* declinedAsked(turn, about, [
+              input.question,
+              input.detail,
+              ...(input.options ?? []).map((one) => one.label),
+            ]);
+      if (no !== undefined) return yield* refuse(no);
       const questionId =
         redone !== null
           ? redoId(redone.questionId, redone.wakeupId)

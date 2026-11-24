@@ -22,13 +22,13 @@ import {
   outsideStamp,
   renderSource,
 } from "../lead/OutsideContent.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { ownerLevel, ownerLevelSql } from "../people/KinAccess.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
 import { companyMoney } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
 import type { Lead } from "./leadWork.ts";
 import { fieldText, parseFields } from "./lists.ts";
-import type { RecordRow } from "./recordRows.ts";
+import { iso, type RecordRow } from "./recordRows.ts";
 import { regionOf } from "./region.ts";
 import { orgOwner } from "./toolNames.ts";
 
@@ -76,6 +76,8 @@ const typedIn = (said: string, messages: ReadonlyArray<ReadonlyArray<string>>) =
       return false;
     }),
   );
+/** A value as typed values are matched (`gentle`), whole. */
+const folded = (value: string) => words(value).join("");
 /** What a client's printed field holds now. */
 const holding = (record: Pick<RecordRow, "title" | "fieldsJson">, field: PrintedField) =>
   field === "title" ? record.title : fieldText(parseFields(record.fieldsJson), field);
@@ -96,12 +98,19 @@ const encodeProposal = Schema.encodeEffect(ProposalJson);
 
 type Turn = Pick<Lead, "orgId" | "agentId" | "wakeupId">;
 
-/** What people of the company wrote themselves in the messages that woke this turn, folded. */
+/**
+ * What people of the company wrote themselves in the messages that woke this turn, folded; `owner`
+ * when an owner-level person wrote it in their own direct chat.
+ */
 const ownWords = Effect.fn("KinUnconfirmed.ownWords")(function* (turn: Turn) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ body: string }>`SELECT m.body FROM kin_events e
+  const rows = yield* sql<{ body: string; owner: number }>`SELECT m.body,
+      (c.kind = 'direct' AND ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))})
+        AS owner
+    FROM kin_events e
     JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
       AND m.chat_id = json_extract(e.json, '$.chatId')
+    JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
     WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId}
       AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message'
       AND json_extract(e.json, '$.origin') IS NULL
@@ -109,13 +118,14 @@ const ownWords = Effect.fn("KinUnconfirmed.ownWords")(function* (turn: Turn) {
       AND COALESCE(m.client_message_id, '') NOT LIKE 'send:private:%'
       AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     ORDER BY e.event_id`;
-  return rows.map((row) => words(row.body));
+  return rows.map((row) => ({ words: words(row.body), owner: row.owner === 1 }));
 });
 
 /**
  * Of an agent's changes to printed fields, the ones that wait for a person: every value no person
- * of the company typed in a message that woke this turn. A clear goes in when a person started the
- * turn and nothing from outside came into it. A value equal to the one kept is no change.
+ * of the company typed in a message that woke this turn, and one a person said no to that no
+ * owner-level person typed in their own chat. A clear goes in when a person started the turn and
+ * nothing from outside came into it. A value equal to the one kept is no change.
  */
 export const heldBack = Effect.fn("KinUnconfirmed.heldBack")(function* (
   turn: Turn,
@@ -124,19 +134,70 @@ export const heldBack = Effect.fn("KinUnconfirmed.heldBack")(function* (
     readonly value: string | null;
     readonly before: string | null;
   }>,
+  recordId?: string,
 ) {
   const changing = asked.filter((one) => !same(one.value, one.before));
   if (changing.length === 0) return [];
-  const said = yield* ownWords(turn);
+  const messages = yield* ownWords(turn);
+  const said = messages.map((one) => one.words);
+  const ownerSaid = messages.flatMap((one) => (one.owner ? [one.words] : []));
+  const declined = recordId === undefined ? [] : yield* declinedFor(turn.orgId, [recordId]);
   const clears =
     said.length > 0 &&
     !(yield* outsideRead(turn)) &&
     !(yield* followsOutsideRead(turn.orgId, turn.wakeupId));
   return changing.filter((one) => {
     if (one.value === null) return !clears;
-    const value = words(one.value).join("");
-    return value === "" || !typedIn(value, said);
+    const value = folded(one.value);
+    const no = declined.some((item) => item.field === one.field && folded(item.value) === value);
+    return value === "" || !typedIn(value, no ? ownerSaid : said);
   });
+});
+
+/**
+ * Values a person said no to on Kin's card (Not this) for these clients, newest first, for every
+ * agent while the field doesn't hold them: who said no is kept on the row (`answerUnconfirmed`).
+ */
+const declinedFor = Effect.fn("KinUnconfirmed.declined")(function* (
+  orgId: KinOrgId,
+  recordIds: ReadonlyArray<string>,
+) {
+  if (recordIds.length === 0) return [];
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    patch: string;
+    at: number;
+    name: string | null;
+    title: string;
+    fieldsJson: string;
+  }>`SELECT c.patch_json AS patch, c.declined_at AS at, p.display_name AS name, r.title,
+      r.fields_json AS "fieldsJson"
+    FROM kin_profile_changes c
+    JOIN kin_records r ON r.org_id = c.org_id
+      AND r.record_id = json_extract(c.patch_json, '$.recordId') AND r.register_id = 'clients'
+    LEFT JOIN kin_people p ON p.org_id = c.org_id
+      AND p.person_id = json_extract(c.patch_json, '$.declinedBy')
+    WHERE c.org_id = ${orgId} AND substr(c.change_id, 1, 3) = ${UNCONFIRMED_CHANGE}
+      AND c.declined_at IS NOT NULL AND json_extract(c.patch_json, '$.declinedBy') IS NOT NULL
+      AND r.record_id IN ${sql.in([...new Set(recordIds)])}
+    ORDER BY c.declined_at DESC, c.rowid DESC`;
+  return rows.flatMap((row) =>
+    Option.toArray(decodeProposal(row.patch)).flatMap((proposal) =>
+      proposal.items.flatMap((item) =>
+        item.value === null || folded(holding(row, item.field) ?? "") === folded(item.value)
+          ? []
+          : [
+              {
+                client: row.title,
+                field: item.field,
+                value: item.value,
+                name: row.name ?? "the owner",
+                at: iso(row.at),
+              },
+            ],
+      ),
+    ),
+  );
 });
 
 const LABELS: Readonly<Record<Exclude<PrintedField, "gstin">, string>> = {
@@ -243,7 +304,7 @@ const rowId = Effect.fn("KinUnconfirmed.rowId")(function* (
 export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
   lead: Lead,
   record: Pick<RecordRow, "recordId" | "title" | "fieldsJson" | "ownerKind" | "ownerId">,
-  held: ReadonlyArray<{
+  given: ReadonlyArray<{
     readonly field: PrintedField;
     readonly value: string | null;
     readonly before: string | null;
@@ -256,6 +317,13 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
   const label = yield* labeller(orgId);
   const who = yield* confirmer(orgId, record);
   const name = who?.name ?? "the owner";
+  // A value a person said no to is told, with who and when, and never asked again (`heldBack`).
+  const declined = yield* declinedFor(orgId, [record.recordId]);
+  const noTo = ({ field, value }: (typeof given)[number]) =>
+    value === null
+      ? undefined
+      : declined.find((item) => item.field === field && folded(item.value) === folded(value));
+  const held = given.filter((one) => noTo(one) === undefined);
   const older = yield* pendingRows(orgId, record.recordId);
   // An item whose field changed since it was proposed is no longer asked.
   const live = (item: UnconfirmedItem) => same(holding(record, item.field), item.before);
@@ -322,8 +390,12 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
             name,
           ),
         ];
+  const saidNo = given.flatMap((one) => {
+    const no = noTo(one);
+    return no === undefined ? [] : [saidNoLine(record.title, describe([one]), no.name, no.at)];
+  });
   const say = (line: string | undefined) =>
-    [...(line === undefined ? [] : [line]), ...tooLong].join(" ");
+    [...(line === undefined ? [] : [line]), ...tooLong, ...saidNo].join(" ");
   const waiting = (carded: boolean) =>
     say(short.length === 0 ? undefined : waitingLine(record.title, describe(short), name, carded));
 
@@ -345,24 +417,6 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
     return waiting(true);
   // Only values too long for a card: no card replaces the older one, so the person keeps it.
   if (items.length === 0) return waiting(true);
-  // The person said no on this wake-up's card and no card asked since: told, not asked again.
-  const [refused] = yield* sql<{ patch: string }>`SELECT c.patch_json AS patch
-    FROM kin_profile_changes c
-    WHERE c.org_id = ${orgId} AND c.wakeup_id = ${lead.wakeupId}
-      AND substr(c.change_id, 1, 3) = ${UNCONFIRMED_CHANGE}
-      AND json_extract(c.patch_json, '$.recordId') = ${record.recordId}
-      AND c.widget_id IS NOT NULL AND c.declined_at IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM kin_profile_changes n
-        WHERE n.org_id = c.org_id AND substr(n.change_id, 1, 3) = ${UNCONFIRMED_CHANGE}
-          AND json_extract(n.patch_json, '$.recordId') = ${record.recordId}
-          AND n.widget_id IS NOT NULL AND n.rowid > c.rowid)
-    ORDER BY c.rowid DESC LIMIT 1`;
-  const no = refused === undefined ? [] : Option.toArray(decodeProposal(refused.patch));
-  if (
-    short.length > 0 &&
-    no.some((one) => short.every((value) => one.items.some((item) => sameItem(item, value))))
-  )
-    return say(saidNoLine(record.title, describe(short), name));
   const gate = Option.getOrUndefined(yield* Effect.serviceOption(KinLevelGate));
   const key = itemsKey(items);
   const changeId = yield* rowId(
@@ -438,8 +492,42 @@ const cardDetail = (
 /** Each answer line opens with what is true of the record and ends with what to say. */
 const DONT = "never say it is added or on the record, or give it as";
 
-const saidNoLine = (client: string, what: string, name: string) =>
-  `Not saved, and nothing on ${client} changed: ${name} said no to ${what} on Kin's card in this turn, so nothing is asked again now. Invoices and quotes print what they had. Say in one line that ${name} said no to it; ${DONT} ${client}'s.`;
+/** How a value a person said no to may come back. */
+const UNLESS_TYPED = "unless the owner or a co-owner types it to you in their own chat";
+
+const saidNoLine = (client: string, what: string, name: string, at: string) =>
+  `Not saved, and nothing on ${client} changed: ${name} said no to ${what} on Kin's card at ${at}, so Kin doesn't ask again ${UNLESS_TYPED}. Invoices and quotes print what they had. Say in one line that ${name} said no to it; ${DONT} ${client}'s.`;
+
+/**
+ * Why a question about these clients or their deals is not asked: it names a value a person said
+ * no to for one of them (`declinedFor`), and no owner-level person typed it in their own chat.
+ */
+export const declinedAsked = Effect.fn("KinUnconfirmed.declinedAsked")(function* (
+  turn: Turn,
+  about: ReadonlyArray<string>,
+  texts: ReadonlyArray<string | undefined>,
+) {
+  if (about.length === 0) return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const parties = yield* sql<{ id: string | null }>`SELECT CASE WHEN register_id = 'clients'
+      THEN record_id ELSE party_id END AS id
+    FROM kin_records WHERE org_id = ${turn.orgId} AND key IN ${sql.in([...new Set(about)])}
+      AND register_id IN ('clients', 'deals')
+    ORDER BY key`;
+  const declined = yield* declinedFor(
+    turn.orgId,
+    parties.flatMap((one) => (one.id === null ? [] : [one.id])),
+  );
+  if (declined.length === 0) return undefined;
+  const asked = texts.flatMap((text) => (text === undefined ? [] : [words(text)]));
+  const ownerSaid = (yield* ownWords(turn)).flatMap((one) => (one.owner ? [one.words] : []));
+  const named = declined.find(
+    (one) => typedIn(folded(one.value), asked) && !typedIn(folded(one.value), ownerSaid),
+  );
+  if (named === undefined) return undefined;
+  const label = yield* labeller(turn.orgId);
+  return `${named.name} said no to ${label(named.field)} "${named.value}" for ${named.client} on Kin's card at ${named.at}, so Kin doesn't ask about it again ${UNLESS_TYPED}. Say in one line that ${named.name} said no to it.`;
+});
 
 const tooLongLine = (client: string, labels: ReadonlyArray<string>, name: string) =>
   `Not saved, and nothing on ${client} changed: the ${labels.join(" and ")} you gave ${labels.length === 1 ? "is" : "are"} too long to confirm on a card, so ${name} sets it on ${client}'s page. Until they do, invoices and quotes print what they had. Say in one line that ${name} sets it there; ${DONT} ${client}'s.`;
@@ -463,13 +551,25 @@ export const unconfirmedLines = Effect.fn("KinUnconfirmed.lines")(function* (
   const waiting = [...newest.values()].filter((item) =>
     same(holding(record, item.field), item.before),
   );
-  if (waiting.length === 0) return [];
+  const declined = (yield* declinedFor(orgId, [record.recordId])).filter(
+    (one, at, all) =>
+      all.findIndex(
+        (other) => other.field === one.field && folded(other.value) === folded(one.value),
+      ) === at,
+  );
+  if (waiting.length === 0 && declined.length === 0) return [];
   const label = yield* labeller(orgId);
   const name = (yield* confirmer(orgId, record))?.name ?? "the owner";
-  return waiting.map(
-    (item) =>
-      `Unconfirmed ${label(item.field)}: ${item.value === null ? "remove it" : `"${shown(item.value)}"`}, from ${item.from ?? "a source not said"}. It waits for ${name}'s tap and is not on invoices or quotes; never state it as fact.`,
-  );
+  return [
+    ...waiting.map(
+      (item) =>
+        `Unconfirmed ${label(item.field)}: ${item.value === null ? "remove it" : `"${shown(item.value)}"`}, from ${item.from ?? "a source not said"}. It waits for ${name}'s tap and is not on invoices or quotes; never state it as fact.`,
+    ),
+    ...declined.map(
+      (one) =>
+        `Declined ${label(one.field)}: "${shown(one.value)}": ${one.name} said no to it on Kin's card at ${one.at}. Don't propose it or ask about it again ${UNLESS_TYPED}.`,
+    ),
+  ];
 });
 
 /**
@@ -509,7 +609,8 @@ export const answerUnconfirmed = Effect.fn("KinUnconfirmed.answer")(function* (i
       message: "This card was already answered or replaced by a newer one.",
     });
   if (!input.confirmed) {
-    yield* sql`UPDATE kin_profile_changes SET declined_at = ${input.now}
+    yield* sql`UPDATE kin_profile_changes SET declined_at = ${input.now},
+        patch_json = json_set(patch_json, '$.declinedBy', ${input.personId})
       WHERE org_id = ${input.orgId} AND change_id = ${row.changeId}`;
     return {
       title: "Not used",
