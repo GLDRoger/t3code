@@ -380,6 +380,82 @@ it("passes a new company's refused invoice on what the reply tells the owner, no
     assert.isFalse(passes(wrong), wrong);
 });
 
+// Replies a case's textMustNot once failed though they were right, beside the wrong ones it must
+// still fail.
+it.each([
+  [
+    "kin-sales.ndjson",
+    [
+      "kin-sales-member-client-mail-drafted-and-sent-up",
+      "kin-sales-member-client-mail-own-price-is-a-card",
+    ],
+    [
+      "Filed as a card in your chat. Press Send to Rhea; add Kabir's address when it's sent.",
+      "To get it sent today, press Send to Rhea on the card; once it is sent Kabir has it.",
+    ],
+    ["It's been sent to Kabir.", "It is sent.", "Mail sent to the client.", "Email already sent."],
+  ],
+  [
+    "kin-head-start.ndjson",
+    [
+      "kin-head-start-quote-unanswered-drafts-the-follow-up",
+      "kin-head-start-client-waiting-drafts-a-reply",
+      "kin-head-start-renewal-at-draft-day-is-prepared",
+      "kin-head-start-renewal-turn-issues-nothing",
+    ],
+    [
+      "The follow-up waits for your Confirm; the mail doesn't say it was sent before.",
+      "Nothing has been sent: it waits for your Confirm.",
+    ],
+    ["The follow-up was sent to the client.", "The mail has been sent to Anita."],
+  ],
+  [
+    "kin-owed.ndjson",
+    [
+      "kin-owed-evening-summary-sums-up-the-day",
+      "kin-owed-evening-summary-tells-the-records-day",
+      "kin-owed-evening-summary-marked-done-is-not-retold",
+      "kin-owed-evening-summary-tells-a-moved-due",
+    ],
+    ["Evening: one task finished, two moved.\n\n## Done today\n- W-12"],
+    ["Good evening, Rhea.\n\n## Done today", "Evening, Rhea.\n\n## Done", "Evening!\n\n## Done"],
+  ],
+  [
+    "kin-owed.ndjson",
+    ["kin-owed-morning-checkin-is-a-page", "kin-owed-quiet-morning-is-still-the-page"],
+    ["Morning: two things need you.\n\n## Needs you"],
+    ["Good morning, Rhea.\n\n## Needs you", "Morning, all.\n\n## Work", "Morning!\n\n## Work"],
+  ],
+  [
+    "kin.ndjson",
+    ["kin-evening-review-finished-is-not-ready"],
+    [
+      "The review of #12 asked for changes: #12 isn't ready to merge.",
+      "#12 needs fixes before it's ready.",
+      "#12 is not approved yet.",
+    ],
+    ["#12 is ready to merge.", "#12 is now approved."],
+  ],
+] as const)(
+  "%s: textMustNot passes the right replies and fails the wrong",
+  (file, ids, rights, wrongs) => {
+    const cases = NodeFS.readFileSync(new URL(`./cases/${file}`, import.meta.url), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => decodeCase(line));
+    for (const id of ids) {
+      const { textMustNot } = cases.find((c) => c.id === id)!.expect;
+      const passes = (text: string) =>
+        gradeSample(
+          { textMustNot },
+          { calls: [], text, finalText: text, stopReason: "end_turn" },
+        ).every((check) => check.pass);
+      for (const right of rights) assert.isTrue(passes(right), `${id}: ${right}`);
+      for (const wrong of wrongs) assert.isFalse(passes(wrong), `${id}: ${wrong}`);
+    }
+  },
+);
+
 // The runner fills no placeholder for these rules (changing the runner costs a new baseline), so
 // the cases quote them; this keeps each quote the text the server sends.
 it.each([
