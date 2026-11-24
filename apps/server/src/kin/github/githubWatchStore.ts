@@ -96,8 +96,7 @@ export const repoList = Effect.fn("KinGitHubWatchStore.repos")(function* (orgId:
       return {
         repo: entry.repo,
         fork: entry.fork,
-        watched:
-          pref?.watched === null || pref?.watched === undefined ? !entry.fork : pref.watched === 1,
+        watched: pref?.watched === null || pref?.watched === undefined || pref.watched === 1,
         mentions: pref?.mentions === 1,
       };
     })

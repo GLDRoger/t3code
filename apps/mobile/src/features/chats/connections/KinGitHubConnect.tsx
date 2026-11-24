@@ -617,7 +617,7 @@ function RepoRows(props: {
           </View>
         );
       })}
-      {repos.some((repo) => !repo.watched && !repo.fork) ? (
+      {repos.some((repo) => !repo.watched) ? (
         <ListActionRow
           label={WATCH.watchEverything}
           onPress={() => void actions.everything().then(settle)}
