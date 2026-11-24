@@ -557,6 +557,7 @@ describe("KinRefreshHub", () => {
     assert.deepStrictEqual(watchWriters.toSorted(), [
       "lead/Retirement.ts",
       "persistence/KinRetention.ts",
+      "tasksKey/acts.ts",
       "watches/KinWatchRounds.ts",
       "watches/rpcHandlers.ts",
       "work/deals.ts",

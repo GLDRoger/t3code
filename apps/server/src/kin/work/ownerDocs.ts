@@ -438,7 +438,7 @@ export const diff = Effect.fn("KinDocs.diff")(
 
 /** The owner's undo: the version comes back as a new latest one, so it can be undone too. */
 export const restore = Effect.fn("KinDocs.restore")(
-  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocRestoreInput) {
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocRestoreInput, requestId?: string) {
     const person = yield* theOwner(people, input.orgId);
     yield* Docs.restore(
       input.orgId,
@@ -448,7 +448,9 @@ export const restore = Effect.fn("KinDocs.restore")(
       {
         version: input.version,
         latest: input.latest,
-        originKey: `owner-restore:${person.personId}:${input.key}:${input.version}:${input.latest}`,
+        originKey:
+          requestId ??
+          `owner-restore:${person.personId}:${input.key}:${input.version}:${input.latest}`,
       },
     );
     return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL, person.personId);
