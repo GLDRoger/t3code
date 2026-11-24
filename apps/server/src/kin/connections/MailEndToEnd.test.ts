@@ -2347,96 +2347,93 @@ describe("Kin mail end to end, on a fake mailbox", () => {
       ),
   );
 
-  for (const [service, address] of [
-    ["google", ACCOUNTS],
-    ["microsoft", HELLO],
-  ] as const)
-    it.effect(
-      `a ${service} mailbox back with the company: the watch keeps by when it was received`,
-      () =>
-        setUp((fake) =>
-          Effect.gen(function* () {
-            const sql = yield* SqlClient.SqlClient;
-            const connections = yield* KinConnections;
-            const outside = fromConnections(connections, sql, yield* alertsOnMail(connections));
-            const alerts = sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_bank_alerts
+  it.effect.each([
+    { service: "google", address: ACCOUNTS },
+    { service: "microsoft", address: HELLO },
+  ] as const)(
+    "a $service mailbox back with the company: the watch keeps by when it was received",
+    ({ service, address }) =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const connections = yield* KinConnections;
+          const outside = fromConnections(connections, sql, yield* alertsOnMail(connections));
+          const alerts = sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_bank_alerts
               WHERE org_id = ${orgId}`;
-            const alertAt = (at: number, threadId?: string) =>
-              fake.deliver({
-                to: address,
-                ...(threadId === undefined ? {} : { threadId }),
-                from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
-                subject: "You have done a UPI txn. Check details!",
-                body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
-                at,
-                authResults: [
-                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net",
-                ],
-              });
-            const first = yield* connect(fake, service, address);
-            yield* readMail(first);
-            const moved = yield* connections.moveMailbox(people(owner), {
-              orgId,
-              connectionId: first,
-              to: "mine",
-            });
-            // While it is his: a client mail, and an alert.
-            yield* TestClock.adjust("2 minutes");
-            const stampedAt = yield* Clock.currentTimeMillis;
-            const his = fake.deliver({
+          const alertAt = (at: number, threadId?: string) =>
+            fake.deliver({
               to: address,
-              from: CLIENT,
-              subject: "While it was his",
-              body: "Ravi",
-              at: stampedAt,
-            });
-            const hisAlert = alertAt(stampedAt);
-            yield* TestClock.adjust("2 minutes");
-            const back = yield* connections.moveMailbox(people(owner), {
-              orgId,
-              connectionId: moved.mailbox!.connectionId,
-              to: "company",
-            });
-            assert.isNull(back.mailbox);
-            const company = (yield* connections.list(people(owner), { orgId })).connections[0]!;
-            yield* readMail(company.connectionId);
-            yield* TestClock.adjust("1 minute");
-            const at = yield* Clock.currentTimeMillis;
-            // Received after the move: one its sender stamped before it, one with a date header
-            // JavaScript can't read, and an alert in the thread of the one from while it was his.
-            const stamped = fake.deliver({
-              to: address,
-              from: CLIENT,
-              subject: "Stamped before",
-              body: "x",
+              ...(threadId === undefined ? {} : { threadId }),
+              from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+              subject: "You have done a UPI txn. Check details!",
+              body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
               at,
-              // NOW and two minutes, when the mail from while it was his came.
-              dateHeader: "Mon, 16 Nov 2026 09:02:00 GMT",
+              authResults: ["mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net"],
             });
-            const odd = fake.deliver({
-              to: address,
-              from: CLIENT,
-              subject: "Odd date",
-              body: "x",
-              at,
-              dateHeader: "Tue, 24 Nov 2026 10:00:00 IST",
-            });
-            const after = alertAt(at, hisAlert.threadId);
-            // Its own-era mail put back in the Inbox (snoozed, or moved in by a rule).
-            fake.relabel(his.id);
+          const first = yield* connect(fake, service, address);
+          yield* readMail(first);
+          const moved = yield* connections.moveMailbox(people(owner), {
+            orgId,
+            connectionId: first,
+            to: "mine",
+          });
+          // While it is his: a client mail, and an alert.
+          yield* TestClock.adjust("2 minutes");
+          const stampedAt = yield* Clock.currentTimeMillis;
+          const his = fake.deliver({
+            to: address,
+            from: CLIENT,
+            subject: "While it was his",
+            body: "Ravi",
+            at: stampedAt,
+          });
+          const hisAlert = alertAt(stampedAt);
+          yield* TestClock.adjust("2 minutes");
+          const back = yield* connections.moveMailbox(people(owner), {
+            orgId,
+            connectionId: moved.mailbox!.connectionId,
+            to: "company",
+          });
+          assert.isNull(back.mailbox);
+          const company = (yield* connections.list(people(owner), { orgId })).connections[0]!;
+          yield* readMail(company.connectionId);
+          yield* TestClock.adjust("1 minute");
+          const at = yield* Clock.currentTimeMillis;
+          // Received after the move: one its sender stamped before it, one with a date header
+          // JavaScript can't read, and an alert in the thread of the one from while it was his.
+          const stamped = fake.deliver({
+            to: address,
+            from: CLIENT,
+            subject: "Stamped before",
+            body: "x",
+            at,
+            // NOW and two minutes, when the mail from while it was his came.
+            dateHeader: "Mon, 16 Nov 2026 09:02:00 GMT",
+          });
+          const odd = fake.deliver({
+            to: address,
+            from: CLIENT,
+            subject: "Odd date",
+            body: "x",
+            at,
+            dateHeader: "Tue, 24 Nov 2026 10:00:00 IST",
+          });
+          const after = alertAt(at, hisAlert.threadId);
+          // Its own-era mail put back in the Inbox (snoozed, or moved in by a rule).
+          fake.relabel(his.id);
 
-            const lines = JSON.stringify((yield* outside.read(orgId)).lines);
-            assert.include(lines, "Stamped before");
-            assert.include(lines, "Odd date");
-            assert.notInclude(lines, "While it was his");
-            assert.deepStrictEqual(yield* alerts, [{ count: 1 }]);
-            yield* readMail(company.connectionId);
-            const arrived = (yield* arrivalRows).map((row) => row.messageId);
-            for (const id of [stamped.id, odd.id, after.id]) assert.include(arrived, id);
-            for (const id of [his.id, hisAlert.id]) assert.notInclude(arrived, id);
-          }),
-        ),
-    );
+          const lines = JSON.stringify((yield* outside.read(orgId)).lines);
+          assert.include(lines, "Stamped before");
+          assert.include(lines, "Odd date");
+          assert.notInclude(lines, "While it was his");
+          assert.deepStrictEqual(yield* alerts, [{ count: 1 }]);
+          yield* readMail(company.connectionId);
+          const arrived = (yield* arrivalRows).map((row) => row.messageId);
+          for (const id of [stamped.id, odd.id, after.id]) assert.include(arrived, id);
+          for (const id of [his.id, hisAlert.id]) assert.notInclude(arrived, id);
+        }),
+      ),
+  );
 
   it.effect(
     "an older unkeyed company row moves keyed: its address live once, and its floor held",
