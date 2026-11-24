@@ -891,7 +891,13 @@ it.effect(
       assert.lengthOf(staged, 0);
       assert.lengthOf(yield* told, 0);
 
-      // His own word, in his own chat: dropped and moved, and Finance is told each once.
+      // His own word, in his own chat: dropped and moved, and Finance is told each once. Allowed by
+      // decision though this wake-up also holds a routine: his own message is the word.
+      assert.include(
+        (yield* sql<{ tag: string }>`SELECT tag FROM kin_events WHERE org_id = ${orgId}
+          AND wakeup_id = ${`wake-${leads.o}`} ORDER BY event_id`).map((row) => row.tag),
+        "routine",
+      );
       assert.strictEqual((yield* cancel(leads.o, "def-drop")).outcome, "stopped");
       const run = yield* sql<{ state: string }>`SELECT state FROM kin_deferral_runs
       WHERE org_id = ${orgId} AND item_id = 'def-drop'`;

@@ -874,9 +874,10 @@ const make = Effect.gen(function* () {
       );
   });
   /**
-   * Another lead's reminder of the same owner, changed on the word of an owner-level person in
-   * their own direct chat with this lead: an owner-only turn that read no outside text, about a
-   * one-time item set in their own direct chat with that lead, said by them or by no person.
+   * Another lead's one-time reminder, set in an owner-level person's direct chat with it by them or
+   * no one, changed on their own typed word in their direct chat with this lead, no outside read.
+   * By decision the wake-up need only hold that word: the rest of an owner-only one is his own
+   * agents' text, and a teammate's or outside text already turns this off.
    */
   const ownersOther = Effect.fn("LeadMemory.ownersOther")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
