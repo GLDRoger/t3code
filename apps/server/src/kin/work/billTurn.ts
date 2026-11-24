@@ -2,6 +2,7 @@ import type { KinAttachment, KinEvent, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { shownAsPicture } from "../lead/turn/content.ts";
 import { SILENT_REPLY } from "../reply/classify.ts";
 import { listDef, PRESETS } from "./registers.ts";
 
@@ -49,7 +50,7 @@ export const billTurn = Effect.fn("KinBills.billTurn")(function* (
     text: billTurnText(
       files.map(({ id, attachment }) => ({
         id,
-        image: attachment.type === "image",
+        image: shownAsPicture(attachment),
         name: attachment.name,
       })),
       categories,

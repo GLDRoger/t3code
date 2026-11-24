@@ -44,6 +44,7 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
+import { shownAsPicture } from "../lead/turn/content.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
 import { countryFirst } from "./companyProfile.ts";
@@ -68,6 +69,7 @@ const GROUP_IMAGE_BYTES = 20 * 1024 * 1024;
 /** Kin queues a bill on its own at most this often; the owner's Read again is beside it. */
 const AUTO_READS = 2;
 const COULD_NOT_READ = "Kin could not read this one";
+const UNSHOWN_PHOTO = "Kin can't read this kind of photo: add it as a JPEG or PNG.";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
@@ -311,7 +313,18 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue;
-  const waiting = (yield* batchRows(orgId, batchId)).filter((row) => row.state === "waiting");
+  const now = yield* Clock.currentTimeMillis;
+  const rows = (yield* batchRows(orgId, batchId)).filter((row) => row.state === "waiting");
+  // A photo no turn can show (a phone's HEIC) is told at once, without spending a turn.
+  const unshown = rows.filter(
+    (row) => !isPdf(row) && !shownAsPicture({ type: row.fileType, mimeType: row.mimeType }),
+  );
+  if (unshown.length > 0)
+    yield* sql`UPDATE kin_bill_reads SET state = 'unreadable', problem = ${UNSHOWN_PHOTO},
+        read_at = ${now}
+      WHERE org_id = ${orgId} AND sha256 IN ${sql.in(unshown.map((row) => row.sha256))}
+        AND state = 'waiting'`;
+  const waiting = rows.filter((row) => !unshown.includes(row));
   const groups: Array<Array<Row>> = [];
   let bytes = 0;
   for (const row of waiting) {
@@ -329,7 +342,6 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
       if (image) bytes += row.sizeBytes;
     }
   }
-  const now = yield* Clock.currentTimeMillis;
   for (const group of groups) {
     const first = group[0]!;
     const reads = Math.max(...group.map((row) => row.reads)) + 1;
@@ -373,7 +385,7 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
         reads = reads + 1, agent_id = ${reader}
       WHERE org_id = ${orgId} AND sha256 IN ${sql.in(hashes)} AND state = 'waiting'`;
   }
-  return waiting.length;
+  return rows.length;
 });
 
 /** What the owner sees a bill as: its expense's state once one was made for it. */
@@ -586,6 +598,7 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
     files: fresh.map((file) => ({ ...file, ...where })),
   });
   yield* queueWaiting(input.orgId, input.batchId);
+  if (posted !== undefined) yield* refreshCard(input.orgId, input.batchId);
   return {
     batchId: input.batchId,
     ...(posted === undefined ? {} : posted),

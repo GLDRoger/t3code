@@ -43,6 +43,10 @@ const turnFiles = <A extends Pick<ChatAttachment, "type" | "mimeType" | "sizeByt
   return { kept: newest.toReversed(), left: files.length - newest.length };
 };
 
+/** Whether a turn shows `file` to the model as a picture; any other file goes as text or a path. */
+export const shownAsPicture = (file: Pick<ChatAttachment, "type" | "mimeType">) =>
+  file.type === "image" && isProviderSendTurnSupportedImageMimeType(file.mimeType);
+
 const KIN_FILES = KIN_ATTACHMENT_ID_PREFIX.slice(0, -1);
 const PAGE_IMAGE_VERSION = 1;
 
@@ -128,10 +132,7 @@ export class KinTurnContent extends Context.Service<
         }) {
           if (input.attachments.length === 0) return input;
           const { kept, left } = turnFiles(input.attachments);
-          const seen = (attachment: ChatAttachment) =>
-            attachment.type === "image" &&
-            isProviderSendTurnSupportedImageMimeType(attachment.mimeType);
-          const own = kept.filter(seen);
+          const own = kept.filter(shownAsPicture);
           // Claude's adapter carries 28 MB of base64 a request: the turn's own pictures come first.
           const budget: PageBudget = {
             pages: PDF_PAGE_IMAGES.pagesPerTurn,
@@ -156,7 +157,7 @@ export class KinTurnContent extends Context.Service<
                 ];
           const pages: Array<ChatAttachment> = [];
           for (const attachment of kept) {
-            if (seen(attachment)) continue;
+            if (shownAsPicture(attachment)) continue;
             const file = resolveAttachmentPath({ attachmentsDir, attachment });
             const named = `[Attached ${attachment.type} "${attachment.name}"`;
             if (file === null || !(yield* fs.exists(file))) {

@@ -45,6 +45,7 @@ import * as KinFloor from "../floor/KinFloor.ts";
 import { billToolAllowed } from "../lead/billsOnly.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
+import { KinTurnContent } from "../lead/turn/content.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Bills from "./bills.ts";
 import { billTurn } from "./billTurn.ts";
@@ -81,7 +82,13 @@ const documents = Layer.succeed(
   DocumentText.DocumentText,
   DocumentText.DocumentText.of({ ensure: () => Effect.undefined }),
 );
-const layer = Layer.mergeAll(KinRecords.layer, identity, KinChatHub.layer, KinFloor.layer).pipe(
+const layer = Layer.mergeAll(
+  KinRecords.layer,
+  identity,
+  KinChatHub.layer,
+  KinFloor.layer,
+  KinTurnContent.layer,
+).pipe(
   Layer.provideMerge(AttachmentStore.layer),
   Layer.provideMerge(documents),
   Layer.provideMerge(KinChatRepository.layer),
@@ -482,6 +489,49 @@ describe("bills in bulk", () => {
           kept,
         );
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a photo no turn can show is told at once, and each id names the picture shown", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const added = yield* Bills.add(
+        as(rhea),
+        {
+          orgId,
+          attachments: [
+            yield* upload("IMG_7001.heic", "a phone photo", "image/heic"),
+            yield* upload("scan.png", "a scan"),
+          ],
+          clientRequestId: "add",
+        },
+        TEST_UPLOAD_OWNER,
+      );
+      assert.deepStrictEqual(
+        (yield* billRows).map(({ name, state, problem }) => [name, state, problem]),
+        [
+          [
+            "IMG_7001.heic",
+            "unreadable",
+            "Kin can't read this kind of photo: add it as a JPEG or PNG.",
+          ],
+          ["scan.png", "reading", null],
+        ],
+      );
+      assert.strictEqual((yield* card(added.batchId)).text, "Reading 2 bills: 1 done.");
+      const { events } = yield* claimTurn(1);
+      const event = events[0]!;
+      if (event._tag !== "bills.read") return assert.fail("no bills turn");
+      const turn = (yield* billTurn(orgId, event))!;
+      assert.include(turn.text, "B1 is image 1.");
+      const shown = yield* (yield* KinTurnContent).prepare({
+        text: turn.text,
+        attachments: turn.attachments,
+      });
+      assert.deepStrictEqual(
+        shown.attachments.map((file) => file.name),
+        ["B1.png"],
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("a bills turn may call bill_read and nothing else; any other turn isn't confined", () =>
