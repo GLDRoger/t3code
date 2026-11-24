@@ -24,6 +24,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
 import { kinClient } from "./kinClient";
+import { useKinMe } from "./KinProfileSheet";
 import {
   KinSettingsLoadFailed,
   KinSettingsLoading,
@@ -262,14 +263,17 @@ export function KinPeopleMailboxes(
   );
   const remove = useAtomCommand(kinClient.connectionRemove, { reportFailure: false });
   const [problem, setProblem] = useState<string | null>(null);
-  if (props.mailboxes.length === 0) return null;
+  const me = useKinMe(environmentId, orgId);
+  // The viewer's own are under Your mailboxes already.
+  const teammates = props.mailboxes.filter((mailbox) => mailbox.personId !== me);
+  if (teammates.length === 0) return null;
   return (
     <KinSettingsSection
       title={COPY.teammatesTitle}
       description={COPY.teammatesFooter}
       problem={problem}
     >
-      {props.mailboxes.map((mailbox) => (
+      {teammates.map((mailbox) => (
         <KinSettingsRow
           key={mailbox.connectionId}
           title={names.get(mailbox.personId) ?? mailbox.account ?? COPY.title}
