@@ -741,13 +741,17 @@ it.effect("record_update changes only named fields, logs each change, and both o
       { reason: "invalid_state" },
     );
     // "Moved to Monday 10:00": a time given for a task lands in its due, which its page shows,
-    // and the answer says the date as the page does.
+    // and the answer says the date as the page does, in the company's zone.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:30',
+        '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
+      ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
     const timed = yield* LeadWork.update(scopeOf(lead), {
       key: "W-3",
       sourceEventId: "ask-event",
       at: "2026-11-30T10:00+05:30",
     });
-    assert.deepInclude(timed, { changed: ["due"], shows: "Due: Mon 30 Nov, 04:30" });
+    assert.deepInclude(timed, { changed: ["due"], shows: "Due: Mon 30 Nov, 10:00" });
     assert.include(yield* OwnerWork.get([owner], { orgId, key: "W-3" }), {
       dueAt: "2026-11-30T04:30:00.000Z",
       dueAllDay: false,
