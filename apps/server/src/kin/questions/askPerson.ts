@@ -622,7 +622,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
       const no =
         turn === null || sentUp !== undefined
           ? undefined
-          : yield* declinedAsked(turn, about, [
+          : yield* declinedAsked(turn, target.id, about, [
               input.question,
               input.detail,
               ...(input.options ?? []).map((one) => one.label),

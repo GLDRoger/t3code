@@ -338,6 +338,7 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
         ? undefined
         : yield* declinedAsked(
             { orgId: input.orgId, agentId: input.agentId, wakeupId: input.wakeupId },
+            personId,
             about,
             [input.question, input.detail, ...input.labels],
           );

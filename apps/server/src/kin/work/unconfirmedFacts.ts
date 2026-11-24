@@ -15,6 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeCrypto from "node:crypto";
 
 import { keySentSql } from "../chat/keySent.ts";
+import { effectiveAudience } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import {
   followsOutsideRead,
@@ -23,12 +24,13 @@ import {
   renderSource,
 } from "../lead/OutsideContent.ts";
 import { ownerLevel, ownerLevelSql } from "../people/KinAccess.ts";
+import { dayWord } from "../questions/rules.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
 import { companyMoney } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
 import type { Lead } from "./leadWork.ts";
 import { fieldText, parseFields } from "./lists.ts";
-import { iso, type RecordRow } from "./recordRows.ts";
+import { ownerZone, type RecordRow } from "./recordRows.ts";
 import { regionOf } from "./region.ts";
 import { orgOwner } from "./toolNames.ts";
 
@@ -157,6 +159,7 @@ export const heldBack = Effect.fn("KinUnconfirmed.heldBack")(function* (
 /**
  * Values a person said no to on Kin's card (Not this) for these clients, newest first, for every
  * agent while the field doesn't hold them: who said no is kept on the row (`answerUnconfirmed`).
+ * Only a card that proposed one value: a no to several may have been to any one of them.
  */
 const declinedFor = Effect.fn("KinUnconfirmed.declined")(function* (
   orgId: KinOrgId,
@@ -183,21 +186,30 @@ const declinedFor = Effect.fn("KinUnconfirmed.declined")(function* (
     ORDER BY c.declined_at DESC, c.rowid DESC`;
   return rows.flatMap((row) =>
     Option.toArray(decodeProposal(row.patch)).flatMap((proposal) =>
-      proposal.items.flatMap((item) =>
-        item.value === null || folded(holding(row, item.field) ?? "") === folded(item.value)
-          ? []
-          : [
-              {
-                client: row.title,
-                field: item.field,
-                value: item.value,
-                name: row.name ?? "the owner",
-                at: iso(row.at),
-              },
-            ],
-      ),
+      proposal.items.length !== 1
+        ? []
+        : proposal.items.flatMap((item) =>
+            item.value === null || folded(holding(row, item.field) ?? "") === folded(item.value)
+              ? []
+              : [
+                  {
+                    client: row.title,
+                    field: item.field,
+                    value: item.value,
+                    name: row.name ?? "the owner",
+                    at: row.at,
+                  },
+                ],
+          ),
     ),
   );
+});
+
+/** When a no was said, as Kin's other agent-read lines say a day, in the company's zone. */
+const saidOn = Effect.fn("KinUnconfirmed.saidOn")(function* (orgId: KinOrgId) {
+  const zone = yield* ownerZone(orgId);
+  const now = yield* Clock.currentTimeMillis;
+  return (at: number) => dayWord(at, now, zone);
 });
 
 const LABELS: Readonly<Record<Exclude<PrintedField, "gstin">, string>> = {
@@ -390,9 +402,12 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
             name,
           ),
         ];
+  const day = yield* saidOn(orgId);
   const saidNo = given.flatMap((one) => {
     const no = noTo(one);
-    return no === undefined ? [] : [saidNoLine(record.title, describe([one]), no.name, no.at)];
+    return no === undefined
+      ? []
+      : [saidNoLine(record.title, describe([one]), no.name, day(no.at))];
   });
   const say = (line: string | undefined) =>
     [...(line === undefined ? [] : [line]), ...tooLong, ...saidNo].join(" ");
@@ -495,29 +510,34 @@ const DONT = "never say it is added or on the record, or give it as";
 /** How a value a person said no to may come back. */
 const UNLESS_TYPED = "unless the owner or a co-owner types it to you in their own chat";
 
-const saidNoLine = (client: string, what: string, name: string, at: string) =>
-  `Not saved, and nothing on ${client} changed: ${name} said no to ${what} on Kin's card at ${at}, so Kin doesn't ask again ${UNLESS_TYPED}. Invoices and quotes print what they had. Say in one line that ${name} said no to it; ${DONT} ${client}'s.`;
+const saidNoLine = (client: string, what: string, name: string, day: string) =>
+  `Not saved, and nothing on ${client} changed: ${name} said no to ${what} on Kin's card ${day}, so Kin doesn't ask again ${UNLESS_TYPED}. Invoices and quotes print what they had. Say in one line that ${name} said no to it; ${DONT} ${client}'s.`;
 
 /**
- * Why a question about these clients or their deals is not asked: it names a value a person said
- * no to for one of them (`declinedFor`), and no owner-level person typed it in their own chat.
+ * Why a question to an owner-level person, in a turn only the owner level reads, about these
+ * clients or their deals is not asked: it names a value a person said no to for one of them
+ * (`declinedFor`) that no owner-level person typed in their own chat. A client's name, or words of
+ * it, never count: every question about them may name them.
  */
 export const declinedAsked = Effect.fn("KinUnconfirmed.declinedAsked")(function* (
   turn: Turn,
+  to: KinPersonId,
   about: ReadonlyArray<string>,
   texts: ReadonlyArray<string | undefined>,
 ) {
   if (about.length === 0) return undefined;
+  if (!(yield* ownerLevel(turn.orgId, to).pipe(Effect.orDie))) return undefined;
+  if ((yield* effectiveAudience(turn)) !== "owner_only") return undefined;
   const sql = yield* SqlClient.SqlClient;
   const parties = yield* sql<{ id: string | null }>`SELECT CASE WHEN register_id = 'clients'
       THEN record_id ELSE party_id END AS id
     FROM kin_records WHERE org_id = ${turn.orgId} AND key IN ${sql.in([...new Set(about)])}
       AND register_id IN ('clients', 'deals')
     ORDER BY key`;
-  const declined = yield* declinedFor(
+  const declined = (yield* declinedFor(
     turn.orgId,
     parties.flatMap((one) => (one.id === null ? [] : [one.id])),
-  );
+  )).filter((one) => one.field !== "title" && !typedIn(folded(one.value), [words(one.client)]));
   if (declined.length === 0) return undefined;
   const asked = texts.flatMap((text) => (text === undefined ? [] : [words(text)]));
   const ownerSaid = (yield* ownWords(turn)).flatMap((one) => (one.owner ? [one.words] : []));
@@ -526,7 +546,8 @@ export const declinedAsked = Effect.fn("KinUnconfirmed.declinedAsked")(function*
   );
   if (named === undefined) return undefined;
   const label = yield* labeller(turn.orgId);
-  return `${named.name} said no to ${label(named.field)} "${named.value}" for ${named.client} on Kin's card at ${named.at}, so Kin doesn't ask about it again ${UNLESS_TYPED}. Say in one line that ${named.name} said no to it.`;
+  const day = yield* saidOn(turn.orgId);
+  return `${named.name} said no to ${label(named.field)} "${named.value}" for ${named.client} on Kin's card ${day(named.at)}, so Kin doesn't put it on a card again. If ${named.client} asked for it again, tell ${named.name} so in plain words, with no card: it goes on the record only when the owner or a co-owner types it to you in their own chat. A question that doesn't name "${named.value}" is fine to ask.`;
 });
 
 const tooLongLine = (client: string, labels: ReadonlyArray<string>, name: string) =>
@@ -551,6 +572,7 @@ export const unconfirmedLines = Effect.fn("KinUnconfirmed.lines")(function* (
   const waiting = [...newest.values()].filter((item) =>
     same(holding(record, item.field), item.before),
   );
+  const day = yield* saidOn(orgId);
   const declined = (yield* declinedFor(orgId, [record.recordId])).filter(
     (one, at, all) =>
       all.findIndex(
@@ -567,7 +589,7 @@ export const unconfirmedLines = Effect.fn("KinUnconfirmed.lines")(function* (
     ),
     ...declined.map(
       (one) =>
-        `Declined ${label(one.field)}: "${shown(one.value)}": ${one.name} said no to it on Kin's card at ${one.at}. Don't propose it or ask about it again ${UNLESS_TYPED}.`,
+        `Declined ${label(one.field)}: "${shown(one.value)}": ${one.name} said no to it on Kin's card ${day(one.at)}. Don't propose it or ask about it again ${UNLESS_TYPED}.`,
     ),
   ];
 });
