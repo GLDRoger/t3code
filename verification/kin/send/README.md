@@ -16,4 +16,4 @@
 
 On `feat/kin-mail-automated-notice`, the activity type shares its mail shape with the provider so the outside watch can distinguish automated notices from unknown people. Card preparation binds the account and generation shown on the card. Confirm and send each verify that binding.
 
-On `feat/kin-promises-reach`, `kin_connection_tools` (`canConnect`) and `kin_connection_offer` also count an owner-level person's own mailbox as connected, and the offer says so instead of recording one; neither stores an ask, draws a card or reaches Confirm or a send, so every rule holds as modelled.
+On `feat/kin-promises-reach`, `kin_connection_tools` (`canConnect`) and `kin_connection_offer` also count as connected the own mailbox of the owner-level person the turn is alone for (never another person's), and the offer says so instead of recording one; neither stores an ask, draws a card or reaches Confirm or a send, so every rule holds as modelled.
