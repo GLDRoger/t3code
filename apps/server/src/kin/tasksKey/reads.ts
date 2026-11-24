@@ -10,6 +10,7 @@ import { keyHidden } from "../work/codingAgent.ts";
 import * as Deals from "../work/deals.ts";
 import * as Clients from "../work/ownerClients.ts";
 import * as Docs from "../work/ownerDocs.ts";
+import * as MoneyAnswers from "../work/ownerMoneyAnswers.ts";
 import { money, moneyViewer } from "../work/ownerMoney.ts";
 import { connectionViewer, list } from "../work/ownerWork.ts";
 import { workFailure } from "../work/recordRows.ts";
@@ -348,6 +349,17 @@ export const moneySummary = Effect.fn("KinTasksKeyReads.money")(function* (holde
       const { asOf: _shownAt, ...figures } = shown;
       const { asOf: _wholeAt, ...all } = whole;
       return { ...shown, privateLeftOut: !same(figures, all) };
+    }),
+  );
+});
+
+export const budgets = Effect.fn("KinTasksKeyReads.budgets")(function* (holder: TasksKeyHolder) {
+  return yield* readAs(holder, (people) =>
+    Effect.gen(function* () {
+      const input = { orgId: holder.orgId };
+      const shown = yield* MoneyAnswers.budgets(people, input, keyed);
+      const whole = yield* MoneyAnswers.budgets(people, input);
+      return { ...shown, privateLeftOut: !same(shown, whole) };
     }),
   );
 });

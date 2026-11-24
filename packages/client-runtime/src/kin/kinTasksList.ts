@@ -378,17 +378,25 @@ export function kinTaskStep(
         };
   const holder = record.owner;
   if (holder._tag === "person" && holder.personId === names.me) {
-    const first = (by: KinRecord["owner"]) => kinWorkName(by, names).split(/\s+/)[0] ?? "";
+    const first = (by: KinRecord["owner"], codingAgent?: boolean) => {
+      const name = kinWorkName(by, names).split(/\s+/)[0] ?? "";
+      return codingAgent === true ? `${name} (coding agent)` : name;
+    };
     // From the stored hand-back, as the task's page reads it: a change and its Undo keep it.
     if (record.handedBack !== undefined)
       return {
         kind: "told",
-        line: KIN_TASKS.handedBack(first(record.handedBack.by), move.handedBackNote ?? null),
+        line: KIN_TASKS.handedBack(
+          first(record.handedBack.by, move.handedBackByCodingAgent),
+          move.handedBackNote ?? null,
+        ),
       };
     if (move.askedBy !== undefined)
       return {
         kind: "told",
-        line: KIN_TASKS.asked(first({ _tag: "person", personId: move.askedBy })),
+        line: KIN_TASKS.asked(
+          first({ _tag: "person", personId: move.askedBy }, move.askedByCodingAgent),
+        ),
       };
     return null;
   }

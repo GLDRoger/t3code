@@ -740,6 +740,8 @@ export const restore = Effect.fn("KinDocs.restore")(function* (
   return yield* transaction(
     Effect.gen(function* () {
       const row = yield* docRow(orgId, ref, writerSees(writer));
+      if (isKeyRequest(input.originKey) && row.originKey.startsWith(CHARACTER_ORIGIN))
+        return yield* characterByHand;
       const again = yield* retried(orgId, row.recordId, input.originKey);
       if (again !== undefined) return again;
       const current = yield* versionOf(orgId, row.recordId);
@@ -757,7 +759,9 @@ export const restore = Effect.fn("KinDocs.restore")(function* (
         title: old.title,
         body: old.body,
         kind: "restored",
-        summary: input.summary ?? `Restored version ${old.version}`,
+        summary:
+          input.summary ??
+          `Restored version ${old.version}${isKeyRequest(input.originKey) ? " (coding agent)" : ""}`,
         operations: [{ op: "restore" }],
         restoredFrom: old.version,
         originKey: input.originKey,

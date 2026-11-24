@@ -10,6 +10,7 @@ import { buildIndex } from "./buildIndex.ts";
 import { isCheckoutPath } from "./checkoutPaths.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import {
+  KinChatError,
   MemoryItemFrontMatter,
   RepoSlug,
   type KinAgentId,
@@ -148,6 +149,10 @@ export interface MemoryUndo {
   readonly branch: string;
   readonly base: string;
   readonly commit: string;
+  readonly codingAgent?: {
+    readonly personId: KinPersonId;
+    readonly admit: (item: MemoryCache.MemoryItem) => Effect.Effect<void, KinChatError>;
+  };
 }
 export type MemoryUndoResult =
   | { readonly _tag: "undone"; readonly commit: string }
@@ -250,7 +255,7 @@ export class MemoryWriter extends Context.Service<
     readonly undoChange: (
       orgId: KinOrgId,
       input: MemoryUndo,
-    ) => Effect.Effect<MemoryUndoResult, Failure>;
+    ) => Effect.Effect<MemoryUndoResult, Failure | KinChatError>;
     /**
      * The owner's own choice of who may know an item, outside any wake-up: one commit on the
      * default branch that sets its label and, when the team may now know it, who decided and when.
@@ -1539,6 +1544,15 @@ const make = Effect.gen(function* () {
           const head = yield* branchHead(orgId, writer, input.branch);
           const headFiles = yield* filesAt(orgId, writer, head);
           const current = headFiles.get(input.path);
+          const key = input.codingAgent;
+          if (key !== undefined && current !== undefined) {
+            const { frontMatter, body } = yield* parseFrontMatter(
+              orgId,
+              input.path,
+              current.toString("utf8"),
+            );
+            yield* key.admit({ head: { ...frontMatter, orgId, path: input.path }, body });
+          }
           const written = (yield* filesAt(orgId, writer, input.commit)).get(input.path);
           if (current === undefined || written === undefined || !current.equals(written))
             return stale;
@@ -1558,6 +1572,16 @@ const make = Effect.gen(function* () {
             restored = render({ ...frontMatter, invalid_at: invalidAt }, body);
           }
           const { frontMatter } = yield* parseFrontMatter(orgId, input.path, restored);
+          if (
+            key !== undefined &&
+            (before === undefined ||
+              endedBy(frontMatter, yield* Clock.currentTimeMillis) ||
+              frontMatter.superseded_by !== null)
+          )
+            return yield* new KinChatError({
+              reason: "not_allowed",
+              message: "A coding agent's key never deletes or archives anything.",
+            });
           if (frontMatter.id !== input.itemId)
             return yield* new MemoryWriteRejected({ reason: "Invalid undo target" });
           // Whatever retired it on the way, the restored words reach no one until the owner says.
@@ -1569,7 +1593,7 @@ const make = Effect.gen(function* () {
             head,
             headFiles,
             files: new Map([[input.path, restored]]),
-            message: `kin(${input.agentId}): owner undo ${input.itemId}\n\nKin-Undo: ${input.commit}\n`,
+            message: `kin(${input.agentId}): owner${key === undefined ? "" : " (coding agent)"} undo ${input.itemId}\n\nKin-Undo: ${input.commit}\n${key === undefined ? "" : `Kin-Coding-Agent-For: ${key.personId}\n`}`,
           });
           return { _tag: "undone", commit } as const;
         }),
