@@ -402,6 +402,10 @@ export function layerWithRegistry<Error>(
               Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
                 getInstance: () => Effect.undefined,
               }),
+              WorkspaceFolders.layer.pipe(
+                Layer.provide(layerStores),
+                Layer.provide(TaskFolderStore.layer.pipe(Layer.provide(layerDatabase))),
+              ),
             ),
           ),
         )

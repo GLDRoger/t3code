@@ -506,6 +506,7 @@ it.effect.each(["initialize", "initialized", "answer"] as const)(
                     },
                     url: "https://peer.example",
                     token: "fixture",
+                    capabilities: box.capabilities,
                   }),
                 recordOutcome: () => Effect.void,
               }),

@@ -60,6 +60,7 @@ import { recordAudience, turnAudience } from "./Audience.ts";
 import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as TaskFolders from "../../workspace/TaskFolders.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -655,6 +656,8 @@ function parts(options: HarnessOptions) {
       isScratchProject: () => Effect.succeed(false),
       folderForThread: () => Effect.succeedNone,
     }),
+    // A lead's thread is never a multi-repository task folder.
+    Layer.mock(TaskFolders.TaskFolders)({ plan: () => Effect.succeed(null) }),
     ProviderRegistryMock.layer(),
     settings,
   );

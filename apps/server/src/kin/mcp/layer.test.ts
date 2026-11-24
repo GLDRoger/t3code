@@ -89,6 +89,10 @@ import { ServerConfig } from "../../config.ts";
 import { DeviceService } from "../../device/DeviceService.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { GitManager } from "../../git/GitManager.ts";
+import { FeedbackStore } from "../../feedback/FeedbackStore.ts";
+import { MilestoneHub } from "../../milestones/MilestoneHub.ts";
+import { Workflows } from "../../workflows/Workflows.ts";
+import { TaskFolders } from "../../workspace/TaskFolders.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
@@ -179,7 +183,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(GitVcsDriver)({}),
   Layer.mock(GitWorkflowService)({}),
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
-  Layer.mock(McpProviderSessions)({}),
+  Layer.mock(McpProviderSessions)({ toolResultEpoch: () => Effect.succeed(0) }),
   Layer.mock(OrchestrationEventStore)({}),
   Layer.mock(PeerForwarding)({ call: () => forwardedTo("call") }),
   Layer.mock(EnvironmentThemeService)({}),
@@ -197,6 +201,10 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProcessRunner)({}),
   FetchHttpClient.layer,
   Layer.mock(GitManager)({}),
+  Layer.mock(FeedbackStore)({}),
+  Layer.mock(MilestoneHub)({}),
+  Layer.mock(TaskFolders)({}),
+  Layer.mock(Workflows)({}),
   Layer.mock(ProviderAdapterRegistryV2)({}),
   Layer.mock(ProviderInstanceRegistry)({}),
   Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([]) }),
@@ -458,6 +466,8 @@ it.effect.each([true, false])(
         const issued = yield* registry.issue({
           threadId,
           providerInstanceId: ProviderInstanceId.make("codex"),
+          // As the session manager issues it for a provider that holds for background work.
+          capabilities: new Set(["preview", "background-wait"]),
         });
         assert.strictEqual(issued.config.endpoint, "http://127.0.0.1:43123/kin/mcp");
         assert.strictEqual(
@@ -1123,6 +1133,8 @@ it.effect.each([true, false])(
           const token = (yield* registry.issue({
             threadId: thread,
             providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            // As the session manager issues it for Claude, which holds for background work.
+            capabilities: new Set(["preview", "background-wait"]),
           })).config.authorizationHeader;
           const session = (yield* request("/kin/mcp", token, "initialize", initialize)).headers[
             "mcp-session-id"
