@@ -6,6 +6,7 @@ import type {
   KinPresence,
   KinWidget,
 } from "@t3tools/contracts";
+import { KinMemberId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -39,7 +40,11 @@ import {
   kinRowSeq,
   kinSeqToMarkRead,
   kinUnreadToMark,
+  kinNewLineSeq,
+  kinNextNewLineHold,
+  kinOwnReadSeq,
   kinUnseenCount,
+  latestKinSeq,
   mergeKinFeed,
   type KinFeedRow,
   type KinFeedViewer,
@@ -1061,6 +1066,78 @@ describe("new messages pill", () => {
     // Seqs 7-10 alternate owner and lead.
     expect(kinUnseenCount(messages, 6, KIN_FIXTURE_OWNER)).toBe(2);
     expect(kinUnseenCount(messages, 6, null)).toBe(4);
+  });
+});
+
+describe("new line", () => {
+  const mine = (seq: number) =>
+    ({ ...all.find((m) => m.author._tag === "human")!, messageId: `o${seq}`, seq }) as KinMessage;
+  const opened = (messages: ReadonlyArray<KinMessage>, readSeq?: number) =>
+    applyKinChatEvent(emptyKinChat, {
+      _tag: "backlog",
+      messages,
+      widgets: [],
+      lastSeq: latestKinSeq(messages),
+      ...(readSeq === undefined ? {} : { readSeq }),
+    });
+  const lineOf = (state: KinChatState, held: ReturnType<typeof kinNextNewLineHold> = null) => {
+    const hold = kinNextNewLineHold(
+      held,
+      "chat",
+      kinOwnReadSeq(state, "me"),
+      latestKinSeq(state.messages),
+    );
+    return { hold, seq: kinNewLineSeq(state.messages, hold, KIN_FIXTURE_OWNER) };
+  };
+  const agentRun = [agentMessage(1), mine(2), agentMessage(3), mine(4), agentMessage(5)];
+
+  it.each([
+    ["nothing after the mark", agentRun, 5, null],
+    ["only the viewer's own after the mark", [...agentRun, mine(6)], 5, null],
+    ["mixed after the mark", agentRun, 2, 3],
+    ["own first, then another's", agentRun, 3, 5],
+    ["a host without the mark", agentRun, undefined, null],
+    ["a page that starts after the mark", agentRun.slice(2), 0, null],
+  ] as const)("%s", (_, messages, readSeq, expected) => {
+    expect(lineOf(opened(messages, readSeq)).seq).toBe(expected);
+  });
+
+  it("holds where the chat opened it until the viewer's own mark moves", () => {
+    const open = opened(agentRun, 2);
+    const first = lineOf(open);
+    expect(first.seq).toBe(3);
+    // A message arriving while the chat is open lands below the line.
+    const arrived = applyKinChatEvent(open, { _tag: "message", message: agentMessage(6) });
+    expect(lineOf(arrived, first.hold)).toEqual(first);
+    // Another member's mark moves nothing.
+    const theirs = applyKinChatEvent(arrived, {
+      _tag: "read",
+      memberId: KinMemberId.make("them"),
+      seq: 6,
+    });
+    expect(lineOf(theirs, first.hold).seq).toBe(3);
+    // A reaction to 3 moves it above the next unanswered one.
+    const reacted = applyKinChatEvent(theirs, {
+      _tag: "read",
+      memberId: KinMemberId.make("me"),
+      seq: 3,
+    });
+    const after = lineOf(reacted, first.hold);
+    expect(after.seq).toBe(5);
+    // A reply reads everything; what arrives after it gets no line.
+    const replied = applyKinChatEvent(
+      applyKinChatEvent(reacted, { _tag: "message", message: mine(7) }),
+      { _tag: "read", memberId: KinMemberId.make("me"), seq: 7 },
+    );
+    const gone = lineOf(replied, after.hold);
+    expect(gone.seq).toBeNull();
+    const answer = applyKinChatEvent(replied, { _tag: "message", message: agentMessage(8) });
+    expect(lineOf(answer, gone.hold).seq).toBeNull();
+    // Nothing unanswered at open: a message arriving while open gets no line either.
+    const read = opened(agentRun, 5);
+    const none = lineOf(read);
+    const later = applyKinChatEvent(read, { _tag: "message", message: agentMessage(6) });
+    expect(lineOf(later, none.hold).seq).toBeNull();
   });
 });
 

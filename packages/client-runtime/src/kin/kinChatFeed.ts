@@ -858,6 +858,54 @@ export function kinUnseenCount(
   return count;
 }
 
+/** The viewer's own read mark: the stream's opening one, moved by their member's read events. */
+export function kinOwnReadSeq(
+  state: Pick<KinChatState, "readSeq" | "reads">,
+  viewerMemberId: string | null,
+): number | null {
+  if (state.readSeq === null) return null;
+  const moved = viewerMemberId === null ? 0 : (state.reads[viewerMemberId] ?? 0);
+  return Math.max(state.readSeq, moved);
+}
+
+/** The mark the "New" line was placed from, and the latest seq held then: later arrivals fall below it. */
+export type KinNewLineHold = {
+  readonly chatId: string;
+  readonly mark: number;
+  readonly upTo: number;
+};
+
+/** The line stays where the chat opened it; only a move of the viewer's own mark places it again. */
+export function kinNextNewLineHold(
+  held: KinNewLineHold | null,
+  chatId: string,
+  mark: number | null,
+  latestSeq: number,
+): KinNewLineHold | null {
+  if (mark === null) return null;
+  if (held !== null && held.chatId === chatId && held.mark === mark) return held;
+  return { chatId, mark, upTo: Math.max(latestSeq, mark) };
+}
+
+/**
+ * The message the "New" line goes above: the first after the mark, up to `upTo`, that the viewer
+ * did not write. Null when there is none, or when what has loaded starts after the mark.
+ */
+export function kinNewLineSeq(
+  messages: ReadonlyArray<KinMessage>,
+  hold: KinNewLineHold | null,
+  viewerPersonId: KinPersonId | null,
+): number | null {
+  if (hold === null || messages.length === 0 || messages[0]!.seq > hold.mark + 1) return null;
+  for (const message of messages) {
+    if (message.seq <= hold.mark) continue;
+    if (message.seq > hold.upTo) return null;
+    const own = message.author._tag === "human" && message.author.personId === viewerPersonId;
+    if (!own && message.status === "posted") return message.seq;
+  }
+  return null;
+}
+
 export const latestKinSeq = (messages: ReadonlyArray<KinMessage>) =>
   messages[messages.length - 1]?.seq ?? 0;
 
