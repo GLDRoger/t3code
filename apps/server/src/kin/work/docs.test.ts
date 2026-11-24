@@ -2525,10 +2525,7 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     const mate = { _tag: "person" as const, orgId, personId: mateId };
     const others = [{ _tag: "person" as const, orgId, personId: otherMate }] as const;
     const reads = (who: typeof mate, key: KinRecordKey) =>
-      Effect.match(OwnerDocs.get([who], { orgId, key }), {
-        onSuccess: () => true,
-        onFailure: () => false,
-      });
+      Effect.isSuccess(OwnerDocs.get([who], { orgId, key }));
     const nobodyElse = Effect.fn("test.nobodyElse")(function* (key: KinRecordKey) {
       for (const who of others) {
         assert.isFalse(yield* reads(who, key), `${who.personId} reads ${key}`);
@@ -2587,7 +2584,7 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     });
     assert.isTrue(yield* reads(mate, first.key));
     // Her turn may not lift the label, raise it as hers, or change its kind; nor may her app.
-    for (const change of [{ sensitive: true }, { kind: "mail" }, { kind: "other" }] as const) {
+    for (const change of [{ sensitive: true }, { kind: "quote" }, { kind: "other" }] as const) {
       const moved = yield* Effect.flip(
         LeadDocs.move(scopeOf(lead), { key: first.key, sourceEventId: asked, ...change }),
       );
