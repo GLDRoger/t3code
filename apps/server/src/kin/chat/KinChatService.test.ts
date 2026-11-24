@@ -32,8 +32,10 @@ import {
   KinKeyThumbprint,
   KinMemberId,
   type KinChatListEvent,
+  KinActionId,
   KinMessageId,
   KinMessagesSendInput,
+  kinApprovalWidgetId,
   KinOrgId,
   KinPersonId,
   type KinReactionEmoji,
@@ -2335,6 +2337,24 @@ describe("KinChatService", () => {
         yield* service.react(person, { messageId: last.messageId, emoji: "❤️", on: true });
         assert.strictEqual(yield* mark, last.seq);
         assert.strictEqual(yield* repo.unreadCount(member), 0);
+        // An approval card decided on their own tap reads up to its message, never back.
+        const approvalOn = (actionId: KinActionId, message: { readonly messageId: KinMessageId }) =>
+          repo.insertWidget({
+            ...card,
+            audience: "chat",
+            widgetId: KinWidgetId.make(kinApprovalWidgetId(actionId)),
+            messageId: message.messageId,
+            type: "approval",
+          });
+        const early = KinActionId.make("act-early");
+        const late = KinActionId.make("act-late");
+        yield* approvalOn(early, first);
+        const asking = yield* say("Invented approval note");
+        yield* approvalOn(late, asking);
+        yield* service.answeredApproval([person], late);
+        assert.strictEqual(yield* mark, asking.seq);
+        yield* service.answeredApproval([person], early);
+        assert.strictEqual(yield* mark, asking.seq);
       }).pipe(Effect.provide(layer)),
   );
   it.effect("filters every hub event against current viewer membership at delivery", () =>

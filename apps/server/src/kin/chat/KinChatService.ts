@@ -30,6 +30,8 @@ import {
   KIN_SOCIAL_WEEK_CARD,
   KinMessagesReactInput,
   KinMessagesSendInput,
+  kinApprovalWidgetId,
+  type KinActionId,
   KinWidgetsActInput,
   KinChoiceCardState,
   KinDocCardState,
@@ -423,6 +425,14 @@ export class KinChatService extends Context.Service<
       identity: PersonCaller,
       input: KinWidgetsActInput,
     ) => Effect.Effect<KinMessage, ServiceError>;
+    /**
+     * The person decided an approval card on their own tap (signed approve or reject): their read
+     * mark reaches the card's message, in a chat of theirs.
+     */
+    readonly answeredApproval: (
+      people: Viewers,
+      actionId: KinActionId,
+    ) => Effect.Effect<void, ServiceError>;
     /** Whether `act` would let this person tap the card at all: an active writing member who reads it. */
     readonly canTap: (
       identity: PersonIdentity,
@@ -3934,6 +3944,22 @@ const make = Effect.gen(function* () {
           }),
       );
     }),
+    answeredApproval: Effect.fn("KinChatService.answeredApproval")(function* (people, actionId) {
+      const widgetId = KinWidgetId.make(kinApprovalWidgetId(actionId));
+      for (const identity of people) {
+        const card = yield* repo.getWidget({ orgId: identity.orgId, widgetId });
+        if (Option.isNone(card) || card.value.type !== "approval") continue;
+        const member = (yield* repo.listMembers(card.value)).find(
+          (row) =>
+            row.leftAt === null &&
+            row.principal._tag === "person" &&
+            row.principal.personId === identity.personId,
+        );
+        if (member === undefined) return;
+        const message = yield* requireRecord(repo.getMessage(card.value));
+        return yield* markAnswered(member, message.seq);
+      }
+    }, transaction),
     canTap: Effect.fn("KinChatService.canTap")(function* (identity, input) {
       yield* tapTarget(identity, input.widgetId);
     }),
