@@ -122,7 +122,7 @@ describe("a doc's private line and its label item", () => {
       [
         { sensitive: true, kindLabel: zoya },
         "Private. Only owners and Zoya Sheikh, whose draft it is, see this.",
-        "Mark as private",
+        "Keep to owners only",
       ],
       [
         { sensitive: true, kindLabel: { reader: { name: "Zoya Sheikh", you: true as const } } },
