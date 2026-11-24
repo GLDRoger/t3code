@@ -165,7 +165,7 @@ export const countryFirstMessage = (owner: string, ask: CountryAsk = {}) =>
   `Nothing was ${ask.saved === true ? "saved" : "created"}: ${NOT_CHOSEN}, ${
     ask.forTeammate === true
       ? "and Kin records no money until an owner chooses it in Settings, Company details."
-      : `so Kin can't tell its currency or tax. ${
+      : `so Kin can't tell its currency or tax: name no currency yet. ${
           ask.answeringChooser === true
             ? "The person you're answering chooses it themselves, in Settings, Company details: tell them so in your reply. Kin wakes you here once it is chosen, so they needn't tell you. No question or tool of yours can set it."
             : `Ask ${owner} to choose it in Settings, Company details.`
