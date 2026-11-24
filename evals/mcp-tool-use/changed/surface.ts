@@ -23,7 +23,14 @@ import { PreviewControlsToolkit } from "../../../apps/server/src/mcp/toolkits/pr
 import { PreviewToolkit } from "../../../apps/server/src/mcp/toolkits/preview/tools.ts";
 import { TURN_EVENT_TOOLS } from "../../../apps/server/src/kin/lead/eventIds.ts";
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../../apps/server/src/kin/reply/classify.ts";
-import { fillKinRules, KIN_CALL_REFUSAL, kinDated, kinSessionOf, kinTurnFiles } from "../kin.ts";
+import {
+  fillKinRules,
+  KIN_CALL_REFUSAL,
+  kinBillsOf,
+  kinDated,
+  kinSessionOf,
+  kinTurnFiles,
+} from "../kin.ts";
 import { filledKinMocks } from "../kin-checks.ts";
 import { rubricRequest } from "../rubric.ts";
 import {
@@ -61,7 +68,7 @@ export const runnerHash = () =>
   );
 
 /** The runner this file's part list was checked against. */
-export const REVIEWED_RUNNER = "d034f970a5f362aa";
+export const REVIEWED_RUNNER = "58be22b2e7225639";
 
 export const CaseSurface = Schema.Struct({
   /** The case as run.json hashes it, and its first request as run.json hashes it. */
@@ -296,6 +303,7 @@ export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
       kinSession: kinSessionOf(testCase),
       kinShared: prompt.includes("{{SHARED_TURN}}"),
       kinSocial: setup.world?.kinSocial === true,
+      kinBills: kinBillsOf(testCase),
     };
   };
   const bases = new Map<string, Base>();

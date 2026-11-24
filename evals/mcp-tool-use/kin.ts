@@ -66,6 +66,7 @@ import { formatKinPicturesDay, KIN_TEXT_LOCALE, KinMoneySummary } from "@t3tools
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
+import { BILLS_TOOLS } from "../../apps/server/src/kin/lead/billsOnly.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
 import { KinStatementToolkit } from "../../apps/server/src/kin/work/mcp/statementTools.ts";
 import { KinBillToolkit } from "../../apps/server/src/kin/work/mcp/billTools.ts";
@@ -194,6 +195,8 @@ export type KinSeatOptions = {
   readonly kinShared?: boolean;
   /** The lead's remit is social media, so Social's tools join (AgentSession). */
   readonly kinSocial?: boolean;
+  /** Bills read in the background: a confined thread that lists `bill_read` alone (`billsOnly`). */
+  readonly kinBills?: boolean;
 };
 
 const names = (...toolkits: ReadonlyArray<{ readonly tools: object }>) =>
@@ -228,6 +231,7 @@ const ANY_KIN = names(
 
 /** Whether a T3 tool, by bare name, is listed to this turn as far as Kin decides (AgentSession). */
 export const kinToolVisible = (name: string, options: KinSeatOptions) => {
+  if (options.kinBills === true) return BILLS_TOOLS.has(name);
   // A turn others read runs on a shared thread, which lists only what it may run.
   if (options.kinShared === true && !listedOnSharedThread(name)) return false;
   if (options.kinAgent !== true && options.kinLead !== true) return !ANY_KIN.has(name);
@@ -241,6 +245,9 @@ export const kinToolVisible = (name: string, options: KinSeatOptions) => {
 };
 
 export const KIN_SHARED_PROMPT = /\{\{(SHARED_TURN|GROUP_RULES)\}\}/;
+/** A bills turn's section (`work/billTurn.ts`): the turn runs on the confined bills thread. */
+export const KIN_BILLS_PROMPT = /\{\{BILLS_TURN:/;
+export const kinBillsOf = ({ prompt }: McpToolUseCase) => KIN_BILLS_PROMPT.test(prompt);
 /**
  * A Kin lead's turn on a thread nobody else reads has the owner's seat, as `lead/turn/session.ts`
  * plans it; a case says `kinSession: false` only to model a turn without it on purpose.
@@ -249,7 +256,9 @@ export const kinSessionOf = ({ setup, prompt }: McpToolUseCase) => {
   const stated = setup.world?.kinSession;
   return typeof stated === "boolean"
     ? stated
-    : setup.world?.kinLead === true && !KIN_SHARED_PROMPT.test(prompt);
+    : setup.world?.kinLead === true &&
+        !KIN_SHARED_PROMPT.test(prompt) &&
+        !KIN_BILLS_PROMPT.test(prompt);
 };
 
 /**
@@ -271,7 +280,8 @@ export const kinLeadBase = <M, E>(input: {
   readonly isT3Name: (name: string) => boolean;
 }) => {
   const { options, t3 } = input;
-  const ownerSeat = options.kinSession === true && options.kinShared !== true;
+  const ownerSeat =
+    options.kinSession === true && options.kinShared !== true && options.kinBills !== true;
   const deferredKin = t3.filter(
     (tool) => !KIN_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
   );
@@ -283,7 +293,13 @@ export const kinLeadBase = <M, E>(input: {
   const deferred = [...deferredNative, ...deferredKin];
   return {
     model: input.model,
-    system: [text(kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"))],
+    system: [
+      text(
+        options.kinBills === true
+          ? kinInstructions("confined", "claudeAgent", false)
+          : kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"),
+      ),
+    ],
     reminders:
       deferred.length > 0 && input.deferredHeader !== undefined
         ? [text(`${input.deferredHeader}${deferred.map((tool) => tool.name).join("\n")}\n`)]
@@ -295,8 +311,11 @@ export const kinLeadBase = <M, E>(input: {
         ? input.templateTools.filter(
             (tool) => !input.isT3Name(tool.name) && !tool.name.endsWith("ToolSearch"),
           )
-        : // A confined Claude session keeps the provider's own web search (`claude.ts`).
-          [{ name: "WebSearch", ...input.nativeSchema("WebSearch") }]),
+        : // A confined Claude session keeps the provider's own web search (`claude.ts`), but
+          // for bills.
+          options.kinBills === true
+          ? []
+          : [{ name: "WebSearch", ...input.nativeSchema("WebSearch") }]),
       ...(deferred.length > 0 ? toolSearch : []),
       ...t3.filter((tool) => !deferredKin.includes(tool)),
     ],
@@ -1269,6 +1288,8 @@ export const kinTurnFiles = Effect.fn("evaluateMcpToolUse.kinTurnFiles")(functio
     const prepared = yield* (yield* KinTurnContent).prepare({
       text: PROMPT_MARK,
       attachments: stored,
+      // As the runner decides it (`WakeupRunner` `offersBillsAdd`): a lead's owner-only turn.
+      offersBillsAdd: testCase.setup.world?.kinLead === true && kinSessionOf(testCase),
     });
     const text = yield* providerMessageTextWithAttachmentPaths({
       text: prepared.text,
