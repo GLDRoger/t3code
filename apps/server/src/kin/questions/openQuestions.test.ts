@@ -395,7 +395,7 @@ it.effect("a question is asked once, and its default is taken once at its day", 
         WHERE org_id = ${orgId}`;
       yield* sql`UPDATE kin_agents SET paused_at = ${at} WHERE agent_id = 'finance'`;
       assert.strictEqual(yield* settle(orgId, TUE_1930), 2);
-      assert.strictEqual((yield* questionRow(sql, "q-chief-last")).state, "withdrawn");
+      assert.strictEqual((yield* questionRow(sql, "q-chief-last")).state, "lapsed");
       yield* sql`DELETE FROM kin_questions WHERE question_id LIKE 'q-paused-%'`;
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
       assert.lengthOf(yield* dueEvents(sql, orgId), 0);
@@ -997,6 +997,43 @@ it.effect("only the asker takes an answer from the person's own words, and she c
   ),
 );
 
+// Rhea leaves the Chief of staff's question in words unanswered: at its day it lapses, with no
+// notice and no second ask, and the Chief of staff reads it as lapsed, not withdrawn.
+it.effect("a question in words nobody answered lapses quietly but reads lapsed", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, chatOf, wake } = yield* ambermill;
+      const text = yield* Questions.recordTextQuestion({
+        orgId: KinOrgId.make(orgId),
+        agentId: KinAgentId.make("chief"),
+        chatId: chatOf("chief"),
+        wakeupId: "w-text",
+        question: "Is P-3 finished?",
+        now: IST_MON_1130,
+      });
+      const said = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
+        WHERE org_id = ${orgId}`.pipe(Effect.map((rows) => rows[0]!.n));
+      const events = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_events
+        WHERE org_id = ${orgId}`.pipe(Effect.map((rows) => rows[0]!.n));
+      const before = [yield* said, yield* events];
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 1);
+      assert.strictEqual(yield* settle(orgId, TUE_1930 + 86_400_000), 0);
+      assert.strictEqual((yield* questionRow(sql, text!)).state, "lapsed");
+      assert.deepStrictEqual([yield* said, yield* events], before);
+      // Her later words don't answer it; asked to close it, the Chief of staff reads lapsed.
+      yield* wake(
+        "chief",
+        yield* chats.send(owner, { chatId: chatOf("chief"), body: "Later.", clientMessageId: "m" }),
+      );
+      assert.deepStrictEqual(
+        (yield* callAs("chief", "kin_ask_close", { question: text!, outcome: "withdrawn" })).value,
+        { question: text!, state: "lapsed" },
+      );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 // Rhea is away six weeks and Finance's default is taken in the first: she is told once she is
 // back, counted in her chat itself. Later, Meera, still away, has more held notices than one pass
 // tells: Rhea, who is back, is told of her next one in that same pass.
@@ -1145,6 +1182,14 @@ const askingTeam = Effect.gen(function* () {
       AND chat_id = ${chatId} AND author_kind = 'system' ORDER BY seq`.pipe(
       Effect.map((rows) => rows.map((row) => row.body)),
     );
+  /** `id` signed in to Kin: a live session bound to them. */
+  const signIn = (id: string) =>
+    Effect.gen(function* () {
+      yield* sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, issued_at, expires_at)
+        VALUES (${`s-${id}`}, ${id}, '[]', 'bearer-access-token', ${at}, '2027-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES (${`s-${id}`}, ${orgId}, ${id}, 0)`;
+    });
   const answeredWakes = sql<{ key: string; origin: string | null }>`SELECT dedupe_key AS key,
       json_extract(json, '$.origin') AS origin FROM kin_events
     WHERE org_id = ${orgId} AND dedupe_key LIKE 'question-answered:%' ORDER BY rowid`;
@@ -1205,6 +1250,7 @@ const askingTeam = Effect.gen(function* () {
     widgetOf,
     kinLines,
     answeredWakes,
+    signIn,
     tap,
     wakeQueued,
   };
@@ -3746,7 +3792,9 @@ it.effect("a question asked for someone away waits for them, then is raised once
       yield* settle(orgId, back + 60_000);
       assert.lengthOf(yield* cardsFor(devChat), 1);
 
-      // At its day nobody answers for him: it is raised once more, saying still who asks.
+      // At its day nobody answers for him, signed in by now: it is raised once more, saying still
+      // who asks.
+      yield* team.signIn("dev");
       const raiseAt = Date.UTC(2026, 10, 20, 5);
       assert.strictEqual(yield* settle(orgId, raiseAt), 1);
       assert.strictEqual(yield* settle(orgId, raiseAt + 86_400_000), 0);
@@ -3764,7 +3812,8 @@ it.effect("a question asked for someone away waits for them, then is raised once
       const runOut =
         "Dev Malhotra hasn't answered “Does the shoot move to Friday?” by its day; Kin asked Dev Malhotra once more.";
       assert.deepStrictEqual((yield* team.kinLines(chatOf("chief"))).slice(1), [runOut]);
-      yield* sql`UPDATE kin_questions SET raised_at = NULL WHERE question_id = ${asked.questionId}`;
+      yield* sql`UPDATE kin_questions SET raised_at = NULL, act_at = ${raiseAt}
+        WHERE question_id = ${asked.questionId}`;
       assert.strictEqual(yield* settle(orgId, raiseAt + 2 * 86_400_000), 1);
       assert.deepStrictEqual((yield* team.kinLines(chatOf("chief"))).slice(1), [runOut]);
 
@@ -3783,6 +3832,119 @@ it.effect("a question asked for someone away waits for them, then is raised once
       const next = { orgId: KinOrgId.make(orgId), wakeupId: "answer-turn" };
       yield* inheritOutside({ ...next, eventIds: [answered!.eventId] });
       assert.strictEqual(stampKey((yield* outsideStamp(next)) ?? ""), "mail-connection");
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// Dev's request through the Chief of staff waits on Zoya, who never answers, even asked once more:
+// at the raise's own day it lapses. Dev's chat hears once, the Chief of staff is woken there once,
+// Zoya's card reads lapsed, and a rerun adds nothing. Arjun never signed in, so his lapses at its
+// first day, saying so. Meera's lapses too, told without its words, which Dev can no longer read.
+it.effect("a question asked for someone that nobody answers lapses, and its chat hears once", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, orgId, chiefChat, askFor, wakeOn, kinLines, cardOf, widgetOf } = team;
+      yield* team.signIn("zoya");
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'clients', 'Clients', 'C', 1, 0) ON CONFLICT DO NOTHING`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES (${orgId}, 'rec_harbourline', 'clients', 'C-7', 'Harbourline Hotels', 'person',
+          ${team.owner.personId}, 'person', 'harbourline', 0, 0)`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id IN ('dev', 'zoya')`;
+      const devChat = yield* chiefChat("dev");
+      const dev = yield* wakeOn("chief", "dev", devChat, "Did the client approve the quote?");
+      const ask = (to: string, question: string, intent: string) =>
+        askFor("chief", dev, {
+          to,
+          question,
+          options: [{ label: "Yes" }, { label: "Not yet" }],
+          about: [],
+          intent,
+        });
+      const toZoya = yield* ask("Zoya", "Did the client approve the quote?", "quote approved");
+      const toArjun = yield* ask("Arjun", "Is the call sheet final?", "call sheet");
+      const toMeera = yield* ask("Meera", "Did C-7 sign the terms?", "terms signed");
+      assert.deepStrictEqual(
+        [toZoya.signedIn, toArjun.signedIn, toMeera.signedIn],
+        [true, false, false],
+      );
+      yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = 'dev'`;
+      const stateOf = (id: string) => questionRow(sql, id).pipe(Effect.map((row) => row.state));
+      const lapsedWakes = sql<{ key: string; chatId: string; origin: string }>`SELECT
+          dedupe_key AS key, json_extract(json, '$.chatId') AS "chatId",
+          json_extract(json, '$.origin.personId') AS origin
+        FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'question-lapsed:%'
+        ORDER BY dedupe_key`;
+      const outcomeOf = (questionId: string) =>
+        Effect.gen(function* () {
+          const row = yield* questionRow(sql, questionId);
+          const card = yield* widgetOf(row.raiseWidget ?? (yield* cardOf(questionId)).widgetId!);
+          return { closed: card.closedAt !== null, outcome: (card.state as { outcome?: unknown }).outcome };
+        });
+
+      // Wednesday 10:30 IST, the morning after its day: Zoya is asked once more; Arjun, never
+      // signed in, can't be, so his lapses now, as does Meera's.
+      const wednesday = Date.UTC(2026, 10, 18, 5);
+      assert.strictEqual(yield* settle(orgId, wednesday), 3);
+      assert.strictEqual(yield* settle(orgId, wednesday + 60_000), 0);
+      assert.deepStrictEqual(
+        [yield* stateOf(toZoya.questionId), yield* stateOf(toArjun.questionId)],
+        ["open", "lapsed"],
+      );
+      assert.deepStrictEqual((yield* kinLines(devChat)).toSorted(), [
+        "Arjun Nair hasn't signed in to Kin, so “Is the call sheet final?”, asked on Mon 16 Nov, lapsed without an answer.",
+        "Meera Shah hasn't signed in to Kin, so a question asked for this chat, asked on Mon 16 Nov, lapsed without an answer.",
+        "Zoya Sheikh hasn't answered “Did the client approve the quote?” by its day; Kin asked Zoya Sheikh once more.",
+      ]);
+      assert.deepStrictEqual(yield* outcomeOf(toArjun.questionId), {
+        closed: true,
+        outcome: {
+          title: "Lapsed",
+          text: "Lapsed on Wed 18 Nov: Arjun Nair didn't answer.",
+          lapsed: {
+            personId: KinPersonId.make("arjun"),
+            name: "Arjun Nair",
+            at: DateTime.formatIso(DateTime.makeUnsafe(wednesday)),
+          },
+        },
+      });
+
+      // Zoya's raised card has a day of its own, Thursday's end: then it lapses too, once.
+      const thursday = Date.UTC(2026, 10, 19, 14);
+      assert.strictEqual(yield* settle(orgId, thursday - 60_000), 0);
+      assert.strictEqual(yield* settle(orgId, thursday), 1);
+      assert.strictEqual(yield* settle(orgId, thursday + 3 * 86_400_000), 0);
+      assert.strictEqual(yield* stateOf(toZoya.questionId), "lapsed");
+      const lapsedLine =
+        "Zoya Sheikh didn't answer “Did the client approve the quote?”, asked on Mon 16 Nov. It has lapsed.";
+      assert.lengthOf(
+        (yield* kinLines(devChat)).filter((line) => line === lapsedLine),
+        1,
+      );
+      assert.lengthOf(yield* kinLines(devChat), 4);
+      assert.deepInclude((yield* outcomeOf(toZoya.questionId)).outcome as object, {
+        text: "Lapsed on Thu 19 Nov: Zoya Sheikh didn't answer.",
+      });
+      // The Chief of staff is woken once for each, in Dev's chat and at his level.
+      assert.deepStrictEqual(
+        (yield* lapsedWakes).map((wake) => [wake.chatId, wake.origin]),
+        [
+          [devChat, "dev"],
+          [devChat, "dev"],
+          [devChat, "dev"],
+        ],
+      );
+      const told = yield* Questions.lapsedTurnText(KinOrgId.make(orgId), toZoya.questionId);
+      assert.match(told!.text, /^Your question for Dev Malhotra, “Did the client approve the quote\?”, asked of Zoya Sheikh on Mon 16 Nov, lapsed: nobody answered\./);
+      assert.match(
+        (yield* Questions.lapsedTurnText(KinOrgId.make(orgId), toArjun.questionId))!.text,
+        /Arjun Nair hasn't signed in to Kin, so asking again in Kin won't reach them/,
+      );
+      // Lapsed, it no longer counts among what waits on Zoya: she may be asked anew.
+      assert.lengthOf(yield* Questions.openFor(KinOrgId.make(orgId), KinPersonId.make("zoya")), 0);
     }).pipe(Effect.provide(layer)),
   ),
 );

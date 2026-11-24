@@ -616,7 +616,12 @@ const make = Effect.gen(function* () {
           { orgId, agentId: event.agentId, wakeupId },
           chat.value,
         ).pipe(Effect.provideService(KinRecords, records.value));
-      if (subject.type !== "question" || subject.undone === true || subject.answered === true)
+      if (
+        subject.type !== "question" ||
+        subject.undone === true ||
+        subject.answered === true ||
+        subject.lapsed === true
+      )
         return false;
       if (subject.dismissed === true) return yield* dismissalGone(orgId, subject);
       const due = yield* dueTurnText(orgId, subject.questionId, yield* Clock.currentTimeMillis);

@@ -32,6 +32,7 @@ import { isOrgPaused } from "../lead/orgState.ts";
 import * as Reach from "../lead/Reach.ts";
 import { stampEvent, storedStamp } from "../lead/OutsideContent.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import { signedIn } from "../people/signedIn.ts";
 import { holdFor } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
 import type * as CardActions from "../widgets/cardActions.ts";
@@ -86,7 +87,13 @@ export const OPEN_QUESTION_HEADINGS = {
 export const openQuestionsHeading = (who: string) =>
   `# Open questions to ${who} (already asked; don't ask or repeat them)`;
 
-export type QuestionState = "open" | "answered" | "default_taken" | "withdrawn" | "dismissed";
+export type QuestionState =
+  | "open"
+  | "answered"
+  | "default_taken"
+  | "withdrawn"
+  | "dismissed"
+  | "lapsed";
 export type QuestionRow = {
   readonly questionId: string;
   readonly agentId: KinAgentId;
@@ -392,7 +399,7 @@ export const textQuestionId = (wakeupId: string) => `q-${hash(`text:${wakeupId}`
 /**
  * A reply that ended on a question to the one person in a direct chat, with no card: stored
  * with no default, so every agent sees it is open. Their next message in that chat answers it,
- * and at its day it lapses quietly. An older open one from the same agent there gives way.
+ * and at its day it lapses, with nobody told. An older open one from the same agent there gives way.
  */
 export const recordTextQuestion = Effect.fn("KinQuestions.recordText")(function* (input: {
   readonly orgId: KinOrgId;
@@ -746,7 +753,6 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
   queue: Pick<KinEventQueue.KinEventQueue["Service"], "enqueue">,
   approved = false,
 ) {
-  const sql = yield* SqlClient.SqlClient;
   const who = yield* personName(orgId, row.personId);
   const asker = yield* personOfChat(orgId, forChatId);
   const changesFirst = !approved && isChangesFirst(row, said);
@@ -775,35 +781,68 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
         }),
       ),
     );
-  const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
-    FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${row.agentId}`;
-  const ownerAsked = lead === undefined || lead.ownerChatId === forChatId;
   const named = asker === undefined ? "the chat that asked" : yield* personName(orgId, asker);
   // An approved draft's turn is the owner's own (`approveDraft`): none in the chat that asked.
   if (approved || changesFirst) return named;
-  // Its turn answers in the chat that asked, so only while its asker still writes there.
+  yield* wakeAsker(orgId, row, forChatId, now, queue, {
+    eventId: answeredEventId(orgId, row.questionId),
+    dedupeKey: `question-answered:${row.questionId}`,
+    subject: { type: "question", questionId: row.questionId, answered: true },
+    notNow: notSentBack,
+  });
+  return named;
+});
+
+/**
+ * One turn of a question's asker in the chat it was asked for, on what became of it there: only
+ * while its asker still writes there, or when that is its owner's own chat.
+ */
+const wakeAsker = Effect.fn("KinQuestions.wakeAsker")(function* (
+  orgId: KinOrgId,
+  row: QuestionRow,
+  forChatId: KinChatId,
+  now: number,
+  queue: Pick<KinEventQueue.KinEventQueue["Service"], "enqueue">,
+  turn: {
+    readonly eventId: KinEventId;
+    readonly dedupeKey: string;
+    readonly subject: {
+      readonly type: "question";
+      readonly questionId: string;
+      readonly answered?: true;
+      readonly lapsed?: true;
+    };
+    readonly notNow: KinChatError;
+  },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const asker = yield* personOfChat(orgId, forChatId);
+  const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
+    FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${row.agentId}`;
+  const ownerAsked = lead === undefined || lead.ownerChatId === forChatId;
   if (
     !ownerAsked &&
     (asker === undefined ||
       asker !== row.forPersonId ||
       !(yield* Reach.reaches(orgId, Reach.person(asker), Reach.agent(row.agentId))))
   ) {
-    yield* Effect.logInfo("Kin dropped an answer's turn: the chat that asked can't take it", {
+    yield* Effect.logInfo("Kin dropped an asker's turn: the chat that asked can't take it", {
       orgId,
       questionId: row.questionId,
       forChatId,
+      dedupeKey: turn.dedupeKey,
     });
-    return named;
+    return;
   }
   const event = yield* decodeEvent({
     _tag: "deferral.due",
-    eventId: answeredEventId(orgId, row.questionId),
+    eventId: turn.eventId,
     orgId,
     agentId: row.agentId,
     receivedAt: iso(now),
     provenance: { _tag: "system" },
-    dedupeKey: `question-answered:${row.questionId}`,
-    subject: { type: "question", questionId: row.questionId, answered: true },
+    dedupeKey: turn.dedupeKey,
+    subject: turn.subject,
     lateByMs: 0,
     ...(ownerAsked || asker === undefined
       ? {}
@@ -816,12 +855,11 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
     Effect.catchTags({
       KinEventQueueRetiredAgent: () => Effect.void,
       KinEventQueueUnknownAgent: () => Effect.void,
-      KinEventQueueConflict: () => Effect.fail(notSentBack),
-      KinEventQueueUnknownEvent: () => Effect.fail(notSentBack),
+      KinEventQueueConflict: () => Effect.fail(turn.notNow),
+      KinEventQueueUnknownEvent: () => Effect.fail(turn.notNow),
     }),
   );
   yield* stampEvent(orgId, event.eventId, yield* storedStamp(orgId, row.questionId));
-  return named;
 });
 const notSentBack = new KinChatError({
   reason: "conflict",
@@ -1391,8 +1429,9 @@ type SettleDeps = {
 /**
  * Settles each question whose day came, once: a safe default is taken (its own action run, else
  * the asker's turn queued, as it is marked), one with none is raised once more on the next working
- * morning, a text question lapses. Conditional updates make a rerun do nothing. Then each person
- * a default was taken for is told, once.
+ * morning, a text question lapses. One asked for another chat lapses at its raise's own day, or
+ * instead of its raise when its person hasn't signed in (`lapseAsked`). Conditional updates make
+ * a rerun do nothing. Then each person a default was taken for is told, once.
  */
 export const settleDue = Effect.fn("KinQuestions.settleDue")(function* (
   orgId: KinOrgId,
@@ -1405,7 +1444,8 @@ export const settleDue = Effect.fn("KinQuestions.settleDue")(function* (
     ? []
     : (yield* sql<Raw>`SELECT ${sql.literal(COLUMNS)} ${sql.literal(FROM)}
         WHERE q.org_id = ${orgId} AND q.state = 'open' AND q.act_at <= ${now}
-          AND (q.safe = 1 OR q.raised_at IS NULL) AND a.paused_at IS NULL
+          AND (q.safe = 1 OR q.raised_at IS NULL
+            OR (q.for_chat_id IS NOT NULL AND q.draft_json IS NULL)) AND a.paused_at IS NULL
           AND NOT (q.for_chat_id IS NOT NULL AND q.widget_id IS NULL)
         ORDER BY q.act_at, q.question_id LIMIT 50`).map(toRow);
   let settled = 0;
@@ -1416,7 +1456,7 @@ export const settleDue = Effect.fn("KinQuestions.settleDue")(function* (
           ? lapse(orgId, row, now)
           : row.safe
             ? takeDefault(orgId, row, now, deps)
-            : raise(orgId, row, now, deps.chat),
+            : raise(orgId, row, now, deps),
       )
       .pipe(
         Effect.catch((cause) =>
@@ -1620,7 +1660,7 @@ const lapse = Effect.fn("KinQuestions.lapse")(function* (
   now: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const moved = yield* sql`UPDATE kin_questions SET state = 'withdrawn', closed_at = ${now}
+  const moved = yield* sql`UPDATE kin_questions SET state = 'lapsed', closed_at = ${now}
     WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
     RETURNING question_id`;
   return moved.length > 0;
@@ -1709,9 +1749,10 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
   orgId: KinOrgId,
   row: QuestionRow,
   now: number,
-  chat: Pick<KinChatService["Service"], "closeReplaced" | "ask" | "notice">,
+  deps: SettleDeps,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const { chat } = deps;
   const [agent] = yield* sql<{ owner: string; threadId: string | null; retiredAt: string | null }>`
     SELECT a.owner_person_id AS owner, l.thread_id AS "threadId", a.retired_at AS "retiredAt"
     FROM kin_agents a LEFT JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
@@ -1740,7 +1781,14 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
     );
     return true;
   }
-  const moved = yield* sql`UPDATE kin_questions SET raised_at = ${now}
+  // Asked for someone, it ends unanswered at its raise's own day, or now when its person hasn't
+  // signed in: asking again in Kin can't reach them. A sent-up draft waits on the owner as before.
+  const lapses = row.forChatId !== null && row.draft === null;
+  if (lapses && (row.raisedAt !== null || !(yield* signedIn(orgId, row.personId))))
+    return yield* lapseAsked(orgId, row, now, deps);
+  const clock = yield* personClock(orgId, row.personId);
+  const moved = yield* sql`UPDATE kin_questions SET raised_at = ${now},
+      act_at = ${lapses ? defaultDue(now, clock.zone, clock.work) : row.actAt}
     WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
       AND raised_at IS NULL
     RETURNING question_id`;
@@ -1813,7 +1861,6 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
     }
     return true;
   }
-  const clock = yield* personClock(orgId, row.personId);
   const said = `${row.agentName} asked ${dayWord(row.askedAt, now, clock.zone)}. Nothing happens until you answer.`;
   // Asked for someone, it says who still: the server's line, as on the first card.
   const by =
@@ -1910,6 +1957,115 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
       );
   }
   return true;
+});
+
+/** The asker's turn on a question asked for another chat that lapsed: one per question. */
+const lapsedEventId = (orgId: string, questionId: string) =>
+  KinEventId.make(`question_${hash(`${orgId}\0${questionId}\0lapsed`).slice(0, 32)}`);
+/** "Mon 16 Nov", on `zone`'s clock. */
+const dayOf = (at: number, zone: string) =>
+  formatKinWhen(at, "day", { zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "");
+const shortQuote = (text: string) => `“${oneLine(text, 80)}”`;
+
+/** What a lapsed question's card says to a client that doesn't read `lapsed`. */
+export const lapsedCardText = (who: string, day: string) => `Lapsed on ${day}: ${who} didn't answer.`;
+
+/**
+ * Kin's one line in the chat a question was asked for, once it lapsed: who, what and since when.
+ * `question` is null where that chat's person may no longer read it.
+ */
+export const lapsedNotice = (input: {
+  readonly who: string;
+  readonly question: string | null;
+  readonly asked: string;
+  readonly unsigned: boolean;
+}) => {
+  const what = input.question === null ? "a question asked for this chat" : shortQuote(input.question);
+  return input.unsigned
+    ? `${input.who} hasn't signed in to Kin, so ${what}, asked on ${input.asked}, lapsed without an answer.`
+    : `${input.who} didn't answer ${what}, asked on ${input.asked}. It has lapsed.`;
+};
+
+/**
+ * A question asked for another chat ends unanswered, in the sweep's transaction: it closes as
+ * lapsed, its card says so, the chat it was asked for hears once (`kin-asked-lapsed:<id>`), and its
+ * asker is woken there once to carry on without it. One raised before this was built gets its
+ * raise's day first.
+ */
+const lapseAsked = Effect.fn("KinQuestions.lapseAsked")(function* (
+  orgId: KinOrgId,
+  row: QuestionRow,
+  now: number,
+  deps: SettleDeps,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const forChatId = row.forChatId;
+  if (forChatId === null) return false;
+  const clock = yield* personClock(orgId, row.personId);
+  if (row.raisedAt !== null) {
+    const day = defaultDue(row.raisedAt, clock.zone, clock.work);
+    if (now < day) {
+      yield* sql`UPDATE kin_questions SET act_at = ${day}
+        WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'`;
+      return false;
+    }
+  }
+  const moved = yield* sql`UPDATE kin_questions SET state = 'lapsed', closed_at = ${now}
+    WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
+    RETURNING question_id`;
+  if (moved.length === 0) return false;
+  const who = yield* personName(orgId, row.personId);
+  for (const widgetId of cardIds(row))
+    yield* deps.chat.closeReplaced({
+      orgId,
+      widgetId: KinWidgetId.make(widgetId),
+      outcome: {
+        title: "Lapsed",
+        text: lapsedCardText(who, dayOf(now, clock.zone)),
+        lapsed: { personId: row.personId, name: who, at: iso(now) },
+      },
+    });
+  // Its words only to the person it was asked for, while they may still read them.
+  const asker = yield* personOfChat(orgId, forChatId);
+  const askerLevel = asker !== undefined && (yield* ownerLevel(orgId, asker));
+  const reads =
+    asker !== undefined &&
+    (row.forPersonId === null ? askerLevel : asker === row.forPersonId) &&
+    (askerLevel || (yield* unreadableBy(orgId, asker, row.question)) === undefined);
+  const zone = asker === undefined ? clock.zone : (yield* personClock(orgId, asker)).zone;
+  yield* deps.chat
+    .notice({
+      orgId,
+      chatId: forChatId,
+      messageId: KinMessageId.make(`kin-asked-lapsed:${row.questionId}`),
+      audience: "chat",
+      body: lapsedNotice({
+        who,
+        question: reads ? row.question : null,
+        asked: dayOf(row.askedAt, zone),
+        unsigned: row.raisedAt === null,
+      }),
+    })
+    .pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Kin couldn't tell the asker a question lapsed", {
+          orgId,
+          questionId: row.questionId,
+          cause,
+        }),
+      ),
+    );
+  yield* wakeAsker(orgId, row, forChatId, now, deps.queue, {
+    eventId: lapsedEventId(orgId, row.questionId),
+    dedupeKey: `question-lapsed:${row.questionId}`,
+    subject: { type: "question", questionId: row.questionId, lapsed: true },
+    notNow: notLapsedNow,
+  });
+  return true;
+});
+const notLapsedNow = new KinChatError({
+  reason: "conflict",
+  message: "Kin couldn't tell the asker that question lapsed just now.",
 });
 
 const personName = Effect.fn("KinQuestions.personName")(function* (
@@ -2014,6 +2170,33 @@ export const answeredTurnText = Effect.fn("KinQuestions.answeredTurnText")(funct
     data: {
       question: row.question,
       answer: row.answer,
+      ...(row.about.length === 0 ? {} : { about: row.about }),
+    },
+  };
+});
+
+/**
+ * What the asker's turn is told when a question it asked for a chat lapsed unanswered, in that
+ * chat's lane; undefined when there is nothing to carry on. Lapsed never raised, its person hadn't
+ * signed in (`raise`).
+ */
+export const lapsedTurnText = Effect.fn("KinQuestions.lapsedTurnText")(function* (
+  orgId: KinOrgId,
+  questionId: string,
+) {
+  const row = yield* readQuestion(orgId, questionId);
+  if (row === undefined || row.state !== "lapsed" || row.forChatId === null) return undefined;
+  const who = yield* personName(orgId, row.personId);
+  const asker = yield* personOfChat(orgId, row.forChatId);
+  const forWhom = asker === undefined ? "this chat" : yield* personName(orgId, asker);
+  const zone = (yield* personClock(orgId, asker ?? row.personId)).zone;
+  const unsigned = row.raisedAt === null;
+  return {
+    text: `Your question for ${forWhom}, “${row.question}”, asked of ${who} on ${dayOf(row.askedAt, zone)}, lapsed: nobody answered${unsigned ? `, and ${who} hasn't signed in to Kin, so asking again in Kin won't reach them` : ""}. Kin told ${forWhom} in one line, so don't repeat that, and don't ask ${who} again on a card. In one or two sentences, tell ${forWhom} what you'll do without the answer, or that you'll ask someone else or take it to the owner, and then do it.`,
+    data: {
+      question: row.question,
+      asked: who,
+      signedIn: !unsigned,
       ...(row.about.length === 0 ? {} : { about: row.about }),
     },
   };
