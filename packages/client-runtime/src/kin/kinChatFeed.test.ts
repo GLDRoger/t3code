@@ -1105,7 +1105,7 @@ describe("new line", () => {
   it("holds where the chat opened it until the viewer's own mark moves", () => {
     const open = opened(agentRun, 2);
     const first = lineOf(open);
-    expect([first.seq, first.hold?.opening]).toEqual([3, true]);
+    expect(first.seq).toBe(3);
     // A message arriving while the chat is open lands below the line.
     const arrived = applyKinChatEvent(open, { _tag: "message", message: agentMessage(6) });
     expect(lineOf(arrived, first.hold)).toEqual(first);
@@ -1123,7 +1123,7 @@ describe("new line", () => {
       seq: 3,
     });
     const after = lineOf(reacted, first.hold);
-    expect([after.seq, after.hold?.opening]).toEqual([5, false]);
+    expect(after.seq).toBe(5);
     // A reply reads everything; what arrives after it gets no line.
     const replied = applyKinChatEvent(
       applyKinChatEvent(reacted, { _tag: "message", message: mine(7) }),

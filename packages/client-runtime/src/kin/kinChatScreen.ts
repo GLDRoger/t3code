@@ -351,8 +351,6 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
     display,
     /** The row to bring into view for `landOn`; -1 until it has loaded. */
     landIndex,
-    /** The "New" line's row; -1 when there is none. */
-    newLineIndex: newLineSeq === null ? -1 : rows.findIndex((row) => row.key === "new-line"),
     /** The page to read next to reach `landOn`; null once it has loaded or nothing is left. */
     landPage,
     latestSeq: latestKinSeq(messages),

@@ -270,12 +270,11 @@ describe("kinChatFeedView", () => {
     // After the mark at 2: message 3 is the owner's own, 4 is the lead's.
     const at = shown.findIndex((key) => key.includes("fixture-4"));
     const view = feed({
-      newLine: { chatId: KIN_FIXTURE_CHAT_ID, mark: 2, upTo: 4, opening: true },
+      newLine: { chatId: KIN_FIXTURE_CHAT_ID, mark: 2, upTo: 4 },
     });
     expect(keys(view)).toEqual([...shown.slice(0, at), "new-line", ...shown.slice(at)]);
     expect(view.rows[at]).toMatchObject({ type: "day", label: "New" });
-    expect(view.newLineIndex).toBe(at);
-    expect(feed().newLineIndex).toBe(-1);
+    expect(keys(feed())).not.toContain("new-line");
   });
 
   it("follows the end until the reader scrolls away, then counts what they have not seen", () => {

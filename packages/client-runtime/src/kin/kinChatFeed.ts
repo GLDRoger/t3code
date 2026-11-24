@@ -873,8 +873,6 @@ export type KinNewLineHold = {
   readonly chatId: string;
   readonly mark: number;
   readonly upTo: number;
-  /** Placed as the chat opened, not moved by an answer since: the feed may open on it. */
-  readonly opening: boolean;
 };
 
 /** The line stays where the chat opened it; only a move of the viewer's own mark places it again. */
@@ -885,9 +883,8 @@ export function kinNextNewLineHold(
   latestSeq: number,
 ): KinNewLineHold | null {
   if (mark === null) return null;
-  const same = held !== null && held.chatId === chatId;
-  if (same && held.mark === mark) return held;
-  return { chatId, mark, upTo: Math.max(latestSeq, mark), opening: !same };
+  if (held !== null && held.chatId === chatId && held.mark === mark) return held;
+  return { chatId, mark, upTo: Math.max(latestSeq, mark) };
 }
 
 /**
