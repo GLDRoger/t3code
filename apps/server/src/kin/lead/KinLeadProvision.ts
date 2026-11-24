@@ -55,6 +55,7 @@ import { KinStop } from "./KinStop.ts";
 import * as Retirement from "./Retirement.ts";
 import { tracked } from "./tracked.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
+import { checkLeadNoticeNow } from "../hostBackup.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import * as Reach from "./Reach.ts";
 import {
@@ -757,7 +758,7 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
         profile: yield* profileIn(retired, by ?? lead.ownerPersonId),
       };
     }),
-  );
+  ).pipe(Effect.tap(() => checkLeadNoticeNow(input.orgId)));
 });
 
 /**
@@ -814,7 +815,7 @@ export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
         profile: yield* profileIn(restored, by ?? lead.ownerPersonId),
       };
     }),
-  );
+  ).pipe(Effect.tap(() => checkLeadNoticeNow(input.orgId)));
 });
 
 /** The host's `kin lead retire` and `restore`: the same methods, acting as the host's owner. */
@@ -862,7 +863,7 @@ export const setPaused = Effect.fn("KinLeadProvision.setPaused")(function* (inpu
         yield* sql.afterCommit(queue.value.nudge(lead.orgId));
       return yield* profileIn({ ...lead, pausedAt }, by ?? lead.ownerPersonId);
     }),
-  );
+  ).pipe(Effect.tap(() => checkLeadNoticeNow(input.orgId)));
 });
 
 /** The model new agents start on, for owner-level people; null until one is chosen. */

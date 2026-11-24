@@ -23,11 +23,6 @@ const DUE_SENSES = new Set<KinPulseFact["sense"]>([
 ]);
 
 const MAX_FAILED_ATTEMPTS = 3;
-const lateBand = (fact: KinPulseFact) => {
-  if (fact.sense !== "task_late" || fact.measure?.unit !== "hours") return 0;
-  const days = Math.floor(fact.measure.value / 24);
-  return days < 3 ? 0 : days < 7 ? 3 : Math.floor(days / 7) * 7;
-};
 
 const lateReminder = (fact: KinPulseFact, zone: string) =>
   `Still open since ${dayIn(DateTime.toEpochMillis(fact.since), zone)}.`;
@@ -38,6 +33,14 @@ const unitMs = (unit: string) => (unit === "hours" ? HOUR_MS : unit === "days" ?
 export const entryDueSoon = (fact: Pick<KinPulseFact, "sense" | "key">) =>
   fact.sense === "entry_late" && fact.key.includes(":soon=");
 const comingDue = (fact: KinPulseFact) => DUE_SENSES.has(fact.sense) || entryDueSoon(fact);
+
+/** How late a late task or list entry is, in bands it is told again at: 3 days, 7, then weekly. */
+const lateBand = (fact: KinPulseFact) => {
+  const late = fact.sense === "task_late" || (fact.sense === "entry_late" && !entryDueSoon(fact));
+  if (!late || fact.measure?.unit !== "hours") return 0;
+  const days = Math.floor(fact.measure.value / 24);
+  return days < 3 ? 0 : days < 7 ? 3 : Math.floor(days / 7) * 7;
+};
 
 /** Whether a coming-due fact falls due on `at`'s day in `zone`. */
 const dueToday = (fact: KinPulseFact, at: number, zone: string) => {
@@ -72,22 +75,22 @@ export const factSig = (fact: KinPulseFact, at: number, zone: string) => {
   if (fact.sense === "sense_overflow" && m !== undefined) return `count:${m.value}`;
   const age = lateBand(fact);
   const band =
-    fact.sense === "task_late"
-      ? age > 0
-        ? `late:${age}`
-        : m !== undefined && m.threshold > 0
+    age > 0
+      ? `late:${age}`
+      : fact.sense === "task_late"
+        ? m !== undefined && m.threshold > 0
           ? "1"
           : ""
-      : fact.stage !== undefined
-        ? fact.stage
-        : // A list entry is no task: told once an episode, never again as it ages.
-          m === undefined ||
-            comingDue(fact) ||
-            fact.sense === "entry_late" ||
-            fact.sense === "entry_check" ||
-            m.threshold <= 0
-          ? ""
-          : String(Math.floor(m.value / m.threshold));
+        : fact.stage !== undefined
+          ? fact.stage
+          : // A list entry is told once an episode until it is late into a band.
+            m === undefined ||
+              comingDue(fact) ||
+              fact.sense === "entry_late" ||
+              fact.sense === "entry_check" ||
+              m.threshold <= 0
+            ? ""
+            : String(Math.floor(m.value / m.threshold));
   // "open" stays so rows told before holds left the signature still match.
   return `${band}|open|${dueToday(fact, at, zone) ? `due:${dayIn(at, zone)}` : ""}`;
 };

@@ -771,8 +771,17 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
       assert.include(forced, { reason: "not_allowed" });
       assert.strictEqual((yield* kin.stateOf(reacted.key)).state, "open");
 
-      // Its default is the action, on a question about sending: at its day it is raised again,
-      // never taken.
+      // Its default is the action, on a task that repeats: at its day it is raised again, never
+      // taken, though the question is about sending (a done is judged by what it does).
+      const byRhea = {
+        actor: { _tag: "person" as const, personId: owner.personId },
+        via: "owner" as const,
+      };
+      yield* kin.records.update(orgId, byRhea, timed.key, {
+        dueAt: MON + 7 * 86_400_000,
+        repeat: { every: "month" },
+      });
+      const timedRev = (yield* kin.stateOf(timed.key)).rev;
       yield* kin.turn("finance", kin.chatOf("finance"), "And the proposal?");
       const daily = yield* callAs("finance", "kin_ask", {
         ...closeIt(timed.key),
@@ -780,6 +789,7 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
         default: "Close it",
       });
       assert.isTrue(daily.ok, JSON.stringify(daily.value));
+      assert.strictEqual(daily.value.untaken, "repeats");
       const due = Date.parse(daily.value.by as string);
       yield* TestClock.setTime(due + 60_000);
       yield* Questions.settleDue(orgId, due + 60_000, kin.settleDeps);
@@ -844,10 +854,10 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
       });
       const ran = yield* kin.tap(owner, raised.raiseWidgetId, "option-1", "raised");
       assert.deepInclude(JSON.parse(ran.body), { handled: true });
-      assert.deepStrictEqual(yield* kin.stateOf(timed.key), { state: "done", rev: timed.rev + 1 });
+      assert.deepStrictEqual(yield* kin.stateOf(timed.key), { state: "done", rev: timedRev + 1 });
       const again = yield* kin.tap(owner, raised.raiseWidgetId, "option-1", "raised-again");
       assert.strictEqual(again.messageId, ran.messageId);
-      assert.strictEqual((yield* kin.stateOf(timed.key)).rev, timed.rev + 1);
+      assert.strictEqual((yield* kin.stateOf(timed.key)).rev, timedRev + 1);
       const without = (yield* question(gone.value.question))!;
       assert.strictEqual(without.state, "withdrawn");
       assert.isNull(without.raiseWidgetId);
@@ -2068,6 +2078,42 @@ it.effect("a default due while Kin or its asker is paused is taken on resume", (
         WHERE org_id = ${orgId} AND agent_id = 'finance'`;
       assert.strictEqual(yield* settleAt(kin, second.due + 60_000), 1);
       assert.strictEqual((yield* kin.stateOf(handouts.key)).state, "done");
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// A default is judged by what its sealed plan does: marking a task done moves no money, so an
+// amount in the question doesn't hold it. The same words with no plan still wait for Rhea.
+it.effect("a default whose plan closes a task is taken at its day, whatever its words say", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const chatId = kin.chatOf("finance");
+      const ask = Effect.fn("test.askAboutFee")(function* (
+        title: string,
+        action: (key: string) => { readonly kind: "done"; readonly target: string } | undefined,
+      ) {
+        const row = yield* kin.task(title);
+        yield* kin.turn("finance", chatId, `Is ${row.key} finished?`);
+        const act = action(row.key);
+        const asked = yield* callAs("finance", "kin_ask", {
+          question: `${row.key} ${title} at €40 a month: is it done, or keep it open?`,
+          options: [
+            act === undefined ? { label: "It's done" } : { label: "It's done", action: act },
+            { label: "Keep it open" },
+          ],
+          default: "It's done",
+        });
+        assert.isTrue(asked.ok, JSON.stringify(asked.value));
+        return { row, untaken: asked.value.untaken, due: Date.parse(asked.value.by as string) };
+      });
+      const done = yield* ask("Renew the hosting plan", (target) => ({ kind: "done", target }));
+      const words = yield* ask("Renew the domain", () => undefined);
+      assert.deepStrictEqual([done.untaken, words.untaken], [undefined, "money"]);
+      yield* settleAt(kin, done.due + 60_000);
+      assert.strictEqual((yield* kin.stateOf(done.row.key)).state, "done");
+      assert.strictEqual((yield* kin.stateOf(words.row.key)).state, "open");
     }).pipe(Effect.provide(layer)),
   ),
 );

@@ -317,11 +317,18 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
         refusalText(hold, yield* leadNamer(input.orgId, input.agentId), clock.zone),
       );
   }
+  // A sealed plan is judged by what it does, not by the card's words; the asker's "none" holds.
   const untaken: Untaken | undefined =
-    unsafeDefault(label, input.question, {
-      labels: input.labels,
-      aboutMoney: yield* aboutMoney(input.orgId, about),
-    }) ?? (input.acts === undefined || takesAsDefault(input.acts) ? input.held : "action");
+    label === null
+      ? "none"
+      : input.acts !== undefined
+        ? takesAsDefault(input.acts)
+          ? input.held
+          : "action"
+        : (unsafeDefault(label, input.question, {
+            labels: input.labels,
+            aboutMoney: yield* aboutMoney(input.orgId, about),
+          }) ?? input.held);
   const safe = untaken === undefined;
   const actAt = safe ? dueAt : raiseAt(dueAt, clock.zone, clock.work);
   const intent = normaliseIntent(input.intent);
