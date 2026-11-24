@@ -7,6 +7,8 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  EnvironmentId,
+  type KinAttachment,
   KinAgentId,
   KinBillBatchCard,
   type KinBillRead,
@@ -34,6 +36,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { recordTestUploadOwner, TEST_UPLOAD_OWNER } from "../../assets/AttachmentUpload.testkit.ts";
 import { createPendingAttachmentId } from "../../attachmentStore.ts";
+import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -49,6 +52,7 @@ import { toolAdmitted } from "../lead/SharedTools.ts";
 import { KinTurnContent } from "../lead/turn/content.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Bills from "./bills.ts";
+import * as LeadBills from "./leadBills.ts";
 import { billTurn } from "./billTurn.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { moneySummary } from "./moneyViews.ts";
@@ -179,6 +183,7 @@ const seed = Effect.gen(function* () {
 });
 
 const decodeCard = Schema.decodeUnknownSync(KinBillBatchCard);
+const encodeAdded = Schema.encodeUnknownEffect(KinBillsAddResult);
 const card = (batchId: string) =>
   Effect.gen(function* () {
     const repo = yield* KinChatRepository.KinChatRepository;
@@ -401,6 +406,14 @@ describe("bills in bulk", () => {
           }),
           { bill: "B1", result: "B1 saved; the owner keeps it." },
         );
+        // A re-run of this turn (after a restart) names the rest as before: B2 is still B2.
+        const rest = (yield* billTurn(orgId, event))!;
+        assert.deepStrictEqual(rest.ids, ["B2", "B3"]);
+        assert.include(rest.text, "B2 is image 1, B3 is image 2.");
+        assert.deepStrictEqual(
+          rest.attachments.map((file) => file.name),
+          ["B2.png", "B3.png"],
+        );
         yield* read({
           bill: "B2",
           vendor: "Tidewater Freight",
@@ -504,7 +517,7 @@ describe("bills in bulk", () => {
     Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
-      const names = ["cad", "pkr", "eur", "symbol", "dots", "commas", "none", "paise"];
+      const names = ["cad", "again", "pkr", "eur", "symbol", "dots", "commas", "none", "paise"];
       yield* Bills.add(
         as(rhea),
         {
@@ -522,6 +535,8 @@ describe("bills in bulk", () => {
       });
       const answers = new Map([
         ["cad.png", printed("Maple Hosting", "1200.50", "CAD")],
+        // The same bill again in the batch: a duplicate of the suggestion just made of it.
+        ["again.png", printed("MAPLE hosting", "1200.5", "CAD")],
         // Kin's rupees of Pakistan have no minor unit (`kinCurrency`): a whole figure.
         ["pkr.png", printed("Indus Couriers", "1200", "PKR")],
         ["eur.png", printed("Rhein Papier", "1200.50", "EUR")],
@@ -531,7 +546,7 @@ describe("bills in bulk", () => {
         ["none.png", printed("Tidewater Freight", "1200.50")],
         ["paise.png", printed("Indus Couriers", "1200.50", "PKR")],
       ]);
-      // Eight bills are two turns, claimed in either order: each answers its own by file.
+      // Nine bills are two turns, claimed in either order: each answers its own by file.
       for (const n of [1, 2]) {
         const { wakeupId, events } = yield* claimTurn(n);
         const event = events[0]!;
@@ -550,6 +565,7 @@ describe("bills in bulk", () => {
             WHERE b.org_id = ${orgId} ORDER BY b.position`,
         [
           { state: "read", problem: null, amount: 120_050, currency: "CAD" },
+          { state: "duplicate", problem: null, amount: null, currency: null },
           { state: "read", problem: null, amount: 1_200, currency: "PKR" },
           { state: "read", problem: null, amount: 120_050, currency: "EUR" },
           ...Array.from({ length: 3 }, () => ({
@@ -630,16 +646,214 @@ describe("bills in bulk", () => {
         );
         // What was read stays for the owner's own form.
         assert.include(JSON.parse((yield* billRows)[0]!.readJson!), { amount: "1180000000" });
+        const sql = yield* SqlClient.SqlClient;
+        const suggested = sql<{ title: string; confirmed: number }>`SELECT title, confirmed
+          FROM kin_records WHERE origin_key LIKE 'bill:%' ORDER BY title, record_id`;
+        // Keeping is all or nothing: one keep that fails keeps none of the batch.
+        yield* sql`CREATE TRIGGER refuse BEFORE UPDATE OF confirmed ON kin_records
+          WHEN NEW.amount_minor < 0 BEGIN SELECT RAISE(ABORT, 'refused'); END`;
+        yield* Bills.keepRead(as(rhea), {
+          orgId,
+          batchId: added.batchId,
+          clientRequestId: "keep",
+        }).pipe(Effect.flip);
+        assert.deepStrictEqual(
+          (yield* suggested).map((row) => row.confirmed),
+          [0, 0],
+        );
+        yield* sql`DROP TRIGGER refuse`;
+        // An expense the owner edited, still a suggestion, is kept as edited.
+        const [backlog] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills
+          .filter((one) => one.file.name === "backlog.png")
+          .map((one) => one.expense!);
+        yield* update(as(rhea), {
+          orgId,
+          key: backlog!.key,
+          rev: backlog!.rev,
+          title: "Tidewater Freight, old account",
+        });
         const kept = yield* Bills.keepRead(as(rhea), {
           orgId,
           batchId: added.batchId,
           clientRequestId: "keep",
         });
         assert.lengthOf(kept.kept, 2);
+        assert.deepStrictEqual(yield* suggested, [
+          { title: "Tidewater Freight, Nov 2026", confirmed: 1 },
+          { title: "Tidewater Freight, old account", confirmed: 1 },
+        ]);
         assert.deepStrictEqual(
           kept.skipped.map((one) => one.why),
           Array.from({ length: 3 }, () => "It wasn't read cleanly."),
         );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "bills_add reads the photos and PDFs on an owner-level person's message of this turn, and nothing else",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* KinChatRepository.KinChatRepository;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const store = yield* AttachmentStore.KinAttachmentStore;
+        // Zoya, a member, has her own chat with Finance.
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES ('zoya-finance', ${orgId}, 'direct', ${`${zoya}:${finance}`}, 0, ${at})`;
+        for (const [memberId, kind, who] of [
+          ["zoya-finance-person", "person", zoya],
+          ["zoya-finance-agent", "agent", finance],
+        ] as const)
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              person_id, agent_id, role, joined_at)
+            VALUES (${memberId}, ${orgId}, 'zoya-finance', ${kind},
+              ${kind === "person" ? who : null}, ${kind === "agent" ? who : null}, 'member', ${at})`;
+        const post = (
+          messageId: string,
+          chatId: string,
+          author: "rhea" | "zoya" | "kin",
+          files: ReadonlyArray<KinAttachment>,
+        ) =>
+          repo.insertMessage({
+            orgId,
+            chatId: KinChatId.make(chatId),
+            audience: "chat",
+            messageId: KinMessageId.make(messageId),
+            author:
+              author === "kin"
+                ? { _tag: "system" }
+                : {
+                    _tag: "human",
+                    personId: author === "rhea" ? rhea : zoya,
+                    memberId: KinMemberId.make(`${chatId}-person`),
+                  },
+            kind: author === "kin" ? "system" : "text",
+            body: "This month's bills, please enter them",
+            ...(files.length === 0 ? {} : { attachments: files }),
+            intent: null,
+            mentions: [],
+            replyTo: null,
+            widgetId: null,
+            floorRunId: null,
+            status: "posted",
+            sentBy: null,
+            clientMessageId: null,
+            createdAt: at,
+            editedAt: null,
+          });
+        const kept = (files: ReadonlyArray<KinAttachment>) =>
+          store.claim(files, TEST_UPLOAD_OWNER).pipe(Effect.map((claimed) => claimed.attachments));
+        const bills = yield* kept([
+          yield* upload("IMG_0101.png", "sample cloud"),
+          yield* upload("rent.pdf", "%PDF-1.4 rent", "application/pdf"),
+          yield* upload("notes.txt", "not a bill", "text/plain"),
+        ]);
+        yield* post("rhea-bills", "rhea-finance", "rhea", bills);
+        yield* post(
+          "rhea-notes",
+          "rhea-finance",
+          "rhea",
+          yield* kept([yield* upload("minutes.txt", "minutes", "text/plain")]),
+        );
+        yield* post("kin-files", "rhea-finance", "kin", yield* kept([yield* upload("k.png", "k")]));
+        yield* post(
+          "zoya-bills",
+          "zoya-finance",
+          "zoya",
+          yield* kept([yield* upload("z.png", "z")]),
+        );
+        const message = (eventId: string, messageId: string, chatId: string, by: KinPersonId) =>
+          queue.enqueue({
+            _tag: "chat.message",
+            orgId,
+            agentId: finance,
+            eventId: KinEventId.make(eventId),
+            receivedAt: DateTime.makeUnsafe(NOW + 1),
+            dedupeKey: null,
+            provenance: {
+              _tag: "human",
+              personId: by,
+              memberId: KinMemberId.make(`${chatId}-person`),
+            },
+            chatId: KinChatId.make(chatId),
+            messageId: KinMessageId.make(messageId),
+          });
+        yield* message("rhea-event", "rhea-bills", "rhea-finance", rhea);
+        yield* claimTurn(1);
+        const scope: McpInvocationScope = {
+          environmentId: EnvironmentId.make("fixture"),
+          requestNamespace: "fixture",
+          issuedAt: 0,
+          capabilities: new Set(),
+          client: undefined,
+          thread: undefined,
+        };
+        // Another turn's event is refused before anything is read.
+        assert.include(
+          yield* LeadBills.add(scope, { sourceEventId: "zoya-event" }).pipe(Effect.flip),
+          {
+            message: "sourceEventId must be one of this turn's events. Nothing was written.",
+          },
+        );
+        assert.deepStrictEqual(yield* LeadBills.add(scope, { sourceEventId: "rhea-event" }), {
+          added: 2,
+          alreadyAdded: 0,
+          notBills: 1,
+          next: "Kin reads them in the background; its card in the chat shows how it goes. Say so in one line and stop.",
+        });
+        // The files stay on Rhea's own message, where the owner level opens them (`KinChatService`).
+        assert.deepStrictEqual(
+          yield* sql`SELECT name, attachment_id AS "attachmentId", message_id AS "messageId",
+              card_chat_id AS "cardChatId" FROM kin_bill_reads ORDER BY position`,
+          bills.slice(0, 2).map((file) => ({
+            name: file.name,
+            attachmentId: file.id,
+            messageId: "rhea-bills",
+            cardChatId: "rhea-finance",
+          })),
+        );
+        const refusal = (messageId: string, chatId = "rhea-finance") =>
+          Bills.addFromMessage({
+            orgId,
+            agentId: finance,
+            eventId: "rhea-event",
+            chatId,
+            messageId,
+          }).pipe(
+            Effect.flip,
+            Effect.map((error) => [error.reason, error.message]),
+          );
+        yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id = 'rhea-notes'`;
+        assert.deepStrictEqual(
+          [
+            yield* refusal("rhea-bills", "meera-finance"),
+            yield* refusal("kin-files"),
+            yield* refusal("rhea-notes"),
+            yield* refusal("zoya-bills", "zoya-finance"),
+          ],
+          [
+            ...Array.from({ length: 3 }, () => [
+              "invalid_state",
+              "That message has no bills from a person.",
+            ]),
+            ["not_allowed", "Only the owner or a co-owner adds bills to Expenses."],
+          ],
+        );
+        yield* sql`UPDATE kin_messages SET status = 'posted' WHERE message_id = 'rhea-notes'`;
+        assert.deepStrictEqual(yield* refusal("rhea-notes"), [
+          "invalid_state",
+          "That message has no photo or PDF.",
+        ]);
+        // A turn a teammate reads may call neither bills tool.
+        yield* endTurn(KinWakeupId.make("wake-1"));
+        yield* message("zoya-event", "zoya-bills", "zoya-finance", zoya);
+        const { wakeupId } = yield* claimTurn(2);
+        for (const tool of ["bills_add", "bill_read"])
+          assert.isFalse(
+            yield* toolAdmitted({ orgId, agentId: finance, wakeupId }, tool, {}),
+            tool,
+          );
       }).pipe(Effect.provide(layer)),
   );
 
@@ -993,7 +1207,7 @@ describe("bills in bulk", () => {
         clientRequestId: "add",
       };
       const added = yield* Bills.add(as(rhea), input, TEST_UPLOAD_OWNER);
-      yield* Schema.encodeUnknownEffect(KinBillsAddResult)(added);
+      yield* encodeAdded(added);
       assert.strictEqual(added.added[0]!.name, name.slice(0, 200));
       assert.deepStrictEqual(yield* Bills.add(as(rhea), input, TEST_UPLOAD_OWNER), added);
       // The bill keeps its whole name.
