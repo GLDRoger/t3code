@@ -308,6 +308,21 @@ it.effect("an agent's printed client detail goes straight in only as a person ty
           one.key,
         );
     }
+    // The same change to two clients in one wake-up waits on each, on its own card.
+    const both = yield* LeadWork.updateMany(scope, {
+      keys: ["C-1", "C-4"],
+      sourceEventId: yield* turn(null),
+      terms: "Net 30",
+      heardFrom: "their group mail of 3 Nov",
+    });
+    assert.lengthOf(both.entries ?? [], 2);
+    for (const key of ["C-1", "C-4"]) {
+      const { row } = yield* stored(key);
+      const mine = (yield* cards).filter((card) => card.recordId === row.recordId);
+      assert.lengthOf(mine, 1, key);
+      assert.include(mine[0]?.detail, "Terms: Net 30", key);
+      assert.isDefined((yield* LeadWork.get(scope, { key })).unconfirmed, key);
+    }
     // A new client keeps the name it was made with; its tax number from a mail waits.
     const made = yield* LeadWork.create(scope, {
       sourceEventId: yield* turn("Add the client from that mail"),

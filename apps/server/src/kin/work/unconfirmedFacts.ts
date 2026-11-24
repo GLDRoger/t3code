@@ -249,7 +249,7 @@ export const propose = Effect.fn("KinUnconfirmed.propose")(function* (
   const patch = yield* encodeProposal({ recordId: record.recordId, items }).pipe(Effect.orDie);
   const changeId = `${UNCONFIRMED_CHANGE}${NodeCrypto.createHash("sha256")
     .update(
-      `${orgId}|${lead.agentId}|${lead.wakeupId}|${stableStringify(items.map(({ at: _at, ...one }) => one))}`,
+      `${orgId}|${lead.agentId}|${lead.wakeupId}|${record.recordId}|${stableStringify(items.map(({ at: _at, ...one }) => one))}`,
     )
     .digest("hex")
     .slice(0, 32)}`;
