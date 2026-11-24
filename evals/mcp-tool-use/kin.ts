@@ -55,6 +55,8 @@ import { concernsLine, mineLine, totalsLine } from "../../apps/server/src/kin/sa
 import { whenLabel } from "../../apps/server/src/kin/social/rows.ts";
 import { moneySection } from "../../apps/server/src/kin/work/moneyViews.ts";
 import {
+  COUNTRY_NEEDED,
+  countryChosenLine,
   countryFirstMessage,
   notRegisteredFact,
 } from "../../apps/server/src/kin/work/companyProfile.ts";
@@ -516,6 +518,11 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
+    // The wake's line once a new company's country is chosen (`{{COUNTRY_CHOSEN:GB|GBP}}`).
+    .replace(
+      /\{\{COUNTRY_CHOSEN:([A-Z]{2})\|([A-Z]{3})\}\}/g,
+      (_, country: string, currency: string) => countryChosenLine(country, currency),
+    )
     .replace(/\{\{REVIEW_WAKE:([^|}]+)\|(\d+)\}\}/g, (_, who: string, count: string) =>
       REVIEW_WAKE_TEXT({ who: who.split(", "), count: Number(count) }),
     )
@@ -671,6 +678,8 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     passed: false,
     note: alreadyOnIt(input.agent, input.titles),
   }),
+  // company_profile's line for a new company whose country isn't chosen yet.
+  countryNeeded: () => COUNTRY_NEEDED,
   // A money write refused while the company's country isn't chosen, as the turn's caller words it.
   countryFirst: (input: { owner: string; saved?: boolean; answeringChooser?: boolean }) => ({
     $error: {

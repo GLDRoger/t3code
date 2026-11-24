@@ -27,6 +27,8 @@ import {
   KinWakeupId,
   KinWidgetId,
 } from "./kinChat.ts";
+import { KinCountryCode } from "./kinFinance.ts";
+import { KinCurrency } from "./kinMoney.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
 import { KinRecordId, KinRecordKey, KinRecordState, KinWorkPrincipal } from "./kinWork.ts";
 import { ModelSelection } from "./modelSelection.ts";
@@ -869,6 +871,13 @@ export const KinEvent = Schema.Union([
         type: Schema.Literal("scheduled_task"),
         itemId: KinMemoryItemId,
         runId: TrimmedNonEmptyString,
+      }),
+      // A new company's country was chosen after a write of this agent's was refused for want of
+      // it (`companyProfile.ts`): the turn answers in the chat that write was asked in.
+      Schema.Struct({
+        type: Schema.Literal("country"),
+        country: KinCountryCode,
+        currency: KinCurrency,
       }),
     ]),
     lateByMs: NonNegativeInt,
