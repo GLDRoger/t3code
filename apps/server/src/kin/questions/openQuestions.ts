@@ -1968,7 +1968,8 @@ const dayOf = (at: number, zone: string) =>
 const shortQuote = (text: string) => `“${oneLine(text, 80)}”`;
 
 /** What a lapsed question's card says to a client that doesn't read `lapsed`. */
-export const lapsedCardText = (who: string, day: string) => `Lapsed on ${day}: ${who} didn't answer.`;
+export const lapsedCardText = (who: string, day: string) =>
+  `Lapsed on ${day}: ${who} didn't answer.`;
 
 /**
  * Kin's one line in the chat a question was asked for, once it lapsed: who, what and since when.
@@ -1980,7 +1981,8 @@ export const lapsedNotice = (input: {
   readonly asked: string;
   readonly unsigned: boolean;
 }) => {
-  const what = input.question === null ? "a question asked for this chat" : shortQuote(input.question);
+  const what =
+    input.question === null ? "a question asked for this chat" : shortQuote(input.question);
   return input.unsigned
     ? `${input.who} hasn't signed in to Kin, so ${what}, asked on ${input.asked}, lapsed without an answer.`
     : `${input.who} didn't answer ${what}, asked on ${input.asked}. It has lapsed.`;

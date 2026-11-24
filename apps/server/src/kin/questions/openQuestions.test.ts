@@ -3882,7 +3882,10 @@ it.effect("a question asked for someone that nobody answers lapses, and its chat
         Effect.gen(function* () {
           const row = yield* questionRow(sql, questionId);
           const card = yield* widgetOf(row.raiseWidget ?? (yield* cardOf(questionId)).widgetId!);
-          return { closed: card.closedAt !== null, outcome: (card.state as { outcome?: unknown }).outcome };
+          return {
+            closed: card.closedAt !== null,
+            outcome: (card.state as { outcome?: unknown }).outcome,
+          };
         });
 
       // Wednesday 10:30 IST, the morning after its day: Zoya is asked once more; Arjun, never
@@ -3938,7 +3941,10 @@ it.effect("a question asked for someone that nobody answers lapses, and its chat
         ],
       );
       const told = yield* Questions.lapsedTurnText(KinOrgId.make(orgId), toZoya.questionId);
-      assert.match(told!.text, /^Your question for Dev Malhotra, “Did the client approve the quote\?”, asked of Zoya Sheikh on Mon 16 Nov, lapsed: nobody answered\./);
+      assert.match(
+        told!.text,
+        /^Your question for Dev Malhotra, “Did the client approve the quote\?”, asked of Zoya Sheikh on Mon 16 Nov, lapsed: nobody answered\./,
+      );
       assert.match(
         (yield* Questions.lapsedTurnText(KinOrgId.make(orgId), toArjun.questionId))!.text,
         /Arjun Nair hasn't signed in to Kin, so asking again in Kin won't reach them/,
