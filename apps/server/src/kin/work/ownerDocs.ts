@@ -75,7 +75,7 @@ import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { EVERY_RECORD_KIND, search as runSearch } from "./search.ts";
 import { docKindWords, searchIndexed } from "./searchIndex.ts";
 import {
-  clientMoneySeen,
+  clientDocMoneySeen,
   KIN_OWNER_LEVEL,
   PICTURE_DOC_ORIGIN,
   seenBy,
@@ -313,10 +313,10 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
     seenBy(sql, viewer),
     input.archived === true ? sql`r.state = 'dropped'` : sql`r.state != 'dropped'`,
     ...(partyId === undefined ? [] : [sql`r.party_id = ${partyId}`]),
-    // A client's money docs reach a teammate only with the Money switch (`clientMoneySeen`).
+    // A client's money docs reach a teammate only with the Money switch, or as her own draft.
     ...(partyId === undefined || viewer._tag === "ownerLevel"
       ? []
-      : viewer.people.map((person) => clientMoneySeen(sql, person))),
+      : viewer.people.map((person) => clientDocMoneySeen(sql, person))),
     ...(projectId === undefined ? [] : [sql`r.project_id = ${projectId}`]),
     ...(input.owner === undefined
       ? []

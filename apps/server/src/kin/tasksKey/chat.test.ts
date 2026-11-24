@@ -251,7 +251,12 @@ it("every other check that a person said it themselves leaves out what a key sen
     ["questions/askPerson.ts", 1],
     ["connections/privateTurn.ts", 1],
   ] as const)
-    assert.lengthOf(read(file).match(/keySentSql\("m\.client_message_id"\)/g) ?? [], uses, file);
+    assert.lengthOf(
+      read(file).match(/keySentSql\((?:"m\.client_message_id"|`\$\{m\}\.client_message_id`)\)/g) ??
+        [],
+      uses,
+      file,
+    );
   for (const file of ["people/KinAccess.ts", "work/dismissedHold.ts", "work/leadWork.ts"])
     assert.notInclude(read(file), "'key:%'", file);
 });

@@ -13,6 +13,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -255,7 +256,9 @@ const stored = (key: string) =>
     return { row, gstin: field("gstin"), field };
   });
 const answer = (widgetId: string, personId: KinPersonId, confirmed: boolean) =>
-  answerUnconfirmed({ orgId, widgetId, personId, confirmed, via: "tap", now: NOW });
+  Effect.flatMap(Clock.currentTimeMillis, (now) =>
+    answerUnconfirmed({ orgId, widgetId, personId, confirmed, via: "tap", now }),
+  );
 
 it.effect("an agent's printed client detail goes straight in only as a person typed it", () =>
   Effect.gen(function* () {
@@ -499,6 +502,27 @@ it.effect(
       const kept = yield* LeadWork.get(scope, { key: "C-2" });
       assert.strictEqual(kept.address, "Invented 1 Quay Road");
       assert.deepStrictEqual(kept.unconfirmed, [
+        `Declined Billing address: "Invented 9 Dock Lane": Rhea said no to it on Kin's card today. Don't propose it or ask about it again unless the owner or a co-owner types it to you in their own chat.`,
+      ]);
+      // Once Rhea sets the address by hand, that no is over, even after it changes again; only a
+      // new Not this brings the line back.
+      yield* TestClock.adjust("1 minute");
+      for (const address of ["Invented 9 Dock Lane", "Invented 1 Quay Road"])
+        yield* (yield* KinRecords.KinRecords).update(
+          orgId,
+          { actor: { _tag: "person", personId: ownerId }, via: "owner" },
+          "C-2",
+          { fields: { address } },
+        );
+      assert.isUndefined((yield* LeadWork.get(scope, { key: "C-2" })).unconfirmed);
+      yield* LeadWork.update(scope, {
+        key: "C-2",
+        sourceEventId: yield* turn(null),
+        address: "Invented 9 Dock Lane",
+      });
+      const [anotherNo] = yield* cards;
+      yield* answer(anotherNo!.widgetId, ownerId, false);
+      assert.deepStrictEqual((yield* LeadWork.get(scope, { key: "C-2" })).unconfirmed, [
         `Declined Billing address: "Invented 9 Dock Lane": Rhea said no to it on Kin's card today. Don't propose it or ask about it again unless the owner or a co-owner types it to you in their own chat.`,
       ]);
 

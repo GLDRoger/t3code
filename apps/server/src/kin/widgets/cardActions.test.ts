@@ -564,6 +564,39 @@ it.effect("a tap on an action option runs it once, as the server wrote it", () =
       assert.isNull(
         (yield* Questions.readQuestion(orgId, noneLabelled.value.question as string))?.defaultLabel,
       );
+      // The lines Kin adds for an action take their room from the detail: it is never cut, so a
+      // detail past what is left is refused before any card is made.
+      const note = `Mark ${later.key} done: Mark ${later.key} “Order the signage” done`;
+      const room = 2000 - note.length - 2;
+      const closeAsk = (question: string, detail: string) =>
+        callAs("finance", "kin_ask", {
+          question,
+          detail,
+          options: [
+            { label: "Close it", action: { kind: "done", target: later.key } },
+            { label: "Not yet" },
+          ],
+          default: "none",
+        });
+      const cardsBefore = yield* kin.sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets`;
+      assert.deepStrictEqual(yield* closeAsk("Close the signage?", "x".repeat(room + 1)), {
+        ok: false,
+        value: {
+          _tag: "KinChatError",
+          reason: "invalid_state",
+          message: `detail is ${(room + 1).toLocaleString("en-US")} characters, and with the lines Kin adds for options with an action this card holds ${room.toLocaleString("en-US")} of it: shorten detail and ask again.`,
+        },
+      });
+      assert.deepStrictEqual(
+        yield* kin.sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets`,
+        cardsBefore,
+      );
+      const whole = yield* closeAsk("Close the signage now?", "x".repeat(room));
+      assert.isTrue(whole.ok, JSON.stringify(whole.value));
+      assert.strictEqual(
+        card(yield* kin.widget(whole.value.widgetId)).detail,
+        `${"x".repeat(room)}\n\n${note}`,
+      );
     }).pipe(Effect.provide(layer)),
   ),
 );

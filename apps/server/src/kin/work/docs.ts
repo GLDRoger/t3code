@@ -42,6 +42,7 @@ import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "
 import { indexRecord } from "./searchIndex.ts";
 import {
   KIN_OWNER_LEVEL,
+  keyedAs,
   MONEY_DOC_KINDS,
   PICTURE_DOC_ORIGIN,
   pictureVersionSeen,
@@ -220,16 +221,22 @@ const writerSees = (writer: Writer): KinViewer =>
 export const docRow = Effect.fn("KinDocs.row")(function* (
   orgId: KinOrgId,
   ref: { readonly key: string } | { readonly recordId: string },
-  /** For a person, a doc they may not see is no doc at all (`personSees`). */
+  /**
+   * For a person, a doc they may not see is no doc at all (`personSees`); for a keyed viewer, so is
+   * one a key never carries (`keyedAs`).
+   */
   viewer: KinViewer,
 ) {
   const records = yield* KinRecords;
+  const sql = yield* SqlClient.SqlClient;
   const row =
     "key" in ref ? yield* records.get(orgId, ref.key) : yield* records.getById(orgId, ref.recordId);
   const hidden =
     row !== undefined &&
-    viewer._tag === "people" &&
-    !(yield* viewVisible(orgId, viewer.people, row.recordId));
+    ((viewer._tag === "people" && !(yield* viewVisible(orgId, viewer.people, row.recordId))) ||
+      (viewer.keyed === true &&
+        (yield* sql`SELECT 1 FROM kin_records r WHERE r.org_id = ${orgId}
+          AND r.record_id = ${row.recordId} AND NOT ${keyedAs(sql, viewer)}`).length > 0));
   if (row === undefined || hidden || listOf(row.registerId) !== "docs")
     return yield* docNotFound("key" in ref ? ref.key : "with that id");
   return row;
