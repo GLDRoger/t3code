@@ -98,6 +98,8 @@ const isPdf = (file: Pick<ChatAttachment, "mimeType" | "name">) =>
 const isBillFile = (file: Pick<ChatAttachment, "type" | "mimeType" | "name">) =>
   file.type === "image" || mimeOf(file).startsWith("image/") || isPdf(file);
 const NOT_A_BILL = "Only photos and PDFs are read as bills.";
+/** A file's name as an add answers it: a chat file's may be longer than the answer carries. */
+const answerName = (name: string) => name.slice(0, 200);
 
 /**
  * `bill_read`'s figures are plain numbers, a dot for decimals, with no more decimals than the
@@ -701,7 +703,7 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
     const prior = known.get(file.sha256);
     if ((prior !== undefined && !prior.revive) || seen.has(file.sha256)) {
       already.push({
-        name: file.attachment.name,
+        name: answerName(file.attachment.name),
         sha256: file.sha256,
         ...(prior?.expense === undefined ? {} : { expense: prior.expense }),
         ...(prior?.dropped === true ? { dropped: true } : {}),
@@ -758,9 +760,9 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
     ...(posted === undefined ? {} : posted),
     added: fresh
       .filter((file) => added.includes(file.sha256))
-      .map((file) => ({ name: file.attachment.name, sha256: file.sha256 })),
+      .map((file) => ({ name: answerName(file.attachment.name), sha256: file.sha256 })),
     already,
-    refused: input.prepared.refused,
+    refused: input.prepared.refused.map((file) => ({ ...file, name: answerName(file.name) })),
   } satisfies KinBillsAddResult;
 });
 

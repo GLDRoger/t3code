@@ -10,6 +10,7 @@ import {
   KinAgentId,
   KinBillBatchCard,
   type KinBillRead,
+  KinBillsAddResult,
   type KinChatError,
   KinChatId,
   KinEventId,
@@ -980,6 +981,29 @@ describe("bills in bulk", () => {
           "read",
         );
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("an add with a file name too long for its answer answers, and so does its retry", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const name = `${"invoice-".repeat(26)}.png`;
+      const input = {
+        orgId,
+        attachments: [yield* upload(name, "long name")],
+        clientRequestId: "add",
+      };
+      const added = yield* Bills.add(as(rhea), input, TEST_UPLOAD_OWNER);
+      yield* Schema.encodeUnknownEffect(KinBillsAddResult)(added);
+      assert.strictEqual(added.added[0]!.name, name.slice(0, 200));
+      assert.deepStrictEqual(yield* Bills.add(as(rhea), input, TEST_UPLOAD_OWNER), added);
+      // The bill keeps its whole name.
+      assert.deepStrictEqual(
+        (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills.map(
+          (bill) => bill.file.name,
+        ),
+        [name],
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("bills held by the daily limit say so once on their card, until reading goes on", () =>
