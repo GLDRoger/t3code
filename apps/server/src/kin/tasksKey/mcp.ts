@@ -1115,7 +1115,6 @@ export const TasksKeyToolkit = Toolkit.make(
   })
     .annotate(Tool.Readonly, false)
     .annotate(Tool.Destructive, false)
-    .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
   Tool.make("search_memory", {
     ...shared,

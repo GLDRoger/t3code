@@ -31,7 +31,7 @@ import { McpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as MemoryChanges from "../memory/MemoryChanges.ts";
-import { authorise, fingerprint } from "../memory/sensitivity.ts";
+import { authorise, fingerprint, retireLabels } from "../memory/sensitivity.ts";
 import * as People from "../people/KinPeople.ts";
 import * as Watches from "../watches/KinWatches.ts";
 import { watchReader } from "../watches/readRpcs.ts";
@@ -224,8 +224,8 @@ it.effect(
           ]),
         );
       });
-      // A person's own terminal client asks before a call by these; a flip shows here. Nothing
-      // here deletes, and every write is safe to repeat.
+      // A person's own terminal client asks before a call by these. Memory undo ends the share
+      // that admitted the original call.
       const read = { readOnly: true, destructive: false, idempotent: true, openWorld: false };
       const write = { readOnly: false, destructive: false, idempotent: true, openWorld: false };
       const everyone = {
@@ -284,7 +284,7 @@ it.effect(
         draft_invoice: write,
         money_summary: read,
         budgets: read,
-        undo_memory_change: write,
+        undo_memory_change: { ...write, idempotent: false },
         search_memory: read,
       });
       assert.deepStrictEqual(
@@ -1043,6 +1043,10 @@ it.effect(
               ? { ...current, head: { ...current.head, sensitive: true } }
               : current;
           if (input.codingAgent !== undefined) yield* input.codingAgent.admit(locked);
+          yield* retireLabels(orgId, [input.itemId]).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orDie,
+          );
           writerCalls.push({
             itemId: input.itemId,
             codingFor: input.codingAgent?.personId ?? null,
@@ -1110,10 +1114,9 @@ it.effect(
       const found = yield* rhea.use("search_memory", { text: "kiln" });
       assert.include(JSON.stringify(found.structuredContent), teamItem.head.id);
       assert.notInclude(JSON.stringify(found.structuredContent), privateItem.head.id);
-      for (let retry = 0; retry < 2; retry++) {
-        const result = yield* rhea.use("undo_memory_change", input);
-        assert.deepStrictEqual(result.structuredContent, { itemId: teamItem.head.id });
-      }
+      const undone = yield* rhea.use("undo_memory_change", input);
+      assert.deepStrictEqual(undone.structuredContent, { itemId: teamItem.head.id });
+      refusedLike(yield* rhea.use("undo_memory_change", input), "Kin record not found.");
       const { card } = yield* memory.undo(rhea.app, { orgId, ...input, itemId: appItem.head.id });
       assert.deepStrictEqual(
         card.items.map((one) => one.undo),
