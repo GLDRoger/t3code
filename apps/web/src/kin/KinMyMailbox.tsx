@@ -166,6 +166,7 @@ export function KinMyMailbox(props: Target) {
             return (
               <KinSettingsRow
                 key={mailbox.connectionId}
+                stack
                 title={mailbox.account ?? COPY.title}
                 detail={COPY.yours}
                 status={
