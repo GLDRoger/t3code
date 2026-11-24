@@ -6,6 +6,7 @@ import {
   KinEventId,
   KinOrgId,
   KinPersonId,
+  KinRecordId,
   KinWakeupId,
   type KinPulseFact,
 } from "@t3tools/contracts";
@@ -51,6 +52,7 @@ import { morningMoneyLines } from "./morningMoney.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { projectLastMoved } from "./senses/projects.ts";
 import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
+import { ensureBankList } from "../work/statements/bankList.ts";
 
 // Invented org, people, entries and money only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -2338,6 +2340,160 @@ describe("KinPulse", () => {
       yield* TestClock.adjust(1);
       assert.isEmpty(yield* facts());
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a bank credit that looks like an invoice's payment wakes Finance once, until settled",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const at = B + 10 * DAY;
+        yield* ensureBankList(orgId, B);
+        yield* insert({ id: "C-9", list: "clients", title: "Harbourline Logistics" });
+        const invoice = (id: string, rupees: number, issued: number, number: string) =>
+          insert({
+            id,
+            list: "invoices",
+            state: "waiting",
+            title: "Invented retainer",
+            amount: rupees * 100,
+            dateAt: issued,
+            dueAt: issued + 30 * DAY,
+            partyId: "r-C-9",
+            fields: JSON.stringify({ number }),
+          });
+        const credit = (id: string, rupees: number, day: number, title: string) =>
+          insert({
+            id,
+            list: "bank_transactions",
+            title,
+            amount: rupees * 100,
+            dateAt: B + day * DAY,
+            ownerKind: "person",
+            ownerId: owner,
+            fields: '{"direction":"credit"}',
+          });
+        const seen = (viewer?: KinPulse.Viewer, when = at) =>
+          read(when, viewer).pipe(
+            Effect.map((pulse) => pulse.facts.filter((fact) => fact.sense === "payment_seen")),
+          );
+        // Both credits came in before the invoice was issued, so nothing is told of them yet.
+        yield* credit("BNK-1", 95_000, 0, "NEFT CR-HARBOURLINE LOGISTICS-INV/26-27/020");
+        yield* credit("BNK-2", 95_000, 8, "NEFT CR-HARBOURLINE LOGISTICS-INV/26-27/020");
+        assert.isEmpty(yield* seen());
+        // Issued later and dated the 2nd: the credit after that day is told; the one before the
+        // invoice's own day is never its payment.
+        yield* invoice("INV-20", 95_000, B + DAY, "INV/26-27/020");
+        const [fact, ...others] = yield* seen();
+        assert.isEmpty(others);
+        assert.deepInclude(fact!, {
+          key: "payment_seen:BNK-2>INV-20",
+          family: "money",
+          subject: {
+            kind: "record",
+            key: "INV-20",
+            title: "Invented retainer",
+            recordId: KinRecordId.make("r-INV-20"),
+            number: "INV/26-27/020",
+          },
+          scope: { clientKey: "C-9", clientTitle: "Harbourline Logistics" },
+          consequence:
+            "BNK-2, ₹95,000 received 9 Nov, looks like this invoice's payment: cites INV/26-27/020. It isn't recorded as paid until the owner confirms.",
+          actor: { _tag: "agent", agentId: finance },
+          sensitive: true,
+          wake: "now",
+          handled: null,
+        });
+        // Only owner-level people hear of it, and only a build that knows the sense shows it.
+        assert.isEmpty(yield* seen({ _tag: "people", people: [mate] }));
+        assert.isEmpty(screenFacts([fact!], undefined));
+        assert.lengthOf(screenFacts([fact!], ["payment_seen"]), 1);
+
+        // Finance wakes once for it, on the pass that finds it; a later pass leaves it be.
+        const first = yield* KinPulse.tick(orgId, at);
+        assert.include(first.woken, fact!.key);
+        const wakes = sql<{ agent: string; json: string }>`SELECT agent_id AS agent, json
+        FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+          AND dedupe_key LIKE 'payment_seen:%' ORDER BY event_id`;
+        const [woke] = yield* wakes;
+        assert.strictEqual(woke!.agent, finance);
+        assert.deepInclude(JSON.parse(woke!.json), { factKeys: [fact!.key] });
+        assert.notInclude((yield* KinPulse.tick(orgId, at + MINUTE)).woken, fact!.key);
+        assert.lengthOf(yield* wakes, 1);
+
+        // A second invoice it fits as well, and as closely: both are named, nothing is chosen,
+        // and the new pair is told once more.
+        yield* invoice("INV-21", 95_000, B + DAY, "INV/26-27/021");
+        yield* sql`UPDATE kin_records SET title = 'NEFT CR-HARBOURLINE LOGISTICS'
+        WHERE record_id = 'r-BNK-2'`;
+        const [both] = yield* seen();
+        assert.deepInclude(both!, {
+          key: "payment_seen:BNK-2>INV-20,BNK-2>INV-21",
+          consequence:
+            "More than one fits, and Kin can't tell which: BNK-2 (₹95,000, 9 Nov) for INV-20: same amount from Harbourline Logistics; BNK-2 (₹95,000, 9 Nov) for INV-21: same amount from Harbourline Logistics. Nothing is recorded until the owner says which.",
+        });
+        assert.include((yield* KinPulse.tick(orgId, at + 2 * MINUTE)).woken, both!.key);
+        // Two credits that fit one invoice, neither ahead: both named, as one fact.
+        yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'r-INV-21'`;
+        yield* credit("BNK-3", 95_000, 9, "NEFT CR-HARBOURLINE LOGISTICS");
+        const [two] = yield* seen();
+        assert.deepInclude(two!, {
+          key: "payment_seen:BNK-3>INV-20,BNK-2>INV-20",
+          consequence:
+            "More than one fits, and Kin can't tell which: BNK-3 (₹95,000, 10 Nov) for INV-20: same amount from Harbourline Logistics; BNK-2 (₹95,000, 9 Nov) for INV-20: same amount from Harbourline Logistics. Nothing is recorded until the owner says which.",
+        });
+        // One that cites the invoice is ahead of one that only matches its amount: it is the
+        // answer, and the other is named as less likely.
+        yield* sql`UPDATE kin_records SET title = 'NEFT CR-HARBOURLINE LOGISTICS-INV/26-27/020'
+        WHERE record_id = 'r-BNK-3'`;
+        const [ranked] = yield* seen();
+        assert.deepInclude(ranked!, {
+          key: "payment_seen:BNK-3>INV-20,BNK-2>INV-20",
+          consequence:
+            "BNK-3, ₹95,000 received 10 Nov, looks like this invoice's payment: cites INV/26-27/020. It also fits, less closely: BNK-2 (₹95,000, 9 Nov) for INV-20: same amount from Harbourline Logistics. It isn't recorded as paid until the owner confirms.",
+        });
+
+        // The owner says it isn't: told no more, and no wake.
+        yield* KinPulse.handle({
+          orgId,
+          at,
+          viewer: { _tag: "owner" },
+          by: { _tag: "person", personId: owner },
+          factKey: ranked!.key,
+          action: "not_a_problem",
+        });
+        assert.notInclude((yield* KinPulse.tick(orgId, at + 3 * MINUTE)).woken, ranked!.key);
+        assert.isNotNull((yield* seen(undefined, at + 30 * DAY))[0]!.handled);
+        assert.isEmpty(
+          (yield* KinPulse.read({
+            orgId,
+            at: at + 30 * DAY,
+            viewer: { _tag: "owner" },
+          })).facts.filter((one) => one.sense === "payment_seen"),
+        );
+        yield* KinPulse.handle({
+          orgId,
+          at,
+          viewer: { _tag: "owner" },
+          by: { _tag: "person", personId: owner },
+          factKey: ranked!.key,
+          action: "undo",
+        });
+        // Explained, voided or paid, it is no longer told.
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id IN ('r-BNK-2', 'r-BNK-3')`;
+        assert.isEmpty(yield* seen());
+        yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id IN ('r-BNK-2', 'r-BNK-3')`;
+        assert.lengthOf(yield* seen(), 1);
+        yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'r-INV-20'`;
+        assert.isEmpty(yield* seen());
+        yield* sql`UPDATE kin_records SET state = 'waiting' WHERE record_id = 'r-INV-20'`;
+        yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
+          currency, paid_on, origin_key, created_at, created_by_kind)
+        VALUES (${orgId}, 'pay-20', 'r-INV-20', 95_000_00, 'INR', '2026-11-09', 'pay-20', 0,
+          'person')`;
+        assert.isEmpty(yield* seen());
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("the morning Money section includes an offered unreadable bank alert once", () =>

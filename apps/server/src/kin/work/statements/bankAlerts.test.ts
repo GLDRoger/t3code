@@ -35,6 +35,7 @@ import {
   threadSeen,
 } from "./bankAlerts.ts";
 import { ensureBankList, findBankList, knownRows } from "./bankList.ts";
+import { creditMatches } from "./invoiceCredits.ts";
 import type { Statement, StatementRow } from "./statementTable.ts";
 
 // Invented: Lakeview Studio's owner Rhea gets HDFC alerts in two connected mailboxes.
@@ -509,6 +510,44 @@ it.layer(layer)((it) => {
       // Another bank's statement isn't checked against HDFC alerts.
       assert.isUndefined(
         yield* alertCheck(orgId, def?.id, { ...hdfc, bank: "Invented Bank" }, found.known),
+      );
+    }),
+  );
+
+  it.effect("a credit alert seen twice is one credit that looks like its invoice's payment", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      // Ambermill (invented) bills Harbourline Logistics; its own org, apart from Lakeview's.
+      const org = KinOrgId.make("ambermill-alerts");
+      yield* sql`INSERT INTO kin_orgs VALUES (${org}, 'Ambermill Studio', '2026-11-01')`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('ambermill-rhea', ${org}, 'rhea', 'Rhea', '2026-11-01', 'owner')`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${org}, 'clients', 'clients', 'C', 1, 0), (${org}, 'invoices', 'invoices', 'INV', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, party_id, date_at, amount_minor, currency, confirmed,
+          created_by_kind, created_by_id, origin_key, created_at, updated_at, fields_json)
+        VALUES (${org}, 'r-amb-c1', 'clients', 'C-1', 'Ambermill Design LLP', 'open', 'person',
+            'ambermill-rhea', NULL, NULL, NULL, NULL, 1, 'person', 'ambermill-rhea', 'c-1', 0, 0,
+            '{}'),
+          (${org}, 'r-amb-inv4', 'invoices', 'INV-4', 'October retainer', 'waiting', 'person',
+            'ambermill-rhea', 'r-amb-c1', ${Date.parse("2026-11-02T12:00:00Z")}, 9_500_000, 'INR', 1,
+            'person', 'ambermill-rhea', 'inv-4', 0, 0, '{"number":"26-27/004"}')`;
+      const credit = alert(
+        "<neft-1@hdfc>",
+        "Dear Customer, INR 95,000.00 was credited to your A/c No. XX4821 on 17-11-2026 for NEFT Cr-INVT0000001-AMBERMILL DESIGN LLP-Invoice 26-27/004. UTR No: INVTN52026111700042. Available balance: INR 5,05,250.50.",
+      );
+      const take = (connectionId: string, threadId: string) =>
+        takeAlerts(org, { connectionId, threadId, messages: [credit], now: NOW });
+      assert.deepInclude(yield* take("work-mail", "c1"), { recorded: 1 });
+      assert.deepInclude(yield* take("home-mail", "c9"), { recorded: 0, duplicate: 1 });
+      const groups = yield* creditMatches(org);
+      assert.deepStrictEqual(
+        groups.map((group) => ({
+          clear: group.clear,
+          pairs: group.pairs.map((pair) => [pair.credit.key, pair.invoice.key, pair.reason]),
+        })),
+        [{ clear: true, pairs: [["BNK-1", "INV-4", "cites 26-27/004"]] }],
       );
     }),
   );

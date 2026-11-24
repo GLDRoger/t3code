@@ -276,18 +276,39 @@ const invoiceCandidate = (
   };
 };
 
+/** The best candidate is the answer on its own, as a statement's review groups it "matched". */
+export const clearlyFirst = (best: number, next: number | undefined) =>
+  best >= CONFIDENT && (next === undefined || best - next >= MARGIN);
+
 /**
- * Whether the matcher would offer `invoice` for one bank row, as it does on a statement's review,
- * and why in one plain phrase: "cites INV/26-27/001", "same amount from Harbourline Logistics".
+ * Whether the matcher would offer `invoice` for one bank row, as it does on a statement's review:
+ * the candidate with its score, and why in one plain phrase: "cites INV/26-27/001", "same amount
+ * from Harbourline Logistics".
  */
+export const invoiceOffer = (
+  row: StatementRow,
+  invoice: InvoiceCandidate,
+  currency: string,
+  withholdsAtSource: boolean,
+) => {
+  const offered = invoiceCandidate(row, invoice, currency, withholdsAtSource);
+  if (offered === undefined || offered.score < PROPOSED) return undefined;
+  return { candidate: offered, reason: offerReason(row, invoice, currency, offered) };
+};
+
 export const invoiceOffered = (
   row: StatementRow,
   invoice: InvoiceCandidate,
   currency: string,
   withholdsAtSource: boolean,
-): string | undefined => {
-  const offered = invoiceCandidate(row, invoice, currency, withholdsAtSource);
-  if (offered === undefined || offered.score < PROPOSED) return undefined;
+): string | undefined => invoiceOffer(row, invoice, currency, withholdsAtSource)?.reason;
+
+const offerReason = (
+  row: StatementRow,
+  invoice: InvoiceCandidate,
+  currency: string,
+  offered: Candidate,
+) => {
   const cited = [invoice.number, invoice.key].find(
     (one) =>
       one !== null &&
