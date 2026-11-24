@@ -411,7 +411,7 @@ it.effect.each([
     assert.deepStrictEqual(asked.actions, ["start_now", "monday", "cancel"]);
     assert.equal(
       asked.text,
-      "def-1 is due at 9:00 am. Tap Start now to start it, Monday to move it, or Cancel. I won't start it on my own: Kin asks before every start for now.",
+      "Due at 9:00 am. Tap Start now to start it, Monday to move it, or Cancel. I won't start it on my own: Kin asks before every start for now.",
     );
     if (role !== "owner") yield* joinChat(role, role === "co-owner" ? "co_owner" : "member");
     const person = role === "owner" ? `owner-${orgId}` : role;
