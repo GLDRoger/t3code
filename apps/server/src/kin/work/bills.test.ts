@@ -644,8 +644,14 @@ describe("bills in bulk", () => {
             ["credit.png", "read", null],
           ],
         );
-        // What was read stays for the owner's own form.
+        // What was read stays for the owner's own form, and reading it again would read the same.
         assert.include(JSON.parse((yield* billRows)[0]!.readJson!), { amount: "1180000000" });
+        assert.deepStrictEqual(
+          (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills.map(
+            (one) => one.readClean,
+          ),
+          [true, true, true, undefined, undefined],
+        );
         const sql = yield* SqlClient.SqlClient;
         const suggested = sql<{ title: string; confirmed: number }>`SELECT title, confirmed
           FROM kin_records WHERE origin_key LIKE 'bill:%' ORDER BY title, record_id`;
@@ -884,6 +890,9 @@ describe("bills in bulk", () => {
         ],
       );
       assert.strictEqual((yield* card(added.batchId)).text, "Reading 2 bills: 1 done.");
+      // Not a read in question: reading it again is still offered.
+      const [heic] = (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills;
+      assert.isUndefined(heic!.readClean);
       const { events } = yield* claimTurn(1);
       const event = events[0]!;
       if (event._tag !== "bills.read") return assert.fail("no bills turn");

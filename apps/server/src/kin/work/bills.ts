@@ -74,6 +74,13 @@ const GROUP_IMAGE_BYTES = 20 * 1024 * 1024;
 const AUTO_READS = 2;
 const COULD_NOT_READ = "Kin could not read this one";
 const UNSHOWN_PHOTO = "Kin can't read this kind of photo: add it as a JPEG or PNG.";
+/** A clean read whose amount or date is the owner's to check: reading it again reads the same. */
+const CHECK_IT = {
+  farAbove: "The amount is far above the rest of Expenses: check it.",
+  ahead: "The date is after today: check it.",
+  old: "The date is more than ten years back: check it.",
+} as const;
+const READ_CLEAN: ReadonlySet<string> = new Set(Object.values(CHECK_IT));
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
@@ -1009,12 +1016,12 @@ const settleRead = Effect.fn("KinBills.settleRead")(function* (
   // What an agent's record_create or a person's form would question is the owner's to check.
   const largest = yield* largestIn(orgId, "expenses", money.currency);
   if (farAbove("Expenses", money, largest, yield* homeCurrency(orgId)) !== undefined)
-    return yield* unreadable("The amount is far above the rest of Expenses: check it.");
+    return yield* unreadable(CHECK_IT.farAbove);
   const zone = yield* ownerZone(orgId);
   const today = dayIn(now, zone);
-  if (read.date > today) return yield* unreadable("The date is after today: check it.");
+  if (read.date > today) return yield* unreadable(CHECK_IT.ahead);
   if (read.date < `${Number(today.slice(0, 4)) - 10}${today.slice(4)}`)
-    return yield* unreadable("The date is more than ten years back: check it.");
+    return yield* unreadable(CHECK_IT.old);
   const twin = yield* sameExpense(orgId, row.sha256, read.vendor, read.date, money, zone);
   if (twin !== undefined) {
     yield* sql`UPDATE kin_bill_reads SET state = 'duplicate', read_json = ${json},
@@ -1261,6 +1268,7 @@ const rowView = (row: Row, records: ReadonlyMap<string, RecordBrief>): KinBillRo
     state: shownState(row, record),
     read: read as KinBillRead,
     ...(row.problem === null ? {} : { problem: row.problem }),
+    ...(row.state === "unreadable" && READ_CLEAN.has(row.problem ?? "") ? { readClean: true } : {}),
     ...(record === undefined
       ? {}
       : { expense: { key: record.key, rev: record.rev, title: record.title } }),

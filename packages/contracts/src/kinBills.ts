@@ -170,6 +170,11 @@ export const KinBillRow = Schema.Struct({
   read: KinBillRead,
   /** In plain words, what could not be read. */
   problem: Schema.optional(Text),
+  /**
+   * An unreadable bill read cleanly whose amount or date is the owner's to check: reading it
+   * again reads the same.
+   */
+  readClean: Schema.optional(Schema.Boolean),
   /** The suggested expense made for it, as it stands now. */
   expense: Schema.optional(
     Schema.Struct({ key: KinRecordKey, rev: NonNegativeInt, title: Schema.String }),
