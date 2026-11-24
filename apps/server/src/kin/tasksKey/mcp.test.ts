@@ -573,8 +573,8 @@ const roundTwo = Effect.gen(function* () {
     });
     return { use, sessionId: issued.key.sessionId, app: yield* identity.resolve(one.app) };
   });
-  const writer = Work.ownerWriter(identity.owner);
   const person = (personId: KinPersonId) => ({ _tag: "person", personId }) as const;
+  const writer = { ...Work.ownerWriter(identity.owner), actor: person(identity.owner.personId) };
   const make = (title: string, fields: Partial<CreateInput> = {}) =>
     records
       .create(orgId, writer, {
@@ -879,7 +879,8 @@ it.effect(
       const rows = yield* sql`SELECT state, asked_look_at, next_look_at, interval_ms, updated_at
       FROM kin_watches WHERE org_id = ${orgId} AND watch_id IN ('app-watch', 'key-watch')
       ORDER BY watch_id`;
-      assert.deepStrictEqual(rows, [rows[0], rows[0]]);
+      assert.lengthOf(rows, 2);
+      assert.deepStrictEqual(rows[1], rows[0]);
       assert.deepInclude(rows[1], { updated_at: 1_000 });
       const history = yield* sql`SELECT json_extract(entry_json, '$.result') AS result
       FROM kin_audit WHERE org_id = ${orgId} AND event = 'watch_restarted'`;

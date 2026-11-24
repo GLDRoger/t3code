@@ -77,8 +77,9 @@ export const keyed = Effect.fn("KinTasksKey.keyed")(function* <
 export const reachKey = Effect.fn("KinTasksKey.reachKey")(function* (
   holder: TasksKeyHolder,
   key: KinRecordKey,
-  missing = (key: string) => new KinChatError({ reason: "not_found", message: `No ${key} here.` }),
-) {
+  missing: (key: string) => KinChatError = (key) =>
+    new KinChatError({ reason: "not_found", message: `No ${key} here.` }),
+): Effect.fn.Return<KinRecordKey, KinChatError, SqlClient.SqlClient> {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ id: string }>`SELECT record_id AS id FROM kin_records
     WHERE org_id = ${holder.orgId} AND key = ${key}`.pipe(workFailure);
