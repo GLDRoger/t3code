@@ -19,24 +19,27 @@ export const KinBillBatchCard = memo(function KinBillBatchCard(props: {
   const navigation = useNavigation();
   const { bills } = props;
   return (
-    <View
-      accessible
-      accessibilityLabel={`${KIN_BILLS.added}: ${bills.text}`}
-      className="gap-2 rounded-[20px] border border-border bg-card-alt p-4"
-    >
-      <View className="flex-row items-baseline justify-between gap-3">
-        <Text textRole="caption" className="font-t3-medium text-foreground-muted">
-          {KIN_BILLS.added}
-        </Text>
-        {bills.progress === null ? null : (
-          <Text textRole="caption" className="text-foreground-muted">
-            {bills.progress}
+    <View className="gap-2 rounded-[20px] border border-border bg-card-alt p-4">
+      {/* Only the words are one element: an accessible card would hide Review from VoiceOver. */}
+      <View
+        accessible
+        accessibilityLabel={`${KIN_BILLS.added}: ${bills.text}`}
+        className="gap-2"
+      >
+        <View className="flex-row items-baseline justify-between gap-3">
+          <Text textRole="caption" className="font-t3-medium text-foreground-muted">
+            {KIN_BILLS.added}
           </Text>
-        )}
+          {bills.progress === null ? null : (
+            <Text textRole="caption" className="text-foreground-muted">
+              {bills.progress}
+            </Text>
+          )}
+        </View>
+        <Text textRole="body" className="text-foreground">
+          {bills.text}
+        </Text>
       </View>
-      <Text textRole="body" className="text-foreground">
-        {bills.text}
-      </Text>
       {bills.reading || !props.ownerLevel ? null : (
         <Button
           size="compact"
