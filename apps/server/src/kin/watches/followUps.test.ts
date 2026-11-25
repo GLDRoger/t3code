@@ -19,6 +19,7 @@ import { MemorySyncHooks } from "../memory/Memory.ts";
 import { withRuns } from "../triggers/deferralRuns.ts";
 import * as TriggerService from "../triggers/KinTriggerService.ts";
 import { fixture, item, orgId, otherOrg, seed } from "../triggers/routines.testkit.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import * as FollowUps from "./followUps.ts";
 
@@ -105,6 +106,14 @@ it.effect(
         askedBy: { personId: zoya.personId, name: "Zoya" },
       });
       assert.deepInclude(all[1], { held: { section: "clients", sectionName: "Clients" } });
+      const moneyOff = {
+        ...KinShell.defaultShell(),
+        sections: [{ id: "money" as const, on: false }],
+      };
+      assert.deepStrictEqual(
+        [FollowUps.heldSwitch(moneyOff, "invoices"), FollowUps.heldSwitch(moneyOff, "docs")],
+        ["money", "docs"],
+      );
       assert.deepStrictEqual((yield* FollowUps.list(orgId, zoya)).followUps, [
         { ...all[0], title: "" },
       ]);

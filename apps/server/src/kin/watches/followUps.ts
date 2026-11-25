@@ -150,6 +150,17 @@ const matchesDue = (head: MemoryItemHead, run: Run) => {
   return run.dueAt !== null && (run.dueAt === due || run.movedFrom === due);
 };
 
+/** The switch a person turns back on: Invoices and Deals stay off while Money or Clients is. */
+export const heldSwitch = (
+  shell: Parameters<typeof KinShell.sectionOn>[0],
+  section: Parameters<typeof KinShell.sectionOn>[1],
+) =>
+  section === "invoices" && !KinShell.sectionOn(shell, "money")
+    ? "money"
+    : section === "deals" && !KinShell.sectionOn(shell, "clients")
+      ? "clients"
+      : section;
+
 export const list = Effect.fn("KinFollowUps.list")(function* (
   orgId: KinOrgId,
   reader: WatchReader,
@@ -194,7 +205,8 @@ export const list = Effect.fn("KinFollowUps.list")(function* (
       for (const reference of refs) {
         const section = sectionOf(reference);
         if (section !== null && !KinShell.sectionOn(shell, section)) {
-          held = { section, sectionName: KinShell.sectionName(shell, section) };
+          const off = heldSwitch(shell, section);
+          held = { section: off, sectionName: KinShell.sectionName(shell, off) };
           break;
         }
       }
