@@ -1815,7 +1815,7 @@ describe("KinChatService", () => {
               json_extract(json, '$.emoji') AS emoji
             FROM kin_events WHERE org_id = ${person.orgId} AND agent_id = ${agent.agentId}
               AND tag = 'chat.reaction'
-            ORDER BY queued_at, event_id`,
+            ORDER BY received_at, event_id`,
         [
           { messageId: question.messageId, emoji: "👍" },
           { messageId: card.messageId, emoji: "👍" },
