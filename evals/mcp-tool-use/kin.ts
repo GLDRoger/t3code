@@ -34,7 +34,14 @@ import {
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { alreadyOnIt, leftNote } from "../../apps/server/src/kin/lead/Handoff.ts";
-import { dueShows, madeIn, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
+import { billPaidConsequence } from "../../apps/server/src/kin/pulse/senses/bank.ts";
+import { billDueConsequence } from "../../apps/server/src/kin/pulse/senses/money.ts";
+import {
+  dueShows,
+  madeIn,
+  repeatedPromise,
+  suggestedBillResult,
+} from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import {
   endOfDay,
@@ -552,6 +559,16 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{WORK_RULE}}", WORK_RULE)
     .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
+    .replace(
+      /\{\{BILL_PAID_FACT:([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\}\}/g,
+      (_, bank, amount, day, bill, vendor, due) =>
+        billPaidConsequence(bank, amount, day, bill, vendor, due),
+    )
+    .replace(
+      /\{\{BILL_DUE_FACT:([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|(\d+)\}\}/g,
+      (_, amount, vendor, day, days) =>
+        billDueConsequence(amount, vendor, day, Number(days), false),
+    )
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
     .replaceAll("{{LEFT_RULE}}", LEFT_RULE)
     .replaceAll("{{OUTSIDE_THREAD_LINE}}", OUTSIDE_THREAD_LINE)
@@ -720,6 +737,11 @@ const docReadAnswer = (input: {
 };
 
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  suggestedBill: (input: { key: string }) => suggestedBillResult(input.key),
+  billSuggestedLabel: (input: { state: "open" | "done" }) =>
+    suggestedStateLabel("expenses", input.state),
+  billDueFact: (input: { amount: string; vendor: string; day: string; days: number }) =>
+    billDueConsequence(input.amount, input.vendor, input.day, input.days, false),
   // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
   billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
   billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>

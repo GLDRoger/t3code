@@ -78,6 +78,7 @@ import * as KinShell from "../shell/KinShell.ts";
 import * as CardActions from "./cardActions.ts";
 import { plansOf, takesAsDefault } from "./cardPlans.ts";
 import { FEWER_THAN_TWO, NOTHING_TIMED } from "./choiceCard.ts";
+import { dayIn } from "../work/money.ts";
 import { ensureBankList } from "../work/statements/bankList.ts";
 import { parseFields } from "../work/lists.ts";
 import { buildReview } from "../work/statements/statementReview.ts";
@@ -347,6 +348,156 @@ it.effect("a tap on an action option runs it once, as the server wrote it", () =
     Effect.gen(function* () {
       const kin = yield* ambermill;
       const { owner, orgId } = kin;
+      yield* kin.turn("finance", kin.chatOf("finance"), "Draft the Acme Hosting bill.");
+      yield* kin.sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
+      const { row: bill } = yield* kin.records.create(
+        orgId,
+        {
+          actor: { _tag: "system" },
+          via: "import",
+        },
+        {
+          list: "expenses",
+          title: "Acme Hosting",
+          state: "open",
+          owner: { _tag: "person", personId: owner.personId },
+          amount: { minor: 450_00, currency: "INR" },
+          dueAt: MON + DAY_MS,
+          fields: { vendor: "Acme Hosting" },
+          originKey: "hosting",
+          confirmed: false,
+        },
+      );
+      const ownerWrites = {
+        actor: { _tag: "person" as const, personId: owner.personId },
+        via: "owner" as const,
+      };
+      const askBill = (kind: string, target: string, question = `Confirm ${target}?`) =>
+        callAs("finance", "kin_ask", {
+          ...closeIt(target),
+          question,
+          options: [
+            { label: "Confirm", action: { kind, target } },
+            { label: "Not now", kind: "no" },
+          ],
+        });
+      const offered = yield* askBill("record_bill", bill.key);
+      assert.isTrue(offered.ok, JSON.stringify(offered.value));
+      const refuseTeammate = Effect.fn("test.refuseTeammate")(function* (widgetId: string) {
+        const plan = (yield* plansOf(orgId, widgetId)).get("option-1")!;
+        const refused = yield* CardActions.run(
+          {
+            orgId,
+            widget: yield* kin.widget(widgetId),
+            personId: KinPersonId.make("dev"),
+            memberId: KinMemberId.make("dev-member"),
+            now: MON,
+          },
+          plan,
+          { records: kin.records, chat: kin.chats },
+        ).pipe(Effect.flip);
+        assert.include(refused, { reason: "not_allowed" });
+      });
+      yield* refuseTeammate(String(offered.value.widgetId));
+      assert.strictEqual(
+        card(yield* kin.widget(offered.value.widgetId)).options[0]?.label,
+        "Record this bill",
+      );
+      assert.strictEqual((yield* kin.records.get(orgId, bill.key))?.confirmed, 0);
+      const edited = yield* kin.records.update(orgId, ownerWrites, bill.key, {
+        notes: "Renewal period checked.",
+      });
+      yield* kin.tap(owner, offered.value.widgetId, "option-1", "stale-bill");
+      assert.deepStrictEqual(card(yield* kin.widget(offered.value.widgetId)).outcome, {
+        title: "Not recorded",
+        text: `${bill.key} changed since this card was made, so nothing was recorded. It is in Money's suggestions.`,
+      });
+      assert.include(yield* kin.records.get(orgId, bill.key), { confirmed: 0, rev: edited.rev });
+      const fresh = yield* askBill("record_bill", bill.key, `Record the revised bill ${bill.key}?`);
+      assert.isTrue(fresh.ok, JSON.stringify(fresh.value));
+      yield* kin.tap(owner, fresh.value.widgetId, "option-1", "keep-bill");
+      yield* kin.tap(owner, fresh.value.widgetId, "option-1", "keep-bill-again");
+      assert.include(yield* kin.records.get(orgId, bill.key), {
+        confirmed: 1,
+        rev: edited.rev + 1,
+      });
+      const bank = yield* ensureBankList(orgId, MON);
+      const { row: debit } = yield* kin.records.create(
+        orgId,
+        {
+          actor: { _tag: "system" },
+          via: "import",
+        },
+        {
+          list: bank.id,
+          title: "Acme Hosting",
+          state: "open",
+          owner: { _tag: "person", personId: owner.personId },
+          amount: { minor: 450_00, currency: "INR" },
+          dateAt: MON - DAY_MS,
+          fields: { direction: "debit" },
+          originKey: "hosting-debit",
+        },
+      );
+      const offerPaid = yield* askBill("mark_bill_paid", debit.key);
+      assert.isTrue(offerPaid.ok, JSON.stringify(offerPaid.value));
+      yield* refuseTeammate(String(offerPaid.value.widgetId));
+      const checked = yield* kin.records.update(orgId, ownerWrites, debit.key, {
+        notes: "Checked against the bank.",
+      });
+      yield* kin.tap(owner, offerPaid.value.widgetId, "option-1", "stale-debit");
+      assert.include(yield* kin.records.get(orgId, bill.key), {
+        state: "open",
+        rev: edited.rev + 1,
+      });
+      assert.include(yield* kin.records.get(orgId, debit.key), {
+        state: "open",
+        rev: checked.rev,
+      });
+      const freshPaid = yield* askBill(
+        "mark_bill_paid",
+        debit.key,
+        `Apply the revised debit ${debit.key}?`,
+      );
+      assert.isTrue(freshPaid.ok, JSON.stringify(freshPaid.value));
+      yield* kin.tap(owner, freshPaid.value.widgetId, "option-1", "pay-bill");
+      yield* kin.tap(owner, freshPaid.value.widgetId, "option-1", "pay-bill-again");
+      const settledBill = (yield* kin.records.get(orgId, bill.key))!;
+      assert.include(settledBill, { state: "done", rev: edited.rev + 2 });
+      assert.strictEqual(dayIn(settledBill.dateAt!, "Asia/Kolkata"), "2026-11-15");
+      assert.include(yield* kin.records.get(orgId, debit.key), {
+        state: "done",
+        rev: checked.rev + 1,
+      });
+      assert.deepStrictEqual(
+        yield* kin.sql<{ recordId: string; relation: string; target: string }>`SELECT
+          record_id AS "recordId", relation, target FROM kin_record_links
+          WHERE org_id = ${orgId} AND record_id IN ${kin.sql.in([bill.recordId, debit.recordId])}
+          ORDER BY relation, record_id, target`,
+        [
+          { recordId: bill.recordId, relation: "evidence", target: debit.recordId },
+          { recordId: debit.recordId, relation: "relates", target: bill.recordId },
+        ],
+      );
+      assert.strictEqual(
+        card(yield* kin.widget(freshPaid.value.widgetId)).outcome?.title,
+        "Marked paid",
+      );
+      yield* kin.records.update(orgId, ownerWrites, debit.key, { state: "open" });
+      yield* kin.records.create(orgId, ownerWrites, {
+        list: "expenses",
+        title: "Acme Hosting renewal",
+        state: "open",
+        owner: { _tag: "person", personId: owner.personId },
+        amount: { minor: 450_00, currency: "INR" },
+        dueAt: MON + DAY_MS,
+        fields: { vendor: "Acme Hosting" },
+        originKey: "hosting-renewal",
+      });
+      const reopened = yield* askBill("mark_bill_paid", debit.key);
+      assert.isFalse(reopened.ok, JSON.stringify(reopened.value));
       const row = yield* kin.task("Set up the appointments API");
       yield* kin.turn("finance", kin.chatOf("finance"), "Where is the API work?");
       const asked = yield* callAs("finance", "kin_ask", {

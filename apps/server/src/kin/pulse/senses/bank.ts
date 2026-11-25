@@ -6,6 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { dayIn, formatMoneyPlain, monthOf, shiftMonth } from "../../work/money.ts";
 import { endOfDay, owedInvoices, recordName, startOfDay } from "../../work/recordRows.ts";
 import { bankKnown, shortDay } from "../../work/statements/bankKnown.ts";
+import { billMatches, billPaidFactKey } from "../../work/statements/debitBill.ts";
 import { repaidMatches } from "../../work/statements/debitRepaid.ts";
 import {
   type CreditMatch,
@@ -293,4 +294,45 @@ export const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function*
       wake: "now",
     };
   });
+});
+
+export const billPaidConsequence = (
+  bankKey: string,
+  amount: string,
+  day: string,
+  billKey: string,
+  vendor: string,
+  due: string,
+) =>
+  `${bankKey}, ${amount} paid ${day}, matches ${billKey}, the bill to pay ${vendor} due ${due}. It isn't marked paid until the owner confirms.`;
+
+export const billPaidSeenSenses = Effect.fn("KinPulse.billPaidSeenSenses")(function* (
+  ctx: SenseContext,
+) {
+  const matches = yield* billMatches(ctx.orgId, ctx.at);
+  return matches.map(({ debit, bill }): SensedFact => ({
+    sense: "bill_paid_seen",
+    family: "money",
+    key: billPaidFactKey(debit.key),
+    subject: {
+      kind: "record",
+      key: debit.key,
+      title: "Bank debit",
+      recordId: KinRecordId.make(debit.recordId),
+    },
+    scope: {},
+    since: iso(Math.min(debit.dateAt, ctx.at)),
+    consequence: billPaidConsequence(
+      debit.key,
+      plain(debit.amountMinor, debit.currency),
+      shortDay(debit.date),
+      bill.key,
+      (bill.vendor ?? bill.title).slice(0, 200),
+      bill.due === null ? "No date" : shortDay(bill.due),
+    ),
+    actor: agentOrOwner(ctx.finance),
+    sensitive: true,
+    wake: "now",
+    extraSection: "money",
+  }));
 });

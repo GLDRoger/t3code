@@ -393,7 +393,7 @@ const paymentCandidate = (
   };
 };
 
-const expenseCandidate = (
+export const expenseCandidate = (
   row: StatementRow,
   expense: ExpenseCandidate,
   currency: string,

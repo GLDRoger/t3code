@@ -62,6 +62,16 @@ import {
   paymentLine,
   recordPayment,
 } from "../work/statements/creditPayment.ts";
+import {
+  billPaidLabel,
+  billPaidLine,
+  drawBill,
+  drawBillPaid,
+  markBillPaid,
+  recordBill,
+  recordBillLabel,
+  recordBillLine,
+} from "../work/statements/billCard.ts";
 import { drawRepaid, markRepaid, repaidLabel, repaidLine } from "../work/statements/repaidCard.ts";
 import {
   type CardActionInput,
@@ -136,6 +146,10 @@ const labelOf = (plan: CardPlan): string => {
       return "Keep it";
     case "undo_answer":
       return "Undo";
+    case "record_bill":
+      return recordBillLabel;
+    case "mark_bill_paid":
+      return billPaidLabel(plan);
   }
 };
 
@@ -177,6 +191,10 @@ const lineOf = (plan: CardPlan): string => {
       return UNDO_ANSWER_LINE;
     case "keep_answer":
       return plan.answer === null ? "Keep it" : `Keep ${quoted(plan.answer, 40)}`;
+    case "record_bill":
+      return recordBillLine(plan);
+    case "mark_bill_paid":
+      return billPaidLine(plan);
   }
 };
 
@@ -385,6 +403,14 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
       case "mark_repaid": {
         yield* ownerTier("record_update");
         return yield* drawRepaid(orgId, input.target, drawn);
+      }
+      case "record_bill": {
+        yield* ownerTier("record_update");
+        return yield* drawBill(orgId, input.target, drawn);
+      }
+      case "mark_bill_paid": {
+        yield* ownerTier("record_update");
+        return yield* drawBillPaid(orgId, input.target, drawn);
       }
     }
   });
@@ -951,6 +977,24 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
       return (
         done ?? nothingDone(`${plan.key} or an expense it repays changed since this was offered`)
       );
+    }
+    case "record_bill":
+    case "mark_bill_paid": {
+      if (!owner) return yield* notAllowed("Only the owner or a co-owner confirms bills to pay.");
+      yield* refuseOff("expenses");
+      if (plan.kind === "mark_bill_paid") yield* refuseOff("bank_transactions");
+      const why = yield* drawsHold(orgId, draws);
+      if (why !== undefined) return nothingDone(why);
+      const writer = {
+        actor: { _tag: "person" as const, personId },
+        via: "owner" as const,
+        askedBy: personId,
+        chatId: tap.widget.chatId,
+        answering: [tap.widget.widgetId, ...alsoAnswering],
+      };
+      if (plan.kind === "record_bill") return yield* recordBill(orgId, plan, writer, records);
+      const done = yield* markBillPaid(orgId, plan, writer, records);
+      return done ?? nothingDone(`${plan.key} or ${plan.bill.key} changed since this was offered`);
     }
   }
 });

@@ -19,12 +19,14 @@ const CARD_ACTIONS = [
   "take_default",
   "record_payment",
   "mark_repaid",
+  "record_bill",
+  "mark_bill_paid",
 ] as const;
 export const CardActionInput = Schema.Struct({
   kind: Schema.Literals(CARD_ACTIONS),
   target: KinTrimmedText.check(Schema.isMaxLength(200)).annotate({
     description:
-      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours. record_payment: a Bank transactions credit's key (BNK-1) when Kin ranks one invoice first for it, else the credit's key, a space and the key or number of an invoice Kin ranks first for it (BNK-1 INV-1). mark_repaid: a Bank transactions debit's key (BNK-4) that Kin reads as paying a partner back.",
+      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours. record_payment: a Bank transactions credit's key (BNK-1) when Kin ranks one invoice first for it, else the credit's key, a space and the key or number of an invoice Kin ranks first for it (BNK-1 INV-1). mark_repaid: a Bank transactions debit's key (BNK-4) that Kin reads as paying a partner back. record_bill: the key of an Expenses entry you suggested as a bill to pay (EXP-7). mark_bill_paid: a Bank transactions debit's key (BNK-4) that Kin matches to one bill to pay.",
   }),
 }).annotate({
   description: "What Kin itself does when this option is tapped; Kin writes its button.",
@@ -127,7 +129,44 @@ const RepaidPlan = Schema.Struct({
   draw: CardDraw,
 });
 export type RepaidPlan = typeof RepaidPlan.Type;
-const RunPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, PaymentPlan, RepaidPlan]);
+const BillPlan = Schema.Struct({
+  kind: Schema.Literal("record_bill"),
+  recordId: Schema.String,
+  key: Schema.String,
+  rev: Schema.Number,
+  vendor: Schema.String,
+  amountMinor: Schema.Number,
+  currency: Schema.String,
+  dueDay: Schema.NullOr(Schema.String),
+  draw: CardDraw,
+});
+export type BillPlan = typeof BillPlan.Type;
+const BillPaidPlan = Schema.Struct({
+  kind: Schema.Literal("mark_bill_paid"),
+  recordId: Schema.String,
+  key: Schema.String,
+  rev: Schema.Number,
+  amountMinor: Schema.Number,
+  currency: Schema.String,
+  day: Schema.String,
+  bill: Schema.Struct({
+    recordId: Schema.String,
+    key: Schema.String,
+    rev: Schema.Number,
+    vendor: Schema.String,
+  }),
+  draw: CardDraw,
+});
+export type BillPaidPlan = typeof BillPaidPlan.Type;
+const RunPlan = Schema.Union([
+  RecordPlan,
+  StartPlan,
+  ListPlan,
+  PaymentPlan,
+  RepaidPlan,
+  BillPlan,
+  BillPaidPlan,
+]);
 export type RunPlan = typeof RunPlan.Type;
 const DefaultPlan = Schema.Struct({
   kind: Schema.Literal("take_default"),
@@ -316,6 +355,8 @@ export const CardPlan = Schema.Union([
   WaitedPlan,
   StallPlan,
   DuePlan,
+  BillPlan,
+  BillPaidPlan,
 ]);
 export type CardPlan = typeof CardPlan.Type;
 export type FactCardPlan = WaitedPlan | StallPlan | DuePlan;
