@@ -24,7 +24,14 @@ import * as KinPulse from "./KinPulse.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
 import { holdIfQuiet } from "../triggers/quietHold.ts";
 import { inHoursAt, nudge } from "./nudge.ts";
-import { matchLines, type OutsideRead, type OutsideSource, poll } from "./outside.ts";
+import {
+  mailLine,
+  matchLines,
+  type OutsideRead,
+  type OutsideSource,
+  outsideKey,
+  poll,
+} from "./outside.ts";
 
 // Invented company, people, mail and calendar only; nothing here reads a real database or service.
 const orgId = KinOrgId.make("org");
@@ -801,6 +808,80 @@ describe("pulse check-ins", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it("a mail line carries its thread as the mail tools take it, under the key it always had", () => {
+    const line = mailLine("Google", "hello@tidewater.example", {
+      receivedBy: null,
+      threadId: "ft6",
+      date: "2026-11-16T09:01:00.000Z",
+      from: "Accounts <accounts@tidewater.example>",
+      subject: "Quote request",
+    });
+    assert.strictEqual(line.thread, "ft6");
+    assert.strictEqual(line.id, "ft6:2026-11-16T09:01:00.000Z");
+    // A deploy must not wake old mail again: the key stays what it was before `thread`.
+    assert.strictEqual(outsideKey(line), "outside:03618093cf4ec14b06257416aa53c24d");
+  });
+
+  it.effect("a check-in past its cap counts the mail it leaves out, its held slots' too", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* record({ key: "C-1", list: "clients", title: "Tidewater Freight" });
+      yield* record({
+        key: "CT-1",
+        list: "contacts",
+        title: "Arjun",
+        partyId: "r-C-1",
+        fields: '{"email":"arjun@tidewater.example"}',
+      });
+      const many = (prefix: string, count: number) =>
+        Array.from({ length: count }, (_, n) =>
+          mail(`${prefix}${n}:a`, `Migration <noreply-${n}@tidewater.example>`, "Synced"),
+        );
+      const matched = ["q1:a", "q2:a", "q3:a"].map((id) =>
+        mail(id, "Arjun <arjun@tidewater.example>", "Urgent quote"),
+      );
+      const listed = Effect.fn("test.listed")(function* (day: string) {
+        const events = yield* pulseEvents;
+        const parsed = JSON.parse(events.find((event) => event.key.endsWith(day))!.json);
+        return {
+          ids: (parsed.outside ?? []).map((line: KinPulseOutsideLine) => line.id),
+          notListed: parsed.outsideNotListed,
+        };
+      });
+      assert.include(yield* checkIn(SLOT, { lines: [...many("a", 67), ...matched], seen: [] }), {
+        _tag: "queued",
+        outside: 60,
+      });
+      const first = yield* listed("afternoon:2026-11-16");
+      assert.strictEqual(first.notListed, 10);
+      assert.includeMembers(first.ids, ["q1:a", "q2:a", "q3:a"]);
+      assert.include(yield* checkIn(SLOT + DAY, { lines: many("b", 60), seen: [] }), {
+        outside: 60,
+      });
+      assert.isUndefined((yield* listed("afternoon:2026-11-17")).notListed);
+      // Away until Friday: Wednesday's brief carries Tuesday's lines and what Tuesday's left out.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-20' WHERE person_id = ${owner}`;
+      const morning = (day: number, lines: ReadonlyArray<KinPulseOutsideLine>) =>
+        queueCheckIn({
+          orgId,
+          agentId: chief,
+          scheduleId: KinMemoryItemId.make("checkin-morning"),
+          title: "Morning brief",
+          what: "Check-in.",
+          dueAt: MONDAY + day * DAY + 9 * HOUR,
+          looseAt: null,
+          zone: "UTC",
+          at: MONDAY + day * DAY + 9 * HOUR,
+          outside: { lines, seen: [] },
+        });
+      yield* morning(1, many("c", 70));
+      assert.strictEqual((yield* listed("morning:2026-11-17")).notListed, 10);
+      yield* morning(2, many("d", 5));
+      assert.strictEqual((yield* listed("morning:2026-11-18")).notListed, 15);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("mail naming an issued number is matched to that entry, only where one shows it", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -1104,54 +1185,57 @@ describe("pulse check-ins", () => {
         assert.isTrue(saved.every((input) => input.keepWording === true));
       }).pipe(Effect.provide(layer)),
   );
-  it.effect("a check-in set in Settings keeps the owner's time across a clock change", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      const sql = yield* SqlClient.SqlClient;
-      yield* companyClock("America/New_York");
-      using _hostClock = vi.spyOn(KinSchedules, "hostTimeZone").mockReturnValue("UTC");
-      const weekdays = [1, 2, 3, 4, 5];
-      const JULY = Date.UTC(2026, 6, 13);
-      const DECEMBER = Date.UTC(2026, 11, 14);
-      // Set at 09:00 his time in July; "moved" was changed on T3's screen since.
-      const july = { at: "13:00", days: weekdays };
-      for (const slug of ["mine", "moved"]) {
-        const at = slug === "moved" ? { ...july, at: "11:00" } : july;
-        yield* scheduleRow({ slug, at: at.at, days: at.days, source: "kin-settings:check-ins" });
-        yield* sql`UPDATE kin_schedules SET owner_time_json = ${JSON.stringify({
-          at: "09:00",
-          days: weekdays,
-          host: july,
-        })} WHERE schedule_id = ${`checkin-${slug}`}`;
-      }
-      const saved: Array<KinSchedules.SaveInput> = [];
-      const schedules = KinSchedules.KinSchedules.of({
-        save: (input) => Effect.sync(() => void saved.push(input)),
-        cancel: () => Effect.void,
-        applyTaps: () => Effect.void,
-      });
-      yield* TestClock.setTime(JULY);
-      yield* followOwnerZone(orgId, schedules);
-      assert.deepStrictEqual(saved, []);
-      yield* TestClock.setTime(DECEMBER);
-      yield* followOwnerZone(orgId, schedules);
-      assert.deepStrictEqual(
-        saved.map(({ scheduleId, every, ownerTime, keepWording }) => ({
-          scheduleId,
-          every,
-          ownerTime,
-          keepWording,
-        })),
-        [
-          {
-            scheduleId: KinMemoryItemId.make("checkin-mine"),
+  it.effect(
+    "a check-in set in Settings or in chat keeps the owner's time across a clock change",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* companyClock("America/New_York");
+        using _hostClock = vi.spyOn(KinSchedules, "hostTimeZone").mockReturnValue("UTC");
+        const weekdays = [1, 2, 3, 4, 5];
+        const JULY = Date.UTC(2026, 6, 13);
+        const DECEMBER = Date.UTC(2026, 11, 14);
+        // Set at 09:00 his time in July, in Settings or in chat; "moved" was changed on T3's screen since.
+        const july = { at: "13:00", days: weekdays };
+        for (const slug of ["mine", "moved", "said"]) {
+          const at = slug === "moved" ? { ...july, at: "11:00" } : july;
+          const source = slug === "said" ? "chat-event" : "kin-settings:check-ins";
+          yield* scheduleRow({ slug, at: at.at, days: at.days, source });
+          yield* sql`UPDATE kin_schedules SET owner_time_json = ${JSON.stringify({
+            at: "09:00",
+            days: weekdays,
+            host: july,
+          })} WHERE schedule_id = ${`checkin-${slug}`}`;
+        }
+        const saved: Array<KinSchedules.SaveInput> = [];
+        const schedules = KinSchedules.KinSchedules.of({
+          save: (input) => Effect.sync(() => void saved.push(input)),
+          cancel: () => Effect.void,
+          applyTaps: () => Effect.void,
+        });
+        yield* TestClock.setTime(JULY);
+        yield* followOwnerZone(orgId, schedules);
+        assert.deepStrictEqual(saved, []);
+        yield* TestClock.setTime(DECEMBER);
+        yield* followOwnerZone(orgId, schedules);
+        assert.deepStrictEqual(
+          saved
+            .map(({ scheduleId, every, ownerTime, keepWording }) => ({
+              scheduleId,
+              every,
+              ownerTime,
+              keepWording,
+            }))
+            .toSorted((a, b) => a.scheduleId.localeCompare(b.scheduleId)),
+          ["checkin-mine", "checkin-said"].map((scheduleId) => ({
+            scheduleId: KinMemoryItemId.make(scheduleId),
             every: { at: "14:00", days: weekdays },
             ownerTime: { at: "09:00", days: weekdays },
             keepWording: true,
-          },
-        ],
-      );
-    }).pipe(Effect.provide(layer)),
+          })),
+        );
+      }).pipe(Effect.provide(layer)),
   );
   it.effect.each([
     { name: "Friday taken off", days: [1, 2, 3, 4] },

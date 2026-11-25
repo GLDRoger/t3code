@@ -270,6 +270,11 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       : void failing.set(lower(address), status);
   const outage = (account: FakeMailAccount, request: Request) => {
     const status = failing.get(lower(account.address));
+    if (status === 429)
+      return new Response(JSON.stringify({ error: { code: status } }), {
+        status,
+        headers: { "content-type": "application/json", "retry-after": "30" },
+      });
     if (status !== undefined) return json({ error: { code: status } }, status);
     return request.method === "POST" && down.has(lower(account.address))
       ? json({ error: { code: 503, message: "The service is unavailable." } }, 503)

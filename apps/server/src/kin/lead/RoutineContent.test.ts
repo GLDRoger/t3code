@@ -8,6 +8,7 @@ import {
   KinRoutineCard,
   KinWidgetId,
   type KinWidget,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -17,6 +18,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
@@ -75,6 +77,8 @@ interface FixtureOptions {
   readonly truncatedRepos?: number;
   /** Runs inside the GitHub read, after the first lead lookup and before the write transaction. */
   readonly onGithubRead?: Effect.Effect<void, never, SqlClient.SqlClient>;
+  /** Delegated tasks' child threads, by id: their latest run's assistant messages, or unreadable. */
+  readonly childThreads?: Readonly<Record<string, ReadonlyArray<string> | "unreadable">>;
 }
 
 /** The real runner and content service over fixture memory in a fake git remote. */
@@ -136,11 +140,42 @@ function layerFor(files: ReadonlyArray<readonly [string, string]>, options: Fixt
         };
       }),
     );
+    const children = options.childThreads ?? {};
+    const threads = Layer.effect(
+      ThreadManagement.ThreadManagementService,
+      Effect.map(ThreadManagement.ThreadManagementService, (service) => ({
+        ...service,
+        getThreadRecords: ((
+          threadId: ThreadId,
+          fields: ReadonlyArray<string>,
+          filter?: Parameters<typeof service.getThreadRecords>[2],
+        ) => {
+          const child = children[threadId];
+          if (child === undefined)
+            return service.getThreadRecords(threadId, fields as never, filter);
+          if (child === "unreadable") return Effect.die("unreadable child thread");
+          const runId = `${threadId}:run`;
+          return Effect.succeed(
+            fields.includes("runs")
+              ? { runs: [{ id: runId }] }
+              : {
+                  messages: child.map((text) => ({
+                    role: "assistant",
+                    runId,
+                    text,
+                    streaming: false,
+                  })),
+                },
+          );
+        }) as typeof service.getThreadRecords,
+      })),
+    );
     // The runner keeps the harness's memory stub; only the content service reads fixture memory.
     const content = RoutineContent.layer.pipe(
       Layer.provide(memory),
       Layer.provideMerge(chat),
       Layer.provide(github),
+      Layer.provide(threads),
     );
     return WakeupRunner.layer.pipe(
       Layer.provideMerge(content),
@@ -511,6 +546,102 @@ it.effect("an evening whose only news is in Kin's records is summed up, by the c
     }).pipe(Effect.orDie),
   ),
 );
+
+it.effect("the evening's done tasks say who started each and what its child thread found", () => {
+  const long = `Reviewed PR #12 (refunds export). Requested changes: ${"the refund totals round each line before summing, ".repeat(5)}and the new column has no test.`;
+  return withFixture(
+    [],
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+          dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+        VALUES (${orgId}, 'Asia/Kolkata', '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
+      yield* sql`UPDATE kin_agents SET display_name = 'Chief of staff' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES ('finance', ${orgId}, 'Finance', 'lead', 'owner', ${timestamp})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id,
+          role, joined_at)
+        VALUES ('lead-member', ${orgId}, 'owner-chat', 'agent', ${agentId}, 'member', ${timestamp})`;
+      const card = (
+        n: number,
+        input: { starter?: string; thread: string | null; status?: string; pr?: string },
+      ) =>
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+              author_agent_id, author_owner_person_id, author_thread_id, author_member_id,
+              author_role, kind, body, mentions_json, status, created_at)
+            VALUES (${`task-message-${n}`}, ${orgId}, 'owner-chat', ${n}, 'agent',
+              ${input.starter ?? agentId}, 'owner', 'lead-thread', 'lead-member', 'member', 'text',
+              '', '[]', 'posted', ${timestamp})`;
+          const state = JSON.stringify({
+            taskId: `task-${n}`,
+            threadId: input.thread,
+            title: `Task ${n}`,
+            status: input.status ?? "done",
+            pullRequests: input.pr === undefined ? [] : [{ url: input.pr, number: 12 }],
+          });
+          yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+              type, revision, state_json, awaiting_json, updated_at)
+            VALUES (${`task:${n}`}, ${orgId}, 'owner-chat', ${`task-message-${n}`}, 'native',
+              'task', 1, ${state},
+              '[]', ${`2026-11-09T00:${String(n).padStart(2, "0")}:00.000Z`})`;
+        });
+      // Two done before the newest eight, read for no outcome; one still working, not done.
+      yield* card(1, { thread: "child-1" });
+      yield* card(2, { thread: "child-2", starter: "finance" });
+      yield* card(3, { thread: "child-3", status: "working" });
+      yield* card(4, { thread: "child-review", pr: "https://github.com/acme/app/pull/12" });
+      yield* card(5, { thread: "child-long" });
+      yield* card(6, { thread: "child-silent", starter: "finance" });
+      yield* card(7, { thread: "child-unreadable" });
+      yield* card(8, { thread: null });
+      for (const n of [9, 10, 11]) yield* card(n, { thread: `child-${n}` });
+      const facts = yield* (yield* RoutineContent.KinRoutineContent).eveningFacts(orgId, agentId);
+      const notes = (JSON.parse(facts ?? "{}").done as ReadonlyArray<{ note?: string }>).map(
+        (row) => row.note,
+      );
+      const cutNote = notes[3] ?? "";
+      assert.deepStrictEqual(notes, [
+        "Chief of staff's task",
+        "Finance's task",
+        "Chief of staff's task; it reported: Requested changes: totals round each line before summing; the new column has no test.",
+        cutNote,
+        "Finance's task; Kin couldn't read what it found",
+        "Chief of staff's task; Kin couldn't read what it found",
+        "Chief of staff's task; Kin couldn't read what it found",
+        "Chief of staff's task; it reported: Found 9",
+        "Chief of staff's task; it reported: Found 10",
+        "Chief of staff's task; it reported: Found 11",
+      ]);
+      const opening = cutNote.split("this is the start): ")[1] ?? "";
+      assert.isTrue(
+        cutNote.startsWith(
+          `Chief of staff's task; it reported (${long.length} characters, this is the start): Reviewed PR #12`,
+        ),
+      );
+      assert.isTrue(opening.endsWith("…") && Array.from(opening).length <= 240);
+      assert.isTrue(long.startsWith(opening.slice(0, -1)) && !opening.endsWith(" …"));
+    }).pipe(Effect.orDie),
+    {
+      at: Date.parse("2026-11-09T13:00:00.000Z"),
+      childThreads: {
+        "child-1": ["Found 1"],
+        "child-2": ["Found 2"],
+        "child-review": [
+          "Looking at the diff now.",
+          "Requested changes: totals round each line before summing; the new column has no test.",
+        ],
+        "child-long": [long],
+        "child-silent": [],
+        "child-unreadable": "unreadable",
+        "child-9": ["Found 9"],
+        "child-10": ["Found 10"],
+        "child-11": ["Found 11"],
+      },
+    },
+  );
+});
 
 it.effect("a brief on a weekday other than Monday skips the week ahead and names GitHub gaps", () =>
   withFixture(

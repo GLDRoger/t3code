@@ -47,6 +47,7 @@ import {
 } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
 import { readCallArguments } from "../../apps/server/src/kin/connections/callArguments.ts";
 import { microsoftMail } from "../../apps/server/src/kin/connections/Microsoft.ts";
+import { readLine } from "../../apps/server/src/kin/connections/ConnectionRows.ts";
 import { resultText } from "../../apps/server/src/kin/connections/ResultText.ts";
 import { outlineOf, sectionsOf, WHOLE_DOC } from "../../apps/server/src/kin/work/docBody.ts";
 import { parseRecipe } from "../../apps/server/src/kin/gendocs/recipe.ts";
@@ -125,6 +126,8 @@ import {
 import {
   CHECK_IN_PULSE_RULE,
   LEFT_RULE,
+  OUTSIDE_NOT_LISTED_LINE,
+  OUTSIDE_THREAD_LINE,
   PULSE_RULE,
 } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { HEAD_START_WAKE } from "../../apps/server/src/kin/pulse/prepareWake.ts";
@@ -535,6 +538,8 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
     .replaceAll("{{LEFT_RULE}}", LEFT_RULE)
+    .replaceAll("{{OUTSIDE_THREAD_LINE}}", OUTSIDE_THREAD_LINE)
+    .replaceAll("{{OUTSIDE_NOT_LISTED_LINE}}", OUTSIDE_NOT_LISTED_LINE)
     .replaceAll("{{HEAD_START_WAKE}}", HEAD_START_WAKE)
     // A quiet bills turn's section for files named as the bill ids Kin gives them (`billTurn.ts`).
     .replace(/\{\{BILLS_TURN:([^}]+)\}\}/g, (_, names: string) =>
@@ -1002,6 +1007,25 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       tool: { name: input.tool, inputSchema: { type: "object" } },
       result: { content: [{ type: "text", text: input.text }] },
     } as never).quoted,
+  // A read across mail accounts: what it read and did not (`readLine`), then each account's answer.
+  acrossAccounts: (input: {
+    read: ReadonlyArray<{ account: string; service: string }>;
+    left: ReadonlyArray<{ account: string; service: string }>;
+    results: ReadonlyArray<{ label: string; tool: string; text: string }>;
+  }) =>
+    [
+      readLine(input.read, input.left),
+      ...input.results.map(
+        (one) =>
+          resultText({
+            label: one.label,
+            tool: { name: one.tool, inputSchema: { type: "object" } },
+            result: { content: [{ type: "text", text: one.text }] },
+          } as never).quoted,
+      ),
+    ]
+      .filter((part) => part !== "")
+      .join("\n\n"),
   cash: (input: {
     today: string;
     timeZone: string;

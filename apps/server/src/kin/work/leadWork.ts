@@ -732,7 +732,10 @@ export const UpdateInput = Schema.Struct({
       "true keeps an entry that reads suggested when the owner or a co-owner asked you to in person; it also says an amount far above the rest of its list, or an invoice issued after its due day, is right as given.",
   }),
   expectedRev: Schema.optional(Schema.Int),
-  tell: Tell,
+  tell: Tell.annotate({
+    description:
+      "false holds the notice a new owner gets. Only a new owner is told: a new due or any other change reaches nobody.",
+  }),
   leftover: Schema.optional(
     KinToolText(
       2_000,

@@ -10,7 +10,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { ServerConfig } from "../../config.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { HOUR_MS } from "../durations.ts";
-import { BACKUP_STATUS_FILE, backupProblem, checkLeadNotice } from "../hostBackup.ts";
+import {
+  BACKUP_STATUS_FILE,
+  backupProblem,
+  checkDreamNotice,
+  checkLeadNotice,
+} from "../hostBackup.ts";
 import { KinHostCare } from "./KinHostCare.ts";
 
 /**
@@ -39,6 +44,11 @@ export const check = Effect.fn("KinHostBackup.check")(function* () {
     const orgId = KinOrgId.make(row.orgId);
     yield* checkLeadNotice(orgId).pipe(
       Effect.catch((cause) => Effect.logWarning("Kin no-agent notice failed", { orgId, cause })),
+    );
+    yield* checkDreamNotice(orgId).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Kin failed-dream notice failed", { orgId, cause }),
+      ),
     );
     if (!care.value.host) continue;
     yield* care.value.checkBackup(orgId, problem);

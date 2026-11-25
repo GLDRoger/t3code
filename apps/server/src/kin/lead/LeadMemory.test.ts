@@ -2,7 +2,7 @@ import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { kinSecretsTest } from "./layer.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, it, vi } from "@effect/vitest";
 import {
   AuthSessionId,
   CommandId,
@@ -1026,7 +1026,14 @@ it.live(
           )).message,
           "That id is a feed's.",
         );
-        const scheduled = yield* service.schedule(scope, scheduleInput);
+        // The owner's own time, as he said it, is kept; the native task runs it on the host's clock.
+        const scheduled = yield* Effect.gen(function* () {
+          using _host = vi.spyOn(KinSchedules, "hostTimeZone").mockReturnValue("Asia/Tokyo");
+          yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Asia/Kolkata' WHERE org_id = ${orgId}`;
+          const made = yield* service.schedule(scope, scheduleInput);
+          yield* sql`UPDATE kin_trigger_settings SET time_zone = 'UTC' WHERE org_id = ${orgId}`;
+          return made;
+        });
         yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
             project_id, workspace_strategy_json, model_selection_json, runtime_mode,
             interaction_mode, created_by, creation_source, created_at, updated_at,
@@ -1113,7 +1120,8 @@ it.live(
           scheduleId: scheduled.itemId,
           existing: false,
           prompt: "Summarise the open PRs",
-          every: { at: "08:00", days: [1, 5] },
+          every: { at: "11:30", days: [1, 5] },
+          ownerTime: { at: "08:00", days: [1, 5] },
           sourceEvent: "fixture-event",
         });
         assert.deepStrictEqual(nativeCancels, [scheduled.itemId, recurring.itemId]);

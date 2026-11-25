@@ -95,6 +95,7 @@ import {
 } from "./OutsideContent.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { stillAway } from "../triggers/quietHours.ts";
+import { onHostClock } from "../pulse/checkInSeeds.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { pauseTriggers } from "../triggers/KinTriggerStore.ts";
 import { DAY_MS } from "../durations.ts";
@@ -1744,6 +1745,9 @@ const make = Effect.gen(function* () {
             );
           if (input.replaces === id) return yield* invalid("`replaces` names this same item.");
           // The native task is the record; its prompt is the instruction, its row the authority.
+          // Said in the owner's time; the native task runs on the host's (`followOwnerZone`).
+          const zone = yield* ownerZone(ctx.orgId).pipe(provideSql);
+          const days = [...new Set(input.days)].toSorted((a, b) => a - b);
           const save = (
             scheduleId: KinMemoryItemId,
             existing: boolean,
@@ -1762,10 +1766,8 @@ const make = Effect.gen(function* () {
                   saidBy: owner.person,
                   title: input.title ?? input.what.slice(0, 120),
                   prompt: input.what,
-                  every: {
-                    at: input.at,
-                    days: [...new Set(input.days)].toSorted((a, b) => a - b),
-                  },
+                  every: onHostClock(input.at, days, zone, KinSchedules.hostTimeZone(), now),
+                  ownerTime: { at: input.at, days },
                   around: input.around ?? (kept !== undefined && kept.looseAt !== null),
                   checkIn: input.checkIn ?? kept?.checkIn === 1,
                   now,

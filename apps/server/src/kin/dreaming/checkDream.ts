@@ -74,6 +74,9 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
     failures.push("dream.json is missing or invalid");
   const report = dream?._tag === "Some" ? dream.value : undefined;
   const material = new Map(input.material.map((entry) => [entry.ref, entry]));
+  const people = new Set(
+    input.material.flatMap((entry) => (entry.trust === "agent" ? [] : [entry.saidBy])),
+  );
   const listed = new Set(report?.changes.map((change) => change.path));
 
   for (const [path, text] of changes) {
@@ -165,7 +168,13 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
         );
       continue;
     }
-    if (author.trust !== fm.trust || author.saidBy !== fm.said_by)
+    // A relationship item is the agent's own note on a client (rule 1b): it may claim less than
+    // what it cites, under the dream's name or its source's but no other person's, without a quote.
+    const ownNote =
+      fm.kind === "relationship" &&
+      rank(fm.trust) <= Math.min(rank(author.trust), rank("agent")) &&
+      (fm.said_by === author.saidBy || !people.has(fm.said_by));
+    if (!ownNote && (author.trust !== fm.trust || author.saidBy !== fm.said_by))
       failures.push(
         `${path} claims ${fm.trust} from ${fm.said_by}; the source was ${author.trust} from ${author.saidBy}`,
       );
@@ -174,7 +183,7 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       const refusal =
         fm.quote !== undefined
           ? quoteRefusal(fm.quote, author.text)
-          : author.kind === "chat" && author.trust !== "agent"
+          : author.kind === "chat" && author.trust !== "agent" && !ownNote
             ? QUOTE_MISSING
             : undefined;
       if (refusal !== undefined) failures.push(`${path} quote: ${refusal}`);
