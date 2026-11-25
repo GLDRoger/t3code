@@ -1,4 +1,4 @@
-import { CommonActions } from "@react-navigation/native";
+import { StackActions } from "@react-navigation/native";
 import * as Linking from "expo-linking";
 import { Alert, Platform } from "react-native";
 
@@ -10,8 +10,9 @@ import { kinHostAtom } from "./state/useKinHost";
 const KIN_SHARED_FILE_NO_KIN =
   "Connect this phone to your company's Kin, then share the file again.";
 
-/** iOS copies a file opened in Kin into Documents/Inbox; that copy is Kin's to remove. */
-const isSystemCopy = (uri: string) => uri.startsWith("file:") && uri.includes("/Documents/Inbox/");
+/** iOS copies a file opened in Kin into an Inbox (tmp/<bundle>-Inbox, once Documents/Inbox). */
+const isSystemCopy = (uri: string) =>
+  uri.startsWith("file:") && /\/(Documents\/Inbox|tmp\/[^/]+-Inbox)\//.test(uri);
 
 /** Removes the system's copy of a shared file once its import finishes or is left. */
 export async function forgetKinSharedFile(uri: string): Promise<void> {
@@ -30,9 +31,16 @@ async function clearSystemCopies(keep: string | null) {
   if (Platform.OS !== "ios") return;
   try {
     const { Directory, Paths } = await import("expo-file-system");
-    const inbox = new Directory(Paths.document, "Inbox");
-    if (!inbox.exists) return;
-    for (const entry of inbox.list()) if (entry.uri !== keep) entry.delete();
+    const tmp = new Directory(Paths.document.uri.replace(/Documents\/?$/, "tmp"));
+    const inboxes = [
+      new Directory(Paths.document, "Inbox"),
+      ...(tmp.exists ? tmp.list() : []).filter(
+        (entry) => entry instanceof Directory && entry.name.endsWith("-Inbox"),
+      ),
+    ];
+    for (const inbox of inboxes)
+      if (inbox.exists && inbox instanceof Directory)
+        for (const entry of inbox.list()) if (entry.uri !== keep) entry.delete();
   } catch (cause) {
     console.warn("Clearing files shared into Kin failed", cause);
   }
@@ -67,7 +75,8 @@ function land(landing: KinSharedFileLanding): () => void {
       }
       whenRootNavigationReady(() =>
         rootNavigationRef.dispatch(
-          CommonActions.navigate(landing.screen, {
+          // A push, so a second file shared while one waits gets its own screen.
+          StackActions.push(landing.screen, {
             environmentId: String(host.environmentId),
             orgId: String(org.orgId),
             file: landing.file.uri,

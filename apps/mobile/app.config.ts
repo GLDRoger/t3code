@@ -222,7 +222,7 @@ const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
 ];
 
 // What Kin opens from another app on its import screens (kinSharedFileInbox, which removes iOS's
-// Documents/Inbox copy). Mirrors kinSharedFile.ts: importing it would tie the fingerprint to it.
+// Inbox copy). Mirrors kinSharedFile.ts: importing it would tie the fingerprint to it.
 const KIN_SHARED_FILE_TYPES = [
   "application/pdf",
   "image/*",
