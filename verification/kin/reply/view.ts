@@ -7,7 +7,7 @@ const first = (vars: Vars, name: string) => list(vars[name])[0];
 export const title = "Your message to an agent, and what comes back";
 
 export const guide =
-  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes, writes the same answer again, posts a chart, thinks, sends you a message for someone else (a nudge or relay), its turn ends or fails, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, four tries at starting, one restart, and a floor that can close; it follows your first message. “Working…” shows while the agent works on it and clears when the turn ends.";
+  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes, writes the same answer again, posts a chart, thinks, sends you a message for someone else (a nudge or relay), its turn ends or fails, someone joins the chat while it works, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, four tries at starting, one restart, a floor that can close, and up to two people joining mid-turn; it follows your first message. “Working…” shows while the agent works on it and clears when the turn ends.";
 
 export const rules: Record<string, string> = {
   NeverTwo: "Each message you send gets at most one reply or one plain failure line, never two.",
@@ -19,7 +19,11 @@ export const rules: Record<string, string> = {
     "The agent's reply says its answer once, even when it writes the answer again after using a tool.",
   RelayLands: "A nudge or relay the agent sends you always lands in your chat, whatever the floor.",
   AskedBeforeSilence:
-    "When an agent's turn ends without the words your message waited for (it only thought them, or only posted a chart or file), it is asked for them once.",
+    "When an agent's turn ends without the words your message waited for (it only thought them, or only posted a chart or file), it is asked for them once, unless Kin held its reply back because someone joined and said so in the chat.",
+  MovedOnce:
+    "When someone joins while the agent works and its reply is held back, your message goes to a fresh turn at most once.",
+  NeverToOldAudience:
+    "Once someone else joined the chat, nothing the agent wrote for you alone posts there.",
   EveryMessageAnswered:
     "Every message you send ends in a reply, a plain failure line, or a chart or file whose agent was asked for its line, never silence, even when the agent sent you a nudge or relay meanwhile.",
   LineClears: '"Working…" (the agent\'s line) always clears.',
@@ -72,6 +76,21 @@ export const variants = [
     what: "a turn that ends owing words goes straight to “didn't reply” without asking",
   },
   {
+    name: "requeue-again",
+    breaks: "MovedOnce",
+    what: "a held-back reply moves its message to a fresh turn every time, without the `_audienceMoved` flag",
+  },
+  {
+    name: "requeue-after-work",
+    breaks: "NeverTwo",
+    what: "a held-back reply moves its messages to a fresh turn even after the turn did something visible",
+  },
+  {
+    name: "reply-after-join",
+    breaks: "NeverToOldAudience",
+    what: "the reply posts after someone joined, as the turn's private prompt wrote it",
+  },
+  {
     name: "line-stays",
     breaks: "LineClears",
     what: "the end of a turn no longer clears the agent's line",
@@ -119,7 +138,15 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "The agent posts the card or hand-over its reply promised";
     case "FloorCloses":
       return "The floor closes";
+    case "SomeoneJoins":
+      return "Someone joins the chat while the agent works";
+    case "ReplyHeldBack":
+      return to["aborted"] === true
+        ? "Its reply is held back for the join; nothing visible yet, so a fresh turn will answer"
+        : "Its reply is held back for the join; the chat is told once";
     case "RunCompletes":
+      if (from["aborted"] === true) return "The turn ends; your message goes to a fresh turn";
+      if (from["noticed"] === true) return "The turn ends; nothing more is said";
       return Number(first(to, "fails")) > Number(first(from, "fails"))
         ? "The turn ends; asked once more, no reply: “didn't reply”"
         : Number(first(to, "replies")) > Number(first(from, "replies"))
@@ -128,6 +155,7 @@ export const step = (action: string, from: Vars, to: Vars) => {
             ? "The turn ends; asked for a line, the agent leaves its chart as it is"
             : "The turn ends";
     case "RunFails":
+      if (from["aborted"] === true) return "The turn fails; your message goes to a fresh turn";
       if (Number(first(to, "notes")) > Number(first(from, "notes")))
         return "The turn fails before what the reply promised: one line names it";
       if (first(to, "ev") === "done")
