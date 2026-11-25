@@ -10804,6 +10804,27 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           { usedTokens: 12_640, inputTokens: 12_600, outputTokens: 40, cachedInputTokens: 0 },
         ],
       );
+      // Each running update also carries the turn so far, every request counted once.
+      assert.deepEqual(
+        harness.events.flatMap((event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "running"
+            ? [event.providerTurn.turnTokenUsage]
+            : [],
+        ),
+        [undefined, 12_345, 24_845, 24_845, 37_445].map((inputTokens, index) =>
+          inputTokens === undefined
+            ? undefined
+            : {
+                usageStatus: "partial" as const,
+                usageScope: "main_agent" as const,
+                hasSubagents: false,
+                inputTokens,
+                cachedInputTokens: 0,
+                cacheCreationTokens: 0,
+                outputTokens: [0, 0, 0, 80, 120][index]!,
+              },
+        ),
+      );
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
