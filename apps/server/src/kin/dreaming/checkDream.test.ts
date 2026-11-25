@@ -3,6 +3,7 @@ import { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
+import { parseFrontMatter } from "../memory/frontMatter.ts";
 import { QUOTE_MISSING } from "../memory/keeping.ts";
 import { checkDream } from "./checkDream.ts";
 import { changedParts } from "./edits.ts";
@@ -609,6 +610,54 @@ it.effect.each([
         result.dream?.changes.filter((change) => change.path === path),
         [],
       );
+    }
+  }),
+);
+
+it.effect("an item quoting what a person typed in an edit is dated by the edit", () =>
+  Effect.gen(function* () {
+    const edit = editOf(
+      "Tidewater Freight can expect delivery on Friday 5 December.",
+      "Tidewater Freight can expect delivery on Monday 8 December.",
+    );
+    assert.deepStrictEqual(
+      edit.changed?.map((part) => part.now),
+      ["Monday 8"],
+    );
+    const path = "claims/tidewater-delivery.md";
+    const preferencePath = "people/drafts.md";
+    const recordedAt = "2026-11-09T03:00:00.000Z";
+    const item = fromEdit({
+      id: "clm-tidewater-delivery",
+      title: "Tidewater Freight delivery",
+      quote: "Monday 8",
+      recorded_at: recordedAt,
+    });
+    const preference = fromEdit({ id: "per-drafts", kind: "person", recorded_at: recordedAt });
+    const result = yield* checkDream({
+      orgId,
+      base,
+      stored: base,
+      tree: new Map([...base, [path, item], [preferencePath, preference]]),
+      special: [],
+      dreamJson: json({
+        ...goodDream,
+        changes: [path, preferencePath].map((path) => ({ path, sources: [editRef] })),
+      }),
+      material: [...material, edit],
+      requireResolutions: true,
+    });
+    assert.deepStrictEqual(result.failures, []);
+    const expected = item
+      .split("\n")
+      .map((line) => (line.startsWith("recorded_at:") ? `recorded_at: ${edit.at}` : line));
+    for (const files of [result.committed, result.changes]) {
+      const text = files.get(path);
+      assert.isDefined(text);
+      const parsed = yield* parseFrontMatter(orgId, path, text);
+      assert.strictEqual(parsed.frontMatter.recorded_at, edit.at);
+      assert.deepStrictEqual(text.split("\n"), expected);
+      assert.strictEqual(files.get(preferencePath), preference);
     }
   }),
 );

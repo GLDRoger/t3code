@@ -6,7 +6,7 @@ import { isCheckoutPath, isItemPath } from "../memory/checkoutPaths.ts";
 import { changedKeys, parseFrontMatter } from "../memory/frontMatter.ts";
 import { QUOTE_MISSING, quoteRefusal } from "../memory/keeping.ts";
 import { kinShapeFailure } from "../memory/lint.ts";
-import { withLabel } from "./labels.ts";
+import { withLabel, withRecordedAt } from "./labels.ts";
 import type { MaterialEntry } from "./material.ts";
 
 const Sources = Schema.Array(Schema.String).check(Schema.isMinLength(1));
@@ -174,7 +174,8 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
     // An edit's draft is the agent's words: only what the person typed in it can be theirs to
     // quote, and only a preference for drafts (rule 1c) may cite one without a quote.
     if (author.kind === "edit") {
-      if (author.trust !== fm.trust || author.saidBy !== fm.said_by)
+      const sameAuthor = author.trust === fm.trust && author.saidBy === fm.said_by;
+      if (!sameAuthor)
         failures.push(
           `${path} claims ${fm.trust} from ${fm.said_by}; the source was ${author.trust} from ${author.saidBy}`,
         );
@@ -186,6 +187,10 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       if (!typed) {
         failures.push(`${path} quote: ${EDIT_QUOTE}`);
         untyped.set(path, fm.id);
+      } else if (sameAuthor && quote !== undefined) {
+        const dated = withRecordedAt(text, author.at);
+        if (dated === undefined) failures.push(`${path} can't be dated as it is formatted`);
+        else changes.set(path, dated);
       }
       continue;
     }

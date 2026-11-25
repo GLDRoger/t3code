@@ -12,6 +12,8 @@ import {
   type StoredLabels,
 } from "../memory/sensitivity.ts";
 
+const ITEM_PARTS = /^((?:\uFEFF)?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$)[\s\S]*)$/;
+
 const valuesOf = (front: string) => {
   try {
     const doc = parseDocument(front, FRONT_MATTER_YAML);
@@ -27,7 +29,7 @@ const valuesOf = (front: string) => {
  * a quoted, indented or flow-style label is re-rendered by the parser.
  */
 export const withLabel = (text: string, sensitive: boolean) => {
-  const parts = /^((?:\uFEFF)?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$)[\s\S]*)$/.exec(text);
+  const parts = ITEM_PARTS.exec(text);
   if (parts === null) return undefined;
   const [, open = "", front = "", rest = ""] = parts;
   const doc = parseDocument(front, FRONT_MATTER_YAML);
@@ -47,6 +49,22 @@ export const withLabel = (text: string, sensitive: boolean) => {
     // An alias to the anchor just replaced can't be rendered.
     return undefined;
   }
+};
+
+export const withRecordedAt = (text: string, at: string) => {
+  const parts = ITEM_PARTS.exec(text);
+  if (parts === null) return undefined;
+  const [, open = "", front = "", rest = ""] = parts;
+  const original = valuesOf(front);
+  if (original === undefined) return undefined;
+  const doc = parseDocument(front, FRONT_MATTER_YAML);
+  const want = JSON.stringify({ ...doc.toJS(), recorded_at: at });
+  if (original === want) return text;
+  const dated = front.replace(
+    /^([ \t]*)(?:recorded_at|"recorded_at"|'recorded_at'):[^\r\n]*$/m,
+    (_, indent: string) => `${indent}recorded_at: ${at}`,
+  );
+  return valuesOf(dated) === want ? `${open}${dated}${rest}` : undefined;
 };
 
 /**
