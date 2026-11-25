@@ -890,7 +890,7 @@ export const NOTICE_GIVEN = (input: {
     input.owner === undefined
       ? ""
       : ` Tell ${input.owner} in one line with kin_relay that ${name} chose to give notice on ${client}'s contract ${key} and ${drafts ? `the mail waits on ${name}'s Confirm` : "no notice mail is drafted yet"}; ask ${input.owner} nothing.`;
-  return `Kin's own card asked ${name} about ${client}'s contract ${key} (renews ${input.renewsOn}, notice due by ${input.noticeBy}), and ${name} chose Give notice. That is ${name}'s answer to Kin's question: ask nobody first. ${what} Record nothing on the project and file no task.${relay} Then tell ${name} in one short line ${drafts ? "that the notice mail waits on the Confirm" : "what is missing"}.`;
+  return `Kin's own card asked ${name} about ${client}'s contract ${key} (renews ${input.renewsOn}, notice due by ${input.noticeBy}), and ${name} chose Give notice. That is ${name}'s answer to Kin's question: ask nobody first. ${what} Record nothing on the project and file no task.${relay} Then tell ${name} in one short line ${drafts ? "that the notice mail waits on the Confirm. The card shows the whole mail, so say nothing more about it" : "what is missing"}.`;
 };
 /** What a person's Stuck on Kin's stalled-task card tells the agent it wakes. */
 export const STALL_STUCK = (input: { readonly name: string; readonly key: string }) =>
