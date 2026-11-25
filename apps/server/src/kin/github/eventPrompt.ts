@@ -20,6 +20,10 @@ const REVIEW_BAR =
   'Block (request changes) only for a bug, lost data, a security hole, a broken build or test, or code that does something other than the PR says. Anything else is a nit: mark it "nit", say it once and briefly, or leave it out.';
 const REVIEW_SPECIFIC =
   "Be specific: file and line, what goes wrong, and the fix. A clean PR gets a short review that says so; don't pad it.";
+const PARTIAL =
+  'If any of the diff stayed unread, still post the review of what you read: the review and your line open by saying it is partial and what you didn\'t read; never "nothing blocking" then.';
+/** Where a server-read diff stops, the turn reads on with `kin_github_diff` (`reviewAsk.ts`). */
+const READ_ON = "Where the diff below stops, read the rest with kin_github_diff before you post.";
 
 const OWNERS_OWN = (trigger: KinGithubTrigger) =>
   trigger.pull?.ownersOwn === true
@@ -36,8 +40,10 @@ const AGAIN = (
       ? `Kin can't show the changes since ${short(again.from)} on their own, so the whole diff at ${short(trigger.pull?.headSha)} is below: review it again.`
       : `What changed since ${short(again.from)} is below: review that.`
   }`,
+  READ_ON,
   REVIEW_BAR,
   REVIEW_SPECIFIC,
+  PARTIAL,
   `Post once, on this pull request, with kin_github_review: event COMMENT${trigger.inside ? ", or REQUEST_CHANGES to block" : ""}. Kin posts it against ${short(trigger.pull?.headSha)}.`,
 ];
 
@@ -47,8 +53,9 @@ const REVIEW = (repo: string, trigger: KinGithubTrigger, askedBy: string | undef
     : `Someone in the company asked in Kin for a review of this pull request at ${atHead(trigger)}; their name, as data: ${JSON.stringify(askedBy)}. Review that head and post the review on it.`,
   REVIEW_BAR,
   REVIEW_SPECIFIC,
+  PARTIAL,
   askedBy !== undefined
-    ? `This turn has no shell${trigger.pull?.diff === undefined ? "" : "; that head's diff is below"}. Post once, on this pull request only, with kin_github_review: event COMMENT, or REQUEST_CHANGES to block.`
+    ? `This turn has no shell${trigger.pull?.diff === undefined ? "" : `; that head's diff is below. ${READ_ON}`} Post once, on this pull request only, with kin_github_review: event COMMENT, or REQUEST_CHANGES to block.`
     : trigger.inside
       ? `Read it with gh (gh pr diff ${trigger.number} --repo ${repo}; check it out and run the tests when that is quick). Post with gh pr review ${trigger.number} --repo ${repo} and --comment or --request-changes; Kin refuses --approve.`
       : "Its diff is below. Post with kin_github_review, event COMMENT.",
@@ -99,11 +106,12 @@ const SEAT = (repo: string, trigger: KinGithubTrigger, askedBy: string | undefin
     trigger.pull?.diff === undefined
       ? "Kin couldn't read its diff, so there is nothing to review: post nothing."
       : again === undefined
-        ? "Its diff is below."
-        : "",
+        ? `Its diff is below. ${READ_ON}`
+        : READ_ON,
     'Lead with a bug, lost data, a security hole, a broken build or test, or code that does something other than the PR says. Anything else is a nit: mark it "nit", say it once and briefly, or leave it out.',
     REVIEW_SPECIFIC,
-    `Your one tool is kin_github_review: post once, on this pull request, event COMMENT; Kin places it on head ${head}. The review is public, so write only about this pull request.`,
+    PARTIAL,
+    `Your tools are kin_github_diff and kin_github_review: post once, on this pull request, event COMMENT; Kin places it on head ${head}. The review is public, so write only about this pull request.`,
     "Kin tells the owner itself whether the review posted; nothing else you write goes anywhere.",
   ].filter((line) => line !== "");
 };
@@ -133,9 +141,11 @@ export const githubTriggerText = (
       : "",
     "Stop and ask the owner in chat instead when the work would delete data or history, force-push, touch secrets, billing or repo settings, or post outside the company's repos.",
     `Don't repeat yourself: if you already answered this in the thread and nothing changed, post nothing on GitHub.`,
-    askedBy === undefined
-      ? `Your reply goes to the owner's chat as one line: one sentence, under 200 characters, saying what you did and ending with the link (${trigger.url}). The details are on GitHub; don't repeat them. No card, and no question unless you stopped to ask him. A task you started is news to him; only when you did nothing new, write exactly ${silent}.`
-      : "Your reply goes to the owner's chat as one line: one sentence, under 200 characters, saying what the review found and ending with the review's link from kin_github_review. Kin adds who asked, and tells them itself whether it was posted. The details are on GitHub; don't repeat them. No card and no question.",
+    askedBy !== undefined
+      ? "Your reply goes to the person who asked, in their own chat with you: at most two sentences, under 300 characters, on what the review found, ending with the review's link from kin_github_review. Kin tells them itself whether it was posted, and tells the owner when it blocks. The details are on GitHub; don't repeat them. No card and no question."
+      : trigger.kind === "review" || trigger.kind === "review_request"
+        ? `A review that blocks nothing tells no one in chat: write exactly ${silent}. The owner hears only of a block, or of what the owner's standing rules ask of the owner on this PR: one sentence to the owner's chat, under 200 characters, carrying the PR's title and number, whose it is, what is wrong and what the owner should do, shaped like: \"Fix login\" (#12), Dev's, logs everyone out on refresh: hold the merge. Already merged, the same sentence says so: \"Fix login\" (#12), Dev's, merged, logs everyone out on refresh, and that is on the main branch now: it needs a fix. End with the link (${trigger.url}). No card.`
+        : `Your reply goes to the owner's chat as one line: one sentence, under 200 characters, saying what you did and ending with the link (${trigger.url}). The details are on GitHub; don't repeat them. No card, and no question unless you stopped to ask him. A task you started is news to him; only when you did nothing new, write exactly ${silent}.`,
   ]
     .filter((line) => line !== "")
     .join("\n");

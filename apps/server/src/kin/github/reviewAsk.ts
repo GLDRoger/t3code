@@ -518,7 +518,7 @@ export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
     case "posted":
       yield* sql`UPDATE kin_github_handled SET review_url = ${sent.url}
         WHERE org_id = ${lead.orgId} AND trigger_key = ${bound.key}`;
-      return postedResult(sent);
+      return postedResult(sent, bound.asked);
     case "refused":
       yield* giveBack;
       return yield* new KinChatError({ reason: sent.reason, message: sent.message });

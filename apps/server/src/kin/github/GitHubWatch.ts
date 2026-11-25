@@ -1711,12 +1711,18 @@ export const sendReview = Effect.fn("KinGitHubWatch.sendReview")(function* (
 });
 
 /** What `kin_github_review` answers for a review GitHub took. */
-export const postedResult = (sent: Extract<Sent, { _tag: "posted" }>) => ({
+export const postedResult = (
+  sent: Extract<Sent, { _tag: "posted" }>,
+  /** A review someone asked for is told to them, in their chat (`askedFor.ts`). */
+  asked = false,
+) => ({
   status: "posted" as const,
   url: sent.url,
-  next: sent.asOwner
-    ? "Posted on the PR as the owner: Kin's GitHub App can't write there. Tell the owner in one line with the link, and that it went out as him."
-    : "Posted on the PR. Tell the owner in one line with the link.",
+  next: asked
+    ? `Posted on the PR${sent.asOwner ? " as the owner: Kin's GitHub App can't write there" : ""}. Tell the person who asked, in one or two sentences, what it found, with the link.`
+    : sent.asOwner
+      ? "Posted on the PR as the owner: Kin's GitHub App can't write there. Tell the owner in one line with the link, and that it went out as him."
+      : "Posted on the PR. Tell the owner in one line with the link.",
 });
 
 /**
