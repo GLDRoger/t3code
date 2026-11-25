@@ -2575,8 +2575,8 @@ const decodeRoleTags = Schema.decodeUnknownOption(Schema.fromJsonString(KinRoleT
 const UNSET_OWNER_NAME = "Owner";
 const OWNER_NAME_UNSET =
   " If the owner tells you their name, save it with people_update and use it from then on.";
-const PASSED_ON_SPEAKER =
-  'Another agent passed this to you; the owner reads your reply. Address the owner as "you".';
+export const PASSED_ON_SPEAKER =
+  'Another agent passed this to you, and the owner reads your reply without seeing what was passed. So its first sentence says who passed it, from where, and what it is about by name, such as "From this afternoon\'s check-in, Chief of staff asked me to look at <what, by name>."; then what you found, then what you need from the owner, if anything. Words above a card are about what the card asks. Address the owner as "you".';
 /** What a task's lead-in says to do when the agent can't finish it: try first, then hand back. */
 const giveBack = (to: string) =>
   `If you can't finish it, first try what you have (records, mail, the web) and give back only what truly needs a person, such as a draft to send: ${to}.`;

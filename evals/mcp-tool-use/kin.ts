@@ -33,7 +33,7 @@ import {
 } from "../../apps/server/src/kin/lead/instructions.ts";
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
-import { alreadyOnIt, leftNote } from "../../apps/server/src/kin/lead/Handoff.ts";
+import { alreadyOnIt, leftNote, passedFactBody } from "../../apps/server/src/kin/lead/Handoff.ts";
 import { dueShows, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import {
@@ -121,6 +121,7 @@ import {
   githubTriggerEvent,
   ASSIGNED_NOT_IN_PERSON,
   HANDED_BACK_WORK,
+  PASSED_ON_SPEAKER,
   UNREAD_RULE,
   REMINDER_DUE,
   REPLY_SHAPE,
@@ -615,6 +616,14 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
     .replaceAll("{{REMINDER_DUE}}", REMINDER_DUE)
+    .replaceAll("{{PASSED_ON_SPEAKER}}", PASSED_ON_SPEAKER)
+    // A check-in fact's hand-off as the other agent's event quotes it, JSON-escaped for its body:
+    // `{{PASSED_FACT:<request>|<check-in>|<about>|<consequence>|<fact key>}}`.
+    .replace(
+      /\{\{PASSED_FACT:([^|}]+)\|([^|}]+)\|([^|}]+)\|([^|}]+)\|([^|}]+)\}\}/g,
+      (_, request: string, from: string, about: string, consequence: string, key: string) =>
+        JSON.stringify(passedFactBody({ request, from, about, consequence, key })).slice(1, -1),
+    )
     // The wake's line once a new company's country is chosen (`{{COUNTRY_CHOSEN:GB|GBP}}`).
     .replace(
       /\{\{COUNTRY_CHOSEN:([A-Z]{2})\|([A-Z]{3})\}\}/g,
