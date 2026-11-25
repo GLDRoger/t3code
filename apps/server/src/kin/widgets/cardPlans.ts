@@ -387,6 +387,16 @@ const NoticePlan = Schema.Struct({
   renewsOn: Schema.String,
 });
 export type NoticePlan = typeof NoticePlan.Type;
+
+const QuietPlan = Schema.Struct({
+  kind: Schema.Literals(["quiet_keep", "quiet_stop"]),
+  wakeupId: Schema.String,
+  agentId: Schema.String,
+  askers: Schema.Array(Schema.String),
+  ask: Schema.Literals([1, 2]),
+});
+export type QuietPlan = typeof QuietPlan.Type;
+export const isQuiet = Schema.is(QuietPlan);
 export const CardPlan = Schema.Union([
   RecordPlan,
   StartPlan,
@@ -406,6 +416,7 @@ export const CardPlan = Schema.Union([
   NoticePlan,
   BillPlan,
   BillPaidPlan,
+  QuietPlan,
 ]);
 export type CardPlan = typeof CardPlan.Type;
 export type FactCardPlan = WaitedPlan | StallPlan | DuePlan | NoticePlan;

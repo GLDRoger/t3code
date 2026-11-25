@@ -25,6 +25,7 @@ import type { KinChatService } from "../chat/KinChatService.ts";
 import { SHARED_REFUSAL, aborted, peopleBehind } from "../lead/Audience.ts";
 import { routeShown, runRoute } from "../lead/routeCard.ts";
 import { recommendShown, runRecommend } from "../recommend/card.ts";
+import { quietShown, runQuiet } from "../lead/quietRunCard.ts";
 import { leaverShown, runLeaver } from "../people/leaver.ts";
 import { factCardShown } from "../pulse/factCards.ts";
 import { runFactCard } from "../pulse/factCardTaps.ts";
@@ -83,6 +84,7 @@ import {
   type CardPlan,
   type RunPlan,
   isAnswered,
+  isQuiet,
   isFactCard,
   isTaken,
   plansOf,
@@ -140,6 +142,9 @@ const labelOf = (plan: CardPlan): string => {
       return recommendShown(plan).label;
     case "leaver":
       return leaverShown(plan).label;
+    case "quiet_keep":
+    case "quiet_stop":
+      return quietShown(plan).label;
     case "waited_answer":
     case "stall_answer":
     case "move_due":
@@ -187,6 +192,9 @@ const lineOf = (plan: CardPlan): string => {
       return recommendShown(plan).line;
     case "leaver":
       return leaverShown(plan).line;
+    case "quiet_keep":
+    case "quiet_stop":
+      return quietShown(plan).line;
     case "waited_answer":
     case "stall_answer":
     case "move_due":
@@ -454,7 +462,7 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
     sealed?.kind === "let_talk" ||
     sealed?.kind === "recommend" ||
     sealed?.kind === "leaver" ||
-    (sealed !== undefined && isFactCard(sealed))
+    (sealed !== undefined && (isFactCard(sealed) || isQuiet(sealed)))
   )
     return yield* refuse("That question has no default to take.");
   if (sealed?.kind === "take_default")
@@ -578,7 +586,8 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
     sealed.kind === "leaver" ||
     isFactCard(sealed) ||
     isTaken(sealed) ||
-    isAnswered(sealed)
+    isAnswered(sealed) ||
+    isQuiet(sealed)
   )
     return undefined;
   const lead = {
@@ -675,6 +684,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   if (plan.kind === "recommend") return yield* runRecommend(tap, plan);
   if (plan.kind === "leaver") return yield* runLeaver(tap, plan, deps.chat);
   if (isFactCard(plan)) return yield* runFactCard(tap, plan, deps.records);
+  if (isQuiet(plan)) return yield* runQuiet(tap, plan);
   if (isAnswered(plan)) return yield* runAnswered(tap, plan, deps.chat);
   if (isTaken(plan))
     return yield* runTaken(

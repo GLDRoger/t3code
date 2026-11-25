@@ -807,6 +807,7 @@ describe("Kin migrations", () => {
         "first_token_at",
         "posted_at",
         "resumed",
+        "quiet_since",
       ])
         yield* sql`ALTER TABLE kin_wakeups DROP COLUMN ${sql(column)}`;
       yield* sql`DROP INDEX idx_kin_wakeups_running_lead`;
@@ -1944,7 +1945,7 @@ describe("Kin migrations", () => {
           (yield* runKinMigrations()).map(([id]) => id),
           [
             196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213, 214, 215, 216, 217, 218, 219, 220, 221,
+            213, 214, 215, 216, 217, 218, 219, 220, 221, 222,
           ],
         );
         assert.deepStrictEqual(yield* receipts, [
@@ -1996,7 +1997,7 @@ describe("Kin migrations", () => {
         (yield* runKinMigrations()).map(([id]) => id),
         [
           197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-          215, 216, 217, 218, 219, 220, 221,
+          215, 216, 217, 218, 219, 220, 221, 222,
         ],
       );
       const all = [
@@ -2752,6 +2753,40 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("K222 keeps old wake-ups with no quiet mark and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      const columns = yield* sql<{ name: string }>`PRAGMA table_info(kin_wakeups)`;
+      if (columns.some((column) => column.name === "quiet_since"))
+        yield* sql`ALTER TABLE kin_wakeups DROP COLUMN quiet_since`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 222`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Ambermill', 1)`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('rhea', 'org', 'rhea', 'Rhea', '2026-11-25T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES ('lead', 'org', 'Lead', 'lead', 'rhea', '2026-11-25T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('chat', 'org', 'team_group', 0, '2026-11-25T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+          worker_projects_json, owner_chat_id)
+        VALUES ('lead', 'org', 'Lead', 0, '{}', '[]', 'chat')`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+        VALUES ('old-wake', 'org', 'lead', 'test', 1, 'running', '[]')`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(222));
+      const read = sql`SELECT wakeup_id, status, quiet_since FROM kin_wakeups ORDER BY wakeup_id`;
+      assert.deepStrictEqual(yield* read, [
+        { wakeup_id: "old-wake", status: "running", quiet_since: null },
+      ]);
+      yield* sql`UPDATE kin_wakeups SET quiet_since = 1 WHERE wakeup_id = 'old-wake'`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 222`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(222));
+      assert.deepStrictEqual(yield* read, [
+        { wakeup_id: "old-wake", status: "running", quiet_since: 1 },
+      ]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("K216 adds the skip record and keeps its rows on rerun", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -2882,6 +2917,7 @@ describe("Kin migrations", () => {
           aborted_at: null,
           settled_at: null,
           retired_at: null,
+          quiet_since: null,
         },
         kin_events: {
           org_id: "org",

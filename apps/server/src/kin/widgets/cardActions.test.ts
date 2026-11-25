@@ -22,6 +22,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -34,6 +35,7 @@ import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinConnections, NOT_CHECKED } from "../connections/ConnectionsService.ts";
 import { fileStore, makeFakeMail } from "../connections/FakeMail.ts";
@@ -45,8 +47,10 @@ import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { KinStop } from "../lead/KinStop.ts";
 import { wakeEvent } from "../lead/ChatWake.ts";
 import { agentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
@@ -343,6 +347,138 @@ const closeIt = (key: string) => ({
   options: [{ label: "Close it", action: { kind: "done", target: key } }, { label: "Not yet" }],
   default: "none",
 });
+
+it.effect("quiet run cards keep going or let only an asker or owner stop that wake-up", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { orgId, sql, owner } = kin;
+      const chatId = kin.chatOf("finance");
+      const dev = kin.person("dev");
+      const zoya = kin.person("zoya");
+      const agentId = KinAgentId.make("finance");
+      const threadId = ThreadId.make("finance-thread");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES (${zoya.personId}, ${orgId}, 'zoya', 'Zoya', ${at}, 'member')`;
+      for (const person of [dev, zoya])
+        yield* kin.repo.addMember({
+          orgId,
+          chatId,
+          memberId: KinMemberId.make(`${person.personId}-in-finance`),
+          principal: { _tag: "person", personId: person.personId },
+          role: "member",
+          joinedAt: at,
+          leftAt: null,
+          mutedUntil: null,
+        });
+      const stop = Context.get(kin.services, KinStop);
+      const queue = Context.get(kin.services, KinEventQueue.KinEventQueue);
+      yield* stop.attach({
+        pause: () => Effect.void,
+        resume: () => Effect.void,
+        interrupt: (orgId, wakeupId, afterInterrupt) =>
+          queue
+            .finish({ orgId, wakeupId, status: "interrupted" })
+            .pipe(Effect.orDie, Effect.andThen(afterInterrupt ?? Effect.void), Effect.as(true)),
+      });
+      const wakeup = yield* kin.turn("finance", chatId, "An invented request", dev);
+      const post = Effect.fn("test.quietCard")(function* (wakeupId: string, ask: 1 | 2) {
+        const widget = yield* kin.chats.ask(
+          {
+            _tag: "agent",
+            hostPosted: true,
+            orgId,
+            agentId,
+            ownerPersonId: owner.personId,
+            threadId,
+          },
+          {
+            chatId,
+            clientMessageId: `kin-quiet-run:${wakeupId}:${ask}`,
+            question:
+              "Still working on this: no sign of progress for 15 minutes. Keep going or stop?",
+            options: [{ label: "Keep going" }, { label: "Stop" }],
+            untilAnswered: true,
+            forChat: true,
+          },
+        );
+        for (const [option, kind] of [
+          ["option-1", "quiet_keep"],
+          ["option-2", "quiet_stop"],
+        ]) {
+          const plan = JSON.stringify({ kind, wakeupId, agentId, askers: [dev.personId], ask });
+          yield* sql`INSERT INTO kin_card_plans (org_id, widget_id, option_id, chat_id, plan_json, created_at)
+          VALUES (${orgId}, ${widget.widgetId}, ${option}, ${chatId}, ${plan}, ${MON})`;
+        }
+        return widget.widgetId;
+      });
+      const readStatus = (id: string) =>
+        sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${id}`;
+      const keep = yield* post(wakeup, 1);
+      const kept = yield* kin.tap(dev, keep, "option-1", "keep");
+      assert.include(JSON.parse(kept.body), { handled: true });
+      assert.strictEqual(card(yield* kin.widget(keep)).outcome?.title, "Kept going");
+      assert.deepStrictEqual(yield* readStatus(wakeup), [{ status: "running" }]);
+
+      const decision = yield* post(wakeup, 2);
+      const denied = yield* kin.tap(zoya, decision, "option-2", "wrong-person").pipe(Effect.flip);
+      assert.include(denied, {
+        reason: "not_allowed",
+        message: "Only the person it was asked of can answer this question.",
+      });
+      assert.isNull((yield* kin.widget(decision)).closedAt);
+      assert.deepStrictEqual(yield* readStatus(wakeup), [{ status: "running" }]);
+      const events = yield* Context.get(kin.services, KinChatHub).subscribeAll;
+      yield* kin.tap(dev, decision, "option-2", "asker-stop");
+      const stopped = yield* events.pipe(
+        Stream.filter((event) => event.type === "message.posted"),
+        Stream.filter((event) => event.message.messageId === `kin-stopped:${wakeup}`),
+        Stream.runHead,
+      );
+      assert.strictEqual(Option.getOrThrow(stopped).message.body, "Dev Malhotra stopped Finance.");
+      assert.strictEqual(card(yield* kin.widget(decision)).outcome?.title, "Stopped");
+      assert.deepStrictEqual(yield* readStatus(wakeup), [{ status: "interrupted" }]);
+
+      const memory = Context.get(kin.services, KinMemoryChanges);
+      const decisions: Array<string> = [];
+      yield* memory.attachWriter({
+        undo: () => Effect.die("unused"),
+        relabel: () => Effect.die("unused"),
+        retire: () => Effect.die("unused"),
+        restore: () => Effect.die("unused"),
+        items: () => Effect.succeed([]),
+        recordDecision: (_org, item) =>
+          Effect.sync(() => {
+            decisions.push(item.link);
+            return { recorded: true };
+          }),
+      });
+      const ownerWakeup = yield* kin.turn("finance", chatId, "Another invented request", dev);
+      const ownerKeep = yield* post(ownerWakeup, 1);
+      yield* kin.tap(owner, ownerKeep, "option-1", "owner-keep");
+      assert.strictEqual(card(yield* kin.widget(ownerKeep)).outcome?.title, "Kept going");
+      assert.deepStrictEqual(yield* readStatus(ownerWakeup), [{ status: "running" }]);
+      const ownerStop = yield* post(ownerWakeup, 2);
+      yield* kin.tap(owner, ownerStop, "option-2", "owner-stop");
+      yield* events.pipe(
+        Stream.filter((event) => event.type === "message.posted"),
+        Stream.filter((event) => event.message.messageId === `kin-stopped:${ownerWakeup}`),
+        Stream.runHead,
+      );
+      assert.strictEqual(card(yield* kin.widget(ownerStop)).outcome?.title, "Stopped");
+      assert.deepStrictEqual(yield* readStatus(ownerWakeup), [{ status: "interrupted" }]);
+      assert.deepStrictEqual(decisions, []);
+
+      const finished = yield* kin.turn("finance", chatId, "A second invented request", dev);
+      const stale = yield* post(finished, 1);
+      yield* queue.finish({ orgId, wakeupId: finished, status: "completed" });
+      yield* kin.tap(dev, stale, "option-2", "stale-stop");
+      assert.strictEqual(card(yield* kin.widget(stale)).outcome?.title, "Already finished");
+      assert.deepStrictEqual(yield* readStatus(finished), [{ status: "completed" }]);
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  ),
+);
 
 // One tap marks the task done in server code: the card shows the server's own line, the tap is
 // handled (no turn), and a retry, a second tap and another session all get the first answer.

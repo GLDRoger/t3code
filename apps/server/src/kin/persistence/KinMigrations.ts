@@ -142,6 +142,7 @@ import AnsweredSeq from "./migrations/K218_AnsweredSeq.ts";
 import SeveralOwnMailboxes from "./migrations/K219_SeveralOwnMailboxes.ts";
 import PaymentReceived from "./migrations/K220_PaymentReceived.ts";
 import TaxByCustomer from "./migrations/K221_TaxByCustomer.ts";
+import QuietRuns from "./migrations/K222_QuietRuns.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -364,6 +365,7 @@ const migrations = {
   "219_SeveralOwnMailboxes": SeveralOwnMailboxes,
   "220_PaymentReceived": PaymentReceived,
   "221_TaxByCustomer": TaxByCustomer,
+  "222_QuietRuns": QuietRuns,
 };
 const loader = Migrator.fromRecord(migrations);
 
