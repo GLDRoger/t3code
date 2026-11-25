@@ -83,8 +83,8 @@ const joinedFrom = (sql: SqlClient.SqlClient, orgId: string, memberId: string) =
 const handoffPrefixes = ["kin-handoff:", "kin-handoff-back:"] as const;
 
 export const visibleToPeople = (sql: SqlClient.SqlClient, alias = "kin_messages") =>
-  sql`NOT (${sql.literal(`${alias}.discussion_id IS NULL AND ${alias}.relay_json IS NOT NULL
-    AND json_extract(${alias}.relay_json, '$.personId') IS NULL`)}
+  sql`NOT (${sql.literal(`${alias}.discussion_id IS NULL AND (${alias}.relay_json IS NULL
+    OR json_extract(${alias}.relay_json, '$.personId') IS NULL)`)}
     AND (${sql.or(
       handoffPrefixes.map(
         (prefix) =>
@@ -94,8 +94,7 @@ export const visibleToPeople = (sql: SqlClient.SqlClient, alias = "kin_messages"
 
 export const isAgentHandoff = (message: KinMessage) =>
   message.discussionId === undefined &&
-  message.relay !== undefined &&
-  message.relay.personId === undefined &&
+  message.relay?.personId === undefined &&
   handoffPrefixes.some((prefix) => message.messageId.startsWith(prefix));
 
 /**

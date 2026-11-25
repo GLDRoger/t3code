@@ -270,6 +270,51 @@ const assertInputOnly = Effect.fn("HandoffTest.assertInputOnly")(function* (
   );
 });
 
+it.effect("a hand-off row stored before relay data existed is hidden from people too", () =>
+  run(({ ctx }) =>
+    Effect.gen(function* () {
+      const { chats, owner, orgId, sql, techChat: chatId } = ctx;
+      const relayed = KinMessageId.make("kin-handoff:00000000000000000000000000000001");
+      const old = KinMessageId.make("kin-handoff:00000000000000000000000000000002");
+      yield* sql`INSERT INTO kin_people (org_id, person_id, handle, display_name, created_at)
+        VALUES (${orgId}, 'zoya', 'zoya', 'Zoya', ${at})`;
+      for (const [messageId, body, relay] of [
+        [
+          relayed,
+          "Zoya asked about Tidewater Freight.",
+          JSON.stringify({ kind: "sent_by", agentId: chief, personId: "zoya" }),
+        ],
+        [old, 'Passed on by Chief of staff\n"Check Tidewater Freight."', null],
+      ] as const) {
+        yield* sql`UPDATE kin_chats SET last_seq = last_seq + 1, last_message_at = ${at}
+          WHERE org_id = ${orgId} AND chat_id = ${chatId}`;
+        yield* sql`INSERT INTO kin_messages (org_id, chat_id, message_id, seq, author_kind,
+            author_role, kind, body, mentions_json, status, created_at, silent, relay_json, discussion_id)
+          SELECT org_id, chat_id, ${messageId}, last_seq, 'system', 'member', 'system',
+            ${body}, '[]', 'posted', ${at}, 1, ${relay}, NULL
+          FROM kin_chats WHERE org_id = ${orgId} AND chat_id = ${chatId}`;
+      }
+      const history = yield* personHistory(ctx, chatId);
+      assert.deepStrictEqual(
+        history.messages.map((row) => row.messageId),
+        [relayed],
+      );
+      const backlog = Option.getOrThrow(yield* Stream.runHead(chats.subscribe(owner, { chatId })));
+      if (backlog._tag !== "backlog") return assert.fail("Expected chat backlog");
+      assert.deepStrictEqual(
+        backlog.messages.map((row) => row.messageId),
+        [relayed],
+      );
+      const list = Option.getOrThrow(yield* Stream.runHead(chats.subscribeChats([owner], {})));
+      if (list._tag !== "snapshot") return assert.fail("Expected Chats snapshot");
+      assert.strictEqual(
+        list.chats.find((row) => row.chatId === chatId)?.lastMessage?.messageId,
+        relayed,
+      );
+    }),
+  ),
+);
+
 it.effect(
   "an owner's request passed on is the other agent's input, not a line in the owner's chat",
   () =>
