@@ -62,14 +62,16 @@ export const closeSubject = Effect.fn("KinOpen.closeSubject")(function* (
     WHERE w.type = 'choice' AND w.closed_at IS NULL AND w.org_id = ${orgId}
       AND p.ran_message_id IS NULL
     ORDER BY p.widget_id, p.option_id`;
-  // Open receipt cards for it or set against it: once it is void their Confirm only refuses.
+  // Open receipt and payment cards for it or set against it: once it is void their Confirm only
+  // refuses.
   const receipts =
     state === "dropped"
       ? yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId"
           FROM kin_receipt_proposals
           WHERE org_id = ${orgId} AND state = 'open' AND widget_id IS NOT NULL
             AND (json_extract(request_json, '$.against') = ${key}
-              OR json_extract(request_json, '$.key') = ${key})
+              OR json_extract(request_json, '$.key') = ${key}
+              OR json_extract(request_json, '$.received.key') = ${key})
           ORDER BY widget_id`
       : [];
   const cards = [

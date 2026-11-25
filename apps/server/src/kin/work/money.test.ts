@@ -3224,6 +3224,44 @@ describe("the owner's taps", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("close a payment card unanswered when its invoice is voided", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(3, "Invoice Tidewater Freight");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "invoices",
+            title: "Invented freight audit",
+            amount: "1 lakh",
+            date: "2026-10-01",
+            fields: { billToName: "Tidewater Freight" },
+          },
+        ],
+      });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: asked,
+        entry: KinRecordKey.make("INV-1"),
+      });
+      const proposed = yield* LeadMoney.payment(scope, {
+        sourceEventId: yield* turn(4, "Tidewater paid 40k"),
+        key: "INV-1",
+        amount: "40k",
+        paidOn: "2026-11-05",
+      });
+      if (!("status" in proposed) || proposed.status !== "proposed")
+        return assert.fail("expected a card");
+      yield* OwnerMoney.voidEntry(people, { orgId, key: "INV-1" });
+      const sql = yield* SqlClient.SqlClient;
+      const [card] = yield* sql<{ closed: number }>`SELECT w.closed_at IS NOT NULL AS closed
+        FROM kin_widgets w JOIN kin_receipt_proposals p ON p.widget_id = w.widget_id
+        WHERE p.proposal_id = ${proposed.proposal}`;
+      assert.strictEqual(card?.closed, 1);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("settle an invoice from its balance when the amount is edited", () =>
     Effect.gen(function* () {
       yield* seed;
