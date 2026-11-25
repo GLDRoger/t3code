@@ -2457,8 +2457,13 @@ export const flagTextQuestion = Effect.fn("KinQuestions.flagText")(function* (wa
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      const said = yield* sql<{ messageId: KinMessageId; body: string; card: number }>`SELECT
-        message_id AS "messageId", body,
+      const said = yield* sql<{
+        messageId: KinMessageId;
+        seq: number;
+        body: string;
+        card: number;
+      }>`SELECT
+        message_id AS "messageId", seq, body,
         widget_id IS NOT NULL AS card FROM kin_messages
       WHERE org_id = ${wake.orgId} AND chat_id = ${wake.chatId} AND author_kind = 'agent'
         AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
@@ -2468,6 +2473,13 @@ export const flagTextQuestion = Effect.fn("KinQuestions.flagText")(function* (wa
       if (last === undefined || said.some((row) => row.card === 1)) return undefined;
       const question = endingQuestion(last.body);
       if (question === undefined) return undefined;
+      const [reply] = yield* sql`SELECT 1 FROM kin_messages m
+        JOIN kin_chat_members member ON member.org_id = m.org_id AND member.chat_id = m.chat_id
+          AND member.person_id = m.author_person_id AND member.left_at IS NULL
+        WHERE m.org_id = ${wake.orgId} AND m.chat_id = ${wake.chatId} AND m.seq > ${last.seq}
+          AND m.author_kind = 'human' AND m.status = 'posted' AND m.origin_json IS NULL
+        ORDER BY m.seq LIMIT 1`;
+      if (reply !== undefined) return undefined;
       return yield* recordTextQuestion({
         orgId: wake.orgId,
         agentId: wake.agentId,

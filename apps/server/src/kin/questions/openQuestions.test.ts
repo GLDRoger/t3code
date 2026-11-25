@@ -1161,6 +1161,43 @@ it.effect(
     ),
 );
 
+it.effect("a reply written before the asking turn ended counts as the answer", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+      const chatId = chatOf("finance");
+      const identity = Context.get(services, KinIdentity);
+      const repo = Context.get(services, KinChatRepository);
+      const wakeupId = yield* wake("finance");
+      const agent = yield* identity.resolveAgent(scopeOf("finance"));
+      const message = yield* chats.send(agent, {
+        chatId,
+        body: "Shall I send the Tidewater Freight reminder today?",
+        intent: "evidence",
+        clientMessageId: "reminder-question",
+      });
+      const reply = yield* chats.send(owner, { chatId, body: "Yes.", clientMessageId: "yes" });
+      assert.isAbove(reply.seq, message.seq);
+      yield* TestClock.adjust("1 second");
+      const questionId = yield* Questions.flagTextQuestion({
+        orgId,
+        chatId,
+        agentId: agent.agentId,
+        threadId: agent.threadId,
+        wakeupId,
+        startedAt: IST_MON_1130,
+      });
+
+      const settled = yield* settle(orgId, TUE_1930);
+      const stored = Option.getOrThrow(yield* repo.getMessage(message));
+      assert.notProperty(stored, "lapsedQuestion");
+      assert.isUndefined(questionId);
+      assert.strictEqual(settled, 0);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 // Rhea is away six weeks and Finance's default is taken in the first: she is told once she is
 // back, counted in her chat itself. Later, Meera, still away, has more held notices than one pass
 // tells: Rhea, who is back, is told of her next one in that same pass.
