@@ -50,6 +50,8 @@ const RecordPlan = Schema.Struct({
   key: Schema.String,
   title: Schema.String,
   rev: Schema.Number,
+  /** A meeting whose time has passed: its buttons say what happened, not the verb. */
+  heldMeeting: Schema.optional(Schema.Literal(true)),
   draw: CardDraw,
 });
 const StartPlan = Schema.Struct({
