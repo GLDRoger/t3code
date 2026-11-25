@@ -394,9 +394,9 @@ export function KinDocPage(
       ) : null}
       {state._tag === "refused" ? (
         <KinWorkNotice {...KIN_DOCS.unavailable} />
-      ) : state._tag === "gone" ? (
+      ) : state._tag === "gone" || state._tag === "private" ? (
         <KinWorkNotice
-          {...KIN_DOCS.gone}
+          {...(state._tag === "private" ? KIN_DOCS.privateNow(state.by) : KIN_DOCS.gone)}
           action={
             <Button size="sm" variant="outline" onClick={() => onGo(null)}>
               Back to {placeTitle}
