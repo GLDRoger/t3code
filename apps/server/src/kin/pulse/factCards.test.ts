@@ -1158,7 +1158,7 @@ it.effect(
         yield* tap(ctx, zoyaId, card!, "Let it renew");
         assert.deepStrictEqual((yield* noticeCards(ctx))[0]!.outcome, {
           title: "Nothing was done",
-          text: `${project}'s notice day changed since this was offered, so nothing was done.`,
+          text: `${project}'s notice day is no longer yours to answer, so nothing was done.`,
         });
         // Set back: a card that did nothing asked nothing, so the next pass asks again.
         yield* ctx.sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.noticeDays', '60')
@@ -1173,7 +1173,7 @@ it.effect(
           (yield* noticeCards(ctx)).find((one) => one.widgetId === open.widgetId)?.outcome,
           {
             title: "No longer needed",
-            text: `${project}'s notice day changed or passed, so this was closed.`,
+            text: `${project}'s notice day no longer stands, so this was closed.`,
           },
         );
       }),

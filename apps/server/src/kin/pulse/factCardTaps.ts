@@ -342,8 +342,7 @@ const runNotice = Effect.fn("KinFactCards.runNotice")(function* (tap: FactTap, p
     note: `${plan.personName}: let it renew`,
     view: "theirs",
   });
-  if (held === "gone")
-    return nothingDone(`${plan.key}'s notice day changed since this was offered`);
+  if (held === "gone") return nothingDone(`${plan.key}'s notice day is no longer yours to answer`);
   if (held === "in_hand") return nothingDone(`${plan.key}'s notice day is already in hand`);
   return {
     title: "Left to renew",

@@ -117,7 +117,7 @@ const closedOutcome = (plan: FactCardPlan): KinChoiceOutcome => {
       case "keep_due":
         return `${plan.key} no longer needs a new date.`;
       case "notice_renew":
-        return `${plan.key}'s notice day changed or passed, so this was closed.`;
+        return `${plan.key}'s notice day no longer stands, so this was closed.`;
     }
   })();
   return { title: "No longer needed", text };
