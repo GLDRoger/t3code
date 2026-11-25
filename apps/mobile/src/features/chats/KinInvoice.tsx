@@ -318,6 +318,15 @@ export function KinInvoicePayments(
               <ListRowLayout
                 label={payment.amount}
                 description={detail}
+                {...(payment.received === null
+                  ? {}
+                  : {
+                      meta: (
+                        <Text textRole="footnote" className="tabular-nums text-foreground-muted">
+                          {payment.received}
+                        </Text>
+                      ),
+                    })}
                 disabled={payment.voided}
               />
               {receipt?._tag === "ready" ? (

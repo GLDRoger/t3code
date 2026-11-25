@@ -12,6 +12,7 @@ import {
   type CreditPair,
   creditMatches,
   pairReason,
+  rateMoney,
 } from "../../work/statements/invoiceCredits.ts";
 import { DAY_MS, threshold } from "../thresholds.ts";
 import {
@@ -129,6 +130,10 @@ const CONSEQUENCE_MAX = 500;
 const plain = (minor: number, currency: string) => formatMoneyPlain({ minor, currency });
 const creditText = (credit: CreditMatch["credit"]) =>
   `${credit.key}, ${plain(credit.amountMinor, credit.currency)} received ${shortDay(credit.date)}`;
+const creditMatchText = (pair: CreditPair) =>
+  "rate" in pair
+    ? `${pair.credit.key}, ${rateMoney(pair.received)} received ${shortDay(pair.credit.date)}`
+    : creditText(pair.credit);
 const invoiceText = (pair: CreditPair) =>
   `${recordName(pair.invoice.key, pair.invoice.number)}: ${pairReason(pair)}`;
 
@@ -217,7 +222,7 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
         scope: entryScope(row),
         consequence: fitted(
           (shown) =>
-            `${creditText(credit)}, looks like this invoice's payment: ${pairReason(best)}.${
+            `${creditMatchText(best)}, looks like this invoice's payment: ${pairReason(best)}.${
               others.length === 0
                 ? ""
                 : ` It also fits, less closely: ${listed(others, Math.min(shown, others.length))}.`

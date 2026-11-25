@@ -483,6 +483,8 @@ export const GetResult = Schema.Struct({
       Schema.Struct({
         paymentId: Schema.String,
         amount: Schema.String,
+        received: Schema.optional(Schema.String),
+        rate: Schema.optional(Schema.String),
         paidOn: Schema.String,
         note: Schema.optional(Schema.String),
         /** TDS the client deducted: it settles the invoice, but no cash came in. */
@@ -2672,6 +2674,8 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
           payments: detail.payments.map((payment) => ({
             paymentId: payment.paymentId,
             amount: formatMoney(payment.amount),
+            ...(payment.received === undefined ? {} : { received: formatMoney(payment.received) }),
+            ...(payment.rate === undefined ? {} : { rate: payment.rate }),
             paidOn: payment.paidOn,
             ...(payment.note === "" ? {} : { note: payment.note }),
             ...(payment.withheld === true ? { withheld: true as const } : {}),

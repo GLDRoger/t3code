@@ -691,6 +691,11 @@ export function KinInvoicePayments(
                       .filter((part) => part !== null)
                       .join(" · ")}
                   </span>
+                  {payment.received === null ? null : (
+                    <span className="text-xs break-words text-muted-foreground tabular-nums">
+                      {payment.received}
+                    </span>
+                  )}
                   {number === null ? null : (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <ReceiptIcon aria-hidden className="size-3" />

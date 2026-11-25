@@ -555,6 +555,8 @@ export type Totals = Sums & {
 };
 export type PaymentInput = {
   readonly amount: KinMoney;
+  readonly received?: KinMoney;
+  readonly rate?: string;
   /** A day in the owner's zone. */
   readonly paidOn: string;
   readonly note?: string;
@@ -3501,10 +3503,14 @@ const make = Effect.gen(function* () {
           paidOn: string;
           note: string;
           withheld: number;
+          receivedMinor: number | null;
+          receivedCurrency: string | null;
+          rate: string | null;
           voidedAt: number | null;
         }>`
           SELECT record_id AS "recordId", amount_minor AS minor, currency, paid_on AS "paidOn", note,
-            withheld, voided_at AS "voidedAt"
+            withheld, voided_at AS "voidedAt", received_minor AS "receivedMinor",
+            received_currency AS "receivedCurrency", rate
           FROM kin_record_payments WHERE org_id = ${orgId} AND origin_key = ${payment.originKey}`;
         if (earlier !== undefined) {
           if (
@@ -3513,7 +3519,10 @@ const make = Effect.gen(function* () {
             earlier.currency !== payment.amount.currency ||
             earlier.paidOn !== payment.paidOn ||
             earlier.note !== (payment.note ?? "") ||
-            earlier.withheld !== (payment.withheld === true ? 1 : 0)
+            earlier.withheld !== (payment.withheld === true ? 1 : 0) ||
+            earlier.receivedMinor !== (payment.received?.minor ?? null) ||
+            earlier.receivedCurrency !== (payment.received?.currency ?? null) ||
+            earlier.rate !== (payment.rate ?? null)
           )
             return yield* new KinChatError({
               reason: "not_allowed",
@@ -3533,6 +3542,10 @@ const make = Effect.gen(function* () {
             `${row.key} is in ${amount.currency}; record the payment in ${amount.currency}.`,
           );
         if (payment.amount.minor <= 0) return yield* invalid("A payment is more than nothing.");
+        if (payment.received?.currency === payment.amount.currency)
+          return yield* invalid(
+            "Only a payment received in a different currency has a received amount and rate.",
+          );
         const balance = amount.minor - row.paid;
         if (payment.amount.minor > balance)
           return yield* new SensitiveRefusal({
@@ -3542,11 +3555,12 @@ const make = Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
             currency, paid_on, note, origin_key, created_at, created_by_kind, created_by_id,
-            withheld)
+            withheld, received_minor, received_currency, rate)
           VALUES (${orgId}, ${paymentId}, ${row.recordId}, ${payment.amount.minor},
             ${payment.amount.currency}, ${payment.paidOn}, ${payment.note ?? ""},
             ${payment.originKey}, ${now}, ${writer.actor._tag}, ${actorIdOf(writer)},
-            ${payment.withheld === true ? 1 : 0})`;
+            ${payment.withheld === true ? 1 : 0}, ${payment.received?.minor ?? null},
+            ${payment.received?.currency ?? null}, ${payment.rate ?? null})`;
         const paidUp =
           payment.amount.minor === balance && row.state !== "done" && def.states.includes("done");
         const rev = row.rev + 1;

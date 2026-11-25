@@ -2940,16 +2940,22 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
         owner: { _tag: "person", personId: owner.personId },
         originKey: "harbourline",
       });
-      const invoiceOf = Effect.fn("test.invoiceOf")(function* (title: string, number: string) {
+      const invoiceOf = Effect.fn("test.invoiceOf")(function* (
+        title: string,
+        number: string,
+        foreign = false,
+      ) {
         const { row } = yield* records.create(orgId, ownerWrites, {
           list: "invoices",
           title,
           owner: { _tag: "person", personId: owner.personId },
           partyId: client.row.recordId,
-          amount: { minor: 95_000_00, currency: "INR" },
+          amount: foreign
+            ? { minor: 100_000, currency: "USD" }
+            : { minor: 95_000_00, currency: "INR" },
           originKey: title,
         });
-        yield* sql`UPDATE kin_records SET state = 'waiting', date_at = ${MON - 10 * DAY_MS},
+        yield* sql`UPDATE kin_records SET state = 'waiting', date_at = ${MON - (foreign ? 15 : 10) * DAY_MS},
             fields_json = json_set(fields_json, '$.number', ${number})
           WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
         return row;
@@ -2962,6 +2968,7 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
         rupees: number,
         reference: string,
         writer: Parameters<typeof records.create>[1] = kinWrites,
+        dateAt = MON - DAY_MS,
       ) =>
         records
           .create(orgId, writer, {
@@ -2969,7 +2976,7 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
             title,
             owner: { _tag: "person", personId: owner.personId },
             amount: { minor: rupees * 100, currency: "INR" },
-            dateAt: MON - DAY_MS,
+            dateAt,
             fields: { direction: "credit", reference, account: "Invented Bank ••4821" },
             originKey: reference,
           })
@@ -3189,6 +3196,129 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
           (yield* records.get(orgId, second.key))!.state,
         ],
         [45_000_00, "waiting"],
+      );
+
+      yield* records.update(orgId, ownerWrites, bank.key, { state: "dropped" });
+      const usd = yield* invoiceOf("Foreign retainer", "INV-12", true);
+      const inr = yield* credit(
+        "Wire INV-12",
+        83_500,
+        "INVTN0000000047",
+        kinWrites,
+        MON - 12 * DAY_MS,
+      );
+      const foreignCard = yield* ask(inr.key, "Is this the foreign retainer payment?");
+      assert.isTrue(foreignCard.ok, JSON.stringify(foreignCard.value));
+      const widgetId = foreignCard.value.widgetId;
+      const rateCard = yield* kin.widget(widgetId);
+      assert.deepStrictEqual(card(rateCard).options[0], {
+        optionId: "option-1",
+        label: "Settle INV-12",
+        action: {
+          line: `Settle INV-12 from Harbourline Logistics (USD 1,000.00) with INR 83,500.00 received on 4 Nov (${inr.key}), a rate of 83.50`,
+        },
+      });
+      const rateFact = (yield* KinPulse.read({
+        orgId,
+        at: MON,
+        viewer: { _tag: "owner" },
+      })).facts.find((fact) => fact.key === `payment_seen:${inr.key}`);
+      assert.strictEqual(
+        rateFact?.consequence,
+        `${inr.key}, INR 83,500.00 received 4 Nov, looks like this invoice's payment: INR 83,500.00 for USD 1,000.00 owed, a rate of 83.50, and it cites INV-12. It isn't recorded as paid until the owner confirms.`,
+      );
+      const beforeRate = yield* callAs("finance", "record_get", { key: usd.key });
+      assert.isTrue(beforeRate.ok, JSON.stringify(beforeRate.value));
+      assert.nestedInclude(beforeRate.value, {
+        "bank.credits[0].key": inr.key,
+        "bank.credits[0].reason":
+          "INR 83,500.00 for USD 1,000.00 owed, a rate of 83.50, and it cites INV-12",
+      });
+      assert.strictEqual((yield* records.get(orgId, usd.key))!.paid, 0);
+      const firstRateTap = yield* kin.tap(owner, widgetId, "option-1", "record-rate");
+      const retryRateTap = yield* kin.chats.act(owner, {
+        widgetId: rateCard.widgetId,
+        revision: rateCard.revision,
+        actionId: "choose",
+        value: "option-1",
+        clientActionId: "record-rate",
+      });
+      assert.strictEqual(retryRateTap.messageId, firstRateTap.messageId);
+      assert.deepStrictEqual(card(yield* kin.widget(widgetId)).outcome, {
+        title: "Payment recorded",
+        text: `Settled INV-12 (USD 1,000.00) with INR 83,500.00 received on 4 Nov, a rate of 83.50; the invoice is paid in full. ${inr.key} is explained in Bank transactions.`,
+      });
+      const settled = (yield* records.get(orgId, usd.key))!;
+      assert.deepStrictEqual(
+        [settled.paid, settled.currency, settled.state],
+        [100_000, "USD", "done"],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT amount_minor, currency, received_minor, received_currency, rate
+          FROM kin_record_payments WHERE org_id = ${orgId} AND record_id = ${usd.recordId}
+          ORDER BY payment_id`,
+        [
+          {
+            amount_minor: 100000,
+            currency: "USD",
+            received_minor: 8350000,
+            received_currency: "INR",
+            rate: "83.500000",
+          },
+        ],
+      );
+      const { payments } = yield* records.detail(settled);
+      const ratePayment = payments![0]!;
+      assert.deepInclude(ratePayment, {
+        amount: { minor: 100_000, currency: "USD" },
+        received: { minor: 8_350_000, currency: "INR" },
+        rate: "83.500000",
+      });
+      const afterRate = yield* callAs("finance", "record_get", { key: usd.key });
+      assert.isTrue(afterRate.ok, JSON.stringify(afterRate.value));
+      assert.nestedInclude(afterRate.value, {
+        "payments[0].received": "₹83,500.00",
+        "payments[0].rate": "83.500000",
+      });
+
+      const [stored] = yield* sql<{ originKey: string }>`SELECT origin_key AS "originKey"
+        FROM kin_record_payments WHERE org_id = ${orgId} AND payment_id = ${ratePayment.paymentId}`;
+      const retry = {
+        amount: ratePayment.amount,
+        received: ratePayment.received!,
+        rate: ratePayment.rate!,
+        paidOn: ratePayment.paidOn,
+        note: ratePayment.note,
+        originKey: stored!.originKey,
+      };
+      assert.strictEqual(
+        (yield* records.pay(orgId, ownerWrites, usd.key, retry)).paymentId,
+        ratePayment.paymentId,
+      );
+      assert.include(
+        yield* records
+          .pay(orgId, ownerWrites, usd.key, { ...retry, rate: "83.510000" })
+          .pipe(Effect.flip),
+        {
+          reason: "not_allowed",
+          message: "That retry key already recorded a different payment.",
+        },
+      );
+      yield* records.voidPayment(orgId, ownerWrites, usd.key, ratePayment.paymentId);
+      assert.strictEqual((yield* records.get(orgId, inr.key))!.state, "open");
+      assert.notInclude(yield* seen, `payment_seen:${inr.key}`);
+      const takenBack = yield* callAs("finance", "record_get", { key: usd.key });
+      assert.nestedInclude(takenBack.value, { "payments[0].voided": true });
+      assert.notNestedProperty(takenBack.value, "bank.credits");
+      assert.include(
+        yield* records
+          .pay(orgId, ownerWrites, usd.key, {
+            ...retry,
+            originKey: "same-currency-with-rate",
+            received: retry.amount,
+          })
+          .pipe(Effect.flip),
+        { reason: "invalid_state" },
       );
     }).pipe(Effect.provide(layer)),
   ),

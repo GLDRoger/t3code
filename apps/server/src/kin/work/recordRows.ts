@@ -1112,10 +1112,14 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
       createdAt: number;
       voidedAt: number | null;
       withheld: number;
+      receivedMinor: number | null;
+      receivedCurrency: string | null;
+      rate: string | null;
     } & PaymentSourceRow
   >`SELECT p.payment_id AS "paymentId", p.amount_minor AS minor, p.currency,
       p.paid_on AS "paidOn", p.note, p.origin_key AS "originKey", p.created_at AS "createdAt",
-      p.voided_at AS "voidedAt", p.withheld, ${paymentSourceColumns(sql)}
+      p.voided_at AS "voidedAt", p.withheld, p.received_minor AS "receivedMinor",
+      p.received_currency AS "receivedCurrency", p.rate, ${paymentSourceColumns(sql)}
     FROM kin_record_payments p WHERE p.org_id = ${orgId} AND p.record_id = ${recordId}
     ORDER BY p.paid_on DESC, p.created_at DESC, p.payment_id`;
   const receipts =
@@ -1144,6 +1148,10 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
     return {
       paymentId: payment.paymentId,
       amount: { minor: payment.minor, currency: payment.currency },
+      ...(payment.receivedMinor === null || payment.receivedCurrency === null
+        ? {}
+        : { received: { minor: payment.receivedMinor, currency: payment.receivedCurrency } }),
+      ...(payment.rate === null ? {} : { rate: payment.rate }),
       paidOn: payment.paidOn,
       note: payment.note,
       recordedAt: iso(payment.createdAt),

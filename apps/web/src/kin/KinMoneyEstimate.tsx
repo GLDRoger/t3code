@@ -6,6 +6,7 @@ import {
   kinRateInput,
   kinRateLine,
   kinSettled,
+  kinSettledPayment,
   type KinRateDraft,
   type KinRates,
 } from "@t3tools/client-runtime/kin/kinCurrency";
@@ -310,24 +311,26 @@ const noBankAtom: ReturnType<typeof kinClient.workItem> = Atom.make(AsyncResult.
  */
 export function KinInvoiceCurrency(
   props: KinWorkTarget & {
-    readonly item: Pick<KinRecordDetail, "amount" | "links">;
+    readonly item: Pick<KinRecordDetail, "amount" | "links" | "payments">;
     readonly rates: KinRates | null;
     readonly settled: boolean;
   },
 ) {
   const { environmentId, orgId, rates } = props;
   const view = kinInvoiceCurrency(props.item, rates);
+  const stored = kinSettledPayment(props.item, rates);
   const bankAtom =
-    view?.bank == null
+    stored !== null || !props.settled || view?.bank == null
       ? noBankAtom
       : kinClient.workItem({ environmentId, input: { orgId, key: view.bank } });
   const bank = Option.getOrNull(AsyncResult.value(useAtomValue(bankAtom)));
   if (view === null || props.item.amount === undefined) return null;
   const bankDay = bank?.dateAt?.slice(0, 10) ?? null;
   const settled =
-    bank?.amount === undefined || bankDay === null
+    stored ??
+    (!props.settled || bank?.amount === undefined || bankDay === null
       ? null
-      : kinSettled(props.item.amount, bank.amount, bankDay, rates);
+      : kinSettled(props.item.amount, bank.amount, bankDay, rates));
   return (
     <div className="flex flex-col items-start gap-1 rounded-lg border border-border/70 px-3 py-2">
       <p className="text-sm font-medium text-foreground">{view.label}</p>
