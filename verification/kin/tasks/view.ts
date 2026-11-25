@@ -22,6 +22,8 @@ export const rules: Record<string, string> = {
     "When someone asks the agent to give a task, they gave it, so handing it back returns it to them; the agent is the giver only on its own.",
   HandedBackShown:
     '"Handed back by" shows only on an open task, naming someone other than its holder: giving it again or closing it clears the mark.',
+  PromisedNotHolder:
+    "A task one teammate promised another is never held by the person it was promised to: given to them, it is theirs and promised to no one.",
 };
 
 export const variants = [
@@ -70,6 +72,16 @@ export const variants = [
     breaks: "HandedBackShown",
     what: 'giving a task again leaves its "Handed back by" mark',
   },
+  {
+    name: "promise-stays",
+    breaks: "PromisedNotHolder",
+    what: "given to the person it was promised to, the task still says it is promised to them",
+  },
+  {
+    name: "byproduct-is-change",
+    breaks: "NoPingPong",
+    what: "the agent's check reads a task coming off someone's alsoOn or promisedTo, because it was given to them, as a change on it (the code at kin 62252f75c6)",
+  },
 ];
 
 const names: Record<string, string> = {
@@ -89,7 +101,9 @@ export const state = (vars: Vars) => {
   const holder = String(vars["holder"]);
   const where =
     vars["state"] === "done" ? "done" : vars["state"] === "doing" ? "started" : "not started";
-  return `${holds[holder] ?? holder}, ${vars["kept"] === false ? "suggested" : where}`;
+  const promised = String(vars["promised"] ?? "none");
+  const owed = promised === "none" ? "" : `, promised to ${names[promised] ?? promised}`;
+  return `${holds[holder] ?? holder}, ${vars["kept"] === false ? "suggested" : where}${owed}`;
 };
 
 export const step = (action: string, from: Vars, to: Vars) => {
