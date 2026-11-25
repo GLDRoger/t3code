@@ -2332,8 +2332,13 @@ it.effect.each([
     }).pipe(Effect.provide(layer)),
 );
 
-it.effect.each(["CI is red on main since 9:00.", "NO_REPLY"])(
-  "sends a notice wake-up's text to the owner's chat, or nothing on NO_REPLY (%s)",
+it.effect.each([
+  "CI is red on main since 9:00.",
+  "NO_REPLY",
+  "No new bank alerts came in since yesterday's run, so there's nothing to log.\nNO_REPLY",
+  "Nothing new since the last run. `NO_REPLY`",
+])(
+  "sends a notice wake-up's text to the owner's chat, or nothing when it says NO_REPLY anywhere (%s)",
   (body) =>
     Effect.gen(function* () {
       const { fake, runId, complete, sql, owner, direct } = yield* setup({});
@@ -2344,7 +2349,7 @@ it.effect.each(["CI is red on main since 9:00.", "NO_REPLY"])(
         WHERE org_id = ${owner.orgId} AND chat_id = ${direct.chatId} ORDER BY seq`;
       assert.deepStrictEqual(
         rows,
-        body === "NO_REPLY" ? [] : [{ body, intent: "evidence", floorRunId: null }],
+        body.includes("NO_REPLY") ? [] : [{ body, intent: "evidence", floorRunId: null }],
       );
       assert.strictEqual(fake.rescues, 0);
     }).pipe(Effect.provide(layer)),
@@ -2395,6 +2400,9 @@ it.each([
   ["Hello (see the log", "Hello (see the log"],
   ["Hello (nothing to add) and more", "Hello (nothing to add) and more"],
   ["Deploy is done.\n(staying quiet)", "Deploy is done."],
+  ["Nothing new to log.\nNO_RE", "Nothing new to log."],
+  ["Nothing new to log.\nNO_REPLY", ""],
+  ["Plan B is set", "Plan B is set"],
 ])("a streaming draft never shows a silence marker (%#)", (body, expected) => {
   assert.strictEqual(draftReplyText(body!), expected);
   assert.strictEqual(stripTrailingSilenceMarker("Done. (silent)"), "Done.");
