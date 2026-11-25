@@ -150,7 +150,7 @@ describe("the Money summary", () => {
       },
       [list("invoices")],
     );
-    expect(withTds.tdsDeducted).toMatchObject({ label: "TDS deducted", lines: ["₹10,000"] });
+    expect(withTds.tdsDeducted).toMatchObject({ label: "Tax withheld", lines: ["₹10,000"] });
     expect(withTds.received.lines).toEqual(view.received.lines);
     expect(kinMoneyHeadline(summary)[0]).toBe("₹2,10,000 and $2,500 owed to us");
     // Past the newest suggestions shown, each list's rest opens on its suggestions only.
