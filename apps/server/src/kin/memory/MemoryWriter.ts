@@ -307,9 +307,9 @@ export class MemoryWriter extends Context.Service<
      */
     readonly stripQuotes: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
     /**
-     * Once per live lead, lands the items its shadow branch holds that the default branch lacks:
-     * notes written at L0 before leads worked on the default branch. Where both changed an
-     * item, the default branch's stays and the shadow branch keeps its own.
+     * Once per live lead, lands the items its shadow branch held when leads began working on the
+     * default branch and that the default branch lacks: notes written at L0 before then. Where
+     * both changed an item, or the default branch deleted it, the default branch's stays.
      */
     readonly landShadows: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
   }
@@ -1911,10 +1911,29 @@ const make = Effect.gen(function* () {
           yield* refuseDuringPurge(orgId);
           const repo = yield* repoFor(orgId);
           if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
+          // Leads stopped working on their shadow branch when K035 ran; a shadow write since then
+          // came from a chat the owner didn't place the lead in, so it stays off the default branch.
+          const [cutOver] = yield* sql<{ at: string }>`SELECT created_at AS "at"
+            FROM kin_sql_migrations WHERE migration_id = 35`.pipe(toSql);
+          const cutOverSeconds = Date.parse(`${cutOver?.at.replace(" ", "T")}Z`) / 1000;
+          if (!Number.isFinite(cutOverSeconds)) return;
           const same = (a: Buffer | undefined, b: Buffer | undefined) =>
             a === undefined ? b === undefined : b !== undefined && a.equals(b);
           for (const { agentId, branch } of pending) {
-            const shadowHead = yield* branchHead(orgId, writer, branch);
+            const tip = yield* branchHead(orgId, writer, branch);
+            const shadowHead = yield* git(orgId, writer, [
+              "rev-list",
+              "-1",
+              `--before=@${cutOverSeconds}`,
+              tip,
+            ]);
+            const mark = sql`INSERT INTO kin_memory_heads (org_id, branch, head)
+              VALUES (${orgId}, ${shadowLanded(agentId)}, ${shadowHead || tip})
+              ON CONFLICT DO NOTHING`.pipe(toSql, Effect.asVoid);
+            if (shadowHead === "") {
+              yield* mark;
+              continue;
+            }
             const shadowFiles = yield* filesAt(orgId, writer, shadowHead);
             const head = yield* branchHead(orgId, writer, main);
             const headFiles = yield* filesAt(orgId, writer, head);
@@ -1930,7 +1949,8 @@ const make = Effect.gen(function* () {
               if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
               const now = headFiles.get(path);
               if (same(baseFiles.get(path), bytes) || same(now, bytes)) continue;
-              if (now !== undefined && !same(now, baseFiles.get(path))) {
+              // Changed on the default branch too, deletion included: its version stays.
+              if (!same(now, baseFiles.get(path))) {
                 kept.push(path);
                 continue;
               }
@@ -1940,9 +1960,6 @@ const make = Effect.gen(function* () {
               if (retired(parsed.value.frontMatter)) ending.push(parsed.value.frontMatter.id);
               files.set(path, text);
             }
-            const mark = sql`INSERT INTO kin_memory_heads (org_id, branch, head)
-              VALUES (${orgId}, ${shadowLanded(agentId)}, ${shadowHead})
-              ON CONFLICT DO NOTHING`.pipe(toSql, Effect.asVoid);
             if (kept.length > 0)
               yield* recovery.notify({
                 orgId,

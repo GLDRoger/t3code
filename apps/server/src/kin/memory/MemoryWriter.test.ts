@@ -2042,6 +2042,9 @@ const landingFixture = <E>(
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('owner-chat', ${orgId}, 'team_group', 0, ${at})`;
       yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
         VALUES (${agentId}, ${orgId}, 'Lead', 'L0', 0, '{}', '[]', 'owner-chat')`;
+      // When K035 ran: leads stopped working on their shadow branch then.
+      yield* sql`UPDATE kin_sql_migrations SET created_at = '2026-11-10 12:42:41'
+        WHERE migration_id = 35`;
       yield* memory.ensureCheckouts(orgId);
       yield* memory.prepareWakeup(orgId);
       yield* run({
@@ -2061,6 +2064,21 @@ const landingFixture = <E>(
       ),
     ),
     Effect.scoped,
+  );
+// Commits made inside are dated before the cut-over, as an L0 lead's were.
+const beforeCutOver = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous = process.env.GIT_COMMITTER_DATE;
+      process.env.GIT_COMMITTER_DATE = "2026-11-01T00:00:00Z";
+      return previous;
+    }),
+    () => effect,
+    (previous) =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env.GIT_COMMITTER_DATE;
+        else process.env.GIT_COMMITTER_DATE = previous;
+      }),
   );
 const personNote = (id: string, title: string) => ({
   path: `people/${id}.md`,
@@ -2087,7 +2105,7 @@ it.effect("an L0 lead's shadow notes land on the default branch and its index, o
       assert.strictEqual(yield* main(), untouched);
 
       yield* writer.stage(orgId, "wake0", personNote("owner-repos", "The owner's two main repos"));
-      yield* writer.commitWakeup(orgId, "wake0", "completed");
+      yield* beforeCutOver(writer.commitWakeup(orgId, "wake0", "completed"));
       assert.include(yield* bare(["show", `${shadow}:INDEX.md`]), "owner-repos");
       assert.notInclude(yield* bare(["show", "main:INDEX.md"]), "owner-repos");
 
@@ -2119,28 +2137,97 @@ it.effect("an L0 lead's shadow notes land on the default branch and its index, o
   ),
 );
 
-it.effect("a shadow note the default branch also changed keeps the default branch's", () =>
-  landingFixture(({ bare, setLevel, notices }) =>
+it.effect("a shadow note written after the cut-over stays off the default branch", () =>
+  landingFixture(({ bare }) =>
     Effect.gen(function* () {
       const writer = yield* Writer.MemoryWriter;
       const shadow = Memory.shadowBranch(agentId);
-      yield* writer.stage(orgId, "wake0", personNote("sam", "Sam, as the shadow has it"));
-      yield* writer.stage(orgId, "wake0", personNote("alex", "Alex leads design"));
-      yield* writer.commitWakeup(orgId, "wake0", "completed");
-      setLevel("L2");
-      yield* writer.stage(orgId, "wake1", personNote("sam", "Sam, as the default branch has it"));
+      yield* writer.stage(orgId, "wake0", personNote("owner-repos", "The owner's two main repos"));
+      yield* beforeCutOver(writer.commitWakeup(orgId, "wake0", "completed"));
+      // After the cut-over, an L0 write comes from a chat the owner didn't place the lead in.
+      yield* writer.stage(orgId, "wake1", personNote("teammate-only", "Said in someone's group"));
       yield* writer.commitWakeup(orgId, "wake1", "completed");
 
       yield* writer.landShadows(orgId);
-      assert.include(yield* bare(["show", "main:people/sam.md"]), "as the default branch has it");
-      assert.include(yield* bare(["show", `${shadow}:people/sam.md`]), "as the shadow has it");
-      assert.include(yield* bare(["show", "main:people/alex.md"]), "Alex leads design");
-      assert.deepStrictEqual(
-        notices.filter((notice) => notice.branch === shadow).map((notice) => notice.reason),
-        [
-          "Kept the default branch's people/sam.md over this shadow branch's, which still holds its own",
-        ],
-      );
+      assert.include(yield* bare(["show", "main:people/owner-repos.md"]), "two main repos");
+      const tree = yield* bare(["ls-tree", "-r", "--name-only", "main"]);
+      assert.notInclude(tree, "teammate-only");
+      assert.notInclude(yield* bare(["show", "main:INDEX.md"]), "teammate-only");
+      assert.include(yield* bare(["show", `${shadow}:people/teammate-only.md`]), "someone's group");
     }),
   ),
+);
+
+it.effect(
+  "a shadow note the default branch also changed or deleted keeps the default branch's",
+  () =>
+    landingFixture(({ bare, setLevel, notices }) =>
+      Effect.gen(function* () {
+        const writer = yield* Writer.MemoryWriter;
+        const memory = yield* Memory.Memory;
+        const vcs = yield* Vcs.VcsProcess;
+        const shadow = Memory.shadowBranch(agentId);
+        setLevel("L2");
+        const gone = personNote("gone", "Gone soon");
+        yield* writer.stage(orgId, "wake0", gone);
+        yield* writer.commitWakeup(orgId, "wake0", "completed");
+        setLevel("L0");
+        yield* writer.stage(orgId, "wake1", personNote("sam", "Sam, as the shadow has it"));
+        yield* writer.stage(orgId, "wake1", personNote("alex", "Alex leads design"));
+        yield* writer.stage(orgId, "wake1", {
+          ...gone,
+          content: gone.content.replace('status: "open"', 'status: "done"'),
+        });
+        yield* beforeCutOver(writer.commitWakeup(orgId, "wake1", "completed"));
+        setLevel("L2");
+        yield* writer.stage(orgId, "wake2", personNote("sam", "Sam, as the default branch has it"));
+        yield* writer.commitWakeup(orgId, "wake2", "completed");
+        // A purge-like deletion on the default branch.
+        const { writer: checkout } = yield* memory.ensureCheckouts(orgId);
+        const index = `${checkout}/.git/test-delete-index`;
+        const git = (args: ReadonlyArray<string>) =>
+          vcs
+            .run({
+              operation: "test.writer",
+              command: "git",
+              cwd: checkout,
+              args,
+              env: {
+                GIT_INDEX_FILE: index,
+                GIT_AUTHOR_NAME: "Fixture Bot",
+                GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+                GIT_COMMITTER_NAME: "Fixture Bot",
+                GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+              },
+            })
+            .pipe(Effect.map((r) => r.stdout.trim()));
+        const before = yield* git(["rev-parse", "refs/heads/main"]);
+        yield* git(["read-tree", before]);
+        yield* git(["update-index", "--force-remove", "people/gone.md"]);
+        const deleted = yield* git([
+          "commit-tree",
+          yield* git(["write-tree"]),
+          "-p",
+          before,
+          "-m",
+          "purge gone",
+        ]);
+        const remote = yield* bare(["rev-parse", "--absolute-git-dir"]);
+        yield* git(["push", "--", remote, `${deleted}:refs/heads/main`]);
+        yield* git(["update-ref", "refs/heads/main", deleted, before]);
+        yield* memory.record(orgId, "main", before, deleted);
+
+        yield* writer.landShadows(orgId);
+        assert.include(yield* bare(["show", "main:people/sam.md"]), "as the default branch has it");
+        assert.include(yield* bare(["show", `${shadow}:people/sam.md`]), "as the shadow has it");
+        assert.include(yield* bare(["show", "main:people/alex.md"]), "Alex leads design");
+        assert.notInclude(yield* bare(["ls-tree", "-r", "--name-only", "main"]), "people/gone.md");
+        assert.deepStrictEqual(
+          notices.filter((notice) => notice.branch === shadow).map((notice) => notice.reason),
+          [
+            "Kept the default branch's people/gone.md, people/sam.md over this shadow branch's, which still holds its own",
+          ],
+        );
+      }),
+    ),
 );
