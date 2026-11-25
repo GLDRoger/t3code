@@ -854,8 +854,15 @@ const noticeCards = Effect.fn("KinFactCards.notices")(function* (input: {
         ((yield* input.sees(looks, [fact])).length > 0 &&
           (yield* sql`SELECT 1 FROM kin_records r WHERE r.org_id = ${orgId}
             AND r.record_id = ${row.recordId} AND ${viewSees(sql, [looks])}`).length > 0));
-    const personId = theirs ? looks : KinPersonId.make(owner.personId);
-    if (!(yield* input.budget.free(personId))) continue;
+    const ownerId = KinPersonId.make(owner.personId);
+    const first = theirs ? looks : ownerId;
+    // A teammate's spent nudge waits a day; from the notice day on it goes to the owner instead.
+    const personId = (yield* input.budget.free(first))
+      ? first
+      : dayIn(at, zone) >= day
+        ? ownerId
+        : undefined;
+    if (personId === undefined || !(yield* input.budget.free(personId))) continue;
     const [drafter] = yield* draftersFor(orgId, row.recordId, "mail", chief);
     const agentId =
       drafter === undefined ? null : yield* Reach.carrierFor(orgId, personId, drafter);

@@ -1285,3 +1285,45 @@ it.effect("a teammate's open notice card closes once the owner has the notice da
     }),
   ),
 );
+
+/** Zoya's nudge of `day` already spent, by the Chief of staff in Zoya's chat with it. */
+const spendZoyasNudge = (ctx: Ctx, day: string, at: number) =>
+  Effect.gen(function* () {
+    const chat = yield* ctx.chats.createDirect(ctx.person(zoyaId), {
+      orgId: ctx.orgId,
+      agentId: chief,
+    });
+    yield* ctx.sql`INSERT INTO kin_pulse_nudges (org_id, person_id, day, agent_id, chat_id,
+        fact_key, sent_at)
+      VALUES (${ctx.orgId}, ${zoyaId}, ${day}, ${chief}, ${chat.chatId}, 'task_late:W-9', ${at})
+      ON CONFLICT (org_id, person_id, day) DO NOTHING`;
+  });
+
+it.effect(
+  "a teammate whose nudge is spent doesn't hold a notice day past its day: on the day the owner gets the card, and the teammate none later",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        // Renews Tue 26 Jan: notice is due by Fri 27 Nov, two days after NOW.
+        yield* contract(ctx, { _tag: "person", personId: zoyaId }, "2027-01-26");
+        yield* TestClock.setTime(NOW);
+        yield* spendZoyasNudge(ctx, "2026-11-25", NOW);
+        yield* tickAt(ctx, NOW);
+        assert.deepStrictEqual(yield* noticeCards(ctx), []);
+        yield* TestClock.setTime(NOW + 2 * DAY);
+        yield* spendZoyasNudge(ctx, "2026-11-27", NOW + 2 * DAY);
+        yield* tickAt(ctx, NOW + 2 * DAY);
+        assert.deepStrictEqual(
+          (yield* noticeCards(ctx)).map((card) => card.who),
+          [ctx.owner.personId],
+        );
+        yield* freshDay(ctx);
+        yield* TestClock.setTime(NOW + 3 * DAY);
+        yield* tickAt(ctx, NOW + 3 * DAY);
+        assert.deepStrictEqual(
+          (yield* noticeCards(ctx)).map((card) => card.who),
+          [ctx.owner.personId],
+        );
+      }),
+    ),
+);
