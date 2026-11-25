@@ -270,11 +270,9 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * In the join's transaction (`onPersonJoined`): a turn that may hold the owner's context, or
-   * that read the chat before it was shared, never continues once someone else can read it; its
-   * run stops after commit. What was asked there before stays the owner's: it expires, the chat
-   * hears once which agent didn't answer, and a task delegated there answers in the owner's chat,
-   * its card here frozen.
+   * In the join's transaction (`onPersonJoined`): no turn that may hold the owner's context, or
+   * read the chat before it was shared, continues once someone else can read it. What was asked
+   * there before stays the owner's: unanswered, it expires and the chat hears once who didn't.
    */
   const shareWith = Effect.fn("KinGroups.shareWith")(function* (
     chat: Pick<KinChat, "orgId" | "chatId">,
