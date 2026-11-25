@@ -63,6 +63,7 @@ import * as KinGitHubAppSetup from "./github/appSetup.ts";
 import * as Keychain from "./github/Keychain.ts";
 import * as AgentSession from "./lead/AgentSession.ts";
 import * as KinRefusedModels from "./lead/refusedModels.ts";
+import * as OwnerNotices from "./lead/OwnerNotices.ts";
 import * as Workspace from "./gendocs/workspace.ts";
 import * as Vcs from "../vcs/VcsProcess.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -236,6 +237,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
       ).pipe(
         Layer.merge(KinShell.layer),
         Layer.merge(KinNumbers.layer),
+        Layer.merge(OwnerNotices.layer),
         Layer.provideMerge(KinChat.layerWithWork),
         // Social's posting service sits on top: it reads cards, chats and the document renderer.
         (core) =>
