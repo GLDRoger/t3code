@@ -5,6 +5,8 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { homeCurrency } from "./companyProfile.ts";
+import { aboutInHome } from "./recordedRate.ts";
 import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth } from "./money.ts";
 import { countedEntry, keyWithheld, moneyDay, ownerZone, startOfDay } from "./recordRows.ts";
 
@@ -150,6 +152,7 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
       }
     ORDER BY b.category IS NULL, lower(b.category), p.key, b.currency`;
   if (budgets.length === 0) return { month: shown, budgets: [] };
+  const home = yield* homeCurrency(orgId);
   const spent = yield* sql<{
     minor: number;
     currency: string;
@@ -161,36 +164,47 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
       AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${from} AND ${moneyDay(sql)} < ${to}
       ${keyed ? sql`AND NOT ${keyWithheld(sql)}` : sql``}
     ORDER BY r.key`;
-  return {
-    month: shown,
-    budgets: budgets.map((budget) => {
-      const onTarget = spent.filter(
-        (one) =>
-          (budget.category === null ||
-            one.category?.toLowerCase() === budget.category.toLowerCase()) &&
-          (budget.projectId === null || one.projectId === budget.projectId),
-      );
-      const members = onTarget.filter((one) => one.currency === budget.currency);
-      // A currency with its own budget on this target is counted there, not left out here.
-      const budgeted = new Set(
-        budgets
-          .filter((other) => targetOf(other) === targetOf(budget))
-          .map((other) => other.currency),
-      );
-      const total = members.reduce((sum, one) => sum + BigInt(one.minor), 0n);
-      const limit = BigInt(budget.limitMinor);
-      return {
-        ...budget,
-        spent: total,
-        expenses: members.length,
-        status: statusOf(total, limit),
-        notCounted: addUp(
-          onTarget.filter((one) => !budgeted.has(one.currency)),
-          budget.currency,
-        ),
-      };
-    }),
-  };
+  const rows = [];
+  for (const budget of budgets) {
+    const onTarget = spent.filter(
+      (one) =>
+        (budget.category === null ||
+          one.category?.toLowerCase() === budget.category.toLowerCase()) &&
+        (budget.projectId === null || one.projectId === budget.projectId),
+    );
+    const members = onTarget.filter((one) => one.currency === budget.currency);
+    // A currency with its own budget on this target is counted there, not left out here.
+    const budgeted = new Set(
+      budgets
+        .filter((other) => targetOf(other) === targetOf(budget))
+        .map((other) => other.currency),
+    );
+    const total = members.reduce((sum, one) => sum + BigInt(one.minor), 0n);
+    const limit = BigInt(budget.limitMinor);
+    const notCounted = addUp(
+      onTarget.filter((one) => !budgeted.has(one.currency)),
+      budget.currency,
+    );
+    const minor = Number(total);
+    const about =
+      notCounted.length === 0 || !Number.isSafeInteger(minor)
+        ? undefined
+        : yield* aboutInHome(
+            orgId,
+            [{ currency: budget.currency, minor }, ...notCounted],
+            home,
+            now,
+          );
+    rows.push({
+      ...budget,
+      spent: total,
+      expenses: members.length,
+      status: statusOf(total, limit),
+      notCounted,
+      ...(about === undefined ? {} : { about }),
+    });
+  }
+  return { month: shown, budgets: rows };
 });
 export type BudgetsView = Effect.Success<ReturnType<typeof budgetsView>>;
 

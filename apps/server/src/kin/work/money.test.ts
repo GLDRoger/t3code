@@ -57,6 +57,7 @@ import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import * as LeadWork from "./leadWork.ts";
 import { typedFields } from "./leadFields.ts";
 import { aboutTotal, addUp, dayIn, financialYearOf, formatMinor, parseAmount } from "./money.ts";
+import { aboutInHome, type RecordedRate } from "./recordedRate.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { markOutside } from "../lead/OutsideContent.ts";
@@ -526,6 +527,48 @@ describe("amounts", () => {
       usd(1_300),
     );
   });
+
+  it.effect("estimates only when every foreign currency has a recorded rate", () =>
+    Effect.gen(function* () {
+      const at = Date.parse("2026-11-20T12:00:00Z");
+      const totals = [
+        { minor: 1_040, currency: "USD" },
+        { minor: 40, currency: "EUR" },
+        { minor: 40, currency: "GBP" },
+        { minor: 10, currency: "CAD" },
+      ];
+      const rates: Record<string, RecordedRate> = {
+        EUR: {
+          invoiceCurrency: "EUR",
+          receivedCurrency: "USD",
+          rate: "1.000000",
+          day: "2026-11-12",
+        },
+        GBP: {
+          invoiceCurrency: "GBP",
+          receivedCurrency: "USD",
+          rate: "1.000000",
+          day: "2026-11-03",
+        },
+        CAD: {
+          invoiceCurrency: "CAD",
+          receivedCurrency: "USD",
+          rate: "0.700000",
+          day: "2026-11-12",
+        },
+      };
+      const read = (org: typeof orgId, from: string, to: string, asOf: number) =>
+        Effect.succeed(org === orgId && to === "USD" && asOf === at ? rates[from] : undefined);
+      assert.deepStrictEqual(yield* aboutInHome(orgId, totals, "USD", at, read), {
+        total: { minor: 1_100, currency: "USD" },
+        rateDays: ["2026-11-03", "2026-11-12"],
+      });
+      assert.isUndefined(yield* aboutInHome(orgId, totals.slice(0, 1), "USD", at, read));
+      assert.isUndefined(
+        yield* aboutInHome(orgId, [...totals, { minor: 10, currency: "JPY" }], "USD", at, read),
+      );
+    }),
+  );
 
   it("formats totals past a float's exact range digit for digit, signed", () => {
     const past = BigInt(Number.MAX_SAFE_INTEGER) * 10n + 7n;
@@ -5673,7 +5716,9 @@ describe("money answers", () => {
           spent: "$300.00",
           notCounted: [{ currency: "EUR", spent: "€768.00" }],
         });
-        assert.deepInclude((yield* OwnerMoneyAnswers.budgets(people, { orgId })).budgets[0], {
+        const [budget] = (yield* OwnerMoneyAnswers.budgets(people, { orgId })).budgets;
+        assert.notProperty(budget, "about");
+        assert.deepInclude(budget, {
           spent: { minor: 30_000, currency: "USD" },
           notCounted: [{ currency: "EUR", spent: { minor: 76_800, currency: "EUR" } }],
         });

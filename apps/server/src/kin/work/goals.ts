@@ -27,6 +27,7 @@ import { homeCurrency, recordingCurrency } from "./companyProfile.ts";
 import { dayIn, formatMoneyPlain, parseAmount, roundToWhole } from "./money.ts";
 import { inList, ownerWriter, theOwner } from "./ownerWork.ts";
 import { playbookThreshold } from "./playbooks.ts";
+import { aboutInHome } from "./recordedRate.ts";
 import { countedPayment, endOfDay, ownerZone, startOfDay } from "./recordRows.ts";
 
 /**
@@ -174,6 +175,7 @@ export const goalsNow = Effect.fn("KinGoals.now")(function* (
     ORDER BY r.state = 'done', r.due_at IS NULL, r.due_at, LENGTH(r.key), r.key`;
   const behindPercent = (yield* playbookThreshold(orgId, "goal_behind_percent")).value;
   const goals: Array<KinGoal> = [];
+  let home: string | undefined;
   for (const row of rows) {
     const fields = parseFields(row.fields);
     const measureText = fieldText(fields, "measure");
@@ -194,14 +196,30 @@ export const goalsNow = Effect.fn("KinGoals.now")(function* (
           ? Number(targetField)
           : Number.NaN;
     if (!Number.isFinite(target) || target <= 0) continue;
-    const current = yield* ownerLevelProgressOf(orgId, measure, {
-      start,
-      until,
-      startsOn,
-      untilDay: dayIn(until, zone),
-      currency: money?.currency ?? (yield* homeCurrency(orgId)),
-      manual: Number(fieldText(fields, "current") ?? 0) || 0,
-    });
+    const untilDay = dayIn(until, zone);
+    let current: number;
+    let notCounted: KinGoal["notCounted"];
+    let about: KinGoal["about"];
+    if (isMoneyMeasure(measure)) {
+      home ??= yield* homeCurrency(orgId);
+      const currency = money?.currency ?? home;
+      const received = yield* ownerLevelReceivedByCurrency(orgId, startsOn, untilDay);
+      current = received.find((one) => one.currency === currency)?.minor ?? 0;
+      const other = received.filter((one) => one.currency !== currency);
+      if (other.length > 0) {
+        notCounted = other.map((one) => ({ currency: one.currency, received: one }));
+        about = yield* aboutInHome(orgId, [{ currency, minor: current }, ...other], home, at);
+      }
+    } else {
+      current = yield* ownerLevelProgressOf(orgId, measure, {
+        start,
+        until,
+        startsOn,
+        untilDay,
+        currency: "",
+        manual: Number(fieldText(fields, "current") ?? 0) || 0,
+      });
+    }
     const expected = paceAt(target, start, end, at);
     const unit = fieldText(fields, "unit");
     goals.push({
@@ -215,6 +233,8 @@ export const goalsNow = Effect.fn("KinGoals.now")(function* (
       ...(unit === null ? {} : { unit }),
       target,
       current,
+      ...(notCounted === undefined ? {} : { notCounted }),
+      ...(about === undefined ? {} : { about }),
       expected,
       startsOn,
       dueOn: end === null ? null : dayIn(end, zone),

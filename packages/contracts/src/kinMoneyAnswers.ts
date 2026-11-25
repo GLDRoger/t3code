@@ -215,6 +215,7 @@ export const KinMoneyBudget = Schema.Struct({
   notCounted: Schema.optional(
     Schema.Array(Schema.Struct({ currency: KinCurrency, spent: KinSignedMoney })),
   ),
+  about: Schema.optional(Schema.Struct({ total: KinSignedMoney, rateDays: Schema.Array(KinDay) })),
 });
 export type KinMoneyBudget = typeof KinMoneyBudget.Type;
 export const KinMoneyBudgets = Schema.Struct({

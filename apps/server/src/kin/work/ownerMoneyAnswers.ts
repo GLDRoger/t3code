@@ -220,6 +220,7 @@ const budgetsOf = Effect.fn("KinMoneyAnswers.budgetsOf")(function* (
       spent: signed(one.spent, one.currency),
       expenses: one.expenses,
       status: one.status,
+      ...(one.about === undefined ? {} : { about: one.about }),
       ...(one.notCounted.length === 0
         ? {}
         : {
