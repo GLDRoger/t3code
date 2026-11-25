@@ -27,6 +27,7 @@ import { registerSectionColumns, sectionOfRegister } from "../shell/sections.ts"
 import { readProfile, type TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { clientRecipients } from "../work/billingContact.ts";
+import { billedParty, billingClientFromProject } from "../work/billTo.ts";
 import { formatMoney } from "../work/money.ts";
 import { listDef, stateLabel } from "../work/registers.ts";
 import { seenBy } from "../work/teamView.ts";
@@ -378,9 +379,9 @@ export const fromOf = (
 };
 
 /**
- * Who a new mail carrying invoices or receipts goes to when it names nobody: their client's
- * billing contact, else its first contact with an email, and the line that says which. `null`
- * when it carries none.
+ * Who a new mail carrying invoices or receipts goes to when it names nobody: the name an invoice
+ * bills by, with its email; else its client's billing contact, else that client's first contact
+ * with an email. Also the line that says which. `null` when it carries none.
  */
 const billedTo = Effect.fn("KinSending.billedTo")(function* (
   orgId: KinOrgId,
@@ -391,19 +392,49 @@ const billedTo = Effect.fn("KinSending.billedTo")(function* (
   );
   if (entries.length === 0) return null;
   const sql = yield* SqlClient.SqlClient;
-  const parties = yield* sql<{ partyId: string | null; client: string | null }>`
-    SELECT DISTINCT c.record_id AS "partyId", c.title AS client
+  const rows = yield* sql<{
+    partyId: string | null;
+    client: string | null;
+    registerId: string;
+    fieldsJson: string | null;
+  }>`
+    SELECT DISTINCT c.record_id AS "partyId", c.title AS client, r.register_id AS "registerId",
+      CASE WHEN c.record_id IS NULL AND r.register_id = 'invoices' THEN r.fields_json END
+        AS "fieldsJson"
     FROM kin_records r
     LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
     LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.register_id = 'clients'
-      AND c.record_id = COALESCE(r.party_id, p.party_id)
+      AND c.record_id = ${billingClientFromProject(sql, sql`p.party_id`)}
     WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(entries)}
       AND r.register_id IN ('invoices', 'receipts')
     ORDER BY c.record_id`;
-  const [party, ...more] = parties;
+  // One rule for who an entry bills (`billTo.ts`): its client record, else the name typed on it.
+  const parties = new Map(
+    rows.map((row) => {
+      const typed =
+        row.partyId === null && row.fieldsJson !== null
+          ? billedParty({ registerId: row.registerId, fieldsJson: row.fieldsJson }, undefined)
+          : undefined;
+      const key =
+        row.partyId !== null
+          ? `client:${row.partyId}`
+          : typed === undefined
+            ? "none"
+            : `named:${(typed.email ?? typed.name).toLowerCase()}`;
+      return [key, { ...row, typed }] as const;
+    }),
+  );
+  const [party, ...more] = parties.values();
   if (party === undefined) return null;
   const needsTo = (why: string) => refused(`${MAIL_TOOL.send} needs to: ${why}.`);
   if (more.length > 0) return yield* needsTo("these are for different clients");
+  if (party.typed !== undefined)
+    return party.typed.email === null
+      ? yield* needsTo(`it bills ${party.typed.name} by name, with no email`)
+      : {
+          email: party.typed.email,
+          note: `It goes to ${party.typed.name} (${party.typed.email}), who it bills.`,
+        };
   if (party.partyId === null) return yield* needsTo("it has no client");
   const client = party.client ?? "its client";
   const picked = (yield* clientRecipients(orgId, [party.partyId], true)).get(party.partyId);

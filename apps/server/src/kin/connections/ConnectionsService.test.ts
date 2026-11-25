@@ -2792,6 +2792,28 @@ describe("KinConnections sending", () => {
           attachments: ["INV-1"],
         });
         assert.deepStrictEqual(cards.at(-1)?.send?.to, ["ana@client.example"]);
+        // A name typed on the invoice is who it bills, over its project's client and contacts.
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+          VALUES (${orgId}, 'projects', 'Projects', 'P', 0)`;
+        yield* row("rec_proj", "projects", "Invented Project", {});
+        yield* sql`UPDATE kin_records SET party_id = 'rec_client' WHERE record_id = 'rec_proj'`;
+        yield* sql`UPDATE kin_records SET fields_json = '{"email":"zed@client.example","billing":"true"}'
+          WHERE record_id = 'ct-z'`;
+        yield* sql`UPDATE kin_records SET party_id = NULL, project_id = 'rec_proj',
+            fields_json = json_set(fields_json, '$.billToName', 'Walk-in Ltd')
+          WHERE record_id = 'rec_inv'`;
+        assert.include(
+          (yield* Effect.flip(mail("Invoice by name"))).message,
+          "mail_send needs to: it bills Walk-in Ltd by name, with no email.",
+        );
+        yield* sql`UPDATE kin_records
+          SET fields_json = json_set(fields_json, '$.billToEmail', 'pay@walkin.example')
+          WHERE record_id = 'rec_inv'`;
+        assert.include(
+          (yield* mail("Invoice by name again")).note ?? "",
+          "It goes to Walk-in Ltd (pay@walkin.example), who it bills.",
+        );
+        assert.deepStrictEqual(cards.at(-1)?.send?.to, ["pay@walkin.example"]);
       }),
     ),
   );

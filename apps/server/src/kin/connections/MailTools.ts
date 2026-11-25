@@ -185,7 +185,7 @@ const sendTools = (vendor: MailVendor) => {
           },
           to: addresses(
             MAX_RECIPIENTS,
-            "Who it goes to. Leave it out with an invoice or receipt attached: it goes to its client's billing contact.",
+            "Who it goes to. Leave it out with an invoice or receipt attached: it goes to whoever it bills.",
           ),
           cc: addresses(MAX_RECIPIENTS, "Who gets a copy."),
           subject: { type: "string", maxLength: 300 },
