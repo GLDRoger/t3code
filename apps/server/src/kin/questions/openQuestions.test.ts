@@ -2676,7 +2676,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       );
       assert.strictEqual(
         posts[0]!.note,
-        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it or name ${posts[0]!.key}; say in one line what it is; Rhea Rao hasn't seen it, and it reaches Rhea Rao only when the person in this chat presses Send to Rhea Rao. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
+        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it or name ${posts[0]!.key}; say in one line what it is; Rhea Rao hasn't seen it, and it reaches Rhea Rao only when the person in this chat presses Send to Rhea Rao: that tap is the whole way up, so don't also put it to Rhea Rao with kin_ask_person or kin_ask, and don't mention the card's length. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
       );
       // A blank draft, or one whose Approve card would be too long to carry, files nothing.
       const docCount = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records

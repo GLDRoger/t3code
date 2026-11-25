@@ -207,6 +207,82 @@ it.effect.each([
     ],
   },
   {
+    name: "accepts a relationship note that claims less than the line it cites, and nothing else that does",
+    tree: new Map([
+      ...goodTree,
+      [
+        "relationships/note.md",
+        fixtureItem({
+          id: "rel-001",
+          kind: "relationship",
+          source: ownerRef,
+          said_by: "kin-dream",
+          trust: "agent",
+        }),
+      ],
+      [
+        "relationships/raised.md",
+        fixtureItem({
+          id: "rel-002",
+          kind: "relationship",
+          source: agentRef,
+          said_by: "fixture-lead",
+          trust: "owner",
+        }),
+      ],
+      [
+        "relationships/named.md",
+        fixtureItem({
+          id: "rel-003",
+          kind: "relationship",
+          source: ownerRef,
+          said_by: "fixture-guest",
+          trust: "agent",
+        }),
+      ],
+      [
+        "claims/note.md",
+        fixtureItem({
+          id: "clm-010",
+          kind: "claim",
+          source: ownerRef,
+          said_by: "kin-dream",
+          trust: "agent",
+        }),
+      ],
+      [
+        "people/note.md",
+        fixtureItem({
+          id: "per-010",
+          kind: "person",
+          source: ownerRef,
+          said_by: "kin-dream",
+          trust: "agent",
+        }),
+      ],
+    ]),
+    dream: {
+      ...goodDream,
+      changes: [
+        ...goodDream.changes,
+        { path: "relationships/note.md", sources: [ownerRef] },
+        { path: "relationships/raised.md", sources: [agentRef] },
+        { path: "relationships/named.md", sources: [ownerRef] },
+        { path: "claims/note.md", sources: [ownerRef] },
+        { path: "people/note.md", sources: [ownerRef] },
+      ],
+    },
+    failures: [
+      "relationships/raised.md claims owner from fixture-lead; the source was agent from fixture-lead",
+      "relationships/named.md claims agent from fixture-guest; the source was owner from fixture-owner",
+      `relationships/named.md quote: ${QUOTE_MISSING}`,
+      "claims/note.md claims agent from kin-dream; the source was owner from fixture-owner",
+      `claims/note.md quote: ${QUOTE_MISSING}`,
+      "people/note.md claims agent from kin-dream; the source was owner from fixture-owner",
+      `people/note.md quote: ${QUOTE_MISSING}`,
+    ],
+  },
+  {
     name: "rejects what a person said without their words from that message",
     tree: new Map([
       ...goodTree,
