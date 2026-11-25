@@ -38,6 +38,7 @@ import {
   type ReceiptRequest,
   samePayment,
   snapshotOf,
+  takeBackQuestion,
 } from "../gendocs/receiptProposals.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
 import { turnChat } from "../lead/Audience.ts";
@@ -207,9 +208,11 @@ export const proposeMoney = Effect.fn("KinOwnerCards.proposeMoney")(function* (
     snapshot: string;
     closed: number;
     updatedAt: string | null;
-    card: string | null;
+    untilAnswered: number | null;
+    detail: string | null;
   }>`SELECT p.state, p.snapshot_json AS snapshot, w.closed_at IS NOT NULL AS closed,
-      w.updated_at AS "updatedAt", w.state_json AS card
+      w.updated_at AS "updatedAt", json_extract(w.state_json, '$.untilAnswered') AS "untilAnswered",
+      json_extract(w.state_json, '$.detail') AS detail
     FROM kin_receipt_proposals p
     LEFT JOIN kin_widgets w ON w.org_id = p.org_id AND w.widget_id = p.widget_id
     WHERE p.org_id = ${lead.orgId} AND p.proposal_id = ${proposal}`;
@@ -219,24 +222,40 @@ export const proposeMoney = Effect.fn("KinOwnerCards.proposeMoney")(function* (
       message:
         "The owner already answered the card for this same payment in this turn, so nothing more was recorded. Don't ask again unless they do.",
     });
+  if (request.takeBack !== undefined && row !== undefined && row.state !== "open")
+    return yield* new KinChatError({
+      reason: "conflict",
+      message:
+        "The owner already answered the card for taking this payment back in this turn, so nothing more changed. Don't ask again unless they do.",
+    });
   // A card that closed or stopped taking taps is never put to the agent as there to confirm.
   if (
     row?.updatedAt != null &&
     (row.closed === 1 ||
       choiceExpired(
-        { updatedAt: row.updatedAt, state: JSON.parse(row.card ?? "{}") },
+        {
+          updatedAt: row.updatedAt,
+          state: row.untilAnswered === 1 ? { untilAnswered: true } : {},
+        },
         yield* Clock.currentTimeMillis,
       ))
   )
     return yield* new KinChatError({
       reason: "conflict",
-      message: `The owner's card for this ${request.received === undefined ? "money" : "payment"} closed before they answered it, so nothing was recorded. Ask them to record it themselves in Money.`,
+      message:
+        request.takeBack !== undefined
+          ? "The owner's card for taking this payment back closed before they answered it, so nothing changed. Ask them to take it back themselves on the invoice in Money."
+          : `The owner's card for this ${request.received === undefined ? "money" : "payment"} closed before they answered it, so nothing was recorded. Ask them to record it themselves in Money.`,
     });
-  // Asked again, it is the card already drawn, as it was drawn: its first figures stand.
-  const shown = cardLines(
-    row === undefined ? snapshot : (JSON.parse(row.snapshot) as typeof snapshot),
-    asked,
-  );
+  // Asked again, it is the card already drawn, as it was drawn: its first figures stand. One
+  // never shown is drawn only while those first figures are still the records'.
+  if (row !== undefined && row.detail === null && row.snapshot !== stableStringify(snapshot))
+    return yield* new KinChatError({
+      reason: "conflict",
+      message:
+        "The figures changed while Kin was asking the owner, so no card was shown and nothing changed. Ask them to do this themselves in Money.",
+    });
+  const shown = row?.detail == null ? cardLines(snapshot, asked) : row.detail.split("\n");
   const card = yield* askOwner(
     lead,
     {
@@ -572,7 +591,7 @@ export const PaymentInput = Schema.Struct({
   }),
   note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
   void: Schema.optional(KinToolText(60)).annotate({
-    description: "A paymentId from record_get to take back instead.",
+    description: "A paymentId from record_get: put taking it back to the owner instead.",
   }),
   another: Schema.optional(Schema.Literal(true)).annotate({
     description:
@@ -615,6 +634,10 @@ export const PaymentResult = Schema.Union([
 
 export const PAYMENT_PROPOSED_NEXT =
   "Nothing is recorded yet. Kin put this payment to the owner on a card. Say in one short line that it is there to check and confirm, and that nothing is recorded until they tap Confirm; a typed yes doesn't record it. Never say it is recorded, marked paid or done.";
+export const TAKE_BACK_PROPOSED_NEXT =
+  "Nothing is taken back yet. Kin put this to the owner on a card. Say in one short line that it is there to check and confirm, and that the payment stays recorded until they tap Confirm. Never say it is taken back or done.";
+const TAKE_BACK_NO_CARD_NEXT =
+  "Nothing was taken back. Kin couldn't show the owner a card for it, so ask them to take the payment back themselves on the invoice in Money.";
 const PAYMENT_NO_CARD_NEXT =
   "Nothing was recorded. Kin couldn't show the owner a card for this payment, so ask them to record it themselves in Money.";
 
@@ -717,8 +740,33 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
       sensitive: true as const,
     };
   }
-  yield* records.voidPayment(lead.orgId, writer, input.key, input.void);
-  return yield* paymentSummary(lead.orgId, input.key);
+  // Taking a payment back is the owner's tap too: the agent's call only draws its card.
+  yield* refuseKinOwn(lead.orgId, writer, KIN_OWN_REFUSAL.payment);
+  const sql = yield* SqlClient.SqlClient;
+  const [held] = yield* sql<{ voided: number }>`SELECT voided_at IS NOT NULL AS voided
+    FROM kin_record_payments WHERE org_id = ${lead.orgId} AND payment_id = ${input.void}
+      AND record_id = ${before.recordId}`;
+  if (held === undefined)
+    return yield* new KinChatError({
+      reason: "not_found",
+      message: `No payment ${input.void.slice(0, 40)} on ${before.key}.`,
+    });
+  if (held.voided === 1)
+    return yield* invalid("That payment was already taken back, so nothing changed.");
+  const request: ReceiptRequest = { takeBack: { key: before.key, paymentId: input.void } };
+  const question = takeBackQuestion(
+    yield* snapshotOf(lead.orgId, { ...request, version: 2 }),
+    before.key,
+  );
+  const asked = yield* proposeMoney(lead, request, question);
+  return {
+    status: "proposed" as const,
+    key: before.key,
+    proposal: asked.proposal,
+    shown: asked.shown,
+    next: asked.card === undefined ? TAKE_BACK_NO_CARD_NEXT : TAKE_BACK_PROPOSED_NEXT,
+    sensitive: true as const,
+  };
 });
 export const payment = leadTool("KinWorkTools.payment", runPayment);
 

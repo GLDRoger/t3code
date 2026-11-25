@@ -18,6 +18,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -79,7 +80,7 @@ import * as LeadDocuments from "../gendocs/leadDocuments.ts";
 import * as Quotes from "../gendocs/quotes.ts";
 import { endOfDay } from "./recordRows.ts";
 import { moneyOf } from "./projectSpine.ts";
-import { agentPaid } from "./agentPayment.testkit.ts";
+import { agentPaid, agentTook } from "./agentPayment.testkit.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
 
 // Invented org, people, amounts and files only; nothing here reads a real database.
@@ -185,7 +186,7 @@ const gate = Layer.unwrap(
               ${at}, ${`send:${input.clientMessageId}`})
             ON CONFLICT DO NOTHING`;
           // Posted now, as the chat stamps it, so it takes taps for its day from now.
-          const postedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+          const postedAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
           yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
               type, revision, state_json, awaiting_json, updated_at)
             VALUES (${widgetId}, ${agent.orgId}, ${input.chatId}, ${messageId}, 'native', 'choice', 1,
@@ -2235,14 +2236,38 @@ describe("invoices", () => {
       });
       assert.deepStrictEqual([rest.balance, rest.state], ["₹0.00", "done"]);
       assert.isUndefined(yield* credits());
-      yield* LeadMoney.payment(scope, {
-        sourceEventId: paid,
-        key: "INV-1",
-        void: first.paymentId!,
-      });
+      // Taking one back is the owner's tap too: the agent's call draws its card, once.
       const records = yield* KinRecords.KinRecords;
+      const takeBack = { sourceEventId: paid, key: "INV-1", void: first.paymentId! };
+      const toTake = yield* LeadMoney.payment(scope, takeBack);
+      if (!("status" in toTake) || toTake.status !== "proposed")
+        return assert.fail("expected a card");
+      assert.deepInclude(yield* LeadMoney.payment(scope, takeBack), {
+        proposal: toTake.proposal,
+      });
+      assert.strictEqual((yield* records.get(orgId, "INV-1"))!.paid, 10_000_000);
+      const [takeCard] = yield* sqlPaid<{ state: string }>`SELECT w.state_json AS state
+        FROM kin_widgets w JOIN kin_receipt_proposals p ON p.widget_id = w.widget_id
+        WHERE p.proposal_id = ${toTake.proposal}`;
+      assert.strictEqual(
+        JSON.parse(takeCard!.state).question,
+        `Take back the payment of ₹40,000.00 on Thu, 5 Nov 2026 from ${number}?`,
+      );
+      assert.deepStrictEqual(toTake.shown, [
+        "Client: Invented Acme",
+        "Payment: ₹40,000.00 received on Thu, 5 Nov 2026",
+        `Invoice: ${number}, Invented October retainer`,
+        "Received on it now: ₹1,00,000.00 of ₹1,00,000.00",
+        "Owed after: ₹40,000.00",
+      ]);
+      yield* agentTook(orgId, ownerId, toTake.proposal);
       const after = yield* records.get(orgId, "INV-1");
       assert.deepStrictEqual([after!.state, after!.paid], ["waiting", 6_000_000]);
+      // Taken back, asking again draws nothing and says so.
+      assert.strictEqual(
+        (yield* Effect.flip(LeadMoney.payment(scope, takeBack))).message,
+        "That payment was already taken back, so nothing changed.",
+      );
       // The voided payment's own call again is no retry of a live payment: it is refused.
       const voidedRetry = yield* LeadMoney.payment(scope, {
         sourceEventId: paid,

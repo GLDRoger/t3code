@@ -71,7 +71,8 @@ export const closeSubject = Effect.fn("KinOpen.closeSubject")(function* (
           WHERE org_id = ${orgId} AND state = 'open' AND widget_id IS NOT NULL
             AND (json_extract(request_json, '$.against') = ${key}
               OR json_extract(request_json, '$.key') = ${key}
-              OR json_extract(request_json, '$.received.key') = ${key})
+              OR json_extract(request_json, '$.received.key') = ${key}
+              OR json_extract(request_json, '$.takeBack.key') = ${key})
           ORDER BY widget_id`
       : [];
   const cards = [

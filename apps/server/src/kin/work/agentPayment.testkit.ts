@@ -39,3 +39,24 @@ export const agentPaid = (
     const summary = yield* LeadMoney.paymentSummary(orgId, input.key);
     return { ...summary, paymentId: tapped.paymentId, tdsPaymentId: tapped.tdsPaymentId };
   });
+
+/** The owner level's Confirm on the card an agent's call to take a payment back drew. */
+export const agentTook = (orgId: KinOrgId, personId: string, proposal: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const [card] = yield* sql<{ widgetId: string | null }>`SELECT widget_id AS "widgetId"
+      FROM kin_receipt_proposals WHERE org_id = ${orgId} AND proposal_id = ${proposal}`;
+    if (card?.widgetId == null) return yield* Effect.die(new Error("no card was drawn"));
+    const tapped = yield* sql.withTransaction(
+      answerReceiptCard({
+        orgId,
+        widgetId: card.widgetId,
+        personId,
+        confirmed: true,
+        via: "tap",
+        now: yield* Clock.currentTimeMillis,
+      }),
+    );
+    if (tapped?._tag !== "takenBack") return yield* Effect.die(new Error("nothing was taken back"));
+    return tapped;
+  });

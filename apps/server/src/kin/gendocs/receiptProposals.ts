@@ -54,6 +54,8 @@ export const ReceiptRequest = Schema.Struct({
       another: Schema.optionalKey(Schema.Literal(true)),
     }),
   ),
+  /** An agent's payment_record void: the payment `paymentId` on `key` taken back by the tap. */
+  takeBack: Schema.optionalKey(Schema.Struct({ key: Schema.String, paymentId: Schema.String })),
   towards: Schema.optionalKey(Schema.String),
   mode: Schema.optionalKey(Schema.String),
   reference: Schema.optionalKey(Schema.String),
@@ -104,10 +106,24 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
   const zone = yield* ownerZone(orgId);
   const entry = request.key === undefined ? undefined : yield* records.get(orgId, request.key);
   const received = request.received;
-  const invoiceKey = request.against ?? received?.key;
+  const takeBack = request.takeBack;
+  const invoiceKey = request.against ?? received?.key ?? takeBack?.key;
   const against = invoiceKey === undefined ? undefined : yield* records.get(orgId, invoiceKey);
   // A payment is from the invoice's client; an entry's from its own.
-  const party = received === undefined ? entry : against;
+  const party = received === undefined && takeBack === undefined ? entry : against;
+  const [taking] =
+    takeBack === undefined || against === undefined
+      ? []
+      : yield* (yield* SqlClient.SqlClient)<{
+          minor: number;
+          currency: string;
+          paidOn: string;
+          withheld: number;
+          voided: number;
+        }>`SELECT amount_minor AS minor, currency, paid_on AS "paidOn", withheld,
+            voided_at IS NOT NULL AS voided
+          FROM kin_record_payments WHERE org_id = ${orgId}
+            AND payment_id = ${takeBack.paymentId} AND record_id = ${against.recordId}`;
   const client =
     request.advance?.client !== undefined
       ? yield* records.get(orgId, request.advance.client)
@@ -190,6 +206,7 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
             ...(named && against.withheld > 0 ? { tax: against.withheld } : {}),
           },
     recorded: sameAdvances,
+    ...(taking === undefined ? {} : { taking: { ...taking } }),
     ...(billedTo === undefined ? {} : { billedTo }),
     ...(received?.withheld === undefined ? {} : { withheld: received.withheld }),
     // Asked as another payment, the card says the same one is already there.
@@ -228,6 +245,7 @@ export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
   ].filter((one) => one !== undefined);
   const against = snapshot.against;
   if (request.received !== undefined) return paymentLines(snapshot, request.received);
+  if (request.takeBack !== undefined) return takeBackLines(snapshot, request.takeBack.key);
   return [
     `Client: ${payerOf(snapshot) ?? "none named"}`,
     `Amount: ${snapshot.amount === null ? "none given" : formatMoney(snapshot.amount)}`,
@@ -285,6 +303,51 @@ const paymentLines = (snapshot: Snapshot, received: Received) => {
   ];
 };
 
+type Taking = {
+  readonly minor: number;
+  readonly currency: string;
+  readonly paidOn: string;
+  readonly withheld: number;
+};
+const takingOf = (snapshot: Snapshot): Taking | undefined =>
+  "taking" in snapshot ? snapshot.taking : undefined;
+
+/** The question on a card that takes a payment back. */
+export const takeBackQuestion = (snapshot: Snapshot, key: string) => {
+  const taking = takingOf(snapshot);
+  const name = snapshot.against?.name ?? key;
+  if (taking === undefined) return `Take back this payment on ${name}?`;
+  return `Take back the ${taking.withheld === 1 ? "tax withheld" : "payment"} of ${formatMoney(taking)} on ${dayText(taking.paidOn)} from ${name}?`;
+};
+
+/** A take-back card: the payment, the invoice, and what stays owed once it is taken back. */
+const takeBackLines = (snapshot: Snapshot, key: string) => {
+  const against = snapshot.against;
+  const taking = takingOf(snapshot);
+  const total = against?.total ?? null;
+  return [
+    `Client: ${payerOf(snapshot) ?? "none named"}`,
+    ...(taking === undefined
+      ? []
+      : [
+          taking.withheld === 1
+            ? `Tax the client withheld: ${formatMoney(taking)} on ${dayText(taking.paidOn)}`
+            : `Payment: ${formatMoney(taking)} received on ${dayText(taking.paidOn)}`,
+        ]),
+    `Invoice: ${against === null ? key : `${against.name ?? against.key}, ${against.title}`}`,
+    ...(against === null || total === null
+      ? []
+      : [
+          `${"tax" in against ? "Settled" : "Received"} on it now: ${formatMoney({ minor: against.paid, currency: total.currency })} of ${formatMoney(total)}`,
+          ...(taking === undefined
+            ? []
+            : [
+                `Owed after: ${formatMoney({ minor: total.minor - against.paid + taking.minor, currency: total.currency })}`,
+              ]),
+        ]),
+  ];
+};
+
 /** What the owner's Confirm did, in their words, for the answered card. */
 const madeOutcome = (made: { readonly number: string | null }, shown: Snapshot) => {
   const money = shown.amount === null ? "The money" : formatMoney(shown.amount);
@@ -310,6 +373,21 @@ const madeOutcome = (made: { readonly number: string | null }, shown: Snapshot) 
   return {
     title: "Money recorded",
     text: `${money}${from}${on}, is recorded and ${where}. ${receipt}`,
+  };
+};
+
+/** What the owner's Confirm on a take-back card did. */
+const takenOutcome = (shown: Snapshot, key: string) => {
+  const taking = takingOf(shown);
+  const total = shown.against?.total ?? null;
+  const name = shown.against?.name ?? key;
+  return {
+    title: "Payment taken back",
+    text: `${taking === undefined ? "The payment" : `${formatMoney(taking)} received ${dayText(taking.paidOn)}`} is taken back from ${name}${
+      total === null || taking === undefined || shown.against === null
+        ? ""
+        : `; ${formatMoney({ minor: total.minor - shown.against.paid + taking.minor, currency: total.currency })} is owed on it now`
+    }.`,
   };
 };
 
@@ -351,7 +429,8 @@ export const proposeReceipt = Effect.fn("KinReceipts.propose")(function* (input:
   const json = stableStringify(input.request);
   const snapshot = stableStringify(input.snapshot);
   // A payment's ask in one turn is one card whatever its figures do; its first snapshot stands.
-  const figures = input.request.received === undefined ? snapshot : "";
+  const figures =
+    input.request.received === undefined && input.request.takeBack === undefined ? snapshot : "";
   const proposalId = `rp_${NodeCrypto.createHash("sha256")
     .update(
       `${input.orgId.length}:${input.orgId}${input.agentId}:${input.wakeupId}:${json}:${figures}`,
@@ -417,11 +496,17 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
     sql`UPDATE kin_receipt_proposals SET state = ${state}, receipt_key = ${key},
         decided_at = ${input.now}
       WHERE org_id = ${input.orgId} AND proposal_id = ${row.proposalId}`;
+  const request = Option.getOrUndefined(decodeRequest(row.json));
   if (!input.confirmed) {
     yield* decide("declined", null);
-    return { _tag: "declined" as const };
+    return {
+      _tag: "declined" as const,
+      outcome:
+        request?.takeBack === undefined
+          ? { title: "Not recorded", text: "You said no, so nothing was recorded or numbered." }
+          : { title: "Not taken back", text: "You said no, so the payment stays recorded." },
+    };
   }
-  const request = Option.getOrUndefined(decodeRequest(row.json));
   if (request === undefined)
     return yield* new KinChatError({
       reason: "invalid_state",
@@ -430,7 +515,8 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
   const shell = yield* KinShell.get(input.orgId);
   const section = !KinShell.sectionOn(shell, "money")
     ? "money"
-    : (request.against ?? request.received) !== undefined && !KinShell.sectionOn(shell, "invoices")
+    : (request.against ?? request.received ?? request.takeBack) !== undefined &&
+        !KinShell.sectionOn(shell, "invoices")
       ? "invoices"
       : request.advance?.client !== undefined && !KinShell.sectionOn(shell, "clients")
         ? "clients"
@@ -449,6 +535,12 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
     });
   const personId = KinPersonId.make(input.personId);
   const writer: Writer = { actor: { _tag: "person", personId }, via: "owner", askedBy: personId };
+  const takeBack = request.takeBack;
+  if (takeBack !== undefined) {
+    yield* (yield* KinRecords).voidPayment(input.orgId, writer, takeBack.key, takeBack.paymentId);
+    yield* decide("made", null);
+    return { _tag: "takenBack" as const, outcome: takenOutcome(shown, takeBack.key) };
+  }
   const received = request.received;
   if (received !== undefined) {
     const records = yield* KinRecords;
@@ -519,7 +611,12 @@ export const proposalOutcome = Effect.fn("KinReceipts.outcome")(function* (input
       message: `No receipt proposal ${input.proposalId.slice(0, 40)} of yours. Call kin_receipt with what the owner asked for first.`,
     });
   if (row.state === "made" && row.receiptKey !== null) return row.receiptKey;
-  const received = Option.getOrUndefined(decodeRequest(row.json))?.received;
+  const asked = Option.getOrUndefined(decodeRequest(row.json));
+  if (row.state === "made" && asked?.takeBack !== undefined)
+    return yield* refused(
+      "The owner confirmed taking this payment back on its card, so Kin took it back; there is no receipt to read.",
+    );
+  const received = asked?.received;
   if (row.state === "made" && received !== undefined && received.amount === undefined)
     return yield* refused(
       "The owner confirmed this tax the client withheld on its card, so Kin recorded it. Tax withheld isn't money received, so it gets no receipt.",

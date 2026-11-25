@@ -25,6 +25,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
@@ -154,7 +155,7 @@ const gate = Layer.unwrap(
               ${at}, ${`send:${input.clientMessageId}`})
             ON CONFLICT DO NOTHING`;
           // Posted now, as the chat stamps it, so it takes taps for its day from now.
-          const postedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+          const postedAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
           yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
               type, revision, state_json, awaiting_json, updated_at)
             VALUES (${widgetId}, ${agent.orgId}, ${input.chatId}, ${messageId}, 'native', 'choice', 1,

@@ -160,9 +160,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   if (ran !== undefined) return ran;
   if (watched !== undefined) return watched;
   if (details !== undefined) return details;
-  if (made?._tag === "made" || made?._tag === "paid") return made.outcome;
-  if (made?._tag === "declined")
-    return { title: "Not recorded", text: "You said no, so nothing was recorded or numbered." };
+  if (made !== undefined) return made.outcome;
   if (asked?._tag === "declined")
     return { title: "Not sent", text: "You cancelled it, so nothing was sent." };
   if (currency !== undefined)
