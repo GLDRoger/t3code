@@ -30,6 +30,7 @@ import { touchesOf } from "../work/touches.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { personQuietUntil, validZone } from "../triggers/quietHold.ts";
 import { fieldList, parseFields } from "../work/lists.ts";
+import { DEFAULT_STAGES, stagesOf } from "../work/dealStages.ts";
 import { dayIn, formatMoneyPlain } from "../work/money.ts";
 import { principalOfText } from "../work/projectSpine.ts";
 import { labelledNow, owedInvoices, ownerZone, startOfDay } from "../work/recordRows.ts";
@@ -46,13 +47,22 @@ const draftParty = (personId: string) => `draft:${personId}`;
 const taskSlot = (recordId: string) => `task:${recordId}`;
 /** A deal's facts its person gets a drafted follow-up for (`stillQuiet`). */
 const DEAL_FOLLOW_UPS = new Set<string>(["deal_quiet", "deal_date_passed"]);
+/** A deal or prospect with no next step, and a project with no plan, get one proposed. */
+const PROPOSALS = new Set<string>(["deal_no_next_step", "project_no_plan"]);
+/** A meeting's facts: the prep before it (`stillAhead`), its outcome asked after (`stillPassed`). */
+const MEETINGS = new Set<string>(["meeting_soon", "meeting_passed"]);
+/** Facts Kin routes to a person itself and checks against that person's own view. */
+const ROUTED = new Set<string>([...MEETINGS, ...PROPOSALS]);
 const FOLLOW_UPS = new Set<string>([
   "task_late",
   "task_due_soon",
   "theirs_late",
-  "meeting_soon",
+  ...MEETINGS,
   ...DEAL_FOLLOW_UPS,
+  ...PROPOSALS,
 ]);
+/** After Not this on a suggestion for it, a deal or project gets no new proposal this long. */
+const DECLINED_REST_MS = 14 * DAY_MS;
 /** A prep note this close to its meeting comes too late to read: none is made. */
 const PREP_BEFORE_MS = 2 * HOUR_MS;
 /** What a prep note lists of the client's open work, at most. */
@@ -70,9 +80,9 @@ const shortHash = (text: string) =>
 type DraftPath = "mail" | "doc";
 
 /**
- * Who may draft a follow-up, in order: the live lead its project names as its lead; for one to a
- * client, the first live lead whose domain sells; the company's own lead (`routing`). A paused
- * lead runs nothing, so it drafts nothing.
+ * Who may draft a follow-up, in order: the live lead its project (or it, a project) names as its
+ * lead; for one to a client, the first live lead whose domain sells; the company's own lead
+ * (`routing`). A paused lead runs nothing, so it drafts nothing.
  */
 const draftersFor = Effect.fnUntraced(function* (
   orgId: KinOrgId,
@@ -84,7 +94,7 @@ const draftersFor = Effect.fnUntraced(function* (
   const leads = yield* sql<{ agentId: string; domain: string; leadsProject: number }>`SELECT
       l.agent_id AS "agentId", l.domain,
       EXISTS (SELECT 1 FROM kin_records r JOIN kin_records p ON p.org_id = r.org_id
-          AND p.record_id = r.project_id AND p.register_id = 'projects'
+          AND p.record_id = COALESCE(r.project_id, r.record_id) AND p.register_id = 'projects'
         WHERE r.org_id = l.org_id AND r.record_id = ${recordId}
           AND p.owner_kind = 'agent' AND p.owner_id = l.agent_id) AS "leadsProject"
     FROM kin_leads l
@@ -299,6 +309,148 @@ const stillAhead = Effect.fnUntraced(function* (
   return { zone, path: "doc" as const, of: "meeting" as const };
 });
 
+/**
+ * Their zone when `meetingId` is an open, unlabelled client meeting `personId` holds and sees,
+ * passed with `factKey` standing, Clients on and theirs, and no open question about it nor mail
+ * card on it from their mailbox: asked once a meeting.
+ */
+const stillPassed = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  factKey: string,
+  meetingId: string,
+  at: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const viewer = (yield* ownerLevel(orgId, personId))
+    ? ({ _tag: "ownerLevel" } as const)
+    : viewerOfPeople([personId]);
+  const [row] = yield* sql<{
+    zone: string | null;
+    dateAt: number;
+    seesClients: number;
+    client: number;
+    standing: number;
+    asked: number;
+    carded: number;
+  }>`SELECT p.time_zone AS zone, m.date_at AS "dateAt",
+      (p.sees_clients = 1 OR p.access IN ('owner', 'co_owner')) AS "seesClients",
+      EXISTS (SELECT 1 FROM kin_records r WHERE r.org_id = m.org_id AND r.register_id = 'clients'
+        AND r.record_id = COALESCE(m.party_id, pr.party_id) AND ${seenBy(sql, viewer)}) AS client,
+      EXISTS (SELECT 1 FROM kin_pulse_facts f WHERE f.org_id = m.org_id
+        AND f.fact_key = ${factKey} AND f.subject_record_id = m.record_id
+        AND f.cleared_at IS NULL) AS standing,
+      EXISTS (SELECT 1 FROM kin_questions q WHERE q.org_id = m.org_id AND q.state = 'open'
+        AND (' ' || q.about || ' ') LIKE ('% ' || m.key || ' %')) AS asked,
+      EXISTS (SELECT 1 FROM kin_connection_asks k JOIN kin_connections c
+          ON c.org_id = k.org_id AND c.connection_id = k.connection_id
+        WHERE k.org_id = m.org_id AND k.entry_record_id = m.record_id AND k.state = 'open'
+          AND (c.person_id IS NULL OR c.person_id = ${personId})) AS carded
+    FROM kin_records m
+    JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = ${personId}
+      AND p.removed_at IS NULL
+    LEFT JOIN kin_records pr ON pr.org_id = m.org_id AND pr.record_id = m.project_id
+    WHERE m.org_id = ${orgId} AND m.record_id = ${meetingId} AND m.register_id = 'work'
+      AND m.category = 'meeting' AND m.state NOT IN ('done', 'dropped') AND m.date_at <= ${at}
+      AND m.owner_kind = 'person' AND m.owner_id = ${personId}
+      AND m.record_id IN (SELECT r.record_id FROM kin_records r WHERE r.org_id = ${orgId}
+        AND r.record_id = ${meetingId} AND ${seenBy(sql, viewer)} AND NOT ${labelledNow(sql)})`;
+  if (
+    row === undefined ||
+    row.standing !== 1 ||
+    row.client !== 1 ||
+    row.seesClients !== 1 ||
+    row.asked === 1 ||
+    row.carded === 1
+  )
+    return undefined;
+  if (!(yield* KinShell.sectionOnFor(orgId, "clients").pipe(Effect.orElseSucceed(() => false))))
+    return undefined;
+  const zone = validZone(row.zone) ?? (yield* ownerZone(orgId));
+  if (yield* chasedSince(orgId, personId, meetingId, row.dateAt, dayIn(at, zone))) return undefined;
+  return { zone, path: "mail" as const, of: "outcome" as const };
+});
+
+/**
+ * Once a stretch: an open deal or prospect they look after (`deals.ts` `hearer`; the owner's when
+ * nobody does) and see, with no quiet or late mail of its own standing; or an open project, for
+ * the owner. Never within `DECLINED_REST_MS` of a suggestion for it being dropped.
+ */
+const stillUnplanned = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  factKey: string,
+  recordId: string,
+  at: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const viewer = (yield* ownerLevel(orgId, personId))
+    ? ({ _tag: "ownerLevel" } as const)
+    : viewerOfPeople([personId]);
+  const plan = senseOf(factKey) === "project_no_plan";
+  const present = sql`SELECT person_id FROM kin_people WHERE org_id = r.org_id
+    AND removed_at IS NULL`;
+  const [row] = yield* sql<{
+    zone: string | null;
+    seesClients: number;
+    standing: number;
+    mailed: number;
+    declined: number;
+    since: number;
+  }>`SELECT p.time_zone AS zone,
+      (p.sees_clients = 1 OR p.access IN ('owner', 'co_owner')) AS "seesClients",
+      EXISTS (SELECT 1 FROM kin_pulse_facts f WHERE f.org_id = r.org_id
+        AND f.fact_key = ${factKey} AND f.subject_record_id = r.record_id
+        AND f.cleared_at IS NULL) AS standing,
+      EXISTS (SELECT 1 FROM kin_pulse_facts f WHERE f.org_id = r.org_id
+        AND f.subject_record_id = r.record_id AND f.cleared_at IS NULL
+        AND f.sense IN ${sql.in([...DEAL_FOLLOW_UPS])}) AS mailed,
+      EXISTS (SELECT 1 FROM kin_records w WHERE w.org_id = r.org_id
+        AND w.register_id IN ('work', 'milestones') AND w.confirmed = 0 AND w.state = 'dropped'
+        AND w.closed_at > ${at - DECLINED_REST_MS}
+        AND (w.project_id = r.record_id OR (r.register_id = 'clients' AND w.party_id = r.record_id)
+          OR w.record_id IN (SELECT l.record_id FROM kin_record_links l WHERE l.org_id = r.org_id
+            AND l.kind = 'record' AND l.target = r.record_id))) AS declined,
+      MAX(r.created_at, COALESCE((SELECT MAX(t.closed_at) FROM kin_records t
+        WHERE t.org_id = r.org_id AND t.project_id = r.record_id
+          AND t.register_id IN ('work', 'milestones')), 0)) AS since
+    FROM kin_records r
+    LEFT JOIN kin_records cl ON cl.org_id = r.org_id AND cl.record_id = r.party_id
+    JOIN kin_people p ON p.org_id = r.org_id AND p.person_id = ${personId}
+      AND p.removed_at IS NULL
+    WHERE r.org_id = ${orgId} AND r.record_id = ${recordId}
+      AND ${
+        plan
+          ? sql`r.register_id = 'projects' AND r.state = 'open' AND p.access = 'owner'`
+          : sql`((r.register_id = 'deals' AND r.state = 'open')
+            OR (r.register_id = 'clients' AND r.category = 'prospect' AND r.state <> 'dropped'))
+          AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
+            OR (r.register_id = 'deals' AND r.owner_kind = 'agent'
+              AND cl.owner_kind = 'person' AND cl.owner_id = ${personId})
+            OR (p.access = 'owner'
+              AND NOT (r.owner_kind = 'person' AND r.owner_id IN (${present}))
+              AND NOT (r.register_id = 'deals' AND r.owner_kind = 'agent'
+                AND cl.owner_kind = 'person' AND cl.owner_id IN (${present}))))
+          AND ${crmSeenBy(sql, viewer)}`
+      }`;
+  if (row === undefined || row.standing !== 1 || row.declined === 1) return undefined;
+  if (!plan && (row.seesClients !== 1 || row.mailed === 1)) return undefined;
+  const on = (section: "clients" | "deals") =>
+    KinShell.sectionOnFor(orgId, section).pipe(Effect.orElseSucceed(() => false));
+  if (!(yield* on("clients")) || (!plan && !(yield* on("deals")))) return undefined;
+  const zone = validZone(row.zone) ?? (yield* ownerZone(orgId));
+  // `deal_no_next_step:<key>:<since>`; a project's stretch starts when its last task closed.
+  const since = plan ? row.since : Number(factKey.slice(factKey.lastIndexOf(":") + 1));
+  if (
+    !Number.isFinite(since) ||
+    (yield* chasedSince(orgId, personId, recordId, since, dayIn(at, zone)))
+  )
+    return undefined;
+  return plan
+    ? { zone, path: "doc" as const, of: "plan" as const }
+    : { zone, path: "mail" as const, of: "step" as const };
+});
+
 /** How to draft the follow-up `factKey` names on `recordId` for `personId` now, if still wanted. */
 const stillWanted = (
   orgId: KinOrgId,
@@ -309,9 +461,13 @@ const stillWanted = (
 ) =>
   DEAL_FOLLOW_UPS.has(senseOf(factKey))
     ? stillQuiet(orgId, personId, factKey, recordId, at)
-    : senseOf(factKey) === "meeting_soon"
-      ? stillAhead(orgId, personId, factKey, recordId, at)
-      : stillDue(orgId, personId, recordId, at);
+    : PROPOSALS.has(senseOf(factKey))
+      ? stillUnplanned(orgId, personId, factKey, recordId, at)
+      : senseOf(factKey) === "meeting_soon"
+        ? stillAhead(orgId, personId, factKey, recordId, at)
+        : senseOf(factKey) === "meeting_passed"
+          ? stillPassed(orgId, personId, factKey, recordId, at)
+          : stillDue(orgId, personId, recordId, at);
 
 /**
  * A person's own task that is due (`stillDue`): one wake, in their own chat, of the first agent
@@ -338,9 +494,9 @@ export const draftWakes = Effect.fn("KinPulse.draftWakes")(function* (input: {
     (fact) => FOLLOW_UPS.has(fact.sense) && fact.subject.recordId !== undefined,
   );
   if (due.length === 0) return woken;
-  // A meeting's facts are the main agent's; its prep is for the person who holds it.
+  // A meeting's facts are the main agent's; its prep and its outcome are its holder's.
   const meetings = due.flatMap((fact) =>
-    fact.sense === "meeting_soon" && !fact.sensitive ? [fact.subject.recordId!] : [],
+    MEETINGS.has(fact.sense) && !fact.sensitive ? [fact.subject.recordId!] : [],
   );
   const sql = yield* SqlClient.SqlClient;
   const held = new Map(
@@ -351,26 +507,32 @@ export const draftWakes = Effect.fn("KinPulse.draftWakes")(function* (input: {
           WHERE org_id = ${orgId} AND owner_kind = 'person' AND record_id IN ${sql.in(meetings)}
           ORDER BY record_id`).map((row) => [row.recordId, row.personId]),
   );
+  // A project's missing plan, and a deal nobody looks after, are the owner's.
+  const [orgOwner] = due.some((fact) => PROPOSALS.has(fact.sense) && fact.actor._tag !== "person")
+    ? yield* sql<{ personId: string }>`SELECT person_id AS "personId" FROM kin_people
+        WHERE org_id = ${orgId} AND access = 'owner' AND removed_at IS NULL
+        ORDER BY person_id LIMIT 1`
+    : [];
   const byPerson = new Map<string, Array<KinPulseFact>>();
   for (const fact of due) {
-    const holder =
-      fact.sense === "meeting_soon"
-        ? held.get(fact.subject.recordId!)
-        : fact.actor._tag === "person"
-          ? fact.actor.personId
+    const holder = MEETINGS.has(fact.sense)
+      ? held.get(fact.subject.recordId!)
+      : fact.actor._tag === "person"
+        ? fact.actor.personId
+        : PROPOSALS.has(fact.sense)
+          ? orgOwner?.personId
           : undefined;
     if (holder !== undefined) byPerson.set(holder, [...(byPerson.get(holder) ?? []), fact]);
   }
   for (const [person, facts] of byPerson) {
     const personId = KinPersonId.make(person);
-    const prep = facts.filter((fact) => fact.sense === "meeting_soon");
     const seen = new Set([
       ...(yield* input.sees(
         personId,
-        facts.filter((fact) => fact.sense !== "meeting_soon"),
+        facts.filter((fact) => !ROUTED.has(fact.sense)),
       )).map((fact) => fact.key),
-      // Held and unlabelled; `stillAhead` checks it against their own view.
-      ...prep.map((fact) => fact.key),
+      // Each is checked against their own view as it is made (`stillAhead`, `stillUnplanned`).
+      ...facts.filter((fact) => ROUTED.has(fact.sense)).map((fact) => fact.key),
     ]);
     const ready: Array<{ fact: KinPulseFact; recordId: string; zone: string; path: DraftPath }> =
       [];
@@ -600,8 +762,9 @@ export const docHeadStart = Effect.fn("KinPulse.docHeadStart")(function* (
     ? rest.slice(0, -`:YYYY-MM-DD:${agentId}`.length)
     : rest.slice(0, -":YYYY-MM-DD".length);
   const at = yield* DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
-  if ((yield* stillWanted(orgId, personId, event.factKey ?? "", recordId, at))?.path !== "doc")
-    return undefined;
+  const still = yield* stillWanted(orgId, personId, event.factKey ?? "", recordId, at);
+  // A proposed plan is tasks, not a doc.
+  if (still?.path !== "doc" || still.of === "plan") return undefined;
   const [task] = yield* sql<{ key: string }>`SELECT key FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${recordId}`;
   return task === undefined ? undefined : { personId, recordId, key: task.key };
@@ -674,6 +837,23 @@ export const DRAFT_DEAL = (name: string, addresses: ReadonlyArray<string>, reaso
 /** The same, for something a client owes us that is late: a chase. */
 export const DRAFT_CHASE = (name: string, addresses: ReadonlyArray<string>) =>
   `Kin woke you for ${name}: the client below owed this to us by the day below and it hasn't come, and no mail for it waits on a card. Draft a short, friendly chase to the contact below from ${ownMailbox(addresses)} with kin_connection_call mail_send, naming the entry's key, asking for it or for a day it will come. Nothing goes until they tap Confirm: never say it was sent, and promise nothing for us. Then tell them in one short line that the chase to the contact is ready on its card for their Confirm. The card shows the whole mail, so say nothing more about it.`;
+/**
+ * The wake's own line for a client meeting that passed with no outcome: one question, then its
+ * answer noted, the follow-up drafted (`mail` when they have a mailbox and a contact) and its
+ * action items suggested.
+ */
+export const DRAFT_MEETING_OUTCOME = (
+  name: string,
+  meeting: { readonly key: string; readonly title: string },
+  mail: { readonly to: string; readonly from: ReadonlyArray<string> } | undefined,
+) =>
+  `Kin woke you for ${name}: their meeting below with a client has passed and no outcome is noted. Ask them once with kin_ask in this chat: question "How did ${meeting.title} go?", options "It didn't happen" (action drop on ${meeting.key}) and "Nothing to follow up" (action done on ${meeting.key}), default "none", about ${meeting.key}, and detail "Or reply here in a line or two: I'll note it on ${meeting.key}, ${mail === undefined ? "write you call notes for the follow-up" : `draft the follow-up to ${mail.to} for your Confirm`} and suggest the action items." Say nothing else now. When they reply with how it went: close that question as answered with kin_ask_close, then put what they said in ${meeting.key}'s notes and mark it done with record_update, ${mail === undefined ? "give them call notes for the follow-up here (there is no mailbox of theirs or no contact to write to)" : `draft the follow-up to the contact below with kin_connection_call mail_send from ${ownMailbox(mail.from)}, promising nothing for us that their reply and the records don't hold`}, and record each action item, even one the client asked for, as a Work row with suggested true, owner whoever their reply names for it, else them. Nothing goes until they tap Confirm: never say it was sent. ${mail === undefined ? `After the call notes, say in one short line that ${meeting.key} is noted and done and how many action items you suggested; their tasks show them, so don't list them.` : `Then tell them in one short line that ${meeting.key} is noted and done, the follow-up waits on its card for their Confirm, and how many action items you suggested. The cards show the mail and the tasks, so say nothing more about them.`}`;
+/** The wake's own line for a deal, or a prospect with no deal, that has no next step. */
+export const PROPOSE_STEP = (name: string, deal: boolean) =>
+  `Kin woke you for ${name}: ${deal ? "the deal below" : "the prospect below, which has no deal,"} has no next step. Propose one: a single Work row with record_create, suggested true, for this client${deal ? " and deal" : ""}, owner them, due a day this week, titled as the step itself (a call, a mail, a demo, a quote), from the last contact and comment below. Never offer a price, date or term the records don't hold. Make nothing else. Then tell them in one short line what you suggested, with its key, and that it waits on its task to be kept or not. The task shows why you suggested it, so say nothing more about it.`;
+/** The wake's own line for a project with no plan: its breakdown as suggested tasks. */
+export const PROPOSE_PLAN = (name: string) =>
+  `Kin woke you for ${name}: the project below has no milestones and no open tasks. Propose its plan in one record_create call: at most 8 tasks, each with the project, a size (S, M or L), an owner from its members and a one-line reason, and milestones only where its own words name stages. Every row, milestones too, is suggested true, so none stands until they keep it. Use only the project's own words, its docs and the records below; never add a figure or date that isn't there. Then tell them in one short line how many tasks you suggested and that they keep each or not on Tasks. The rows show what each is and why, so say nothing more about them.`;
 /** The wake's own line when there is no mailbox of theirs, or no contact they may see. */
 export const DRAFT_CALL_NOTES = (name: string, mailbox: boolean) =>
   `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. ${mailbox ? "There is no contact address for it that they may see" : "No mailbox of theirs is connected"}, so draft no mail: give them call notes here in this chat (what to say, what was promised, the last contact).`;
@@ -793,6 +973,23 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
       viewer,
       lastComment,
     });
+  if (still.of === "outcome")
+    return yield* meetingOutcome(orgId, person.name, {
+      meetingId: fact.recordId,
+      zone,
+      viewer,
+      addresses,
+      from,
+    });
+  if (still.of === "step" || still.of === "plan")
+    return yield* proposal(orgId, person.name, {
+      recordId: fact.recordId,
+      zone,
+      at,
+      viewer,
+      lastComment,
+      plan: still.of === "plan",
+    });
   const [task] = yield* sql<{
     key: string;
     title: string;
@@ -874,12 +1071,7 @@ const meetingPrep = Effect.fnUntraced(function* (
       AND c.record_id = COALESCE(m.party_id, pr.party_id)
     WHERE m.org_id = ${orgId} AND m.record_id = ${input.meetingId}`;
   if (meeting === undefined) return undefined;
-  const names = new Map(
-    (yield* sql<{ id: string; name: string }>`SELECT person_id AS id, display_name AS name
-      FROM kin_people WHERE org_id = ${orgId}
-      UNION ALL SELECT agent_id AS id, display_name AS name FROM kin_agents WHERE org_id = ${orgId}
-      ORDER BY id`).map((one) => [one.id, one.name]),
-  );
+  const names = yield* namesOf(orgId);
   const attendees = fieldList(parseFields(meeting.fieldsJson), "attendees").flatMap((text) => {
     const who = principalOfText(text);
     const found =
@@ -944,6 +1136,176 @@ const meetingPrep = Effect.fnUntraced(function* (
                 .join(" + "),
             },
           }),
+    },
+  };
+});
+
+/** A passed meeting's wake: the meeting, who was in it, its client and the contact to write to. */
+const meetingOutcome = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  name: string,
+  input: {
+    readonly meetingId: string;
+    readonly zone: string;
+    readonly viewer: ReturnType<typeof viewerOfPeople>;
+    readonly addresses: ReadonlyArray<string>;
+    readonly from: { readonly mailbox: string } | { readonly from: string | ReadonlyArray<string> };
+  },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [meeting] = yield* sql<{
+    key: string;
+    title: string;
+    dateAt: number;
+    fieldsJson: string;
+    client: string;
+    partyId: string;
+  }>`SELECT m.key, m.title, m.date_at AS "dateAt", m.fields_json AS "fieldsJson",
+      c.title AS client, c.record_id AS "partyId"
+    FROM kin_records m
+    LEFT JOIN kin_records pr ON pr.org_id = m.org_id AND pr.record_id = m.project_id
+    JOIN kin_records c ON c.org_id = m.org_id AND c.register_id = 'clients'
+      AND c.record_id = COALESCE(m.party_id, pr.party_id)
+    WHERE m.org_id = ${orgId} AND m.record_id = ${input.meetingId}`;
+  if (meeting === undefined) return undefined;
+  const names = yield* namesOf(orgId);
+  const attendees = fieldList(parseFields(meeting.fieldsJson), "attendees").flatMap((text) => {
+    const who = principalOfText(text);
+    const found =
+      who === null ? undefined : names.get(who._tag === "person" ? who.personId : who.agentId);
+    return found === undefined ? [] : [found];
+  });
+  const contact = yield* contactOf(orgId, meeting.partyId, seenBy(sql, input.viewer));
+  return {
+    text: DRAFT_MEETING_OUTCOME(
+      name,
+      meeting,
+      contact === undefined || input.addresses.length === 0
+        ? undefined
+        : { to: contact.name, from: input.addresses },
+    ),
+    data: {
+      meeting: meeting.key,
+      title: meeting.title,
+      at: formatKinWhen(meeting.dateAt, "dayTime", { zone: input.zone, locale: KIN_TEXT_LOCALE }),
+      attendees,
+      client: meeting.client,
+      ...(contact === undefined ? {} : { writeTo: contact }),
+      ...input.from,
+    },
+  };
+});
+
+/** Every person's and agent's name by id, for the people a record names. */
+const namesOf = Effect.fnUntraced(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  return new Map(
+    (yield* sql<{ id: string; name: string }>`SELECT person_id AS id, display_name AS name
+      FROM kin_people WHERE org_id = ${orgId}
+      UNION ALL SELECT agent_id AS id, display_name AS name FROM kin_agents WHERE org_id = ${orgId}
+      ORDER BY id`).map((one) => [one.id, one.name]),
+  );
+});
+
+/**
+ * A proposal's wake: for a deal, its client and stage; for a prospect, itself; either with the
+ * last contacts they see. For a project: its notes, the docs on it they see, and its people.
+ */
+const proposal = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  name: string,
+  input: {
+    readonly recordId: string;
+    readonly zone: string;
+    readonly at: number;
+    readonly viewer: ReturnType<typeof viewerOfPeople>;
+    readonly lastComment: { readonly lastComment?: string };
+    readonly plan: boolean;
+  },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { recordId, viewer } = input;
+  const [row] = yield* sql<{
+    key: string;
+    title: string;
+    registerId: string;
+    notes: string;
+    fieldsJson: string;
+    ownerId: string;
+    client: string | null;
+    partyId: string | null;
+  }>`SELECT r.key, r.title, r.register_id AS "registerId", r.notes, r.fields_json AS "fieldsJson",
+      r.owner_id AS "ownerId", c.title AS client, c.record_id AS "partyId"
+    FROM kin_records r
+    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+      AND c.record_id IN (SELECT r.record_id FROM kin_records r
+        WHERE r.org_id = ${orgId} AND r.register_id = 'clients' AND ${crmSeenBy(sql, viewer)})
+    WHERE r.org_id = ${orgId} AND r.record_id = ${recordId}`;
+  if (row === undefined) return undefined;
+  const fields = parseFields(row.fieldsJson);
+  const client = row.client === null ? {} : { client: row.client };
+  if (input.plan) {
+    const docs = yield* sql<{ key: string; title: string }>`SELECT r.key, r.title
+      FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = 'docs' AND r.state <> 'dropped'
+        AND (r.project_id = ${recordId} OR r.record_id IN (SELECT
+          CASE WHEN l.record_id = ${recordId} THEN l.target ELSE l.record_id END
+          FROM kin_record_links l WHERE l.org_id = ${orgId} AND l.kind = 'record'
+            AND (l.record_id = ${recordId} OR l.target = ${recordId})))
+        AND ${seenBy(sql, viewer)}
+      ORDER BY r.key LIMIT ${PREP_OPEN}`;
+    const names = yield* namesOf(orgId);
+    const members = [
+      row.ownerId,
+      ...fieldList(fields, "members").flatMap((text) => {
+        const who = principalOfText(text);
+        return who === null ? [] : [who._tag === "person" ? who.personId : who.agentId];
+      }),
+    ].flatMap((id) => {
+      const found = names.get(id);
+      return found === undefined ? [] : [found];
+    });
+    const notes = Array.from(row.notes.trim()).slice(0, 2_000).join("");
+    return {
+      text: PROPOSE_PLAN(name),
+      data: {
+        project: row.key,
+        title: row.title,
+        ...client,
+        ...(notes === "" ? {} : { notes }),
+        docs,
+        members: [...new Set(members)],
+        ...input.lastComment,
+      },
+    };
+  }
+  const deal = row.registerId === "deals";
+  const partyId = deal ? row.partyId : recordId;
+  const touches = partyId === null ? [] : yield* touchesOf(orgId, partyId, input.at, 3, viewer);
+  const stageId = typeof fields["stage"] === "string" ? fields["stage"] : undefined;
+  const stage =
+    stageId === undefined
+      ? undefined
+      : ((
+          (yield* stagesOf(orgId)).stages.find((one) => one.id === stageId) ??
+          DEFAULT_STAGES.find((one) => one.id === stageId)
+        )?.name ?? stageId);
+  return {
+    text: PROPOSE_STEP(name, deal),
+    data: {
+      ...(deal ? { deal: row.key } : { prospect: row.key }),
+      title: row.title,
+      ...(deal ? client : {}),
+      ...(stage === undefined ? {} : { stage }),
+      lastContacts: touches.map((touch) => ({
+        on: dayIn(Date.parse(touch.at), input.zone),
+        kind: touch.kind,
+        ...(touch.who === null ? {} : { who: touch.who }),
+        ...(touch.note.trim() === ""
+          ? {}
+          : { note: Array.from(touch.note.trim()).slice(0, 200).join("") }),
+      })),
+      ...input.lastComment,
     },
   };
 });
