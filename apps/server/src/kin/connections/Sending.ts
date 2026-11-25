@@ -455,7 +455,7 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (
   input: Parameters<typeof prepareOne>[0],
 ) {
   const billed =
-    input.tool === MAIL_TOOL.send && strings(input.args.to).length === 0
+    input.tool === MAIL_TOOL.send && recipients(input.args.to).length === 0
       ? yield* billedTo(input.orgId, strings(input.args.attachments))
       : null;
   const prepared = yield* prepareOne(

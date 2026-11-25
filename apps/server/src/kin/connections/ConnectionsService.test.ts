@@ -2792,6 +2792,27 @@ describe("KinConnections sending", () => {
           attachments: ["INV-1"],
         });
         assert.deepStrictEqual(cards.at(-1)?.send?.to, ["ana@client.example"]);
+        yield* sendCall("mail_send", {
+          to: "bea@client.example",
+          subject: "Invoice for Bea",
+          body: "Attached.",
+          attachments: ["INV-1"],
+        });
+        assert.deepStrictEqual(cards.at(-1)?.send?.to, ["bea@client.example"]);
+        // A bad address is refused as one, not swapped for the billing contact.
+        const cardsBefore = cards.length;
+        assert.include(
+          (yield* Effect.flip(
+            sendCall("mail_send", {
+              to: "not-an-address",
+              subject: "Invoice for nobody",
+              body: "Attached.",
+              attachments: ["INV-1"],
+            }),
+          )).message,
+          "not-an-address",
+        );
+        assert.lengthOf(cards, cardsBefore);
         // A name typed on the invoice is who it bills, over its project's client and contacts.
         yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
           VALUES (${orgId}, 'projects', 'Projects', 'P', 0)`;
