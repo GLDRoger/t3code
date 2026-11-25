@@ -7,10 +7,12 @@ import {
   type KinContactListInput,
   type KinOrgId,
   type KinPartiesInput,
+  type KinShell,
 } from "@t3tools/contracts";
 
 import { KIN_LISTS, kinMoneyText } from "./kinLists.ts";
 import { kinCount } from "./kinCount.ts";
+import { kinSectionNamed } from "./kinShell.ts";
 
 /** Marketing's words and rules, the same on web and phone: campaigns, tags, lists and exports. */
 export const KIN_MARKETING = {
@@ -127,10 +129,15 @@ export function kinCampaignResultRows(
   results: KinCampaignResults,
   audience: string | null | undefined,
   deals: boolean,
+  shell?: KinShell | null,
 ): ReadonlyArray<KinCampaignResultRow> {
   return [
     { id: "prospects", label: KIN_MARKETING.prospects, value: String(results.prospects) },
-    { id: "clients", label: KIN_MARKETING.clients, value: String(results.clients) },
+    {
+      id: "clients",
+      label: kinSectionNamed(shell, KIN_MARKETING.clients),
+      value: String(results.clients),
+    },
     ...(deals
       ? [
           {
@@ -165,10 +172,11 @@ export function kinCampaignResultsSummary(
   results: KinCampaignResults,
   audience: string | null | undefined,
   deals: boolean,
+  shell?: KinShell | null,
 ): string {
   const parts = [
     ...counting(results.prospects, "prospect", "prospects"),
-    ...counting(results.clients, "client", "clients"),
+    ...counting(results.clients, "client", "clients").map((part) => kinSectionNamed(shell, part)),
     ...(deals ? counting(results.open.count, "deal", "deals") : []),
     ...(deals ? counting(results.won.count, "won", "won") : []),
     ...(audience == null ? [] : counting(results.audience, "contact", "contacts")),

@@ -14,6 +14,7 @@ import {
   type KinPersonPlaceSwitches,
   type KinPersonPlaces,
   type KinPersonProfile,
+  type KinShell,
   kinIsLocalOnlyHost,
   kinOwnerLevel,
   kinWhenFormat,
@@ -26,6 +27,7 @@ import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runti
 import type { KinAvatarView } from "./kinScreenState.ts";
 import { kinRoleLine } from "./kinProfiles.ts";
 import { kinFailureText } from "./kinAnswers.ts";
+import { kinSectionNamed } from "./kinShell.ts";
 
 export const KIN_TEAM_TITLE = "Team";
 export const KIN_TEAM_ADD = "Add teammate";
@@ -600,6 +602,7 @@ export function kinAccessChangeCopy(
   name: string,
   access: KinPeopleSetAccessInput["access"],
   back = false,
+  shell?: KinShell | null,
 ): { readonly title: string; readonly detail: string; readonly confirm: string } {
   if (back)
     return access === "co_owner"
@@ -616,7 +619,7 @@ export function kinAccessChangeCopy(
   return access === "co_owner"
     ? {
         title: `Make ${name} a co-owner?`,
-        detail: `${name} will see Tasks, Money, Clients, Docs and Settings, use every agent in their own chats with it, and confirm what you can. Only you can change who is a co-owner.`,
+        detail: `${name} ${kinSectionNamed(shell, "will see Tasks, Money, Clients, Docs and Settings, use every agent in their own chats with it, and confirm what you can. Only you can change who is a co-owner.")}`,
         confirm: "Make co-owner",
       }
     : {

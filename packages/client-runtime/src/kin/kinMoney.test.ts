@@ -140,6 +140,22 @@ describe("the Money summary", () => {
     expect(
       kinMoneyView({ ...summary, owed: { ...summary.owed, byClientMore: 12 } }, []).clientsMore,
     ).toBe("12 more clients");
+    // A company that renamed Clients reads its own word in Kin's rows, never in a client's name.
+    const patients = {
+      rev: 1,
+      sections: [{ id: "clients" as const, on: true, name: "Patients", noun: "patient" }],
+    };
+    const typed = {
+      ...summary.owed,
+      byClient: [{ ...summary.owed.byClient[0]!, party: null }],
+      byClientMore: 1,
+    };
+    const renamed = kinMoneyView({ ...summary, owed: typed }, [], patients);
+    expect([renamed.clients[0]!.name, renamed.clientsMore]).toEqual([
+      "No patient",
+      "1 more patient",
+    ]);
+    expect(kinMoneyView(summary, [], patients).clients[0]!.name).toBe("Acme Foods");
     // TDS stands on its own, never inside Received.
     expect([view.tdsDeducted, view.yearTdsDeducted]).toEqual([null, null]);
     const withTds = kinMoneyView(

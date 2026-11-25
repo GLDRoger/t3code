@@ -56,6 +56,7 @@ import {
   KinSettingsStatus,
 } from "./settings/KinSettingsLayout";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
+import { useKinSectionNamed } from "./useKinShell";
 
 /** A state said only when it isn't fine: problems are badges. */
 function ToneStatus(props: { readonly row: KinSocialRow }) {
@@ -99,6 +100,7 @@ function SocialSection(props: { readonly environmentId: EnvironmentId; readonly 
     link: (input) => link({ environmentId, input }),
     reload,
   });
+  const named = useKinSectionNamed(environmentId);
   const [open, setOpen] = useState<Open | null>(null);
   const [removing, setRemoving] = useState<KinSocialRow | null>(null);
   const [busy, setBusy] = useState(false);
@@ -216,11 +218,12 @@ function SocialSection(props: { readonly environmentId: EnvironmentId; readonly 
           view={view}
           rekey={open.kind === "rekey" ? open.row : null}
           actions={actions}
+          named={named}
           onClose={() => setOpen(null)}
         />
       ) : null}
       {open?.kind === "link" ? (
-        <LinkDialog row={open.row} actions={actions} onClose={() => setOpen(null)} />
+        <LinkDialog row={open.row} actions={actions} named={named} onClose={() => setOpen(null)} />
       ) : null}
       <KinConfirm
         ask={
@@ -253,6 +256,7 @@ function ConnectDialog(props: {
   readonly view: KinSocialView;
   readonly rekey: KinSocialRow | null;
   readonly actions: Actions;
+  readonly named: (text: string) => string;
   readonly onClose: () => void;
 }) {
   const { view, rekey, actions } = props;
@@ -313,7 +317,7 @@ function ConnectDialog(props: {
             <DialogTitle>
               {rekey === null ? COPY.sheetTitle : `${COPY.reconnect}: ${rekey.title}`}
             </DialogTitle>
-            <DialogDescription>{COPY.intro}</DialogDescription>
+            <DialogDescription>{props.named(COPY.intro)}</DialogDescription>
           </DialogHeader>
           <DialogPanel>
             {done !== null ? (
@@ -328,7 +332,7 @@ function ConnectDialog(props: {
                       {COPY.whose}
                     </legend>
                     {choices.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">{COPY.noClients}</p>
+                      <p className="text-sm text-muted-foreground">{props.named(COPY.noClients)}</p>
                     ) : (
                       choices.map((choice, index) => (
                         <label
@@ -439,6 +443,7 @@ function ConnectDialog(props: {
 function LinkDialog(props: {
   readonly row: KinSocialRow;
   readonly actions: Actions;
+  readonly named: (text: string) => string;
   readonly onClose: () => void;
 }) {
   const { row, actions } = props;
@@ -482,7 +487,7 @@ function LinkDialog(props: {
           <DialogHeader>
             <DialogTitle>{COPY.linkTitle(row.title)}</DialogTitle>
             <DialogDescription>
-              {row.kind === "client" ? COPY.forwardLink : COPY.openSignedIn}
+              {row.kind === "client" ? props.named(COPY.forwardLink) : COPY.openSignedIn}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
