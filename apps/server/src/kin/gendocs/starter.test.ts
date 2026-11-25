@@ -498,7 +498,7 @@ it("ships four recipes that parse, read only what Kin supplies, and make their s
       "accounts-2026-10.xlsx",
       "sales-register-2026-10.csv",
       "receipts-2026-10.csv",
-      "tds-2026-10.csv",
+      "tax-withheld-2026-10.csv",
       "expenses-2026-10.csv",
       "unpaid-expenses-2026-10.csv",
       "owed-to-partners-2026-10.csv",

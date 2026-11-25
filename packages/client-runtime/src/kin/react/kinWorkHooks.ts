@@ -19,7 +19,7 @@ import { useEffect, useState } from "react";
 
 import { runKinCommand } from "../kinRunCommand.ts";
 import { kinAccessMeAtom } from "../kinAccess.ts";
-import { kinSectionOn } from "../kinShell.ts";
+import { kinSectionNamed, kinSectionOn } from "../kinShell.ts";
 import { kinHostLink, type KinRouteHost } from "../kinHost.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinInvitedPeople } from "../kinTeam.ts";
@@ -192,6 +192,8 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
         reread: (key) =>
           registry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
         online: () => kinHostConnected(environmentId),
+        named: (text) =>
+          kinSectionNamed(registry.get(kinAccessMeAtom(app.runtime, environmentId))?.shell, text),
         ...(uses.keepAnswers === true
           ? { answers: kinWorkAnswersOf({ environmentId, orgId }) }
           : {}),

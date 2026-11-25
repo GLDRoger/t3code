@@ -168,7 +168,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
-import { useKinShell } from "./useKinShell";
+import { useKinSectionNamed, useKinShell } from "./useKinShell";
 import {
   kinPickerNamed,
   kinSectionNoun,
@@ -1355,6 +1355,7 @@ export function KinWorkLinks(
   },
 ) {
   const navigate = useNavigate();
+  const named = useKinSectionNamed(props.environmentId);
   const rest = kinLinkedRest(props.links);
   return (
     <KinLinkedGroups
@@ -1362,6 +1363,7 @@ export function KinWorkLinks(
       title={props.title ?? "Links"}
       // Both panels show the entry's client, project and milestone in their rows already.
       parentsShown
+      named={named}
       // A task or list entry opens on this panel; a doc, client or project has its own page.
       onOpen={(to) =>
         to._tag === "record" && (to.kind === "task" || to.kind === "entry")
@@ -1404,6 +1406,8 @@ export function KinLinkedGroups(props: {
   readonly item: Parameters<typeof kinLinked>[0];
   readonly title: string;
   readonly parentsShown: boolean;
+  /** Kin's words about clients in the company's own name for them. */
+  readonly named?: (text: string) => string;
   readonly onOpen: (to: KinNotificationDestination) => void;
   readonly children?: React.ReactNode;
 }) {
@@ -1415,7 +1419,9 @@ export function KinLinkedGroups(props: {
     <Section title={props.title}>
       {linked.groups.map((group) => (
         <div key={group.group} className="flex flex-col">
-          <h4 className="px-1 text-xs text-muted-foreground">{KIN_LINKED.group[group.group]}</h4>
+          <h4 className="px-1 text-xs text-muted-foreground">
+            {(props.named ?? String)(KIN_LINKED.group[group.group])}
+          </h4>
           <ul className="flex flex-col">
             {group.items.map((item) => {
               const { open } = item;

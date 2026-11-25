@@ -258,7 +258,11 @@ describe("bills in bulk", () => {
           ["IMG_0001.png", "IMG_0001.png", "scan.pdf"],
         );
         assert.deepStrictEqual(added.refused, [
-          { name: "notes.txt", reason: "Only photos and PDFs are read as bills." },
+          {
+            name: "notes.txt",
+            reason: "Only photos and PDFs are read as bills.",
+            attachmentId: files[3]!.id,
+          },
         ]);
         assert.strictEqual(added.chatId, "rhea-finance");
         // The files ride on Kin's own silent message in Rhea's chat with Finance, which wakes no one.

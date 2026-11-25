@@ -84,6 +84,7 @@ import { useKinEntryLines } from "./state/useKinMoneyAnswers";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate } from "./state/useKinHost";
+import { useKinSectionNamed } from "./state/useKinShell";
 import { KinGateView } from "./components/KinWorkPieces";
 import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
@@ -686,6 +687,7 @@ export function KinReceiptsSection(props: KinWorkTarget & { readonly seq: number
   const navigation = useNavigation();
   const openRecord = useKinWorkLink();
   const { environmentId, orgId } = props;
+  const named = useKinSectionNamed(environmentId);
   const canRead = useAtomValue(kinClient.receiptsRead.permissionAtom(environmentId));
   const canMake = useAtomValue(kinClient.makeReceipt.permissionAtom(environmentId));
   const { state, refresh } = useKinReceipts(props, { enabled: canRead });
@@ -722,7 +724,7 @@ export function KinReceiptsSection(props: KinWorkTarget & { readonly seq: number
         />
       ) : receipts.length === 0 ? (
         <Text textRole="body" className="px-4 py-3 text-foreground-muted">
-          {KIN_RECEIPTS.empty}
+          {named(KIN_RECEIPTS.empty)}
         </Text>
       ) : (
         shown.map((receipt) => (
@@ -797,6 +799,7 @@ export function KinReceiptNewScreen({ route }: StaticScreenProps<KinReceiptNewPa
 
 function ReceiptForm(props: KinWorkTarget) {
   const navigation = useNavigation();
+  const named = useKinSectionNamed(props.environmentId);
   const actions = useKinMoneyActions(props);
   // A plain number is in the home currency; a typed symbol or code still names its own.
   const home = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
@@ -844,9 +847,9 @@ function ReceiptForm(props: KinWorkTarget) {
         <Menu
           title={KIN_RECEIPTS.party}
           accessibilityRole="button"
-          accessibilityLabel={`${KIN_RECEIPTS.party}: ${payer?.name ?? KIN_RECEIPTS.noClient}. Change`}
+          accessibilityLabel={`${KIN_RECEIPTS.party}: ${payer?.name ?? named(KIN_RECEIPTS.noClient)}. Change`}
           actions={[
-            { id: "", title: KIN_RECEIPTS.noClient, state: payer === null ? "on" : "off" },
+            { id: "", title: named(KIN_RECEIPTS.noClient), state: payer === null ? "on" : "off" },
             ...clients.map((one) => ({
               id: one.key,
               title: one.name,
@@ -859,7 +862,7 @@ function ReceiptForm(props: KinWorkTarget) {
         >
           <View pointerEvents="none">
             <ListRowLayout
-              label={payer?.name ?? KIN_RECEIPTS.noClient}
+              label={payer?.name ?? named(KIN_RECEIPTS.noClient)}
               detail={KIN_RECEIPTS.party}
             />
           </View>
@@ -960,6 +963,7 @@ function ApplyReceipt(
 ) {
   const navigation = useNavigation();
   const { environmentId, orgId, party: payer } = props;
+  const named = useKinSectionNamed(environmentId);
   const actions = useKinMoneyActions(props);
   const [attempt, setAttempt] = useState(0);
   const [held, setHeld] = useState<{
@@ -1009,7 +1013,11 @@ function ApplyReceipt(
           onRetry={() => setAttempt((count) => count + 1)}
         />
       ) : invoices.length === 0 ? (
-        <EmptyState variant="plain" title="No open invoice" detail={KIN_RECEIPTS.noInvoices} />
+        <EmptyState
+          variant="plain"
+          title="No open invoice"
+          detail={named(KIN_RECEIPTS.noInvoices)}
+        />
       ) : (
         <ListSection title={KIN_RECEIPTS.pickInvoice}>
           {invoices.map((invoice) => (
