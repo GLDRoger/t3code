@@ -4,9 +4,11 @@ import {
   KIN_STREAMS,
   AuthSessionId,
   AuthStandardClientScopes,
+  KinConnectionId,
   KinOrgId,
   KinPersonId,
   ProviderInstanceId,
+  type KinMyMailbox,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -25,6 +27,7 @@ import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as RetiredActions from "../approvals/retiredActions.ts";
+import { KinConnections } from "../connections/ConnectionsService.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
 import * as KinShell from "../shell/KinShell.ts";
@@ -341,6 +344,89 @@ describe("KinRefreshHub", () => {
       assert.deepInclude(yield* Queue.take(queue), { workLists: 2 });
     }).pipe(Effect.scoped, Effect.provide(paired)),
   );
+
+  it.effect("a member hears connections only when their own connections read changed", () => {
+    const mailboxes = new Map<KinPersonId, KinMyMailbox>();
+    const connections = Layer.mock(KinConnections)({
+      mine: (people, { orgId }) =>
+        Effect.sync(() => {
+          const person = people.find((person) => person.orgId === orgId);
+          return (
+            (person && mailboxes.get(person.personId)) ?? {
+              orgId,
+              mailbox: null,
+              mailboxes: [],
+              services: [
+                { service: "google", label: "Google", ready: true },
+                { service: "microsoft", label: "Microsoft", ready: false },
+              ],
+              signInAddress: "https://ambermill.example/sign-in",
+            }
+          );
+        }),
+    });
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { touch } = yield* RefreshHub.KinRefreshObserver;
+      const { owner: rhea } = yield* KinIdentity;
+      const { orgId } = rhea;
+      const zoya = { ...rhea, personId: KinPersonId.make("zoya") };
+      const arjun = { ...rhea, personId: KinPersonId.make("arjun") };
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES (${zoya.personId}, ${orgId}, 'zoya', 'Zoya', '2026-11-09T00:00:00.000Z', 'member'),
+          (${arjun.personId}, ${orgId}, 'arjun', 'Arjun', '2026-11-09T00:00:00.000Z', 'member')`;
+      const zoyaRefreshes = subscribeRefreshes([zoya], { orgId });
+      const zoyaQueue = yield* Stream.toQueue(zoyaRefreshes, { capacity: "unbounded" });
+      const arjunQueue = yield* Stream.toQueue(subscribeRefreshes([arjun], { orgId }), {
+        capacity: "unbounded",
+      });
+      const rheaQueue = yield* Stream.toQueue(subscribeRefreshes([rhea], { orgId }), {
+        capacity: "unbounded",
+      });
+      const zoyaFirst = yield* Queue.take(zoyaQueue);
+      const arjunFirst = yield* Queue.take(arjunQueue);
+      const rheaFirst = yield* Queue.take(rheaQueue);
+      assert.strictEqual(zoyaFirst.connections, 0);
+      assert.strictEqual(arjunFirst.connections, 0);
+      assert.strictEqual(rheaFirst.connections, 0);
+
+      const connect = (personId: KinPersonId, first: KinMyMailbox) => {
+        const mailbox = {
+          connectionId: KinConnectionId.make(`${personId}-mail`),
+          preset: "google",
+          account: `${personId}@ambermill.example`,
+          state: "active",
+        } satisfies KinMyMailbox["mailbox"];
+        mailboxes.set(personId, { ...first, mailbox, mailboxes: [mailbox] });
+      };
+      const { mine } = yield* KinConnections;
+      const burst = sql
+        .withTransaction(touch(orgId, "connections"))
+        .pipe(Effect.andThen(TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE)));
+      connect(zoya.personId, yield* mine([zoya], { orgId }));
+      yield* burst;
+      const zoyaNext = yield* Queue.take(zoyaQueue);
+      assert.strictEqual(zoyaNext.connections, (zoyaFirst.connections ?? 0) + 1);
+      assert.strictEqual(yield* Queue.size(arjunQueue), 0);
+      assert.strictEqual((yield* Queue.take(rheaQueue)).connections, 1);
+
+      yield* burst;
+      assert.strictEqual(yield* Queue.size(zoyaQueue), 0);
+      assert.strictEqual(yield* Queue.size(arjunQueue), 0);
+      assert.strictEqual((yield* Queue.take(rheaQueue)).connections, 2);
+
+      connect(arjun.personId, yield* mine([arjun], { orgId }));
+      yield* burst;
+      assert.strictEqual(
+        (yield* Queue.take(arjunQueue)).connections,
+        (arjunFirst.connections ?? 0) + 1,
+      );
+      assert.strictEqual(yield* Queue.size(zoyaQueue), 0);
+      assert.strictEqual((yield* Queue.take(rheaQueue)).connections, 3);
+
+      assert.deepStrictEqual(yield* Stream.runHead(zoyaRefreshes), Option.some(zoyaNext));
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(paired, connections)));
+  });
 
   it.effect("moves the lists a new company made while waiting when its country is saved", () =>
     Effect.gen(function* () {

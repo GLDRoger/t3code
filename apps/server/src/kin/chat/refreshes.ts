@@ -8,8 +8,10 @@ import {
   type KinRefreshesSubscribeInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
+import { KinConnections } from "../connections/ConnectionsService.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
 import { accessOf } from "../people/KinAccess.ts";
 import { KinIdentity, type PersonIdentity } from "./KinIdentity.ts";
@@ -26,6 +28,7 @@ type Reads = {
   readonly kind: Effect.Effect<KinPersonAccess | undefined>;
   readonly view: Effect.Effect<string | null>;
   readonly lists: Effect.Effect<string | null>;
+  readonly connections: Effect.Effect<string | null> | undefined;
   readonly numbers: Effect.Effect<string>;
 };
 /**
@@ -61,8 +64,8 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
 /**
  * The revisions this viewer may see. Owner-level people read every topic but the owner's own
  * recommendations. A member reads the time zone, profiles, Needs attention, the stop switch, their
- * lead list and work lists (moved only when what those show them changed) and, while a new company
- * waits on its country, the company topic.
+ * lead list, work lists and their own connections (moved only when those views change) and, while
+ * a new company waits on its country, the company topic.
  */
 export const subscribeRefreshes = (
   people: ReadonlyArray<PersonIdentity>,
@@ -94,6 +97,11 @@ export const subscribeRefreshes = (
         Effect.map((shown) => JSON.stringify(shown)),
         Effect.orElseSucceed(() => null),
       );
+      const connectionsService = Option.getOrUndefined(yield* Effect.serviceOption(KinConnections));
+      const connectionsView = connectionsService?.mine([person], { orgId: input.orgId }).pipe(
+        Effect.map((shown) => JSON.stringify(shown)),
+        Effect.orElseSucceed(() => null),
+      );
       const numbersView = visibleValueRevision(person).pipe(Effect.orElseSucceed(() => "refused"));
       const bursts = burstReads.get(hub) ?? new WeakMap<KinRevisions, Map<string, Reads>>();
       burstReads.set(hub, bursts);
@@ -111,6 +119,8 @@ export const subscribeRefreshes = (
           kind: yield* Effect.cached(Effect.provide(kind, services)),
           view: yield* Effect.cached(Effect.provide(view, services)),
           lists: yield* Effect.cached(Effect.provide(listsView, services)),
+          connections:
+            connectionsView === undefined ? undefined : yield* Effect.cached(connectionsView),
           numbers: yield* Effect.cached(Effect.provide(numbersView, services)),
         };
         people.set(key, reads);
@@ -122,6 +132,7 @@ export const subscribeRefreshes = (
       let heard: KinRevisions | undefined;
       let leads = 0;
       let lists = 0;
+      let connections: number | undefined;
       let numbers = 0;
       let company = 0;
       let waited = false;
@@ -149,6 +160,11 @@ export const subscribeRefreshes = (
             )
               // A refusal that stands is no change.
               lists = hub.counted(counter("workLists"), (yield* reads.lists) ?? "refused");
+            if (
+              reads.connections !== undefined &&
+              (heard === undefined || heard.connections !== now.connections)
+            )
+              connections = hub.counted(counter("connections"), yield* reads.connections);
             if (heard === undefined || heard.company !== now.company) {
               const still = yield* waiting;
               waited ||= still;
@@ -165,6 +181,7 @@ export const subscribeRefreshes = (
               leads,
               pulse: now.pulse,
               workLists: lists,
+              ...(connections === undefined ? {} : { connections }),
               stop: now.stop,
               // Moves say "read again"; the reads show a teammate only their own watches.
               watches: now.watches,
