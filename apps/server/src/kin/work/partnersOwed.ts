@@ -107,9 +107,9 @@ export type PartnersOwed = Effect.Success<ReturnType<typeof partnersOwed>>;
 
 /**
  * Everyone who has funded a Paid expense, owed or not, with repaid amounts lacking a statement
- * row as totals per currency and day, and the share tied to each Bank transactions entry. A
- * statement line naming one is never a new expense. A mark with no Repaid on day counts on the
- * day it was written, in the owner's zone.
+ * row as totals per currency and day, and the share tied to each live Bank transactions entry
+ * on the same day. A statement line naming one is never a new expense. A mark with no Repaid on
+ * day counts on the day it was written, in the owner's zone.
  */
 export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
@@ -174,12 +174,14 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
       tied: new Map<string, BankTotals>(),
     };
     if (funding.state === "repaid" && row.linked === 0) {
-      const at = `${row.currency} ${funding.repaidOn ?? dayIn(row.markedAt, zone)}`;
+      const markedDay = funding.repaidOn ?? dayIn(row.markedAt, zone);
+      const at = `${row.currency} ${markedDay}`;
       const minor = BigInt(row.minor);
       payee.repaid.set(at, (payee.repaid.get(at) ?? 0n) + minor);
-      if (row.bankRecordId !== null && row.bankDateAt !== null) {
+      const bankDay = row.bankDateAt === null ? null : dayIn(row.bankDateAt, zone);
+      if (row.bankRecordId !== null && bankDay === markedDay) {
         const tied = payee.tied.get(row.bankRecordId) ?? {
-          bankDay: dayIn(row.bankDateAt, zone),
+          bankDay,
           amounts: new Map<string, bigint>(),
         };
         tied.amounts.set(at, (tied.amounts.get(at) ?? 0n) + minor);

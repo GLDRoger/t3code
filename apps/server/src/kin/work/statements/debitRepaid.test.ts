@@ -402,6 +402,29 @@ it.layer(layer)((it) => {
     }),
   );
 
+  it.effect("a hand mark on another day is not taken for the old card's tie", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("ambermill-later-hand-mark");
+      const { kin, records, owner } = yield* cardMarkedCompany(org);
+      yield* records.update(org, owner, "EXP-4", {
+        fields: { reimbursement: "owed", repaidOn: null },
+      });
+
+      const at = day("2026-11-27");
+      yield* TestClock.setTime(at);
+      yield* records.update(org, owner, "EXP-4", {
+        fields: { reimbursement: "repaid", repaidOn: "2026-11-27" },
+      });
+      yield* kin.debit("BNK-14", 5_000, "2026-11-27");
+
+      assert.deepStrictEqual(yield* kin.told(at), []);
+      assert.strictEqual(
+        yield* kin.draw("BNK-14"),
+        "BNK-14 may be the repayment already marked by hand for Zoya Rao on 2026-11-27, so Kin offers no card for it. Nothing was asked; tell the owner what you see instead.",
+      );
+    }),
+  );
+
   // The same, with Repaid on left blank: the day the mark was written stands in, in the
   // company's zone (21 Nov 20:00 UTC is 22 Nov in Kolkata).
   it.effect("a hand mark with no repaid day counts from the day it was written", () =>
