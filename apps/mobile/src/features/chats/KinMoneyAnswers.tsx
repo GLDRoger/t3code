@@ -583,7 +583,7 @@ function BudgetRow(props: { readonly view: KinBudgetView; readonly onPress?: () 
   return (
     <Pressable
       accessibilityRole={props.onPress === undefined ? "text" : "button"}
-      accessibilityLabel={[view.label, view.spent, view.standing, view.notCounted]
+      accessibilityLabel={[view.label, view.spent, view.standing, view.notCounted, view.about]
         .filter((part) => part !== null)
         .join(". ")}
       {...(props.onPress === undefined ? {} : { accessibilityHint: KIN_BUDGETS.edit })}
@@ -631,6 +631,11 @@ function BudgetRow(props: { readonly view: KinBudgetView; readonly onPress?: () 
       {view.notCounted === null ? null : (
         <Text textRole="footnote" className="text-foreground-muted">
           {view.notCounted}
+        </Text>
+      )}
+      {view.about === null ? null : (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {view.about}
         </Text>
       )}
     </Pressable>

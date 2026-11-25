@@ -761,6 +761,9 @@ function BudgetRow(props: {
         {view.notCounted === null ? null : (
           <span className="text-xs text-muted-foreground">{view.notCounted}</span>
         )}
+        {view.about === null ? null : (
+          <span className="text-xs text-muted-foreground">{view.about}</span>
+        )}
       </div>
       {props.canChange ? (
         <Button

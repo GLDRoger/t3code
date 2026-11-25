@@ -3421,6 +3421,13 @@ describe("KinPulse", () => {
   it.effect("goals count their progress from Kin's rows, and money goals only for money", () =>
     Effect.gen(function* () {
       yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'receipts', 'Receipts', 'RCT', 1, 0) ON CONFLICT DO NOTHING`;
+      yield* insert({ id: "RCT-1", list: "receipts", state: "done" });
+      yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor, currency,
+          paid_on, origin_key, created_at, created_by_kind)
+        VALUES (${orgId}, 'pay-eur', 'r-RCT-1', 76_800, 'EUR', '2026-11-12', 'pay-eur', 0, 'person')`;
       const at = B + 15 * DAY;
       const { goals } = yield* goalsNow(orgId, at, { money: true });
       const by = new Map(goals.map((one) => [one.key, one]));
@@ -3451,12 +3458,14 @@ describe("KinPulse", () => {
       assert.isTrue(nextWeek.some((line) => line.includes("W-20")));
       // The weekly brief's figures lead with goals, then overdue money from the same rows.
       const week = yield* weeklyFigures({ orgId, now: at });
-      assert.match(week, /^Goals:\n- G-1 .*₹1,00,000 of ₹10,00,000.*behind$/m);
+      assert.match(
+        week,
+        /^Goals:\n- G-1 .*₹1,00,000 of ₹10,00,000.*behind, plus €768\.00 received in other currencies that this goal doesn't count$/m,
+      );
       assert.match(week, /^- INV-1:.*unpaid, overdue for \d+ days; no mail with it on record$/m);
       assert.notMatch(week, /INV-7|INV-8/);
       assert.match(week, /^- Still to come in: ₹1,97,000\.00$/m);
       // Run 4: the brief called a reminder sent 45 s earlier a draft. Its lines read the record.
-      const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,
           reach, state, created_at, updated_at)
         VALUES (${orgId}, 'mail', 'Outlook', 'remote', 'graph.example', 'none', 'open', 'active', 1, 1)`;

@@ -5,7 +5,7 @@ import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId, KinPersonId } from "./kinChat.ts";
 import { CanonicalUtcTimestamp, KinMemoryItemId } from "./kinLead.ts";
-import { KinCurrency, KinDay } from "./kinMoney.ts";
+import { KinCurrency, KinDay, KinMoney } from "./kinMoney.ts";
 import { KinRecordId, KinRecordKey } from "./kinWork.ts";
 
 /**
@@ -371,6 +371,10 @@ export const KinGoal = Schema.Struct({
   unit: Schema.optional(Schema.String),
   target: Schema.Finite,
   current: Schema.Finite,
+  notCounted: Schema.optional(
+    Schema.Array(Schema.Struct({ currency: KinCurrency, received: KinMoney })),
+  ),
+  about: Schema.optional(Schema.Struct({ total: KinMoney, rateDays: Schema.Array(KinDay) })),
   /** Where a straight line from start to target stands today. */
   expected: Schema.Finite,
   startsOn: KinDay,

@@ -21,7 +21,7 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-import { kinEstimate, type KinRates } from "./kinCurrency.ts";
+import { kinEstimate, kinRateDay, type KinRates } from "./kinCurrency.ts";
 import {
   afterLabel,
   kinBankKnownText,
@@ -166,6 +166,18 @@ export const KIN_BUDGETS = {
     `+ ${amounts.join(" and ")} not counted in this ${currency} budget`,
   removedProject: "a removed project",
 };
+
+/** A total across currencies at rates the company was paid at; never an exact figure. */
+const KIN_MONEY_ABOUT = {
+  /** "About ₹1,30,000 in all · approximate, at the rate of a payment on Nov 12, 2026". */
+  inAll: (total: string, days: ReadonlyArray<string>) =>
+    `About ${total} in all · approximate, at ${days.length === 1 ? "the rate of a payment" : "the rates of payments"} on ${days.map(kinRateDay).join(" and ")}`,
+};
+
+export const kinMoneyAboutText = (
+  about: { readonly total: KinSignedMoney; readonly rateDays: ReadonlyArray<string> } | undefined,
+) =>
+  about === undefined ? null : KIN_MONEY_ABOUT.inAll(kinMoneyText(about.total), about.rateDays);
 
 export const KIN_QUOTES = {
   title: "Quotes",
@@ -544,6 +556,8 @@ export interface KinBudgetView {
   readonly estimate: string | null;
   /** Spending on it in other currencies, which `spent` leaves out. */
   readonly notCounted: string | null;
+  /** All of it in the home currency, at rates the company was paid at. */
+  readonly about: string | null;
   readonly budget: KinMoneyBudget;
 }
 
@@ -588,6 +602,7 @@ export function kinBudgetsView(
                 budget.notCounted.map((one) => kinMoneyText(one.spent)),
                 budget.limit.currency,
               ),
+        about: kinMoneyAboutText(budget.about),
         budget,
       };
     })

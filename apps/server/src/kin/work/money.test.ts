@@ -57,6 +57,7 @@ import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import * as LeadWork from "./leadWork.ts";
 import { typedFields } from "./leadFields.ts";
 import { aboutTotal, addUp, dayIn, financialYearOf, formatMinor, parseAmount } from "./money.ts";
+import { aboutInHome, type RecordedRate } from "./recordedRate.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { markOutside } from "../lead/OutsideContent.ts";
@@ -526,6 +527,48 @@ describe("amounts", () => {
       usd(1_300),
     );
   });
+
+  it.effect("estimates only when every foreign currency has a recorded rate", () =>
+    Effect.gen(function* () {
+      const at = Date.parse("2026-11-20T12:00:00Z");
+      const totals = [
+        { minor: 1_040, currency: "USD" },
+        { minor: 40, currency: "EUR" },
+        { minor: 40, currency: "GBP" },
+        { minor: 10, currency: "CAD" },
+      ];
+      const rates: Record<string, RecordedRate> = {
+        EUR: {
+          invoiceCurrency: "EUR",
+          receivedCurrency: "USD",
+          rate: "1.000000",
+          day: "2026-11-12",
+        },
+        GBP: {
+          invoiceCurrency: "GBP",
+          receivedCurrency: "USD",
+          rate: "1.000000",
+          day: "2026-11-03",
+        },
+        CAD: {
+          invoiceCurrency: "CAD",
+          receivedCurrency: "USD",
+          rate: "0.700000",
+          day: "2026-11-12",
+        },
+      };
+      const read = (org: typeof orgId, from: string, to: string, asOf: number) =>
+        Effect.succeed(org === orgId && to === "USD" && asOf === at ? rates[from] : undefined);
+      assert.deepStrictEqual(yield* aboutInHome(orgId, totals, "USD", at, read), {
+        total: { minor: 1_100, currency: "USD" },
+        rateDays: ["2026-11-03", "2026-11-12"],
+      });
+      assert.isUndefined(yield* aboutInHome(orgId, totals.slice(0, 1), "USD", at, read));
+      assert.isUndefined(
+        yield* aboutInHome(orgId, [...totals, { minor: 10, currency: "JPY" }], "USD", at, read),
+      );
+    }),
+  );
 
   it("formats totals past a float's exact range digit for digit, signed", () => {
     const past = BigInt(Number.MAX_SAFE_INTEGER) * 10n + 7n;
@@ -5766,7 +5809,9 @@ describe("money answers", () => {
           spent: "$300.00",
           notCounted: [{ currency: "EUR", spent: "€768.00" }],
         });
-        assert.deepInclude((yield* OwnerMoneyAnswers.budgets(people, { orgId })).budgets[0], {
+        const [budget] = (yield* OwnerMoneyAnswers.budgets(people, { orgId })).budgets;
+        assert.notProperty(budget, "about");
+        assert.deepInclude(budget, {
           spent: { minor: 30_000, currency: "USD" },
           notCounted: [{ currency: "EUR", spent: { minor: 76_800, currency: "EUR" } }],
         });
@@ -5858,6 +5903,44 @@ describe("money answers", () => {
           [
             ["€1,000.00", false],
             ["$500.00", false],
+          ],
+        );
+        yield* records.create(orgId, system, {
+          list: "expenses",
+          title: "Invented train fare",
+          owner,
+          state: "done",
+          category: "travel",
+          amount: { minor: 2_500_00, currency: "INR" },
+          dateAt: on("2026-11-05"),
+          originKey: "train",
+        });
+        yield* OwnerMoneyAnswers.setBudget(people, {
+          orgId,
+          category: "travel",
+          project: null,
+          currency: "INR",
+          limitMinor: 5_000_00,
+          clientRequestId: "travel-inr",
+        });
+        yield* sql`DELETE FROM kin_money_budgets
+          WHERE org_id = ${orgId} AND category = 'travel' AND currency = 'EUR'`;
+        const rates: Record<string, RecordedRate> = {
+          EUR: { invoiceCurrency: "EUR", receivedCurrency: "USD", rate: "1.10", day: "2026-11-10" },
+          INR: { invoiceCurrency: "INR", receivedCurrency: "USD", rate: "0.01", day: "2026-11-12" },
+        };
+        const read = (org: typeof orgId, from: string, to: string, asOf: number) =>
+          Effect.succeed(org === orgId && to === "USD" && asOf === now ? rates[from] : undefined);
+        const view = yield* budgetsView(orgId, now, undefined, false, read);
+        const about = {
+          total: { minor: 120_500, currency: "USD" },
+          rateDays: ["2026-11-10", "2026-11-12"],
+        };
+        assert.deepStrictEqual(
+          view.budgets.map((one) => [one.currency, one.about]),
+          [
+            ["INR", about],
+            ["USD", about],
           ],
         );
       }).pipe(Effect.provide(layer)),
@@ -7175,7 +7258,8 @@ describe("money answers", () => {
         assert.include(refused.message, "Expenses have no category Invented snacks");
 
         const now = yield* Clock.currentTimeMillis;
-        assert.deepStrictEqual(budgetsAnswer(yield* budgetsView(orgId, now)).budgets, [
+        const answer = budgetsAnswer(yield* budgetsView(orgId, now));
+        assert.deepStrictEqual(answer.budgets, [
           {
             for: "software",
             limit: "₹5,000.00",
@@ -7201,8 +7285,10 @@ describe("money answers", () => {
             status: "ok",
           },
         ]);
+        const flags = yield* budgetFlags(orgId, now);
+        assert.strictEqual(flags?.basis, answer.basis);
         assert.deepStrictEqual(
-          (yield* budgetFlags(orgId, now))?.budgets.map((one) => [one.for, one.status]),
+          flags?.budgets.map((one) => [one.for, one.status]),
           [
             ["software", "near"],
             ["travel", "over"],
