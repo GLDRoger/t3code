@@ -613,6 +613,24 @@ it.each([
     changed: [],
   },
   {
+    name: "a sentence moved within the draft is not typed",
+    before: "Hi Sam,\n\nInvoices are due within 30 days.\n\nOur rate is 45 an hour.",
+    after: "Hi Sam,\n\nOur rate is 45 an hour.\n\nInvoices are due within 30 days.",
+    changed: [],
+  },
+  {
+    name: "a copy of the draft's own sentence is not typed",
+    before: "Our rate is 45 an hour. Thanks.",
+    after: "Our rate is 45 an hour. Thanks. Our rate is 45 an hour.",
+    changed: [],
+  },
+  {
+    name: "a typed word the draft holds elsewhere is still typed",
+    before: "Our rate is 45 an hour. Minimum 30 hours.",
+    after: "Our rate is 30 an hour. Minimum 30 hours.",
+    changed: [{ was: "45", now: "30" }],
+  },
+  {
     name: "a script written without spaces is compared word by word",
     before: "运费每公斤四十五元。",
     after: "运费每公斤五十元。",

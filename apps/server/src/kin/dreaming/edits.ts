@@ -43,15 +43,20 @@ const CHANGED_PER_EDIT = 12;
 const COMPARED_MAX = 4_000_000;
 const words = new Intl.Segmenter(undefined, { granularity: "word" });
 const wordsOf = (text: string) =>
-  [...words.segment(text)].flatMap(({ segment, index }) =>
-    segment.trim() === "" ? [] : [{ word: segment, start: index, end: index + segment.length }],
+  [...words.segment(text)].flatMap(({ segment, index, isWordLike }) =>
+    segment.trim() === ""
+      ? []
+      : [{ word: segment, start: index, end: index + segment.length, wordLike: isWordLike }],
   );
+/** A run this long that the draft already holds word for word was moved or copied, not typed. */
+const MOVED_MIN_WORDS = 3;
+const SEP = "\u0000";
 const capped = (text: string) => text.slice(0, cutAt(text, QUOTE_MAX));
 
 /**
  * The runs of words in `after` that are not in `before`, in order, each with the words it
  * replaced (`was` empty for an insert). Word by word, punctuation its own word, spacing ignored;
- * a cut alone leaves no run.
+ * a cut alone leaves no run, nor does a run of three or more words found as it is in `before`.
  */
 export const changedParts = (before: string, after: string) => {
   const was = wordsOf(before);
@@ -77,6 +82,14 @@ export const changedParts = (before: string, after: string) => {
         a[i]!.word === b[j]!.word
           ? lcs[(i + 1) * width + j + 1]! + 1
           : Math.max(lcs[(i + 1) * width + j]!, lcs[i * width + j + 1]!);
+  const drafted = `${SEP}${was.map((one) => one.word).join(SEP)}${SEP}`;
+  const moved = (from: number, to: number) => {
+    const run = b.slice(from, to);
+    return (
+      run.filter((one) => one.wordLike === true).length >= MOVED_MIN_WORDS &&
+      drafted.includes(`${SEP}${run.map((one) => one.word).join(SEP)}${SEP}`)
+    );
+  };
   const span = (text: string, list: typeof a, from: number, to: number) =>
     from < to ? capped(text.slice(list[from]!.start, list[to - 1]!.end)) : "";
   const parts: Array<{ readonly was: string; readonly now: string }> = [];
@@ -97,7 +110,7 @@ export const changedParts = (before: string, after: string) => {
       if (j < b.length && (i === a.length || lcs[i * width + j + 1]! >= lcs[(i + 1) * width + j]!))
         j++;
       else i++;
-    if (j > fromJ) parts.push({ was: span(before, a, fromI, i), now: span(after, b, fromJ, j) });
+    if (j > fromJ && !moved(fromJ, j)) parts.push({ was: span(before, a, fromI, i), now: span(after, b, fromJ, j) });
   }
   return parts;
 };
