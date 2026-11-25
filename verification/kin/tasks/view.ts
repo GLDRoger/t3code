@@ -80,7 +80,7 @@ export const variants = [
   {
     name: "byproduct-is-change",
     breaks: "NoPingPong",
-    what: "the agent's check reads a task coming off someone's alsoOn or promisedTo, because it was given to them, as a change on it (the code at kin 62252f75c6)",
+    what: "the agent's check reads a task coming off someone's alsoOn or promisedTo, because it was given to them, as a change on it (the code before 221707c5c8)",
   },
 ];
 

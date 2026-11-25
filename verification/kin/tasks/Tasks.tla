@@ -71,7 +71,7 @@ Give(actor, to, asker) ==
   /\ pingpong' = (pingpong \/ (actor = "agent" /\ asker # "owner" /\ to \in backs))
   \* The code before this change read the last change alone: any hand-off since hid a hand-back.
   \* Coming off alsoOn or promisedTo because it was given to them is part of the hand-off, never a
-  \* change on it ("byproduct-is-change": notBouncedBack reads that line as one).
+  \* change on it (recordRows.ts isHandOffByProduct; "byproduct-is-change" is the code before 221707c5c8).
   /\ bounced' = IF Broken = "last-change-only" \/ (Broken = "byproduct-is-change" /\ to \in {helper, promised})
                 THEN {} ELSE bounced
   /\ holder' = to
