@@ -6,6 +6,7 @@ import {
   isKinOsLink,
   KIN_PERSON_ACTION_MS,
   kinShellAllowsPermission,
+  kinShellAllowsReveal,
   kinShellCrashReload,
   kinShellNavigation,
   kinShellOutsideOpen,
@@ -257,6 +258,11 @@ describe("kinShellNavigation", () => {
   });
 
   it("lets only the team's host send alerts and copy links", () => {
+    assert.isFalse(
+      kinShellAllowsReveal({ frameOrigin: "https://other.example", hostOrigin: HOST }),
+    );
+    assert.isFalse(kinShellAllowsReveal({ frameOrigin: HOST, hostOrigin: null }));
+    assert.isTrue(kinShellAllowsReveal({ frameOrigin: HOST, hostOrigin: HOST }));
     const cases: ReadonlyArray<readonly [string, string, string | null, boolean]> = [
       ["notifications", `${HOST}/kin`, HOST, true],
       ["clipboard-sanitized-write", HOST, HOST, true],

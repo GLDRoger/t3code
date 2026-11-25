@@ -8,6 +8,8 @@ import {
   type KinBillsListInput,
   type KinChatHistoryInput,
   type KinChatId,
+  type KinDesktopNotice,
+  type KinDesktopNoticesInput,
   type KinChatMembersInput,
   type KinCompanyProfileInput,
   type KinReceiptsInput,
@@ -73,6 +75,8 @@ import { Atom, AtomRegistry } from "effect/reactivity";
 
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
+import { subscribe } from "../rpc/index.ts";
+import { followStreamInEnvironment } from "../state/environmentStreams.ts";
 import {
   createEnvironmentQueryAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
@@ -1198,6 +1202,21 @@ export function makeKinClient<R, ER>(
       tag: KIN_CHAT_WS_METHODS.chatsClear,
       concurrency: { mode: "singleFlight", key: ({ input }) => `preview:${input.chatId}` },
     }),
+    subscribeDesktopNotices: (
+      environmentId: EnvironmentId,
+      input: KinDesktopNoticesInput,
+      onNotice: (notice: KinDesktopNotice) => void,
+    ) =>
+      registry.mount(
+        runtime
+          .atom(
+            followStreamInEnvironment(
+              environmentId,
+              subscribe("kin.push.desktopNotices", input),
+            ).pipe(Stream.runForEach((notice) => Effect.sync(() => onNotice(notice)))),
+          )
+          .pipe(Atom.setIdleTTL(0), Atom.withLabel("kin:push:desktop-notices")),
+      ),
     inbox: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: KIN_INBOX_LABEL,
       subscribe: (input: Parameters<typeof kinInboxStream>[0]) =>

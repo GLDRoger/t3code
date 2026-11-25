@@ -166,6 +166,17 @@ export const KinPushData = Schema.Struct({
 });
 export type KinPushData = typeof KinPushData.Type;
 
+export const KinDesktopNotice = Schema.Struct({
+  title: Schema.String,
+  body: Schema.String,
+  ring: Schema.Boolean,
+  data: KinPushData,
+});
+export type KinDesktopNotice = typeof KinDesktopNotice.Type;
+
+export const KinDesktopNoticesInput = Schema.Struct({ orgId: KinOrgId });
+export type KinDesktopNoticesInput = typeof KinDesktopNoticesInput.Type;
+
 /** `sending` is `unconfigured` until the Kin host has an APNs key: tokens are kept, nothing is sent. */
 export const KinPushSendingStatus = Schema.Literals(["ready", "unconfigured"]);
 export type KinPushSendingStatus = typeof KinPushSendingStatus.Type;
@@ -236,6 +247,7 @@ export const KIN_PUSH_WS_METHODS = {
   registerDevice: "kin.push.registerDevice",
   unregisterDevice: "kin.push.unregisterDevice",
   watch: "kin.push.watch",
+  desktopNotices: "kin.push.desktopNotices",
   reconcile: "kin.push.reconcile",
 } as const;
 
@@ -259,6 +271,12 @@ export const KinPushRpcs = [
     error,
     stream: true,
   }),
+  Rpc.make(KIN_PUSH_WS_METHODS.desktopNotices, {
+    payload: KinDesktopNoticesInput,
+    success: KinDesktopNotice,
+    error,
+    stream: true,
+  }),
   // The phone in front, or a push arrived: what it still shows that is settled.
   Rpc.make(KIN_PUSH_WS_METHODS.reconcile, {
     payload: KinPushReconcileInput,
@@ -273,6 +291,7 @@ export const KIN_PUSH_RPC_SCOPES = {
   [KIN_PUSH_WS_METHODS.registerDevice]: AuthKinChatScope,
   [KIN_PUSH_WS_METHODS.unregisterDevice]: AuthKinChatScope,
   [KIN_PUSH_WS_METHODS.watch]: AuthKinChatScope,
+  [KIN_PUSH_WS_METHODS.desktopNotices]: AuthKinChatScope,
   [KIN_PUSH_WS_METHODS.reconcile]: AuthKinChatScope,
 } as const satisfies Record<
   (typeof KIN_PUSH_WS_METHODS)[keyof typeof KIN_PUSH_WS_METHODS],
