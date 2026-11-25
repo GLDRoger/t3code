@@ -31,6 +31,7 @@ import * as Groups from "../chat/KinGroups.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { destination, turnAudience, turnPeople } from "../lead/Audience.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
+import * as LevelGate from "../lead/LevelGate.ts";
 import * as Reach from "../lead/Reach.ts";
 import { readPeople } from "../lead/peopleRead.ts";
 import { buildSeat } from "../lead/seat.ts";
@@ -2380,6 +2381,130 @@ it.effect(
       yield* away(mira, "Mira", ["co_owner", "member"]);
       yield* writable(mira, finance);
     }).pipe(Effect.provide(teamLayer)),
+);
+
+it.effect.each([
+  { status: "completed" },
+  { status: "failed", final: true },
+  { status: "timed_out", final: true },
+] as const)(
+  "a co-owner made a member after the reply, while the turn still works, leaves that message answered",
+  (finish) =>
+    Effect.gen(function* () {
+      const people = yield* People.KinPeople;
+      const identity = yield* KinIdentity;
+      const repo = yield* Repository.KinChatRepository;
+      const chats = yield* Service.KinChatService;
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const gate = yield* LevelGate.KinLevelGate;
+      const sql = yield* SqlClient.SqlClient;
+      const { owner } = identity;
+      const { orgId } = owner;
+      yield* pairSession(ownerSession.sessionId);
+      const agentId = KinAgentId.make("finance");
+      const threadId = ThreadId.make("finance-thread");
+      yield* repo.insertAgent({
+        orgId,
+        agentId,
+        ownerPersonId: owner.personId,
+        displayName: "Finance",
+        role: "lead",
+        createdAt: at,
+      });
+      yield* identity.registerAgentThread({ orgId, agentId, threadId });
+      const ownerChat = yield* chats.createDirect(owner, { orgId, agentId });
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json,
+          worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Finance', 'L1', 0, '{}', '[]', ${ownerChat.chatId})`;
+      const { person } = yield* people.accept({
+        secret: (yield* people.createInvite(ownerSession, { orgId, displayName: "Meera" })).secret,
+      });
+      const meera = { _tag: "person" as const, orgId, personId: person.personId };
+      yield* people.setAccess(ownerSession, { ...meera, access: "co_owner" });
+      const { chatId } = yield* chats.createDirect(meera, { orgId, agentId });
+      const first = ChatWake.wakeEvent(
+        yield* chats.send(meera, {
+          chatId,
+          body: "Is the invoice ready?",
+          clientMessageId: "first",
+        }),
+        agentId,
+        undefined,
+      );
+      yield* queue.enqueue(first);
+      const second = ChatWake.wakeEvent(
+        yield* chats.send(meera, {
+          chatId,
+          body: "When is payment due?",
+          clientMessageId: "second",
+        }),
+        agentId,
+        undefined,
+      );
+      yield* queue.enqueue(second);
+      yield* TestClock.adjust(2_000);
+      const wakeupId = KinWakeupId.make("finance-wakeup");
+      yield* Effect.scoped(queue.claim({ orgId, agentId, wakeupId, model: "test" }));
+      yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, audience = 'owner_only'
+        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`;
+      const agent = Option.getOrThrow(yield* identity.agentForWakeup({ orgId, wakeupId }));
+      const reply = yield* gate.post(
+        agent,
+        { chatId, body: "The invoice is ready.", clientMessageId: "reply", intent: "answer" },
+        () =>
+          sql`UPDATE kin_events SET replied_at = 2000
+            WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND event_id = ${first.eventId}`.pipe(
+            Effect.asVoid,
+          ),
+      );
+
+      const events = sql`SELECT event_id AS "eventId", state, wakeup_id AS "wakeupId", attempts,
+          replied_at IS NOT NULL AS replied
+        FROM kin_events WHERE org_id = ${orgId} ORDER BY replied DESC, event_id`;
+      const answered = {
+        eventId: first.eventId,
+        state: "claimed",
+        wakeupId,
+        attempts: 0,
+        replied: 1,
+      };
+      const unanswered = {
+        eventId: second.eventId,
+        state: "claimed",
+        wakeupId,
+        attempts: 0,
+        replied: 0,
+      };
+      assert.deepStrictEqual(yield* events, [answered, unanswered]);
+      yield* people.setAccess(ownerSession, { orgId, personId: meera.personId, access: "member" });
+      assert.isTrue(
+        yield* Reach.reaches(orgId, Reach.person(meera.personId), Reach.agent(agentId)),
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
+          AND status = 'running' AND aborted_at IS NOT NULL`,
+        1,
+      );
+      assert.deepStrictEqual(yield* events, [answered, unanswered]);
+
+      const finished = yield* queue.finish({ orgId, wakeupId, ...finish });
+      assert.deepStrictEqual(yield* events, [
+        { ...answered, state: "done" },
+        { ...unanswered, state: "queued", wakeupId: null },
+      ]);
+      assert.deepStrictEqual(finished, {
+        failedEventIds: [],
+        stranded: 0,
+        replied: 0,
+        retried: 0,
+        retryInMs: 0,
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT message_id AS "messageId" FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = ${chatId} AND author_kind <> 'human' ORDER BY seq`,
+        [{ messageId: reply.messageId }],
+      );
+    }).pipe(Effect.provide(LevelGate.layer.pipe(Layer.provideMerge(teamLayer)))),
 );
 
 const withRecords = People.layer.pipe(

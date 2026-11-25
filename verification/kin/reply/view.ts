@@ -7,7 +7,7 @@ const first = (vars: Vars, name: string) => list(vars[name])[0];
 export const title = "Your message to an agent, and what comes back";
 
 export const guide =
-  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes, writes the same answer again, posts a chart, thinks, sends you a message for someone else (a nudge or relay), its turn ends or fails, someone joins the chat while it works, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, four tries at starting, one restart, a floor that can close, and up to two people joining mid-turn; it follows your first message. “Working…” shows while the agent works on it and clears when the turn ends.";
+  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes, writes the same answer again, posts a chart, thinks, sends you a message for someone else (a nudge or relay), its turn ends or fails, someone joins the chat while it works, you are made a member while it works, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, four tries at starting, one restart, a floor that can close, and up to two people joining mid-turn; it follows your first message. “Working…” shows while the agent works on it and clears when the turn ends.";
 
 export const rules: Record<string, string> = {
   NeverTwo: "Each message you send gets at most one reply or one plain failure line, never two.",
@@ -83,7 +83,7 @@ export const variants = [
   {
     name: "requeue-after-work",
     breaks: "NeverTwo",
-    what: "a held-back reply moves its messages to a fresh turn even after the turn did something visible",
+    what: "a held-back reply moves its messages to a fresh turn even after the turn did something visible, and the turn's end requeues the one it already replied to",
   },
   {
     name: "reply-after-join",
@@ -94,6 +94,11 @@ export const variants = [
     name: "line-not-ended",
     breaks: "NeverTwo",
     what: "the join's held-back line posts but the turn's unanswered asks are not ended (no `endLostToJoin`, the code before this change)",
+  },
+  {
+    name: "aborted-requeues-replied",
+    breaks: "NeverTwo",
+    what: "a turn stopped because its asker was made a member puts a message that already has its reply back in the queue (the code before this change)",
   },
   {
     name: "join-expires-silently",
@@ -154,12 +159,15 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return from["wake"] === "running"
         ? "Someone else joins; the agent's turn is stopped and the chat is told once"
         : "Someone else joins; the chat is told once your waiting message won't be answered";
+    case "MadeMember":
+      return "You are made a member while the agent works; its turn is stopped";
     case "ReplyHeldBack":
       return to["aborted"] === true
         ? "Its reply is held back for the join; nothing visible yet, so a fresh turn will answer"
         : "Its reply is held back for the join; the chat is told once";
     case "RunCompletes":
-      if (from["aborted"] === true) return "The turn ends; your message goes to a fresh turn";
+      if (from["aborted"] === true)
+        return "The turn ends; a message it had not answered goes to a fresh turn";
       if (from["noticed"] === true) return "The turn ends; nothing more is said";
       return Number(first(to, "fails")) > Number(first(from, "fails"))
         ? "The turn ends; asked once more, no reply: “didn't reply”"
@@ -169,7 +177,8 @@ export const step = (action: string, from: Vars, to: Vars) => {
             ? "The turn ends; asked for a line, the agent leaves its chart as it is"
             : "The turn ends";
     case "RunFails":
-      if (from["aborted"] === true) return "The turn fails; your message goes to a fresh turn";
+      if (from["aborted"] === true)
+        return "The turn fails; a message it had not answered goes to a fresh turn";
       if (Number(first(to, "notes")) > Number(first(from, "notes")))
         return "The turn fails before what the reply promised: one line names it";
       if (first(to, "ev") === "done")
