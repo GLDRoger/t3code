@@ -288,7 +288,10 @@ const forPayment = Effect.fn("KinReceipts.forPayment")(function* (
 });
 
 /** What a receipts entry stands on: a live payment, one taken back or gone, or none yet. */
-const standing = Effect.fn("KinReceipts.standing")(function* (orgId: KinOrgId, receipt: RecordRow) {
+export const standing = Effect.fn("KinReceipts.standing")(function* (
+  orgId: KinOrgId,
+  receipt: RecordRow,
+) {
   const held = parseFields(receipt.fieldsJson).payment;
   if (typeof held !== "string") return "none" as const;
   const sql = yield* SqlClient.SqlClient;

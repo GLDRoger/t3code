@@ -23,7 +23,7 @@ import { dayIn, formatMoney } from "../work/money.ts";
 import { billedParty } from "../work/billTo.ts";
 import { parseFields } from "../work/lists.ts";
 import { endOfDay, issuedNumber, ownerZone } from "../work/recordRows.ts";
-import { recordReceipt } from "./receipts.ts";
+import { recordReceipt, standing } from "./receipts.ts";
 
 /**
  * An agent's receipt that would record money received waits here, as asked, with the figures its
@@ -115,6 +115,11 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
         ? undefined
         : yield* records.getById(orgId, party.partyId);
   const named = request.version === 2;
+  // An advance set against an invoice is money already received there, moved, not new.
+  const moved =
+    named && entry !== undefined && request.against !== undefined
+      ? (yield* standing(orgId, entry)) === "live"
+      : false;
   // An invoice to a typed bill-to name with no client record is from that name.
   const billedTo =
     named && client === undefined && against !== undefined
@@ -146,7 +151,10 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
       ? null
       : { minor: entry.amountMinor, currency: entry.currency });
   return {
-    entry: entry === undefined ? null : { key: entry.key, rev: entry.rev, state: entry.state },
+    entry:
+      entry === undefined
+        ? null
+        : { key: entry.key, rev: entry.rev, state: entry.state, ...(moved ? { moved } : {}) },
     client: client === undefined ? null : { key: client.key, title: client.title, rev: client.rev },
     amount,
     receivedOn:
@@ -171,6 +179,8 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
                   name: issuedNumber(parseFields(against.fieldsJson).number).number ?? against.key,
                 }
               : {}),
+            // Tax withheld on it settles it but isn't money received: said apart on newer cards.
+            ...(named && against.withheld > 0 ? { tax: against.withheld } : {}),
           },
     recorded: sameAdvances,
     ...(billedTo === undefined ? {} : { billedTo }),
@@ -189,6 +199,14 @@ export const dayText = (day: string) =>
     zone: "UTC",
     locale: KIN_TEXT_LOCALE,
   });
+
+/** What the invoice has already, labelled settled when that includes tax withheld. */
+const alreadyOn = (against: NonNullable<Snapshot["against"]>) =>
+  against.total === null
+    ? []
+    : [
+        `Already ${"tax" in against ? "settled" : "received"} on it: ${formatMoney({ minor: against.paid, currency: against.total.currency })} of ${formatMoney(against.total)}`,
+      ];
 
 /** Who the money is from, as the card and its outcome name them. */
 const payerOf = (snapshot: Snapshot) =>
@@ -213,11 +231,10 @@ export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
           `Already recorded: ${formatMoney(snapshot.amount)}${snapshot.client === null ? "" : ` from ${snapshot.client.title}`}${snapshot.receivedOn === null ? "" : ` on ${dayText(snapshot.receivedOn)}`} (${snapshot.recorded.map((one) => one.number ?? "receipt not numbered yet").join(", ")}). Confirm only if this is another payment.`,
         ]),
     `Set against: ${against === null ? "no invoice; it stays an advance" : "name" in against ? `${against.name}, ${against.title}` : against.title}`,
-    ...(against?.total == null
-      ? []
-      : [
-          `Already received on it: ${formatMoney({ minor: against.paid, currency: against.total.currency })} of ${formatMoney(against.total)}`,
-        ]),
+    ...(against === null ? [] : alreadyOn(against)),
+    ...(snapshot.entry !== null && "moved" in snapshot.entry
+      ? ["Already recorded as received; Confirm sets it against this invoice."]
+      : []),
     ...(note.length === 0 ? [] : [`Agent's note: ${note.join(", ")}`]),
   ];
 };
@@ -244,11 +261,7 @@ const paymentLines = (snapshot: Snapshot, received: Received) => {
       : [`Tax the client withheld: ${formatMoney(received.withheld)}`]),
     `Received on: ${dayText(received.paidOn)}`,
     `Invoice: ${against === null ? received.key : `${against.name ?? against.key}, ${against.title}`}`,
-    ...(against?.total == null
-      ? []
-      : [
-          `Already received on it: ${formatMoney({ minor: against.paid, currency: against.total.currency })} of ${formatMoney(against.total)}`,
-        ]),
+    ...(against === null ? [] : alreadyOn(against)),
     ...(left === undefined
       ? []
       : [
@@ -271,11 +284,25 @@ const madeOutcome = (made: { readonly number: string | null }, shown: Snapshot) 
   const payer = payerOf(shown);
   const from = payer === undefined ? "" : ` from ${payer}`;
   const on = shown.receivedOn === null ? "" : `, received ${dayText(shown.receivedOn)}`;
-  const where =
-    shown.against === null ? "kept as an advance" : `set against ${shown.against.title}`;
+  const target =
+    shown.against === null
+      ? undefined
+      : "name" in shown.against
+        ? `${shown.against.name}, ${shown.against.title}`
+        : shown.against.title;
+  const receipt =
+    made.number === null
+      ? "Its receipt is being numbered."
+      : `Receipt ${made.number}; its PDF follows.`;
+  if (target !== undefined && shown.entry !== null && "moved" in shown.entry)
+    return {
+      title: "Advance set against the invoice",
+      text: `${money}${from}${on}, already received as an advance, is set against ${target}; no new money was recorded. ${receipt}`,
+    };
+  const where = target === undefined ? "kept as an advance" : `set against ${target}`;
   return {
     title: "Money recorded",
-    text: `${money}${from}${on}, is recorded and ${where}. ${made.number === null ? "Its receipt is being numbered." : `Receipt ${made.number}; its PDF follows.`}`,
+    text: `${money}${from}${on}, is recorded and ${where}. ${receipt}`,
   };
 };
 

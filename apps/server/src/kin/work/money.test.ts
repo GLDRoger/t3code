@@ -3180,6 +3180,8 @@ describe("the owner's taps", () => {
         second.shown,
         "A payment of the same amount on the same day is already recorded on it; Confirm adds a second one.",
       );
+      // Its tax counts toward what is settled, not toward the money received.
+      assert.include(second.shown, "Already settled on it: ₹44,000.00 of ₹1,00,000.00");
       yield* agentPaid(scope, orgId, ownerId, {
         sourceEventId: relayed,
         ...payment,

@@ -2072,7 +2072,7 @@ const answerCard = (clientMessageId: string, kind: "yes" | "no") =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const widgetId = `choice:card-${clientMessageId}`;
-    yield* sql.withTransaction(
+    const tapped = yield* sql.withTransaction(
       answerReceiptCard({
         orgId,
         widgetId,
@@ -2097,15 +2097,16 @@ const answerCard = (clientMessageId: string, kind: "yes" | "no") =>
     };
     yield* sql`UPDATE kin_widgets SET state_json = ${JSON.stringify({ ...state, answer })},
         revision = revision + 1 WHERE widget_id = ${widgetId}`;
+    return tapped;
   });
-/**
- * The agent's receipt as the owner asked for it; one that records money waits for the owner's
- * Confirm on its card, tapped here, and the agent's call with its proposal reads what it made.
- */
 /** An invoice issued, so money can be set against it. */
 const issuedInvoice = (asked: string, key: string) =>
   LeadDocuments.issue(scope, { entry: KinRecordKey.make(key), sourceEventId: asked });
 
+/**
+ * The agent's receipt as the owner asked for it; one that records money waits for the owner's
+ * Confirm on its card, tapped here, and the agent's call with its proposal reads what it made.
+ */
 const agentReceipt = (asked: string, input: ReceiptAsk) =>
   Effect.gen(function* () {
     const first = yield* LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
@@ -2545,8 +2546,14 @@ describe("receipts", () => {
           onInvoice.shown,
           `Set against: ${String(JSON.parse(target.fieldsJson).number)}, ${target.title}`,
         );
-        yield* answerCard(`kin-receipt:${onInvoice.proposal}`, "yes");
+        // The advance is money already received: Confirm moves it, and says so.
+        assert.include(
+          onInvoice.shown,
+          "Already recorded as received; Confirm sets it against this invoice.",
+        );
+        const moved = yield* answerCard(`kin-receipt:${onInvoice.proposal}`, "yes");
         assert.deepStrictEqual(yield* invoicePaid, [{ minor: 400_00 }, { minor: 500_00 }]);
+        assert.strictEqual(moved?.outcome.title, "Advance set against the invoice");
       }).pipe(Effect.provide(layer)),
   );
 
