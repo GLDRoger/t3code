@@ -51,3 +51,39 @@ export const waitWhileActive = Effect.fn("KinRunSilence.waitWhileActive")(functi
       return result;
   }
 });
+
+export const QUIET_ASKS_MS = [900_000, 3_600_000] as const;
+
+export const waitAsking = Effect.fn("KinRunSilence.waitAsking")(function* <
+  E,
+  R,
+  QuietError,
+  QuietServices,
+>(
+  threads: ThreadManagementService.ThreadManagementService["Service"],
+  input: { readonly projectId: ProjectId; readonly threadId: ThreadId; readonly runId: RunId },
+  lastActivity: () => number,
+  eachWindow: Effect.Effect<void, E, R>,
+  onQuiet: (ask: 1 | 2, since: number) => Effect.Effect<void, QuietError, QuietServices>,
+  alreadyAsked = 0,
+) {
+  let asked = alreadyAsked;
+  while (true) {
+    yield* eachWindow;
+    const threshold = QUIET_ASKS_MS[asked];
+    const now = yield* Clock.currentTimeMillis;
+    const result = yield* threads.waitForThread({
+      ...input,
+      timeoutMs:
+        threshold === undefined
+          ? RUN_SILENCE_MS
+          : Math.min(RUN_SILENCE_MS, Math.max(0, lastActivity() + threshold - now)),
+    });
+    if (!result.timedOut) return result;
+    const since = lastActivity();
+    if (threshold !== undefined && (yield* Clock.currentTimeMillis) - since >= threshold) {
+      yield* onQuiet(asked === 0 ? 1 : 2, since);
+      asked++;
+    }
+  }
+});

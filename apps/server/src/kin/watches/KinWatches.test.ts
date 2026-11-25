@@ -15,6 +15,7 @@ import { context } from "../pulse/KinPulse.ts";
 import { KinWatchdogGithubReader, type GithubItemState } from "../triggers/watchdogs.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import * as KinShell from "../shell/KinShell.ts";
+import { ALL_KINDS } from "./kinds/all.ts";
 import { invoicePaid } from "./kinds/invoicePaid.ts";
 import type { CodeOutcome, WatchKind } from "./kinds/kind.ts";
 import { pr } from "./kinds/pr.ts";
@@ -182,6 +183,12 @@ describe("Kin watches", () => {
           started_at, ended_at, status, event_ids, audience)
         VALUES ('wake-1', ${orgId}, 'chief', 'lead-thread', 'run-1', 'fixture', ${T0 - HOUR},
           ${T0 - HOUR + MINUTE}, 'failed', '["ev-1"]', 'owner_only')`;
+      const quietKind = ALL_KINDS.find((kind) => kind.kind === "turn_quiet");
+      assert.isDefined(quietKind);
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at,
+          status, event_ids, quiet_since)
+        VALUES ('quiet-wake', ${orgId}, 'chief', 'fixture', ${T0 - 30 * MINUTE}, 'running',
+          '[]', ${T0 - 20 * MINUTE})`;
       let github: GithubItemState["state"] = "open";
       const reader = {
         readRepo: (_org: KinOrgId, _repo: string, numbers: ReadonlyArray<number>) =>
@@ -280,6 +287,22 @@ describe("Kin watches", () => {
               sql`UPDATE kin_events SET state = 'expired' WHERE event_id = 'ev-1'`,
               T0,
               "closed: no longer applies: its work was dropped",
+            ],
+          ],
+        },
+        {
+          kind: quietKind!,
+          about: "Chief of staff's turn from Wed 25 Nov, 13:40",
+          steps: [
+            [
+              Effect.void,
+              T0,
+              "problem: No sign of progress since Wed 25 Nov, 13:50. It keeps running until someone with the owner's access stops it with Stop on its chat's working line.",
+            ],
+            [
+              sql`UPDATE kin_wakeups SET status = 'completed' WHERE org_id = ${orgId} AND wakeup_id = 'quiet-wake'`,
+              T0,
+              "closed: it shows progress again or ends",
             ],
           ],
         },

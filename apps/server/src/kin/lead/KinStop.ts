@@ -4,6 +4,7 @@ import {
   KinChatId,
   KinEvent,
   KinMessageId,
+  type KinPersonId,
   KinOrgState,
   ThreadId,
   type KinMessage,
@@ -36,7 +37,7 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { isAdoptedRunMessage, wakeupMessageId, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { chatShared } from "../chat/sharing.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
@@ -73,6 +74,7 @@ export type KinStopFanOut = {
   readonly interrupt?: (
     orgId: KinOrgId,
     wakeupId: KinWakeupId,
+    afterAskedInterrupt?: Effect.Effect<void>,
   ) => Effect.Effect<boolean, KinStopFanOutError>;
   /** Stops a wake-up aborted for its audience, dropping its draft; its runner requeues its events. */
   readonly abort?: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
@@ -128,6 +130,12 @@ export class KinStop extends Context.Service<
       orgId: KinOrgId,
       wakeupIds: ReadonlyArray<KinWakeupId>,
     ) => Effect.Effect<void>;
+    /** Only after a committed, authorized Stop tap on a sealed quiet-run card. */
+    readonly stopAsked: (
+      orgId: KinOrgId,
+      wakeupId: KinWakeupId,
+      personId: KinPersonId,
+    ) => Effect.Effect<void>;
     /** Owner only: the presence line's Stop on one wake-up. Its events are not retried. */
     readonly interrupt: (
       people: ReadonlyArray<PersonIdentity>,
@@ -138,6 +146,7 @@ export class KinStop extends Context.Service<
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const scope = yield* Effect.scope;
   const presence = yield* Effect.serviceOption(KinPresence);
   const queue = yield* Queue.KinEventQueue;
   const chat = yield* Chat.KinChatRepository;
@@ -295,10 +304,10 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     wakeupId: KinWakeupId,
     lane: { readonly chatId: KinChatId; readonly leadName: string },
-    person: PersonIdentity,
+    personId: KinPersonId,
   ) {
     const [who] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
-      WHERE org_id = ${orgId} AND person_id = ${person.personId} ORDER BY person_id`;
+      WHERE org_id = ${orgId} AND person_id = ${personId} ORDER BY person_id`;
     if (who === undefined) return;
     const message = yield* chat.insertMessage({
       orgId,
@@ -515,6 +524,28 @@ const make = Effect.gen(function* () {
         { discard: true },
       );
     }),
+    stopAsked: Effect.fn("KinStop.stopAsked")(
+      function* (orgId, wakeupId, personId) {
+        const interrupt = attached?.interrupt;
+        if (interrupt === undefined) return;
+        const lane = yield* stoppedLane(orgId, wakeupId);
+        const tell =
+          lane === undefined
+            ? Effect.void
+            : tellStopped(orgId, wakeupId, lane, personId).pipe(
+                Effect.catchCause((cause) => Effect.logWarning("Kin stop line failed", { cause })),
+              );
+        yield* interrupt(orgId, wakeupId, tell);
+      },
+      (effect, orgId, wakeupId) =>
+        effect.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin could not stop a quiet run", { orgId, wakeupId, cause }),
+          ),
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        ),
+    ),
     interrupt: Effect.fn("KinStop.interrupt")(function* (people, input) {
       const person = yield* owner(people, input.orgId);
       if (attached?.interrupt === undefined) return yield* unavailable;
@@ -524,7 +555,7 @@ const make = Effect.gen(function* () {
         .interrupt(input.orgId, input.wakeupId)
         .pipe(Effect.mapError(() => unavailable));
       if (interrupted && lane !== undefined)
-        yield* tellStopped(input.orgId, input.wakeupId, lane, person).pipe(
+        yield* tellStopped(input.orgId, input.wakeupId, lane, person.personId).pipe(
           Effect.catchCause((cause) => Effect.logWarning("Kin stop line failed", { cause })),
         );
       return { interrupted };
@@ -666,35 +697,91 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
     interrupt: Effect.fn("KinStop.fanOut.interrupt")(function* (
       orgId: KinOrgId,
       wakeupId: KinWakeupId,
+      afterAskedInterrupt?: Effect.Effect<void>,
     ) {
       const failed = (cause: unknown) => new KinStopFanOutError({ orgId, cause });
-      const [row] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId" FROM kin_wakeups
+      const [row] = yield* sql<{ threadId: string; runId: string | null }>`
+        SELECT thread_id AS "threadId", run_id AS "runId" FROM kin_wakeups
         WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
-          AND thread_id IS NOT NULL ORDER BY wakeup_id`.pipe(Effect.mapError(failed));
+          AND thread_id IS NOT NULL AND (${afterAskedInterrupt === undefined ? 0 : 1} = 0 OR aborted_at IS NULL)
+        ORDER BY wakeup_id`.pipe(Effect.mapError(failed));
       if (row === undefined) {
+        if (afterAskedInterrupt !== undefined) return false;
         // Not running: a turn a trouble holds for later is dropped instead, and its notice redrawn.
         const dropped = yield* queue.dropHeld(orgId, wakeupId).pipe(Effect.mapError(failed));
         if (dropped > 0 && Option.isSome(care)) yield* care.value.refresh(orgId);
         return dropped > 0;
       }
-      // The owner chose to stop: the run's failure must not requeue its events. A stop that
-      // finds none left is a repeat of one still winding the run down.
-      const released = yield* sql`UPDATE kin_events SET state = 'done'
-        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
-        RETURNING event_id`.pipe(Effect.mapError(failed));
-      if (released.length === 0) return false;
       const threadId = ThreadId.make(row.threadId);
       const projection = yield* threads.getThreadProjection(threadId).pipe(Effect.mapError(failed));
-      const run = projection.runs.at(-1);
+      const belongsToWakeup = (candidate: OrchestrationV2Run) =>
+        candidate.id === row.runId ||
+        candidate.userMessageId === wakeupMessageId(wakeupId) ||
+        isAdoptedRunMessage(wakeupId, candidate.userMessageId);
+      const run =
+        afterAskedInterrupt === undefined
+          ? projection.runs.at(-1)
+          : projection.runs.findLast(
+              (candidate) => ThreadManagement.isActiveRun(candidate) && belongsToWakeup(candidate),
+            );
       if (run === undefined) return false;
+      // Mark only this wake-up's events done before the interrupt can settle or requeue them.
+      const released = yield* sql`UPDATE kin_events SET state = 'done'
+        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
+          AND EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = ${orgId}
+            AND w.wakeup_id = ${wakeupId} AND w.status = 'running'
+            AND (${afterAskedInterrupt === undefined ? 0 : 1} = 0 OR w.aborted_at IS NULL))
+        RETURNING event_id`.pipe(Effect.mapError(failed));
+      if (released.length === 0) return false;
+      const projectId = projection.thread.projectId;
       yield* threads
         .interruptThread({
-          projectId: projection.thread.projectId,
+          projectId,
           threadId,
           runId: run.id,
           commandId: CommandId.make(`kin-owner-stop:${wakeupId}:${run.id}`),
         })
         .pipe(Effect.mapError(failed));
+      if (afterAskedInterrupt === undefined) return true;
+      yield* afterAskedInterrupt;
+      const settled = yield* threads
+        .waitForThread({ projectId, threadId, runId: run.id, timeoutMs: 30_000 })
+        .pipe(Effect.mapError(failed));
+      if (settled.timedOut && settled.run !== null && ThreadManagement.isActiveRun(settled.run)) {
+        // The thread may still own tasks from a different wake-up; a card cannot stop those.
+        yield* Effect.gen(function* () {
+          const { runs, subagents } = yield* threads.getThreadRecords(threadId, [
+            "runs",
+            "subagents",
+          ]);
+          const target = runs.find((candidate) => candidate.id === settled.run?.id);
+          if (
+            target === undefined ||
+            !ThreadManagement.isActiveRun(target) ||
+            !belongsToWakeup(target)
+          )
+            return;
+          const ownedRuns = new Set(runs.filter(belongsToWakeup).map((candidate) => candidate.id));
+          if (
+            subagents.some(
+              (task) =>
+                task.origin === "app_owned" && (task.runId === null || !ownedRuns.has(task.runId)),
+            )
+          )
+            return;
+          yield* threads.stopDelegatedTasks({
+            threadId,
+            commandId: CommandId.make(`kin-quiet-stop:${wakeupId}`),
+          });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin could not stop a stuck turn's tasks", { threadId, cause }),
+          ),
+        );
+        yield* threads
+          .forceStopThread({ threadId, runId: settled.run.id })
+          .pipe(Effect.mapError(failed));
+      }
       return true;
     }),
     resume: Effect.fn("KinStop.fanOut.resume")(function* (orgId: KinOrgId) {

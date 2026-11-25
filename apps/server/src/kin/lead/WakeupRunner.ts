@@ -134,7 +134,8 @@ import { KinTeam } from "../team/KinTeam.ts";
 import { KinHandoff } from "./Handoff.ts";
 import * as WorkFor from "./workFor.ts";
 import { noticeRecords, runsFrom, turnRecords } from "./wakeupRuns.ts";
-import { RUN_SILENCE_MS, activityAt, waitWhileActive } from "./runSilence.ts";
+import { RUN_SILENCE_MS, activityAt, waitAsking } from "./runSilence.ts";
+import { closeQuietRunCards, postQuietRunCard } from "./quietRunCard.ts";
 
 const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string }) =>
   KinIdentity.isAdoptedRunMessage(wakeupId, run.userMessageId) &&
@@ -857,10 +858,10 @@ const make = Effect.gen(function* () {
       };
       const waitingSince = yield* Clock.currentTimeMillis;
       lastWork.set(threadId, waitingSince);
-      /** When the wake-up is ended if its run shows nothing more. */
-      const quietUntil = () => (lastWork.get(threadId) ?? waitingSince) + RUN_SILENCE_MS;
+      const lastActivity = () => lastWork.get(threadId) ?? waitingSince;
+      const quietUntil = () => lastActivity() + RUN_SILENCE_MS;
       // The grant lasts as long as the wake-up may run, so a slow first reply still lands.
-      const holdFloor = Effect.gen(function* () {
+      const holdFloor = Effect.fn("WakeupRunner.holdFloor")(function* (whileWaiting = false) {
         const claimed = yield* sql<{ messageId: string }>`
           SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events
           WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
@@ -868,19 +869,20 @@ const make = Effect.gen(function* () {
         yield* floor.renew({
           orgId,
           agentId,
-          until: quietUntil(),
+          until: whileWaiting ? (yield* Clock.currentTimeMillis) + RUN_SILENCE_MS : quietUntil(),
           messageIds: claimed.map((event) => KinMessageId.make(event.messageId)),
         });
       });
-      const keepFloor = holdFloor.pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Kin could not hold a working wake-up's floor", {
-            orgId,
-            wakeupId,
-            cause,
-          }),
-        ),
-      );
+      const keepFloor = (whileWaiting = false) =>
+        holdFloor(whileWaiting).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin could not hold a working wake-up's floor", {
+              orgId,
+              wakeupId,
+              cause,
+            }),
+          ),
+        );
       const steer = Effect.fn("WakeupRunner.steer")(function* () {
         if (!steering.open) return;
         let events = yield* queue.steer({ orgId, agentId, wakeupId });
@@ -928,7 +930,7 @@ const make = Effect.gen(function* () {
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared",
             ),
           });
-          yield* holdFloor;
+          yield* holdFloor();
           if (Option.isSome(bridge))
             yield* bridge.value.steered(orgId, wakeupId, {
               n,
@@ -992,42 +994,99 @@ const make = Effect.gen(function* () {
         }
       }).pipe(Effect.forkChild);
       let current = runId;
-      let result: Effect.Success<ReturnType<typeof threads.waitForThread>>;
-      while (true) {
-        result = yield* waitWhileActive(
-          threads,
-          { projectId, threadId, runId: current },
-          () => lastWork.get(threadId) ?? waitingSince,
-          keepFloor,
-        );
-        // Under the steer lock, so no steer lands once the wake-up stops waiting.
-        const next = yield* steering.lock.withPermits(1)(
-          Effect.gen(function* () {
-            const after =
-              (yield* threads.getThreadRecords(threadId, ["runs"], { runIds: [current] })).runs[0]
-                ?.ordinal ?? 0;
-            const adopted =
-              result.timedOut || (yield* isAborted(row))
-                ? undefined
-                : (yield* threads.getThreadRecords(threadId, ["runs"], {
-                    runStatuses: ["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES],
-                  })).runs
-                    .filter(
-                      (run) =>
-                        run.ordinal > after &&
-                        isSteerRun(wakeupId, run) &&
-                        // A provider failure holds the queue: a held run never starts by itself.
-                        ((run.status === "queued" && run.queueHeld !== true) ||
-                          ThreadManagementService.isActiveRun(run)),
-                    )
-                    .toSorted((a, b) => a.ordinal - b.ordinal)[0];
-            if (adopted === undefined) steering.open = false;
-            return adopted;
-          }),
-        );
-        if (next === undefined) break;
-        current = next.id;
-      }
+      let asked = 0;
+      let quietSince: number | null = null;
+      const eachQuietWindow = Effect.gen(function* () {
+        if (quietSince !== null && quietSince < lastActivity()) {
+          yield* sql`UPDATE kin_wakeups SET quiet_since = NULL
+            WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND quiet_since < ${lastActivity()}`;
+          quietSince = null;
+        }
+        yield* keepFloor(true);
+      });
+      const onQuiet = Effect.fn("WakeupRunner.onQuiet")(function* (
+        ask: 1 | 2,
+        since: number,
+        currentRunId: RunId,
+      ) {
+        asked = ask;
+        quietSince = since;
+        yield* sql`UPDATE kin_wakeups SET quiet_since = ${since}
+          WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
+            AND quiet_since IS NOT ${since}`;
+        if (Option.isNone(bridge) || Option.isNone(chat)) return;
+        const lane = yield* bridge.value.lane(row);
+        if (
+          Option.isSome(lane) &&
+          lane.value.owed &&
+          lane.value.team !== true &&
+          lane.value.quiet !== true
+        )
+          yield* postQuietRunCard({ orgId, agentId, wakeupId, lane: lane.value, ask }, threads, {
+            threadId,
+            runId: currentRunId,
+          }).pipe(
+            Effect.provideService(KinChatService, chat.value),
+            provideSql,
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin couldn't post a quiet run card", { cause }),
+            ),
+          );
+      });
+      const endQuietWait = Effect.gen(function* () {
+        if (asked === 0) return;
+        if (quietSince !== null)
+          yield* sql`UPDATE kin_wakeups SET quiet_since = NULL
+            WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND quiet_since IS NOT NULL`;
+        if (Option.isSome(chat))
+          yield* closeQuietRunCards(row).pipe(
+            Effect.provideService(KinChatService, chat.value),
+            provideSql,
+          );
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't clear its quiet run", { cause }),
+        ),
+      );
+      const result = yield* Effect.gen(function* () {
+        while (true) {
+          const result = yield* waitAsking(
+            threads,
+            { projectId, threadId, runId: current },
+            lastActivity,
+            eachQuietWindow,
+            (ask, since) => onQuiet(ask, since, current),
+            asked,
+          );
+          // Under the steer lock, so no steer lands once the wake-up stops waiting.
+          const next = yield* steering.lock.withPermits(1)(
+            Effect.gen(function* () {
+              const after =
+                (yield* threads.getThreadRecords(threadId, ["runs"], { runIds: [current] })).runs[0]
+                  ?.ordinal ?? 0;
+              const adopted =
+                result.timedOut || (yield* isAborted(row))
+                  ? undefined
+                  : (yield* threads.getThreadRecords(threadId, ["runs"], {
+                      runStatuses: ["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES],
+                    })).runs
+                      .filter(
+                        (run) =>
+                          run.ordinal > after &&
+                          isSteerRun(wakeupId, run) &&
+                          // A provider failure holds the queue: a held run never starts by itself.
+                          ((run.status === "queued" && run.queueHeld !== true) ||
+                            ThreadManagementService.isActiveRun(run)),
+                      )
+                      .toSorted((a, b) => a.ordinal - b.ordinal)[0];
+              if (adopted === undefined) steering.open = false;
+              return adopted;
+            }),
+          );
+          if (next === undefined) return result;
+          current = next.id;
+        }
+      }).pipe(Effect.ensuring(endQuietWait));
       yield* Fiber.interrupt(steerer);
       // Its steers still queued would start with no wake-up to own them, or hold the lead's
       // queue for good; they go, and their messages return with the rest of its events.
@@ -1127,13 +1186,13 @@ const make = Effect.gen(function* () {
           });
           if (status === "completed") {
             lastWork.set(threadId, yield* Clock.currentTimeMillis);
-            yield* keepFloor;
+            yield* keepFloor();
             const holdingFloor = Effect.gen(function* () {
               while (true) {
                 const left = quietUntil() - (yield* Clock.currentTimeMillis);
                 if (left <= 0) return yield* Effect.never;
                 yield* Effect.sleep(left);
-                yield* keepFloor;
+                yield* keepFloor();
               }
             });
             yield* Effect.raceFirst(completing, holdingFloor);

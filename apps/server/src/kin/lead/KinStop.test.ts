@@ -176,7 +176,10 @@ describe("KinStop", () => {
   );
 
   // QA: Stop pressed twice answered true both times, so a client couldn't tell it was done.
-  it.effect("an owner's stop answers true once, then false while the wake-up winds down", () =>
+  it.effect.each([
+    ["an owner's stop answers true once, then false while the wake-up winds down", false],
+    ["a card stop force-stops the run after the interrupt is ignored for 30 seconds", true],
+  ] as const)("%s", ([, asked]) =>
     Effect.gen(function* () {
       const entered = yield* Queue.unbounded<ThreadId>();
       // Whatever a failure would set off: a trouble's notice, or a line in the chat.
@@ -224,7 +227,28 @@ describe("KinStop", () => {
         const runner = yield* WakeupRunner.WakeupRunner;
         const stop = yield* KinStop.KinStop;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        yield* stop.attach(yield* KinStop.makeFanOut(Option.none()));
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const forceStops: Array<string> = [];
+        const fanOut = yield* KinStop.makeFanOut(Option.none()).pipe(
+          Effect.provideService(
+            ThreadManagement.ThreadManagementService,
+            asked
+              ? {
+                  ...threads,
+                  interruptThread: () => Effect.succeed({ type: "no_active_run" as const }),
+                  stopDelegatedTasks: (input) =>
+                    Effect.sync(() => void forceStops.push("tasks")).pipe(
+                      Effect.andThen(threads.stopDelegatedTasks(input)),
+                    ),
+                  forceStopThread: (input) =>
+                    Effect.sync(() => void forceStops.push("agent")).pipe(
+                      Effect.andThen(threads.forceStopThread(input)),
+                    ),
+                }
+              : threads,
+          ),
+        );
+        yield* stop.attach(fanOut);
         yield* queue.enqueue(event("work"));
         yield* queue.enqueue(event("more-work"));
         const run = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
@@ -233,8 +257,21 @@ describe("KinStop", () => {
         const [running] = yield* sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId"
           FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running' ORDER BY wakeup_id`;
         const input = { orgId, wakeupId: running!.wakeupId };
-        assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: true });
-        assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: false });
+        if (asked) {
+          yield* stop.stopAsked(orgId, input.wakeupId, owner[0]!.personId);
+          yield* stop.stopAsked(orgId, input.wakeupId, owner[0]!.personId);
+          yield* TestClock.adjust("29 seconds");
+          assert.deepStrictEqual(forceStops, []);
+          assert.deepStrictEqual(
+            yield* sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId}`,
+            [{ status: "running" }],
+          );
+          yield* TestClock.adjust("1 second");
+          assert.deepStrictEqual(forceStops, ["tasks", "agent"]);
+        } else {
+          assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: true });
+          assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: false });
+        }
         yield* worker.drain();
         yield* Fiber.join(run);
         assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: false });
