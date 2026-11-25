@@ -18,7 +18,7 @@ import {
   KIN_FIXTURE_OWNER,
   makeKinFixtureMessages,
 } from "./kinChatFixtures.ts";
-import type { KinFeedViewer } from "./kinChatFeed.ts";
+import { KIN_HISTORY_PAGE_SIZE, type KinFeedViewer } from "./kinChatFeed.ts";
 import {
   kinChatFeedFollow,
   kinChatFeedRows,
@@ -246,6 +246,35 @@ describe("kinChatFeedView", () => {
     );
     expect(feed({ landOn: "fixture-3" }).landIndex).toBeGreaterThan(-1);
     expect(feed({ landOn: "fixture-99" }).landIndex).toBe(-1);
+    // A Team-room discussion opens on its first row.
+    const discussed = messages.map((m) =>
+      m.seq >= 3 ? { ...m, discussionId: "TD-1" as KinMessage["discussionId"] } : m,
+    );
+    expect(feed({ live: { ...emptyKinChat, messages: discussed }, landOn: "TD-1" }).landIndex).toBe(
+      keys(feed()).findIndex((key) => key.includes("fixture-3")),
+    );
+    // Older than what has loaded: the chat reads back to it instead of opening at the end.
+    const later = { ...emptyKinChat, messages: messages.map((m) => ({ ...m, seq: m.seq + 50 })) };
+    expect(feed({ live: later, exhausted: false, landOn: "fixture-99" }).landPage).toEqual({
+      chatId: KIN_FIXTURE_CHAT_ID,
+      beforeSeq: messages[0]!.seq + 50,
+      limit: KIN_HISTORY_PAGE_SIZE,
+    });
+    expect(feed({ live: later, exhausted: false, landOn: "fixture-3" }).landPage).toBeNull();
+    expect(feed({ live: later, exhausted: true, landOn: "fixture-99" }).landPage).toBeNull();
+    expect(feed({ live: later, exhausted: false }).landPage).toBeNull();
+  });
+
+  it("draws the New line before the first unanswered row, as a divider", () => {
+    const shown = keys(feed());
+    // After the mark at 2: message 3 is the owner's own, 4 is the lead's.
+    const at = shown.findIndex((key) => key.includes("fixture-4"));
+    const view = feed({
+      newLine: { chatId: KIN_FIXTURE_CHAT_ID, mark: 2, upTo: 4 },
+    });
+    expect(keys(view)).toEqual([...shown.slice(0, at), "new-line", ...shown.slice(at)]);
+    expect(view.rows[at]).toMatchObject({ type: "day", label: "New" });
+    expect(keys(feed())).not.toContain("new-line");
   });
 
   it("follows the end until the reader scrolls away, then counts what they have not seen", () => {

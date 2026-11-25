@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   type KinCheckIn,
@@ -8,6 +9,7 @@ import {
   KinMessageId,
   KinPersonId,
   KinScheduledTaskCard,
+  KinWidgetId,
   type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -41,7 +43,11 @@ import * as KinSchedules from "./kinSchedules.ts";
 import { nativeScheduler } from "./kinSchedules.testkit.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
-import { KinAgentId, KinMemoryItemId } from "@t3tools/contracts";
+import * as HostCare from "../host/KinHostCare.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
+import * as ProcessRunner from "../../processRunner.ts";
+import * as ServerConfig from "../../config.ts";
+import { KinAgentId, KinEventId, KinMemoryItemId } from "@t3tools/contracts";
 
 const decodeCard = Schema.decodeUnknownSync(KinScheduledTaskCard);
 const task: MemoryItemHead = item("sch-prs", {
@@ -67,7 +73,10 @@ const identity = Layer.mock(KinIdentity)({
 /** Kin's consumer over the real native scheduler; `recorded` holds what would be bare threads. */
 const harness = (
   projects?: Set<string>,
-  routine: Layer.Layer<never> | Layer.Layer<RoutineContent.KinRoutineContent> = Layer.empty,
+  services:
+    | Layer.Layer<never>
+    | Layer.Layer<KinHostCare>
+    | Layer.Layer<RoutineContent.KinRoutineContent> = Layer.empty,
 ) => {
   const recorded = {
     launches: [] as ThreadLaunchService.ThreadLaunchInput[],
@@ -91,7 +100,7 @@ const harness = (
         }),
       }),
     ),
-    Layer.provideMerge(routine),
+    Layer.provideMerge(services),
   );
   return { recorded, workers, kinTicks, layer };
 };
@@ -177,6 +186,80 @@ it.effect("a scheduled task wakes the lead at its time and its card records the 
       ["Three PRs are open on acme/api. #41 waits on Bob's review."],
     );
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a run whose time passes while Kin's computer is in trouble says why once, ringing no one again",
+  () => {
+    const refreshed: Array<string> = [];
+    const care = Layer.mock(KinHostCare)({
+      host: true,
+      causeFor: () => Effect.succeed({ cause: "signin" as const, told: true }),
+      refresh: (org) => Effect.sync(() => void refreshed.push(org)),
+    });
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* tick(tuesday);
+      assert.lengthOf(yield* runs(), 1);
+      // Signed out the whole time: the run's wait passes before any turn could start.
+      yield* TestClock.setTime(tuesday + LeadDelivery.DELIVERY_DEADLINE_MS.scheduled_task + 1);
+      yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+      const sql = yield* SqlClient.SqlClient;
+      const said = yield* sql<{
+        body: string;
+        silent: number;
+      }>`SELECT body, silent FROM kin_messages
+      WHERE org_id = ${orgId} AND chat_id = 'chat-a' AND message_id LIKE 'kin-run-failed:%'`;
+      assert.deepStrictEqual(said, [
+        {
+          body: '"Open PRs digest" didn\'t run: its AI account is signed out.',
+          silent: 1,
+        },
+      ]);
+      assert.deepStrictEqual(refreshed, [orgId]);
+      yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_messages WHERE message_id LIKE 'kin-run-failed:%'`,
+        1,
+      );
+    }).pipe(Effect.provide(harness(undefined, care).layer));
+  },
+);
+
+it.effect(
+  "a run held by a trouble says on its card that it waits, and why, until it is let go",
+  () => {
+    // Nothing on this computer runs a command: it isn't a Kin host.
+    const runner = Layer.succeed(
+      ProcessRunner.ProcessRunner,
+      ProcessRunner.ProcessRunner.of({ run: () => Effect.die("no commands here") }),
+    );
+    const care = HostCare.layerWithoutRunner.pipe(
+      Layer.provide(runner),
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-scheduled-held-" })),
+      Layer.provide(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* tick(tuesday);
+      const [run] = yield* runs();
+      assert.include((yield* card()).state.lastRun, { status: "running" });
+      const hostCare = yield* KinHostCare;
+      yield* hostCare.failed({
+        orgId,
+        agentId: KinAgentId.make(run!.agentId),
+        cause: "signin",
+        eventIds: [KinEventId.make(run!.eventId)],
+      });
+      assert.deepInclude((yield* card()).state.lastRun, {
+        status: "running",
+        note: "its AI account is signed out",
+      });
+      // The agent works again: its held run is let go, and the card no longer says it waits.
+      yield* hostCare.succeeded(orgId, KinAgentId.make(run!.agentId));
+      assert.notProperty((yield* card()).state.lastRun, "note");
+    }).pipe(Effect.provide(care.pipe(Layer.provideMerge(harness().layer))));
+  },
 );
 
 it.effect("Pause stops scheduled runs until Resume", () =>
@@ -293,6 +376,19 @@ it.effect(
         yield* sql`SELECT 1 FROM kin_trigger_inbox WHERE org_id = ${orgId} AND consumed_at IS NULL`,
         [],
       );
+      const [fire] = yield* sql<{ fireId: string }>`SELECT fire_id AS "fireId"
+        FROM kin_trigger_inbox WHERE org_id = ${orgId} ORDER BY fire_id`;
+      assert.deepStrictEqual(
+        yield* sql`SELECT kind, ref, reason, at FROM kin_offline_skips ORDER BY ref`,
+        [
+          {
+            kind: "scheduled",
+            ref: fire?.fireId,
+            reason: "time_passed",
+            at: Number(fire?.fireId.split(":").at(-1)),
+          },
+        ],
+      );
     }).pipe(Effect.provide(layer)),
 );
 
@@ -333,6 +429,7 @@ const save = Effect.fn("test.nativeSave")(function* (
     readonly chatId?: string;
     readonly prompt?: string;
     readonly existing?: boolean;
+    readonly forChat?: boolean;
   } = {},
 ) {
   yield* (yield* KinSchedules.KinSchedules).save({
@@ -341,6 +438,7 @@ const save = Effect.fn("test.nativeSave")(function* (
     scheduleId,
     existing: overrides.existing ?? false,
     chatId: KinChatId.make(overrides.chatId ?? "chat-a"),
+    ...(overrides.forChat === true ? { audience: "shared" as const } : {}),
     sourceEvent: "set-event",
     saidBy: "owner-a",
     title: "Stuck PRs",
@@ -369,8 +467,14 @@ const nativeCard = Effect.fn("test.nativeCard")(function* () {
   return { widget, state: decodeCard(widget.state) };
 });
 
-/** Run now from T3's Scheduled tasks screen, then Kin's next tick. */
-const runNow = Effect.fn("test.nativeRunNow")(function* () {
+/**
+ * Run now from T3's Scheduled tasks screen, then Kin's next tick. The run before has ended,
+ * unless `overlapping`.
+ */
+const runNow = Effect.fn("test.nativeRunNow")(function* (overlapping = false) {
+  if (!overlapping)
+    yield* (yield* SqlClient.SqlClient)`UPDATE kin_lead_deliveries SET status = 'delivered'
+      WHERE status = 'pending'`;
   yield* TestClock.adjust("1 second");
   yield* (yield* ScheduledTaskService.ScheduledTaskService).runNow({ id: taskId });
   yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
@@ -422,6 +526,35 @@ it.effect(
       yield* leadWakeup({ orgId, eventId: run!.eventId, chatId: "chat-a" });
       yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
       assert.include((yield* nativeCard()).state.lastRun, { status: "skipped" });
+
+      yield* runNow();
+      const [, next] = yield* nativeRuns();
+      const body = "Approve the bank-alert tally?";
+      const messageId = KinMessageId.make(
+        (yield* leadWakeup({ orgId, eventId: next!.eventId, chatId: "chat-a", body }))!,
+      );
+      yield* (yield* Repository.KinChatRepository).insertWidget({
+        audience: "chat",
+        orgId,
+        chatId: KinChatId.make("chat-a"),
+        messageId,
+        widgetId: KinWidgetId.make("bank-alert-question"),
+        widgetClass: "native",
+        type: "choice",
+        state: { question: body },
+        source: null,
+        feed: null,
+        awaiting: [],
+        pinnedAt: null,
+        closedAt: null,
+        updatedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+      });
+      yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+      assert.include((yield* nativeCard()).state.lastRun, {
+        status: "posted",
+        note: body,
+        messageId,
+      });
 
       yield* (yield* KinSchedules.KinSchedules).cancel(orgId, scheduleId);
       assert.lengthOf((yield* tasks.list()).tasks, 0);
@@ -508,7 +641,10 @@ it.effect(
   },
 );
 
-const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* () {
+const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* (
+  audience: "owner_only" | "shared" = "owner_only",
+  forChat = false,
+) {
   yield* seed();
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:30', '18:30', '03:00', 0, 1, '09:00', '{"from":"21:00","to":"08:00"}')`;
@@ -521,7 +657,7 @@ const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* () {
   yield* sql`UPDATE kin_leads SET models_json = ${MODELS} WHERE org_id = ${orgId}`;
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
       event_ids, audience) VALUES ('set-wake', ${orgId}, 'lead-a', 'test', 0, 'completed',
-      '["set-event"]', 'owner_only')`;
+      '["set-event"]', ${audience})`;
   const asked = {
     _tag: "chat.message",
     orgId,
@@ -537,8 +673,131 @@ const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* () {
       queued_at, state, wakeup_id)
     VALUES ('set-event', ${orgId}, 'lead-a', 'chat.message', 'P0', ${JSON.stringify(asked)}, 0, 0,
       'done', 'set-wake')`;
-  yield* save({ chatId: "group-a" });
+  yield* save({ chatId: "group-a", forChat });
   yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
+});
+
+it.effect("a slot while the routine's last run is still going is skipped and counted", () => {
+  const { layer } = harness();
+  return Effect.gen(function* () {
+    yield* nativeSetup();
+    yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
+    yield* runNow();
+    assert.lengthOf(yield* nativeRuns(), 1);
+    // Its turn hasn't ended: the next two are skipped, one run at a time.
+    yield* runNow(true);
+    yield* runNow(true);
+    assert.lengthOf(yield* nativeRuns(), 1);
+    assert.deepInclude((yield* nativeCard()).state, { overlapSkipped: 2 });
+    assert.include((yield* nativeCard()).state.lastRun, {
+      status: "skipped",
+      note: "the last run was still going",
+    });
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("a routine set for a room of owner-level people runs in that room", () => {
+  const { layer } = harness();
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* TestClock.setTime(start);
+    yield* nativeSetupInGroup("owner_only", true);
+    // A co-owner joined, so the room was shared; the owner and she set it for the room.
+    yield* sql`UPDATE kin_chats SET shared_at = 1 WHERE chat_id = 'group-a'`;
+    yield* runNow();
+    const [run] = yield* sql<{ chatId: string | null; lane: string }>`SELECT
+        json_extract(e.json, '$.chatId') AS "chatId", d.chat_id AS lane
+      FROM kin_events e JOIN kin_lead_deliveries d ON d.org_id = e.org_id AND d.event_id = e.event_id
+      WHERE e.org_id = ${orgId} AND json_extract(e.json, '$.subject.itemId') = ${scheduleId}
+      ORDER BY e.received_at`;
+    assert.deepStrictEqual(run, { chatId: "group-a", lane: "group-a" });
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("a co-owner's routine for them alone runs in their own chat with the agent", () => {
+  const { layer } = harness();
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* TestClock.setTime(start);
+    yield* nativeSetup("meera-direct");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES ('meera', ${orgId}, 'meera', 'Meera Iyer', '2026-11-07T00:00:00.000Z', 'co_owner')`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
+      VALUES ('meera-direct', ${orgId}, 'direct', 0, '2026-11-07T00:00:00.000Z', 'meera:lead-a')`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        agent_id, role, joined_at)
+      VALUES ('meera-in-direct', ${orgId}, 'meera-direct', 'person', 'meera', NULL, 'owner',
+          '2026-11-07T00:00:00.000Z'),
+        ('lead-in-meera', ${orgId}, 'meera-direct', 'agent', NULL, 'lead-a', 'member',
+          '2026-11-07T00:00:00.000Z')`;
+    yield* runNow();
+    const runIn = yield* sql<{ chatId: string | null; lane: string }>`SELECT
+        json_extract(e.json, '$.chatId') AS "chatId", d.chat_id AS lane
+      FROM kin_events e JOIN kin_lead_deliveries d ON d.org_id = e.org_id AND d.event_id = e.event_id
+      WHERE e.org_id = ${orgId} AND json_extract(e.json, '$.subject.itemId') = ${scheduleId}
+      ORDER BY e.received_at`;
+    assert.deepStrictEqual(runIn, [{ chatId: "meera-direct", lane: "meera-direct" }]);
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("a group's own routine runs in the group, and pauses once its agent left it", () => {
+  const { layer } = harness();
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* TestClock.setTime(start);
+    // Set in the group by a turn its people read: it is the group's, shown there with who asked.
+    yield* nativeSetupInGroup("shared", true);
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+        author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+      VALUES ('set-message', ${orgId}, 'group-a', 50, 'human', 'owner-a', 'group-owner', 'owner',
+        'text', 'every morning post the stuck PRs here', '[]', 'posted', '2026-11-09T09:00:00.000Z')`;
+    yield* sql`UPDATE kin_chats SET last_seq = 50 WHERE chat_id = 'group-a'`;
+    const shown = yield* nativeCard();
+    assert.equal(shown.widget.chatId, "group-a");
+    assert.equal(shown.state.askedBy?.personId, "owner-a");
+    yield* runNow();
+    const runIn = yield* sql<{ chatId: string | null; lane: string }>`SELECT
+        json_extract(e.json, '$.chatId') AS "chatId", d.chat_id AS lane
+      FROM kin_events e JOIN kin_lead_deliveries d ON d.org_id = e.org_id AND d.event_id = e.event_id
+      WHERE e.org_id = ${orgId} AND json_extract(e.json, '$.subject.itemId') = ${scheduleId}
+      ORDER BY e.received_at`;
+    assert.deepStrictEqual(runIn, [{ chatId: "group-a", lane: "group-a" }]);
+    const withheld = sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE org_id = ${orgId} AND body LIKE '%without its wording%' ORDER BY seq`;
+    assert.lengthOf(yield* withheld, 0);
+    // A teammate joined after it was set: the run goes on, its words only to whoever set it.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('latecomer', ${orgId}, 'latecomer', 'Latecomer', '2026-11-09T00:00:00.000Z')`;
+    yield* sql`UPDATE kin_chats SET shared_at = 1, shared_from_seq = 51 WHERE chat_id = 'group-a'`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        role, joined_at, joined_seq)
+      VALUES ('group-latecomer', ${orgId}, 'group-a', 'person', 'latecomer', 'member',
+        '2026-11-10T00:00:00.000Z', 51)`;
+    yield* runNow();
+    assert.lengthOf(yield* nativeRuns(), 2);
+    const [note] = yield* withheld;
+    assert.include(note?.body, `"Stuck PRs" ran in Plans without its wording`);
+    assert.include(note?.body, prompt);
+
+    yield* sql`UPDATE kin_chat_members SET left_at = '2026-11-10T00:00:00.000Z'
+      WHERE org_id = ${orgId} AND member_id = 'group-lead'`;
+    yield* runNow();
+    assert.lengthOf(yield* nativeRuns(), 2);
+    const told = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE org_id = ${orgId} AND kind = 'system' AND body LIKE 'Paused %' ORDER BY seq`;
+    assert.lengthOf(told, 1);
+    assert.include(told[0]!.body, 'Paused "Stuck PRs": it was for Plans, which');
+    const [row] = yield* sql<{ pending: number | null }>`SELECT pending_enabled AS pending
+      FROM kin_schedules WHERE org_id = ${orgId}`;
+    assert.equal(row?.pending, 0);
+    // Paused, a Run now does nothing and tells no one again.
+    yield* runNow();
+    assert.lengthOf(yield* nativeRuns(), 2);
+    assert.lengthOf(
+      yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId} AND body LIKE 'Paused %'`,
+      1,
+    );
+  }).pipe(Effect.provide(layer));
 });
 
 it.effect("an edited prompt is put to the owner once and runs only after he confirms it", () => {
@@ -603,16 +862,16 @@ it.effect("the card's Pause, Run now and Delete act on the native task", () => {
     assert.isFalse((yield* tasks.list()).tasks[0]!.enabled);
     assert.include((yield* nativeCard()).state, { status: "paused" });
     assert.lengthOf(yield* nativeRuns(), 0);
-    // Run now still runs a paused schedule, as before.
+    // Run now respects the pause: resume it first.
     yield* tap("run_now");
     yield* drain;
-    assert.lengthOf(yield* nativeRuns(), 1);
+    assert.lengthOf(yield* nativeRuns(), 0);
     // The same when the pause comes from T3's Scheduled tasks screen.
     yield* tasks.setEnabled({ id: taskId, enabled: true });
     yield* due();
     yield* tasks.setEnabled({ id: taskId, enabled: false });
     yield* drain;
-    assert.lengthOf(yield* nativeRuns(), 1);
+    assert.lengthOf(yield* nativeRuns(), 0);
     yield* tap("delete");
     yield* drain;
     assert.lengthOf((yield* tasks.list()).tasks, 0);
@@ -735,17 +994,31 @@ it.effect("a check-in the host slept through fires once when Kin is back that da
     const tasks = yield* ScheduledTaskService.ScheduledTaskService;
     const evening = (yield* tasks.list()).tasks.find((row) => row.title === "Evening check-in")!;
     const opens = Date.parse(evening.nextRunAt!);
+    // Kin's pass runs just before T3's scheduler sees the slot, so its minutely work is done.
+    yield* TestClock.setTime(opens + 12 * 60_000 - 5_000);
+    yield* tick;
     // The host sleeps through the slot and wakes twelve minutes in: T3 skips the run as missed.
     yield* TestClock.setTime(opens + 12 * 60_000);
     yield* workers.get("scheduled-tasks")!;
     const skipped = (yield* tasks.list()).tasks.find((row) => row.id === evening.id)!;
     assert.isAbove(Date.parse(skipped.nextRunAt!), opens + 12 * 60_000);
-    yield* tick;
+    // It fires in the next pass, five seconds on, not a minute.
     yield* tick;
     assert.deepStrictEqual(
       yield* sql`SELECT fire_id AS "fireId", consumed_at IS NOT NULL AS done
         FROM kin_trigger_inbox WHERE fire_id LIKE ${`ns:${evening.id}:%`}`,
       [{ fireId: `ns:${evening.id}:${opens}:scheduled`, done: 1 }],
+    );
+    // The next evening it wakes past the catch-up window: that slot alone is recorded, once.
+    const next = opens + 24 * 60 * 60_000;
+    yield* TestClock.setTime(next + 3 * 60 * 60_000 + 60_000);
+    yield* workers.get("scheduled-tasks")!;
+    yield* tick;
+    yield* tick;
+    assert.deepStrictEqual(
+      yield* sql`SELECT kind, ref, reason, at FROM kin_offline_skips
+        WHERE ref LIKE ${`ns:${evening.id}:%`} ORDER BY at`,
+      [{ kind: "check_in", ref: `ns:${evening.id}:${next}`, reason: "time_passed", at: next }],
     );
   }).pipe(Effect.provide(Layer.merge(layer, identity)));
 });
@@ -785,12 +1058,11 @@ it.effect(
 it.effect(
   "briefs are their receiver's own: Settings and the chat move one schedule, and days and off reach it",
   () => {
-    // What the evening summary would sum up today, as `KinRoutineContent` gathers it.
-    const today: { evening: string | null } = { evening: null };
+    let evening: string | null = null;
     const { layer, kinTicks, workers } = harness(
       undefined,
       Layer.mock(RoutineContent.KinRoutineContent)({
-        eveningFacts: () => Effect.sync(() => today.evening),
+        eveningFacts: () => Effect.sync(() => evening),
       }),
     );
     return Effect.gen(function* () {
@@ -813,19 +1085,38 @@ it.effect(
         { kind: "evening", at: "18:30", days: weekdays, around: true, on: true },
       ]);
 
-      // A day with nothing to sum up brings no evening summary; a day with something does.
       const summaries = sql<{ key: string }>`SELECT dedupe_key AS key FROM kin_events
         WHERE org_id = ${orgId} AND tag = 'pulse' AND dedupe_key LIKE 'checkin:checkin-evening:%'
         ORDER BY queued_at`;
-      for (const [facts, queued] of [
-        [null, 0],
-        ['{"routine":"evening_summary"}', 1],
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'work', 'Work', 'W', 1, 0) ON CONFLICT DO NOTHING`;
+      const hour = 60 * 60_000;
+      for (const { activity, task, queued } of [
+        { activity: null, task: null, queued: 0 },
+        { activity: '{"routine":"evening_summary"}', task: null, queued: 1 },
+        { activity: null, task: "due today", queued: 1 },
+        { activity: null, task: "untold late task", queued: 1 },
       ] as const) {
-        today.evening = facts;
-        yield* TestClock.setTime(Date.parse((yield* native("Evening summary")).nextRunAt!));
+        const before = (yield* summaries).length;
+        const at = Date.parse((yield* native("Evening summary")).nextRunAt!);
+        evening = activity;
+        if (task !== null) {
+          const dueAt = task === "due today" ? at + hour : at - 48 * hour;
+          yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+              owner_kind, owner_id, due_at, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+            VALUES (${orgId}, 'invented-task', 'work', 'W-91', 'Invented handoff', 'doing', 'person',
+              ${owner.personId}, ${dueAt}, 'person', ${owner.personId}, 'invented-task', ${at}, ${at})`;
+        }
+        yield* TestClock.setTime(at);
         yield* workers.get("scheduled-tasks")!;
         yield* drain;
-        assert.lengthOf(yield* summaries, queued);
+        assert.lengthOf(
+          yield* summaries,
+          before + queued,
+          task ?? (activity === null ? "quiet" : "activity only"),
+        );
+        if (task !== null)
+          yield* sql`DELETE FROM kin_records WHERE org_id = ${orgId} AND record_id = 'invented-task'`;
       }
 
       // Off: the task stops, so its next slot brings nothing; on again, it comes back.
@@ -840,7 +1131,7 @@ it.effect(
       yield* TestClock.adjust("1 day");
       yield* workers.get("scheduled-tasks")!;
       yield* drain;
-      assert.lengthOf(yield* summaries, 1);
+      assert.lengthOf(yield* summaries, 3);
       yield* save({ kind: "evening", at: "18:30", days: weekdays, on: true });
       yield* drain;
       assert.isTrue((yield* native("Evening summary")).enabled);
@@ -859,9 +1150,14 @@ it.effect(
         ),
         morning,
       );
+      // In the owner's own time, whatever the host's clock says.
+      const index = () =>
+        checkInIndex(orgId, KinAgentId.make("lead-a")).pipe(
+          Effect.map((lines) => lines.join("\n")),
+        );
       assert.include(
-        (yield* checkInIndex(orgId, KinAgentId.make("lead-a"))).join("\n"),
-        `checkin-morning Morning check-in: around ${morning.at}`,
+        yield* index(),
+        "checkin-morning Morning check-in: around 08:00 Sun, Mon, Tue, Wed, Thu, Fri",
       );
 
       // A form opened before its days changed elsewhere saves its new time onto those days.
@@ -883,6 +1179,11 @@ it.effect(
         checkIn: true,
         now: yield* Clock.currentTimeMillis,
       });
+      // A row with no owner's time of its own is listed from its host time, turned back.
+      assert.include(
+        yield* index(),
+        "checkin-morning Morning check-in: around 08:00 Mon, Tue, Wed",
+      );
       assert.include((yield* save({ ...opened, at: "08:15", changed: ["at"] })).briefs[0], {
         at: "08:15",
       });
@@ -961,11 +1262,7 @@ it.effect(
       // Made exact on T3's screen at a time before its old window, it fires at that time.
       yield* save({ kind: "morning", at: "11:00", days: weekdays, on: true });
       const nine = onHostClock("09:00", weekdays, zone, host, yield* Clock.currentTimeMillis);
-      const fires = KinSchedules.timeOnDayOf(
-        (yield* Clock.currentTimeMillis) + 24 * 60 * 60_000,
-        host,
-        nine.at,
-      );
+      const fires = KinSchedules.timeOnDayOf(Date.UTC(2026, 10, 17, 12), host, nine.at);
       const morningTask = KinSchedules.scheduleTaskId(orgId, "checkin-morning");
       yield* sql`UPDATE scheduled_tasks SET next_run_at = ${DateTime.formatIso(DateTime.makeUnsafe(fires))},
         schedule_json = json_set(schedule_json, '$.timeOfDay', ${nine.at},

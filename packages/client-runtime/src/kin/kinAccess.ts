@@ -100,22 +100,13 @@ function makeKinAccess<R, ER>(
       const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
       const environmentId = supervisor.target.environmentId;
       // A failed read would leave a co-owner on a member's dock until the next refresh.
-      return yield* Effect.suspend(() =>
-        Effect.promise(() => read.run(registry, { environmentId, input })),
-      ).pipe(
-        Effect.flatMap((result) =>
-          result._tag === "Success"
-            ? Effect.succeed(result.value)
-            : result._tag === "Failure"
-              ? Effect.failCause(result.cause)
-              : Effect.never,
-        ),
+      return yield* Effect.suspend(() => read.run(registry, { environmentId, input })).pipe(
         Effect.retry({ times: 4, schedule: Schedule.exponential("1 second") }),
       );
     }),
     staleTimeMs: 30_000,
     // A kind change moves `leads` and `people` for everyone, members included; a country chosen
-    // moves the company's money.
+    // moves the company's money; a section switched moves `shell`.
     refreshTrigger: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: KinAccessMeInput;
@@ -125,7 +116,8 @@ function makeKinAccess<R, ER>(
         const leads = refreshes("leads")(target);
         const people = refreshes("people")(target);
         const company = refreshes("company")(target);
-        trigger = Atom.make((get) => `${get(leads)}|${get(people)}|${get(company)}`);
+        const shell = refreshes("shell")(target);
+        trigger = Atom.make((get) => `${get(leads)}|${get(people)}|${get(company)}|${get(shell)}`);
         triggers.set(`${target.environmentId}:${target.input.orgId}`, trigger);
       }
       return trigger;

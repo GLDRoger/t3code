@@ -24,6 +24,7 @@ import {
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { recordSkips, slotsBetween } from "../host/offlineSkips.ts";
 
 export class KinTriggerFireConflict extends Schema.TaggedError<KinTriggerFireConflict>()(
   "KinTriggerFireConflict",
@@ -313,6 +314,21 @@ const make = Effect.gen(function* () {
           if (!duplicate && updated.length !== 1) {
             return yield* new KinTriggerFireConflict({ orgId: value.orgId, reason: "not_due" });
           }
+          // The slots a late recurring routine or task jumps over to its next run never run.
+          if (
+            updated.length === 1 &&
+            nextAt !== null &&
+            (trigger.subject.type === "routine" || trigger.subject.type === "scheduled_task")
+          )
+            yield* recordSkips(
+              value.orgId,
+              "scheduled",
+              slotsBetween(trigger.schedule, trigger.timeZone, dueAt, nextAt).map((at) => ({
+                ref: `${triggerId}:${at}`,
+                reason: "time_passed",
+                at,
+              })),
+            ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
           return duplicate ? "duplicate" : "fired";
         }),
       );
@@ -332,3 +348,15 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(KinTriggerStore, make);
+
+/** Stops triggers firing, in the caller's transaction; their next write turns them on again. */
+export const pauseTriggers = Effect.fn("KinTriggerStore.pauseTriggers")(function* (
+  orgId: KinOrgId,
+  triggerIds: ReadonlyArray<string>,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
+    updated_at = max(updated_at, ${now})
+    WHERE org_id = ${orgId} AND trigger_id IN ${sql.in(triggerIds)}`;
+});

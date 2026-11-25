@@ -16,6 +16,7 @@ const host = vi.hoisted(() => ({
 vi.mock(import("./kinClient"), async (importOriginal) => {
   const real = await importOriginal();
   const { Atom: A, AsyncResult: R } = await import("effect/reactivity");
+  const { sync } = await import("effect/Effect");
   const { appAtomRegistry: registry } = await import("../rpc/atomRegistry");
   const read = A.make(() => R.success({ zone: "Pacific/Auckland", briefs: host.briefs })).pipe(
     A.keepAlive,
@@ -29,27 +30,30 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
       briefs: () => read,
       briefSave: {
         ...real.kinClient.briefSave,
-        run: async (_registry: unknown, { input }: { readonly input: KinBriefSaveInput }) => {
-          const { orgId: _orgId, ...change } = input;
-          host.saves.push(change);
-          host.briefs = host.briefs.map((brief) =>
-            brief.kind === input.kind
-              ? { ...brief, at: input.at, days: input.days, on: input.on }
-              : brief,
-          );
-          return R.success({ zone: "Pacific/Auckland", briefs: host.briefs });
-        },
+        run: (_registry: unknown, { input }: { readonly input: KinBriefSaveInput }) =>
+          sync(() => {
+            const { orgId: _orgId, ...change } = input;
+            host.saves.push(change);
+            host.briefs = host.briefs.map((brief) =>
+              brief.kind === input.kind
+                ? { ...brief, at: input.at, days: input.days, on: input.on }
+                : brief,
+            );
+            return { zone: "Pacific/Auckland", briefs: host.briefs };
+          }),
       },
     },
   };
 });
 
-vi.mock("../state/use-atom-command", () => ({
-  useAtomCommand:
-    (command: { run: (registry: unknown, input: unknown) => Promise<unknown> }) =>
-    (input: unknown) =>
-      command.run(null, input),
-}));
+vi.mock("../state/use-atom-command", async () => {
+  const { runAtomCommand } = await import("@t3tools/client-runtime/state/runtime");
+  const { appAtomRegistry } = await import("../rpc/atomRegistry");
+  return {
+    useAtomCommand: (command: Parameters<typeof runAtomCommand>[1]) => (input: unknown) =>
+      runAtomCommand(appAtomRegistry, command, input),
+  };
+});
 
 const weekdays = [1, 2, 3, 4, 5];
 
@@ -73,21 +77,23 @@ describe("Settings → Briefs", () => {
     await expect.element(page.getByText("08:00 · Weekdays")).toBeVisible();
     await expect.element(page.getByText(/Times are in/)).toBeVisible();
 
+    // The switch says on or off; the line keeps saying when.
     await userEvent.click(page.getByRole("switch", { name: "Morning page: On" }));
-    await expect.element(page.getByText("Off · 08:00 · Weekdays")).toBeVisible();
-    await userEvent.click(page.getByRole("switch", { name: "Morning page: Off" }));
+    await expect.element(page.getByRole("switch", { name: "Morning page: Off" })).not.toBeChecked();
     await expect.element(page.getByText("08:00 · Weekdays", { exact: true })).toBeVisible();
+    await userEvent.click(page.getByRole("switch", { name: "Morning page: Off" }));
+    await expect.element(page.getByRole("switch", { name: "Morning page: On" })).toBeChecked();
     expect(host.saves.map((save) => [save.on, save.changed])).toEqual([
       [false, ["on"]],
       [true, ["on"]],
     ]);
 
-    await userEvent.click(page.getByRole("button", { name: "Change: Morning page" }));
+    await userEvent.click(page.getByRole("button", { name: "Edit brief: Morning page" }));
     const sheet = page.getByRole("dialog");
     await expect.element(sheet.getByText("Morning page")).toBeVisible();
     await userEvent.fill(sheet.getByLabelText("Time"), "07:15");
     await userEvent.click(sheet.getByRole("button", { name: "Fri" }));
-    await userEvent.click(sheet.getByRole("button", { name: "Save" }));
+    await userEvent.click(sheet.getByRole("button", { name: "Save brief" }));
     await expect.element(sheet).not.toBeInTheDocument();
     await expect.element(page.getByText("07:15 · Mon, Tue, Wed, Thu")).toBeVisible();
     expect(host.saves.at(-1)).toEqual({

@@ -17,6 +17,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
 import { type KinSchedule, readNativeTask, readSchedule } from "../triggers/kinSchedules.ts";
+import { pauseTriggers } from "../triggers/KinTriggerStore.ts";
 
 export const scheduledTaskTriggerId = (itemId: string) => KinTriggerId.make(`schedule:${itemId}`);
 
@@ -113,8 +114,7 @@ export const applyScheduledTaskTap = Effect.fn("KinScheduledTasks.applyTap")(fun
       if (row.paused === 1) return yield* invalid("It's already paused.");
       yield* sql`UPDATE kin_scheduled_tasks SET paused = 1, updated_at = ${now}
         WHERE org_id = ${orgId} AND item_id = ${card.itemId}`;
-      yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
-          updated_at = max(updated_at, ${now}) WHERE org_id = ${orgId} AND trigger_id = ${triggerId}`;
+      yield* pauseTriggers(orgId, [triggerId], now);
       return { state: { ...card, status: "paused", nextRunAt: null }, closed: false } satisfies {
         state: KinScheduledTaskCard;
         closed: boolean;
@@ -135,8 +135,7 @@ export const applyScheduledTaskTap = Effect.fn("KinScheduledTasks.applyTap")(fun
     case "delete": {
       yield* sql`UPDATE kin_scheduled_tasks SET state = 'deleted', run_now_at = NULL,
           updated_at = ${now} WHERE org_id = ${orgId} AND item_id = ${card.itemId}`;
-      yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
-          updated_at = max(updated_at, ${now}) WHERE org_id = ${orgId} AND trigger_id = ${triggerId}`;
+      yield* pauseTriggers(orgId, [triggerId], now);
       return { state: { ...card, status: "deleted", nextRunAt: null }, closed: true } satisfies {
         state: KinScheduledTaskCard;
         closed: boolean;

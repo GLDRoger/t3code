@@ -2,6 +2,7 @@ import type { KinReactionEmoji } from "@t3tools/contracts";
 import { useState } from "react";
 import { Pressable, ScrollView, Text as SystemText, useWindowDimensions, View } from "react-native";
 
+import { SymbolView } from "../../../components/ui/AppSymbol";
 import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { ListSection } from "../../../components/ui/ListSection";
 import { Sheet } from "../../../components/ui/Sheet";
@@ -12,13 +13,17 @@ import {
   type NativeMarkdownTextStyle,
 } from "../../../native/SelectableMarkdownText";
 import { kinBodyMarkdown, kinImageSource } from "@t3tools/client-runtime/kin/kinChatFeed";
-import { KIN_PICKER_REACTIONS, KIN_REACTION_NAMES } from "@t3tools/client-runtime/kin/kinReactions";
+import {
+  KIN_PICKER_REACTIONS,
+  KIN_QUICK_REACTIONS,
+  KIN_REACTION_NAMES,
+} from "@t3tools/client-runtime/kin/kinReactions";
 
 const PER_ROW = 6;
-const ROWS = [KIN_PICKER_REACTIONS.slice(0, PER_ROW), KIN_PICKER_REACTIONS.slice(PER_ROW)];
+const ALL_ROWS = [KIN_PICKER_REACTIONS.slice(0, PER_ROW), KIN_PICKER_REACTIONS.slice(PER_ROW)];
 
 /**
- * A message's long-press sheet: reactions on top, then Copy and Select text. Reply and mark as
+ * A message's long-press sheet: five reactions and More on top, then Copy and Select text. Reply and mark as
  * unread are left out until Kin can do them: the lead never reads `replyTo`, and read state only
  * moves forward.
  */
@@ -32,6 +37,8 @@ export function KinMessageSheet(props: {
   readonly onClose: () => void;
 }) {
   const [selecting, setSelecting] = useState(false);
+  const [allReactions, setAllReactions] = useState(false);
+  const rows = allReactions ? ALL_ROWS : [KIN_QUICK_REACTIONS];
   // An explicit height, so the sheet measures the text rather than its own current size.
   const [textHeight, setTextHeight] = useState(0);
   const { height } = useWindowDimensions();
@@ -57,10 +64,26 @@ export function KinMessageSheet(props: {
         <View className="gap-4 px-4 pt-7 pb-10">
           {onReact === null ? null : (
             <View className="gap-3" accessibilityRole="toolbar" accessibilityLabel="Reactions">
-              {ROWS.map((row) => (
+              {rows.map((row) => (
                 <View key={row[0]} className="flex-row justify-between">
                   {Array.from({ length: PER_ROW }, (_, column) => {
                     const emoji = row[column];
+                    if (emoji === undefined && !allReactions)
+                      return (
+                        <Pressable
+                          key="more"
+                          accessibilityRole="button"
+                          accessibilityLabel="More reactions"
+                          onPress={() => setAllReactions(true)}
+                          className="size-13 items-center justify-center rounded-full bg-subtle-strong active:opacity-70"
+                        >
+                          <SymbolView
+                            name="ellipsis"
+                            size={20}
+                            tintColorClassName="accent-icon-muted"
+                          />
+                        </Pressable>
+                      );
                     if (emoji === undefined) return <View key={column} className="size-13" />;
                     const selected = props.mine.has(emoji);
                     return (

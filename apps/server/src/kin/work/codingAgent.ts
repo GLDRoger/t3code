@@ -11,7 +11,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { isOwnerHimself } from "../people/KinAccess.ts";
 import { holderOf, type TasksKeyHolder } from "../tasksKey/TasksKeys.ts";
-import { keySensitive } from "./recordRows.ts";
+import { companyListSql } from "./keyGuard.ts";
+import { keyWithheld } from "./recordRows.ts";
 
 /**
  * A person's own coding agent, calling with its key: who it acts as, from `admit`, never from a
@@ -23,13 +24,21 @@ export interface CodingAgentConnection {
   readonly orgId: KinOrgId;
   readonly personId: KinPersonId;
   readonly sessionId: AuthSessionId;
+  /** What the calling tool works on: a Work task (the default), a promise, or a company list's entry. */
+  readonly kind?: "task" | "promise" | "entry";
+  /** Other entries the call names, by key: each checked in the write's own transaction. */
+  readonly names?: ReadonlyArray<string>;
 }
 
-export const connectionOf = (holder: TasksKeyHolder): CodingAgentConnection => ({
+export const connectionOf = (
+  holder: TasksKeyHolder,
+  kind: CodingAgentConnection["kind"] = "task",
+): CodingAgentConnection => ({
   _tag: "codingAgent",
   orgId: holder.orgId,
   personId: holder.personId,
   sessionId: holder.sessionId,
+  kind,
 });
 
 export const connectionEnded = new KinChatError({
@@ -56,9 +65,18 @@ export const connectionLive = Effect.fn("KinCodingAgent.live")(function* (
 });
 
 /**
- * In the caller's transaction: what the key adds to the screen's own check for one entry. A Work
- * task this person holds, nobody dropped, and neither it nor its client or project labelled now.
+ * In the caller's transaction: what the key adds to the screen's own check for one entry: it is
+ * the calling tool's own kind (a Work task, a promise, a company list's entry), nobody dropped it,
+ * and neither it nor its client or project is labelled now. Whether the person may read or change
+ * it is their screen's rule, decided by the Work method as for their app.
  */
+const kindSql = (kind: NonNullable<CodingAgentConnection["kind"]>) =>
+  kind === "entry"
+    ? companyListSql("r")
+    : kind === "promise"
+      ? "(r.register_id = 'work' AND r.category = 'obligation')"
+      : "r.register_id = 'work'";
+
 export const connectionReaches = Effect.fn("KinCodingAgent.reaches")(function* (
   connection: CodingAgentConnection,
   recordId: string,
@@ -66,8 +84,24 @@ export const connectionReaches = Effect.fn("KinCodingAgent.reaches")(function* (
   const sql = yield* SqlClient.SqlClient;
   const found = yield* sql`SELECT 1 FROM kin_records r
     WHERE r.org_id = ${connection.orgId} AND r.record_id = ${recordId}
-      AND r.register_id = 'work' AND r.owner_kind = 'person'
-      AND r.owner_id = ${connection.personId} AND r.state <> 'dropped'
-      AND NOT ${keySensitive(sql)}`;
+      AND ${sql.literal(kindSql(connection.kind ?? "task"))}
+      AND r.state <> 'dropped' AND NOT ${keyWithheld(sql)}`;
   return found.length > 0;
+});
+
+/**
+ * In the caller's transaction: which of these entries no key reaches, whoever holds it
+ * (`keyWithheld`). Every read a key makes beyond its tasks passes its rows through this.
+ */
+export const keyHidden = Effect.fn("KinCodingAgent.hidden")(function* (
+  orgId: KinOrgId,
+  recordIds: ReadonlyArray<string>,
+) {
+  if (recordIds.length === 0) return new Set<string>();
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ id: string }>`SELECT r.record_id AS id FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in([...new Set(recordIds)])}
+      AND ${keyWithheld(sql)}
+    ORDER BY r.record_id`;
+  return new Set(rows.map((row) => row.id));
 });

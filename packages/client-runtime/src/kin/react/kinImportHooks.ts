@@ -4,9 +4,12 @@ import type {
   KinImportApplyInput,
   KinImportCheck,
   KinImportCheckInput,
+  KinImportFile,
   KinImportUndone,
 } from "@t3tools/contracts";
+import { useState } from "react";
 
+import { createKinImportFiles } from "../kinImport.ts";
 import { kinListSend, type KinListOutcome } from "../kinLists.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinWorkReadState } from "../kinWorkForms.ts";
@@ -35,15 +38,32 @@ export function makeKinImportHooks<R, ER>(app: KinHookApp<R, ER>) {
     const undo = useAtomCommand(kinClient.importUndo, { reportFailure: false });
     const online = () => kinHostConnected(environmentId);
     const reread = () => registry.refresh(runsAtom(target));
+    // The file goes up once: later checks and the import name what the host holds.
+    const [send] = useState(createKinImportFiles);
     return {
-      check: (input: Omit<KinImportCheckInput, "orgId">): Promise<KinListOutcome<KinImportCheck>> =>
-        kinListSend({ online, send: () => check({ environmentId, input: { ...input, orgId } }) }),
+      check: (
+        input: Omit<KinImportCheckInput, "orgId" | "file"> & { readonly file: KinImportFile },
+      ): Promise<KinListOutcome<KinImportCheck>> =>
+        kinListSend({
+          online,
+          send: () =>
+            send(
+              input.file,
+              (file) => check({ environmentId, input: { ...input, file, orgId } }),
+              (checked) => checked.upload,
+            ),
+        }),
       apply: async (
-        input: Omit<KinImportApplyInput, "orgId">,
+        input: Omit<KinImportApplyInput, "orgId" | "file"> & { readonly file: KinImportFile },
       ): Promise<KinListOutcome<KinImportApplied>> => {
         const outcome = await kinListSend({
           online,
-          send: () => apply({ environmentId, input: { ...input, orgId } }),
+          send: () =>
+            send(
+              input.file,
+              (file) => apply({ environmentId, input: { ...input, file, orgId } }),
+              () => null,
+            ),
         });
         if (outcome.ok) reread();
         return outcome;

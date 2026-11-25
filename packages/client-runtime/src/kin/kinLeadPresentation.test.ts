@@ -3,6 +3,7 @@ import { KinAgentId, KinPersonId, ProviderInstanceId } from "@t3tools/contracts"
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  kinAgentRowLine,
   kinChatReadOnlyLine,
   kinDomainLabel,
   kinDomainSlug,
@@ -31,6 +32,17 @@ describe("lead domains", () => {
 
   it.each(["", "   ", "123", "—"])("has no slug for %j", (typed) => {
     expect(kinDomainSlug(typed)).toBeNull();
+  });
+
+  it("says what an agent does in its list row, never its name again or its charter", () => {
+    const lead = { name: "Finance", domain: "finance", intro: "", roleTags: [] };
+    expect(kinAgentRowLine(lead)).toBeNull();
+    expect(kinAgentRowLine({ ...lead, name: "Chief of staff", domain: "chief" })).toBeNull();
+    expect(kinAgentRowLine({ ...lead, name: "Asha" })).toBe("Finance");
+    expect(kinAgentRowLine({ ...lead, roleTags: ["billing", "payroll"] })).toBe("billing, payroll");
+    expect(
+      kinAgentRowLine({ ...lead, intro: " Ask me about invoices. ", roleTags: ["billing"] }),
+    ).toBe("Ask me about invoices.");
   });
 
   it("reads a slug back as words that make the same slug", () => {
@@ -200,14 +212,24 @@ describe("kinWorkingAgents", () => {
   });
 
   it.each([
-    ["a direct chat with it is working", [row(true, "finance")], ["finance"]],
-    ["its turn ended: the row says so", [row(false, "finance")], []],
-    ["a host without the flag", [row(undefined, "finance")], []],
-    ["another agent's chat is working", [row(true, "chief"), row(false, "finance")], ["chief"]],
+    ["a direct chat with it is working", [row(true, "finance")], [], ["finance"]],
+    ["its turn ended: the row says so", [row(false, "finance")], [], []],
+    ["a host without the flag", [row(undefined, "finance")], [], []],
+    ["another agent's chat is working", [row(true, "chief"), row(false, "finance")], [], ["chief"]],
     // A group's row names only the viewer, so it can't say which agent is on a run.
-    ["a working group names nobody", [row(true)], []],
-  ] as const)("%s", (_, chats, working) => {
-    expect([...kinWorkingAgents(chats)]).toEqual(working);
+    ["a working group names nobody", [row(true)], [], []],
+    // The leads list says which agents are on a run, reread when a group's flag flips.
+    [
+      "a group or the Team room it works in",
+      [row(true), row(false, "finance")],
+      ["finance"],
+      ["finance"],
+    ],
+    ["a group's turn ended", [row(false), row(false, "finance")], ["finance"], []],
+    ["a stale lead flag with no group working", [row(false, "finance")], ["finance"], []],
+  ] as const)("%s", (_, chats, leads, working) => {
+    const listed = leads.map((agentId) => ({ agentId: KinAgentId.make(agentId), working: true }));
+    expect([...kinWorkingAgents(chats, listed)]).toEqual(working);
   });
 
   it("knows nobody is working before the chat list has loaded", () => {

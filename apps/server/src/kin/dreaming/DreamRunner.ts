@@ -4,6 +4,7 @@ import {
   ModelSelection,
   type KinRoutine,
   type KinTriggerFireId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -22,6 +23,7 @@ import { isSqlError } from "effect/sql/SqlError";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
@@ -56,6 +58,8 @@ export type DreamOutcome =
       readonly branch: string;
       readonly head: string;
       readonly dream: DreamJson;
+      /** Items the checks left out of a night that landed, each with why. */
+      readonly leftOut: ReadonlyArray<string>;
     }
   | {
       readonly _tag: "failed";
@@ -88,7 +92,17 @@ const encodeDream = Schema.encodeEffect(Schema.fromJsonString(DreamJson));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const FAILED_NIGHTS_NOTICE = 3;
+/**
+ * The owner's choice: whether a night that read its material and landed nothing (no model ran,
+ * or it changed nothing) counts that material as dreamed. Off, it is offered again next night.
+ */
+const EMPTY_DREAM_CONSUMES_MATERIAL = true;
+/** The owner's choice: whether a dream may start once the day's budget is spent. Off, it waits. */
+const DREAM_RUNS_ON_A_SPENT_BUDGET = false;
 const emptyDream: DreamJson = { changes: [], merges: [], supersessions: [], contradictions: [] };
+/** Where a failed night says why, a night that landed says what it left out. */
+const leftOutLine = (leftOut: ReadonlyArray<string>) =>
+  leftOut.length === 0 ? null : leftOut.join("\n").slice(0, 4000);
 const zoned = (ms: number, timeZone: string) => DateTime.makeZonedUnsafe(ms, { timeZone });
 
 const extractPrompt = (input: { orgId: string; head: string; full: boolean }) =>
@@ -98,6 +112,7 @@ Read ${scratch}/material.json. It lists every original since the last good dream
 
 1. Extract durable facts, meaning only what will still matter weeks from now and could not be cheaply found again: lasting facts about the company, clients, people and projects, how the owner wants things done, decisions with their reasons, and promises with their dates. Never make an item of a to-do, a follow-up minutes or hours away, where work stands or what someone is waiting for, anything readable again from a repo, PR or check, or small talk; one item holds one thing. Put them into item files under objectives/, commitments/, deferrals/, decisions/, people/, claims/ or relationships/, and fold journal/ entries. Merge duplicate items with trust agent or external and mark the replaced ones with invalid_at and superseded_by.
 1b. Keep one relationship item per client with trust agent (kind relationship, links ["client:C-3"] with its key), from that client's touches, chats and work: who they are and who decides, how they like to work, what was promised and what annoyed them (with dates), the dynamic with us and why, and what they might want next. Never put to-dos, status, meeting dates, amounts owed or last contact in it. Revise yours as they change; what a person said about them stays in its own item, as rule 4 says. Commercial terms and what they are charged go in a second relationship item with sensitive true.
+1c. Entries of kind edit show what a person changed in an agent's draft, before and after. When more than one shows the same kind of change to a draft's wording, not its facts, write it once, in one person item under people/, as that person's preference for drafts, with one of those entries as its source and its said_by and trust, and all of them in dream.json. It is kept as theirs, so it says only what the edits show and in how many, without names or details from them. Cite an edit entry for nothing else but a fact the person typed: its "changed" lists their words ("now") in place of the draft's ("was"). A fact their words state (a rate, a date, a name) is one item with their said_by and trust and quote = one whole "now", saying what they typed and nothing else the draft says. The rest of a draft is not a fact yet: no other item, a relationship one included, cites the edit.
 2. Edit only item files and journal/. Never delete a file. Never edit rules.md or INDEX.md. Do not run git.
 3. A new item, or one whose source changes, takes source = the material ref, and said_by and trust = that entry's saidBy and trust. When that entry is a chat message a person wrote, the item also takes quote = their exact words from it that say it, at most 400 characters. Never change an item's quote.
 4. An item with trust owner or member holds what a person said: leave it exactly as it is, and never supersede, close or move it. You may write your own item that cites it, as your own conclusion: source = its material ref, trust agent (external if that item's is), and no quote. The same goes for any item you make from another item, a reminder included.
@@ -125,6 +140,7 @@ const make = Effect.gen(function* () {
   const store = yield* KinTriggerStore.KinTriggerStore;
   const ticks = yield* Scheduler.Scheduler;
   const vcs = yield* VcsProcess;
+  const threads = yield* ThreadManagement.ThreadManagementService;
   /** One dream per org, reserved before its claim; `cancel` acts once it is claimed. `decided` marks whether the dream or `cancel` won. */
   const live = new Map<
     KinOrgId,
@@ -210,9 +226,12 @@ const make = Effect.gen(function* () {
     outcome: DreamOutcome,
   ) {
     const now = yield* Clock.currentTimeMillis;
+    // A landed dream was settled in the transaction that landed it.
     if (outcome._tag === "succeeded") {
       yield* sql`UPDATE kin_dream_runs SET status = 'succeeded', head = ${outcome.head},
-        dream_json = ${yield* encodeDream(outcome.dream)}, ended_at = ${now}
+        dream_json = ${yield* encodeDream(outcome.dream)}, ended_at = ${now},
+        failure = ${leftOutLine(outcome.leftOut)},
+        material_until = ${EMPTY_DREAM_CONSUMES_MATERIAL ? sql`material_until` : sql`material_from`}
         WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
       return;
     }
@@ -240,8 +259,8 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${orgId} AND status IN ('failed', 'succeeded')
       ORDER BY owner_date DESC LIMIT ${FAILED_NIGHTS_NOTICE + 1}`;
     const streak = recent.findIndex((row) => row.status !== "failed");
-    // Exactly the third failed night in a row: a longer streak was already told. Nothing is
-    // lost, so it is for whoever runs Kin, never a line in the owner's chat.
+    // Exactly the third failed night in a row: a longer streak was already told. This is the
+    // operator's log line; the owner's notice is the hourly `checkDreamNotice`.
     if ((streak === -1 ? recent.length : streak) === FAILED_NIGHTS_NOTICE)
       yield* notices.notify({ orgId, branch, reason: "Dream failed three nights in a row" });
   });
@@ -355,12 +374,36 @@ const make = Effect.gen(function* () {
       ),
   );
 
+  /** A dream turn spends from the day's budget as a wake-up does; a failed read only logs. */
+  const charge = Effect.fn("DreamRunner.charge")(
+    function* (orgId: KinOrgId, threadId: ThreadId) {
+      const { providerTurns } = yield* threads.getThreadRecords(threadId, ["providerTurns"]);
+      yield* budget.chargeDream({
+        orgId,
+        threadId,
+        usage: providerTurns.map((turn) => ({
+          providerTurnId: turn.id,
+          ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
+          ...(turn.tokenUsage === undefined ? {} : { tokenUsage: turn.tokenUsage }),
+          usedTokens: turn.tokenUsage?.usedTokens,
+        })),
+      });
+    },
+    (effect, orgId, threadId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't charge a dream turn", { orgId, threadId, cause }),
+        ),
+      ),
+  );
+
   const dream = Effect.fn("DreamRunner.dream")(function* (
     orgId: KinOrgId,
     claimed: NonNullable<Effect.Success<ReturnType<typeof claim>>>,
     ownerDate: string,
     full: boolean,
     timeZone: string,
+    decide: Effect.Effect<boolean>,
   ) {
     const { dreamId, branch } = claimed;
     const failed = (failures: ReadonlyArray<string>): DreamOutcome => ({
@@ -417,6 +460,7 @@ const make = Effect.gen(function* () {
         branch,
         head: base.head,
         dream: emptyDream,
+        leftOut: [],
       } satisfies DreamOutcome;
     }
     const root = yield* prepareCheckout(orgId, dreamId, files, material);
@@ -430,14 +474,16 @@ const make = Effect.gen(function* () {
         // Recorded before the turn starts, so the stop switch's fan-out can interrupt it.
         yield* sql`UPDATE kin_dream_runs SET thread_id = ${DreamSession.dreamThreadId(dreamId, name)}
           WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
-        const result = yield* session.run({
-          orgId,
-          dreamId,
-          turn: name,
-          workspaceRoot: root,
-          model,
-          text,
-        });
+        const result = yield* session
+          .run({
+            orgId,
+            dreamId,
+            turn: name,
+            workspaceRoot: root,
+            model,
+            text,
+          })
+          .pipe(Effect.ensuring(charge(orgId, DreamSession.dreamThreadId(dreamId, name))));
         return (yield* paused) ? "paused" : result.status;
       });
       const extracted = yield* turn(
@@ -478,6 +524,10 @@ const make = Effect.gen(function* () {
         changes: checked.changes,
         merges: checked.dream?.merges ?? [],
         labels,
+        cited: checked.dream?.changes ?? [],
+        privateRefs: new Set(
+          material.entries.flatMap((entry) => (entry.sensitive === true ? [entry.ref] : [])),
+        ),
       });
       const findings = yield* scanner.scan({
         orgId,
@@ -505,6 +555,12 @@ const make = Effect.gen(function* () {
         ...(credential ? ["The dream output contains a live T3 credential"] : []),
       ];
       if (failures.length > 0 || checked.dream === undefined) return failed(failures);
+      if (checked.leftOut.length > 0)
+        yield* Effect.logWarning("Kin dream left items out", {
+          orgId,
+          dreamId,
+          leftOut: checked.leftOut,
+        });
       const { commit } = yield* writer.value.commitDream(orgId, {
         branch,
         base: base.head,
@@ -513,9 +569,8 @@ const make = Effect.gen(function* () {
       });
       // A pause during the checks or the push fails the dream, and settling deletes its branch.
       if (yield* paused) return failed([pausedFailure]);
-      // The branch waits for the owner, so who may know each item until then is kept here. What
-      // it would let the team know is only suggested: a reworded item stops reaching the team
-      // when its new words land, until the owner confirms them.
+      // Who may know each item is kept before it lands. What it would let the team know is only
+      // suggested: a reworded item stops reaching the team once it lands, until the owner confirms.
       yield* Effect.gen(function* () {
         yield* classify(orgId, classified);
         for (const [itemId, content] of suggested) yield* suggest(orgId, itemId, content);
@@ -523,12 +578,46 @@ const make = Effect.gen(function* () {
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.provideService(KinRefreshObserver, refresh),
       );
+      if (changes.size === 0)
+        return {
+          _tag: "succeeded",
+          dreamId,
+          branch,
+          head: commit,
+          dream: checked.dream,
+          leftOut: checked.leftOut,
+        } satisfies DreamOutcome;
+      // From here a cancel loses: memory lands as a wake-up's does, and the run is settled
+      // in the transaction that records it, so its material counts as dreamed only once landed.
+      if (!(yield* decide)) return yield* Effect.never;
+      const dreamText = yield* encodeDream(checked.dream);
+      const landed = yield* writer.value
+        .landDream(orgId, {
+          base: base.head,
+          files: changes,
+          message: `kin(dream): ${ownerDate}\n\nKin-Dream: ${dreamId}\nMaterial-Until: ${iso(claimed.until)}\n`,
+          landed: Effect.fn("DreamRunner.landed")(
+            function* (head: string) {
+              const now = yield* Clock.currentTimeMillis;
+              const rows =
+                yield* sql`UPDATE kin_dream_runs SET status = 'succeeded', head = ${head},
+                dream_json = ${dreamText}, ended_at = ${now}, failure = ${leftOutLine(checked.leftOut)}
+              WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running'
+              RETURNING dream_id`;
+              if (rows.length !== 1)
+                return yield* Effect.die(new Error("The dream run ended before it landed"));
+            },
+            Effect.mapError(toPersistenceSqlError("DreamRunner.landed")),
+          ),
+        })
+        .pipe(Effect.uninterruptible);
       return {
         _tag: "succeeded",
         dreamId,
         branch,
-        head: commit,
+        head: landed.commit,
         dream: checked.dream,
+        leftOut: checked.leftOut,
       } satisfies DreamOutcome;
     }).pipe(Effect.ensuring(fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore)));
   });
@@ -543,8 +632,14 @@ const make = Effect.gen(function* () {
   ) {
     const { dreamId, branch } = claimed;
     const cancelled: DreamOutcome = { _tag: "cancelled", dreamId, branch };
+    let landing = false;
+    const decide = Effect.sync(() => {
+      if (slot.decided) return false;
+      slot.decided = landing = true;
+      return true;
+    });
     const outcome = yield* Effect.raceFirst(
-      dream(orgId, claimed, ownerDate, full, timeZone).pipe(
+      dream(orgId, claimed, ownerDate, full, timeZone, decide).pipe(
         Effect.catchCauseIf(
           (cause) => !Cause.hasInterruptsOnly(cause),
           (cause) => {
@@ -562,7 +657,7 @@ const make = Effect.gen(function* () {
           },
         ),
         Effect.flatMap((outcome) => {
-          if (slot.decided) return Effect.never;
+          if (slot.decided && !landing) return Effect.never;
           slot.decided = true;
           return Effect.succeed(outcome);
         }),
@@ -686,7 +781,7 @@ const make = Effect.gen(function* () {
         const paused =
           yield* sql`SELECT 1 FROM kin_org_state WHERE org_id = ${orgId} AND paused = 1 ORDER BY org_id`;
         if (paused.length > 0) continue;
-        if (!(yield* budget.admit(orgId, "P4")).allowed) continue;
+        if (!DREAM_RUNS_ON_A_SPENT_BUDGET && !(yield* budget.admit(orgId, "P4")).allowed) continue;
         const outcome = yield* run(orgId, {
           full: routine === "dream_full",
           ownerDate: DateTime.formatIsoDate(due),

@@ -9,6 +9,7 @@ import {
   type KinDealRow,
   type KinDealsResult,
   type KinDealStagesResult,
+  type KinShell,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -60,6 +61,82 @@ vi.mock(import("./useKinMoney"), async (importOriginal) => ({
   ...(await importOriginal()),
   useKinRates: () => null,
   useKinHomeCurrency: () => "EUR",
+  useKinAskAgent: () => null,
+  useKinLists: (() => ({ state: { _tag: "loading" } })) as never,
+}));
+
+// The company's sections as `kin.access.me` has them; the switch's save writes them here.
+const shell = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  return {
+    held: null as unknown,
+    canSet: true,
+    answer: null as null | ((sent: unknown) => unknown),
+    listeners,
+    put(next: unknown) {
+      this.held = next;
+      for (const listener of listeners) listener();
+    },
+  };
+});
+vi.mock(import("./useKinShell"), async () => {
+  const { useSyncExternalStore } = await import("react");
+  const { kinSectionNamed, kinSectionNamedWords, kinSectionOn, kinShellChanged } =
+    await import("@t3tools/client-runtime/kin/kinShell");
+  const useKinShell = () =>
+    useSyncExternalStore(
+      (listener) => {
+        shell.listeners.add(listener);
+        return () => shell.listeners.delete(listener);
+      },
+      () => shell.held,
+    ) as never;
+  return {
+    useKinShell,
+    useKinSectionOn: ((_: unknown, id: "deals") => kinSectionOn(useKinShell(), id)) as never,
+    useKinSectionNamed: (() => {
+      const held = useKinShell();
+      return (text: string) => kinSectionNamed(held, text);
+    }) as never,
+    useKinSectionWords: ((_: unknown, words: object) =>
+      kinSectionNamedWords(useKinShell(), words)) as never,
+    useKinSectionCanSet: () => shell.canSet,
+    useKinSectionSet: (() => async (held: never, change: never) => {
+      const sent = kinShellChanged(held, change);
+      const answer = shell.answer?.(sent);
+      if (answer !== undefined) return answer;
+      const value = { rev: sent.rev + 1, sections: sent.shell.sections };
+      shell.put(value);
+      return { ok: true, value };
+    }) as never,
+  };
+});
+vi.mock(import("./useKinWork"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinWork: (() => ({
+    _tag: "ready",
+    live: { seq: 1, summary: { parties: {} } },
+    stale: false,
+  })) as never,
+  useKinWorkDirectory: (() => ({
+    names: { people: new Map(), agents: new Map(), me: null, zone: null },
+  })) as never,
+}));
+vi.mock(import("./useKinPlaces"), () => ({
+  useKinDestinations: (() => ({
+    destinations: ["chats", "tasks", "money", "clients", "docs"],
+    known: true,
+  })) as never,
+}));
+vi.mock(import("./useKinOwnerLevel"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinOwnerLevel: () => true,
+  useKinSeesClients: () => true,
+}));
+// The Clients tab's own list is its tests'; here it is only where a hidden Deals tab lands.
+vi.mock(import("./KinWorkClients"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  KinWorkClientsList: (() => <p>Every client</p>) as never,
 }));
 
 import "~/index.css";
@@ -68,6 +145,8 @@ import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { KinDealPage } from "./KinDealPage";
 import { KinDealsTab } from "./KinDeals";
 import { KinDealStagesSettings } from "./KinDealsSetting";
+import { KinPlaceView } from "./KinPlaceView";
+import { KinSectionsSettings } from "./settings/KinSectionSwitch";
 
 const zoya = KinPersonId.make("person-zoya");
 const target = { environmentId: EnvironmentId.make("env-1"), orgId: KinOrgId.make("org-1") };
@@ -102,6 +181,10 @@ const deal = (n: number, title: string, over: Partial<KinDealRow> = {}): KinDeal
   closedAt: null,
   ...over,
 });
+const dealsOn: KinShell = {
+  rev: 0,
+  sections: ["clients", "deals", "money", "invoices", "docs"].map((id) => ({ id, on: true })),
+};
 const step = (title: string, late: boolean) => ({
   key: KinRecordKey.make(`T-${title.length}`),
   title,
@@ -114,6 +197,9 @@ function setup(input: {
   readonly deals?: ReadonlyArray<KinDealRow>;
   readonly page?: KinDealPageValue;
   readonly stages?: KinDealStagesResult;
+  /** The company's sections; Deals on unless given. */
+  readonly shell?: KinShell | undefined;
+  readonly canSet?: boolean;
 }) {
   state.deals = {
     stages,
@@ -130,6 +216,9 @@ function setup(input: {
   state.update = vi.fn();
   state.setStages = vi.fn();
   state.setQuietDays = vi.fn();
+  shell.put(input.shell === undefined ? dealsOn : input.shell);
+  shell.canSet = input.canSet ?? true;
+  shell.answer = null;
   return {
     move: state.move,
     update: state.update,
@@ -275,6 +364,78 @@ describe("one deal's page", () => {
     </AppAtomRegistryProvider>
   );
   const renderPage = (held: typeof directory = directory) => render(pageElement(held));
+
+  it("lists its promises, ours then theirs, each with where it was made, and Add opens the form for this deal", async () => {
+    const pilot = deal(7, "Clinic scheduling pilot");
+    const promise = (key: string, title: string, side: "ours" | "theirs", from: object) =>
+      ({
+        recordId: KinRecordId.make(`rec-${key}`),
+        orgId: target.orgId,
+        key: KinRecordKey.make(key),
+        title,
+        state: "open",
+        waitingOn: null,
+        owner: { _tag: "person", personId: zoya },
+        category: "obligation",
+        side,
+        dueAt: null,
+        dueAllDay: false,
+        late: false,
+        confirmed: true,
+        sensitive: false,
+        working: false,
+        pullRequest: null,
+        rev: 1,
+        createdAt: "2026-11-01T00:00:00.000Z",
+        updatedAt: "2026-11-01T00:00:00.000Z",
+        closedAt: null,
+        from,
+      }) as never;
+    setup({
+      page: {
+        ...dealPage(pilot),
+        promises: [
+          promise("W-1", "Send the revised quote", "ours", {
+            kind: "note",
+            note: "At the site visit",
+          }),
+          promise("W-2", "Signed order form", "theirs", { kind: "meeting" }),
+        ],
+      },
+    });
+    const onAddTask = vi.fn();
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinDealPage
+          {...target}
+          dealKey={KinRecordKey.make("DL-7")}
+          frame="page"
+          directory={directory}
+          onOpenTask={() => {}}
+          onOpenClient={() => {}}
+          onStartProject={null}
+          onAddTask={onAddTask}
+          onClose={() => {}}
+        />
+      </AppAtomRegistryProvider>,
+    );
+    await expect.element(page.getByRole("heading", { name: "Promises" })).toBeVisible();
+    const rows = page.getByRole("button", { name: /Send the revised quote|Signed order form/ });
+    expect(rows.elements().map((one) => one.textContent?.includes("Send"))).toEqual([true, false]);
+    await expect.element(page.getByText("We promised")).toBeVisible();
+    await expect.element(page.getByText("They owe")).toBeVisible();
+    await expect.element(page.getByText("At the site visit")).toBeVisible();
+    await expect.element(page.getByText("From a meeting")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Add" }));
+    await userEvent.click(page.getByRole("menuitem", { name: "They promise" }));
+    expect(onAddTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        party: { key: "C-1", title: "Brightwater Clinics" },
+        side: "theirs",
+        deal: { key: "DL-7", title: "Clinic scheduling pilot" },
+      }),
+    );
+  });
 
   it("moves to the next stage, wins, and loses with a reason", async () => {
     const pilot = deal(7, "Clinic scheduling pilot", { stage: "in-talks" });
@@ -425,71 +586,97 @@ describe("Settings → Deals", () => {
     quietDays: 14,
   });
 
-  it("lets the owner rename, add and remove a stage, moving its open deals first", async () => {
-    const { setStages } = setup({ stages: held(true) });
-    await using _screen = await render(
+  const renderSettings = () =>
+    render(
       <AppAtomRegistryProvider>
         <KinDealStagesSettings {...target} />
       </AppAtomRegistryProvider>,
     );
-    const second = page.getByRole("textbox", { name: "Stage name 2" });
-    await userEvent.clear(second);
-    await userEvent.type(second, "Talking");
-    await userEvent.click(page.getByRole("button", { name: "Add a stage" }));
-    await userEvent.type(page.getByRole("textbox", { name: "Stage name 5" }), "Signed off");
-    await userEvent.click(page.getByRole("button", { name: "Remove…" }).nth(3));
-    const ask = page.getByRole("dialog");
+
+  it("lets the owner rename and move a stage in its own dialog", async () => {
+    const { setStages } = setup({ stages: held(true) });
+    await using _screen = await renderSettings();
+    await userEvent.click(page.getByRole("button", { name: "Edit stage: In talks" }));
+    const form = page.getByRole("dialog");
+    const name = form.getByRole("textbox", { name: "Name" });
+    await userEvent.clear(name);
+    await userEvent.type(name, "Talking");
+    await userEvent.click(form.getByRole("button", { name: "Move up" }));
+    await expect.element(form.getByText("1 of 4")).toBeVisible();
+    await userEvent.click(form.getByRole("button", { name: "Save stage" }));
+    expect(setStages).toHaveBeenCalledWith({
+      rev: 5,
+      stages: [
+        { id: "in-talks", name: "Talking" },
+        { id: "new", name: "New" },
+        { id: "proposal", name: "Proposal" },
+        { id: "deciding", name: "Deciding" },
+      ],
+    });
+  });
+
+  it("adds a stage at the end, and waits for a name that isn't there already", async () => {
+    const { setStages } = setup({ stages: held(true) });
+    await using _screen = await renderSettings();
+    await userEvent.click(page.getByRole("button", { name: "Add stage" }));
+    const form = page.getByRole("dialog");
+    const add = form.getByRole("button", { name: "Add stage" });
+    await expect.element(add).toBeDisabled();
+    await userEvent.type(form.getByRole("textbox", { name: "Name" }), "proposal");
+    await expect.element(form.getByText("“proposal” is there twice.")).toBeVisible();
+    await userEvent.clear(form.getByRole("textbox", { name: "Name" }));
+    await userEvent.type(form.getByRole("textbox", { name: "Name" }), "Signed off");
+    await userEvent.click(add);
+    expect(setStages).toHaveBeenCalledWith({
+      rev: 5,
+      stages: [...held(true).stages, { name: "Signed off" }],
+    });
+  });
+
+  it("asks where a removed stage's open deals go before removing it", async () => {
+    const { setStages } = setup({ stages: held(true) });
+    await using _screen = await renderSettings();
+    await userEvent.click(page.getByRole("button", { name: "Edit stage: Deciding" }));
+    await userEvent.click(page.getByRole("button", { name: "Remove stage" }));
+    const ask = page.getByRole("alertdialog");
+    await expect.element(ask.getByText("2 open deals are in it. They move to:")).toBeVisible();
+    expect(setStages).not.toHaveBeenCalled();
     await userEvent.click(ask.getByRole("button", { name: "Move 2 and remove" }));
-    await userEvent.click(page.getByRole("button", { name: "Save stages" }));
     expect(setStages).toHaveBeenCalledWith({
       rev: 5,
       stages: [
         { id: "new", name: "New" },
-        { id: "in-talks", name: "Talking" },
+        { id: "in-talks", name: "In talks" },
         { id: "proposal", name: "Proposal" },
-        { name: "Signed off" },
       ],
       moveTo: { deciding: "new" },
     });
   });
 
-  it("lets the owner set when a deal goes quiet, on its own Save", async () => {
+  it("lets the owner pick when a deal goes quiet, saved as it is picked", async () => {
     const { setQuietDays, setStages } = setup({ stages: held(true) });
-    await using _screen = await render(
-      <AppAtomRegistryProvider>
-        <KinDealStagesSettings {...target} />
-      </AppAtomRegistryProvider>,
-    );
-    const days = page.getByRole("spinbutton", { name: "Days before a deal is quiet" });
-    await expect.element(days).toHaveValue(14);
-    const save = page.getByRole("region", { name: "A deal goes quiet after" }).getByRole("button", {
-      name: "Save",
-    });
-    await expect.element(save).toBeDisabled();
-    await userEvent.clear(days);
-    await userEvent.type(days, "0");
-    await expect.element(page.getByText("Say a whole number of days, 1 to 365.")).toBeVisible();
-    await userEvent.clear(days);
-    await userEvent.type(days, "21");
-    await userEvent.click(save);
+    await using _screen = await renderSettings();
+    const days = page.getByRole("combobox", { name: "Days before a deal is quiet" });
+    await expect.element(days).toHaveTextContent("14 days");
+    await userEvent.click(days);
+    await userEvent.click(page.getByRole("option", { name: "21 days" }));
     expect(setQuietDays).toHaveBeenCalledWith(21);
     expect(setStages).not.toHaveBeenCalled();
   });
 
   it("shows a teammate the stages to read, not change", async () => {
     setup({ stages: held(false) });
-    await using _screen = await render(
-      <AppAtomRegistryProvider>
-        <KinDealStagesSettings {...target} />
-      </AppAtomRegistryProvider>,
-    );
+    await using _screen = await renderSettings();
     await expect
-      .element(page.getByText("The owner and co-owners set the stages. Ask them to change one."))
+      .element(
+        page.getByText("How every deal in the company moves. The owner and co-owners set it."),
+      )
       .toBeVisible();
-    expect(page.getByRole("textbox").elements()).toHaveLength(0);
-    expect(page.getByRole("button", { name: "Save stages" }).elements()).toHaveLength(0);
+    await expect.element(page.getByText("Deciding")).toBeVisible();
+    expect(page.getByRole("button", { name: /Edit stage/ }).elements()).toHaveLength(0);
+    expect(page.getByRole("button", { name: "Add stage" }).elements()).toHaveLength(0);
     await expect.element(page.getByText("14 days")).toBeVisible();
-    expect(page.getByRole("spinbutton").elements()).toHaveLength(0);
+    expect(page.getByRole("combobox").elements()).toHaveLength(0);
   });
 });
 
@@ -596,5 +783,215 @@ describe("the deals figures", () => {
     await expect.element(page.getByText("No deals yet")).toBeVisible();
     await expect.element(page.getByText(/^Won in/)).not.toBeInTheDocument();
     await expect.element(page.getByText("This week in deals")).not.toBeInTheDocument();
+  });
+});
+
+describe("We run deals", () => {
+  const held: KinDealStagesResult = { stages, rev: 5, can: true, open: {}, quietDays: 14 };
+  const off: KinShell = {
+    rev: 1,
+    sections: dealsOn.sections.map((one) => (one.id === "deals" ? { ...one, on: false } : one)),
+  };
+  const place = () => (
+    <KinPlaceView
+      {...target}
+      place="clients"
+      tab="deals"
+      onTab={() => {}}
+      record={null}
+      onGo={() => {}}
+      openKey={null}
+      onOpenKey={() => {}}
+      dialog={null}
+      onDialog={() => {}}
+      docLink={() => ""}
+      onLeave={() => {}}
+    />
+  );
+
+  it("hides the Deals tab under Clients once switched off, and brings it back on", async () => {
+    setup({ stages: held, deals: [deal(1, "Clinic rollout")] });
+    await page.viewport(1440, 900);
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinDealStagesSettings {...target} />
+        {place()}
+      </AppAtomRegistryProvider>,
+      { router: "/kin/env-1/org-1/clients" },
+    );
+    const tab = page.getByRole("button", { name: "Deals", exact: true });
+    await expect.element(tab).toBeVisible();
+    await expect.element(page.getByText("Clinic rollout").first()).toBeVisible();
+    const toggle = page.getByRole("switch", { name: "We run deals" });
+    await expect.element(toggle).toBeChecked();
+
+    await userEvent.click(toggle);
+    await expect.element(toggle).not.toBeChecked();
+    await expect.element(tab).not.toBeInTheDocument();
+    await expect.element(page.getByText("Every client")).toBeVisible();
+    await expect
+      .element(
+        page.getByText("Deals is off, so these settings aren't used until you turn it back on."),
+      )
+      .toBeVisible();
+    // The stages stay there to change while off.
+    await expect.element(page.getByRole("button", { name: "Edit stage: New" })).toBeVisible();
+
+    await userEvent.click(toggle);
+    await expect.element(toggle).toBeChecked();
+    await expect.element(tab).toBeVisible();
+  });
+
+  it("says what turning it off does, that nothing is deleted, and that older phone apps keep Deals", async () => {
+    setup({ stages: held });
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinDealStagesSettings {...target} />
+      </AppAtomRegistryProvider>,
+    );
+    await expect
+      .element(
+        page.getByText(
+          "Turning this off hides Deals for everyone in the company: the Deals tab, deals on client and project pages, deals in search, and Kin's deal nudges. Nothing is deleted, and you can turn it back on at any time.",
+        ),
+      )
+      .toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          "Teammates on an older version of the phone app keep seeing Deals until they update.",
+        ),
+      )
+      .toBeVisible();
+  });
+
+  it("shows a teammate no switch, and an older host none either", async () => {
+    setup({ stages: { ...held, can: false }, canSet: false });
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinDealStagesSettings {...target} />
+      </AppAtomRegistryProvider>,
+    );
+    await expect.element(page.getByText("Deciding").or(page.getByText("Proposal"))).toBeVisible();
+    expect(page.getByRole("switch").elements()).toHaveLength(0);
+    shell.canSet = true;
+    shell.put(undefined);
+    expect(page.getByRole("switch").elements()).toHaveLength(0);
+  });
+
+  it("keeps the switch where it was when someone changed it since, and says so", async () => {
+    setup({ stages: held, shell: dealsOn });
+    shell.answer = () => {
+      shell.put(off);
+      return {
+        ok: false,
+        changed: true,
+        problem:
+          "This changed while you were looking at it. Here is the latest, so check it and try again.",
+      };
+    };
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinDealStagesSettings {...target} />
+      </AppAtomRegistryProvider>,
+    );
+    const toggle = page.getByRole("switch", { name: "We run deals" });
+    await userEvent.click(toggle);
+    await expect
+      .element(page.getByText("This changed while you were looking at it.", { exact: false }))
+      .toBeVisible();
+    await expect.element(toggle).not.toBeChecked();
+  });
+});
+
+describe("Settings › Sections", () => {
+  const sections = () => (
+    <AppAtomRegistryProvider>
+      <KinSectionsSettings {...target} />
+    </AppAtomRegistryProvider>
+  );
+
+  it("switches Money off and on, and says Invoices and quotes is off because of it", async () => {
+    setup({});
+    await using _screen = await render(sections());
+    const money = page.getByRole("switch", { name: "Money", exact: true });
+    const invoices = page.getByRole("switch", { name: "Invoices and quotes" });
+    await expect.element(money).toBeChecked();
+    await userEvent.click(money);
+    await expect.element(money).not.toBeChecked();
+    // Held off by Money: it explains rather than offering a switch that would be refused.
+    await expect.element(invoices).not.toBeChecked();
+    await expect.element(invoices).toBeDisabled();
+    await expect.element(page.getByText("Off because Money is off.")).toBeVisible();
+    await userEvent.click(money);
+    await expect.element(money).toBeChecked();
+    await expect.element(invoices).toBeChecked();
+    await expect.element(invoices).toBeEnabled();
+  });
+
+  it("shows the host's refusal in place and keeps the switch as saved", async () => {
+    setup({});
+    shell.answer = () => ({
+      ok: false,
+      changed: false,
+      problem: "Turn off Invoices and quotes first: invoices need Clients.",
+    });
+    await using _screen = await render(sections());
+    const clients = page.getByRole("switch", { name: "Clients", exact: true });
+    await userEvent.click(clients);
+    await expect
+      .element(page.getByText("Turn off Invoices and quotes first: invoices need Clients."))
+      .toBeVisible();
+    await expect.element(clients).toBeChecked();
+  });
+
+  it("says the host's words when someone changed it since, and shows what they saved", async () => {
+    setup({});
+    const moneyOff: KinShell = {
+      rev: 4,
+      sections: dealsOn.sections.map((one) => (one.id === "money" ? { ...one, on: false } : one)),
+    };
+    shell.answer = () => {
+      shell.put(moneyOff);
+      return {
+        ok: false,
+        changed: true,
+        problem:
+          "Someone else changed the sections just now, so nothing was saved. Check them and save again.",
+      };
+    };
+    await using _screen = await render(sections());
+    await userEvent.click(page.getByRole("switch", { name: "Deals", exact: true }));
+    await expect
+      .element(
+        page.getByText(
+          "Someone else changed the sections just now, so nothing was saved. Check them and save again.",
+          { exact: true },
+        ),
+      )
+      .toBeVisible();
+    await expect.element(page.getByRole("switch", { name: "Deals", exact: true })).toBeChecked();
+    await expect
+      .element(page.getByRole("switch", { name: "Money", exact: true }))
+      .not.toBeChecked();
+  });
+
+  it("calls Clients by the company's name, and goes back to Kin's", async () => {
+    setup({});
+    await using _screen = await render(sections());
+    await userEvent.click(page.getByRole("button", { name: "Rename" }));
+    await userEvent.fill(page.getByLabelText("Name"), "Patients");
+    await userEvent.fill(page.getByLabelText("One of them"), "patient");
+    await userEvent.click(page.getByRole("button", { name: "Save name" }));
+    await expect.element(page.getByRole("switch", { name: "Patients" })).toBeVisible();
+    await expect.element(page.getByText("Patients, one patient")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Use Kin's name" }));
+    await expect.element(page.getByRole("switch", { name: "Clients", exact: true })).toBeVisible();
+  });
+
+  it("offers a teammate nothing to switch", async () => {
+    setup({ canSet: false });
+    await using _screen = await render(sections());
+    expect(page.getByRole("switch").elements()).toHaveLength(0);
   });
 });

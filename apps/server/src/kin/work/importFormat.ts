@@ -1,14 +1,16 @@
 import {
+  calendarTimeMillis,
   KinCurrency,
   KinDay,
   KinLabelText,
-  KinListFieldType,
+  KinWritableListFieldType,
   KinListId,
   KinNumberingRule,
   KinRecordState,
   KinTrimmedText,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 /**
  * The file `kin import` reads: JSON Lines, so a company's whole history streams through in
@@ -27,11 +29,30 @@ const When = Schema.String.check(
   Schema.isPattern(
     /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2}))?$/,
   ),
+  Schema.makeFilter((value) => Number.isFinite(calendarTimeMillis(value)), {
+    expected: "a real calendar day or time with its offset",
+  }),
 );
-/** A plain decimal in major units, `1234.50`: never a float, never with grouping. */
-const Amount = Schema.String.check(Schema.isPattern(/^\d{1,15}(?:\.\d{1,6})?$/));
-/** Text, a choice or a day; `owner` for a person field; a client's or project's source id for a link. */
+const GROUPED_AMOUNT = /^-?\d{1,3}(?:,\d{2,3})*,\d{3}(?:\.\d{1,6})?$/;
+const ungroup = (value: string) => (GROUPED_AMOUNT.test(value) ? value.replaceAll(",", "") : value);
+const amount = (plain: RegExp) =>
+  Schema.String.check(
+    Schema.makeFilter(
+      (value) =>
+        plain.test(ungroup(value)) ||
+        `The amount ${JSON.stringify(value.slice(0, 40))} isn't a number Kin can read.`,
+    ),
+  ).pipe(
+    Schema.decodeTo(
+      Schema.String,
+      SchemaTransformation.transform({ decode: ungroup, encode: (value) => value }),
+    ),
+  );
+const Amount = amount(/^\d{1,15}(?:\.\d{1,6})?$/);
+const EntryAmount = amount(/^-?\d{1,15}(?:\.\d{1,6})?$/);
+/** Text, a choice or a day; an active teammate’s id or `owner` for a person field; a client's or project's source id for a link. */
 const FieldValue = Schema.Union([Line, Schema.Struct({ amount: Amount, currency: KinCurrency })]);
+const Fields = Schema.Record(Schema.String, FieldValue).check(Schema.isMaxProperties(20));
 
 export const ImportList = Schema.Struct({
   list: KinListId,
@@ -43,7 +64,7 @@ export const ImportList = Schema.Struct({
     Schema.Array(
       Schema.Struct({
         label: Label,
-        type: KinListFieldType,
+        type: KinWritableListFieldType,
         choices: Schema.optional(Schema.Array(Label).check(Schema.isMaxLength(30))),
         link: Schema.optional(Schema.Literals(["clients", "projects"])),
         sensitive: Schema.optional(Schema.Boolean),
@@ -137,19 +158,22 @@ export const ImportEntry = Schema.Struct({
   source: SourceId,
   list: KinListId,
   title: Title,
+  match: Schema.optional(Schema.Never),
   state: Schema.optional(KinRecordState),
   category: Schema.optional(Label),
   client: Schema.optional(SourceId),
   project: Schema.optional(SourceId),
   due: Schema.optional(When),
   date: Schema.optional(When),
-  amount: Schema.optional(Amount),
+  amount: Schema.optional(EntryAmount),
   currency: Schema.optional(KinCurrency),
   notes: Schema.optional(Notes),
-  fields: Schema.optional(
-    Schema.Record(Schema.String, FieldValue).check(Schema.isMaxProperties(20)),
-  ),
+  fields: Schema.optional(Fields),
   sensitive: Schema.optional(Schema.Boolean),
+  steps: Schema.optional(
+    Schema.Array(Schema.Struct({ title: Schema.String, done: Schema.Boolean })),
+  ),
+  urgent: Schema.optional(Schema.Boolean),
   /** The number it was issued; Kin's own numbering continues past it. */
   number: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Za-z0-9/-]{1,32}$/))),
   createdAt: Schema.optional(When),
@@ -162,6 +186,29 @@ export const ImportEntry = Schema.Struct({
   suggested: Schema.optional(Schema.Boolean),
 });
 export type ImportEntry = typeof ImportEntry.Type;
+
+const ImportEntryMatch = Schema.Struct({
+  source: SourceId,
+  list: KinListId,
+  match: Key,
+  fields: Schema.optional(Fields),
+  notes: Schema.optional(Notes),
+  /** Voids it after any fills, as the owner's Void tap does and with its rules. */
+  void: Schema.optional(Schema.Literal(true)),
+});
+export type ImportEntryMatch = typeof ImportEntryMatch.Type;
+
+const entryObject = Schema.is(
+  Schema.Struct({ entry: Schema.Record(Schema.String, Schema.Unknown) }),
+);
+const sourceId = Schema.is(SourceId);
+export const entryMatchWithExtraKeys = (raw: unknown) =>
+  entryObject(raw) &&
+  Object.hasOwn(raw.entry, "match") &&
+  (Object.keys(raw).length !== 1 ||
+    Object.keys(raw.entry).some((key) => !Object.hasOwn(ImportEntryMatch.fields, key)))
+    ? { source: sourceId(raw.entry.source) ? raw.entry.source : null }
+    : undefined;
 
 /** A person at a client above it or imported before; `match` fills one Kin has. */
 export const ImportContact = Schema.Struct({
@@ -195,7 +242,7 @@ export type ImportDeal = typeof ImportDeal.Type;
 export const ImportRow = Schema.Union([
   Schema.Struct({ client: ImportClient }),
   Schema.Struct({ project: ImportProject }),
-  Schema.Struct({ entry: ImportEntry }),
+  Schema.Struct({ entry: Schema.Union([ImportEntryMatch, ImportEntry]) }),
   Schema.Struct({ contact: ImportContact }),
   Schema.Struct({ deal: ImportDeal }),
 ]);

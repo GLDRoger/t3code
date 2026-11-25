@@ -33,6 +33,8 @@ A Kin release is a commit on `kin` that runs on the host. The release check runs
 
 Only after the build passes does it stop `kin-server` and take a `sqlite3 .backup` of `~/.t3/userdata/statev2.sqlite` into `~/kin-update-backups` (or `$KIN_UPDATE_BACKUPS`). It keeps the 10 newest (3 while the nightly backup last succeeded within 36 hours) and never touches files it didn't name. It refuses to start when a disk it writes to lacks room for that copy, twice the database and 1 GiB to spare. Then it switches `~/kin-current` and starts the server. The build is healthy when the service is up with no restarts, the server answers on its port, and the database's T3 and Kin migrations have reached the build's highest. If any of those fails, it switches back to the previous build. If the failed build had already migrated the database, it also restores the backup. The migrated copy stays beside it as `statev2.sqlite.failed-<sha>`. The restore copies the backup beside the database and checks it before renaming it into place. If that fails, it starts nothing: `kin-server` stays stopped with its data intact, and the last line names the backup, where the migrated copy is, and the command that finishes the restore. A failure after the stop but before the new build starts puts back the previous env file, units and link and starts the previous build. It keeps the 3 newest builds, about 7 GB each. `scripts/kin-update.test.ts` runs these paths against a fake host.
 
+A host backup, this one or the nightly one, holds everything, every person's own mail cards and the connection keys included, and is for the operator only.
+
 ## Running it on a second machine
 
 A full check takes over an hour on a laptop. A faster machine you can reach over ssh can run it instead. This is optional: when that machine is off, asleep, busy with another run, or can't fetch the commit, the check runs on this one, and the result is the same either way.
@@ -42,3 +44,7 @@ A full check takes over an hour on a laptop. A faster machine you can reach over
 3. Here, set `KIN_RELEASE_REMOTE` to the ssh host (an alias in your `~/.ssh/config`) and `KIN_RELEASE_REMOTE_COMMAND` to that command. The commit must be pushed. Pass `--here` to run locally anyway.
 
 The findings, summary and (on `--full`) the new fixture come back into the usual folder here, with the full output in `remote.log`. A `--full` run sends the last release's fixture there first, so `migrate` checks the same thing on either machine. No credentials go to the second machine: no stage needs one.
+
+## Pictures on the host
+
+Kin draws each picture in a browser held in a user systemd scope (1 GB of memory, 256 tasks) where the host has one. A host without a user scope, such as a container, draws without it and relies on the container's own memory limit.

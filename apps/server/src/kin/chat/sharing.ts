@@ -64,7 +64,11 @@ export const chatShared = Effect.fn("KinChatSharing.chatShared")(function* (
  * people in it now besides its owner, never below where it was first shared; a re-join raises it.
  * NULL for a chat never shared or not found, so a shared turn sees none of it.
  */
-export const historyFloor = (sql: SqlClient.SqlClient, orgId: string, chatId: string) =>
+export const historyFloor = (
+  sql: SqlClient.SqlClient,
+  orgId: string | Statement.Fragment,
+  chatId: string | Statement.Fragment,
+) =>
   sql`(SELECT MAX(c.shared_from_seq, COALESCE((SELECT MAX(m.joined_seq) FROM kin_chat_members m
       WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id AND m.principal_kind = 'person'
         AND m.left_at IS NULL AND ${sql.literal(notOwnerSql("m.org_id", "m.chat_id", "m.person_id"))}), 0))
@@ -94,12 +98,23 @@ export const readableBy = (
 };
 
 /** `readableBy` from the seq `from` (SQL) on; a query's own member row can give it. */
-export const readableFrom = (sql: SqlClient.SqlClient, orgId: string, from: Statement.Fragment) =>
+export const readableFrom = (
+  sql: SqlClient.SqlClient,
+  orgId: string | Statement.Fragment,
+  from: Statement.Fragment,
+) =>
   sql`(kin_messages.seq >= ${from} AND (kin_messages.widget_id IS NULL OR NOT EXISTS (
     SELECT 1 FROM kin_widgets card JOIN kin_messages anchor ON anchor.org_id = card.org_id
       AND anchor.message_id = card.message_id
     WHERE card.org_id = ${orgId} AND card.widget_id = kin_messages.widget_id
       AND anchor.seq < ${from})))`;
+
+/** A row of `kin_messages` (unaliased) this person reads now: in its chat, from their join on. */
+export const personReads = (sql: SqlClient.SqlClient, personId: string | Statement.Fragment) =>
+  sql`EXISTS (SELECT 1 FROM kin_chat_members reader WHERE reader.org_id = kin_messages.org_id
+    AND reader.chat_id = kin_messages.chat_id AND reader.principal_kind = 'person'
+    AND reader.person_id = ${personId} AND reader.left_at IS NULL
+    AND ${readableFrom(sql, sql`kin_messages.org_id`, sql`COALESCE(reader.joined_seq, 0)`)})`;
 
 /** Whether `memberId` may read `messageId`, by `readableBy`; `floorOf` as there. */
 export const memberReads = Effect.fn("KinChatSharing.memberReads")(function* (

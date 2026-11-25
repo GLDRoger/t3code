@@ -3,36 +3,57 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
+  KIN_HOST_TROUBLE_CARD,
   KinAgentId,
+  KinEventId,
+  KinHostTroubleCard,
+  type KinAgentPage,
   type KinChatId,
   KinOrgId,
   KinPersonId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ServerProvider,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { ServerConfig } from "../../config.ts";
+import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as HostCare from "../host/KinHostCare.ts";
+import * as RefreshHub from "../chat/KinRefreshHub.ts";
+import * as ArrivalStore from "../arrivals/ArrivalStore.ts";
+import * as KinWatches from "../watches/KinWatches.ts";
+import * as WatchReads from "../watches/readRpcs.ts";
+import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import * as KinLevels from "./KinLevels.ts";
 import * as RetiredActions from "../approvals/retiredActions.ts";
 import * as Provision from "./KinLeadProvision.ts";
 import { ownerLevelAgentPage, ownerLevelSetCharacter } from "./agentPage.ts";
 import { seedCharacters } from "./characters.ts";
+import { seedPlaybooks } from "../work/playbookSeeds.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import { KinLevelGate } from "./LevelGate.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import { RETIRED_ACTION_REASON } from "./Retirement.ts";
+
+const decodeTroubleCard = Schema.decodeUnknownSync(Schema.fromJsonString(KinHostTroubleCard));
 
 const layer = Layer.merge(Provision.layer, RetiredActions.hostLayer).pipe(
   Layer.provideMerge(Sqlite.layerMemory),
@@ -77,6 +98,7 @@ const seedProject = Effect.gen(function* () {
   yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
     VALUES (${project}, 'A', '/tmp/a', '[]', '2026-11-09T00:00:00.000Z', '2026-11-09T00:00:00.000Z')`;
 });
+const decodeProvider = Schema.decodeEffect(ServerProvider);
 const isRefusal = Schema.is(Provision.KinLeadProvisionError);
 const refusal = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
@@ -295,8 +317,199 @@ describe("KinLeadProvision", () => {
           VALUES ('unanswered', ${growth.orgId}, ${growth.agentId}, 'chat.message', 'P0',
             ${JSON.stringify({ chatId: growth.ownerChatId, messageId: asked.messageId })},
             'unanswered', 0, 0)`;
-        const retired = yield* Provision.retire({ ...by, agentId: growth.agentId });
+        const { orgId, agentId } = growth;
+        yield* sql`INSERT INTO kin_watches (org_id, watch_id, kind, source, source_key, about,
+            closes_when, agent_id, audience, why, set_by_kind, set_by_id, latest_by, next_look_at,
+            interval_ms, state, closed_at, closed_how, closed_by_kind, closed_by_id,
+            created_at, updated_at)
+          VALUES (${orgId}, 'open-watch', 'task_out', 'agent', 'open-watch', 'a task',
+              'the task is done', ${agentId}, 'owner', 'asked', 'agent', ${agentId}, 120000,
+              60000, 60000, 'open', NULL, NULL, NULL, NULL, 0, 0),
+            (${orgId}, 'closed-watch', 'task_out', 'agent', 'closed-watch', 'an old task',
+              'the task is done', ${agentId}, 'owner', 'asked', 'agent', ${agentId}, 120000,
+              60000, 60000, 'closed', 60000, 'done', 'agent', ${agentId}, 0, 60000)`;
+        const reader = { personId: ada.ownerPersonId, viewer: KIN_OWNER_LEVEL };
+        const closedWatch = sql`SELECT * FROM kin_watches
+          WHERE org_id = ${orgId} AND watch_id = 'closed-watch'`;
+        const closedBefore = yield* closedWatch;
+        const [stale] = yield* KinWatches.openWatches(orgId);
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host,
+            auth, reach, state, created_at, updated_at)
+          VALUES (${orgId}, 'arrival-mailbox', 'Invented mail', 'builtin', 'mail.example.invalid',
+            'none', 'closed', 'active', 0, 0)`;
+        yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id,
+            noticed_at, state, agent_id, event_id)
+          VALUES (${orgId}, 'arrival-1', 'arrival-mailbox', 'mail-1', 0, 'looking', ${agentId},
+            'unanswered')`;
+        const arrival = sql`SELECT * FROM kin_arrivals WHERE org_id = ${orgId}
+          AND arrival_id = 'arrival-1'`;
+        const arrivalBefore = yield* arrival;
+        const refresh = (yield* RefreshHub.KinRefreshHub).changes(orgId).pipe(Stream.runHead);
+        const initialRevision = Option.getOrThrow(yield* refresh).watches;
+        const care = yield* HostCare.KinHostCare;
+        yield* sql`UPDATE kin_events SET not_before = 120000 WHERE org_id = ${orgId}
+          AND event_id = 'unanswered'`;
+        yield* sql`INSERT INTO kin_events
+            (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, not_before)
+          VALUES ('growth-spent', ${orgId}, ${agentId}, 'routine', 'P1', '{}', 0, 0, 'failed', 120000),
+            ('ada-held', ${orgId}, ${ada.agentId}, 'routine', 'P1', '{}', 0, 0, 'queued', 120000)`;
+        for (const [cause, troubleAgent, event] of [
+          ["signin", agentId, "unanswered"],
+          ["signin", ada.agentId, "ada-held"],
+          ["model", agentId, "growth-spent"],
+        ] as const) {
+          yield* care.failed({
+            orgId,
+            agentId: troubleAgent,
+            cause,
+            eventIds: [KinEventId.make(event)],
+          });
+        }
+        const troubleCards = sql<{ state: string; closed: string | null }>`SELECT
+            state_json AS state, closed_at AS closed FROM kin_widgets
+          WHERE org_id = ${orgId} AND type = ${KIN_HOST_TROUBLE_CARD} ORDER BY widget_id`.pipe(
+          Effect.map((rows) =>
+            rows.map((row) => ({
+              ...decodeTroubleCard(row.state),
+              open: row.closed === null,
+            })),
+          ),
+        );
+        assert.deepStrictEqual(
+          (yield* troubleCards).map((card) => [card.cause, card.open]),
+          [
+            ["model", true],
+            ["signin", true],
+          ],
+        );
+        const retired = yield* Provision.retire({ ...by, agentId });
         assert.strictEqual(retired._tag, "retired");
+        assert.strictEqual(Option.getOrThrow(yield* refresh).watches, initialRevision + 1);
+        assert.deepStrictEqual(yield* KinWatches.openWatches(orgId), []);
+        assert.deepInclude(yield* WatchReads.one(orgId, reader, "open-watch"), {
+          agentId,
+          state: "closed",
+          closedHow: "its agent was retired",
+          nextLookAt: null,
+          latestBy: "1970-01-01T00:02:00.000Z",
+        });
+        assert.deepStrictEqual(yield* closedWatch, closedBefore);
+        assert.deepStrictEqual(yield* arrival, arrivalBefore);
+        assert.deepStrictEqual(
+          yield* ArrivalStore.known(orgId, "arrival-mailbox", ["mail-1"]),
+          new Set(["mail-1"]),
+        );
+        assert.deepStrictEqual(yield* ArrivalStore.parkedDue(orgId, "arrival-mailbox", 60000), []);
+        assert.deepStrictEqual(
+          yield* sql`SELECT state FROM kin_events WHERE org_id = ${orgId} AND agent_id = ${agentId}
+            ORDER BY event_id`,
+          [{ state: "expired" }, { state: "expired" }],
+        );
+        const afterRetirement = yield* care.status(orgId);
+        assert.strictEqual(afterRetirement.agents.held, 1);
+        assert.deepStrictEqual(
+          afterRetirement.agents.troubles.map(({ card }) => [card.cause, card.count]),
+          [["signin", 1]],
+        );
+        assert.deepStrictEqual(
+          (yield* troubleCards).map((card) => [
+            card.cause,
+            card.open,
+            card.count,
+            card.agents.map((agent) => agent.name),
+          ]),
+          [
+            ["model", false, 0, ["Growth"]],
+            ["signin", true, 1, ["Ada"]],
+          ],
+        );
+        assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 1 });
+        yield* sql`UPDATE kin_events SET not_before = 120000 WHERE org_id = ${orgId}
+          AND event_id = 'ada-held'`;
+        yield* care.succeeded(orgId, ada.agentId);
+        assert.isFalse(yield* care.troubleOpen(orgId, "signin"));
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, state, not_before FROM kin_events WHERE org_id = ${orgId}
+            AND held_by IS NOT NULL ORDER BY event_id`,
+          [
+            { event_id: "ada-held", state: "queued", not_before: 60000 },
+            { event_id: "growth-spent", state: "expired", not_before: 120000 },
+            { event_id: "unanswered", state: "expired", not_before: 120000 },
+          ],
+        );
+        assert.isFalse(
+          yield* care.failed({
+            orgId,
+            agentId,
+            cause: "model",
+            eventIds: [KinEventId.make("growth-spent")],
+          }),
+        );
+        const closedTroubleCards = yield* troubleCards;
+        assert.deepStrictEqual(
+          closedTroubleCards.map((card) => [card.cause, card.open]),
+          [
+            ["model", false],
+            ["signin", false],
+          ],
+        );
+        const troubleMessages = sql`SELECT m.message_id FROM kin_messages m JOIN kin_troubles t
+          ON t.org_id = m.org_id AND t.trouble_id = m.message_id WHERE m.org_id = ${orgId}
+          ORDER BY m.message_id`;
+        const toldOnce = yield* troubleMessages;
+        assert.lengthOf(toldOnce, 2);
+        for (const id of ["open-watch", "closed-watch"])
+          assert.deepInclude(yield* KinWatches.again(orgId, reader, id).pipe(Effect.flip), {
+            reason: "invalid_state",
+          });
+        assert.strictEqual(
+          yield* KinWatches.upsert({
+            orgId,
+            at: 60000,
+            kind: { kind: "task_out", source: "task" },
+            found: [
+              {
+                sourceKey: "found-before-retiring",
+                subjectRef: null,
+                recordId: null,
+                about: "another task",
+                closesWhen: "the task is done",
+                why: "a task was found",
+                agentId,
+              },
+            ],
+          }),
+          0,
+        );
+        assert.strictEqual(
+          yield* KinWatches.settleClock({
+            orgId,
+            at: 60000,
+            moved: new Set(),
+            asleep: new Map([["open-watch", null]]),
+            watches: [stale!],
+          }),
+          0,
+        );
+        yield* KinWatches.recordRound({
+          orgId,
+          at: 60000,
+          looks: [
+            {
+              watch: stale!,
+              why: "routine",
+              outcome: { _tag: "nothing_new", evidence: [] },
+              checksWork: true,
+            },
+          ],
+        });
+        assert.deepStrictEqual(
+          (yield* WatchReads.log(orgId, reader, {
+            watchId: "open-watch",
+            timeZone: "UTC",
+          })).rows.map((row) => row._tag === "look" && row.look.line),
+          ["its agent was retired"],
+        );
         assert.deepStrictEqual(
           yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${growth.ownerChatId}
             AND author_kind = 'system'`,
@@ -369,6 +582,18 @@ describe("KinLeadProvision", () => {
 
         const restored = yield* Provision.restore({ ...by, agentId: growth.agentId });
         assert.strictEqual(restored._tag, "restored");
+        yield* care.refresh(orgId);
+        assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 0 });
+        assert.deepStrictEqual(yield* troubleCards, closedTroubleCards);
+        assert.deepStrictEqual(yield* troubleMessages, toldOnce);
+        assert.strictEqual(Option.getOrThrow(yield* refresh).watches, initialRevision + 2);
+        assert.deepInclude(yield* WatchReads.one(orgId, reader, "open-watch"), {
+          state: "open",
+          closedHow: null,
+          nextLookAt: "1970-01-01T00:01:00.000Z",
+        });
+        assert.deepStrictEqual(yield* closedWatch, closedBefore);
+        assert.deepStrictEqual(yield* arrival, arrivalBefore);
         assert.deepStrictEqual(restored.lead, growth);
         assert.isUndefined(restored.profile.retired);
         assert.strictEqual(yield* KinLevels.effectiveLevel(growth), "L0");
@@ -380,8 +605,23 @@ describe("KinLeadProvision", () => {
         // The host's command retires through the same method, recording no person; a new lead
         // with its name then holds it, so the old one can't come back beside it.
         yield* TestClock.adjust("1 minute");
-        const byHost = yield* Provision.retireOnHost(growth.agentId);
+        yield* care.failed({ orgId, agentId, cause: "model", eventIds: [] });
+        const byHost = yield* Provision.retireOnHost(growth.agentId).pipe(
+          Effect.updateContext((services: Context.Context<Provision.Requirements>) =>
+            Context.omit(HostCare.KinHostCare)(services),
+          ),
+        );
         assert.strictEqual(byHost.lead.retiredByPersonId, null);
+        assert.isFalse(yield* care.troubleOpen(orgId, "model"));
+        assert.lengthOf(
+          (yield* troubleCards).filter((card) => card.open),
+          1,
+        );
+        yield* care.refresh(orgId, { closedOnly: true });
+        assert.lengthOf(
+          (yield* troubleCards).filter((card) => card.open),
+          0,
+        );
         const twin = yield* Provision.create({
           ...input(owner, []),
           name: "Growth",
@@ -389,7 +629,18 @@ describe("KinLeadProvision", () => {
         });
         assert.strictEqual(twin._tag, "created");
         assert.strictEqual(yield* refusal(Provision.restoreOnHost(growth.agentId)), "conflict");
-      }).pipe(Effect.provide(paired)),
+      }).pipe(
+        Effect.provide(
+          HostCare.layer.pipe(
+            Layer.provideMerge(KinEventQueue.layer),
+            Layer.provideMerge(RefreshHub.layer),
+            Layer.provideMerge(paired),
+            Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-retirement-" })),
+            Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      ),
   );
 
   it.effect(
@@ -739,6 +990,21 @@ describe("KinLeadProvision", () => {
         yield* deferral("soon", "snoozed", "remind", due - 3_600_000, due);
         yield* deferral("given", "reminded", "remind", due, null);
         yield* deferral("fired", "armed", "remind", due - 1000, null);
+        // A room's reminder for this lead, in a room the viewer is not in: not on their list.
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+          VALUES ('room-x', ${orgId}, 'team_group', 'Invented room', 1, '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id,
+            role, joined_at)
+          VALUES ('room-x-lead', ${orgId}, 'room-x', 'agent', ${tech.agentId}, 'member',
+            '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('room-card', ${orgId}, 'room-x', 1, 'system', 'owner', 'system', '', '[]', 'posted', '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
+          VALUES (${orgId}, 'roomy', 'armed', ${due - 7_200_000}, 'remind', '{}', 0)`;
+        yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type, revision, state_json, awaiting_json, updated_at)
+          VALUES (${`deferral:${orgId}:roomy`}, ${orgId}, 'room-x', 'room-card', 'native', 'card', 1,
+            ${JSON.stringify({ title: "Invented: the room's own" })}, '[]', '2026-11-09T00:00:00.000Z')`;
+        yield* trigger("deferral:roomy:due", due - 7_200_000);
         const scheduled = (itemId: string, paused: number, nextRunAt: number | null = due) =>
           sql`INSERT INTO kin_scheduled_tasks (org_id, item_id, chat_id, state, paused, recorded_at, updated_at)
             VALUES (${orgId}, ${itemId}, ${tech.ownerChatId}, 'active', ${paused}, '2026-11-09T00:00:00.000Z', 0)`.pipe(
@@ -888,11 +1154,63 @@ describe("KinLeadProvision", () => {
         const tech = (yield* Provision.create(input(owner, []))).lead;
         // A custom instance that settings name as Claude.
         const sonnet = { instanceId: ProviderInstanceId.make("work"), model: "claude-sonnet-4-6" };
+        const provider = yield* decodeProvider({
+          instanceId: sonnet.instanceId,
+          driver: "claudeAgent",
+          enabled: true,
+          installed: true,
+          version: null,
+          status: "ready",
+          auth: { status: "unknown" },
+          checkedAt: "1970-01-01T00:00:00.000Z",
+          models: [
+            {
+              slug: sonnet.model,
+              name: "Invented listed model",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        });
+        const listed = Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([provider]) });
+        const unknown = { ...sonnet, model: "invented-unlisted" };
+        const create = Provision.create({
+          ...input(owner, []),
+          name: "Invented analyst",
+          model: unknown,
+        });
+        assert.match(
+          (yield* create.pipe(Effect.provide(listed), Effect.flip)).message,
+          /invented-unlisted.*work.*Settings/,
+        );
+        const fromCache = yield* Effect.gen(function* () {
+          const config = yield* ServerConfig;
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.writeFileString(
+            `${config.providerStatusCacheDir}/work.json`,
+            JSON.stringify(provider),
+          );
+          return yield* Effect.flip(create);
+        }).pipe(
+          Effect.provide(
+            ServerConfig.layerTest(process.cwd(), { prefix: "kin-model-catalog-" }).pipe(
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ),
+        );
+        assert.match(fromCache.message, /invented-unlisted.*work.*Settings/);
         const edit = (
           fields: Parameters<typeof Provision.update>[0]["fields"],
           editor: Provision.LeadCreator = owner,
         ) => Provision.update({ editor, orgId: tech.orgId, agentId: tech.agentId, fields });
-        assert.strictEqual((yield* edit({ model: sonnet })).model, "claude-sonnet-4-6");
+        assert.match(
+          (yield* edit({ model: unknown }).pipe(Effect.provide(listed), Effect.flip)).message,
+          /invented-unlisted.*work.*Settings/,
+        );
+        assert.strictEqual(
+          (yield* edit({ model: sonnet }).pipe(Effect.provide(listed))).model,
+          sonnet.model,
+        );
         // The runner reads this row at each wake-up, so the next turn runs on it.
         const [row] = yield* sql<{ model: string }>`SELECT models_json AS model FROM kin_leads
           WHERE org_id = ${tech.orgId} AND agent_id = ${tech.agentId}`;
@@ -933,6 +1251,20 @@ describe("KinLeadProvision", () => {
         assert.isDefined((yield* pause(true)).paused);
         assert.strictEqual(yield* refusal(pause(false, teammate)), "not_found");
         assert.isUndefined((yield* pause(false)).paused);
+
+        // The last lead paused tells the owner at once, not at the next hourly check; a resume closes it.
+        const noAgent = sql<{ open: number }>`SELECT CASE WHEN resolved_at IS NULL THEN 1 ELSE 0 END
+            AS open FROM kin_waiting WHERE org_id = ${tech.orgId} AND message_id LIKE 'kin-no-lead:%'
+          ORDER BY waiting_id`;
+        const live = yield* sql<{
+          agentId: KinAgentId;
+        }>`SELECT agent_id AS "agentId" FROM kin_agents
+          WHERE org_id = ${tech.orgId} AND role = 'lead' AND retired_at IS NULL ORDER BY agent_id`;
+        for (const { agentId } of live)
+          yield* Provision.setPaused({ by: owner, orgId: tech.orgId, agentId, paused: true });
+        assert.deepStrictEqual(yield* noAgent, [{ open: 1 }]);
+        yield* pause(false);
+        assert.deepStrictEqual(yield* noAgent, [{ open: 0 }]);
       }).pipe(Effect.provide(paired)),
   );
   it.effect("shows an agent's page and keeps an edited character's old version", () =>
@@ -946,8 +1278,30 @@ describe("KinLeadProvision", () => {
       assert.deepStrictEqual(page.runsOn, page.model);
       assert.isNull(page.modelNote);
       assert.include(page.character?.body ?? "", "# Ada");
-      const edited = yield* ownerLevelSetCharacter({ ...target, body: "# Ada\n\nDry and exact." });
-      assert.strictEqual(edited.character?.body.trim(), "# Ada\n\nDry and exact.");
+      // Each page lists the playbooks its area works by: code review is Ada's, not Social's.
+      yield* seedPlaybooks(tech.orgId, (yield* KinIdentity).owner.personId);
+      const reviewing = "Reviewing and merging code";
+      const titles = (shown: KinAgentPage) => shown.playbooks.map((one) => one.title);
+      assert.include(titles(yield* ownerLevelAgentPage(target)), reviewing);
+      const social = (yield* Provision.create({
+        ...input(owner, []),
+        name: "Social",
+        domain: "social",
+      })).lead;
+      const socialPage = yield* ownerLevelAgentPage({ ...target, agentId: social.agentId });
+      assert.deepStrictEqual(titles(socialPage), ["Winning customers"]);
+      // Kin's part, named for Ada; hers starts empty, and the single field still carries it all.
+      const kin = page.kinCharacter ?? "";
+      assert.isTrue(kin.startsWith("# Ada"));
+      assert.strictEqual(page.ownCharacter, "");
+      assert.strictEqual(page.character?.body, kin);
+      const edited = yield* ownerLevelSetCharacter({ ...target, body: "Dry and exact." });
+      assert.strictEqual(edited.ownCharacter?.trim(), "Dry and exact.");
+      assert.strictEqual(edited.kinCharacter, kin);
+      assert.strictEqual(edited.character?.body, `${kin}\n\nDry and exact.`);
+      // An older page sends the single field back whole: Kin's part is not stored as hers.
+      const again = yield* ownerLevelSetCharacter({ ...target, body: edited.character!.body });
+      assert.strictEqual(again.ownCharacter, edited.ownCharacter);
       const versions = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_doc_versions v
         JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
         WHERE r.key = ${edited.character!.key}`;

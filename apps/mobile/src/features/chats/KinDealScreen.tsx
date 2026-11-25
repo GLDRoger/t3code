@@ -15,6 +15,8 @@ import {
   kinDealChangeWhen,
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_PROMISES, kinDealPromises } from "@t3tools/client-runtime/kin/kinPromises";
+import { kinSectionOffLine } from "@t3tools/client-runtime/kin/kinShell";
 import {
   KIN_WORK_NEW_COPY,
   kinWorkAssignees,
@@ -57,6 +59,7 @@ import {
   KinWorkFrame,
   KinWorkLoading,
   KinWorkPrivateMark,
+  KinWorkTaskRow,
   KinWorkTextField,
 } from "./components/KinWorkPieces";
 import { KinDealNextLine } from "./KinDealsList";
@@ -64,8 +67,10 @@ import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinDealPage, useKinDealSend } from "./state/useKinDeals";
+import { useKinShell } from "./state/useKinShell";
 import { useKinInvoiceFromQuote } from "./state/useKinMoneyAnswers";
 import { useKinWorkDirectory, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import { KinWatchLine } from "./KinWatchLine";
 
 export type KinDealParams = {
   readonly environmentId: string;
@@ -138,9 +143,13 @@ function KinDealBody(
   const now = new Date(useNowMinuteMs());
   const send = useKinDealSend(target);
   const ownerLevel = useKinIsOwnerLevel(environmentId);
+  // Deals switched off: the deal still opens by its link, and says so.
+  const offLine = kinSectionOffLine(useKinShell(environmentId), "deals", ownerLevel);
   const canProject = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));
   const canInvoice = useAtomValue(kinClient.workInvoiceFromQuote.permissionAtom(environmentId));
   const invoice = useKinInvoiceFromQuote(target);
+  const canAddTask = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
+  const promises = kinDealPromises(page, names, now);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [becameClient, setBecameClient] = useState(false);
@@ -205,6 +214,11 @@ function KinDealBody(
       refresh={{ accessibilityLabel: "Refresh", onPress: props.onRefresh }}
       {...(deal.can.move ? { menus: [moveMenu] } : {})}
     >
+      {offLine === null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {offLine}
+        </Text>
+      )}
       <View className="gap-1 px-2">
         <View className="flex-row items-center gap-2">
           <View className="rounded-full bg-subtle px-2 py-0.5">
@@ -240,6 +254,7 @@ function KinDealBody(
         )}
       </View>
       <KinAsideNote {...target} record={deal.key} names={names} />
+      <KinWatchLine {...target} recordKey={deal.key} />
 
       {deal.state !== "open" ? null : <DealStrip deal={deal} stages={stages} />}
 
@@ -417,6 +432,63 @@ function KinDealBody(
         </ListSection>
       )}
 
+      {promises === null ? null : (
+        <ListSection title={KIN_PROMISES.title}>
+          {promises.ours.length + promises.theirs.length === 0 ? (
+            <ListRowLayout label={KIN_PROMISES.none} disabled />
+          ) : (
+            [
+              ...promises.ours.map((row) => ({ row, mark: KIN_PROMISES.oursShort })),
+              ...promises.theirs.map((row) => ({ row, mark: KIN_PROMISES.theirsShort })),
+            ].map(({ row, mark }) => (
+              <KinWorkTaskRow
+                key={row.key}
+                inset
+                row={row}
+                saving={false}
+                onPress={() => openTask(row.key)}
+                onAct={null}
+                promise={{
+                  mark,
+                  from: row.promise?.from ?? null,
+                  onOpen:
+                    row.promise?.open == null
+                      ? null
+                      : () => {
+                          const at = row.promise?.open;
+                          if (at != null)
+                            navigation.navigate("KinChat", {
+                              environmentId,
+                              orgId,
+                              chatId: at.chatId,
+                              message: at.messageId,
+                            });
+                        },
+                }}
+              />
+            ))
+          )}
+          {canAddTask
+            ? (["ours", "theirs"] as const).map((side) => (
+                <ListActionRow
+                  key={side}
+                  label={side === "ours" ? KIN_PROMISES.ours : KIN_PROMISES.theirs}
+                  onPress={() =>
+                    navigation.navigate("KinWorkNew", {
+                      environmentId,
+                      orgId,
+                      party: deal.party.key,
+                      partyName: deal.party.title,
+                      side,
+                      deal: deal.key,
+                      dealName: deal.title,
+                    })
+                  }
+                />
+              ))
+            : null}
+        </ListSection>
+      )}
       {deal.concerns === undefined ? null : (
         <ListSection title={KIN_DEALS.concernsRaised}>
           {deal.concerns.map((concern) => (
@@ -499,7 +571,7 @@ function KinDealBody(
       </ListSection>
 
       {page.notes === "" ? null : (
-        <ListSection>
+        <ListSection title={KIN_DEALS.notes}>
           <View className="bg-grouped-card px-4 py-3">
             <Text textRole="body" selectable className="text-foreground">
               {page.notes}

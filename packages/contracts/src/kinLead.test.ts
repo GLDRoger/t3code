@@ -111,6 +111,13 @@ const eventSamples = {
     pendingActionId: "action-1",
     outcome: "executed",
   },
+  "bills.read": {
+    ...event,
+    _tag: "bills.read",
+    chatId: "chat-1",
+    batchId: "batch-1",
+    bills: ["a".repeat(64)],
+  },
   resume: {
     ...event,
     _tag: "resume",

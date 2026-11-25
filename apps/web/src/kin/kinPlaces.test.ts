@@ -1,4 +1,4 @@
-import { KinAgentId, KinListId, KinRecordKey } from "@t3tools/contracts";
+import { KinAgentId, KinBillBatchId, KinListId, KinRecordKey } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -137,6 +137,8 @@ describe("place addresses", () => {
       { list: KinListId.make("renewals") },
       { dates: true },
       { subscriptions: true },
+      { bills: null },
+      { bills: KinBillBatchId.make("b-3f9a") },
       { doc: party, version: 2, section: "s", changes: { to: 3, from: 1 }, history: true },
     ] as const;
     for (const record of records)
@@ -199,6 +201,17 @@ describe("place addresses", () => {
         tab: "clients",
       }),
     ).toEqual({});
+  });
+
+  it("reads bills with no value as every batch, and a value that is no batch as no place", () => {
+    // The router hands a route its validated search over the raw one, so both reach `kinRecordOf`.
+    const placeOf = (raw: Record<string, unknown>) =>
+      kinRecordOf(Object.assign({}, raw, validateKinPlaceSearch(raw)));
+    expect(placeOf({ bills: "" })).toEqual({ bills: null });
+    expect(placeOf({ bills: true })).toEqual({ bills: null });
+    expect(placeOf({ bills: "b-3f9a" })).toEqual({ bills: "b-3f9a" });
+    expect(placeOf({ bills: 5 })).toBeNull();
+    expect(placeOf({ bills: "x".repeat(81) })).toBeNull();
   });
 
   it("opens an agent's page over the place and closes Settings", () => {

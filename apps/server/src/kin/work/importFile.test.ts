@@ -32,6 +32,7 @@ import * as ImportFile from "./importFile.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { dayIn } from "./money.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import * as Clients from "./ownerClients.ts";
 
 // Invented company (Ambermill), people, clients and amounts only.
@@ -62,7 +63,7 @@ const gate = Layer.mock(KinLevelGate)({
   ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
 });
 const layer = KinImport.layer.pipe(
-  Layer.provideMerge(Layer.mergeAll(KinRecords.layer, identity, gate)),
+  Layer.provideMerge(Layer.mergeAll(KinRecords.layer, identity, gate, KinShell.layer)),
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
@@ -397,6 +398,43 @@ describe("bringing a file in", () => {
         ],
       );
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "checks and imports clients, but counts their deals as left out while Deals is off",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const input = {
+          orgId,
+          file: fileOf("Company,Deal,Stage,Value\nInvented Alder,First order,in-talks,EUR 110\n"),
+          mapping: { columns: ["client.name", "deal.title", "deal.stage", "deal.value"] as const },
+        };
+        const on = yield* ImportFile.check([rhea], input);
+        assert.strictEqual(on.will.deals, 1);
+        const shell = yield* KinShell.KinShell;
+        yield* shell.set(orgId, ownerId, 0, [{ id: "deals", on: false }]);
+        const checked = yield* ImportFile.check([rhea], input);
+        assert.isTrue(checked.ready);
+        assert.strictEqual(checked.will.deals, 0);
+        assert.deepStrictEqual(checked.leftOut, [
+          { line: 2, reason: "Deals is turned off for this company." },
+        ]);
+        const applied = yield* ImportFile.apply([rhea], { ...input, batch: on.batch });
+        assert.deepStrictEqual(applied.added, { ...on.will, deals: 0 });
+        assert.deepStrictEqual(applied.leftOut, checked.leftOut);
+        assert.deepStrictEqual(
+          yield* sql`SELECT register_id AS list FROM kin_records WHERE org_id = ${orgId}
+          AND title IN ('Invented Alder', 'First order') ORDER BY register_id`,
+          [{ list: "clients" }],
+        );
+        yield* shell.set(orgId, ownerId, 1, [{ id: "deals", on: true }]);
+        assert.strictEqual(
+          (yield* ImportFile.apply([rhea], { ...input, batch: on.batch })).added.deals,
+          1,
+        );
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect(
@@ -868,6 +906,73 @@ describe("bringing a file in", () => {
             }),
           ),
           "invalid_state: This isn't the file you checked. Check it again before importing.",
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "holds the file after its first read, for its reader only, and lets it go once imported",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const file = fileOf("Company\nInvented Fjord Labs\n");
+        const mapping = { columns: ["client.name" as const] };
+        const first = yield* ImportFile.check([rhea], { orgId, file });
+        const upload = first.upload!;
+        assert.strictEqual(upload.hash.slice(0, 16), first.batch.slice(1));
+        const held = { name: file.name, upload };
+        const again = yield* ImportFile.check([rhea], { orgId, file: held, mapping });
+        assert.deepStrictEqual(
+          [again.batch, again.upload, again.will.clients],
+          [first.batch, upload, 1],
+        );
+        // Sent whole again, the same file keeps its id.
+        assert.deepStrictEqual((yield* ImportFile.check([rhea], { orgId, file })).upload, upload);
+
+        const gone = "not_found: Kin no longer has this file. Choose it again.";
+        const notChecked =
+          "invalid_state: This isn't the file you checked. Check it again before importing.";
+        const wrongHash = { ...held, upload: { ...upload, hash: "0".repeat(64) } };
+        assert.deepStrictEqual(
+          [
+            // A co-owner may import, but not with the file Rhea sent.
+            yield* refusal(ImportFile.check([meera], { orgId, file: held, mapping })),
+            yield* refusal(
+              ImportFile.apply([meera], { orgId, file: held, mapping, batch: first.batch }),
+            ),
+            yield* refusal(ImportFile.check([rhea], { orgId, file: wrongHash, mapping })),
+          ],
+          [gone, gone, notChecked],
+        );
+
+        const applied = yield* ImportFile.apply([rhea], {
+          orgId,
+          file: held,
+          mapping,
+          batch: first.batch,
+        });
+        assert.strictEqual(applied.added.clients, 1);
+        assert.strictEqual(yield* refusal(ImportFile.check([rhea], { orgId, file: held })), gone);
+
+        // An hour unused, it is gone; the file sent whole still imports.
+        const next = fileOf("Company\nInvented Harbour Tiles\n");
+        const later = (yield* ImportFile.check([rhea], { orgId, file: next })).upload!;
+        yield* TestClock.adjust("60 minutes");
+        const batch = (yield* ImportFile.check([rhea], { orgId, file: next, mapping })).batch;
+        assert.strictEqual(
+          yield* refusal(
+            ImportFile.apply([rhea], {
+              orgId,
+              file: { name: next.name, upload: later },
+              mapping,
+              batch,
+            }),
+          ),
+          gone,
+        );
+        assert.strictEqual(
+          (yield* ImportFile.apply([rhea], { orgId, file: next, mapping, batch })).added.clients,
+          1,
         );
       }).pipe(Effect.provide(layer)),
   );

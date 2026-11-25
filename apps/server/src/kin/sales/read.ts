@@ -3,11 +3,12 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { quote } from "../lead/LeadPrompt.ts";
+import { quote } from "../lead/quote.ts";
 import { markOutside, outsideRead, pageSeen, rememberPages } from "../lead/OutsideContent.ts";
 import { leadTool, type Lead } from "../work/leadWork.ts";
 import { PAGE_NOT_GIVEN, pageLine } from "./text.ts";
 import { KinWebPages } from "./webPage.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 export const WebPageInput = Schema.Struct({
   url: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(2_000)),
@@ -34,7 +35,8 @@ const personGave = Effect.fnUntraced(function* (lead: Lead, address: string) {
       AND m.chat_id = json_extract(e.json, '$.chatId')
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId}
       AND e.wakeup_id = ${lead.wakeupId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
-      AND m.origin_json IS NULL AND instr(m.body, ${address}) > 0
+      AND m.origin_json IS NULL AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
+      AND instr(m.body, ${address}) > 0
     LIMIT 1`;
   return rows.length > 0;
 });
@@ -56,6 +58,7 @@ const runWebPage = Effect.fnUntraced(function* (lead: Lead, input: typeof WebPag
   const page = yield* (yield* KinWebPages).read(address);
   yield* markOutside(lead, `web:${new URL(page.url).hostname.slice(0, 120)}`);
   yield* rememberPages(lead, [address, page.url, ...page.links]);
+  const moreLinks = page.links.filter((link) => !page.text.includes(`(${link})`));
   const shown = new URL(page.url);
   shown.search = "";
   return {
@@ -64,6 +67,8 @@ const runWebPage = Effect.fnUntraced(function* (lead: Lead, input: typeof WebPag
       url: shown.href,
       title: page.title,
       text: page.text,
+      // A link past the cut is one the text above no longer shows.
+      ...(moreLinks.length > 0 ? { more_links: moreLinks } : {}),
     }),
     ...(page.cut ? { cut: true as const } : {}),
     answer: pageLine(page.text.length, page.cut),

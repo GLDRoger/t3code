@@ -6,6 +6,7 @@ import {
   type KinPartyCreateInput,
   type KinPartyPageInput,
   type KinPartyUpdateInput,
+  type KinPartyWithDealCreateInput,
   type KinProjectCreateInput,
   type KinProjectPageInput,
   type KinProjectPeopleInput,
@@ -19,6 +20,7 @@ import {
   type KinPartyPage,
   type KinPartyRow,
   type KinPersonId,
+  calendarTimeMillis,
   KinChatError,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -28,7 +30,9 @@ import { isSqlError, type SqlError } from "effect/sql/SqlError";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Crm from "./crm.ts";
-import { dealSeesField } from "./deals.ts";
+import { sectionOnFor as sectionOn } from "../shell/KinShell.ts";
+import { DEALS_OFF } from "../shell/sections.ts";
+import { createdOut, createIn as createDealIn, dealSeesField } from "./deals.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
 import { fieldList, parseFields, type FieldValue, type ListName } from "./lists.ts";
 import {
@@ -45,7 +49,7 @@ import {
   writerOf,
 } from "./ownerWork.ts";
 import { principalOfText, principalText } from "./projectSpine.ts";
-import { projectNoteOf } from "./recordComments.ts";
+import { keyNamedFor, projectNoteOf } from "./recordComments.ts";
 import {
   iso,
   notFound,
@@ -57,6 +61,7 @@ import {
 } from "./recordRows.ts";
 import {
   KIN_OWNER_LEVEL,
+  keyedViewer,
   crmSeenBy,
   crmVisible,
   inProject,
@@ -161,11 +166,17 @@ const opened = Effect.fn("KinWork.crm.opened")(function* (
   return yield* inList(input.orgId, (yield* found(input.orgId, input)).key, list);
 });
 
+/** Read for a coding agent's key: the viewer leaves out what a key never carries (`keyedViewer`). */
+type ThroughKey = { readonly keyed?: boolean };
+const scoped = (viewer: KinViewer, options: ThroughKey) =>
+  options.keyed === true ? keyedViewer(viewer) : viewer;
+
 export const parties = Effect.fn("KinWork.parties")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartiesInput,
+  options: ThroughKey = {},
 ) {
-  const viewer = yield* reader(people, input.orgId);
+  const viewer = scoped(yield* reader(people, input.orgId), options);
   const works = yield* switchedOn(input.orgId, viewer);
   const { now, seq } = yield* asOf(input.orgId, viewer);
   // Kinds, who looks after a client, where it came from and tags are Clients' own; a lead
@@ -191,8 +202,9 @@ export const parties = Effect.fn("KinWork.parties")(function* (
 export const projects = Effect.fn("KinWork.projects")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinProjectsInput,
+  options: ThroughKey = {},
 ) {
-  const viewer = yield* reader(people, input.orgId);
+  const viewer = scoped(yield* reader(people, input.orgId), options);
   const { now, seq } = yield* asOf(input.orgId, viewer);
   const party =
     input.party === undefined
@@ -221,12 +233,14 @@ export const projects = Effect.fn("KinWork.projects")(function* (
 export const party = Effect.fn("KinWork.party")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartyPageInput,
+  options: ThroughKey = {},
 ) {
-  const viewer = yield* reader(people, input.orgId);
+  const viewer = scoped(yield* reader(people, input.orgId), options);
   const row = yield* opened(input, "clients");
   yield* unseen(viewer, row, input);
   const { now, seq } = yield* asOf(input.orgId, viewer);
-  const page = yield* read(Crm.partyPage(row, now, seq, viewer));
+  const readers = people.filter((one) => one.orgId === input.orgId).map((one) => one.personId);
+  const page = yield* read(Crm.partyPage(row, now, seq, viewer, readers));
   if (viewer._tag === "ownerLevel")
     return { ...page, can: { edit: true, log: true, owner: true } } satisfies KinPartyPage;
   const [team] = viewer.people;
@@ -316,9 +330,13 @@ const memberPage = Effect.fn("KinWork.crm.memberPage")(function* (
 export const project = Effect.fn("KinWork.project")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinProjectPageInput,
+  options: ThroughKey = {},
 ) {
   const person = yield* viewerOf(people, input.orgId);
-  const viewer = person.teammate ? viewerOfPeople([person.person.personId]) : KIN_OWNER_LEVEL;
+  const viewer = scoped(
+    person.teammate ? viewerOfPeople([person.person.personId]) : KIN_OWNER_LEVEL,
+    options,
+  );
   const row = yield* opened(input, "projects");
   // Anyone in it opens it, Clients place or not, and in it sees only what `personSees` shows them.
   if (
@@ -341,7 +359,7 @@ export const project = Effect.fn("KinWork.project")(function* (
       : undefined;
   return {
     ...page,
-    ...(note === undefined ? {} : { note }),
+    ...(note === undefined ? {} : { note: keyNamedFor(person, note) }),
     ...(results === undefined ? {} : { results }),
     can: { people: !person.teammate || leads, note: !person.teammate },
   };
@@ -730,6 +748,36 @@ export const createParty = Effect.fn("KinWork.createParty")(function* (
   return viewer.teammate ? yield* memberOut(row, person) : yield* partyOut(row);
 });
 
+/**
+ * A new client and its first deal in one transaction, as the two forms would make them: a refusal
+ * of either keeps neither. With Deals off, only the client is kept.
+ */
+export const createPartyWithDeal = Effect.fn("KinWork.createPartyWithDeal")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinPartyWithDealCreateInput,
+) {
+  const { deal, acceptDealLeftOut: _acceptDealLeftOut, ...asked } = input;
+  const { party, made } = yield* (yield* SqlClient.SqlClient)
+    .withTransaction(
+      Effect.gen(function* () {
+        const party = yield* createParty(people, asked);
+        if (!(yield* sectionOn(input.orgId, "deals"))) return { party, made: undefined };
+        const made = yield* createDealIn(people, {
+          ...deal,
+          orgId: input.orgId,
+          party: party.key,
+          clientRequestId: input.clientRequestId,
+        });
+        return { party, made };
+      }),
+    )
+    .pipe(workFailure);
+  if (made === undefined) return { party, dealLeftOut: DEALS_OFF };
+  yield* (yield* KinRecords).announce(input.orgId, [made.row.recordId]);
+  const { deal: shown } = yield* createdOut(input.orgId, made);
+  return { party, deal: shown };
+});
+
 export const updateParty = Effect.fn("KinWork.updateParty")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartyUpdateInput,
@@ -904,6 +952,10 @@ const spineFields = (input: KinProjectCreateInput | KinProjectUpdateInput) => ({
   value: input.value,
   startsOn: input.startsOn,
   renewsOn: input.renewsOn,
+  noticeDays:
+    input.noticeDays === undefined || input.noticeDays === null
+      ? input.noticeDays
+      : String(input.noticeDays),
   members: input.members?.map(principalText),
   audience: input.audience,
 });
@@ -1052,7 +1104,7 @@ export const logTouch = Effect.fn("KinWork.logTouch")(function* (
   const records = yield* KinRecords;
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
-  const at = input.at === undefined ? now : Date.parse(input.at);
+  const at = input.at === undefined ? now : calendarTimeMillis(input.at);
   // A member's requests have their own keys, so a retry never finds someone else's.
   const origin = viewer.teammate ? `member:${person.personId}:touch` : "owner:touch";
   const { touch, partyId } = yield* sql

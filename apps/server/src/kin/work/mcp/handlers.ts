@@ -4,11 +4,15 @@ import { KinChatError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { numbersHandlers } from "../../numbers/mcp.ts";
 import { LeadMemory } from "../../lead/LeadMemory.ts";
 import * as Clients from "../leadClients.ts";
 import * as Money from "../leadMoney.ts";
 import * as Work from "../leadWork.ts";
 import * as Comments from "../workComments.ts";
+import { liftMarks } from "../pageMarks.ts";
+import { proposeHandler } from "../../shell/mcp.ts";
+import { watchHandler } from "../../numbers/watch.ts";
 import { KinWorkToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -20,9 +24,12 @@ const failure = (error: unknown) =>
 
 // Kin's service checks the persisted lead and wake-up, rather than T3 thread-control grants.
 export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
+  ...numbersHandlers,
   records_query: McpToolAccess.reads(
     Effect.fn("KinWorkToolkit.query")(function* (input) {
-      return yield* Work.query(yield* McpInvocationContext, input);
+      const result = yield* Work.query(yield* McpInvocationContext, input);
+      const [records, marks] = liftMarks(result.records);
+      return { ...result, records, ...marks };
     }, Effect.mapError(failure)),
   ),
   record_get: McpToolAccess.reads(
@@ -54,7 +61,9 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
   ),
   record_create: McpToolAccess.actsAsCaller(
     Effect.fn("KinWorkToolkit.create")(function* (input) {
-      return yield* Work.create(yield* McpInvocationContext, input);
+      const result = yield* Work.create(yield* McpInvocationContext, input);
+      const [records, marks] = liftMarks(result.records);
+      return { ...result, records, ...marks };
     }, Effect.mapError(failure)),
   ),
   record_update: McpToolAccess.actsAsCaller(
@@ -123,7 +132,9 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
   ),
   dates_query: McpToolAccess.reads(
     Effect.fn("KinWorkToolkit.dates")(function* (input) {
-      return yield* Money.datesQuery(yield* McpInvocationContext, input);
+      const result = yield* Money.datesQuery(yield* McpInvocationContext, input);
+      const [dates, marks] = liftMarks(result.dates);
+      return { ...result, dates, ...marks };
     }, Effect.mapError(failure)),
   ),
   company_profile: McpToolAccess.actsAsCaller(
@@ -131,4 +142,6 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
       return yield* Money.profile(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
+  company_sections: proposeHandler,
+  numbers_watch: watchHandler,
 });

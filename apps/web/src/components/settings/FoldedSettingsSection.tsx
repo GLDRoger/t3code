@@ -2,6 +2,7 @@ import { SettingsGroup } from "./SettingsGroup";
 import { ChevronRightIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
+import { kinSettingHidden } from "~/kin/kinNoCode";
 import { cn } from "~/lib/utils";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { useSettingsSearchTarget, useSettingsSearchTargetId } from "./settingsLayout";
@@ -33,6 +34,7 @@ export function FoldedSettingsSection({
     setOpenedForTarget(id);
     if (!open) setOpen(true);
   }
+  if (kinSettingHidden(id)) return null;
 
   if (headerPlacement === "outside") {
     return (

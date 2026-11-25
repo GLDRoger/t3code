@@ -109,6 +109,7 @@ const fakeGraph = () => {
       }
       if (path === "/messages/m1/reply" || path === "/messages/d1/send")
         return new Response(null, { status: 202 });
+      if (path === "/calendar") return json({ id: "primary-opaque", name: "Invented work" });
       if (path === "/events") return json({ id: "ev-1" }, 201);
       return json({ error: { code: "ErrorItemNotFound" } }, 404);
     },
@@ -212,6 +213,10 @@ describe("Microsoft mail", () => {
     const graph = fakeGraph();
     return Effect.gen(function* () {
       const http = yield* HttpClient.HttpClient;
+      assert.strictEqual(
+        yield* microsoftMail.calendarName(http, TOKEN, mailbox, "primary"),
+        "Invented work",
+      );
       const saved = yield* microsoftMail.saveEvent(http, TOKEN, {
         calendarId: "primary",
         eventId: null,

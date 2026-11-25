@@ -1,30 +1,23 @@
 import { useAtomValue } from "@effect/atom-react";
-import {
-  createKinCardActions,
-  type KinCardNotice,
-} from "@t3tools/client-runtime/kin/kinDeferralPresentation";
+import type { KinCardNotice } from "@t3tools/client-runtime/kin/kinDeferralPresentation";
 import {
   KIN_SOCIAL_ACTION_LABELS,
-  kinSocialActInput,
-  kinSocialFailureNotice,
+  kinSocialCardActions,
+  kinSocialCardTaps,
+  kinSocialNoticeShown,
   kinSocialPostActions,
+  type KinSocialNotice,
   type KinSocialPackView,
+  type KinSocialTap,
   type KinSocialPostTone,
   type KinSocialPostView,
   type KinSocialWeekView,
   KIN_SOCIAL_COPY,
 } from "@t3tools/client-runtime/kin/kinSocial";
 import { kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type {
-  EnvironmentId,
-  KinSocialMedia,
-  KinSocialPackCardAction,
-  KinSocialWeekCardAction,
-} from "@t3tools/contracts";
-import { AsyncResult } from "effect/reactivity";
+import type { EnvironmentId, KinSocialMedia } from "@t3tools/contracts";
 import { Image as ExpoImage } from "expo-image";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Linking, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -49,48 +42,27 @@ const TONE_CLASSES: Record<KinSocialPostTone, string> = {
   muted: "text-foreground-muted",
 };
 
-type Tap = {
-  readonly actionId: KinSocialWeekCardAction | KinSocialPackCardAction;
-  readonly value: unknown;
-};
 type Target = Pick<KinSocialWeekView, "widgetId" | "revision">;
 
 /** One tap at a time per card; a refusal shows in the owner's words until the card changes. */
 function useSocialTaps(environmentId: EnvironmentId, view: Target) {
   const post = useAtomCommand(kinClient.widgetAction, { reportFailure: false });
   const canAct = useAtomValue(kinClient.widgetAction.permissionAtom(environmentId));
-  const actions = useRef<ReturnType<typeof createKinCardActions<Target, string>> | null>(null);
-  const taps = useRef(new Map<string, Tap>());
+  const [taps] = useState(kinSocialCardTaps);
   const [pending, setPending] = useState<string | null>(null);
-  const [notice, setNotice] = useState<{ revision: number; notice: KinCardNotice } | null>(null);
-  const press = async (key: string, tap: Tap) => {
-    taps.current.set(key, tap);
-    if (actions.current === null)
-      actions.current = createKinCardActions<Target, string>({
-        newId: uuidv4,
-        toInput: (target, actionKey, clientActionId) =>
-          kinSocialActInput(target, taps.current.get(actionKey)!, clientActionId),
-        failureNotice: (cause) => kinSocialFailureNotice(cause),
-        post: async (input) => {
-          const result = await post({ environmentId, input });
-          return AsyncResult.isFailure(result)
-            ? { ok: false as const, cause: squashAtomCommandFailure(result) }
-            : { ok: true as const };
-        },
-      });
-    const revision = view.revision;
-    const outcome = await actions.current(view, key, () => {
-      setPending(key);
-      setNotice(null);
-    });
-    if (outcome.status === "ignored") return;
-    setPending(null);
-    if (outcome.status === "failed") setNotice({ revision, notice: outcome.notice });
-  };
+  const [notice, setNotice] = useState<KinSocialNotice>(null);
+  const { press } = kinSocialCardActions({
+    view,
+    environmentId,
+    newId: uuidv4,
+    taps,
+    post,
+    set: { pending: setPending, notice: setNotice },
+  });
   return {
     canAct,
     pending,
-    notice: notice !== null && notice.revision === view.revision ? notice.notice : null,
+    notice: kinSocialNoticeShown(notice, view),
     press,
   };
 }
@@ -163,7 +135,7 @@ function PostRow(props: {
   readonly nowMs: number;
   readonly canAct: boolean;
   readonly pending: string | null;
-  readonly press: (key: string, tap: Tap) => void;
+  readonly press: (key: string, tap: KinSocialTap) => void;
 }) {
   const { post } = props;
   const actions = props.canAct ? kinSocialPostActions(post, props.nowMs) : [];

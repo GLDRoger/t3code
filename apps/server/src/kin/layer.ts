@@ -21,6 +21,8 @@ import * as KeySeal from "./approvals/KeySeal.ts";
 import * as ApprovalCards from "./chat/approvalCards.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
+import * as KinPushDispatch from "./push/KinPushDispatch.ts";
+import * as KinHostCare from "./host/KinHostCare.ts";
 import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
 import * as KinImport from "./work/KinImport.ts";
@@ -29,11 +31,17 @@ import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
 import * as FileSystem from "effect/FileSystem";
 import { ServerConfig } from "../config.ts";
-import { answerChoice, refusedChoice, resumeInterruptedSends } from "./work/cardAnswers.ts";
+import {
+  answerChoice,
+  dismissChoice,
+  refusedChoice,
+  resumeInterruptedSends,
+} from "./work/cardAnswers.ts";
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 import { KinIdentity, KinNewCompanyCountryUnset } from "./chat/KinIdentity.ts";
+import { indexStoredSteps } from "./work/searchIndex.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
-import { offerNewCharacter, seedCharacters } from "./lead/characters.ts";
+import { seedCharacters, splitCharacters } from "./lead/characters.ts";
 import { closeSubject } from "./open/closeSubject.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
@@ -50,9 +58,11 @@ import * as GitHubLogin from "./connections/GitHubLogin.ts";
 import { devAppStandIn } from "./github/devAppStandIn.ts";
 import * as KinGitHubApp from "./github/KinGitHubApp.ts";
 import * as KinGitHubAppKey from "./github/appKey.ts";
+import * as KinGitHubHook from "./github/appHook.ts";
 import * as KinGitHubAppSetup from "./github/appSetup.ts";
 import * as Keychain from "./github/Keychain.ts";
 import * as AgentSession from "./lead/AgentSession.ts";
+import * as KinRefusedModels from "./lead/refusedModels.ts";
 import * as Workspace from "./gendocs/workspace.ts";
 import * as Vcs from "../vcs/VcsProcess.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -63,6 +73,10 @@ import * as DevFakeMail from "./connections/DevFakeMail.ts";
 import * as DevClock from "./DevClock.ts";
 import * as McpGateway from "./connections/McpGateway.ts";
 import * as DevFakeSocial from "./social/DevFakeSocial.ts";
+import * as DevFakeImages from "./pictures/DevFakeImages.ts";
+
+import * as KinNumbers from "./numbers/KinNumbers.ts";
+import * as KinShell from "./shell/KinShell.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   Layer.effect(
@@ -77,6 +91,10 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
       const { owner } = yield* KinIdentity;
       yield* HostPolicy.check();
       yield* checkPublicUrl();
+      yield* indexStoredSteps(owner.orgId).pipe(
+        Effect.provide(services),
+        Effect.catch((error) => Effect.logWarning("Kin could not index saved task steps", error)),
+      );
       // A failed seed leaves Kin running; the next start tries the missing ones again.
       yield* seedPlaybooks(owner.orgId, owner.personId).pipe(
         Effect.provide(services),
@@ -90,15 +108,24 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Effect.logWarning("Kin default characters not written", Cause.pretty(cause)),
         ),
       );
-      yield* offerNewCharacter(owner.orgId).pipe(
+      yield* splitCharacters(owner.orgId, chat).pipe(
         Effect.provide(services),
         Effect.catchCause((cause) =>
-          Effect.logWarning("Kin couldn't offer the new character", Cause.pretty(cause)),
+          Effect.logWarning(
+            "Kin couldn't separate Kin's part of the characters",
+            Cause.pretty(cause),
+          ),
         ),
       );
+
       yield* DevFakeMail.connectFakeAccounts(owner).pipe(Effect.provide(services));
       const hub = yield* KinChatHub;
       const scope = yield* Effect.scope;
+      // What pushes told of a task is withdrawn once it is done, dropped or handed on.
+      yield* KinPushDispatch.settleTasks(
+        owner.orgId,
+        (yield* KinRecords.KinRecords).changes(owner.orgId),
+      );
       const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
       // Receipt and statement cards' answers carry out their work here, in the tap's transaction.
       yield* chat.attachChoiceAnswers(
@@ -110,6 +137,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               Effect.logWarning("Kin couldn't show a card's sent-mail check", Cause.pretty(cause)),
             ),
           ),
+        (input) => dismissChoice(input).pipe(Effect.provide(services)),
       );
       yield* resumeInterruptedSends(owner.orgId, yield* Clock.currentTimeMillis).pipe(
         Effect.provide(services),
@@ -140,9 +168,11 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Layer.provideMerge(
             Layer.mergeAll(
               KinPush.layer,
+              KinHostCare.layer,
+              KinRefusedModels.layer,
               LevelControl.layer,
               MemoryChanges.layer,
-              KinImport.layer.pipe(Layer.provideMerge(KinRecords.layer)),
+              KinImport.layer,
               Render.layer.pipe(
                 Layer.provideMerge(Workspace.layer),
                 Layer.provide(
@@ -170,6 +200,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           // Kin's GitHub App: the identity agents' shells and Kin's own GitHub writes use.
           Layer.provideMerge(
             KinGitHubAppSetup.layer.pipe(
+              Layer.provideMerge(KinGitHubHook.layer.pipe(Layer.provide(ServerSecretStore.layer))),
               Layer.provideMerge(KinGitHubApp.layer),
               Layer.provide(KinGitHubApp.KinGitHubAppConfig.layer),
               Layer.provide(KinGitHubAppKey.layer.pipe(Layer.provide(ServerSecretStore.layer))),
@@ -203,12 +234,20 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
         ),
       ).pipe(
-        Layer.provideMerge(KinChat.layer),
+        Layer.merge(KinShell.layer),
+        Layer.merge(KinNumbers.layer),
+        Layer.provideMerge(KinChat.layerWithWork),
         // Social's posting service sits on top: it reads cards, chats and the document renderer.
         (core) =>
           DevFakeSocial.layer.pipe(
             Layer.provide(ConnectionSecrets.layer),
             Layer.provideMerge(core),
+          ),
+        // Pictures read the secret store, chats for the 80% notice, and the document store.
+        (withSocial) =>
+          DevFakeImages.layer.pipe(
+            Layer.provide(ConnectionSecrets.layer),
+            Layer.provideMerge(withSocial),
           ),
       ),
     ),

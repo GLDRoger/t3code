@@ -10,10 +10,9 @@ import {
 } from "@t3tools/contracts";
 import {
   KIN_AGENT_PAGE,
-  kinAgentWriteCharacterStarter,
+  kinAgentReadyCharacterLine,
 } from "@t3tools/client-runtime/kin/kinAgentPage";
 import {
-  kinDomainLabel,
   KIN_CHIEF_OF_STAFF,
   KIN_LEAD_CHARTER_MAX,
   KIN_LEAD_MODELS,
@@ -27,11 +26,12 @@ import {
   type KinLeadDraft,
   KIN_AGENTS_COPY,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { KIN_SET_UP } from "@t3tools/client-runtime/kin/kinSetUp";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useRef, useState, type ComponentProps, type ComponentRef, type ReactNode } from "react";
 import { TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -41,12 +41,11 @@ import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
-import { setComposerDraftText } from "../../state/use-composer-drafts";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient, refreshKinAgents } from "./state/kinClient";
+import { KinWorkFieldBox } from "./components/KinWorkPieces";
 import {
   KinAgentEffortAdvice,
   KinAgentEffortRow,
@@ -54,7 +53,6 @@ import {
   kinPickedModel,
   useKinAgentModelOptions,
 } from "./KinAgentModelRow";
-import { kinDraftKey } from "./components/KinComposer";
 
 export type KinLeadFormParams = {
   readonly environmentId: string;
@@ -75,7 +73,11 @@ const noDefaultsAtom: Atom.Atom<AsyncResult.AsyncResult<KinAgentDefaults, unknow
   AsyncResult.initial(),
 );
 
-/** Makes a lead, or changes one's name, area and what it is for. */
+/**
+ * Makes a lead from a name and what it is for, or changes one's name, area, what it is for and what
+ * teammates see. Its character, model and effort are set on the computer; the company's very first
+ * agent still picks its model here, as nothing else could.
+ */
 export function KinLeadFormScreen({ route }: StaticScreenProps<KinLeadFormParams>) {
   const navigation = useNavigation();
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
@@ -180,6 +182,9 @@ function LeadForm(props: {
     lead === null ? (props.suggested ?? NEW_LEAD) : kinLeadDraftOf(lead),
   );
   const [draft, setDraft] = useState(initial);
+  // A new company's first agent asks what it sells; the answer opens What we sell.
+  const [sells, setSells] = useState("");
+  const startWhatWeSell = useAtomCommand(kinClient.docStartWhatWeSell, { reportFailure: false });
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<{
     readonly field: keyof KinLeadDraft | null;
@@ -214,14 +219,12 @@ function LeadForm(props: {
     pickedModel ??
     defaults?.model ??
     (starting === null ? null : kinPickedModel(modelOptions, starting));
-  const [character, setCharacter] = useState("");
-  const [writeForMe, setWriteForMe] = useState(false);
-  const setCharacterBody = useAtomCommand(kinClient.characterSet, { reportFailure: false });
   const dirty =
     draft.name !== initial.name ||
     draft.area !== initial.area ||
     draft.charter !== initial.charter ||
-    draft.intro !== initial.intro;
+    draft.intro !== initial.intro ||
+    sells.trim() !== "";
 
   usePreventRemove(dirty || saving, ({ data }) => {
     if (saved.current) {
@@ -299,12 +302,6 @@ function LeadForm(props: {
         ...((firstAgent || pickedModel !== null) && model !== null ? { model } : undefined),
       },
     });
-    // The host gives every new agent a starter character; the owner's own replaces it.
-    if (AsyncResult.isSuccess(result) && character.trim() !== "")
-      await setCharacterBody({
-        environmentId,
-        input: { orgId, agentId: result.value.agentId, body: character.trim() },
-      });
     setSaving(false);
     if (!AsyncResult.isSuccess(result)) {
       const cause = AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null;
@@ -315,24 +312,21 @@ function LeadForm(props: {
       setProblem({ field: null, text: kinLeadSaveProblem(cause, true) });
       return;
     }
+    // Unsaved, the agent asks it itself in the first chat; the agent is made either way.
+    if (firstAgent && sells.trim() !== "")
+      await startWhatWeSell({
+        environmentId,
+        input: { orgId, sells: sells.trim().slice(0, KIN_SET_UP.max) },
+      });
     saved.current = true;
     refreshLeads();
     navigation.goBack();
-    const chief = AsyncResult.isSuccess(leads)
-      ? leads.value.leads.find(
-          (held) => held.domain === "chief-of-staff" && held.retired === undefined,
-        )
-      : undefined;
-    const chatId = writeForMe && chief !== undefined ? chief.ownerChatId : result.value.ownerChatId;
-    if (writeForMe && chief !== undefined)
-      setComposerDraftText(
-        kinDraftKey(environmentId, orgId, chatId),
-        kinAgentWriteCharacterStarter(name, kinDomainLabel(domain)),
-      );
-    navigation.navigate("KinChat", { environmentId, orgId, chatId });
+    navigation.navigate("KinChat", { environmentId, orgId, chatId: result.value.ownerChatId });
   };
 
   const left = KIN_LEAD_CHARTER_MAX - draft.charter.length;
+  const ready = creating ? kinAgentReadyCharacterLine(draft) : null;
+  const nameProblem = problem?.field === "name" || problem?.field === "area" ? problem.text : null;
   return (
     <FormFrame
       title={creating ? "New agent" : "Edit agent"}
@@ -345,6 +339,25 @@ function LeadForm(props: {
       }}
     >
       {problem?.field === null ? <ErrorBanner message={problem.text} /> : null}
+      {firstAgent ? (
+        <View className="gap-2">
+          <ListSection title={KIN_SET_UP.question}>
+            <TextInput
+              multiline
+              accessibilityLabel={KIN_SET_UP.question}
+              value={sells}
+              editable={allowed && !saving}
+              maxLength={KIN_SET_UP.max}
+              onChangeText={setSells}
+              placeholder={KIN_SET_UP.example}
+              placeholderTextColorClassName="accent-placeholder"
+              textAlignVertical="top"
+              className="min-h-20 px-4 py-3 font-sans text-base leading-normal text-foreground"
+            />
+          </ListSection>
+          <Note problem={null} hint={KIN_SET_UP.hint} />
+        </View>
+      ) : null}
       {allowed ? null : (
         <Text textRole="footnote" className="px-2 text-foreground-muted">
           {creating
@@ -363,20 +376,28 @@ function LeadForm(props: {
             autoCapitalize="words"
             onChange={(name) => set({ name })}
           />
-          <Field
-            label="Area"
-            value={draft.area}
-            maxLength={40}
-            editable={allowed && !saving}
-            autoCapitalize="sentences"
-            borderTop
-            onChange={(area) => set({ area })}
-          />
+          {creating ? null : (
+            <Field
+              label="Area"
+              value={draft.area}
+              maxLength={40}
+              editable={allowed && !saving}
+              autoCapitalize="sentences"
+              borderTop
+              onChange={(area) => set({ area })}
+            />
+          )}
         </ListSection>
-        <Note
-          problem={problem?.field === "name" || problem?.field === "area" ? problem.text : null}
-          hint="The area is what it looks after, such as growth or finance. Leave it blank to use the name."
-        />
+        {creating ? (
+          nameProblem === null && ready === null ? null : (
+            <Note problem={nameProblem} hint={ready ?? ""} />
+          )
+        ) : (
+          <Note
+            problem={nameProblem}
+            hint="The area is what it looks after, such as growth or finance. Leave it blank to use the name."
+          />
+        )}
       </View>
       <View className="gap-2">
         <ListSection title={KIN_AGENTS_COPY.charterLabel}>
@@ -401,7 +422,7 @@ function LeadForm(props: {
           }
         />
       </View>
-      {creating ? (
+      {firstAgent ? (
         <View className="gap-2">
           <ListSection title={KIN_LEAD_MODELS.title}>
             {model === null ? null : (
@@ -426,36 +447,7 @@ function LeadForm(props: {
           {model === null ? null : <KinAgentEffortAdvice value={model} options={modelOptions} />}
           <Note
             problem={model === null ? KIN_LEAD_MODELS.none : null}
-            hint={firstAgent ? KIN_LEAD_MODELS.hint : KIN_AGENT_PAGE.modelDetail}
-          />
-        </View>
-      ) : null}
-      {creating ? (
-        <View className="gap-2">
-          <ListSection title={KIN_AGENT_PAGE.characterField}>
-            <TextInput
-              multiline
-              accessibilityLabel={KIN_AGENT_PAGE.characterField}
-              value={character}
-              editable={allowed && !saving && !writeForMe}
-              onChangeText={setCharacter}
-              placeholder={KIN_AGENT_PAGE.characterPlaceholder}
-              placeholderTextColorClassName="accent-placeholder"
-              textAlignVertical="top"
-              className="min-h-24 px-4 py-3 font-sans text-base leading-normal text-foreground"
-            />
-            <View className="border-t border-border-subtle">
-              <ListToggleRow
-                label={KIN_AGENT_PAGE.writeForMe}
-                value={writeForMe}
-                disabled={character.trim() !== ""}
-                onValueChange={setWriteForMe}
-              />
-            </View>
-          </ListSection>
-          <Note
-            problem={null}
-            hint={writeForMe ? KIN_AGENT_PAGE.writeForMeDetail : KIN_AGENT_PAGE.characterRule}
+            hint={KIN_LEAD_MODELS.hint}
           />
         </View>
       ) : null}
@@ -468,7 +460,7 @@ function LeadForm(props: {
             editable={allowed && !saving}
             maxLength={KIN_LEAD_INTRO_MAX}
             onChangeText={(intro) => set({ intro })}
-            placeholder={KIN_AGENTS_COPY.charterExample}
+            placeholder={KIN_AGENT_PAGE.introPlaceholder}
             placeholderTextColorClassName="accent-placeholder"
             textAlignVertical="top"
             className="min-h-20 px-4 py-3 font-sans text-base leading-normal text-foreground"
@@ -509,14 +501,15 @@ function Field(props: {
   readonly borderTop?: boolean;
   readonly onChange: (value: string) => void;
 }) {
+  const input = useRef<ComponentRef<typeof TextInput>>(null);
   return (
-    <View
-      className={
-        props.borderTop ? "gap-2 border-t border-border-subtle px-4 py-3" : "gap-2 px-4 py-3"
-      }
+    <KinWorkFieldBox
+      label={props.label}
+      input={input}
+      className={props.borderTop ? "border-t border-border-subtle" : undefined}
     >
-      <Text className="text-sm text-foreground-muted">{props.label}</Text>
       <TextInput
+        ref={input}
         accessibilityLabel={props.label}
         value={props.value}
         editable={props.editable}
@@ -529,6 +522,6 @@ function Field(props: {
         placeholderTextColorClassName="accent-placeholder"
         className="min-h-8 font-sans text-base text-foreground"
       />
-    </View>
+    </KinWorkFieldBox>
   );
 }

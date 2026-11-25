@@ -1,4 +1,5 @@
 import type {
+  KinCash,
   KinChartSpec,
   KinListDefinition,
   KinListId,
@@ -7,6 +8,7 @@ import type {
   KinRecordKey,
 } from "@t3tools/contracts";
 
+import { kinBilledName } from "./kinBillTo.ts";
 import {
   KIN_LIST_DEFAULT_FILTER,
   KIN_MONEY_NOTHING,
@@ -75,7 +77,7 @@ export const KIN_MONEY = {
   createChief: "Create Chief of staff",
   askMessage: "Start tracking our expenses and invoices.",
   onlyOwner: {
-    title: "Not available",
+    title: "Money isn't open to you",
     detail: "Money is kept by whoever runs this Kin.",
   },
   /** A company made new records no money until its country is chosen (`countryNeeded`). */
@@ -88,7 +90,32 @@ export const KIN_MONEY = {
     detail: "An owner chooses the company's country first, so amounts, tax and dates read right.",
   },
   chooseCountry: "Open Company details",
+  /** Cash in the bank, as one line, before Kin has any statement or recorded money to show. */
+  noBank: "No bank statement yet",
 };
+
+/**
+ * Money's blocks, top to bottom: who owes us, then this month against last, ahead of what is
+ * suggested, the next 30 days and cash; the folded rows last.
+ */
+export const KIN_MONEY_BLOCKS = [
+  "owed",
+  "month",
+  "suggested",
+  "outlook",
+  "cash",
+  "folded",
+] as const;
+export type KinMoneyBlock = (typeof KIN_MONEY_BLOCKS)[number];
+
+/** True when Kin has nothing about the bank to show: Money draws it as `noBank`, one line. */
+export const kinCashEmpty = (cash: KinCash): boolean =>
+  !cash.known &&
+  cash.accounts.length === 0 &&
+  cash.byCurrency.length === 0 &&
+  cash.notOfRecord.length === 0 &&
+  (cash.alertAccounts ?? []).length === 0 &&
+  (cash.bankKnown?.through ?? null) === null;
 
 /** The lists the host's summary is built from. Everything else about a list is its definition. */
 const INVOICES = "invoices";
@@ -97,6 +124,10 @@ const EXPENSES = "expenses";
 /** The lists Money already opens from its own figures, which Work's Lists leaves out. */
 export const kinInMoney = (def: Pick<KinListDefinition, "list">): boolean =>
   def.list === INVOICES || def.list === EXPENSES || def.list === "quotes";
+
+/** Kin's own money lists keep their settings for the computer: the books are set up there. */
+export const kinListSettingsOnPhone = (def: Pick<KinListDefinition, "list" | "builtIn">) =>
+  !def.builtIn && ![INVOICES, EXPENSES, "receipts", "quotes"].includes(def.list);
 
 /** A list to open, already narrowed to the entries behind a figure. */
 export interface KinListOpen {
@@ -187,7 +218,8 @@ export function kinMoneyView(
   summary: KinMoneySummary,
   lists: ReadonlyArray<KinListDefinition>,
 ): KinMoneyView {
-  const has = (id: string) => lists.find((def) => def.list === id && def.archivedAt === null);
+  // An archived list's entries still count, so its figures still open it, marked archived.
+  const has = (id: string) => lists.find((def) => def.list === id);
   const invoices = has(INVOICES);
   const expenses = has(EXPENSES);
   const open = (
@@ -200,11 +232,11 @@ export function kinMoneyView(
         { list: def.list, filter: { ...KIN_LIST_DEFAULT_FILTER, kept: true, ...filter } };
   // Issued and not yet paid in full: the state the host counts as owed.
   const owing = { show: "waiting" as const };
-  // Paid expenses by their own date: what the host counts as spent.
-  const spentIn = (period: KinListFilter["period"], category?: string | null) =>
+  // Money out by the day it left the accounts: exactly what the host counts as spent.
+  const spentIn = (spent: KinListFilter["spent"], category?: string | null) =>
     open(expenses, {
       show: "done",
-      period,
+      spent,
       ...(category === undefined ? {} : category === null ? { noCategory: true } : { category }),
     });
   const receivedIn = (paid: KinListFilter["paid"]) => open(invoices, { paid });
@@ -234,7 +266,7 @@ export function kinMoneyView(
       rev: record.rev,
       title: record.title,
       amount: record.amount === undefined ? null : kinMoneyText(record.amount),
-      line: [record.key, listName, KIN_SUGGESTED, record.party?.title ?? null]
+      line: [record.key, listName, KIN_SUGGESTED, kinBilledName(record)]
         .filter((part) => part !== null)
         .join(" · "),
     })),
@@ -270,7 +302,8 @@ export function kinMoneyView(
     },
     clients: summary.owed.byClient.map((client) => ({
       key: client.party?.key ?? "none",
-      name: client.party?.title ?? KIN_MONEY.noClient,
+      // The no-client group names the typed names it holds, when the host sends them.
+      name: client.party?.title ?? client.billTo ?? KIN_MONEY.noClient,
       owed: lines(client.owed),
       overdue:
         client.oldestOverdueDays === null

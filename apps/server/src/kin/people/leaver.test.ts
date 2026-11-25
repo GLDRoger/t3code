@@ -6,6 +6,9 @@ import {
   AuthStandardClientScopes,
   KinAgentId,
   KinChatError,
+  KinChatId,
+  KinEventId,
+  KinMessageId,
   KinPersonId,
   KinWidgetId,
   KIN_LEFT_FIELD,
@@ -13,6 +16,7 @@ import {
   ThreadId,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -21,18 +25,29 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { SessionStore } from "../../auth/SessionStore.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinRefreshHub } from "../chat/KinRefreshHub.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
+import * as Retirement from "../lead/Retirement.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
 import type { Services } from "../KinServer.ts";
+import * as Shell from "../shell/KinShell.ts";
+import * as Watches from "../watches/readRpcs.ts";
 import * as Deals from "../work/deals.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as Clients from "../work/ownerClients.ts";
+import { partnersOwed } from "../work/partnersOwed.ts";
+import { presetList } from "../work/registers.ts";
+import { viewerOfPeople } from "../work/teamView.ts";
 import * as People from "./KinPeople.ts";
 
 // Invented: Rhea's Ambermill. Zoya sells and leaves; Arjun sells too; Meera is a co-owner; Dev
@@ -54,7 +69,7 @@ const zoyaId = KinPersonId.make("zoya");
 const arjunId = KinPersonId.make("arjun");
 const meeraId = KinPersonId.make("meera");
 const devId = KinPersonId.make("dev");
-const HELD = "1 open deal, 1 prospect, 1 client, 1 follow-up and 1 promise";
+const HELD = "1 open deal, 1 prospect, 1 client, 1 follow-up, 1 promise and 1 watch";
 
 const seed = Effect.fn("LeaverTest.seed")(function* (services: Context.Context<Services>) {
   const identity = Context.get(services, KinIdentity);
@@ -233,6 +248,23 @@ const holders = (ctx: Ctx) =>
   Effect.forEach(ctx.keys, (key) =>
     ctx.records.get(ctx.orgId, key).pipe(Effect.map((row) => row?.ownerId)),
   );
+const seedWatches = Effect.fn("LeaverTest.seedWatches")(function* (ctx: Ctx) {
+  yield* ctx.sql`INSERT INTO kin_watches (org_id, watch_id, kind, source, source_key, about,
+      closes_when, for_person_id, audience, why, set_by_kind, set_by_id, latest_by, next_look_at,
+      interval_ms, state, closed_at, closed_by_kind, closed_by_id, created_at, updated_at)
+    VALUES (${ctx.orgId}, 'open-watch', 'task_out', 'person', 'open-watch', 'a task',
+        'the task is done', ${zoyaId}, 'person', 'asked', 'person', ${zoyaId}, 72000000, 0,
+        60000, 'open', NULL, NULL, NULL, 0, 0),
+      (${ctx.orgId}, 'closed-watch', 'task_out', 'person', 'closed-watch', 'an old task',
+        'the task is done', ${zoyaId}, 'person', 'asked', 'person', ${zoyaId}, 36000000, 0,
+        60000, 'stopped', 0, 'person', ${zoyaId}, 0, 0)`;
+});
+const watch = (ctx: Ctx, watchId: string) =>
+  ctx.sql`SELECT * FROM kin_watches WHERE org_id = ${ctx.orgId} AND watch_id = ${watchId}`.pipe(
+    Effect.map((rows) => rows[0]!),
+  );
+const watchesFor = (ctx: Ctx, personId: KinPersonId) =>
+  Watches.list(ctx.orgId, { personId, viewer: viewerOfPeople([personId]) }, {});
 const bringBack = (ctx: Ctx, displayName: string, personId: KinPersonId) =>
   Effect.gen(function* () {
     const link = yield* ctx.people.createInvite(ownerSession, {
@@ -264,7 +296,58 @@ it.effect(
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: devId });
         assert.deepStrictEqual(yield* cards(ctx), []);
 
+        yield* seedWatches(ctx);
+        const openBefore = yield* watch(ctx, "open-watch");
+        const closedBefore = yield* watch(ctx, "closed-watch");
+        const zoyasChat = yield* ctx.chats.createDirect(ctx.person(zoyaId), {
+          orgId: ctx.orgId,
+          agentId: chief,
+        });
+        const care = yield* KinHostCare;
+        yield* ctx.sql`INSERT INTO kin_events
+            (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, not_before)
+          VALUES ('zoya-held', ${ctx.orgId}, ${chief}, 'chat.message', 'P1',
+            ${JSON.stringify({ chatId: zoyasChat.chatId })}, 0, 0, 'queued', 72000000),
+            ('zoya-spent', ${ctx.orgId}, ${chief}, 'chat.message', 'P1',
+              ${JSON.stringify({ chatId: zoyasChat.chatId })}, 0, 0, 'failed', 72000000),
+            ('zoya-finished-before-hold', ${ctx.orgId}, ${chief}, 'chat.message', 'P1',
+              ${JSON.stringify({ chatId: zoyasChat.chatId })}, 0, 0, 'failed', 72000000)`;
+        yield* care.failed({
+          orgId: ctx.orgId,
+          agentId: chief,
+          cause: "signin",
+          eventIds: [KinEventId.make("zoya-held"), KinEventId.make("zoya-spent")],
+        });
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: zoyaId });
+        yield* care.failed({
+          orgId: ctx.orgId,
+          agentId: chief,
+          cause: "signin",
+          eventIds: [KinEventId.make("zoya-finished-before-hold")],
+        });
+        assert.deepStrictEqual(yield* care.retry(ctx.orgId), { requeued: 0 });
+        const departingEvents = ctx.sql`SELECT state, not_before FROM kin_events
+          WHERE org_id = ${ctx.orgId} AND event_id IN ('zoya-held', 'zoya-spent', 'zoya-finished-before-hold') ORDER BY event_id`;
+        assert.deepStrictEqual(yield* departingEvents, [
+          { state: "expired", not_before: 72000000 },
+          { state: "expired", not_before: 72000000 },
+          { state: "expired", not_before: 72000000 },
+        ]);
+        assert.deepStrictEqual(yield* care.retry(ctx.orgId), { requeued: 0 });
+        const { held, troubles } = (yield* care.status(ctx.orgId)).agents;
+        assert.strictEqual(held, 0);
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT json_extract(state_json, '$.count') AS count,
+              json_extract(state_json, '$.stopped') AS stopped
+            FROM kin_widgets WHERE org_id = ${ctx.orgId} AND widget_id = ${troubles[0]!.widgetId}`,
+          [{ count: 0, stopped: null }],
+        );
+        yield* care.succeeded(ctx.orgId, chief);
+        assert.deepStrictEqual(yield* departingEvents, [
+          { state: "expired", not_before: 72000000 },
+          { state: "expired", not_before: 72000000 },
+          { state: "expired", not_before: 72000000 },
+        ]);
         // A retried removal asks nothing more.
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: zoyaId });
         const asked = yield* cards(ctx);
@@ -273,10 +356,6 @@ it.effect(
           [yield* chatOf(ctx, ctx.owner.personId), yield* chatOf(ctx, meeraId)].toSorted(),
         );
         for (const card of asked) {
-          assert.strictEqual(
-            card.question,
-            `Zoya left the team and looked after ${HELD}. Who takes them?`,
-          );
           // Shown only while nobody has chosen, on every copy.
           assert.strictEqual(
             card.whileOpen,
@@ -298,22 +377,62 @@ it.effect(
             "Failure",
         );
 
+        const followUp = (yield* ctx.records.get(ctx.orgId, ctx.keys[3]!))!;
+        const { row: proposal } = yield* ctx.records.create(
+          ctx.orgId,
+          { actor: { _tag: "agent", agentId: chief }, via: "lead" },
+          {
+            title: "Invented: prepare a Brightwater checklist",
+            originKey: "proposed-follow-up",
+            owner: { _tag: "person", personId: zoyaId },
+            partyId: followUp.partyId!,
+            confirmed: false,
+          },
+        );
+        const allMoved = HELD.replace("1 follow-up", "2 follow-ups");
+        const refresh = (yield* KinRefreshHub).changes(ctx.orgId).pipe(Stream.runHead);
+        const before = Option.getOrThrow(yield* refresh);
         yield* tap(ctx, meeraId, meeras, "Give them to Arjun");
+        assert.strictEqual(Option.getOrThrow(yield* refresh).watches, before.watches + 1);
+        assert.include(yield* ctx.records.get(ctx.orgId, proposal.key), {
+          ownerId: arjunId,
+          confirmed: 0,
+        });
+        assert.deepInclude(yield* watch(ctx, "open-watch"), {
+          for_person_id: arjunId,
+          set_by_id: openBefore.set_by_id,
+          latest_by: openBefore.latest_by,
+        });
+        assert.deepStrictEqual(yield* watch(ctx, "closed-watch"), closedBefore);
+        assert.deepStrictEqual(
+          (yield* watchesFor(ctx, arjunId)).watches.map((one) => one.watchId),
+          ["open-watch"],
+        );
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT message_id FROM kin_messages WHERE org_id = ${ctx.orgId}
+            AND chat_id = ${zoyasChat.chatId} ORDER BY seq`,
+          [],
+        );
         assert.deepStrictEqual(
           yield* holders(ctx),
           ctx.keys.map(() => arjunId),
         );
-        const after = "To move one on, change who looks after it on its page.";
+        for (const card of asked)
+          assert.strictEqual(
+            card.question,
+            `Zoya left the team and looked after ${HELD}. Who takes them?`,
+          );
+        const after = "To move a record on, change who looks after it on its page.";
         const settled = yield* cards(ctx);
         assert.deepStrictEqual(settled.find((card) => card.widgetId === meeras.widgetId)?.outcome, {
           title: "Given to Arjun",
-          text: `Arjun now looks after ${HELD} that Zoya looked after, and was told. ${after}`,
+          text: `Arjun now looks after ${allMoved} that Zoya looked after, and was told. ${after}`,
         });
         const closed = settled.find((card) => card.widgetId === rheas.widgetId)!;
         assert.isTrue(closed.closed);
         assert.deepStrictEqual(closed.outcome, {
           title: "Given to Arjun",
-          text: `Meera gave Arjun ${HELD} that Zoya looked after. ${after}`,
+          text: `Meera gave Arjun ${allMoved} that Zoya looked after. ${after}`,
         });
         // Answered once for all: Rhea's copy takes no tap.
         assert.isTrue(
@@ -330,7 +449,7 @@ it.effect(
           WHERE m.org_id = ${ctx.orgId} AND m.message_id LIKE 'kin-holder-%' ORDER BY m.seq`;
         assert.deepStrictEqual(
           told.map((row) => row.body),
-          [`Meera gave you what Zoya looked after: ${HELD}. Each one's Activity says so.`],
+          [`Meera gave you what Zoya looked after: ${HELD}. Each record's Activity says so.`],
         );
         const given = (yield* activity(ctx, ctx.deal))[0]!;
         assert.strictEqual(given.actor, meeraId);
@@ -343,6 +462,10 @@ it.effect(
           ctx.keys.map(() => arjunId),
         );
         assert.deepStrictEqual((yield* activity(ctx, ctx.deal))[0], given);
+        assert.deepStrictEqual(
+          (yield* watchesFor(ctx, zoyaId)).watches.map((one) => one.watchId),
+          ["closed-watch"],
+        );
       }),
     ),
 );
@@ -352,7 +475,16 @@ it.effect(
   () =>
     run((ctx) =>
       Effect.gen(function* () {
+        yield* seedWatches(ctx);
+        const openBefore = yield* watch(ctx, "open-watch");
+        const closedBefore = yield* watch(ctx, "closed-watch");
+        yield* ctx.sql`INSERT INTO kin_company_shell (org_id, rev, shell_json, set_by, set_at)
+          VALUES (${ctx.orgId}, 1, '[{"id":"docs","on":false}]', ${zoyaId}, 0)`;
+        const shellRow = ctx.sql`SELECT * FROM kin_company_shell WHERE org_id = ${ctx.orgId}`;
+        const shellBefore = yield* shellRow;
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: zoyaId });
+        assert.deepStrictEqual(yield* shellRow, shellBefore);
+        assert.isFalse(Shell.sectionOn(yield* Shell.get(ctx.orgId), "docs"));
         const [rheas, meeras] = yield* cards(ctx).pipe(
           Effect.map((all) => all.toSorted((a) => (a.chatId === ctx.ownerChat ? -1 : 1))),
         );
@@ -386,6 +518,7 @@ it.effect(
         );
 
         yield* tap(ctx, ctx.owner.personId, rheas!, "Leave them as they are");
+        assert.deepStrictEqual(yield* watch(ctx, "open-watch"), openBefore);
         const text = `${HELD} stay in Zoya's name. If Zoya comes back with a new link, they are Zoya's again.`;
         const settled = yield* cards(ctx);
         assert.deepStrictEqual(
@@ -409,6 +542,12 @@ it.effect(
           yield* holders(ctx),
           ctx.keys.map(() => zoyaId),
         );
+        assert.deepStrictEqual(
+          (yield* watchesFor(ctx, zoyaId)).watches.map((one) => one.watchId),
+          ["open-watch", "closed-watch"],
+        );
+        assert.deepStrictEqual(yield* watch(ctx, "closed-watch"), closedBefore);
+        assert.deepStrictEqual(yield* shellRow, shellBefore);
         for (const key of ctx.keys) {
           const [back, gone] = yield* activity(ctx, key);
           assert.deepStrictEqual(
@@ -435,4 +574,318 @@ it.effect(
         });
       }),
     ),
+);
+
+it.effect("what the company owes a partner who leaves stays owed to them, by name", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      yield* presetList(ctx.orgId, "expenses", 0);
+      yield* ctx.records.create(
+        ctx.orgId,
+        { actor: { _tag: "person", personId: ctx.owner.personId }, via: "owner" },
+        {
+          list: "expenses",
+          originKey: "invented-domain",
+          title: "Invented domain renewal",
+          owner: { _tag: "person", personId: ctx.owner.personId },
+          state: "done",
+          amount: { minor: 420_000, currency: "INR" },
+          dateAt: 0,
+          fields: { fundedBy: `person:${arjunId}` },
+        },
+      );
+      const owed = Effect.map(partnersOwed(ctx.orgId, "INR"), (partners) =>
+        partners.map((one) => [one.personId, one.name, one.owed]),
+      );
+      const before = yield* owed;
+      yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: arjunId });
+      assert.deepStrictEqual(before, [[arjunId, "Arjun", [{ minor: 420_000, currency: "INR" }]]]);
+      assert.deepStrictEqual(yield* owed, before);
+    }),
+  ),
+);
+
+it.effect(
+  "a leaver's reminders in a shared chat stay, saying they left; their routines there pause and the owner is told once",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const repo = Context.get(ctx.services, KinChatRepository);
+        const { sql, orgId } = ctx;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+          VALUES ('plans-room', ${orgId}, 'team_group', 'Plans', 0, ${at})`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, wakeup_id)
+          VALUES ('asked-in-room', ${orgId}, ${chief}, 'chat.message', 'P0',
+            ${JSON.stringify({ chatId: "plans-room" })}, 0, 0, 'done', NULL)`;
+        // Arjun asked the room for a reminder and a Monday routine.
+        const reminder = KinWidgetId.make(`deferral:${orgId}:def-room`);
+        const message = yield* repo.insertMessage({
+          orgId,
+          chatId: KinChatId.make("plans-room"),
+          audience: "chat",
+          messageId: KinMessageId.make(reminder),
+          author: { _tag: "system" },
+          kind: "system",
+          body: "Set for Friday.",
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          clientMessageId: null,
+          createdAt: at,
+          editedAt: null,
+        });
+        yield* repo.insertWidget({
+          orgId,
+          chatId: KinChatId.make("plans-room"),
+          messageId: message.messageId,
+          widgetId: reminder,
+          widgetClass: "native",
+          type: "deferral",
+          state: {
+            itemId: "def-room",
+            title: "Invented: send the report",
+            dueAt: "1970-01-03T10:00:00.000Z",
+            onDue: "remind",
+            text: "Set for Friday.",
+            askedBy: { personId: arjunId, name: "Arjun" },
+          },
+          source: null,
+          feed: null,
+          awaiting: [],
+          pinnedAt: null,
+          closedAt: null,
+          updatedAt: at,
+          audience: "chat",
+        });
+        yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
+            project_id, workspace_strategy_json, model_selection_json, runtime_mode,
+            interaction_mode, created_by, creation_source, created_at, updated_at,
+            last_run_status, run_count)
+          VALUES ('task-room', 'Invented: open tasks', 'Post what is open here.', 1, '{}', 'p',
+            '{}', '{}', 'approval-required', 'plan', 'system', 'server', ${at}, ${at}, 'never', 0)`;
+        yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+            source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+          VALUES ('task-room', ${orgId}, 'sch-room', ${chief}, 'plans-room', 'asked-in-room',
+            ${arjunId}, 'shared', 'hash', 'inbox', 0, 0)`;
+
+        yield* ctx.people.removeAccess(ownerSession, { orgId, personId: arjunId });
+        const card = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: reminder }));
+        assert.isNull(card.closedAt);
+        assert.deepInclude(card.state, {
+          askedBy: { personId: arjunId, name: "Arjun", left: true },
+        });
+        const [routine] = yield* sql<{ pending: number | null }>`SELECT pending_enabled AS pending
+          FROM kin_schedules WHERE task_id = 'task-room'`;
+        assert.equal(routine?.pending, 0);
+        const told = yield* sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+          FROM kin_messages WHERE org_id = ${orgId} AND body LIKE 'Arjun left%' ORDER BY seq`;
+        assert.deepStrictEqual(told, [
+          {
+            chatId: ctx.ownerChat,
+            body: 'Arjun left, so 1 routine they set up is paused: "Invented: open tasks" in Plans. Resume or delete each from its card.',
+          },
+        ]);
+      }),
+    ),
+);
+
+it.effect(
+  "picture counts and settings keep the leaver's and the retired agent's names: they are the company's billing and audit history",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const { sql, orgId } = ctx;
+        yield* sql`INSERT INTO kin_picture_settings (org_id, monthly_limit, updated_at, updated_by)
+          VALUES (${orgId}, 50, 1, ${zoyaId})`;
+        yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, person_id,
+            count, state, at)
+          VALUES (${orgId}, 'pic-zoya', '1970-01', ${chief}, ${zoyaId}, 2, 'made', 1)`;
+        const kept = Effect.all([
+          sql`SELECT agent_id, person_id, count FROM kin_picture_counts WHERE org_id = ${orgId}`,
+          sql`SELECT updated_by FROM kin_picture_settings WHERE org_id = ${orgId}`,
+        ]);
+        const before = yield* kept;
+        yield* ctx.people.removeAccess(ownerSession, { orgId, personId: zoyaId });
+        yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId} AND agent_id = ${chief}`;
+        yield* Retirement.retire({ orgId, agentId: chief, retiredAt: at, now: 1 }, ctx.chats);
+        assert.deepStrictEqual(yield* kept, before);
+        assert.deepStrictEqual(before, [
+          [{ agent_id: chief, person_id: zoyaId, count: 2 }],
+          [{ updated_by: zoyaId }],
+        ]);
+      }),
+    ),
+);
+
+it.effect(
+  "a bill keeps who added it after they leave; its retired reader's queued read ends, the bill stays to be read",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const { sql, orgId } = ctx;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, wakeup_id)
+          VALUES ('bills-zoya', ${orgId}, ${chief}, 'bills.read', 'P3',
+            ${JSON.stringify({ chatId: "zoya-chief", batchId: "b-1", bills: ["a".repeat(64)] })},
+            0, 0, 'queued', NULL)`;
+        yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
+            name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
+            widget_id, added_by_person_id, added_at, state, event_id, reads)
+          VALUES (${orgId}, ${"a".repeat(64)}, 'kin-chat-bill', 'zoya-chief', 'bills:b-1',
+            'IMG_0001.png', 'image', 'image/png', 8, 'b-1', 0, ${chief}, 'zoya-chief', 'bills:b-1',
+            ${zoyaId}, 0, 'reading', 'bills-zoya', 1)`;
+        yield* sql`INSERT INTO kin_bill_requests (org_id, person_id, kind, request_id, input_hash,
+            result_json, created_at) VALUES (${orgId}, ${zoyaId}, 'add', 'add-1', 'h', '{}', 0)`;
+        yield* ctx.people.removeAccess(ownerSession, { orgId, personId: zoyaId });
+        yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId} AND agent_id = ${chief}`;
+        yield* Retirement.retire({ orgId, agentId: chief, retiredAt: at, now: 1 }, ctx.chats);
+        // Who added it is the bill's history; its read waits for the sweep to give it to the
+        // company's reader now (`bills.ts` `queueWaiting`, tested in `bills.test.ts`).
+        assert.deepStrictEqual(
+          yield* sql`SELECT b.added_by_person_id AS "addedBy", b.agent_id AS "agentId", b.state,
+              e.state AS "eventState", q.person_id AS asked
+            FROM kin_bill_reads b JOIN kin_events e ON e.event_id = b.event_id
+              JOIN kin_bill_requests q ON q.org_id = b.org_id WHERE b.org_id = ${orgId}`,
+          [
+            {
+              addedBy: zoyaId,
+              agentId: chief,
+              state: "reading",
+              eventState: "expired",
+              asked: zoyaId,
+            },
+          ],
+        );
+      }),
+    ),
+);
+
+// Every column that holds a person or an agent, as last reviewed. A new one fails here until
+// someone decides what removing the person (`KinPeople.removeAccess`) and retiring the agent
+// (`lead/Retirement.ts`) do to it, tests that, and lists it.
+const HOLDS_SOMEONE: Record<string, string> = {
+  kin_agent_threads: "agent_id",
+  kin_agents: "agent_id owner_person_id retired_by_person_id",
+  kin_arrivals: "agent_id",
+  kin_bank_statements: "agent_id applied_by",
+  // Who added a bill stays its record; a retired reader's bills go to the next reader (`bills.ts`).
+  kin_bill_reads: "added_by_person_id agent_id",
+  kin_bill_requests: "person_id",
+  kin_chat_levels: "agent_id",
+  kin_chat_members: "agent_id member_id person_id",
+  kin_chats: "lead_agent_id",
+  kin_client_touches: "logged_by_id person_id",
+  kin_company_profile: "updated_by_id",
+  kin_company_shell: "set_by",
+  kin_connection_asks: "agent_id decided_by",
+  kin_connection_calls: "agent_id",
+  // A person's own mailbox: removing them removes it and stales its asks (`KinPeople.test.ts`).
+  kin_connections: "person_id",
+  kin_discussions: "ask_agent_id decider_agent_id opened_by_agent_id",
+  kin_doc_jobs: "agent_id answered_author_id asked_by_person_id",
+  kin_doc_versions: "actor_id answered_author_id",
+  kin_events: "agent_id held_by",
+  kin_floor_grants: "agent_id",
+  kin_floor_notices: "agent_id",
+  kin_floor_runs: "opened_by",
+  kin_github_handled: "agent_id",
+  kin_handoffs: "from_agent_id to_agent_id",
+  kin_held_posts: "agent_id person_id",
+  kin_holds: "for_person_id lifted_by_id set_by_id",
+  kin_import_runs: "person_id",
+  kin_issued_numbers: "issued_by_id",
+  kin_lead_access: "agent_id granted_by person_id",
+  kin_lead_deliveries: "agent_id",
+  kin_leads: "agent_id created_by_person_id",
+  kin_list_proposals: "agent_id",
+  kin_memory_shared_writes: "person_id",
+  kin_messages: "author_agent_id author_member_id author_owner_person_id author_person_id sent_by",
+  kin_money_budgets: "set_by_id",
+  kin_org_state: "paused_by",
+  kin_pending_actions: "requested_by_agent_id",
+  kin_people: "person_id",
+  kin_people_invites: "made_by_person_id person_id sees_by_person_id",
+  // Kept in the leaver's and the retired agent's names: billing and audit history.
+  kin_number_values: "agent_id person_id",
+  kin_picture_counts: "agent_id person_id",
+  kin_picture_settings: "updated_by",
+  kin_ping_deliveries: "person",
+  kin_ping_items: "person",
+  kin_ping_ledger: "person",
+  kin_pr_review_posts: "agent_id",
+  // Whose own mailbox a turn read: a mark that keeps that turn's writes in their chat.
+  kin_private_turns: "person_id",
+  kin_profile_changes: "agent_id",
+  kin_pull_requests: "author",
+  kin_pulse_facts: "handled_by_id",
+  kin_pulse_nudges: "agent_id person_id",
+  kin_pulse_told: "person_id",
+  kin_push_devices: "person_id",
+  kin_push_rings: "person_id",
+  // Their devices go with their access, so nothing is withdrawn to them; the rows age out in 7 days.
+  kin_push_sent: "person_id",
+  kin_questions: "agent_id for_person_id person_id",
+  kin_reach_limits: "lifted_by_person_id one_id other_id set_by_person_id",
+  kin_reactions: "member_id",
+  kin_read_state: "member_id",
+  kin_receipt_proposals: "agent_id",
+  kin_recipe_defaults: "set_by_person_id",
+  kin_recipe_labels: "cleared_by_person_id",
+  kin_recommendations: "decided_by",
+  kin_record_changes: "actor_id asked_by_person_id",
+  kin_record_comments: "asked_by_person_id author_id removed_by_id",
+  kin_record_cursors: "agent_id",
+  kin_record_payments: "created_by_id",
+  kin_records:
+    "asked_by_person_id assigned_by_agent_id assigned_by_person_id created_by_id handed_back_id marked_by_person_id notes_by owner_id title_by waiting_on_id",
+  kin_retirement_holds: "agent_id",
+  kin_schedules: "agent_id said_by",
+  kin_session_bindings: "person_id",
+  kin_shadow_entries: "agent_id",
+  kin_social_posts: "agent_id confirmed_by",
+  kin_tasks_keys: "person_id",
+  kin_team_agents: "agent_id set_by",
+  kin_team_memory: "set_by",
+  kin_team_seqs: "person_id",
+  kin_trouble_agents: "agent_id",
+  kin_turn_figures: "agent_id",
+  kin_visual_hosts: "added_by",
+  kin_waiting: "person_id",
+  kin_wakeups: "agent_id",
+  kin_watches: "agent_id closed_by_id for_person_id latest_by set_by_id",
+  kin_worker_attempts: "agent_id approved_by declined_by",
+  kin_worker_network: "changed_by",
+  kin_workers: "agent_id",
+};
+const holdsSomeone = (column: string, columns: ReadonlyArray<string>) =>
+  /(?:^|_)(?:person|agent|member|author|actor|holder|asker|decider|principal)(?:_id)?$|_by(?:_person_id|_agent_id|_id)?$/.test(
+    column,
+  ) ||
+  (column.endsWith("_id") && columns.includes(column.replace(/_id$/, "_kind")));
+
+it.effect("lists every column that holds a person or an agent, so leaving covers new ones", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const tables = yield* sql<{ name: string }>`SELECT name FROM sqlite_master
+      WHERE type = 'table' AND substr(name, 1, 4) = 'kin_' ORDER BY name`;
+    const found: Record<string, string> = {};
+    for (const { name } of tables) {
+      const columns = (yield* sql<{ name: string }>`SELECT name FROM pragma_table_info(${name})
+        ORDER BY name`).map((one) => one.name);
+      const held = columns.filter((column) => holdsSomeone(column, columns));
+      if (held.length > 0) found[name] = held.join(" ");
+    }
+    assert.deepStrictEqual(found, HOLDS_SOMEONE);
+  }).pipe(
+    Effect.provide(
+      KinPersistence.layer.pipe(
+        Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
+      ),
+    ),
+  ),
 );

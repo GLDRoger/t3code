@@ -1,5 +1,13 @@
 import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
-import { KinChatError, type KinWidget, type KinWidgetsActInput } from "@t3tools/contracts";
+import {
+  KIN_ASKER_ONLY_REFUSAL,
+  KinChatError,
+  KinDeferralCard,
+  kinAgentPausedRefusal,
+  type KinWidget,
+  type KinWidgetsActInput,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -8,7 +16,6 @@ import {
   KIN_SENT_CARD_TEXT,
   KIN_STALE_CARD_TEXT,
   KIN_UNDO_TOO_LATE_TEXT,
-  KIN_START_NOW_REFUSALS,
   createKinCardActions,
   kinActionFailureNotice,
   kinDeferralActInput,
@@ -17,11 +24,14 @@ import {
   kinCardStatusAfter,
   kinDeferralCardView,
   kinDeferralCountdown,
-  kinStartNowRefusalNotice,
   visibleKinCardStatus,
   type KinDeferralActionId,
   kinDeferralIsBookkeeping,
 } from "./kinDeferralPresentation.ts";
+
+// The card as a phone build from before `actions` decodes it.
+const { actions: _actions, ...olderFields } = KinDeferralCard.fields;
+const decodeOlderCard = Schema.decodeUnknownSync(Schema.Struct(olderFields));
 
 const DUE = "2026-11-13T09:00:00.000Z";
 const deferral = (state: Record<string, unknown> = {}, overrides: Record<string, unknown> = {}) =>
@@ -50,12 +60,13 @@ const deferral = (state: Record<string, unknown> = {}, overrides: Record<string,
     ...overrides,
   }) as unknown as KinWidget;
 
-const view = (w: KinWidget) => {
-  const result = kinDeferralCardView(w, "UTC");
+const view = (w: KinWidget, ownerLevel?: boolean) => {
+  const result = kinDeferralCardView(w, "UTC", ownerLevel);
   if (result === null) throw new Error("expected a deferral card");
   return result;
 };
-const actionIds = (w: KinWidget) => view(w).actions.map((action) => action.id);
+const actionIds = (w: KinWidget, ownerLevel?: boolean) =>
+  view(w, ownerLevel).actions.map((action) => action.id);
 
 describe("kinDeferralCardView", () => {
   it("draws the confirmed card and its closed state", () => {
@@ -63,15 +74,21 @@ describe("kinDeferralCardView", () => {
     expect(confirmed.phase).toBe("confirmed");
     expect(confirmed.title).toBe("Rate limiting");
     // The host's own "Deferred to …" text repeats the local line, so it is dropped.
-    expect(confirmed.lines).toEqual(["Set for Fri, Nov 13, 9:00 AM. I'll start then."]);
+    expect(confirmed.lines).toEqual([
+      "Set for Fri, Nov 13, 9:00 AM. I'll ask you to start it then.",
+    ]);
     expect(confirmed.eyebrow).toBe("Scheduled");
     expect(view(deferral({ onDue: "remind" })).eyebrow).toBe("Reminder");
     expect(confirmed.countdown).toEqual({ to: Date.parse(DUE), kind: "due" });
     expect(view(deferral({ onDue: "remind", text: "" })).lines).toEqual([
       "Set for Fri, Nov 13, 9:00 AM. I'll remind you then.",
     ]);
+    expect(
+      view(deferral({ onDue: "remind", text: "", askedBy: { personId: "dev", name: "Dev" } }))
+        .lines,
+    ).toEqual(["Set for Fri, Nov 13, 9:00 AM. I'll remind this chat then.", "Asked by Dev."]);
     expect(view(deferral({ text: "Waiting on the API review." })).lines).toEqual([
-      "Set for Fri, Nov 13, 9:00 AM. I'll start then.",
+      "Set for Fri, Nov 13, 9:00 AM. I'll ask you to start it then.",
       "Waiting on the API review.",
     ]);
 
@@ -82,14 +99,36 @@ describe("kinDeferralCardView", () => {
     expect(view(deferral({ phase: "heads_up" }, { closedAt: DUE })).actions).toEqual([]);
   });
 
-  // The taps `KinChatService.act` accepts today; the rest mirror `actionsFor` in deferrals.ts.
+  const DECIDE = ["start_now", "monday", "cancel"];
   it.each([
-    ["confirm", {}, ["undo"]],
-    ["heads_up", { phase: "heads_up" }, ["start_now", "monday", "cancel"]],
-    ["asked", { phase: "asked" }, ["start_now", "monday", "cancel"]],
-    ["started", { phase: "started" }, []],
-  ])("offers the host's actions on a %s card", (_name, state, ids) => {
-    expect(actionIds(deferral(state))).toEqual(ids);
+    ["an older host's confirm", {}, undefined, ["undo"]],
+    ["an older host's heads_up", { phase: "heads_up" }, undefined, []],
+    ["an older host's asked", { phase: "asked" }, undefined, []],
+    ["confirm", { actions: ["undo"] }, undefined, ["undo"]],
+    ["confirm, to a teammate", { actions: ["undo"] }, false, ["undo"]],
+    ["heads_up", { phase: "heads_up", actions: DECIDE }, undefined, DECIDE],
+    ["asked", { phase: "asked", actions: DECIDE }, true, DECIDE],
+    [
+      "asked that can't start",
+      { phase: "asked", actions: ["monday", "cancel"] },
+      true,
+      ["monday", "cancel"],
+    ],
+    ["asked, to a teammate", { phase: "asked", actions: DECIDE }, false, []],
+    [
+      "asked, with a tap this build doesn't know",
+      { phase: "asked", actions: ["later", "cancel"] },
+      true,
+      ["cancel"],
+    ],
+    ["started", { phase: "started", actions: [] }, undefined, []],
+  ])("offers the host's actions on %s card", (_name, state, ownerLevel, ids) => {
+    expect(actionIds(deferral(state), ownerLevel)).toEqual(ids);
+  });
+
+  it("an older build's card schema still reads a card that lists its actions", () => {
+    const state = deferral({ phase: "asked", actions: DECIDE }).state;
+    expect(decodeOlderCard(state)).not.toHaveProperty("actions");
   });
 
   const GRACE = "2026-11-13T09:30:00.000Z";
@@ -127,7 +166,13 @@ describe("kinDeferralCardView", () => {
       ["Due at Fri, Nov 13, 9:00 AM. Start it, move it to Monday, or cancel it?"],
       null,
     ],
-    ["started", { phase: "started", text: "" }, ["Started."], null],
+    ["started", { phase: "started", text: "" }, ["Asked your agent to start it."], null],
+    [
+      "started says who was asked, as the host wrote it",
+      { phase: "started", text: "Asked Lead to start it.", agent: "Lead" },
+      ["Asked Lead to start it."],
+      null,
+    ],
   ])("%s", (_name, state, lines, countdown) => {
     const card = view(deferral(state));
     expect(card.lines).toEqual(lines);
@@ -140,13 +185,16 @@ describe("kinDeferralCardView", () => {
     expect(asked.eyebrow).toBe("Needs your decision");
     expect(asked.accessibilityLabel).toBe("Scheduled: Rate limiting. Due at 9:00. Start it?");
     expect(view(deferral({ text: "Waiting on lane A…" })).accessibilityLabel).toBe(
-      "Scheduled: Rate limiting. Set for Fri, Nov 13, 9:00 AM. I'll start then. Waiting on lane A…",
+      "Scheduled: Rate limiting. Set for Fri, Nov 13, 9:00 AM. I'll ask you to start it then. Waiting on lane A…",
     );
   });
 
   it("treats Kin's own note as bookkeeping, but not a card that needs a decision", () => {
     expect(kinDeferralIsBookkeeping(deferral({ onDue: "remind" }))).toBe(true);
     expect(kinDeferralIsBookkeeping(deferral({ phase: "started" }))).toBe(true);
+    expect(kinDeferralIsBookkeeping(deferral({ phase: "started", actions: [] }))).toBe(true);
+    expect(kinDeferralIsBookkeeping(deferral({ actions: ["undo"] }))).toBe(false);
+    expect(kinDeferralIsBookkeeping(deferral({ actions: ["undo"] }, { closedAt: DUE }))).toBe(true);
     expect(kinDeferralIsBookkeeping(deferral({ phase: "asked" }))).toBe(false);
     expect(kinDeferralIsBookkeeping(deferral({ phase: "heads_up" }))).toBe(false);
     expect(kinDeferralIsBookkeeping(deferral({ phase: "asked" }, { closedAt: DUE }))).toBe(true);
@@ -235,10 +283,13 @@ describe("createKinCardActions", () => {
     return { posted, act };
   };
   const ok = () => Promise.resolve({ ok: true } as const);
-  const refused = (reason: "widget_changed" | "not_allowed" | "invalid_state") =>
+  const refused = (
+    reason: "widget_changed" | "not_allowed" | "invalid_state",
+    message = "Refused.",
+  ) =>
     Promise.resolve({
       ok: false,
-      cause: new KinChatError({ reason, message: "Refused." }),
+      cause: new KinChatError({ reason, message }),
     } as const);
   const dropped = () => Promise.reject(new Error("socket hang up ECONNRESET"));
 
@@ -319,11 +370,12 @@ describe("createKinCardActions", () => {
     expect(posted.map((input) => input.clientActionId)).toEqual(["client-1", "client-2"]);
   });
 
-  it("says the card changed when the host reports a stale revision", async () => {
+  it("says the card changed when the host reports a stale revision, and marks it behind", async () => {
     const { act } = setup(() => refused("widget_changed"));
     expect(await act(view(deferral()), "remind")).toEqual({
       status: "failed",
       notice: { kind: "stale", text: KIN_STALE_CARD_TEXT },
+      behind: true,
     });
     const late = setup(() => refused("invalid_state"));
     expect(await late.act(view(deferral()), "undo")).toEqual({
@@ -340,6 +392,12 @@ describe("createKinCardActions", () => {
         kind: "error",
         text: "Kin didn't take that answer. Tell your agent in the chat instead.",
       },
+    });
+    // A shared chat's own, tapped by someone who didn't ask: the host's words, as they are.
+    const notAsker = setup(() => refused("not_allowed", KIN_ASKER_ONLY_REFUSAL));
+    expect(await notAsker.act(view(deferral()), "undo")).toEqual({
+      status: "failed",
+      notice: { kind: "error", text: KIN_ASKER_ONLY_REFUSAL },
     });
     const lost = setup(dropped);
     expect(await lost.act(view(deferral()), "remind")).toEqual({
@@ -367,35 +425,41 @@ describe("kinCardStatusAfter", () => {
     expect(kinCardStatusAfter({ status: "failed", notice }, "remind", 3).holding).toBe(false);
   });
 
-  it.each<KinDeferralActionId>(["start_now", "monday", "cancel"])(
-    "holds the card after %s until the host rewrites it",
-    (actionId) => {
-      expect(kinCardStatusAfter({ status: "sent" }, actionId, 3)).toEqual({
-        revision: 3,
-        notice: { kind: "sent", text: KIN_SENT_CARD_TEXT },
-        holding: true,
-      });
-    },
-  );
+  // Kin finishes these itself: no agent will update the card. A start's turn may still wait.
+  it.each<[KinDeferralActionId, string | null, string]>([
+    ["start_now", "Lead", "Asked Lead to start it."],
+    ["start_now", null, "Asked your agent to start it."],
+    ["monday", null, "Moved to Monday."],
+    ["cancel", null, "Cancelled."],
+  ])("holds the card after %s (%s) until the host rewrites it", (actionId, agent, text) => {
+    expect(kinCardStatusAfter({ status: "sent" }, actionId, 3, agent)).toEqual({
+      revision: 3,
+      notice: { kind: "sent", text },
+      holding: true,
+    });
+  });
 
-  it.each(Object.keys(KIN_START_NOW_REFUSALS) as Array<keyof typeof KIN_START_NOW_REFUSALS>)(
-    "says why Start now was refused: %s",
-    (reason) => {
-      const notice = kinStartNowRefusalNotice(reason);
-      expect(notice.kind).toBe("error");
-      expect(notice.text).not.toMatch(/_|L2|worker/);
-    },
-  );
-
-  it("hides a notice once the card moves to a new revision", () => {
+  // Another screen moved the card before this tap's refusal came back: the person still hears it.
+  it("keeps a refusal past a new revision, and hides what was sent once the card moves", () => {
     const status = kinCardStatusAfter(
       { status: "failed", notice: { kind: "stale", text: KIN_STALE_CARD_TEXT } },
       "remind",
       3,
     );
     expect(visibleKinCardStatus(status, 3)).toBe(status);
-    expect(visibleKinCardStatus(status, 4)).toBeNull();
+    expect(visibleKinCardStatus(status, 4)).toBe(status);
     const held = kinCardStatusAfter({ status: "sent" }, "remind", 3);
     expect(visibleKinCardStatus(held, 4)).toBeNull();
+  });
+
+  it("says a paused agent's refusal in its own words", () => {
+    const cause = new KinChatError({
+      reason: "invalid_state",
+      message: kinAgentPausedRefusal("Lead"),
+    });
+    expect(kinActionFailureNotice(cause).text).toBe("Lead is paused. Resume it, then start this.");
+    expect(
+      kinActionFailureNotice(new KinChatError({ reason: "invalid_state", message: "Nope." })).text,
+    ).toBe("This card can't take that answer any more.");
   });
 });

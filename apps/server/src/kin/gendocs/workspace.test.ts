@@ -367,4 +367,59 @@ it.layer(layer)("KinWorkspace", (it) => {
       );
     }),
   );
+
+  it.effect(
+    "replaces a starter recipe whose template alone is older, or that an undo put back, never an edited one",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const older = KinOrgId.make("org-older-template");
+        const personId = KinPersonId.make("owner-1");
+        const root = yield* (yield* Workspace.KinWorkspace).root(older);
+        const template = (name: string) => `${root}/recipes/${name}/template.typ`;
+        // An earlier Kin's starter: the same RECIPE.md, an older template.
+        for (const name of ["invoice", "quotation", "receipt"])
+          yield* fs.writeFileString(template(name), "// An older starter.\n");
+        yield* git(root, "add", "--all");
+        yield* git(root, "commit", "-qm", "Kin's starter recipes, rendered by Kin");
+        // The owner edits the quotation; the receipt is edited and then undone back to the starter.
+        const edit = (name: string) =>
+          Effect.gen(function* () {
+            yield* fs.writeFileString(template(name), "// The owner's own.\n");
+            yield* git(root, "commit", "-qam", `Edit ${name}`, "-m", `Kin-Person: ${personId}`);
+          });
+        yield* edit("quotation");
+        yield* edit("receipt");
+        const restart = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          effect.pipe(Effect.provide(Layer.fresh(Workspace.layer)));
+        yield* restart(
+          Effect.gen(function* () {
+            const workspace = yield* Workspace.KinWorkspace;
+            yield* workspace.root(older);
+            const undone = yield* workspace.undoRecipe(
+              older,
+              "receipt",
+              { _tag: "owner", personId },
+              () => Effect.undefined,
+            );
+            assert.strictEqual(undone._tag, "undone");
+          }),
+        );
+        yield* restart(
+          Effect.flatMap(Workspace.KinWorkspace, (workspace) => workspace.root(older)),
+        );
+        assert.deepStrictEqual(
+          [
+            yield* fs.readFileString(template("invoice")),
+            yield* fs.readFileString(template("quotation")),
+            yield* fs.readFileString(template("receipt")),
+          ],
+          [
+            STARTER_FILES["recipes/invoice/template.typ"],
+            "// The owner's own.\n",
+            STARTER_FILES["recipes/receipt/template.typ"],
+          ],
+        );
+      }),
+  );
 });

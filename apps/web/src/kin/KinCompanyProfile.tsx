@@ -1,71 +1,76 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_COMPANY,
+  KIN_COMPANY_SETTINGS,
   kinCompanyCountrySuggestion,
   kinCompanyEditSections,
+  kinCompanyDraftEdit,
   kinCompanyDraftOf,
+  kinCountryName,
   kinDeviceRegion,
-  kinCompanyEmpty,
   kinCompanyInput,
   kinCompanyRead,
   type KinCompanyDraft,
   type KinCompanyFieldId,
 } from "@t3tools/client-runtime/kin/kinCompanyProfile";
-import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_OFFLINE_PAGE, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_SETTINGS_COPY } from "@t3tools/client-runtime/kin/kinSettingsSpread";
+import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { KinCompanyProfile } from "@t3tools/contracts";
-import { DownloadIcon, LockIcon, PencilIcon } from "lucide-react";
 import { useId, useState } from "react";
 
-import { Alert, AlertDescription } from "../components/ui/alert";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import { Button } from "../components/ui/button";
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyTitle,
-} from "../components/ui/empty";
+import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
-import { Label } from "../components/ui/label";
-import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
 import { useAtomCommand } from "../state/use-atom-command";
 import { readPreparedConnection } from "../state/session";
-import { KinBrandSection, KinSettingsHeading } from "./KinBrand";
+import { KinBrandSection } from "./KinBrand";
 import { KinTemplatesSection } from "./KinTemplates";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { kinClient } from "./kinClient";
-import { kinHostConnected, useKinHost } from "./useKinHost";
+import { KinSettingsField, KinSettingsFormDialog } from "./settings/KinSettingsControls";
+import {
+  KinSettingsEmpty,
+  KinSettingsFacts,
+  KinSettingsLoadFailed,
+  KinSettingsLoading,
+  KinSettingsRow,
+  KinSettingsSection,
+} from "./settings/KinSettingsLayout";
+import { KinGateFailed } from "./KinWorkParts";
+import { kinHostConnected, useKinGate, useKinHost } from "./useKinHost";
 import { useKinCompanyProfile, useKinCountryNeeded } from "./useKinMoney";
 import type { KinWorkTarget } from "./useKinWork";
-import { KinGateFailed, KinLoadFailed } from "./KinWorkParts";
-import { useKinGate } from "./useKinHost";
-import { KIN_OFFLINE_PAGE } from "@t3tools/client-runtime/kin/kinAnswers";
 
-function Notice(props: {
-  readonly title: string;
-  readonly detail: string;
-  readonly action?: React.ReactNode;
-}) {
-  return (
-    <Empty size="compact">
-      <EmptyHeader>
-        <EmptyTitle>{props.title}</EmptyTitle>
-        <EmptyDescription>{props.detail}</EmptyDescription>
-      </EmptyHeader>
-      {props.action === undefined ? null : <EmptyContent>{props.action}</EmptyContent>}
-    </Empty>
-  );
-}
-
-/** The company's legal, tax and bank details, for whoever runs this Kin and nobody else. */
+/**
+ * The company's legal, tax and bank details, its brand, templates and data, as sections of
+ * Settings → Company details, for whoever runs this Kin and nobody else.
+ */
 export function KinCompanyProfileSettings() {
   const target = kinNewLeadTarget(useKinHost());
-  if (target === null) return <Notice {...KIN_COMPANY.noKin} />;
+  if (target === null) return <Notice>{KIN_COMPANY.noKin.detail}</Notice>;
   return <Permitted environmentId={target.environmentId} orgId={target.orgId} />;
+}
+
+function Notice(props: { readonly children: string; readonly onRetry?: () => void }) {
+  const searchableSetting = useSearchableSetting();
+  return (
+    <KinSettingsSection
+      title={KIN_COMPANY_SETTINGS.company}
+      searchId={searchableSetting("company-details").id}
+    >
+      {props.onRetry === undefined ? (
+        <KinSettingsEmpty>{props.children}</KinSettingsEmpty>
+      ) : (
+        <KinSettingsLoadFailed onRetry={props.onRetry}>{props.children}</KinSettingsLoadFailed>
+      )}
+    </KinSettingsSection>
+  );
 }
 
 function Permitted(props: KinWorkTarget) {
@@ -74,27 +79,35 @@ function Permitted(props: KinWorkTarget) {
     props.environmentId,
   );
   const { state, refresh } = useKinCompanyProfile(props, gate === null);
-  if (gate === "refused" || state._tag === "refused") return <Notice {...KIN_COMPANY.onlyOwner} />;
-  if (gate === "offline") return <Notice {...KIN_OFFLINE_PAGE} />;
-  if (gate === "failed") return <KinGateFailed />;
+  const searchableSetting = useSearchableSetting();
+  if (gate === "refused" || state._tag === "refused")
+    return <Notice>{KIN_COMPANY.onlyOwner.detail}</Notice>;
+  if (gate === "offline") return <Notice>{KIN_OFFLINE_PAGE.detail}</Notice>;
+  if (gate === "failed")
+    return (
+      <KinSettingsSection
+        title={KIN_COMPANY_SETTINGS.company}
+        searchId={searchableSetting("company-details").id}
+      >
+        <KinGateFailed className="px-4 py-3" />
+      </KinSettingsSection>
+    );
   if (state._tag === "loading") {
     return (
-      <div className="flex flex-col gap-2 p-4" role="status" aria-label={KIN_COMPANY.loading}>
-        <Skeleton className="h-4 w-2/5" />
-        <Skeleton className="h-3.5 w-3/5" />
-        <Skeleton className="h-3.5 w-1/2" />
-      </div>
+      <KinSettingsSection
+        title={KIN_COMPANY_SETTINGS.company}
+        searchId={searchableSetting("company-details").id}
+      >
+        <KinSettingsLoading rows={4} />
+      </KinSettingsSection>
     );
   }
   if (state._tag !== "ready") {
-    return (
-      <KinLoadFailed
-        what={KIN_COMPANY.loadFailed}
-        cause={state._tag === "failed" ? state.cause : null}
-        onRetry={refresh}
-        className="p-4"
-      />
-    );
+    const text =
+      state._tag === "failed"
+        ? kinFailureText(state.cause, `${KIN_COMPANY.loadFailed}.`)
+        : `${KIN_COMPANY.loadFailed}.`;
+    return <Notice onRetry={refresh}>{text}</Notice>;
   }
   return <Profile {...props} profile={state.value} onRefresh={refresh} />;
 }
@@ -104,24 +117,87 @@ function Profile(
 ) {
   const { environmentId, orgId, profile } = props;
   const canEdit = useAtomValue(kinClient.companyProfileSet.permissionAtom(environmentId));
+  const searchableSetting = useSearchableSetting();
+  const [editing, setEditing] = useState(false);
+  const [company, tax, bank] = kinCompanyRead(profile);
+  const facts = (section: typeof company) =>
+    (section?.rows ?? []).map((row) => ({
+      label: row.label,
+      value: row.missing ? (
+        <span className="text-muted-foreground">{row.value}</span>
+      ) : row.id === "country" ? (
+        kinCountryName(row.value)
+      ) : (
+        row.value
+      ),
+    }));
+  const companyFacts = [...facts(company), ...facts(tax)];
+  // No way to be paid at all reads as one "Bank account" fact, not a Not set per field.
+  const bankFacts = (bank?.rows ?? []).every((row) => row.missing) ? [] : facts(bank);
+  return (
+    <>
+      <KinSettingsSection
+        title={KIN_COMPANY_SETTINGS.company}
+        description={KIN_COMPANY_SETTINGS.companyDetail}
+        searchId={searchableSetting("company-details").id}
+        action={
+          canEdit ? (
+            <Button size="xs" variant="outline" onClick={() => setEditing(true)}>
+              {KIN_SETTINGS_COPY.edit}
+            </Button>
+          ) : undefined
+        }
+      >
+        <KinSettingsFacts
+          facts={[
+            ...(companyFacts.length === 0
+              ? [{ label: KIN_COMPANY_SETTINGS.legalName, value: KIN_COMPANY_SETTINGS.notSet }]
+              : companyFacts),
+            ...(bankFacts.length === 0
+              ? [
+                  {
+                    label: KIN_COMPANY_SETTINGS.bank,
+                    value: KIN_COMPANY_SETTINGS.notSet,
+                    attention: KIN_COMPANY_SETTINGS.bankNeeded,
+                  },
+                ]
+              : bankFacts),
+          ]}
+        />
+      </KinSettingsSection>
+      <KinBrandSection {...props} profile={profile} onRefresh={props.onRefresh} />
+      <KinTemplatesSection environmentId={environmentId} orgId={orgId} />
+      {editing ? <ProfileDialog {...props} onClose={() => setEditing(false)} /> : null}
+    </>
+  );
+}
+
+/** Every detail in one form, in the order an invoice needs them. */
+function ProfileDialog(
+  props: KinWorkTarget & {
+    readonly profile: KinCompanyProfile;
+    readonly onRefresh: () => void;
+    readonly onClose: () => void;
+  },
+) {
+  const { environmentId, orgId, profile } = props;
   const set = useAtomCommand(kinClient.companyProfileSet, { reportFailure: false });
-  const [draft, setDraft] = useState<KinCompanyDraft | null>(null);
+  const waiting = useKinCountryNeeded(props);
+  const region = kinDeviceRegion();
+  const [opened] = useState<KinCompanyDraft>(() => kinCompanyDraftOf(profile, region, waiting));
+  const [draft, setDraft] = useState(opened);
   const [problems, setProblems] = useState<Readonly<Partial<Record<KinCompanyFieldId, string>>>>(
     {},
   );
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const waiting = useKinCountryNeeded(props);
-  const region = kinDeviceRegion();
-  const formId = useId();
-  const save = async (typed: KinCompanyDraft) => {
-    const checked = kinCompanyInput(orgId, profile, typed);
+  const save = async () => {
+    const checked = kinCompanyInput(orgId, profile, draft);
     setProblem(null);
     if (!checked.ok) return setProblems(checked.problems);
     setProblems({});
     const { input } = checked;
-    if (input === null) return setDraft(null);
+    if (input === null) return props.onClose();
     setSaving(true);
     const outcome = await kinListSend({
       online: () => kinHostConnected(environmentId),
@@ -130,182 +206,137 @@ function Profile(
     setSaving(false);
     props.onRefresh();
     if (!outcome.ok) return setProblem(outcome.changed ? KIN_COMPANY.changed : outcome.problem);
-    setDraft(null);
-    setSaved(true);
+    props.onClose();
   };
-  const lock = (
-    <p className="flex items-start gap-2 text-xs text-muted-foreground">
-      <LockIcon aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-      {KIN_COMPANY.private}
-    </p>
-  );
-  if (draft === null) {
-    const sections = kinCompanyRead(profile).filter((section) => section.rows.length > 0);
-    return (
-      <div className="flex flex-col gap-5 px-3 sm:px-4">
-        <div className="flex items-start gap-4">
-          <div className="min-w-0 flex-1">{lock}</div>
-          {canEdit ? (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setSaved(false);
-                setDraft(kinCompanyDraftOf(profile, region, waiting));
-              }}
-            >
-              <PencilIcon />
-              {KIN_COMPANY.edit}
-            </Button>
-          ) : null}
-        </div>
-        {saved ? (
-          <p role="status" className="text-xs text-muted-foreground">
-            {KIN_COMPANY.saved}
-          </p>
-        ) : null}
-        {kinCompanyEmpty(profile) ? (
-          <p className="text-sm text-muted-foreground">{KIN_COMPANY.empty}</p>
-        ) : (
-          sections.map((section) => (
-            <section key={section.title} className="flex flex-col gap-2">
-              <h3 className="text-xs font-medium text-muted-foreground">{section.title}</h3>
-              <dl className="grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-6 gap-y-1.5 text-sm">
-                {section.rows.map((row) => (
-                  <div key={row.id} className="contents">
-                    <dt className="text-muted-foreground">{row.label}</dt>
-                    <dd className="min-w-0 whitespace-pre-wrap break-words text-foreground">
-                      {row.value}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </section>
-          ))
-        )}
-        <KinBrandSection {...props} profile={profile} onRefresh={props.onRefresh} />
-        <KinTemplatesSection environmentId={environmentId} orgId={orgId} />
-        <KinExportSection environmentId={environmentId} orgId={orgId} />
-      </div>
-    );
-  }
+  const suggestion = kinCompanyCountrySuggestion(draft, region, waiting);
+  const typedCountry = draft.country.trim().toUpperCase();
   return (
-    <form
-      className="flex flex-col gap-6 px-3 sm:px-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void save(draft);
-      }}
+    <KinSettingsFormDialog
+      title={KIN_COMPANY_SETTINGS.editTitle}
+      description={KIN_COMPANY_SETTINGS.companyDetail}
+      submitLabel={KIN_COMPANY_SETTINGS.save}
+      busy={saving}
+      problem={problem}
+      typed={kinFormTyped(opened, draft)}
+      onSubmit={() => void save()}
+      onClose={props.onClose}
     >
-      {lock}
       {kinCompanyEditSections(profile, draft).map((section) => (
         <fieldset key={section.title} className="flex flex-col gap-3">
           <legend className="pb-2 text-xs font-medium text-muted-foreground">
             {section.title}
           </legend>
           {section.fields.map((field) => {
-            const id = `${formId}-${field.id}`;
-            const shared = {
-              id,
-              value: draft[field.id],
-              placeholder: field.placeholder,
-              disabled: saving,
-              "aria-invalid": problems[field.id] !== undefined,
-              "aria-describedby": problems[field.id] === undefined ? undefined : `${id}-problem`,
-            };
+            if (field.choice)
+              return (
+                <KinCompanyChoice
+                  key={field.id}
+                  label={field.label}
+                  checked={draft[field.id] !== ""}
+                  disabled={saving}
+                  onChange={(checked) => setDraft(kinCompanyDraftEdit(draft, field.id, checked))}
+                />
+              );
+            const fieldProblem = problems[field.id];
+            const help =
+              fieldProblem === undefined ? (
+                field.id === "country" ? (
+                  /^[A-Z]{2}$/.test(typedCountry) ? (
+                    kinCountryName(typedCountry)
+                  ) : (
+                    KIN_COMPANY_SETTINGS.countryHelp
+                  )
+                ) : undefined
+              ) : (
+                <span className="text-destructive-foreground">{fieldProblem}</span>
+              );
             return (
-              <div key={field.id} className="flex flex-col gap-1.5">
-                <Label htmlFor={id}>{field.label}</Label>
-                {field.multiline ? (
-                  <Textarea
-                    {...shared}
-                    rows={3}
-                    onChange={(event) => setDraft({ ...draft, [field.id]: event.target.value })}
-                  />
-                ) : (
-                  <Input
-                    {...shared}
-                    type={field.day ? "date" : undefined}
-                    autoComplete="off"
-                    spellCheck={false}
-                    autoCapitalize={field.code ? "characters" : undefined}
-                    onChange={(event) => setDraft({ ...draft, [field.id]: event.target.value })}
-                  />
-                )}
-                {field.id === "country" ? (
-                  <CountrySuggestion
-                    offer={kinCompanyCountrySuggestion(draft, region, waiting)}
-                    disabled={saving}
-                    onAccept={setDraft}
-                  />
-                ) : null}
-                {problems[field.id] === undefined ? null : (
-                  <p id={`${id}-problem`} className="text-xs text-destructive-foreground">
-                    {problems[field.id]}
-                  </p>
-                )}
-              </div>
+              <KinSettingsField key={field.id} label={field.label} help={help}>
+                {(ids) => {
+                  const shared = {
+                    id: ids.control,
+                    value: draft[field.id],
+                    placeholder: field.placeholder,
+                    disabled: saving || (field.id === "gstin" && draft.notRegistered !== ""),
+                    "aria-invalid": fieldProblem !== undefined,
+                  };
+                  return (
+                    <>
+                      {field.multiline ? (
+                        <Textarea
+                          {...shared}
+                          rows={3}
+                          onChange={(event) =>
+                            setDraft(kinCompanyDraftEdit(draft, field.id, event.target.value))
+                          }
+                        />
+                      ) : (
+                        <Input
+                          {...shared}
+                          type={field.day ? "date" : undefined}
+                          autoComplete="off"
+                          spellCheck={false}
+                          autoCapitalize={field.code ? "characters" : undefined}
+                          onChange={(event) =>
+                            setDraft(kinCompanyDraftEdit(draft, field.id, event.target.value))
+                          }
+                        />
+                      )}
+                      {field.id === "country" && suggestion !== null ? (
+                        <div>
+                          <Button
+                            type="button"
+                            size="xs"
+                            variant="outline"
+                            disabled={saving}
+                            onClick={() => setDraft(suggestion.accept())}
+                          >
+                            {suggestion.label}
+                          </Button>
+                        </div>
+                      ) : null}
+                    </>
+                  );
+                }}
+              </KinSettingsField>
             );
           })}
         </fieldset>
       ))}
-      {problem === null ? null : (
-        <Alert variant="error">
-          <AlertDescription>{problem}</AlertDescription>
-        </Alert>
-      )}
-      <div className="flex justify-end gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          disabled={saving}
-          onClick={() => {
-            setProblems({});
-            setProblem(null);
-            setDraft(null);
-          }}
-        >
-          {KIN_COMPANY.cancel}
-        </Button>
-        <Button type="submit" disabled={saving} aria-busy={saving}>
-          {KIN_COMPANY.save}
-        </Button>
-      </div>
-    </form>
+    </KinSettingsFormDialog>
   );
 }
 
-/** This device's country, offered to a new company still waiting on its own; a tap takes it. */
-function CountrySuggestion(props: {
-  readonly offer: ReturnType<typeof kinCompanyCountrySuggestion>;
+function KinCompanyChoice(props: {
+  readonly label: string;
+  readonly checked: boolean;
   readonly disabled: boolean;
-  readonly onAccept: (draft: KinCompanyDraft) => void;
+  readonly onChange: (checked: boolean) => void;
 }) {
-  const { offer } = props;
-  if (offer === null) return null;
+  const id = useId();
   return (
-    <div>
-      <Button
-        type="button"
-        size="xs"
-        variant="outline"
+    <div className="flex items-center gap-2">
+      <Checkbox
+        id={id}
+        checked={props.checked}
         disabled={props.disabled}
-        onClick={() => props.onAccept(offer.accept())}
-      >
-        {offer.label}
-      </Button>
+        onCheckedChange={(checked) => props.onChange(checked === true)}
+      />
+      <label htmlFor={id} className="cursor-pointer text-sm text-foreground">
+        {props.label}
+      </label>
     </div>
   );
 }
 
 /** Download everything: the owner's alone. The zip streams over HTTP straight to disk. */
-function KinExportSection(props: KinWorkTarget) {
+export function KinCompanyExportSection(props: KinWorkTarget) {
   const { environmentId, orgId } = props;
   const allowed = useAtomValue(kinClient.exportLink.permissionAtom(environmentId));
   const link = useAtomCommand(kinClient.exportLink, { reportFailure: false });
+  const [open, setOpen] = useState(false);
   const [state, setState] = useState<"idle" | "preparing" | "started">("idle");
   const [problem, setProblem] = useState<string | null>(null);
-  const headingId = useId();
   if (!allowed) return null;
   const download = async () => {
     setState("preparing");
@@ -325,37 +356,35 @@ function KinExportSection(props: KinWorkTarget) {
     anchor.rel = "noreferrer";
     anchor.click();
     setState("started");
+    setOpen(false);
   };
   return (
-    <section
-      className="flex flex-col gap-3 border-t border-border pt-5"
-      aria-labelledby={headingId}
-    >
-      <div className="flex flex-col items-start gap-2 sm:flex-row sm:gap-4">
-        <div id={headingId} className="min-w-0 flex-1">
-          <KinSettingsHeading title={KIN_COMPANY.export.title} detail={KIN_COMPANY.export.detail} />
-        </div>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={state === "preparing"}
-          aria-busy={state === "preparing"}
-          onClick={() => void download()}
+    <KinSettingsSection title={KIN_COMPANY.export.title}>
+      <KinSettingsRow
+        title={KIN_COMPANY_SETTINGS.exportRow}
+        wrap
+        detail={
+          state === "started" ? KIN_COMPANY.export.started : KIN_COMPANY_SETTINGS.exportDetail
+        }
+        onOpen={() => {
+          setProblem(null);
+          setOpen(true);
+        }}
+      />
+      {open ? (
+        <KinSettingsFormDialog
+          title={KIN_COMPANY_SETTINGS.exportRow}
+          description={KIN_COMPANY.export.detail}
+          submitLabel={KIN_COMPANY_SETTINGS.exportSubmit}
+          busy={false}
+          notReady={state === "preparing" ? KIN_COMPANY.export.preparing : null}
+          problem={problem}
+          onSubmit={() => void download()}
+          onClose={() => setOpen(false)}
         >
-          <DownloadIcon />
-          {state === "preparing" ? KIN_COMPANY.export.preparing : KIN_COMPANY.export.action}
-        </Button>
-      </div>
-      <p className="text-xs text-muted-foreground">{KIN_COMPANY.export.leaves}</p>
-      {state === "started" ? (
-        <p role="status" className="text-xs text-muted-foreground">
-          {KIN_COMPANY.export.started}
-        </p>
-      ) : problem !== null ? (
-        <p role="alert" className="text-xs text-destructive-foreground">
-          {problem}
-        </p>
+          <p className="text-pretty text-xs text-muted-foreground">{KIN_COMPANY.export.leaves}</p>
+        </KinSettingsFormDialog>
       ) : null}
-    </section>
+    </KinSettingsSection>
   );
 }

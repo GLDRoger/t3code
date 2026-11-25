@@ -185,7 +185,11 @@ it.effect("stops at its size, its time and anything that isn't a page, with a pl
   const site = web({
     "https://corran.example/declared": { headers: { "content-length": String(2 * 1024 * 1024) } },
     "https://corran.example/streamed": { body: big },
-    "https://corran.example/long": { body: `<p>${"word ".repeat(10_000)}</p>` },
+    // Its menu sits past the text's cut, as a long homepage's often does.
+    "https://corran.example/long": {
+      body: `<p>${"word ".repeat(10_000)}</p><nav><a href="/pricing">Pricing</a></nav>
+        <div hidden><a href="/hidden">Hidden</a></div><footer><a href="/contact">Contact</a></footer>`,
+    },
     "https://corran.example/slow": "hang",
     "https://corran.example/file.zip": { headers: { "content-type": "application/zip" } },
     "https://corran.example/gone": { status: 410 },
@@ -198,6 +202,11 @@ it.effect("stops at its size, its time and anything that isn't a page, with a pl
     const long = yield* read("https://corran.example/long");
     assert.isTrue(long.cut);
     assert.strictEqual(long.text.length, PAGE_TEXT_CHARS);
+    // The cut is the text's; links are kept from the whole page, still none it hides.
+    assert.deepStrictEqual(long.links, [
+      "https://corran.example/pricing",
+      "https://corran.example/contact",
+    ]);
     const slow = yield* Effect.forkChild(refusedWith("https://corran.example/slow"));
     yield* TestClock.adjust("21 seconds");
     assert.strictEqual(yield* Fiber.join(slow), pageTooSlow(20));

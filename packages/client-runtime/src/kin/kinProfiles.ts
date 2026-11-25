@@ -20,11 +20,17 @@ export { KIN_PROFILE_NAME_MAX, KIN_PROFILE_SKILLS_MAX, KIN_PROFILE_TALK_MAX };
 
 export const KIN_PROFILE_COPY = {
   runsWorkspace: "Runs this workspace",
-  skillsExample: "SwiftUI, App Store releases",
+  skillsExample: "For example: SwiftUI, App Store releases",
   title: "Profile",
   mine: "Your profile",
   edit: "Edit profile",
+  /** Settings → Profile's one sentence. */
+  purpose: "How your teammates and agents see you, and when Kin can reach you.",
+  editOf: (what: string) => `Edit ${what.toLowerCase()}`,
+  saveProfile: "Save profile",
+  pictureLabel: "Picture",
   save: "Save",
+  saveUsername: "Save username",
   saving: "Saving…",
   failed: "Couldn't save.",
   loadFailed: "Couldn't load this profile.",
@@ -48,10 +54,18 @@ export const KIN_PROFILE_COPY = {
   noHours: "Not set",
   noSkills: "Nothing yet",
   noTags: "No roles yet",
+  /** Web's profile rows: one word for every empty value. */
+  rowEmpty: "Not set",
   pictureAdd: "Add picture",
   pictureChange: "Change picture",
   pictureRemove: "Remove picture",
   pictureFailed: "The picture didn't upload. Try a smaller image.",
+  pictureSaved: "Picture saved.",
+  pictureRemoved: "Picture removed.",
+  aboutYou: "About you",
+  yourTasks: "Your tasks",
+  moreAboutYou: "More about you",
+  moreAboutThem: "More about them",
 } as const;
 
 export const KIN_GITHUB_LOGIN = {
@@ -62,7 +76,13 @@ export const KIN_GITHUB_LOGIN = {
   set: "Add GitHub username…",
   change: "Change",
   remove: "Remove",
+  removeTitle: "Remove the GitHub username?",
+  removeDetail: (mine: boolean) =>
+    mine
+      ? "Kin stops finding your pull requests until you add it again."
+      : "Kin stops finding their pull requests until it's added again.",
   save: "Save",
+  saveUsername: "Save username",
   saving: "Saving…",
   invalid:
     "That isn't a GitHub username. It is 1 to 39 letters, digits and single hyphens, and doesn't start or end with a hyphen.",
@@ -202,6 +222,26 @@ export function kinQuietLine(profile: KinPersonProfile, holding: KinProfileHoldi
     .filter((part) => part !== null)
     .join(" · ");
 }
+
+/** Settings › Notifications: the quiet hours that apply to someone, and the one switch for them. */
+export const KIN_QUIET_NOTIFICATIONS = {
+  title: "Quiet hours",
+  arrive: "Notifications in them arrive quietly: no sound, and they wait in your notifications.",
+  answers: "Replies to what I asked still ring",
+  answersDetail:
+    "When you asked during these quiet hours or in the three hours before. Off, quiet hours keep everything quiet.",
+  failed: "Couldn't save that.",
+} as const;
+
+/** "The company's quiet hours, 22:00 to 07:00", or "Your own quiet hours, …" when they set some. */
+export function kinQuietSource(profile: KinPersonProfile, holding: KinProfileHolding): string {
+  const { quiet } = kinProfileHolding(profile, holding);
+  const whose = profile.quietHours === undefined ? "The company's" : "Your own";
+  return `${whose} quiet hours, ${quiet.from} to ${quiet.to}`;
+}
+
+/** Whether a reply to what they asked rings in their quiet hours: on unless they turned it off. */
+export const kinAnswersRing = (profile: KinPersonProfile) => profile.answersRing ?? true;
 
 /** Where the platform can't list its zones (Hermes), the ones most teams are in. */
 const COMMON_TIME_ZONES = [

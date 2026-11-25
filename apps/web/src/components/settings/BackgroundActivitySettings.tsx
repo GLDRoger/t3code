@@ -33,6 +33,7 @@ import {
   PROVIDER_HEALTH_INTERVAL_STEP_SECONDS,
   resolveBackgroundActivityProfileOption,
 } from "./SettingsPanels.logic";
+import { kinSettingHidden } from "~/kin/kinNoCode";
 import { IntervalSecondsField } from "./IntervalSecondsField";
 import { PolicyTooltip, SettingResetButton, SettingsRow } from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
@@ -176,7 +177,10 @@ function BackgroundActivityAdvancedDialog({
               </Select>
             </div>
 
-            <div className="flex flex-col gap-3 border-b px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div
+              hidden={kinSettingHidden("git-fetch-interval")}
+              className="flex flex-col gap-3 border-b px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+            >
               <div className="min-w-0 space-y-1">
                 <div className="text-sm font-medium">
                   {searchableSetting("git-fetch-interval").title}

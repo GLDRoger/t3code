@@ -7,7 +7,9 @@ import {
   KIN_DOCS,
   KIN_SEARCH,
   kinDocDiffSummary,
+  kinDocSameWords,
   kinSearchHint,
+  kinSearchPlaceholder,
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -21,14 +23,13 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { SearchField } from "../../components/ui/SearchField";
 import { useNowMinuteMs } from "../../lib/clock";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { PatchDiffView } from "../review/PatchDiffView";
-import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
+import { KinWorkFrame, KinWorkLoading, KinWorkToggleRow } from "./components/KinWorkPieces";
 import { useKinOpenHit } from "./state/kinWorkLink";
 import { KinDocChangesView } from "./KinDocChangesView";
 import { KinSearchHits } from "./KinDocsList";
@@ -36,6 +37,7 @@ import { kinDocVersionParam, useKinDocRestore } from "./KinDocScreen";
 import { kinClient } from "./state/kinClient";
 import { useKinDoc, useKinDocHistory, useKinSearch } from "./state/useKinDocs";
 import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import { useKinShell } from "./state/useKinShell";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -158,7 +160,7 @@ function KinDocChanges(
         <Notice tone="danger" message={restore.problem} onDismiss={restore.dismiss} />
       )}
       {diff.patch.trim() === "" ? (
-        <EmptyState variant="plain" {...KIN_DOCS.noChanges} />
+        <EmptyState variant="plain" {...kinDocSameWords(diff)} />
       ) : !source && fromVersion !== null && before.state._tag === "loading" ? (
         <KinWorkLoading label="Loading changes" />
       ) : !source && before.state._tag === "ready" ? (
@@ -362,6 +364,8 @@ function KinSearch(props: KinWorkTarget) {
   const navigation = useNavigation();
   const { state, search } = useKinSearch(props, null);
   const scope = useKinViewerScope(props.environmentId);
+  const shell = useKinShell(props.environmentId);
+  const placeholder = kinSearchPlaceholder(shell);
   const input = useRef<TextInputInstance>(null);
   const open = useKinOpenHit(props);
   return (
@@ -369,22 +373,22 @@ function KinSearch(props: KinWorkTarget) {
       <View className="flex-row">
         <SearchField
           inputRef={input}
-          accessibilityLabel={KIN_SEARCH.placeholder}
+          accessibilityLabel={placeholder}
           clearAccessibilityLabel="Clear search"
-          placeholder={KIN_SEARCH.placeholder}
+          placeholder={placeholder}
           value={state.text}
           onChangeText={search.setText}
         />
       </View>
       <ListSection>
-        <ListToggleRow
+        <KinWorkToggleRow
           label={KIN_SEARCH.includeClosed}
           value={state.closed}
           onValueChange={search.setClosed}
         />
       </ListSection>
       {state.text.trim() === "" ? (
-        <EmptyState variant="plain" {...kinSearchHint(scope)} />
+        <EmptyState variant="plain" {...kinSearchHint(scope, shell)} />
       ) : (
         <View className="-mx-4">
           <KinSearchHits state={state} scope={scope} onRetry={search.retry} onOpen={open} />

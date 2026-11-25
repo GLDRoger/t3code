@@ -1,11 +1,14 @@
 import { assert, it } from "@effect/vitest";
 import {
+  type KinChatError,
+  MemoryItemHead,
   AuthKinTasksScope,
   type AuthSessionId,
   EnvironmentAuthenticatedAuth,
   EnvironmentHttpApi,
   KIN_RECORD_COMMENTS_PAGE,
   type KinPersonId,
+  type KinWorkPrincipal,
   type KinTasksKeysIssueInput,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -19,6 +22,7 @@ import { HttpEffect, HttpRouter, HttpServerRequest, type HttpServerResponse } fr
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Queue from "effect/Queue";
@@ -38,12 +42,48 @@ import * as ServerConfig from "../../config.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as People from "../people/KinPeople.ts";
+import * as Deals from "../work/deals.ts";
+import * as Clients from "../work/ownerClients.ts";
 import * as Records from "../work/KinRecords.ts";
+import { dealLink } from "../work/promises.ts";
 import * as Work from "../work/ownerWork.ts";
 import { TasksKeyAudience } from "./audience.ts";
-import { commentMine, getMine, listMine, setStateMine } from "./tasks.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
+import * as MemoryChanges from "../memory/MemoryChanges.ts";
+import { authorise, fingerprint } from "../memory/sensitivity.ts";
+import * as Docs from "../work/docs.ts";
+import { defineList, presetDefinition, proposalFor } from "../work/registers.ts";
+import { lists, money, updateList } from "../work/ownerMoney.ts";
+import { MATERIAL } from "../you/projection.ts";
+import {
+  findDocs,
+  listClients,
+  listProjects,
+  moneySummary,
+  openClient,
+  openProject,
+  readDoc,
+  searchMemory,
+  unknownKey,
+} from "./reads.ts";
+import * as Acts from "./acts.ts";
+import { listPeople } from "./people.ts";
+import {
+  commentMine,
+  createProject,
+  createTask,
+  getMine,
+  listMine,
+  listSeenBy,
+  setStateMine,
+  updateProject,
+  updateTask,
+} from "./tasks.ts";
 import { admitted, layer, layerAt, team } from "./tasksKey.testkit.ts";
 import * as TasksKeys from "./TasksKeys.ts";
+import { KIN_GITHUB_HOOK_ROUTE } from "../github/appHook.ts";
+import * as KinGitHubHookHttp from "../github/hookHttp.ts";
+import { KinServer } from "../KinServer.ts";
 
 const reason = <A, E extends { readonly reason?: string }, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
@@ -124,7 +164,7 @@ it.effect("a person makes keys only for themself, three at most, even two at onc
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a key reaches only tasks its person holds, narrowly and as them, even the owner's", () =>
+it.effect("a key reaches the tasks its person's screen shows, and changes them as them", () =>
   Effect.gen(function* () {
     const { orgId, rhea, zoya, arjun } = yield* team;
     const records = yield* Records.KinRecords;
@@ -182,46 +222,37 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       dueDay: "Tue 1 Dec 2026",
       project: "Invented: launch",
     };
-    assert.deepStrictEqual(yield* listMine(zoyaKey), { tasks: [task], more: false });
-    // No money, no client, nobody else's: the narrow view and nothing more.
+    assert.deepStrictEqual(yield* listMine(zoyaKey), {
+      tasks: [task],
+      more: false,
+      material: MATERIAL,
+    });
+    // No money and no client on a task: what her Tasks screen shows of it.
     assert.deepStrictEqual(yield* getMine(zoyaKey, hers.key), {
       ...task,
+      checklist: [],
       brief: "Invented brief: two rooms",
+      material: MATERIAL,
       comments: [],
     });
-    for (const other of [shared, given, owners])
-      assert.strictEqual(yield* reason(getMine(zoyaKey, other.key)), "not_found");
-    // The owner's key is as narrow: only what Rhea holds.
+    // What her app shows her, her key reads: one shared with the team and one she gave away,
+    // never the owner's own.
+    assert.strictEqual((yield* getMine(zoyaKey, shared.key)).holder, "Arjun");
+    assert.strictEqual((yield* getMine(zoyaKey, given.key)).holder, "Arjun");
+    assert.strictEqual(yield* reason(getMine(zoyaKey, owners.key)), "not_found");
+    // `list_my_tasks` stays what the person holds or is on, the owner's too.
     assert.deepStrictEqual(
       (yield* listMine(rheaKey)).tasks.map((one) => one.key),
       [owners.key],
     );
-    assert.strictEqual(yield* reason(getMine(rheaKey, hers.key)), "not_found");
+    // The owner's key reads and comments on Zoya's task, as the owner's app does.
+    assert.strictEqual((yield* getMine(rheaKey, hers.key)).holder, "Zoya");
+    // A task only its holder changes stays Arjun's: refused as her screen is.
     assert.strictEqual(
-      yield* reason(setStateMine(rheaKey, { key: hers.key, state: "done" })),
-      "not_found",
+      yield* reason(setStateMine(zoyaKey, { key: shared.key, state: "done" })),
+      "not_allowed",
     );
-    // Zoya gave it, so her app may change it; her key may not, and neither may the writer.
-    assert.strictEqual(
-      yield* reason(setStateMine(zoyaKey, { key: given.key, state: "done" })),
-      "not_found",
-    );
-    assert.strictEqual(
-      yield* reason(
-        records.update(
-          orgId,
-          { ...writer(zoya.personId), codingAgentKey: zoyaKey.sessionId },
-          given.key,
-          { state: "done" },
-        ),
-      ),
-      "not_found",
-    );
-    assert.strictEqual(
-      yield* reason(commentMine(zoyaKey, { key: given.key, text: "Invented" })),
-      "not_found",
-    );
-    assert.strictEqual((yield* records.get(orgId, given.key))?.state, "open");
+    assert.strictEqual((yield* records.get(orgId, shared.key))?.state, "open");
 
     // A comment is hers, through the key; the same words again are the same comment.
     const said = { key: hers.key, text: "Invented: the hall is booked" };
@@ -237,7 +268,7 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
     const started = yield* setStateMine(zoyaKey, { key: hers.key, state: "doing" });
     assert.deepInclude(started, { key: hers.key, state: "doing" });
     assert.deepStrictEqual(started.comments, [
-      { by: "you", at: started.comments[0]!.at, text: "Invented: the hall is booked" },
+      { by: "you (the user)", at: started.comments[0]!.at, text: "Invented: the hall is booked" },
     ]);
     const [change] = yield* sql<{
       kind: string;
@@ -281,18 +312,356 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       (yield* setStateMine(zoyaKey, { key: hers.key, state: "open" })).state,
       "open",
     );
-    // Once it is Arjun's, her key no longer reaches it.
+    // Once it is Arjun's, her key still reads it, as her app does on a project she is on, and
+    // its state is Arjun's to change.
     yield* records.update(orgId, writer(rhea.personId), hers.key, {
       owner: { _tag: "person", personId: arjun.personId },
     });
-    assert.strictEqual(yield* reason(getMine(zoyaKey, hers.key)), "not_found");
+    assert.strictEqual((yield* getMine(zoyaKey, hers.key)).holder, "Arjun");
     assert.strictEqual(
       yield* reason(setStateMine(zoyaKey, { key: hers.key, state: "done" })),
-      "not_found",
+      "not_allowed",
     );
+    // Put on it beside Arjun, her key lists it, naming who holds it, reads it and comments on
+    // it; its state stays Arjun's to change, refused in the words her own screen gets.
+    yield* records.update(orgId, writer(rhea.personId), hers.key, {
+      fields: { alsoOn: [`person:${zoya.personId}`] },
+    });
+    assert.deepInclude(
+      (yield* listMine(zoyaKey)).tasks.find((one) => one.key === hers.key),
+      { holder: "Arjun" },
+    );
+    assert.strictEqual((yield* getMine(zoyaKey, hers.key)).key, hers.key);
+    assert.deepStrictEqual(
+      yield* commentMine(zoyaKey, { key: hers.key, text: "Invented: chairs ordered" }),
+      { key: hers.key, posted: true },
+    );
+    assert.deepInclude(
+      yield* Effect.flip(setStateMine(zoyaKey, { key: hers.key, state: "doing" })),
+      {
+        reason: "not_allowed",
+        message:
+          "You're on this task, not holding it: you can comment or leave. Arjun can change it.",
+      },
+    );
+    assert.strictEqual((yield* getMine(zoyaKey, hers.key)).state, "open");
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "a key makes and changes tasks and projects as its person, as far as their screen does",
+  () =>
+    Effect.gen(function* () {
+      const { orgId, rhea, zoya } = yield* team;
+      const records = yield* Records.KinRecords;
+      const sql = yield* SqlClient.SqlClient;
+      const zoyaKey = yield* admitted((yield* TasksKeys.issue(zoya.app, { orgId })).secret);
+      const rheaKey = yield* admitted((yield* TasksKeys.issue(rhea.app, { orgId })).secret);
+      // Who "him" is: everyone by the name their screens use, a member's teammates as teammates.
+      assert.deepStrictEqual((yield* listPeople(zoyaKey)).people, [
+        { name: "Arjun", kind: "person", role: "teammate" },
+        { name: "Rhea", kind: "person", role: "owner" },
+        { name: "Zoya", kind: "person", role: "you" },
+      ]);
+      const asked = {
+        title: "Invented: send the quote",
+        brief: "Invented brief: two pages",
+        holder: "Arjun",
+        due: "2026-12-04",
+      };
+      const made = yield* createTask(rheaKey, asked);
+      assert.deepInclude(made, {
+        title: asked.title,
+        brief: asked.brief,
+        holder: "Arjun",
+        due: "2026-12-04",
+      });
+      // The same request again is the same task; another person's key makes its own.
+      assert.strictEqual((yield* createTask(rheaKey, asked)).key, made.key);
+      const history = (key: string) =>
+        sql<{ actor: string; viaKey: string | null }>`SELECT c.actor_id AS actor,
+          c.coding_agent_key AS "viaKey"
+        FROM kin_record_changes c JOIN kin_records r ON r.record_id = c.record_id
+        WHERE r.key = ${key} ORDER BY c.seq`;
+      assert.deepStrictEqual(yield* history(made.key), [
+        { actor: rhea.personId, viaKey: rheaKey.sessionId },
+      ]);
+      // Everyone's tasks, by holder: Arjun's new one reads to the owner's key.
+      assert.deepStrictEqual(
+        (yield* listSeenBy(rheaKey, { holder: "Arjun" })).tasks.map((one) => one.key),
+        [made.key],
+      );
+      assert.deepStrictEqual((yield* listSeenBy(zoyaKey, { holder: "Arjun" })).tasks, []);
+      // Zoya can't see the owner's task to Arjun, so her key can't change it or give it away.
+      assert.strictEqual(
+        yield* reason(updateTask(zoyaKey, { key: made.key, holder: "Zoya" })),
+        "not_found",
+      );
+      // Shared with the team she reads it; held by Arjun, it is not hers to give away.
+      yield* records.update(orgId, writerFor(rhea.personId), made.key, { team: true });
+      assert.strictEqual((yield* getMine(zoyaKey, made.key)).holder, "Arjun");
+      assert.strictEqual(
+        yield* reason(updateTask(zoyaKey, { key: made.key, holder: "Zoya", title: "Invented" })),
+        "not_allowed",
+      );
+      assert.strictEqual((yield* records.get(orgId, made.key))?.title, asked.title);
+      // The owner's key changes it and gives it to Zoya, each change marked as the key's.
+      const moved = yield* updateTask(rheaKey, {
+        key: made.key,
+        title: "Invented: send the revised quote",
+        due: null,
+        holder: "Zoya",
+      });
+      assert.deepInclude(moved, {
+        title: "Invented: send the revised quote",
+        due: null,
+        holder: "Zoya",
+      });
+      assert.strictEqual((yield* getMine(zoyaKey, made.key)).holder, undefined);
+      // Made, shared by Rhea's own app, then changed and given away through her key.
+      assert.deepStrictEqual(
+        (yield* history(made.key)).map((one) => one.viaKey),
+        [rheaKey.sessionId, null, rheaKey.sessionId, rheaKey.sessionId],
+      );
+      assert.strictEqual(
+        yield* reason(updateTask(rheaKey, { key: made.key, holder: "Nobody at all" })),
+        "not_found",
+      );
+      // Now hers, Zoya's key starts it.
+      assert.strictEqual(
+        (yield* setStateMine(zoyaKey, { key: made.key, state: "doing" })).state,
+        "doing",
+      );
+
+      // Projects are the owner level's to make, as in the app.
+      const fair = { title: "Invented: spring fair", lead: "Zoya", target: "2027-03-01" };
+      const project = yield* createProject(rheaKey, fair);
+      assert.strictEqual((yield* createProject(rheaKey, fair)).key, project.key);
+      assert.deepStrictEqual(
+        (yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
+        WHERE register_id = 'projects' AND title = ${fair.title}`)[0]?.n,
+        1,
+      );
+      assert.strictEqual(
+        yield* reason(createProject(zoyaKey, { title: "Invented" })),
+        "not_allowed",
+      );
+      yield* updateProject(rheaKey, { key: project.key, notes: "Invented: two stalls" });
+      assert.strictEqual((yield* records.get(orgId, project.key))?.notes, "Invented: two stalls");
+      assert.strictEqual(
+        yield* reason(updateProject(zoyaKey, { key: project.key, notes: "Invented" })),
+        "not_allowed",
+      );
+      assert.deepStrictEqual(yield* history(project.key), [
+        { actor: rhea.personId, viaKey: rheaKey.sessionId },
+        { actor: rhea.personId, viaKey: rheaKey.sessionId },
+      ]);
+
+      // Once revoked, the key makes nothing.
+      yield* TasksKeys.revoke(rhea.app, { orgId, sessionId: rheaKey.sessionId });
+      assert.strictEqual(
+        yield* reason(createTask(rheaKey, { title: "Invented: after revoking" })),
+        "not_allowed",
+      );
+      assert.isUndefined(
+        (yield* sql<{ key: string }>`SELECT key FROM kin_records
+        WHERE title = 'Invented: after revoking'`)[0],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a key does by hand what its person's screens do, marked as theirs, and nothing their screens refuse",
+  () =>
+    Effect.gen(function* () {
+      const { orgId, rhea, zoya } = yield* team;
+      const records = yield* Records.KinRecords;
+      const sql = yield* SqlClient.SqlClient;
+      const rheaKey = yield* admitted((yield* TasksKeys.issue(rhea.app, { orgId })).secret);
+      const zoyaKey = yield* admitted((yield* TasksKeys.issue(zoya.app, { orgId })).secret);
+      const marks = (key: string) =>
+        sql<{ viaKey: string | null }>`SELECT c.coding_agent_key AS "viaKey"
+          FROM kin_record_changes c JOIN kin_records r ON r.record_id = c.record_id
+          WHERE r.key = ${key} ORDER BY c.seq`.pipe(
+          Effect.map((rows) => rows.map((row) => row.viaKey)),
+        );
+      const count = (title: string) =>
+        sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records WHERE title = ${title}`.pipe(
+          Effect.map(([row]) => row?.n ?? 0),
+        );
+
+      // A client, with its first contact; the same request again is the same client.
+      const client = { name: "Invented Lantern Co", contact: { name: "Invented Ira" } };
+      const lantern = yield* Acts.createClient(rheaKey, client);
+      assert.strictEqual(yield* Acts.createClient(rheaKey, client), lantern);
+      assert.strictEqual(yield* count(client.name), 1);
+      yield* Acts.updateClient(rheaKey, {
+        key: lantern,
+        notes: "Invented: prefers mornings",
+        newContact: { name: "Invented Omar", role: "Buyer" },
+      });
+      const page = yield* Clients.party([{ _tag: "person", orgId, personId: rhea.personId }], {
+        orgId,
+        key: lantern,
+      });
+      assert.strictEqual(page.party.notes, "Invented: prefers mornings");
+      assert.sameMembers(
+        page.contacts.map((one) => one.name),
+        ["Invented Ira", "Invented Omar"],
+      );
+      assert.isTrue((yield* marks(lantern)).every((viaKey) => viaKey === rheaKey.sessionId));
+      // A call logged, with its follow-up the person's own task.
+      yield* Acts.logContact(rheaKey, {
+        client: lantern,
+        kind: "call",
+        note: "Invented: wants a quote",
+        next: { title: "Invented: send the quote", due: "2026-12-02" },
+      });
+      assert.strictEqual(yield* count("Invented: send the quote"), 1);
+      // Its history shows it came through her coding agent.
+      const logged = yield* Clients.party([{ _tag: "person", orgId, personId: rhea.personId }], {
+        orgId,
+        key: lantern,
+      });
+      assert.strictEqual(logged.touches?.[0]?.who, "Rhea (coding agent)");
+
+      // A deal on it, then moved on; and a promise to them, kept.
+      const name = (who: KinWorkPrincipal) => (who._tag === "person" ? who.personId : who.agentId);
+      const deal = yield* Acts.createDeal(
+        rheaKey,
+        {
+          client: lantern,
+          title: "Invented: spring order",
+          value: { minor: 90_000, currency: "INR" },
+        },
+        name,
+      );
+      assert.deepInclude(deal, { title: "Invented: spring order", state: "open" });
+      const won = yield* Acts.updateDeal(rheaKey, { key: deal.key, outcome: "won" }, name);
+      assert.strictEqual(won.state, "won");
+      assert.isTrue((yield* marks(deal.key)).every((viaKey) => viaKey === rheaKey.sessionId));
+      const promise = yield* Acts.addPromise(rheaKey, {
+        client: lantern,
+        what: "Invented: samples by Friday",
+        due: "2026-12-04",
+      });
+      assert.strictEqual((yield* Acts.closePromise(rheaKey, promise.key)).state, "done");
+
+      // A doc gets a new version of one section; one read before it changed writes nothing.
+      const doc = yield* Docs.create(
+        orgId,
+        { actor: { _tag: "person", personId: rhea.personId }, via: "owner" },
+        {},
+        {
+          title: "Invented price list",
+          body: "Intro.\n\n## Prices\n\nTea 10 invented credits.\n",
+          owner: { _tag: "person", personId: rhea.personId },
+          summary: "Created",
+          company: true,
+          originKey: "test:price-list",
+        },
+      );
+      const wrote = yield* Acts.writeDoc(rheaKey, {
+        key: doc.row.key,
+        version: doc.version.version,
+        section: "Prices",
+        text: "Tea 12 invented credits.",
+      });
+      assert.strictEqual(wrote.version, doc.version.version + 1);
+      assert.strictEqual(
+        yield* reason(
+          Acts.writeDoc(rheaKey, {
+            key: doc.row.key,
+            version: doc.version.version,
+            section: "Prices",
+            text: "Tea 9 invented credits.",
+          }),
+        ),
+        "conflict",
+      );
+      const versions = yield* sql<{ body: string; summary: string }>`SELECT body, summary
+        FROM kin_doc_versions WHERE record_id = ${doc.row.recordId} ORDER BY version`;
+      assert.strictEqual(versions.at(-1)?.summary, 'Changed "Prices" through their coding agent');
+      assert.deepStrictEqual(
+        versions.map((one) => one.body.includes("Tea 10")),
+        [true, false],
+      );
+
+      // The company's own list: an entry added once, then changed.
+      yield* defineList(
+        orgId,
+        yield* proposalFor(orgId, {
+          name: "Invented samples",
+          fields: [{ label: "Colour", type: "text" }],
+        }),
+        0,
+      );
+      const listed = (yield* Acts.listLists(rheaKey)).lists.find(
+        (one) => one.name === "Invented samples",
+      );
+      assert.isDefined(listed);
+      // By hand, as in the app, entries go only on a list shared with the team.
+      const refusedEntry = yield* Effect.flip(
+        Acts.addEntry(rheaKey, { list: listed!.list, title: "Invented: too early" }),
+      );
+      assert.include(refusedEntry.message, "shared with the team");
+      const rheaPerson = [{ _tag: "person" as const, orgId, personId: rhea.personId }];
+      const definition = (yield* lists(rheaPerson, { orgId })).lists.find(
+        (one) => one.list === listed!.list,
+      );
+      yield* updateList(rheaPerson, {
+        orgId,
+        list: listed!.list,
+        rev: definition!.rev,
+        team: true,
+      });
+      const entry = {
+        list: listed!.list,
+        title: "Invented: oak sample",
+        fields: { colour: "Oak" },
+      };
+      const added = yield* Acts.addEntry(rheaKey, entry);
+      assert.strictEqual((yield* Acts.addEntry(rheaKey, entry)).key, added.key);
+      assert.strictEqual(
+        (yield* Acts.updateEntry(rheaKey, { key: added.key, state: "done" })).state,
+        "done",
+      );
+      assert.deepStrictEqual(
+        (yield* Acts.listEntries(rheaKey, { list: listed!.list, state: "done" })).entries.map(
+          (one) => one.key,
+        ),
+        [added.key],
+      );
+      assert.isTrue((yield* marks(added.key)).every((viaKey) => viaKey === rheaKey.sessionId));
+
+      // What Zoya's screens refuse, her key is refused: making a project, and a client labelled
+      // private.
+      assert.strictEqual(
+        yield* reason(createProject(zoyaKey, { title: "Invented: taxi" })),
+        "not_allowed",
+      );
+      yield* records.update(orgId, writerFor(rhea.personId), lantern, { sensitive: true });
+      for (const refused of [
+        Acts.updateClient(rheaKey, { key: lantern, notes: "Invented" }),
+        Acts.logContact(rheaKey, { client: lantern, kind: "call" }),
+        Acts.addPromise(rheaKey, { client: lantern, what: "Invented" }).pipe(Effect.asVoid),
+      ])
+        assert.strictEqual(yield* reason(refused), "not_found");
+      assert.isFalse(
+        (yield* Acts.listWaiting(rheaKey)).waiting.some((one) => one.key === promise.key),
+      );
+
+      // Revoked, it does nothing more.
+      yield* TasksKeys.revoke(rhea.app, { orgId, sessionId: rheaKey.sessionId });
+      assert.strictEqual(
+        yield* reason(Acts.createClient(rheaKey, { name: "Invented after" })),
+        "not_allowed",
+      );
+      assert.strictEqual(yield* count("Invented after"), 0);
+    }).pipe(Effect.provide(layer)),
+);
+
+const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
 const writerFor = (personId: KinPersonId) => ({
   actor: { _tag: "person" as const, personId },
   via: "owner" as const,
@@ -303,7 +672,7 @@ it.effect(
   "nothing labelled sensitive reaches a key, whoever holds it, nor what sits under a labelled client or project",
   () =>
     Effect.gen(function* () {
-      const { orgId, rhea, zoya } = yield* team;
+      const { orgId, rhea, zoya, arjun } = yield* team;
       const records = yield* Records.KinRecords;
       const people = yield* People.KinPeople;
       const sql = yield* SqlClient.SqlClient;
@@ -331,9 +700,34 @@ it.effect(
       const underProject = yield* make("file the audit", { projectId: audit.recordId });
       const underClient = yield* make("send the quote", { partyId: client.recordId });
       const underTheirs = yield* make("book the hall", { projectId: theirs.recordId });
+      // A promise sits on its deal (`promises.ts`): kept private, the deal takes it with it.
+      const owner = [{ _tag: "person" as const, orgId, personId: rhea.personId }];
+      const deal = yield* Deals.create(owner, {
+        orgId,
+        party: client.key,
+        title: "Invented kiln order",
+        clientRequestId: "kiln-order",
+      });
+      const promised = yield* make("send the kiln plan", {
+        partyId: client.recordId,
+        category: "obligation",
+        links: [dealLink({ recordId: deal.deal.recordId, key: deal.deal.key })],
+      });
       const key = yield* admitted((yield* TasksKeys.issue(zoya.app, { orgId })).secret);
       const listed = Effect.map(listMine(key), ({ tasks }) => tasks.map((one) => one.key));
-      assert.includeMembers(yield* listed, [plain.key, underProject.key, underClient.key]);
+      assert.includeMembers(yield* listed, [
+        plain.key,
+        underProject.key,
+        underClient.key,
+        promised.key,
+      ]);
+      yield* Deals.update(owner, {
+        orgId,
+        key: deal.deal.key,
+        rev: deal.deal.rev,
+        sensitive: true,
+      });
+      assert.notInclude(yield* listed, promised.key);
 
       // Labelled after the key was made, the project and the client take their tasks with them.
       yield* label(audit.key);
@@ -349,8 +743,9 @@ it.effect(
           },
         ],
         more: false,
+        material: MATERIAL,
       });
-      for (const hidden of [secret, underProject, underClient, underTheirs]) {
+      for (const hidden of [secret, underProject, underClient, underTheirs, promised]) {
         assert.strictEqual(yield* reason(getMine(key, hidden.key)), "not_found");
         assert.strictEqual(
           yield* reason(setStateMine(key, { key: hidden.key, state: "done" })),
@@ -366,7 +761,195 @@ it.effect(
           0,
         );
       }
-    }).pipe(Effect.provide(layer)),
+
+      // Every other tool too: what its person's screens show, minus what a person labelled, for
+      // the owner's key, a co-owner's (Zoya), a lead's (Dev) and a member's (Arjun, no Money).
+      const sessions = yield* SessionStore;
+      const invite = yield* people.createInvite(rhea.app, { orgId, displayName: "Dev Malhotra" });
+      const dev = yield* people.accept({ secret: invite.secret });
+      const devApp = yield* sessions.verify(dev.accessToken);
+      yield* make("glaze line", {
+        list: "projects",
+        owner: { _tag: "person", personId: dev.person.personId },
+      });
+      yield* sql`UPDATE kin_people SET sees_money = 0 WHERE person_id = ${arjun.personId}`;
+      // Expenses are labelled by their list, which is no person's choice: one under an unlabelled
+      // client reaches a key whose person has Money; one under the labelled client reaches none.
+      // A doc sits under the labelled client.
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0,
+          ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
+      const potters = yield* make("Invented Potters", { list: "clients" });
+      const glaze = yield* make("glaze bill", {
+        list: "expenses",
+        owner: { _tag: "person", personId: rhea.personId },
+        partyId: potters.recordId,
+        amount: { minor: 1_717_100, currency: "INR" },
+        state: "done",
+        dateAt: 0,
+      });
+      const rent = yield* make("kiln rent", {
+        list: "expenses",
+        owner: { _tag: "person", personId: rhea.personId },
+        partyId: quietClient.recordId,
+        amount: { minor: 4_242_400, currency: "INR" },
+        state: "done",
+        dateAt: 0,
+      });
+      assert.strictEqual((yield* records.get(orgId, glaze.key))?.sensitive, 1);
+      // Marked private by a person on purpose: at creation, and on one the default had labelled.
+      const fees = yield* make("legal fees", {
+        list: "expenses",
+        owner: { _tag: "person", personId: rhea.personId },
+        partyId: potters.recordId,
+        amount: { minor: 6_060_600, currency: "INR" },
+        state: "done",
+        dateAt: 0,
+        sensitive: true,
+      });
+      const bonus = yield* make("bonus", {
+        list: "expenses",
+        owner: { _tag: "person", personId: rhea.personId },
+        partyId: potters.recordId,
+        amount: { minor: 7_070_700, currency: "INR" },
+        state: "done",
+        dateAt: 0,
+      });
+      yield* records.update(orgId, writerFor(rhea.personId), bonus.key, { sensitive: true });
+      const { row: kilnTerms } = yield* Docs.create(
+        orgId,
+        writerFor(rhea.personId),
+        {},
+        {
+          title: "Invented: kiln terms",
+          body: "Invented terms.\n",
+          owner: { _tag: "person", personId: rhea.personId },
+          summary: "Created",
+          partyId: quietClient.recordId,
+          originKey: "kiln terms",
+        },
+      );
+      const head = (id: string) =>
+        decodeHead({
+          id,
+          orgId,
+          path: `claims/${id}.md`,
+          kind: "claim",
+          title: `Invented kiln ${id}`,
+          status: "open",
+          due: null,
+          recorded_at: "1970-01-01T00:00:00.000Z",
+          valid_from: "1970-01-01T00:00:00.000Z",
+          invalid_at: null,
+          superseded_by: null,
+          review_by: null,
+          source: "fixture",
+          said_by: "Rhea",
+          trust: "owner",
+          links: [],
+          sensitive: false,
+        });
+      const items = [
+        { head: head("price"), body: "Invented price.\n" },
+        { head: head("day"), body: "Invented day.\n" },
+      ];
+      yield* (yield* KinMemoryChanges).attachWriter({
+        undo: () => Effect.die("Unused"),
+        retire: () => Effect.die("Unused"),
+        restore: () => Effect.die("Unused"),
+        recordDecision: () => Effect.die("Unused"),
+        relabel: () => Effect.die("Unused"),
+        items: () => Effect.die("A key read must not load memory"),
+        snapshot: () => Effect.succeed(items),
+      });
+      // "Only you": the price. The day the team may know.
+      yield* authorise(orgId, "day", fingerprint(items[1]!), "owner_setting");
+      // Rhea's own screen counts every expense, so the rent and the two she marked are there to
+      // leave out; the mark is recorded on the one the default had already labelled.
+      assert.deepStrictEqual(
+        (yield* money([{ _tag: "person", orgId, personId: rhea.personId }], { orgId })).spent
+          .thisMonth.total,
+        [{ minor: 19_090_800, currency: "INR" }],
+      );
+      assert.strictEqual((yield* records.get(orgId, bonus.key))?.markedBy, rhea.personId);
+      const labelled = [
+        quietClient,
+        client,
+        audit,
+        theirs,
+        secret,
+        underProject,
+        underClient,
+        underTheirs,
+        rent,
+        fees,
+        bonus,
+        kilnTerms,
+      ];
+      const never = [
+        ...labelled.flatMap((one) => [JSON.stringify(one.key), JSON.stringify(one.title)]),
+        "Invented kiln price",
+        "4242400",
+        "6060600",
+        "7070700",
+      ];
+      const answer = <A, R>(read: Effect.Effect<A, KinChatError, R>) =>
+        Effect.match(read, {
+          onFailure: (error): unknown => error,
+          onSuccess: (value): unknown => value,
+        });
+      const keys = {
+        rhea: yield* admitted((yield* TasksKeys.issue(rhea.app, { orgId })).secret),
+        zoya: key,
+        dev: yield* admitted((yield* TasksKeys.issue(devApp, { orgId })).secret),
+        arjun: yield* admitted((yield* TasksKeys.issue(arjun.app, { orgId })).secret),
+      };
+      for (const holder of Object.values(keys)) {
+        const answers = [
+          yield* answer(listMine(holder)),
+          yield* answer(getMine(holder, secret.key)),
+          yield* answer(listProjects(holder, {})),
+          yield* answer(listProjects(holder, { text: "audit" })),
+          yield* answer(listClients(holder, {})),
+          yield* answer(findDocs(holder, {})),
+          yield* answer(findDocs(holder, { client: quietClient.key })),
+          yield* answer(openProject(holder, audit.key)),
+          yield* answer(openProject(holder, theirs.key)),
+          yield* answer(openClient(holder, quietClient.key)),
+          yield* answer(openClient(holder, client.key)),
+          yield* answer(readDoc(holder, { key: kilnTerms.key })),
+          yield* answer(moneySummary(holder)),
+          yield* answer(searchMemory(holder, "kiln")),
+        ];
+        const said = JSON.stringify(answers);
+        for (const one of never) assert.notInclude(said, one);
+        for (const opened of answers.slice(7, 12))
+          if (opened instanceof Error && "reason" in opened && opened.reason === "not_found")
+            assert.strictEqual(JSON.stringify(opened), JSON.stringify(unknownKey));
+      }
+      // The owner's key opens each labelled one as one never there, and says money was left out.
+      for (const opened of [
+        yield* Effect.flip(openClient(keys.rhea, quietClient.key)),
+        yield* Effect.flip(openProject(keys.rhea, audit.key)),
+        yield* Effect.flip(readDoc(keys.rhea, { key: kilnTerms.key })),
+      ])
+        assert.strictEqual(JSON.stringify(opened), JSON.stringify(unknownKey));
+      // Those with Money read the list-labelled expense, the rent under the labelled client left
+      // out and counted; a member without Money reads no money at all.
+      for (const holder of [keys.rhea, keys.zoya]) {
+        const figures = yield* moneySummary(holder);
+        assert.deepStrictEqual(figures.spent.thisMonth.total, [
+          { minor: 1_717_100, currency: "INR" },
+        ]);
+        assert.isTrue(figures.privateLeftOut);
+      }
+      assert.strictEqual((yield* Effect.flip(moneySummary(keys.arjun))).reason, "not_allowed");
+      assert.deepStrictEqual(
+        (yield* searchMemory(keys.rhea, "kiln")).lines.map((line) => line.title),
+        ["Invented kiln day"],
+      );
+    }).pipe(Effect.provide(MemoryChanges.layer.pipe(Layer.provideMerge(layer)))),
 );
 
 it.effect("a key's list is soonest due first and counts only what it may show", () =>
@@ -931,6 +1514,33 @@ const refused = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.map((result) => result._tag),
   );
 /** The status T3's own auth routes give a bearer POST, as a client would see it. */
+/** A POST to Kin's GitHub webhook with a bearer token and no GitHub signature. */
+const postHook = Effect.fn("test.postHook")(function* (token: string) {
+  const http = yield* HttpRouter.toHttpEffect(
+    KinGitHubHookHttp.layer.pipe(Layer.provide(NodeCrypto.layer)),
+  );
+  const sent = yield* Deferred.make<HttpServerResponse.HttpServerResponse>();
+  yield* HttpEffect.toHandled(http, (_request, response) => Deferred.succeed(sent, response)).pipe(
+    Effect.provideService(
+      HttpServerRequest.HttpServerRequest,
+      HttpServerRequest.fromWeb(
+        new Request(`http://127.0.0.1${KIN_GITHUB_HOOK_ROUTE}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "x-github-event": "issues" },
+          body: "{}",
+        }),
+      ),
+    ),
+    Effect.provideService(KinServer, {
+      taskCardUpdater: Layer.empty,
+      services: Option.none(),
+      subscribeForViewer: Option.none(),
+    }),
+    Effect.exit,
+  );
+  return (yield* Deferred.await(sent)).status;
+});
+
 const post = Effect.fn("test.post")(function* (path: string, token: string) {
   const routes = HttpApiBuilder.layer(AuthRoutes).pipe(
     Layer.provide(AuthHttp.layer),
@@ -982,6 +1592,8 @@ it.effect("a key is no credential anywhere but its endpoint: every route and cre
     }
     // T3's own MCP clients, a ticket minted for the key's session, and signed file URLs.
     assert.strictEqual(yield* refused(auth.authenticateMcpClient(request(secret))), "Failure");
+    // OAuth's public revoke route ends only an MCP client's own token; a key is none.
+    assert.isFalse(yield* auth.revokeMcpClientToken(secret));
     const ticket = yield* sessions.issueWebSocketToken(key.sessionId);
     assert.strictEqual(
       yield* refused(
@@ -1019,8 +1631,11 @@ it.effect("a key is no credential anywhere but its endpoint: every route and cre
       "mcpOAuth POST /oauth/mcp/approval",
       "mcpOAuth POST /oauth/mcp/decision",
       "mcpOAuth POST /oauth/mcp/register",
+      "mcpOAuth POST /oauth/mcp/revoke",
       "mcpOAuth POST /oauth/mcp/token",
       "metadata GET /.well-known/t3/environment",
+      // Authenticates only through authenticateMcpClient, which refuses a key (above).
+      "peerLink POST /api/peer-link/client-pairing",
       "webhooks GET /api/hooks/:hookId/:token",
       "webhooks PATCH /api/hooks/:hookId/:token",
       "webhooks POST /api/hooks/:hookId/:token",
@@ -1030,6 +1645,9 @@ it.effect("a key is no credential anywhere but its endpoint: every route and cre
       assert.strictEqual(yield* post(path, secret), 401);
       assert.strictEqual(yield* post(path, script), 200);
     }
+    // Kin's routes outside this table: the GitHub App's webhook is public because GitHub calls
+    // it; its own credential is GitHub's signature over the body, so no key or session opens it.
+    for (const token of [secret, script]) assert.strictEqual(yield* postHook(token), 401);
   }).pipe(Effect.scoped, Effect.provide(layer)),
 );
 

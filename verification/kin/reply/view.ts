@@ -14,6 +14,7 @@ export const rules: Record<string, string> = {
   NoteOnlyForBrokenPromise:
     "After a reply, a failure adds at most one short line, and only to name something the reply promised that did not happen.",
   NeverReasoning: "The agent's private reasoning never shows up as its reply.",
+  NeverDiagnostic: "A failed run’s terminal provider error never becomes the agent’s posted reply.",
   SaidOnce:
     "The agent's reply says its answer once, even when it writes the answer again after using a tool.",
   RelayLands: "A nudge or relay the agent sends you always lands in your chat, whatever the floor.",
@@ -29,6 +30,11 @@ export const variants = [
     name: "reasoning-posted",
     breaks: "NeverReasoning",
     what: "the thinking filter (isAnswer) is removed",
+  },
+  {
+    name: "diagnostic-posted",
+    breaks: "NeverDiagnostic",
+    what: "the provider’s terminal diagnostic is posted as an answer",
   },
   {
     name: "relay-through-floor",
@@ -101,6 +107,8 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "The agent writes its answer again after using a tool";
     case "LeadShows":
       return "The agent posts a chart or file and says nothing";
+    case "TerminalDiagnostic":
+      return "The provider writes its terminal error in the transcript";
     case "LeadThinks":
       return "The agent thinks";
     case "LeadNudgesAsker":

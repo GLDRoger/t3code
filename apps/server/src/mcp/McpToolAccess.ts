@@ -23,7 +23,12 @@ import {
   type DispatchModeRefusal,
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
-import { assertNotLinked, assertSameLink, callerLinkOrigin } from "./linkOrigin.ts";
+import {
+  assertFullAccessNamingLink,
+  assertNotLinked,
+  assertSameLink,
+  callerLinkOrigin,
+} from "./linkOrigin.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import {
@@ -320,6 +325,7 @@ export const afterForwarding = <P, A, E, R, E2, R2>(
 
 const fullAccessRequired =
   "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client.";
+const changesEnvironment = "change projects or environment settings";
 
 /** Recheck after waits before writing; caller modes may have changed. */
 export const writesEnvironment = <P, A, E, R>(
@@ -339,9 +345,11 @@ export const writesEnvironment = <P, A, E, R>(
     Effect.tap((caller) =>
       options?.linkedCallers === "allowed"
         ? Effect.void
-        : assertNotLinked(caller, "change projects or environment settings"),
+        : assertNotLinked(caller, changesEnvironment),
     ),
-    Effect.tap((caller) => assertFullAccess(caller, fullAccessRequired)),
+    Effect.tap((caller) =>
+      assertFullAccessNamingLink(caller, fullAccessRequired, changesEnvironment),
+    ),
   );
   return declare(
     (params: P) => check.pipe(Effect.flatMap(() => handle(params, check))),
@@ -392,8 +400,7 @@ const threadBound = Symbol("McpToolAccess.threadBound");
 export const threadBoundGate = (gate: () => boolean) =>
   Object.assign(gate, { [threadBound]: true as const });
 const hidesOutsideClients = (gate: unknown) =>
-  gate === McpInvocationContext.hiddenFromOutsideClients ||
-  (typeof gate === "function" && threadBound in gate);
+  THREAD_ONLY.has(gate) || (typeof gate === "function" && threadBound in gate);
 
 /**
  * A tool runs in a linked environment when its parameters take this target
@@ -413,6 +420,11 @@ const linksUnavailable = new OrchestratorMcpFailure({
   code: "orchestration_error",
   message: "This environment cannot reach linked environments.",
 });
+
+const THREAD_ONLY = new Set<unknown>([
+  McpInvocationContext.hiddenFromOutsideClients,
+  McpInvocationContext.hiddenWithoutBackgroundWait,
+]);
 
 /**
  * Every tool that takes a linked environment runs there the same way: its

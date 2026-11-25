@@ -5,7 +5,6 @@ import {
   KinPersonId,
   type KinConnectionSaveEditedInput,
   type KinConnectionSendEditedInput,
-  type KinWaitingItem,
   type KinWidget,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
@@ -39,8 +38,6 @@ const state = vi.hoisted(() => ({
   } | null>,
   /** How each save is answered, in the same way. */
   saveAnswers: [] as Array<{ reason: "widget_changed"; message: string } | null>,
-  /** What the open list says waits on the reader. */
-  waiting: null as ReadonlyArray<KinWaitingItem> | null,
 }));
 
 vi.mock(import("~/state/use-atom-command"), async () => {
@@ -90,6 +87,7 @@ vi.mock(import("./kinClient"), async () => {
     },
     // Imported by the pages a card can open; no test here reaches them.
     refreshKinAgents: () => {},
+    refreshKinHost: () => {},
     retryKinAccess: () => {},
     kinReads: {},
   } as never;
@@ -100,7 +98,6 @@ vi.mock(import("../connection/catalog"), async () => {
     environmentCatalog: { catalogValueAtom: Atom.make({ isReady: false, entries: new Map() }) },
   } as never;
 });
-vi.mock(import("./useKinOpen"), () => ({ useKinOpenWaiting: () => state.waiting }) as never);
 vi.mock(import("./useKinOwnerLevel"), () => ({ useKinOwnerLevelKnown: () => true }) as never);
 vi.mock(import("./useKinClock"), () => ({ useNowMinuteMs: () => POSTED + 60_000 }) as never);
 
@@ -111,7 +108,6 @@ function setup() {
   state.acted.length = 0;
   state.answers.length = 0;
   state.saveAnswers.length = 0;
-  state.waiting = null;
   kinSendEditHold(kinSendEditHeldKey("env-1", KinPersonId.make("rhea"), "choice:m1"), null);
 }
 
@@ -498,44 +494,7 @@ const asked = (change: Record<string, unknown> = {}): KinWidget =>
     },
     ...change,
   }) as never;
-const waitingOn = (fallback: string | null): KinWaitingItem =>
-  ({
-    waitingId: "w-1",
-    orgId: "org-1",
-    personId: "rhea",
-    chatId: "cos-rhea",
-    messageId: "q1",
-    widgetId: "choice:q1",
-    reason: "question",
-    createdAt: "2026-11-19T09:00:00.000Z",
-    resolvedAt: null,
-    resolution: null,
-    ask: {
-      agent: "Chief of staff",
-      default: fallback,
-      by: "2026-11-20T14:00:00.000Z",
-      revision: 1,
-      options: [
-        { optionId: "option-1", label: "Keep open" },
-        { optionId: "option-2", label: "Mark W-1 done" },
-      ],
-    },
-  }) as never;
-
 describe("an agent's open question", () => {
-  it("names under the question what Kin takes, and when, if nobody answers", async () => {
-    setup();
-    state.waiting = [waitingOn("Mark W-1 done")];
-    await using screen = await render(view(asked()));
-    await expect
-      .element(page.getByText(/^If nobody answers by .+ at .+: Mark W-1 done\.$/))
-      .toBeVisible();
-    // Kin won't take it on its own: the card says nothing more than it did.
-    state.waiting = [waitingOn(null)];
-    await screen.rerender(view(asked({ revision: 2 })));
-    await expect.element(page.getByText(/If nobody answers/)).not.toBeInTheDocument();
-  });
-
   it("marks a taken default's note Undone, with who and when, once it is put back", async () => {
     setup();
     const note = (personId: string, name: string) =>
@@ -562,6 +521,45 @@ describe("an agent's open question", () => {
     await expect.element(page.getByRole("button", { name: "Undo" })).not.toBeInTheDocument();
     await screen.rerender(view(note("zoya", "Zoya Sheikh")));
     await expect.element(page.getByText(/^Undone by Zoya Sheikh at .+\.$/)).toBeVisible();
+  });
+
+  it("dismisses without choosing, collapses to Dismissed with Undo, and opens again on Undo", async () => {
+    setup();
+    const question = "Can we close Design the booking flow screens?";
+    const dismissed = (personId: string, name: string) =>
+      asked({
+        revision: 2,
+        awaiting: [],
+        closedAt: "2026-11-19T09:00:30.000Z",
+        state: {
+          ...(asked().state as object),
+          dismissed: { personId, name, at: "2026-11-19T09:00:30.000Z" },
+        },
+      });
+    await using screen = await render(view(asked()));
+    await userEvent.click(
+      page.getByRole("button", { name: "Dismiss this question without choosing" }),
+    );
+    expect(state.acted).toMatchObject([
+      { widgetId: "choice:q1", revision: 1, actionId: "dismiss" },
+    ]);
+    await screen.rerender(view(dismissed("rhea", "Rhea Rao")));
+    await expect.element(page.getByText("Dismissed", { exact: true })).toBeVisible();
+    await expect.element(page.getByText(question, { exact: false })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Keep open" })).not.toBeInTheDocument();
+    await userEvent.click(
+      page.getByRole("button", { name: "Undo dismiss and show the question again" }),
+    );
+    expect(state.acted.at(-1)).toMatchObject({ revision: 2, actionId: "undismiss" });
+    await screen.rerender(view(asked({ revision: 3 })));
+    await expect.element(page.getByRole("button", { name: "Keep open" })).toBeVisible();
+    // Someone else's copy reads who dismissed it, with no Undo; a mail's Confirm has no Dismiss.
+    await screen.rerender(view(dismissed("zoya", "Zoya Sheikh")));
+    await expect.element(page.getByText("Dismissed by Zoya Sheikh")).toBeVisible();
+    await expect.element(page.getByRole("button", { name: /^Undo/ })).not.toBeInTheDocument();
+    await screen.rerender(view(mail()));
+    await expect.element(page.getByRole("button", { name: "Confirm" })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: /^Dismiss/ })).not.toBeInTheDocument();
   });
 });
 

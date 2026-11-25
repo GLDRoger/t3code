@@ -1,7 +1,12 @@
 import { kinFailureText } from "./kinAnswers.ts";
 import {
+  KIN_AGENT_PAUSED_REFUSAL_END,
+  KIN_ASKER_ONLY_REFUSAL,
+  KIN_DEFERRAL_CARD_ACTIONS,
+  type KinCardAsker,
   KinChatError,
   KinDeferralCard,
+  type KinDeferralCardAction,
   type KinReminderCardAction,
   type KinScheduledTaskCardAction,
   type KinWidget,
@@ -19,8 +24,11 @@ export const KIN_CHANGE_SENT_TEXT = "Sent. Your agent will ask what to change.";
 export const KIN_SEND_FAILED_TEXT = "Couldn't send that.";
 const KIN_UNDONE_TEXT = "Undone. Kin won't act on this.";
 export const KIN_UNDO_TOO_LATE_TEXT = "Too late to undo: Kin already acted on this.";
+/** Start now hands the work to an agent whose turn may still wait (on the day's budget, say). */
+const kinAskedToStart = (agent: string | null | undefined) =>
+  `Asked ${agent ?? "your agent"} to start it.`;
 
-/** The ids the host takes for each phase (`actionsFor` in the server's deferrals). */
+/** The ids a deferral card's taps post (`KIN_DEFERRAL_CARD_ACTIONS`), and its kin cards'. */
 export type KinDeferralActionId =
   | "undo"
   | "change"
@@ -58,12 +66,14 @@ export interface KinDeferralCardView {
   /** What the countdown runs to; null when nothing is pending. */
   readonly countdown: { readonly to: number; readonly kind: KinCountdownKind } | null;
   readonly actions: ReadonlyArray<KinDeferralAction>;
+  /** The agent a decision card's Start now asks, by name; null when the card doesn't say. */
+  readonly agent: string | null;
   /** The card's label without the countdown, which reads from its own line. */
   readonly accessibilityLabel: string;
 }
 
 const then: Record<KinDeferralCard["onDue"], string> = {
-  start: "I'll start then.",
+  start: "I'll ask you to start it then.",
   remind: "I'll remind you then.",
   ask: "I'll ask you then.",
   chase: "I'll chase it then.",
@@ -162,11 +172,23 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
   },
 };
 
-const DECISION_ACTIONS = [
-  KIN_DEFERRAL_ACTIONS.start_now,
-  KIN_DEFERRAL_ACTIONS.monday,
-  KIN_DEFERRAL_ACTIONS.cancel,
-];
+const DEFERRAL_ACTIONS: ReadonlySet<string> = new Set(KIN_DEFERRAL_CARD_ACTIONS);
+
+/**
+ * The taps the host says it takes on this card. A card written before it said so offers Undo
+ * when confirmed and nothing after. Only an owner-level viewer is offered more than Undo; the
+ * card's asker sees a shared chat's own card, whose only tap is Undo.
+ */
+function hostActions(
+  card: KinDeferralCard,
+  ownerLevel: boolean | undefined,
+): ReadonlyArray<KinDeferralAction> {
+  const ids = card.actions ?? (card.phase === undefined ? ["undo"] : []);
+  return ids
+    .filter((id): id is KinDeferralCardAction => DEFERRAL_ACTIONS.has(id))
+    .filter((id) => id === "undo" || ownerLevel !== false)
+    .map((id) => KIN_DEFERRAL_ACTIONS[id]);
+}
 
 // Whole formatted strings only: Hermes leaves out `hour` and `minute` from `formatToParts`.
 const formatters = new Map<string, { date: Intl.DateTimeFormat; time: Intl.DateTimeFormat }>();
@@ -234,9 +256,22 @@ const clamp = (text: string, max: number) => {
 const decodeDeferral = Schema.decodeUnknownOption(KinDeferralCard);
 const isKinChatError = Schema.is(KinChatError);
 
+/** Who asked for a shared chat's own reminder or routine, under its title; null on any other. */
+export function kinAskedByLine(askedBy: KinCardAsker | undefined): string | null {
+  if (askedBy === undefined) return null;
+  return askedBy.left === true
+    ? "Asked by someone who has left."
+    : `Asked by ${clamp(askedBy.name, 80) || "someone"}.`;
+}
+
 type CardBody = Pick<KinDeferralCardView, "phase" | "lines" | "countdown" | "actions">;
 
-function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody {
+function cardBody(
+  card: KinDeferralCard,
+  timeZone: string | undefined,
+  ownerLevel: boolean | undefined,
+): CardBody {
+  const actions = hostActions(card, ownerLevel);
   const dueMs = Date.parse(card.dueAt);
   // The host writes `text` in the owner's zone; show it only when it adds to the local lines.
   const text = clamp(card.text, 280);
@@ -249,10 +284,15 @@ function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody
     case undefined:
       return {
         phase: "confirmed",
-        lines: withText([`Set for ${formatKinDeferralTime(dueMs, timeZone)}. ${then[card.onDue]}`]),
+        lines: withText([
+          `Set for ${formatKinDeferralTime(dueMs, timeZone)}. ${
+            card.askedBy !== undefined && card.onDue === "remind"
+              ? "I'll remind this chat then."
+              : then[card.onDue]
+          }`,
+        ]),
         countdown: { to: dueMs, kind: "due" },
-        // The host takes only Undo here until its owner-tap dispatcher lands for Change and Just remind me.
-        actions: [KIN_DEFERRAL_ACTIONS.undo],
+        actions,
       };
     case "heads_up": {
       // The host's text repeats the start time in the owner's zone, so the local lines replace it.
@@ -266,7 +306,7 @@ function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody
             ? [starting]
             : [`This was due at ${formatKinDeferralClock(dueMs, timeZone)}.`, starting],
         countdown: { to: startMs, kind: "start" },
-        actions: DECISION_ACTIONS,
+        actions,
       };
     }
     case "asked":
@@ -280,10 +320,16 @@ function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody
               ]
             : [text],
         countdown: null,
-        actions: DECISION_ACTIONS,
+        actions,
       };
     case "started":
-      return { phase: "started", lines: withText(["Started."]), countdown: null, actions: [] };
+      // The work was handed over; its turn may still wait, so the line says who was asked.
+      return {
+        phase: "started",
+        lines: [text === "" ? kinAskedToStart(card.agent) : text],
+        countdown: null,
+        actions: [],
+      };
   }
 }
 
@@ -291,15 +337,19 @@ export function kinDeferralCardView(
   widget: KinWidget,
   /** The device timezone when omitted; tests pass one. */
   timeZone?: string,
+  /** False for a teammate: they are offered Undo only. Unknown offers what the host says. */
+  ownerLevel?: boolean,
 ): KinDeferralCardView | null {
   const decoded = decodeDeferral(widget.state);
   if (Option.isNone(decoded)) return null;
   const card = decoded.value;
   const title = clamp(card.title, 200) || (card.onDue === "remind" ? "Reminder" : "Scheduled work");
-  const body: CardBody =
+  const shown: CardBody =
     widget.closedAt === null
-      ? cardBody(card, timeZone)
+      ? cardBody(card, timeZone, ownerLevel)
       : { phase: "closed", lines: ["Closed."], countdown: null, actions: [] };
+  const asked = kinAskedByLine(card.askedBy);
+  const body = asked === null ? shown : { ...shown, lines: [...shown.lines, asked] };
   // "Deferral" is Kin's word, not the owner's: they asked for a reminder or for work to wait.
   const kind = card.onDue === "remind" ? "Reminder" : "Scheduled";
   const eyebrow = body.phase === "asked" ? "Needs your decision" : kind;
@@ -309,20 +359,22 @@ export function kinDeferralCardView(
     itemId: card.itemId,
     eyebrow,
     title,
+    agent: card.agent ?? null,
     ...body,
     accessibilityLabel: kinSentences([`${kind}: ${title}`, ...body.lines]),
   };
 }
 
 /**
- * Kin's own note that it set something for later. False while the card asks for a decision,
- * which still needs its buttons.
+ * Kin's own note that it set something for later. False while the card is open and asks for a
+ * decision or the host lists a tap on it (the confirm card's Undo), which still need their buttons.
  */
 export function kinDeferralIsBookkeeping(widget: KinWidget): boolean {
   const decoded = decodeDeferral(widget.state);
   if (Option.isNone(decoded)) return false;
-  const { phase } = decoded.value;
-  return !(widget.closedAt === null && (phase === "heads_up" || phase === "asked"));
+  const { phase, actions } = decoded.value;
+  const tappable = phase === "heads_up" || phase === "asked" || (actions?.length ?? 0) > 0;
+  return !(widget.closedAt === null && tappable);
 }
 
 type KinCardTarget = Pick<KinDeferralCardView, "widgetId" | "revision" | "itemId">;
@@ -360,33 +412,40 @@ export function kinActionFailureNotice(
     case "widget_changed":
       return { kind: "stale", text: KIN_STALE_CARD_TEXT };
     case "not_allowed":
+      if (cause.message === KIN_ASKER_ONLY_REFUSAL)
+        return { kind: "error", text: KIN_ASKER_ONLY_REFUSAL };
       return {
         kind: "error",
         text: "Kin didn't take that answer. Tell your agent in the chat instead.",
       };
     case "invalid_state":
-      return { kind: "error", text: "This card can't take that answer any more." };
+      return {
+        kind: "error",
+        text: cause.message.endsWith(KIN_AGENT_PAUSED_REFUSAL_END)
+          ? cause.message
+          : "This card can't take that answer any more.",
+      };
     default:
       return { kind: "error", text: kinFailureText(cause, KIN_SEND_FAILED_TEXT) };
   }
 }
 
-/** Why the host may refuse [Start now] (TRIG-8's `Deferrals.act`), in the owner's words. */
-export const KIN_START_NOW_REFUSALS = {
-  stopped: "Starts are paused for now. Ask your agent in the chat.",
-  below_l2: "Your agent can't start work from here. Ask it in the chat.",
-} as const satisfies Record<string, string>;
-
-export function kinStartNowRefusalNotice(
-  reason: keyof typeof KIN_START_NOW_REFUSALS,
-): KinCardNotice {
-  return { kind: "error", text: KIN_START_NOW_REFUSALS[reason] };
-}
-
 export type KinActionOutcome =
   | { readonly status: "ignored" }
   | { readonly status: "sent" }
-  | { readonly status: "failed"; readonly notice: KinCardNotice };
+  | {
+      readonly status: "failed";
+      readonly notice: KinCardNotice;
+      /** The host says the card on screen is behind it: read it again, never leave it answerable. */
+      readonly behind?: true;
+    };
+
+/**
+ * A refusal that means the card was settled or changed since this screen drew it. Any other refusal
+ * leaves the card answerable: the person may try again.
+ */
+const kinCardBehindHost = (cause: unknown) =>
+  isKinChatError(cause) && cause.reason === "widget_changed";
 
 /**
  * Posts card taps one at a time: a tap while another is in flight is ignored, so a double
@@ -427,9 +486,11 @@ export function createKinCardActions<
       onStart?.();
       const result = await options.post(options.toInput(view, actionId, clientActionId));
       if (result.ok) return { status: "sent" };
-      return isKinChatError(result.cause)
-        ? { status: "failed", notice: failureNotice(result.cause, actionId) }
-        : transportFailure();
+      if (!isKinChatError(result.cause)) return transportFailure();
+      const notice = failureNotice(result.cause, actionId);
+      return kinCardBehindHost(result.cause)
+        ? { status: "failed", notice, behind: true }
+        : { status: "failed", notice };
     } catch {
       return transportFailure();
     } finally {
@@ -453,6 +514,8 @@ const SERVER_DONE: Partial<Record<KinDeferralActionId, string>> = {
   snooze_1h: "Snoozed.",
   snooze_tomorrow: "Snoozed.",
   run_now: "Starting a run now.",
+  monday: "Moved to Monday.",
+  cancel: "Cancelled.",
   pause: "Paused.",
   resume: "Resumed.",
   delete: "Deleted.",
@@ -466,19 +529,30 @@ export function kinCardStatusAfter(
   outcome: Exclude<KinActionOutcome, { readonly status: "ignored" }>,
   actionId: KinDeferralActionId,
   revision: number,
+  /** The agent a Start now asks (`KinDeferralCardView.agent`). */
+  agent: string | null = null,
 ): KinCardStatus {
   if (outcome.status === "failed") return { revision, notice: outcome.notice, holding: false };
   if (actionId === "change" || actionId === "edit")
     return { revision, notice: { kind: "sent", text: KIN_CHANGE_SENT_TEXT }, holding: false };
   const text =
-    actionId === "undo" ? KIN_UNDONE_TEXT : (SERVER_DONE[actionId] ?? KIN_SENT_CARD_TEXT);
+    actionId === "undo"
+      ? KIN_UNDONE_TEXT
+      : actionId === "start_now"
+        ? kinAskedToStart(agent)
+        : (SERVER_DONE[actionId] ?? KIN_SENT_CARD_TEXT);
   return { revision, notice: { kind: "sent", text }, holding: true };
 }
 
-/** A status raised on an older revision no longer describes the card. */
-export function visibleKinCardStatus(
-  status: KinCardStatus | null,
+/**
+ * A status raised on an older revision no longer describes the card, except a refusal: the person
+ * who tapped is told it once, whatever the card shows by the time the answer arrives.
+ */
+export function visibleKinCardStatus<Status extends KinCardStatus>(
+  status: Status | null,
   revision: number,
-): KinCardStatus | null {
-  return status !== null && status.revision === revision ? status : null;
+): Status | null {
+  if (status === null) return null;
+  if (status.revision === revision) return status;
+  return status.notice !== null && status.notice.kind !== "sent" && !status.holding ? status : null;
 }

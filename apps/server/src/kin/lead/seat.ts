@@ -86,7 +86,7 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
     .filter((one) => one.agentId !== agentId)
     .map((one) => {
       const held = load?.("agent", one.agentId);
-      return `${colleagueLine(one.name, one.body)}${
+      return `${colleagueLine(one)}${
         held === undefined
           ? ""
           : ` (${held.open} open${held.late > 0 ? `, ${held.late} late` : ""})`

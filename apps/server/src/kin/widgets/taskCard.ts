@@ -1,6 +1,7 @@
 import {
   KinOrgId,
   KinTaskCardState,
+  type KinTaskFailure,
   type KinWidget,
   type OrchestrationV2ThreadShell,
   type ThreadId,
@@ -11,7 +12,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
+import { modelNotOffered } from "../lead/leadModels.ts";
 
 export const taskCardEquivalent = Schema.toEquivalence(KinTaskCardState);
 export const decodeTaskCard = Schema.decodeUnknownSync(KinTaskCardState);
@@ -49,20 +52,43 @@ const pullRequestsFor = (shell: OrchestrationV2ThreadShell) => {
   return shown.map(({ url, number }) => ({ url, number }));
 };
 
+/** What stopped a failed task, from its provider's failure: null when it is none of these. */
+const failureOf = (
+  shell: OrchestrationV2ThreadShell,
+  model: string | null,
+): KinTaskFailure | null => {
+  const code = shell.lastErrorCode ?? null;
+  if (shell.lastErrorClass === "usage_limit") return "usage_limit";
+  if (
+    shell.lastErrorClass === "permission_error" ||
+    code === "authentication_failed" ||
+    code === "api_error_401"
+  )
+    return "signed_out";
+  if (shell.lastErrorClass === "transport_error") return "unreachable";
+  if (model !== null && modelNotOffered({ code, message: shell.lastError }, model))
+    return "model_not_offered";
+  return null;
+};
+
 export const taskCardState = (
   state: KinTaskCardState,
   shell: OrchestrationV2ThreadShell,
   updatedAt: string,
-): KinTaskCardState => ({
-  ...state,
-  status: statusFor(shell),
-  pullRequests: pullRequestsFor(shell),
-  lastError:
-    shell.archivedAt !== null || shell.deletedAt !== null
-      ? "Thread no longer available"
-      : (shell.lastError ?? null),
-  updatedAt,
-});
+): KinTaskCardState => {
+  const status = statusFor(shell);
+  return {
+    ...Struct.omit(state, ["failure"]),
+    status,
+    pullRequests: pullRequestsFor(shell),
+    lastError:
+      shell.archivedAt !== null || shell.deletedAt !== null
+        ? "Thread no longer available"
+        : (shell.lastError ?? null),
+    ...(status === "failed" ? { failure: failureOf(shell, state.model) } : {}),
+    updatedAt,
+  };
+};
 
 export class TaskCardIndex extends Context.Service<
   TaskCardIndex,

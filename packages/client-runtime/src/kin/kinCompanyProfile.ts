@@ -26,6 +26,7 @@ export const KIN_COMPANY = {
   cancel: "Cancel",
   saved: "Saved.",
   notSet: "Not set",
+  notRegistered: "Not registered for GST",
   timeZone: "Time zone",
   timeZoneUse: "Check-ins, due days and your agents' times follow it.",
   /** How it changes: the owner's device sets it once per app run (`createKinOwnerTimeZoneSync`). */
@@ -34,12 +35,14 @@ export const KIN_COMPANY = {
   timeZoneFromHost:
     "None set yet, so Kin uses the computer's. Open Kin on your phone to set yours.",
   empty: "Nothing here yet. Add what goes on your invoices.",
+  /** The phone reads these; they are changed on the computer. */
+  onComputer: "Change these, the brand and the templates in Kin on your computer.",
   /** A new company's suggested country, the device's, which it takes only with a tap. */
   useCountry: (name: string) => `Use ${name}?`,
   changed:
     "These changed while you were editing. What you typed is still here. Check what's new, then save again.",
   onlyOwner: {
-    title: "Not available",
+    title: "Company details aren't open to you",
     detail: "Company details are kept by whoever runs this Kin.",
   },
   noKin: {
@@ -58,6 +61,29 @@ export const KIN_COMPANY = {
   },
 };
 
+/** Web Settings → Company details, said to whoever runs the company. */
+export const KIN_COMPANY_SETTINGS = {
+  purpose:
+    "Your company on paper, as invoices and receipts show it, seen only by you and your co-owners.",
+  company: "Company",
+  companyDetail: "Agents read these only for work that needs them, like an invoice.",
+  bank: "Bank account",
+  bankNeeded: "Invoices need it",
+  legalName: "Name and address",
+  notSet: "Not set",
+  editTitle: "Edit company details",
+  save: "Save details",
+  countryHelp: "Its two-letter code, like IN, GB or US.",
+  exportRow: "Download everything",
+  exportDetail: "A copy of your company's work in Kin, in one zip",
+  exportSubmit: "Download",
+  timeAndLimits: "Time and limits",
+  timeZoneDetail: (zone: string) => `${zone} · check-ins and due days follow it`,
+  timeZoneFromHost: (zone: string) => `${zone}, this computer's · none set yet`,
+  timeZoneFailed: "Couldn't change the time zone.",
+  takeZone: (zone: string) => `Use ${zone}`,
+};
+
 export type KinCompanyFieldId =
   | "legalName"
   | "tradeName"
@@ -67,6 +93,7 @@ export type KinCompanyFieldId =
   | "taxName"
   | "taxRate"
   | "gstin"
+  | "notRegistered"
   | "pan"
   | "placeOfSupply"
   | "sac"
@@ -93,6 +120,12 @@ interface FieldSpec {
   readonly problem?: string;
   /** Shown only for a company in India, or only for one elsewhere. */
   readonly india?: boolean;
+  /** An invoice needs it: read as "Not set" while empty, so a gap is seen. */
+  readonly invoice?: true;
+  /** A yes-or-no choice: the draft holds "yes" or "". */
+  readonly choice?: true;
+  /** Means something only for a company registered for its tax: no gap and no field without it. */
+  readonly registered?: true;
 }
 
 /** The form in the order an invoice needs it. */
@@ -103,13 +136,14 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
   {
     title: "Company",
     fields: [
-      { id: "legalName", label: "Legal name" },
+      { id: "legalName", label: "Legal name", invoice: true },
       { id: "tradeName", label: "Trading name" },
       {
         id: "address",
         label: "Registered address",
         placeholder: "Street, city and postal code",
         multiline: true,
+        invoice: true,
       },
     ],
   },
@@ -121,6 +155,7 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         label: "Country",
         placeholder: "Two-letter code",
         code: true,
+        invoice: true,
         problem: "A country is its two-letter code, like GB, US or IN.",
       },
       {
@@ -147,8 +182,10 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         label: "GSTIN",
         india: true,
         code: true,
+        invoice: true,
         problem: "A GSTIN is 15 characters, like 29ABCDE1234F1Z5.",
       },
+      { id: "notRegistered", label: "Not registered for GST", india: true, choice: true },
       {
         id: "pan",
         india: true,
@@ -156,16 +193,24 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         code: true,
         problem: "A PAN is 10 characters, like ABCDE1234F.",
       },
-      { id: "placeOfSupply", india: true, label: "Place of supply" },
+      {
+        id: "placeOfSupply",
+        india: true,
+        label: "Place of supply",
+        invoice: true,
+        registered: true,
+      },
       {
         id: "sac",
         india: true,
+        registered: true,
         label: "Usual SAC code",
         problem: "A SAC code is 4 to 8 digits.",
       },
       {
         id: "lutNumber",
         india: true,
+        registered: true,
         label: "LUT ARN, for exports",
         code: true,
         problem: "An LUT ARN is 8 to 20 letters and digits.",
@@ -173,6 +218,7 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
       {
         id: "lutDate",
         india: true,
+        registered: true,
         label: "LUT filed on",
         day: true,
         problem: "Write the day as YYYY-MM-DD, like 2026-04-01.",
@@ -182,11 +228,12 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
   {
     title: "Bank",
     fields: [
-      { id: "accountName", label: "Account name" },
+      { id: "accountName", label: "Account name", invoice: true },
       {
         id: "accountNumber",
         label: "Account number",
         code: true,
+        invoice: true,
         problem: "An account number is 6 to 34 letters and digits.",
       },
       {
@@ -194,9 +241,10 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         india: true,
         label: "IFSC",
         code: true,
+        invoice: true,
         problem: "An IFSC is 11 characters, like HDFC0001234.",
       },
-      { id: "bankName", label: "Bank" },
+      { id: "bankName", label: "Bank", invoice: true },
       { id: "branch", label: "Branch" },
       {
         id: "upi",
@@ -250,6 +298,7 @@ const valid: Record<KinCompanyFieldId, (value: string | null) => boolean> = {
   tradeName: Schema.is(KinCompanyProfileData.fields.tradeName),
   address: Schema.is(KinCompanyProfileData.fields.address),
   gstin: Schema.is(KinCompanyProfileData.fields.gstin),
+  notRegistered: () => true,
   pan: Schema.is(KinCompanyProfileData.fields.pan),
   placeOfSupply: Schema.is(KinCompanyProfileData.fields.placeOfSupply),
   sac: Schema.is(KinCompanyProfileData.fields.sac),
@@ -263,6 +312,7 @@ const valid: Record<KinCompanyFieldId, (value: string | null) => boolean> = {
   upi: Schema.is(KinCompanyBank.fields.upi),
 };
 
+const YES = "yes";
 const stored = (profile: KinCompanyProfile, id: KinCompanyFieldId): string | null => {
   if (isBank(id)) return profile.bank[id];
   switch (id) {
@@ -274,6 +324,8 @@ const stored = (profile: KinCompanyProfile, id: KinCompanyFieldId): string | nul
       return profile.tax?.name ?? null;
     case "taxRate":
       return profile.tax?.rate ?? null;
+    case "notRegistered":
+      return profile.taxRegistered === false ? YES : null;
     default:
       return profile[id] ?? null;
   }
@@ -310,9 +362,9 @@ export const kinCompanyDraftOf = (
 };
 
 /** "India" for IN, or the code where this device can't name it. */
-const countryName = (code: string): string => {
+export const kinCountryName = (code: string): string => {
   try {
-    return new Intl.DisplayNames(undefined, { type: "region" }).of(code) ?? code;
+    return new Intl.DisplayNames(undefined, { type: "region", fallback: "none" }).of(code) ?? code;
   } catch {
     return code;
   }
@@ -330,7 +382,7 @@ export const kinCompanyCountrySuggestion = (
   !waiting || region === null || draft.country.trim() !== "" || !valid.country(region)
     ? null
     : {
-        label: KIN_COMPANY.useCountry(countryName(region)),
+        label: KIN_COMPANY.useCountry(kinCountryName(region)),
         accept: () => ({ ...draft, country: region }),
       };
 
@@ -346,10 +398,27 @@ const kinCompanySections = (country: string | null | undefined) => {
   }));
 };
 
+/**
+ * The draft after a tap on a choice: saying the company isn't registered clears its tax number,
+ * and typing a number unsays it.
+ */
+export const kinCompanyDraftEdit = (
+  draft: KinCompanyDraft,
+  id: KinCompanyFieldId,
+  value: string | boolean,
+): KinCompanyDraft => {
+  if (id === "notRegistered")
+    return value === true
+      ? { ...draft, notRegistered: YES, gstin: "" }
+      : { ...draft, notRegistered: "" };
+  const next = { ...draft, [id]: typeof value === "string" ? value : "" };
+  return id === "gstin" && String(value).trim() !== "" ? { ...next, notRegistered: "" } : next;
+};
+
 /** The sections while editing: they follow the country typed, once it is a whole code. */
 export const kinCompanyEditSections = (profile: KinCompanyProfile, draft: KinCompanyDraft) => {
   const typed = draft.country.trim().toUpperCase();
-  return kinCompanySections(
+  const sections = kinCompanySections(
     profile.country === undefined
       ? undefined
       : typed === ""
@@ -358,6 +427,11 @@ export const kinCompanyEditSections = (profile: KinCompanyProfile, draft: KinCom
           ? typed
           : profile.country,
   );
+  if (draft.notRegistered === "") return sections;
+  return sections.map((section) => ({
+    ...section,
+    fields: section.fields.filter((field) => field.registered !== true),
+  }));
 };
 
 /** Nothing has been filled in yet. */
@@ -398,6 +472,7 @@ export function kinCompanyInput(
       continue;
     }
     if (isMoneyField(field.id)) money[field.id] = value;
+    else if (field.id === "notRegistered") top.taxRegistered = value === null ? null : false;
     else (isBank(field.id) ? bank : top)[field.id] = value;
   }
   if (money.country !== undefined) top.country = money.country;
@@ -436,14 +511,48 @@ export function kinCompanyRead(profile: KinCompanyProfile): ReadonlyArray<{
     readonly id: KinCompanyFieldId;
     readonly label: string;
     readonly value: string;
+    /** Empty, and an invoice needs it: `value` is "Not set". */
+    readonly missing: boolean;
   }>;
 }> {
+  // A UPI id is a way to be paid too: with one, the account's details are no gap.
+  const paid = profile.bank.accountNumber !== null || profile.bank.upi !== null;
   return kinCompanySections(profile.country).map((section) => ({
     title: section.title,
     rows: section.fields.flatMap((field) => {
+      if (field.choice) return [];
+      // A company not registered has no tax number to set: that is no gap.
+      if (field.id === "gstin" && profile.taxRegistered === false)
+        return [
+          { id: field.id, label: field.label, value: KIN_COMPANY.notRegistered, missing: false },
+        ];
       const value = stored(profile, field.id);
-      if (value === null) return [];
-      return [{ id: field.id, label: field.label, value: field.day ? readDay(value) : value }];
+      if (value === null && field.registered === true && profile.taxRegistered === false) return [];
+      const missing = value === null && field.invoice === true && !(paid && isBank(field.id));
+      if (value === null && !missing) return [];
+      const shown = value === null ? KIN_COMPANY.notSet : field.day ? readDay(value) : value;
+      return [{ id: field.id, label: field.label, value: shown, missing }];
     }),
   }));
+}
+
+/**
+ * The phone's one screen to read: the country in words and the tax as one line ("VAT at 20%");
+ * the year's first month stays on the computer's page.
+ */
+export function kinCompanyGlance(profile: KinCompanyProfile): ReturnType<typeof kinCompanyRead> {
+  const rate = profile.tax?.rate ?? null;
+  return kinCompanyRead(profile)
+    .map((section) => ({
+      ...section,
+      rows: section.rows.flatMap((row) => {
+        if (row.id === "financialYearStartMonth" || row.id === "taxRate") return [];
+        if (row.missing) return [row];
+        if (row.id === "country") return [{ ...row, value: kinCountryName(row.value) }];
+        if (row.id === "taxName" && rate !== null)
+          return [{ ...row, value: `${row.value} at ${rate}%` }];
+        return [row];
+      }),
+    }))
+    .filter((section) => section.rows.length > 0);
 }

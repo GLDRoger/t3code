@@ -36,7 +36,7 @@ const keybindings: ResolvedKeybindingsConfig = (
 }));
 
 function fakeRouter(pathname: string) {
-  const location = { pathname, href: pathname };
+  const location = { pathname, href: pathname, state: {} };
   const navigate = vi.fn(async (to: { readonly to?: string; readonly href?: string }) => {
     location.pathname = to.to ?? to.href ?? location.pathname;
     location.href = location.pathname;
@@ -96,6 +96,50 @@ describe("registerKinListCommands", () => {
     press(row.key);
 
     expect(t3).toHaveBeenCalledTimes(row.reaches ? 1 : 0);
+  });
+
+  it("keeps ⌘1 to ⌘5 on the destinations and gives Numbers the digit after them", () => {
+    using stack = new DisposableStack();
+    const registry = stack.adopt(
+      AtomRegistry.make({
+        initialValues: [
+          [kinHostAtom, KIN_HOST],
+          [primaryServerKeybindingsAtom, keybindings],
+        ],
+      }),
+      (made) => made.dispose(),
+    );
+    const nav = stack.adopt(document.body.appendChild(document.createElement("nav")), (made) =>
+      made.remove(),
+    );
+    const clicked: Array<string> = [];
+    for (const name of ["chats", "tasks", "money", "clients", "docs", "numbers"]) {
+      const link = nav.appendChild(document.createElement("a"));
+      link.textContent = name;
+      link.setAttribute(name === "numbers" ? "data-kin-numbers" : "data-kin-destination", name);
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        clicked.push(name);
+      });
+    }
+    const { router } = fakeRouter("/kin/kin-host/org/tasks");
+    stack.defer(registerKinListCommands(router, registry));
+    const digit = (n: number) =>
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          code: `Digit${n}`,
+          key: String(n),
+          metaKey: true,
+          ctrlKey: true,
+          cancelable: true,
+          bubbles: true,
+        }),
+      );
+
+    digit(5);
+    digit(6);
+
+    expect(clicked).toEqual(["docs", "numbers"]);
   });
 
   it("leads from a coding thread back into Kin, and is no way out of Kin", () => {

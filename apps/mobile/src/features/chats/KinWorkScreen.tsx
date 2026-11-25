@@ -19,7 +19,7 @@ import {
   type KinWorkPlace,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import { EnvironmentId, KinOrgId, KinPersonId, KinRecordKey } from "@t3tools/contracts";
+import { EnvironmentId, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { View } from "react-native";
@@ -38,7 +38,7 @@ import { KinMoneyArea } from "./KinWorkMoney";
 import { KinListBanner } from "./components/KinListBanner";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { useKinTab, kinTabFoot } from "./components/KinTab";
-import { useKinViewerScope } from "./state/kinChatOnly";
+import { useKinIsOwnerLevel, useKinViewerScope } from "./state/kinChatOnly";
 import { retryKinAccess } from "./state/kinClient";
 import { useKinOpenPlace } from "./state/kinHomeTab";
 import { useKinMoneySummary } from "./state/useKinMoney";
@@ -50,33 +50,17 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { useKinClientCounts, useKinDocsRecent } from "./state/useKinWorkHome";
-
-export type KinWorkParams = {
-  readonly environmentId: string;
-  readonly orgId: string;
-  /** The place that opens: `tasks`, `clients`, `projects`, `docs` or `money`; Tasks otherwise. */
-  readonly show?: string;
-  /** The client the tasks start narrowed to, or a new task starts under. */
-  readonly party?: string;
-  readonly partyName?: string;
-  readonly project?: string;
-  readonly projectName?: string;
-  /** `theirs` when a new task is something the client owes. */
-  readonly side?: string;
-  /** Tasks starts narrowed to what this person holds, from their page's "See all in Tasks". */
-  readonly person?: string;
-};
+import { kinWorkRefParam, type KinWorkParams } from "./state/kinWorkParams";
+import { useKinSectionNamed, useKinSectionOn, useKinShell } from "./state/useKinShell";
+import {
+  kinSectionNamed,
+  kinSectionOffNotice,
+  kinSectionOn,
+} from "@t3tools/client-runtime/kin/kinShell";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
-const decodeKey = Schema.decodeUnknownOption(KinRecordKey);
 const decodePerson = Schema.decodeUnknownOption(KinPersonId);
-
-/** A client or project named in a link: its handle, and the name to show until it is read. */
-export function kinWorkRefParam(key: string | undefined, title: string | undefined) {
-  const held = Option.getOrNull(decodeKey(key));
-  return held === null ? null : { key: held, title: title ?? held };
-}
 
 /**
  * The ways in from the chat list over coding threads, where there is no dock: one row per place,
@@ -95,20 +79,25 @@ function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | n
   const hostClients = kinWorkHostClients(summary);
   const money = useKinMoneySummary(props, { enabled: true }).state;
   const docs = useKinDocsRecent(props);
-  const counts = useKinClientCounts(props, hostClients);
+  // A place whose section the company turned off has no row.
+  const moneyOn = useKinSectionOn(props.environmentId, "money");
+  const clientsOn = useKinSectionOn(props.environmentId, "clients");
+  const counts = useKinClientCounts(props, hostClients && clientsOn);
   const scope = useKinViewerScope(props.environmentId);
   return (
     <>
       <KinWorkEntryRow summary={kinWorkEntrySummary(summary)} onPress={() => open("tasks")} />
-      {money._tag === "refused" || money._tag === "failed" ? null : (
+      {!moneyOn || money._tag === "refused" || money._tag === "failed" ? null : (
         <KinPlaceEntryRow
+          environmentId={props.environmentId}
           place="money"
           summary={money._tag === "ready" ? kinMoneyLine(money.value, scope) : null}
           onPress={() => open("money")}
         />
       )}
-      {!hostClients ? null : (
+      {!hostClients || !clientsOn ? null : (
         <KinPlaceEntryRow
+          environmentId={props.environmentId}
           place="clients"
           summary={counts === null ? null : kinClientsLine(counts.clients, counts.projects)}
           onPress={() => open("clients")}
@@ -116,6 +105,7 @@ function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | n
       )}
       {docs.refused ? null : (
         <KinPlaceEntryRow
+          environmentId={props.environmentId}
           place="docs"
           summary={docs.docs === null ? null : kinDocsLine(docs.docs.total, docs.docs.changed)}
           onPress={() => open("docs")}
@@ -133,11 +123,12 @@ export const KIN_PLACE_SYMBOL = {
 } as const satisfies Record<KinWorkPlace, AppSymbolName>;
 
 function KinPlaceEntryRow(props: {
+  readonly environmentId: KinWorkTarget["environmentId"];
   readonly place: KinWorkPlace;
   readonly summary: string | null;
   readonly onPress: () => void;
 }) {
-  const title = KIN_WORK_HOME.places[props.place];
+  const title = useKinSectionNamed(props.environmentId)(KIN_WORK_HOME.places[props.place]);
   const summary = props.summary ?? "…";
   return (
     <>
@@ -239,7 +230,21 @@ export function KinPlace(
   const directory = useKinWorkDirectory(target, ready);
   const { place } = props;
   const choices = useKinWorkChoices(target, ready && hostClients && place.place === "tasks");
-  const title = KIN_WORK_HOME.places[place.place];
+  const shell = useKinShell(props.environmentId);
+  const ownerLevel = useKinIsOwnerLevel(props.environmentId);
+  const clientsOn = kinSectionOn(shell, "clients");
+  const title = kinSectionNamed(shell, KIN_WORK_HOME.places[place.place]);
+  // The company turned this place's section off: it says so, for everyone.
+  const sectionOff =
+    place.place === "clients" || place.place === "money"
+      ? kinSectionOffNotice(shell, place.place, ownerLevel)
+      : null;
+  if (sectionOff !== null)
+    return (
+      <KinWorkMessage title={title}>
+        <EmptyState variant="plain" {...sectionOff} />
+      </KinWorkMessage>
+    );
   if (state._tag === "ready") {
     const shared = { ...target, live: state.live, stale: state.stale, directory };
     // An older server has tasks only, and a link to anything else says why.
@@ -257,7 +262,7 @@ export function KinPlace(
       <KinTasksList
         {...shared}
         title={title}
-        choices={hostClients ? choices : null}
+        choices={hostClients && clientsOn ? choices : null}
         initial={{
           ...KIN_WORK_DEFAULT_FILTER,
           party: props.party,

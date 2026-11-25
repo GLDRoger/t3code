@@ -7,6 +7,7 @@ import {
   type KinPersonId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -16,23 +17,37 @@ import type { WriteAudience } from "../chat/KinChatRepository.ts";
 import type { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as Reach from "../lead/Reach.ts";
-import { heldGivenBody, isGivenHeld } from "../work/assignNotices.ts";
-import { personQuietUntil } from "./quietHold.ts";
+import type { KinPushSender } from "../push/KinPushSender.ts";
+import { aboutOf, noteAbout } from "../push/pushAbout.ts";
+import { factsStand } from "../pulse/factState.ts";
+import { reservedByCheckIn } from "../pulse/leftForCheckIn.ts";
+import { heldGivenBody, isGivenHeld, TASK_NEWS } from "../work/assignNotices.ts";
+import { ANSWERS_WITHIN_MS, personQuietUntil, relayWakeup, sameAsk } from "./quietHold.ts";
 
 /** A delivered held line's message id is this before its first hold's id. */
 export const HELD_ID = "kin-held:";
+/**
+ * A teammate's direct message that reached someone in their quiet hours without ringing: its id
+ * follows. Posted already, so it is never a chat line; their banner waits for the hours' end.
+ */
+export const DM_NEWS = "kin-dm-news:";
 const decodeRelay = Schema.decodeUnknownOption(Schema.fromJsonString(KinMessageRelay));
 
 /**
  * Posts every held line now due, oldest first, one message per chat and kind. The message id
- * comes from the first line held, so a run repeated after a crash finds its own post.
+ * comes from the first line held, so a run repeated after a crash finds its own post. Task news
+ * due goes as one banner per person and mover, and a direct message's waited ring as one per
+ * sender's chat; neither posts anything.
  */
 export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
   orgId: KinOrgId,
   chat: Pick<KinChatService["Service"], "notice">,
+  push?: Pick<KinPushSender["Service"], "notify">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
+  yield* deliverNews(orgId, now, push);
+  yield* deliverDms(orgId, now, push);
   const rows = yield* sql<{
     holdId: string;
     chatId: string;
@@ -43,10 +58,16 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
     agentId: KinAgentId | null;
     waits: number;
     relay: string | null;
+    heldAt: number;
+    deliverAt: number;
   }>`SELECT hold_id AS "holdId", chat_id AS "chatId", person_id AS "personId", kind, body, audience,
-      agent_id AS "agentId", waits, relay_json AS relay
+      agent_id AS "agentId", waits, relay_json AS relay, held_at AS "heldAt",
+      deliver_at AS "deliverAt"
     FROM kin_held_posts
     WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
+      AND substr(kind, 1, ${TASK_NEWS.length}) != ${TASK_NEWS}
+      AND substr(kind, 1, ${DM_NEWS.length}) != ${DM_NEWS}
+      AND NOT ${reservedByCheckIn(sql)}
     ORDER BY held_at, rowid`;
   const groups = new Map<string, Array<(typeof rows)[number]>>();
   for (const row of rows) {
@@ -76,6 +97,16 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
       yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
       continue;
     }
+    // Kin's notice of facts that all settled while it waited says nothing true any more.
+    const facts = yield* aboutOf(orgId, first.kind, "fact:");
+    if (facts.length > 0 && !(yield* factsStand(orgId, first.personId, facts, now))) {
+      yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+      continue;
+    }
+    if (yield* urgentSince(orgId, first)) {
+      yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+      continue;
+    }
     // An agent's words to a pair restricted since they were held go nowhere; the asker hears so.
     const closed = yield* restrictedSince(orgId, first);
     if (closed !== undefined) {
@@ -102,6 +133,12 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
           });
           yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
           WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+          // Its push is about what the held line was: the same facts.
+          yield* noteAbout(
+            orgId,
+            `${HELD_ID}${first.holdId}`,
+            facts.map((key) => `fact:${key}`),
+          );
         }),
       )
       .pipe(
@@ -119,12 +156,112 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
   return posted;
 });
 
+/** Task news due: each person's from each mover is one banner, once their hold, if any, is over. */
+const deliverNews = Effect.fn("KinQuiet.deliverNews")(function* (
+  orgId: KinOrgId,
+  now: number,
+  push: Pick<KinPushSender["Service"], "notify"> | undefined,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const due = yield* sql<{ holdId: string; personId: KinPersonId; by: string | null }>`SELECT
+      hold_id AS "holdId", person_id AS "personId", json_extract(body, '$.by') AS by
+    FROM kin_held_posts
+    WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
+      AND substr(kind, 1, ${TASK_NEWS.length}) = ${TASK_NEWS}
+    ORDER BY held_at, rowid`;
+  const bursts = new Map<string, Array<(typeof due)[number]>>();
+  for (const row of due) {
+    const key = `${row.personId}\0${row.by}`;
+    bursts.set(key, [...(bursts.get(key) ?? []), row]);
+  }
+  for (const burst of bursts.values()) {
+    const ids = burst.map((row) => row.holdId);
+    const quietUntil = yield* personQuietUntil(orgId, burst[0]!.personId, now);
+    if (quietUntil !== undefined) {
+      yield* sql`UPDATE kin_held_posts SET deliver_at = ${quietUntil}
+        WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+      continue;
+    }
+    // Told once: a banner lost to a crash after this is not rung twice.
+    yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
+      WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+    if (push !== undefined) yield* push.notify({ _tag: "tasks", orgId, holdIds: ids });
+  }
+});
+
+/** Direct messages whose ring waited out someone's quiet hours: one banner per sender's chat. */
+const deliverDms = Effect.fn("KinQuiet.deliverDms")(function* (
+  orgId: KinOrgId,
+  now: number,
+  push: Pick<KinPushSender["Service"], "notify"> | undefined,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const due = yield* sql<{ holdId: string; personId: KinPersonId; chatId: string }>`SELECT
+      hold_id AS "holdId", person_id AS "personId", chat_id AS "chatId"
+    FROM kin_held_posts
+    WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
+      AND substr(kind, 1, ${DM_NEWS.length}) = ${DM_NEWS}
+    ORDER BY held_at, rowid`;
+  const chats = new Map<string, Array<(typeof due)[number]>>();
+  for (const row of due) {
+    const key = `${row.personId}\0${row.chatId}`;
+    chats.set(key, [...(chats.get(key) ?? []), row]);
+  }
+  for (const group of chats.values()) {
+    const ids = group.map((row) => row.holdId);
+    const quietUntil = yield* personQuietUntil(orgId, group[0]!.personId, now);
+    if (quietUntil !== undefined) {
+      yield* sql`UPDATE kin_held_posts SET deliver_at = ${quietUntil}
+        WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+      continue;
+    }
+    yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
+      WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+    if (push !== undefined) yield* push.notify({ _tag: "dm", orgId, holdIds: ids });
+  }
+});
+
 type Held = {
   readonly personId: KinPersonId;
   readonly kind: string;
   readonly agentId: KinAgentId | null;
   readonly relay: string | null;
 };
+
+/**
+ * Whether, while this relay waited, its agent sent them an urgent one raised from the same chat:
+ * posted in their chat before this was due, not answering anything they wrote. Read at delivery,
+ * so it covers lines held before `urgentNow` withdrew them at send.
+ */
+const urgentSince = Effect.fn("KinQuiet.urgentSince")(function* (
+  orgId: KinOrgId,
+  held: Held & { readonly chatId: string; readonly heldAt: number; readonly deliverAt: number },
+) {
+  const wakeupId = relayWakeup(held.kind);
+  if (wakeupId === undefined || held.agentId === null) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const iso = (at: number) => DateTime.formatIso(DateTime.makeUnsafe(at));
+  const sent = yield* sql<{ key: string; at: string }>`SELECT
+      COALESCE(substr(client_message_id, 6), message_id) AS key, created_at AS at
+    FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${held.chatId}
+      AND author_kind = 'agent' AND author_agent_id = ${held.agentId} AND status = 'posted'
+      AND created_at > ${iso(held.heldAt)} AND created_at < ${iso(held.deliverAt)}
+      AND (substr(message_id, 1, 10) = 'kin-relay:'
+        OR substr(client_message_id, 1, 15) = 'send:kin-relay:')
+    ORDER BY seq`;
+  for (const row of sent) {
+    const twin = relayWakeup(row.key);
+    if (twin === undefined || !(yield* sameAsk(orgId, held.agentId, wakeupId, twin))) continue;
+    const at = Date.parse(row.at);
+    const [answered] = yield* sql`SELECT 1 FROM kin_messages
+      WHERE org_id = ${orgId} AND chat_id = ${held.chatId} AND author_person_id = ${held.personId}
+        AND origin_json IS NULL AND created_at > ${iso(at - ANSWERS_WITHIN_MS)}
+        AND created_at <= ${row.at}
+      LIMIT 1`;
+    if (answered === undefined) return true;
+  }
+  return false;
+});
 
 /** The pair a held line from an agent may no longer cross, by name; undefined when it may. */
 const restrictedSince = Effect.fn("KinQuiet.restrictedSince")(function* (

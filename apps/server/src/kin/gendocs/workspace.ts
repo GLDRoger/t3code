@@ -110,6 +110,8 @@ export type RecipeUndo =
       readonly restored: Revision | null;
     }
   | { readonly _tag: "refused"; readonly reason: string };
+// Only Kin writes commit messages here: a job's, a merge's and an undo's never read like these.
+const STARTER_SUBJECTS = ["Kin's starter recipes", "Kin's starter recipes, rendered by Kin"];
 const STARTER_RECIPES = Object.keys(STARTER_FILES).flatMap((file) => {
   const name = /^recipes\/([^/]+)\/RECIPE\.md$/.exec(file)?.[1];
   return name === undefined ? [] : [name];
@@ -275,24 +277,69 @@ export const layer = Layer.effect(
       path.join(root, ".git", "worktrees", workerId);
 
     const current = new Set<string>();
+    const treeAt = (root: string, ref: string, folder: string) =>
+      git(root, ["rev-parse", "--verify", "--quiet", `${ref}:${folder}`]).pipe(
+        Effect.orElseSucceed(() => ""),
+      );
+    /** The folder holds exactly today's starter files. */
+    const isToday = Effect.fn("KinWorkspace.isToday")(function* (root: string, folder: string) {
+      const files = Object.entries(STARTER_FILES).filter(([file]) => file.startsWith(`${folder}/`));
+      const held = (yield* git(
+        root,
+        ["ls-tree", "-r", "-z", "--name-only", DEFAULT_BRANCH, "--", folder],
+        {
+          raw: true,
+        },
+      ))
+        .split("\0")
+        .filter((file) => file !== "");
+      if (held.length !== files.length) return false;
+      for (const [file, text] of files) {
+        const stored = yield* git(root, ["cat-file", "blob", `${DEFAULT_BRANCH}:${file}`], {
+          raw: true,
+        }).pipe(Effect.orElseSucceed(() => undefined));
+        if (stored !== text) return false;
+      }
+      return true;
+    });
     /**
-     * A starter recipe no one has changed is replaced by today's starter: workspaces made before
-     * Kin rendered documents itself held script recipes another process ran.
+     * A starter recipe as some Kin wrote it, never changed or undone back to it, is replaced by
+     * today's starter; one someone changed is theirs and stays. A starter never there is added.
      */
     const upgradeStarters = Effect.fn("KinWorkspace.upgradeStarters")(function* (root: string) {
       let changed = false;
       for (const name of STARTER_RECIPES) {
-        const last = yield* lastChange(root, name);
-        const markdown = yield* git(
+        const folder = `recipes/${name}`;
+        const history = (yield* git(
           root,
-          ["cat-file", "blob", `${DEFAULT_BRANCH}:recipes/${name}/RECIPE.md`],
+          [
+            "log",
+            "--format=%H%x00%P%x00%s%x00%(trailers:only,unfold)%x1e",
+            DEFAULT_BRANCH,
+            "--",
+            folder,
+          ],
           { raw: true },
-        ).pipe(Effect.orElseSucceed(() => ""));
-        if (
-          last.changed._tag !== "starter" ||
-          markdown === STARTER_FILES[`recipes/${name}/RECIPE.md`]
-        )
-          continue;
+        ))
+          .split("\x1e")
+          .map((one) => one.trim().split("\0"))
+          .filter(([commit]) => commit !== undefined && commit !== "");
+        if (history.length > 0) {
+          const now = yield* treeAt(root, DEFAULT_BRANCH, folder);
+          if (now === "" || (yield* isToday(root, folder))) continue;
+          let starter = false;
+          for (const [commit = "", parents = "", subject = "", trailers = ""] of history)
+            if (
+              STARTER_SUBJECTS.includes(subject) &&
+              !parents.trim().includes(" ") &&
+              trailers.trim() === "" &&
+              (yield* treeAt(root, commit, folder)) === now
+            ) {
+              starter = true;
+              break;
+            }
+          if (!starter) continue;
+        }
         yield* git(root, ["rm", "-r", "-q", "--ignore-unmatch", "--", `recipes/${name}`]);
         for (const [file, text] of Object.entries(STARTER_FILES))
           if (file.startsWith(`recipes/${name}/`)) {
@@ -818,6 +865,8 @@ export const layer = Layer.effect(
         }
         yield* git(root, ["update-ref", `refs/heads/${DEFAULT_BRANCH}`, commit, head]);
         yield* git(root, ["reset", "-q", "--hard", commit]);
+        // What it brought back may be an older starter: the next read brings today's.
+        current.delete(root);
         const restored = before === "" ? null : yield* lastChange(root, name, parent);
         yield* refresh.touch(orgId, "recipes");
         return {
@@ -840,8 +889,6 @@ export const layer = Layer.effect(
       failed("read the documents workspace"),
     );
 
-    // Only Kin writes commit messages here: a job's, a merge's and an undo's never read like these.
-    const STARTER_SUBJECTS = ["Kin's starter recipes", "Kin's starter recipes, rendered by Kin"];
     const madeBefore = Effect.fn("KinWorkspace.madeBefore")(
       function* (orgId: KinOrgId, commit: string, baseline: string | null) {
         if (!/^[0-9a-f]{40}$/.test(commit)) return false;

@@ -2,6 +2,7 @@ import {
   type KinAgentId,
   KinChatId,
   type KinOrgId,
+  type KinWakeupId,
   type MessageId,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2Run,
@@ -107,6 +108,11 @@ export const make = Effect.gen(function* () {
     const lead = yield* taskChat(message.threadId);
     if (lead === undefined) return;
     const eventId = hashedEventId("task", message.id);
+    // The turn whose run handed the work out: its result answers whoever asked there.
+    const asked = yield* sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId"
+      FROM kin_wakeups WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}
+        AND run_id = ${completion.parentRunId}
+      ORDER BY started_at, wakeup_id`;
     yield* queue
       .enqueue({
         _tag: "task.finished",
@@ -120,6 +126,7 @@ export const make = Effect.gen(function* () {
         messageId: message.id,
         taskIds: completion.taskIds,
         chatId: lead.chatId,
+        ...(asked.length === 0 ? {} : { askedIn: asked.map((row) => row.wakeupId) }),
       })
       .pipe(
         Effect.catchTags({

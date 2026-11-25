@@ -136,18 +136,32 @@ it.effect(
   () =>
     Effect.gen(function* () {
       yield* seed;
-      const owner = yield* dayRecord({ orgId, from, until, viewer: KIN_OWNER_LEVEL });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
+          author_id, body, request_hash, created_at, coding_agent_key)
+        VALUES (${orgId}, 'n2', 'r-W-4', 2, 'person', 'zoya', 'The clinic sent the roster.',
+          'h2', ${from + 10 * HOUR}, 'invented-key')`;
+      const owner = yield* dayRecord({
+        orgId,
+        from,
+        until,
+        viewer: KIN_OWNER_LEVEL,
+        agentId: "fin",
+      });
       assert.deepStrictEqual(owner, {
-        finished: ["W-6 Beta release to two pilot clinics, done by Rhea"],
+        finished: ["W-6 Beta release to two pilot clinics (task): marked done by Rhea (owner)"],
         changed: [
-          "W-1 Design the booking flow screens: now in progress (Zoya)",
-          "W-9 Rhea's own private errand: now in progress (Rhea)",
+          "W-1 Design the booking flow screens: now in progress by Zoya",
+          "W-9 Rhea's own private errand: now in progress by Rhea (owner)",
         ],
-        notes: ['W-4 Pilot handoff checklist: note by Rhea: "The clinic confirmed the checklist."'],
+        notes: [
+          'W-4 Pilot handoff checklist: note by Rhea (owner): "The clinic confirmed the checklist."',
+          'W-4 Pilot handoff checklist: note by Zoya (coding agent): "The clinic sent the roster."',
+        ],
         made: [
-          "INV-2 Renewal invoice, Orbit Dental (invoice, suggested, not kept yet), by Finance",
+          "INV-2 Renewal invoice, Orbit Dental (invoice, suggested, not kept yet), by Finance (you)",
         ],
-        money: ["₹20,000.00 in on INV-1 Retainer, Orbit Dental, recorded by Rhea"],
+        money: ["₹20,000.00 in on INV-1 Retainer, Orbit Dental, recorded by Rhea (owner)"],
         mail: ['received from C-2 Orbit Dental Care: "Billing contact for INV-1"'],
       });
       const zoya = yield* dayRecord({
@@ -155,9 +169,10 @@ it.effect(
         from,
         until,
         viewer: viewerOfPeople([KinPersonId.make("zoya")]),
+        agentId: "fin",
       });
       assert.deepStrictEqual(zoya.changed, [
-        "W-1 Design the booking flow screens: now in progress (Zoya)",
+        "W-1 Design the booking flow screens: now in progress by Zoya",
       ]);
       assert.deepStrictEqual(zoya.mail, []);
       const before = yield* dayRecord({
@@ -165,9 +180,10 @@ it.effect(
         from: from - 24 * HOUR,
         until: from,
         viewer: KIN_OWNER_LEVEL,
+        agentId: "fin",
       });
       assert.deepStrictEqual(before.changed, [
-        "W-2 Changed yesterday, company time: now in progress (Rhea)",
+        "W-2 Changed yesterday, company time: now in progress by Rhea (owner)",
       ]);
       // A day with nothing in the records says so in one line; one with something, never.
       assert.strictEqual(
@@ -177,6 +193,7 @@ it.effect(
             from: until,
             until: until + 24 * HOUR,
             viewer: KIN_OWNER_LEVEL,
+            agentId: "fin",
           }),
         ),
         QUIET_DAY,
@@ -190,6 +207,80 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "says who marked a task done and through what, and tells a due's last move in the company's zone",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+          dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+        VALUES (${orgId}, 'Asia/Tokyo', '08:30', '18:00', '02:00', 0, 1, '09:00',
+          '{"from":"22:00","to":"07:00"}')`;
+      const at = (iso: string) => Date.parse(iso);
+      for (const [key, title, state, due] of [
+        ["W-12", "Read the new onboarding brief", "done", null],
+        ["W-70", "Send Tidewater Freight the revised quote", "open", "2026-11-30T01:00:00.000Z"],
+        ["W-71", "Book the Tidewater Freight site visit", "open", "2026-11-27T01:00:00.000Z"],
+        ["W-72", "Renew the warehouse lease", "open", null],
+      ] as const)
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, created_by_kind, created_by_id, origin_key, created_at,
+            updated_at, team_shared, due_at)
+          VALUES (${orgId}, ${`r-${key}`}, 'work', ${key}, ${title}, ${state}, 'person', 'zoya',
+            'person', 'rhea', ${`o-${key}`}, ${from - 30 * 24 * HOUR}, ${from - 30 * 24 * HOUR}, 1,
+            ${due === null ? null : at(due)})`;
+      const change = (key: string, after: number, actor: string, fields: string, viaKey = false) =>
+        sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id, via,
+            kind, fields_json, coding_agent_key)
+          VALUES (${orgId}, ${`r-${key}`}, 2, ${from + after * HOUR}, ${actor === "fin" ? "agent" : "person"},
+            ${actor}, 'owner', 'updated', ${fields}, ${viaKey ? "invented-key" : null})`;
+      yield* change("W-12", 1, "zoya", '[{"field":"state","from":"doing","to":"done"}]', true);
+      // Moved twice: only where it ended. Moved and moved back: nothing moved.
+      yield* change(
+        "W-70",
+        2,
+        "fin",
+        '[{"field":"due","from":"2026-11-27T08:00:00.000Z","to":"2026-11-28T01:00:00.000Z"}]',
+      );
+      yield* change(
+        "W-70",
+        3,
+        "fin",
+        '[{"field":"due","from":"2026-11-28T01:00:00.000Z","to":"2026-11-30T01:00:00.000Z"}]',
+      );
+      yield* change(
+        "W-71",
+        4,
+        "zoya",
+        '[{"field":"due","from":"2026-11-27T01:00:00.000Z","to":"2026-11-29T01:00:00.000Z"}]',
+      );
+      yield* change(
+        "W-71",
+        5,
+        "zoya",
+        '[{"field":"due","from":"2026-11-29T01:00:00.000Z","to":"2026-11-27T01:00:00.000Z"}]',
+      );
+      yield* change(
+        "W-72",
+        6,
+        "rhea",
+        '[{"field":"due","from":"2026-12-01T01:00:00.000Z","to":null}]',
+      );
+      const day = yield* dayRecord({ orgId, from, until, viewer: KIN_OWNER_LEVEL, agentId: "fin" });
+      assert.deepStrictEqual(day.finished, [
+        "W-6 Beta release to two pilot clinics (task): marked done by Rhea (owner)",
+        "W-12 Read the new onboarding brief (task): marked done by Zoya (through a coding agent)",
+      ]);
+      assert.deepStrictEqual(day.changed, [
+        "W-1 Design the booking flow screens: now in progress by Zoya",
+        "W-9 Rhea's own private errand: now in progress by Rhea (owner)",
+        "W-70 Send Tidewater Freight the revised quote: due moved to Mon 30 Nov, 10:00 by Finance (you)",
+        "W-72 Renew the warehouse lease: due date taken off by Rhea (owner)",
+      ]);
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("caps each list with a count of the rest", () =>
   Effect.gen(function* () {
     yield* seed;
@@ -199,7 +290,13 @@ it.effect("caps each list with a count of the rest", () =>
             author_id, body, request_hash, created_at)
           VALUES (${orgId}, ${`m${n}`}, 'r-W-1', ${n + 1}, 'person', 'zoya', ${`Step ${n}`},
             ${`hm${n}`}, ${from + HOUR + n})`;
-    const { notes } = yield* dayRecord({ orgId, from, until, viewer: KIN_OWNER_LEVEL });
+    const { notes } = yield* dayRecord({
+      orgId,
+      from,
+      until,
+      viewer: KIN_OWNER_LEVEL,
+      agentId: "fin",
+    });
     assert.lengthOf(notes, 10);
     assert.equal(notes[9], "and 4 more");
   }).pipe(Effect.provide(layer)),

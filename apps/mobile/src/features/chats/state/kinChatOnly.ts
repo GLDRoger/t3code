@@ -6,6 +6,7 @@ import {
   type KinClientsFilter,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
+import { makeKinPlaces } from "@t3tools/client-runtime/kin/kinPlaces";
 import { kinViewerScope, type KinViewerScope } from "@t3tools/client-runtime/kin/kinViewerScope";
 import {
   kinAccessEnded,
@@ -31,7 +32,7 @@ import { connectionAtomRuntime } from "../../../connection/runtime";
 import * as MobileSecureStorage from "../../../persistence/mobile-secure-storage";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { environmentSession } from "../../../state/session";
-import { refreshKinAccessMe } from "./kinClient";
+import { kinClient, refreshKinAccessMe } from "./kinClient";
 
 const KIN_CHAT_ONLY_STORAGE_KEY = "kin.chatOnlyEnvironmentIds";
 const RememberedIds = Schema.fromJsonString(Schema.Array(EnvironmentId));
@@ -186,6 +187,20 @@ export function useKinOwnerLevel(
   );
   return kinViewerOwnerLevel(access, session);
 }
+
+/** The destinations this session has here: the dock's, with the owner level as `useKinOwnerLevel`. */
+export const kinPlacesAtom = makeKinPlaces({
+  kinClient,
+  runtime: connectionAtomRuntime,
+  ownerLevel: Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) =>
+      kinViewerOwnerLevel(
+        get(kinAccessAtom(connectionAtomRuntime, environmentId)),
+        get(environmentSession.sessionStateValueAtom(environmentId)),
+      ),
+    ),
+  ),
+});
 
 /** The places a member reaches (switched on, or a project they lead); null until the host says. */
 export function useKinPlaceReach(environmentId: EnvironmentId): KinPlaceReach | null {

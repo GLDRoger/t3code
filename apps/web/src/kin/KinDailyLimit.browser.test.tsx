@@ -21,6 +21,7 @@ vi.mock(import("./KinNewLeadButton"), async (importOriginal) => ({
 vi.mock(import("./kinClient"), async (importOriginal) => {
   const real = await importOriginal();
   const { Atom: A, AsyncResult: R } = await import("effect/reactivity");
+  const { sync } = await import("effect/Effect");
   const { appAtomRegistry: registry } = await import("../rpc/atomRegistry");
   const { KinOrgId } = await import("@t3tools/contracts");
   const budget = (): KinBudget => ({
@@ -42,25 +43,28 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
       budgetSet: {
         ...real.kinClient.budgetSet,
         permissionAtom: () => allowed,
-        run: async (
+        run: (
           _registry: unknown,
           { input }: { readonly input: { readonly limits: KinBudgetLimits } },
-        ) => {
-          host.calls.push(input.limits);
-          host.limits = input.limits;
-          return R.success(budget());
-        },
+        ) =>
+          sync(() => {
+            host.calls.push(input.limits);
+            host.limits = input.limits;
+            return budget();
+          }),
       },
     },
   };
 });
 
-vi.mock("../state/use-atom-command", () => ({
-  useAtomCommand:
-    (command: { run: (registry: unknown, input: unknown) => Promise<unknown> }) =>
-    (input: unknown) =>
-      command.run(null, input),
-}));
+vi.mock("../state/use-atom-command", async () => {
+  const { runAtomCommand } = await import("@t3tools/client-runtime/state/runtime");
+  const { appAtomRegistry } = await import("../rpc/atomRegistry");
+  return {
+    useAtomCommand: (command: Parameters<typeof runAtomCommand>[1]) => (input: unknown) =>
+      runAtomCommand(appAtomRegistry, command, input),
+  };
+});
 
 function setup() {
   host.limits = { leadUnits: 2_000_000, workerUnits: 6_000_000 };
@@ -84,7 +88,7 @@ describe("Settings → Daily limit", () => {
     setup();
     await using _screen = await render(setting());
     const trigger = page.getByRole("combobox", { name: "Daily limit" });
-    await expect.element(trigger).toHaveTextContent("The usual");
+    await expect.element(trigger).toHaveTextContent("The usual (2M units a day)");
 
     await pick("No limit");
     const ask = page.getByRole("alertdialog");
@@ -103,8 +107,8 @@ describe("Settings → Daily limit", () => {
       .element(page.getByText("Used today: agents 2.5M units, tasks they started 40k units"))
       .toBeVisible();
 
-    await pick("Twice the usual");
-    await expect.element(trigger).toHaveTextContent("Twice the usual");
+    await pick("Twice the usual (4M units a day)");
+    await expect.element(trigger).toHaveTextContent("Twice the usual (4M units a day)");
     expect(page.getByRole("alertdialog").elements()).toHaveLength(0);
     expect(host.calls.at(-1)).toEqual({
       leadUnits: 4_000_000,

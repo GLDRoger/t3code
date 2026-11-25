@@ -11,12 +11,20 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 /** The fixed actions a `kin_ask` option may run (`cardActions.ts`), and what each names. */
-const CARD_ACTIONS = ["done", "drop", "start", "create_list", "take_default"] as const;
+const CARD_ACTIONS = [
+  "done",
+  "drop",
+  "start",
+  "create_list",
+  "take_default",
+  "record_payment",
+  "mark_repaid",
+] as const;
 export const CardActionInput = Schema.Struct({
   kind: Schema.Literals(CARD_ACTIONS),
   target: KinTrimmedText.check(Schema.isMaxLength(200)).annotate({
     description:
-      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours.",
+      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours. record_payment: a Bank transactions credit's key (BNK-1) when Kin ranks one invoice first for it, else the credit's key, a space and the key or number of an invoice Kin ranks first for it (BNK-1 INV-1). mark_repaid: a Bank transactions debit's key (BNK-4) that Kin reads as paying a partner back.",
   }),
 }).annotate({
   description: "What Kin itself does when this option is tapped; Kin writes its button.",
@@ -62,7 +70,62 @@ const ListPlan = Schema.Struct({
   name: Schema.String,
   draw: CardDraw,
 });
-const RunPlan = Schema.Union([RecordPlan, StartPlan, ListPlan]);
+/**
+ * A Bank transactions credit recorded as an invoice's payment, as the statement matcher ranked the
+ * pair when drawn: the credit at its revision, the invoice at what it owed then (`seen`), and what
+ * the card said from the records: the invoice's printed number, its client and what stays owed.
+ */
+const PaymentPlan = Schema.Struct({
+  kind: Schema.Literal("record_payment"),
+  recordId: Schema.String,
+  key: Schema.String,
+  title: Schema.String,
+  number: Schema.String,
+  client: Schema.NullOr(Schema.String),
+  seen: Schema.String,
+  bankRecordId: Schema.String,
+  bankKey: Schema.String,
+  rev: Schema.Number,
+  amountMinor: Schema.Number,
+  currency: Schema.String,
+  day: Schema.String,
+  /** Tax the client withheld, when the matcher read the credit as the amount less it. */
+  withheldMinor: Schema.NullOr(Schema.Number),
+  /** What the invoice still owes once this is recorded: zero settles it. */
+  owedAfterMinor: Schema.Number,
+  draw: CardDraw,
+});
+export type PaymentPlan = typeof PaymentPlan.Type;
+/**
+ * A Bank transactions debit that pays a partner back, as Kin's matcher read it when drawn: the
+ * debit (`recordId`, `key`) at its revision, the partner it names, and each owed expense it
+ * repays in full at its revision, amount and day. What stays owed to them is for the line.
+ */
+const RepaidPlan = Schema.Struct({
+  kind: Schema.Literal("mark_repaid"),
+  recordId: Schema.String,
+  key: Schema.String,
+  rev: Schema.Number,
+  amountMinor: Schema.Number,
+  currency: Schema.String,
+  day: Schema.String,
+  /** What the debit says, as the bank wrote it: shown on the card as a quotation only. */
+  narration: Schema.String,
+  partner: Schema.Struct({ id: Schema.String, name: Schema.String }),
+  repays: Schema.Array(
+    Schema.Struct({
+      recordId: Schema.String,
+      key: Schema.String,
+      rev: Schema.Number,
+      amountMinor: Schema.Number,
+      day: Schema.String,
+    }),
+  ),
+  owedAfterMinor: Schema.Number,
+  draw: CardDraw,
+});
+export type RepaidPlan = typeof RepaidPlan.Type;
+const RunPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, PaymentPlan, RepaidPlan]);
 export type RunPlan = typeof RunPlan.Type;
 const DefaultPlan = Schema.Struct({
   kind: Schema.Literal("take_default"),
@@ -186,6 +249,8 @@ export const CardPlan = Schema.Union([
   RecordPlan,
   StartPlan,
   ListPlan,
+  PaymentPlan,
+  RepaidPlan,
   DefaultPlan,
   RoutePlan,
   TakenPlan,

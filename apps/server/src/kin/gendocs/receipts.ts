@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, paymentIdFor, type Writer } from "../work/KinRecords.ts";
+import { KIN_OWN_REFUSAL, refuseKinOwn } from "../people/KinAccess.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
 import {
   endOfDay,
@@ -25,6 +26,7 @@ import {
   type RecordRow,
   stillSuggestion,
 } from "../work/recordRows.ts";
+import { billedParty, billingClientId } from "../work/billTo.ts";
 import { parseFields } from "../work/lists.ts";
 import { defineList, listCurrency, listDef, PRESETS } from "../work/registers.ts";
 import { makeDocument, type Requester } from "./make.ts";
@@ -328,6 +330,7 @@ const backed = Effect.fn("KinReceipts.backed")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.payment);
   const receipt = yield* records.get(orgId, key);
   if (receipt === undefined || receipt.registerId !== RECEIPTS)
     return yield* invalid(`${key} isn't a receipt. Nothing changed.`);
@@ -466,7 +469,12 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
   // Neither side counts as money yet: setting one against the other would make it count.
   const suggested = [receipt, invoice].find(isSuggestion);
   if (suggested !== undefined) return yield* invalid(stillSuggestion(suggested.key));
-  if (receipt.partyId === null)
+  if (
+    receipt.partyId === null &&
+    (invoice.registerId !== "invoices" ||
+      billingClientId(invoice) !== null ||
+      billedParty(invoice, undefined) === undefined)
+  )
     return yield* invalid(
       `${receipt.key} names no client, so it can't be set against an invoice. Nothing changed.`,
     );

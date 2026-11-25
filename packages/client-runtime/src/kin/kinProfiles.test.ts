@@ -3,6 +3,7 @@ import { KinChatError, KinPersonId } from "@t3tools/contracts";
 
 import {
   KIN_GITHUB_LOGIN,
+  kinAnswersRing,
   kinGithubLoginFailure,
   kinGithubLoginInput,
   kinHoursLine,
@@ -10,6 +11,7 @@ import {
   kinProfileChanges,
   kinProfileDraft,
   kinProfileShowsTasks,
+  kinQuietSource,
   kinTimeZoneChoices,
 } from "./kinProfiles.ts";
 
@@ -60,6 +62,15 @@ describe("kinProfiles", () => {
     const company = { companyQuiet: { from: "21:00", to: "08:00" }, isOwner: false };
     const own = kinProfileDraft(profile, company);
     expect([own.quietFrom, own.quietTo, own.holdOutside]).toEqual(["21:00", "08:00", true]);
+    // Settings › Notifications says whose quiet hours apply, and the answers switch is on unset.
+    expect(kinQuietSource(profile, company)).toBe("The company's quiet hours, 21:00 to 08:00");
+    expect(
+      kinQuietSource({ ...profile, quietHours: { from: "23:00", to: "06:30" } }, company),
+    ).toBe("Your own quiet hours, 23:00 to 06:30");
+    expect([kinAnswersRing(profile), kinAnswersRing({ ...profile, answersRing: false })]).toEqual([
+      true,
+      false,
+    ]);
     const mine = { ...company, mine: true };
     expect(kinProfileChanges(profile, own, mine)).toEqual({ ok: true, changes: {} });
     expect(

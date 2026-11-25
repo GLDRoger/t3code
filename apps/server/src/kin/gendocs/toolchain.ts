@@ -109,6 +109,13 @@ const FONT_FETCH_TIMEOUT = "1 minute";
 const FONT_RETRY_PAUSE_MS = 10 * 60_000;
 const fontsDirectory = (baseDir: string) =>
   `${toolsRoot(baseDir)}/fonts-${FONTS_COMMIT.slice(0, 12)}`;
+/** The pinned fonts' file names, as a page loads them (`KIN_VISUAL_FONTS`). */
+export const PINNED_FONT_FILES = FONT_FILES.map((font) =>
+  font.path.slice(font.path.lastIndexOf("/") + 1),
+);
+/** Where a pinned font's file is once fetched; `undefined` for a name that isn't one of them. */
+export const pinnedFontPath = (baseDir: string, file: string) =>
+  PINNED_FONT_FILES.includes(file) ? `${fontsDirectory(baseDir)}/${file}` : undefined;
 
 export class KinToolchain extends Context.Service<
   KinToolchain,

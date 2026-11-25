@@ -1,6 +1,8 @@
 import {
   kinBodyMarkdown,
+  kinChangedMark,
   kinMessageLabel,
+  kinWithdrawnLine,
   kinPlainText,
   type KinFeedRow,
   type KinNoticeOpen,
@@ -8,6 +10,11 @@ import {
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinTurnReceiptLine } from "@t3tools/client-runtime/kin/kinTurnReceipt";
+import {
+  KIN_REPLY_BUTTONS,
+  kinReplyButtons,
+  type KinReplyButton,
+} from "@t3tools/client-runtime/kin/kinReplyButtons";
 import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   kinDraftMarkdown,
@@ -35,13 +42,14 @@ import {
 import { KinAvatar } from "./KinAvatar";
 import { kinOutbox } from "./kinOutbox";
 import { openKinProfile } from "./KinProfileSheet";
+import { kinRecordPlace } from "./kinPlaces";
 import {
   kinPageShape,
   KIN_REACTION_EMOJI,
   KinOrgId,
   type EnvironmentId,
   type KinMessageRef,
-  type KinPersonId,
+  KinPersonId,
   type KinReactionEmoji,
   type KinWidget,
   kinWhenFormat,
@@ -176,6 +184,8 @@ export function KinMessageRow(props: {
   readonly viewerPersonId: KinPersonId | null;
   /** The card's agent by name when it is retired, so its reminders and schedules read as on hold. */
   readonly heldFor: string | null;
+  /** The viewer may only read this chat: its cards offer nothing that writes in it. */
+  readonly readOnly?: boolean;
   readonly reactions: ReadonlyArray<KinReactionChip>;
   /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
   readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
@@ -192,6 +202,16 @@ export function KinMessageRow(props: {
   const { row, onReact } = props;
   const { message } = row;
   const { author } = message;
+  const withdrawn = kinWithdrawnLine(row);
+  if (withdrawn !== null)
+    return (
+      <KinWithdrawnRow
+        line={withdrawn}
+        said={message.withdrawn?.said ?? null}
+        environmentId={props.environmentId}
+      />
+    );
+  const changed = kinChangedMark(message, formatTime);
   const deleted = message.status === "deleted";
   const suggested = message.status === "suggested";
   const hasBody = !deleted && message.body.trim().length > 0;
@@ -212,6 +232,7 @@ export function KinMessageRow(props: {
   const layout = row.own || !hasBody ? "bubble" : kinMessageLayout(message);
   const label = kinMessageLabel(row, formatTime(message.createdAt));
   const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
+  const buttons = kinReplyButtons(message);
   // A page's card is its foot, across the page's width.
   const onPage = hasBubble && layout !== "bubble";
   const card =
@@ -222,6 +243,7 @@ export function KinMessageRow(props: {
         orgId={props.orgId}
         viewerPersonId={props.viewerPersonId}
         heldFor={props.heldFor}
+        readOnly={props.readOnly === true}
       />
     ) : (
       <KinCardGroup
@@ -291,9 +313,9 @@ export function KinMessageRow(props: {
               head={kinPageHead(message, props.firstName ?? null)}
               foot={hasCard ? card : null}
             />
-            {message.editedAt !== null ? (
-              <p className="pt-0.5 text-xs text-muted-foreground">Edited</p>
-            ) : null}
+            {changed === null ? null : (
+              <p className="pt-0.5 text-xs text-muted-foreground">{changed}</p>
+            )}
           </div>
         ) : hasBubble ? (
           <div role="article" aria-label={label} className={row.own ? BUBBLE : OTHER_BUBBLE}>
@@ -307,9 +329,9 @@ export function KinMessageRow(props: {
             ) : deleted ? (
               <p className="italic text-muted-foreground">Message deleted</p>
             ) : null}
-            {suggested || message.editedAt !== null ? (
+            {suggested || changed !== null ? (
               <p className="pt-0.5 text-xs text-muted-foreground">
-                {suggested ? KIN_CHAT_COPY.suggestion : "Edited"}
+                {suggested ? KIN_CHAT_COPY.suggestion : changed}
               </p>
             ) : null}
           </div>
@@ -324,6 +346,13 @@ export function KinMessageRow(props: {
           {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
         </div>
       ) : null}
+      {buttons.length === 0 ? null : (
+        <KinReplyButtons
+          buttons={buttons}
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+        />
+      )}
       {receipt === null ? null : (
         <KinTurnReceipt
           line={receipt}
@@ -355,6 +384,74 @@ export function KinMessageRow(props: {
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** Up to three buttons under an agent's reply, each opening what it named. */
+function KinReplyButtons(props: {
+  readonly buttons: ReadonlyArray<KinReplyButton>;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+}) {
+  const params = { environmentId: props.environmentId, orgId: props.orgId };
+  return (
+    <div role="group" aria-label={KIN_REPLY_BUTTONS.label} className="flex flex-wrap gap-1 px-1">
+      {props.buttons.map((button) => {
+        const { to } = button;
+        const common = {
+          size: "sm-multiline" as const,
+          variant: "outline" as const,
+          title: button.note ?? undefined,
+        };
+        switch (to._tag) {
+          case "chat":
+            return (
+              <Button
+                key={button.id}
+                {...common}
+                render={
+                  <Link
+                    to="/kin/$environmentId/$orgId/$chatId"
+                    params={{ ...params, chatId: to.chatId }}
+                  />
+                }
+              >
+                {button.label}
+              </Button>
+            );
+          case "record": {
+            const place = kinRecordPlace(to);
+            return (
+              <Button
+                key={button.id}
+                {...common}
+                render={<Link to={place.to} params={params} search={place.search} />}
+              >
+                {button.label}
+              </Button>
+            );
+          }
+          case "person":
+            return (
+              <Button
+                key={button.id}
+                {...common}
+                onClick={() =>
+                  openKinProfile({
+                    environmentId: props.environmentId,
+                    orgId: KinOrgId.make(props.orgId),
+                    personId: KinPersonId.make(to.personId),
+                  })
+                }
+              >
+                {button.label}
+              </Button>
+            );
+          case "settings":
+            return null;
+        }
+      })}
     </div>
   );
 }
@@ -420,6 +517,35 @@ export function KinDraftRow(props: {
   );
 }
 
+/**
+ * A message its agent took back: one quiet line in its place. The owner side may open what it
+ * said; the server sends those words to no one else.
+ */
+function KinWithdrawnRow(props: {
+  readonly line: string;
+  readonly said: string | null;
+  readonly environmentId: EnvironmentId;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mx-auto flex max-w-3xl flex-col items-center gap-1 px-8 py-1">
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        <p className="text-center text-xs text-muted-foreground">{props.line}</p>
+        {props.said === null ? null : (
+          <Button size="xs" variant="ghost" onClick={() => setOpen(!open)} aria-expanded={open}>
+            {open ? KIN_CHAT_COPY.hideWithdrawn : KIN_CHAT_COPY.showWithdrawn}
+          </Button>
+        )}
+      </div>
+      {open && props.said !== null ? (
+        <div className="w-full max-w-xl text-sm text-muted-foreground">
+          <KinBody markdown={props.said} environmentId={props.environmentId} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** A line from Kin itself, such as a reply that failed: muted, centred, never a bubble. */
 export function KinSystemRow(props: {
   readonly body: string;
@@ -431,8 +557,16 @@ export function KinSystemRow(props: {
     readonly environmentId: EnvironmentId;
     readonly orgId: string;
   } | null;
+  /** The Team-room discussion the notice names, opened there; null for none. */
+  readonly discussion?: {
+    readonly discussionId: string;
+    readonly teamRoomId: string;
+    readonly environmentId: EnvironmentId;
+    readonly orgId: string;
+  } | null;
 }) {
   const open = props.open ?? null;
+  const discussion = props.discussion ?? null;
   return (
     <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-center gap-2 px-8 py-1">
       <p className="text-center text-xs text-muted-foreground">{props.body}</p>
@@ -453,6 +587,25 @@ export function KinSystemRow(props: {
           }
         >
           {open.target.label}
+        </Button>
+      )}
+      {discussion === null ? null : (
+        <Button
+          size="xs"
+          variant="outline"
+          render={
+            <Link
+              to="/kin/$environmentId/$orgId/$chatId"
+              params={{
+                environmentId: discussion.environmentId,
+                orgId: discussion.orgId,
+                chatId: discussion.teamRoomId,
+              }}
+              search={{ message: discussion.discussionId }}
+            />
+          }
+        >
+          {KIN_CARD_COPY.openDiscussion}
         </Button>
       )}
       {props.onRetry === null ? null : (
@@ -486,7 +639,7 @@ export function KinRelayRow(props: {
       <div className={cn(ROW, "pt-3", "items-start")}>
         <div
           role="article"
-          aria-label={`Sent by ${row.personLabel}, via ${row.agentLabel}, ${time}: ${kinPlainText(words)}`}
+          aria-label={`Sent by ${row.personLabel}, via ${row.agentLabel}, ${time}: ${kinPlainText(words)}${row.afterReading === undefined ? "" : `. ${row.afterReading}`}`}
           className="min-w-0 max-w-[85%] rounded-2xl bg-accent text-sm text-foreground dark:bg-card"
         >
           <p
@@ -502,6 +655,11 @@ export function KinRelayRow(props: {
           <div className="px-3.5 pb-2 pt-1">
             <KinBody markdown={words} environmentId={props.environmentId} />
           </div>
+          {row.afterReading === undefined ? null : (
+            <p aria-hidden className="px-3.5 pb-2 text-xs text-muted-foreground">
+              {row.afterReading}
+            </p>
+          )}
         </div>
       </div>
     );
@@ -516,6 +674,7 @@ export function KinRelayRow(props: {
           orgId: props.orgId,
           chatId: props.teamRoomId,
         }}
+        search={{ message: row.discussionId }}
         className="self-start rounded-sm text-xs text-foreground underline underline-offset-2 outline-none ring-ring hover:text-primary focus-visible:ring-2 focus-visible:ring-inset"
       >
         {KIN_CARD_COPY.seeHow}
@@ -541,7 +700,7 @@ export function KinRelayRow(props: {
       <div className={cn(ROW, "pt-3", sent ? "items-end" : "items-start")}>
         <div
           role="article"
-          aria-label={`${label}, ${time}: ${kinPlainText(body)}`}
+          aria-label={`${label}, ${time}: ${kinPlainText(body)}${row.afterReading === undefined ? "" : `. ${row.afterReading}`}`}
           className={cn(
             "flex min-w-0 max-w-[85%] flex-col rounded-2xl text-sm",
             sent ? "bg-message text-message-foreground" : "border border-border",
@@ -555,6 +714,11 @@ export function KinRelayRow(props: {
             expanded={expanded}
             onToggle={() => setExpanded((value) => !value)}
           />
+          {row.afterReading === undefined ? null : (
+            <p aria-hidden className="-mt-1 px-3 pb-2 text-xs text-muted-foreground">
+              {row.afterReading}
+            </p>
+          )}
           {expanded ? (
             <div className="flex max-h-96 flex-col gap-1 overflow-auto px-3 pb-3">{words}</div>
           ) : null}
@@ -623,7 +787,8 @@ const firstLine = (markdown: string) =>
 export function KinFoldRow(props: { readonly row: FoldRow; readonly onToggle: () => void }) {
   const { row } = props;
   const decision = row.decision === null ? null : firstLine(row.decision);
-  const label = [`${joinNames(row.authors)} talked it over`, decision, `${row.count} messages`]
+  const talk = row.open ? "are still talking it over" : "talked it over";
+  const label = [`${joinNames(row.authors)} ${talk}`, decision, `${row.count} messages`]
     .filter(Boolean)
     .join(" · ");
   return (

@@ -3,6 +3,7 @@ import type {
   KinDay,
   KinGoalSaveInput,
   KinGoalsResult,
+  KinOpenRead,
   KinPulseHandleAction,
   KinPulseScreenRead,
   KinRecordKey,
@@ -12,7 +13,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 
 import { squashAtomCommandFailure } from "../../state/runtime.ts";
-import { kinOwnerLevelAtom } from "../kinAccess.ts";
+import { kinAccessMeAtom, kinOwnerLevelAtom } from "../kinAccess.ts";
 import { kinFailureText } from "../kinAnswers.ts";
 import {
   kinAttentionProblem,
@@ -20,7 +21,15 @@ import {
   type KinAttentionScope,
   KIN_GOALS,
 } from "../kinAttention.ts";
+import {
+  kinInboxScreenWithOpen,
+  kinOpenAttention,
+  kinOpenShown,
+  kinOpenTasksCount,
+} from "../kinOpenList.ts";
+import type { KinInboxScreenState } from "../kinScreenState.ts";
 import { kinAskAboutAgent, type KinScreenTarget } from "../kinScreenReads.ts";
+import { kinNeedsYouCount, kinTasksDealFactsOf } from "../kinTasksList.ts";
 import { kinWorkReadState } from "../kinWorkForms.ts";
 import {
   type KinHookApp,
@@ -44,9 +53,17 @@ const noAttentionAtom: Atom.Atom<AsyncResult.AsyncResult<KinPulseScreenRead, unk
 const noLiveAtom: Atom.Atom<AsyncResult.AsyncResult<{ readonly seq: number }, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
+const noStreamedAtom: Atom.Atom<boolean | null> = Atom.make(false);
+const noAnsweredAtom: Atom.Atom<ReadonlyArray<string>> = Atom.make<ReadonlyArray<string>>([]);
 const noGoalsAtom: Atom.Atom<AsyncResult.AsyncResult<KinGoalsResult, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
+const noOpenAtom: Atom.Atom<AsyncResult.AsyncResult<KinOpenRead, unknown>> = Atom.make(
+  AsyncResult.initial(),
+);
+const noCountsAtom: Atom.Atom<
+  AsyncResult.AsyncResult<{ readonly needsYou: number } | null, unknown>
+> = Atom.make(AsyncResult.initial());
 
 /** Needs you, its taps, Ask about and the company's goals, on one app's client. */
 export function makeKinAttentionHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinAttentionUses) {
@@ -81,7 +98,79 @@ export function makeKinAttentionHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinAt
     const seq = Option.getOrNull(AsyncResult.value(live))?.seq ?? null;
     useRereadOnChange(seq, () => registry.refresh(atom));
     const answered = useAtomValue(kinReads.answered(target));
-    return state._tag === "ready" ? kinAttentionShown(state.value, new Set(answered)) : null;
+    // A section's own or Tasks' facts are the open list's, where the host streams it.
+    const open = useKinOpen(enabled && !paged ? target : null);
+    if (state._tag !== "ready") return null;
+    const shown = kinAttentionShown(state.value, new Set(answered));
+    return open == null ? shown : kinOpenAttention(shown, open);
+  }
+
+  /**
+   * What is open for the viewer, the one list every Needs you, Waiting on you and badge reads: one
+   * subscription per person and org, shared. Facts answered here leave at once. Undefined from a
+   * host that doesn't stream it, whose screens read as before; null until first read.
+   */
+  function useKinOpen(target: KinScreenTarget | null): KinOpenRead | null | undefined {
+    const environmentId = target?.environmentId ?? null;
+    const input = { orgId: target?.orgId ?? ("" as KinScreenTarget["orgId"]) };
+    const streamed = useAtomValue(
+      environmentId === null ? noStreamedAtom : kinClient.openStreamed({ environmentId, input }),
+    );
+    const live = useAtomValue(
+      environmentId !== null && streamed === true
+        ? kinClient.openLive({ environmentId, input })
+        : noOpenAtom,
+    );
+    const answered = useAtomValue(target === null ? noAnsweredAtom : kinReads.answered(target));
+    if (target === null || streamed === false) return undefined;
+    const read = Option.getOrNull(AsyncResult.value(live));
+    return read === null ? null : kinOpenShown(read, new Set(answered));
+  }
+
+  /** A screen's inbox with Waiting on you as the open list has it (`kinInboxWithOpen`). */
+  function useKinInboxShown(
+    state: KinInboxScreenState,
+    target: KinScreenTarget | null,
+  ): KinInboxScreenState {
+    return kinInboxScreenWithOpen(state, target?.orgId ?? null, useKinOpen(target));
+  }
+
+  /**
+   * The Tasks badge: the same number as Tasks' Needs you heading (`kinNeedsYouCount`): the open
+   * list's count of Tasks' tasks and its deal facts. An older host's comes from Needs attention,
+   * which carries Tasks' count as it moves, or Tasks' counts read again as Work's tasks change.
+   * Null until first known.
+   */
+  function useKinTasksNeedsYou(target: KinScreenTarget): number | null {
+    const { environmentId, orgId } = target;
+    const ownerLevel = useAtomValue(kinOwnerLevelAtom(runtime, environmentId));
+    const me = useAtomValue(kinAccessMeAtom(runtime, environmentId));
+    const viewer = { ownerLevel, me: me?.personId ?? null };
+    const open = useKinOpen(target);
+    const fromOpen = open == null ? null : kinOpenTasksCount(open, viewer);
+    const pulse = useKinAttention(
+      target,
+      open === undefined || (open !== null && fromOpen === null),
+    );
+    const streamed = useAtomValue(streamedAtom(target));
+    const carried = streamed === true ? (pulse?.tasksNeedsYou ?? null) : null;
+    const older =
+      open !== null &&
+      fromOpen === null &&
+      (streamed === false || (pulse !== null && carried === null));
+    const read = useAtomValue(
+      older ? kinClient.workMoveCounts({ environmentId, input: { orgId } }) : noCountsAtom,
+    );
+    const counts =
+      carried !== null ? { needsYou: carried } : Option.getOrNull(AsyncResult.value(read));
+    const dealFacts = kinTasksDealFactsOf(pulse, viewer);
+    const known = fromOpen ?? kinNeedsYouCount({ counts, dealFacts: dealFacts.length });
+    // Offline or reconnecting the count can't be read; the badge keeps the last one it showed.
+    const key = `${environmentId}:${orgId}`;
+    const [last, setLast] = useState({ key, count: known });
+    if (known !== null && (known !== last.count || key !== last.key))
+      setLast({ key, count: known });
+    return known ?? (last.key === key ? last.count : null);
   }
 
   /**
@@ -201,5 +290,13 @@ export function makeKinAttentionHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinAt
     };
   }
 
-  return { useKinAttention, useKinAttentionHandle, useKinAskAbout, useKinGoals };
+  return {
+    useKinAttention,
+    useKinOpen,
+    useKinInboxShown,
+    useKinTasksNeedsYou,
+    useKinAttentionHandle,
+    useKinAskAbout,
+    useKinGoals,
+  };
 }

@@ -23,6 +23,7 @@ import { KinIdentity } from "./chat/KinIdentity.ts";
 import { makeKinChatHandlers } from "./chat/rpcHandlers.ts";
 import { makeKinConnectionHandlers } from "./connections/rpcHandlers.ts";
 import { makeKinSocialHandlers } from "./social/rpcHandlers.ts";
+import { makeKinPicturesHandlers } from "./pictures/rpcHandlers.ts";
 import { makeKinLevelHandlers } from "./levels/rpcHandlers.ts";
 import { makeKinMemoryHandlers } from "./memory/rpcHandlers.ts";
 import { KinServer, type Services } from "./KinServer.ts";
@@ -30,8 +31,12 @@ import { accessOf } from "./people/KinAccess.ts";
 import { makeKinPushHandlers } from "./push/rpcHandlers.ts";
 import { KIN_READ_RPCS, readOnlyStream } from "./readRpcs.ts";
 import { makeKinRecommendHandlers } from "./recommend/rpcHandlers.ts";
+import { makeKinHostHandlers } from "./host/rpcHandlers.ts";
 import { makeKinWorkHandlers } from "./work/rpcHandlers.ts";
 import { makeKinTasksKeyHandlers } from "./tasksKey/rpcHandlers.ts";
+import { makeKinNumbersHandlers } from "./numbers/rpcHandlers.ts";
+import { makeKinShellHandlers } from "./shell/rpcHandlers.ts";
+import { makeKinWatchHandlers } from "./watches/rpcHandlers.ts";
 import { countryFirstForPerson, isCountryFirst } from "./work/companyProfile.ts";
 
 const group = RpcGroup.make(...KinRpcs);
@@ -94,6 +99,8 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
   const services = Option.flatMap(kin, (kin) => kin.services);
   const handlers = group.of({
     ...(yield* makeKinPeopleHandlers(session)),
+    ...(yield* makeKinShellHandlers(session)),
+    ...(yield* makeKinNumbersHandlers(session)),
     ...(yield* makeKinTasksKeyHandlers(session)),
     ...(yield* makeKinChatHandlers(session)),
     ...(yield* makeKinApprovalHandlers(session, services)),
@@ -103,7 +110,10 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     ...(yield* makeKinPushHandlers(session)),
     ...(yield* makeKinConnectionHandlers(session)),
     ...(yield* makeKinSocialHandlers(session)),
+    ...(yield* makeKinPicturesHandlers(session)),
     ...(yield* makeKinRecommendHandlers(session)),
+    ...(yield* makeKinHostHandlers(session)),
+    ...(yield* makeKinWatchHandlers(session)),
   });
   const personSees = forPerson(session, services);
   const guarded: Record<string, unknown> = {};

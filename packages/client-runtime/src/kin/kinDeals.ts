@@ -8,6 +8,7 @@ import {
   type KinDealPersonNumbers,
   type KinDealRow,
   type KinDealStage,
+  type KinDealStagesSetInput,
   type KinDealState,
   type KinDealsInput,
   type KinDealsResult,
@@ -35,6 +36,7 @@ import {
   type KinWorkNames,
 } from "./kinWork.ts";
 import type { KinWorkReadState } from "./kinWorkForms.ts";
+import type { KinMineCount } from "./kinWorkClients.ts";
 
 /** A deal's key: the built-in Deals list's fixed prefix. */
 export const kinIsDealKey = (key: string) => key.startsWith("DL-");
@@ -72,6 +74,10 @@ export const KIN_DEALS = {
   me: "Me",
   someone: "Someone…",
   whose: "Whose deals",
+  showEveryone: "Clear to show everyone's",
+  /** The By person row a list was opened from, as its chip names it. */
+  personChip: (name: string) => `Looked after by ${name}`,
+  clearPerson: "Clear it",
   which: "Which deals",
   dropWon: "Drop to win",
   dropLost: "Drop to lose",
@@ -90,10 +96,21 @@ export const KIN_DEALS = {
   addStep: "Add a next step",
   stepNeeded: "Add a next step, or choose None yet.",
   what: "What",
+  whatPlaceholder: "What the deal is for",
   value: "Value",
+  valuePlaceholder: "Such as 90k or 9 lakh",
   expected: "Expected",
-  valueHint: "Leave it empty if you don't know yet",
+  valueHint: "A rough figure is fine. Leave it empty if you don't know yet.",
   notAmount: "That isn't an amount.",
+  readAs: (amount: string) => `Read as ${amount}`,
+  notes: "Notes",
+  notesPlaceholder: "Prices mentioned, rough numbers",
+  notesHint: "Anything to remember when you talk numbers.",
+  privateLabel: "Keep private",
+  privateOn: "Private. Only the owner and co-owners see this deal and the promises made on it.",
+  privateOff: "Whoever sees the client sees this deal and its promises.",
+  stepPlaceholder: "What happens next",
+  cameFromPlaceholder: "Such as a referral or an event",
   add: "Add deal",
   boardHint: "Each deal keeps its own currency. Dragging a card changes its stage; Lost asks why.",
   section: "Deals",
@@ -204,6 +221,61 @@ export const KIN_DEAL_STAGES = {
   searchTerms: ["deals", "stages", "pipeline", "won", "lost"],
 } as const;
 
+/** Settings → Deals on the web: each stage changes in its own dialog. */
+export const KIN_DEAL_STAGES_SETTINGS = {
+  purposeReadOnly: "How every deal in the company moves. The owner and co-owners set it.",
+  addSubmit: "Add stage",
+  add: "Add stage",
+  edit: "Edit stage",
+  save: "Save stage",
+  remove: "Remove stage",
+  name: "Name",
+  nameHelp: "Renaming keeps every deal where it is.",
+  place: "Place",
+  placeOf: (n: number, of: number) => `${n} of ${of}`,
+  removeEmptyDetail: "No open deals are in it. You can add it again later.",
+  moveTo: "Move them to",
+  failed: "Couldn't change the stages.",
+  quietTitle: "Quiet deals",
+  wonDetail: "Turns a prospect into a client",
+  lostDetail: "Asks why, in a word",
+} as const;
+
+/** The quiet-day lengths offered, with the one in use kept when it is none of them. */
+export function kinDealQuietChoices(days: number): ReadonlyArray<number> {
+  // Hermes has no `toSorted`.
+  return [...new Set([7, 14, 21, 30, days])].sort((a, b) => a - b);
+}
+
+/** One stage's change, made in its own dialog and saved on its own. */
+export type KinDealStageChange =
+  | { readonly _tag: "add"; readonly name: string }
+  | { readonly _tag: "edit"; readonly id: string; readonly name: string; readonly place: number }
+  | { readonly _tag: "remove"; readonly id: string; readonly moveTo: string | null };
+
+/** The whole list a stage's change sends, on the version it was made on; only that stage differs. */
+export function kinDealStagesAfter(
+  held: { readonly stages: ReadonlyArray<KinDealStage>; readonly rev: number },
+  change: KinDealStageChange,
+): Omit<KinDealStagesSetInput, "orgId"> {
+  const kept = held.stages.map((stage): { id?: string; name: string } => ({
+    id: stage.id,
+    name: stage.name,
+  }));
+  if (change._tag === "add")
+    return { rev: held.rev, stages: [...kept, { name: change.name.trim() }] };
+  if (change._tag === "remove")
+    return {
+      rev: held.rev,
+      stages: kept.filter((stage) => stage.id !== change.id),
+      ...(change.moveTo === null ? {} : { moveTo: { [change.id]: change.moveTo } }),
+    };
+  const others = kept.filter((stage) => stage.id !== change.id);
+  const place = Math.max(0, Math.min(change.place, others.length));
+  others.splice(place, 0, { id: change.id, name: change.name.trim() });
+  return { rev: held.rev, stages: others };
+}
+
 /** Settings → Deals: when a deal with nothing moving reaches whoever looks after it. */
 export const KIN_DEAL_QUIET = {
   title: "A deal goes quiet after",
@@ -288,6 +360,14 @@ export function kinDealsQuery(
     },
   };
 }
+
+/** How many deals a read finds under its filters, the ones past the cap included. */
+export const kinDealsCount = (
+  result: Pick<KinDealsResult, "deals" | "more" | "open">,
+  state: KinDealState,
+): KinMineCount => ({
+  n: state === "open" ? result.open.count : result.deals.length + result.more,
+});
 
 export const KIN_DEALS_STATES: ReadonlyArray<{
   readonly id: KinDealState;
@@ -698,6 +778,16 @@ const concernLabels = (text: string | null) =>
     ? new Set<string>()
     : new Set(text.split("\n").map((item) => item.split(": ")[0]!.trim()));
 
+/** What the Value field read from what was typed, and the line shown under it. */
+export function kinDealValueRead(typed: string, currency: string) {
+  const text = typed.trim();
+  if (text === "") return { money: null, bad: false, hint: KIN_DEALS.valueHint };
+  const money = kinParseMoney(text, currency);
+  return money === null
+    ? { money, bad: true, hint: KIN_DEALS.notAmount }
+    : { money, bad: false, hint: KIN_DEALS.readAs(kinMoneyText(money)) };
+}
+
 // Editing a deal
 
 /** What the Edit form holds, as typed. The client stays: a deal never moves to another. */
@@ -708,18 +798,27 @@ export interface KinDealEditDraft {
   readonly expected: string | null;
   readonly source: string;
   readonly quote: KinRecordKey | null;
+  /** What was said about price and the like: the deal page's notes. */
+  readonly notes: string;
+  /** Keep private: only the owner level sees it and the promises made on it. */
+  readonly private: boolean;
 }
 
-export function kinDealEditDraft(
-  deal: Pick<KinDealRow, "title" | "value" | "expectedAt" | "expectedAllDay" | "source" | "quote">,
-  names: KinWorkNames,
-): KinDealEditDraft {
+/** A deal as Edit opens it: its row, with the notes its page carries. */
+type KinDealEditable = Pick<
+  KinDealRow,
+  "title" | "value" | "expectedAt" | "expectedAllDay" | "source" | "quote" | "sensitive"
+> & { readonly notes?: string };
+
+export function kinDealEditDraft(deal: KinDealEditable, names: KinWorkNames): KinDealEditDraft {
   return {
     title: deal.title,
     value: deal.value === undefined ? "" : kinMoneyText(deal.value),
     expected: kinWorkAllDay(deal.expectedAt, deal.expectedAllDay, names),
     source: deal.source ?? "",
     quote: deal.quote?.key ?? null,
+    notes: deal.notes ?? "",
+    private: deal.sensitive,
   };
 }
 
@@ -732,10 +831,7 @@ export type KinDealEditRequest =
  * typed without a currency takes the deal's own, else the company's.
  */
 export function kinDealEditRequest(
-  deal: Pick<
-    KinDealRow,
-    "key" | "rev" | "title" | "value" | "expectedAt" | "expectedAllDay" | "source" | "quote"
-  >,
+  deal: KinDealEditable & Pick<KinDealRow, "key" | "rev">,
   draft: KinDealEditDraft,
   names: KinWorkNames,
   home: string | null,
@@ -748,6 +844,7 @@ export function kinDealEditRequest(
   const value = typed === "" ? null : kinParseMoney(typed, currency);
   if (typed !== "" && value === null) return { ok: false, problem: KIN_DEALS.notAmount };
   const source = draft.source.trim();
+  const notes = draft.notes.trim();
   const sameValue =
     value === null
       ? deal.value === undefined
@@ -764,6 +861,8 @@ export function kinDealEditRequest(
       ...(draft.expected === was.expected ? {} : { expectedOn: draft.expected }),
       ...(source === was.source ? {} : { source: source === "" ? null : source }),
       ...(draft.quote === was.quote ? {} : { quote: draft.quote }),
+      ...(notes === was.notes.trim() ? {} : { notes }),
+      ...(draft.private === was.private ? {} : { sensitive: draft.private }),
     },
   };
 }

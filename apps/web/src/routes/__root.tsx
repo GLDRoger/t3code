@@ -52,8 +52,9 @@ import { configureClientTracing } from "../observability/clientTracing";
 import { resolveInitialServerAuthGateState } from "../environments/primary";
 import { GUEST_PAGE_PATH } from "../guestPage";
 import { KIN_INVITE_LINK_PATH } from "@t3tools/shared/remote";
-import { kinListAt } from "../kin/kinListSwitch";
+import { KinChatOnlyRoot, redirectChatOnlyToKin } from "../kin/KinChatOnlyRoot";
 import { rememberKinTeammate } from "../kin/kinTeammateMark";
+import { redirectCodingToKin } from "../kin/kinNoCode";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
 import { useHostedPromptLinkLanding } from "../components/promptLinks/HostedPromptLinkLanding";
 import { isLocalEnvironmentDisabled } from "../localEnvironment";
@@ -63,6 +64,8 @@ import { readProject } from "../state/entities";
 
 import { getDesktopSnapShotBridge } from "../lib/desktopSnapShot";
 import { isChunkLoadError } from "../lib/chunkReloadGuard";
+import { KinUpdatedPage } from "../kin/KinUpdatedLine";
+import { KIN_WEB_ONLY } from "../kin/kinWebOnly";
 import { shouldResumeSnapShotSetupOnStartup } from "../lib/snapShotSetupResume";
 
 export const Route = createRootRoute({
@@ -77,6 +80,7 @@ export const Route = createRootRoute({
         } as const,
       };
     }
+    redirectCodingToKin(location.pathname);
 
     if (location.pathname === "/pair" && hasHostedPairingRequest(new URL(window.location.href))) {
       return {
@@ -95,19 +99,7 @@ export const Route = createRootRoute({
     }
 
     const authGateState = await resolveInitialServerAuthGateState();
-    if (
-      authGateState.status === "authenticated" &&
-      authGateState.chatOnly &&
-      kinListAt(location.pathname) !== "kin"
-    ) {
-      throw redirect({
-        to: "/kin",
-        search: location.pathname.startsWith("/settings")
-          ? { settings: location.pathname.split("/")[2] || "general" }
-          : {},
-        replace: true,
-      });
-    }
+    redirectChatOnlyToKin(authGateState, location.pathname);
     if (authGateState.status === "authenticated") {
       // Idempotent, so every navigation can ask for it.
       void configureClientTracing();
@@ -199,16 +191,8 @@ function RootRouteBranch() {
   if (authGateState.status !== "authenticated" && authGateState.status !== "hosted-static") {
     return <Outlet />;
   }
-  // A teammate's session gets Kin's list and chats: no setup, thread sync or coding chrome.
-  if (authGateState.status === "authenticated" && authGateState.chatOnly) {
-    return (
-      <CommandPalette>
-        <AppSidebarLayout chatOnly>
-          <Outlet />
-        </AppSidebarLayout>
-      </CommandPalette>
-    );
-  }
+  if (authGateState.status === "authenticated" && authGateState.chatOnly)
+    return <KinChatOnlyRoot />;
 
   // Settings can reopen /welcome mid-session, so it mounts everything the app does except the
   // first-run gate and the event router, whose first navigation would leave the page.
@@ -279,6 +263,7 @@ function RootRouteErrorView({ error }: ErrorComponentProps) {
   const pathname = useLocation({ select: (location) => location.pathname });
   const report = errorReport(error, pathname);
 
+  if (KIN_WEB_ONLY && isChunkLoadError(error)) return <KinUpdatedPage />;
   return (
     <StandalonePage>
       <StandalonePageHeader title={gt("Something went wrong.")} description={message} />

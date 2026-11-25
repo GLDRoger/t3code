@@ -86,6 +86,26 @@ export function KinImportScreen({ route }: StaticScreenProps<KinImportParams>) {
   return <Importing {...target} />;
 }
 
+type ImportAsset = { readonly uri: string; readonly name: string; readonly size?: number };
+
+/** Opens the document picker; undefined when the person cancelled. */
+async function pickImportAsset(): Promise<ImportAsset | undefined> {
+  const { getDocumentAsync } = await import("expo-document-picker");
+  const endHandoff = beginForegroundHandoff();
+  try {
+    const result = await getDocumentAsync({ copyToCacheDirectory: true, multiple: false });
+    return result.canceled ? undefined : result.assets[0];
+  } finally {
+    endHandoff();
+  }
+}
+
+async function readImportFile(asset: ImportAsset): Promise<KinImportFile> {
+  const { File } = await import("expo-file-system");
+  const data = await new File(asset.uri).base64();
+  return { name: (asset.name.trim() || "file.csv").slice(0, 200), data };
+}
+
 /** A row whose value is picked from a menu: a column's destination, a decision, a stage. */
 function PickRow(props: {
   readonly label: string;
@@ -159,22 +179,12 @@ function Importing(props: KinWorkTarget) {
 
   const choose = async () => {
     setProblem(null);
-    const { getDocumentAsync } = await import("expo-document-picker");
-    const endHandoff = beginForegroundHandoff();
-    let asset: { readonly uri: string; readonly name: string; readonly size?: number } | undefined;
-    try {
-      const result = await getDocumentAsync({ copyToCacheDirectory: true, multiple: false });
-      asset = result.canceled ? undefined : result.assets[0];
-    } finally {
-      endHandoff();
-    }
+    const asset = await pickImportAsset();
     if (asset === undefined) return;
     const tooBig = kinImportTooBig(asset.size ?? 0);
     if (tooBig !== null) return setProblem(tooBig);
     setBusy({ doing: "reading", rows: 0 });
-    const { File } = await import("expo-file-system");
-    const data = await new File(asset.uri).base64();
-    const file = { name: (asset.name.trim() || "file.csv").slice(0, 200), data };
+    const file = await readImportFile(asset);
     setPicked(file);
     setChoices(KIN_IMPORT_NO_CHOICES);
     setApplied(null);

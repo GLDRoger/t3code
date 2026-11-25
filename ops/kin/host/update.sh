@@ -33,6 +33,10 @@ BACKUP_STATUS="$HOME/.t3/userdata/kin-backup-status.json"
 SPACE_HEADROOM=$((1024 * 1024 * 1024))
 # Seconds to wait for a new build to answer and finish its migrations.
 ANSWER_TIMEOUT=90
+# Seconds to wait for agents' turns and the nightly dream to end before stopping the server. Past
+# it the server stops anyway: a stopped turn lands what it staged in memory, and its unanswered
+# messages are answered after the restart.
+TURN_WAIT=120
 BACKUP=""
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SELF_SUM="$(cksum <"$SELF")"
@@ -93,6 +97,33 @@ db_heads() {
   t3="$(sqlite3 -readonly "$DB" 'SELECT coalesce(max(migration_id), 0) FROM effect_sql_migrations;' 2>/dev/null || echo 0)"
   kin="$(sqlite3 -readonly "$DB" 'SELECT coalesce(max(migration_id), 0) FROM kin_sql_migrations;' 2>/dev/null || echo 0)"
   echo "${t3:-0} ${kin:-0}"
+}
+
+# How many agent turns (wake-ups) and dreams the database shows running; 0 before Kin's tables exist.
+running_work() {
+  local n=""
+  if [ -f "$DB" ]; then
+    n="$(sqlite3 -readonly "$DB" "SELECT (SELECT count(*) FROM kin_wakeups WHERE status = 'running') + (SELECT count(*) FROM kin_dream_runs WHERE status = 'running');" 2>/dev/null)" || n=""
+  fi
+  echo "${n:-0}"
+}
+
+# Waits up to TURN_WAIT seconds for running agent turns and dreams to end, saying what it waits for.
+wait_for_turns() {
+  local running waited=0
+  running="$(running_work)"
+  [ "$running" -gt 0 ] || return 0
+  say "waiting for $running running agent turn(s) or dream to finish before stopping the server (up to ${TURN_WAIT}s)."
+  until [ "$running" -eq 0 ]; do
+    if [ "$waited" -ge "$TURN_WAIT" ]; then
+      say "$running still running after ${TURN_WAIT}s; stopping the server anyway. What they staged in memory lands as it stops."
+      return 0
+    fi
+    sleep 5
+    waited=$((waited + 5))
+    running="$(running_work)"
+  done
+  say "no agent turn or dream is running now (waited ${waited}s)."
 }
 
 # A consistent copy of the database before the new build migrates it. Sets BACKUP.
@@ -160,6 +191,14 @@ space_short() {
       return
     fi
   done
+}
+
+# Kin's temp folder on the main disk: service.env's TMPDIR when it names one (kin-server.env, read
+# after it, repeats it so the host's choice stands), else ~/.cache/kin-tmp. Keep in step with setup.sh.
+kin_tmpdir() {
+  local dir=""
+  if [ -f "$SERVICE_ENV" ]; then dir="$(sed -n 's/^ *\(export \)\{0,1\}TMPDIR=["'\'']\{0,1\}\(\/[^"'\'']*\).*/\2/p' "$SERVICE_ENV" | tail -n1)"; fi
+  echo "${dir:-$HOME/.cache/kin-tmp}"
 }
 
 server_url() {
@@ -276,6 +315,7 @@ write_env_file() {
     "KIN_REPO=$REPO" \
     "KIN_CHECKOUT=$CURRENT" \
     "KIN_NODE_VERSION=$1" \
+    "TMPDIR=$(kin_tmpdir)" \
     ${2:+"KIN_BUILD_COMMIT=$2"} >"$tmp" || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$ENV_FILE"; then
     rm -f "$tmp"
     return 1
@@ -285,7 +325,9 @@ write_env_file() {
 install_units() {
   local unit
   mkdir -p "$UNIT_DIR" || return 1
-  for unit in kin-server.service kin-backup.service kin-backup.timer; do
+  for unit in kin-server.service kin-backup.service kin-backup.timer kin-temp-clean.service kin-temp-clean.timer; do
+    # A build from before a unit existed leaves that unit as it is.
+    [ -f "$1/ops/kin/host/$unit" ] || continue
     cmp -s "$1/ops/kin/host/$unit" "$UNIT_DIR/$unit" ||
       install -m 0644 "$1/ops/kin/host/$unit" "$UNIT_DIR/$unit" || return 1
   done
@@ -313,6 +355,7 @@ deploy() {
     say "not enough disk space: $problem. Nothing changed; the server still runs ${previous:-nothing}."
     return 1
   fi
+  wait_for_turns
   # Stopped first, so the backup holds every write the previous build made.
   systemctl --user stop kin-server 2>/dev/null || true
   if ! backup_db "$sha"; then
@@ -339,6 +382,8 @@ deploy() {
   if [ -z "$problem" ]; then
     rm -f "$ENV_FILE.prev"
     say "running $sha, healthy: up, answering, migrations at $(db_heads | sed 's/ /\/K/'). Previous build: ${previous:-none}."
+    systemctl --user enable --now kin-temp-clean.timer 2>/dev/null ||
+      say "couldn't turn on the hourly temp clean; see systemctl --user status kin-temp-clean.timer."
     prune_builds "$build" "$previous"
     prune_backups
     return 0
@@ -384,6 +429,11 @@ main() {
   local KIN_REPO=""
   if [ -f "$ENV_FILE" ]; then KIN_REPO="$(sed -n 's/^KIN_REPO=//p' "$ENV_FILE" | tail -n1)"; fi
   REPO="${KIN_REPO:-$HOME/t3code}"
+  # The build (install, compile, cc) and its tests write here, not to a small /tmp.
+  TMPDIR="$(kin_tmpdir)"
+  export TMPDIR
+  mkdir -p "$TMPDIR"
+  if [ -O "$TMPDIR" ]; then chmod 700 "$TMPDIR"; fi
 
   [ "$(git -C "$REPO" branch --show-current)" = kin ] || { say "$REPO is not on branch kin."; exit 1; }
   [ -f "$REPO/.env" ] || { say "$REPO/.env is missing (cp .env.example .env)."; exit 1; }

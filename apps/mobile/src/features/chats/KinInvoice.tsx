@@ -71,6 +71,7 @@ import {
   KinWorkTextField,
 } from "./components/KinWorkPieces";
 import { KinLinesFields } from "./KinMoneyAnswers";
+import type { KinMakeStep } from "./kinMakeStep";
 import { kinClient } from "./state/kinClient";
 import {
   useKinCompanyCountry,
@@ -84,6 +85,7 @@ import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 type MoneyActions = ReturnType<typeof useKinMoneyActions>;
 
@@ -143,8 +145,12 @@ export function KinInvoiceActions(
     setReading(false);
     Dialog.confirm({
       title: KIN_INVOICES.issueTitle,
-      message:
+      message: [
+        invoice.issueTotal,
         next === null ? KIN_INVOICES.issueDetail(invoice.prefix) : KIN_INVOICES.issueNumber(next),
+      ]
+        .filter((line) => line !== null)
+        .join("\n"),
       confirmText: KIN_INVOICES.issue,
       onConfirm: () => void actions.issue(itemKey),
     });
@@ -466,16 +472,6 @@ const targetOf = (params: { readonly environmentId: string; readonly orgId: stri
   const orgId = Option.getOrNull(decodeOrgId(params.orgId));
   return environmentId === null || orgId === null ? null : { environmentId, orgId };
 };
-
-/** What Make invoice or Make its PDF makes, and for whom: a step of the entry's sheet. */
-export interface KinMakeStep {
-  /** The list whose templates make it. */
-  readonly list: string;
-  /** The entry's currency: every line is in it. */
-  readonly currency: string;
-  /** The invoice's client, to edit when a detail of theirs is missing. */
-  readonly party: { readonly key: string; readonly title: string } | null;
-}
 
 /**
  * Pick a template, see the PDF as it would be made, then file it: the entry's sheet turns into
@@ -975,25 +971,23 @@ function ApplyReceipt(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the client's open invoices from the host when the sheet opens or Try again is pressed
   useEffect(() => {
     let current = true;
-    void kinClient.workList
-      .run(appAtomRegistry, {
-        environmentId,
-        input: {
-          orgId,
-          list: INVOICES,
-          states: ["waiting"],
-          ...(payer === null ? {} : { party: payer }),
-          limit: 50,
-        },
-      })
-      .then((result) => {
-        if (current)
-          setHeld({
-            attempt,
-            invoices: AsyncResult.isSuccess(result) ? result.value.records : null,
-            cause: result,
-          });
-      });
+    void runKinCommand(appAtomRegistry, kinClient.workList, {
+      environmentId,
+      input: {
+        orgId,
+        list: INVOICES,
+        states: ["waiting"],
+        ...(payer === null ? {} : { party: payer }),
+        limit: 50,
+      },
+    }).then((result) => {
+      if (current)
+        setHeld({
+          attempt,
+          invoices: AsyncResult.isSuccess(result) ? result.value.records : null,
+          cause: result,
+        });
+    });
     return () => {
       current = false;
     };

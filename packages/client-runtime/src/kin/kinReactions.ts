@@ -41,6 +41,9 @@ export const KIN_PICKER_REACTIONS = [
   "💯",
 ] as const satisfies ReadonlyArray<KinReactionEmoji>;
 
+/** The long-press sheet's first row; "More" opens the rest. */
+export const KIN_QUICK_REACTIONS = KIN_PICKER_REACTIONS.slice(0, 5);
+
 const reactionKey = (reaction: Pick<KinReaction, "messageId" | "memberId" | "emoji">) =>
   `${reaction.messageId}|${reaction.memberId}|${reaction.emoji}`;
 

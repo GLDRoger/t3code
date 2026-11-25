@@ -13,6 +13,7 @@ import {
 
 import { formatMoney } from "../money.ts";
 import type { KnownRow } from "./bankList.ts";
+import type { AlertCheck } from "./bankAlerts.ts";
 import type { Candidate, RowMatch } from "./statementMatch.ts";
 import type { Statement } from "./statementTable.ts";
 
@@ -37,6 +38,8 @@ export type Review = {
   /** Every row not already explained in Bank transactions. */
   readonly matches: ReadonlyMap<number, RowMatch>;
   readonly missing?: ReadonlyArray<Missing>;
+  /** How its rows and the account's bank alerts agree, when Kin has alerts of it. */
+  readonly alerts?: AlertCheck;
 };
 
 const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
@@ -52,22 +55,32 @@ export const STATEMENT_REVIEW_TEXT =
   "Kin read a bank statement and matched its rows. Review and confirm them on its card.";
 
 export const OPEN_INVOICE_NOTE = "An open invoice: pick it if this money is its payment";
+/** Every key Confirm marks, or the count and its first and last when they don't all fit. */
+const repaysNote = (repays: ReadonlyArray<{ readonly key: string }>) => {
+  const all = `Marks ${repays.map((one) => one.key).join(", ")} repaid`;
+  return all.length <= 200
+    ? all
+    : `Marks ${repays.length} expenses repaid: ${repays[0]!.key} … ${repays.at(-1)!.key}`;
+};
+
 const target = (candidate: Candidate, option: number, currency: string): KinStatementTarget => ({
   option,
   kind: candidate.kind,
   key: candidate.key,
   label: clamp(`${candidate.key} · ${candidate.title}`, 200),
-  ...(candidate.fit === "tds" && candidate.tdsMinor !== undefined
-    ? { note: `Paid with ${money(candidate.tdsMinor, currency)} TDS deducted` }
-    : candidate.fit === "part"
-      ? { note: "Part payment" }
-      : candidate.fit === "foreign"
-        ? { note: "Same amount in its own currency" }
-        : candidate.fit === "recorded"
-          ? { note: "Payment already recorded: this links the bank row to it" }
-          : candidate.fit === "open"
-            ? { note: OPEN_INVOICE_NOTE }
-            : {}),
+  ...(candidate.repays !== undefined
+    ? { note: repaysNote(candidate.repays) }
+    : candidate.fit === "tds" && candidate.tdsMinor !== undefined
+      ? { note: `Paid with ${money(candidate.tdsMinor, currency)} TDS deducted` }
+      : candidate.fit === "part"
+        ? { note: "Part payment" }
+        : candidate.fit === "foreign"
+          ? { note: "Same amount in its own currency" }
+          : candidate.fit === "recorded"
+            ? { note: "Payment already recorded: this links the bank row to it" }
+            : candidate.fit === "open"
+              ? { note: OPEN_INVOICE_NOTE }
+              : {}),
 });
 
 /**
@@ -184,6 +197,31 @@ const heldBackWhy = (review: Review) =>
         : review.statement.check.status === "unchecked"
           ? "Nothing is ticked: Kin couldn't check these rows against the statement's own balances and text. Check each, then tick it."
           : undefined;
+const alertLines = (check: AlertCheck, currency: string) => [
+  ...(check.merged === 0
+    ? []
+    : [
+        `${check.merged} row${check.merged === 1 ? " is" : "s are"} already in Bank transactions from bank alerts: the same entr${check.merged === 1 ? "y" : "ies"}, not new ones.`,
+      ]),
+  ...(check.notOnStatement.length === 0
+    ? []
+    : [
+        `In bank alerts, not on this statement: ${check.notOnStatement
+          .slice(0, 4)
+          .map(
+            (one) =>
+              `${shortDay(one.date)} ${money(one.amountMinor, currency)}${one.direction === null ? "" : one.direction === "credit" ? " in" : " out"} (${one.key})`,
+          )
+          .join(", ")}${
+          check.notOnStatement.length > 4 ? `, and ${check.notOnStatement.length - 4} more` : ""
+        }. They stay in Bank transactions; check the statement covers those days.`,
+      ]),
+  ...(check.notInAlerts === 0
+    ? []
+    : [
+        `On this statement, not in any bank alert since ${shortDay(check.alertsSince)}: ${check.notInAlerts} row${check.notInAlerts === 1 ? "" : "s"}.`,
+      ]),
+];
 const missingLine = (missing: ReadonlyArray<Missing>, currency: string) =>
   `Recorded before, not found in this reading: ${missing
     .slice(0, 4)
@@ -392,6 +430,7 @@ export const reviewCard = (
             `${held.size} row${held.size === 1 ? " was" : "s were"} recorded from this statement before; Undo takes ${held.size === 1 ? "it" : "them"} back.`,
           ]),
       ...(missing.length === 0 ? [] : [missingLine(missing, currency)]),
+      ...(review.alerts === undefined ? [] : alertLines(review.alerts, currency)),
       ...(fromScan(review)
         ? ["These rows were read from images of a scanned statement: check them against it."]
         : review.source === "agent"

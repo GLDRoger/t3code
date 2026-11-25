@@ -268,6 +268,66 @@ describe("a client's page", () => {
     expect(page.getByText("No next step").elements()).toHaveLength(0);
   });
 
+  it("marks promises with where they were made, and puts the contract's dates under the name", async () => {
+    const promise = (key: string, title: string, side: "ours" | "theirs", from?: object) => ({
+      recordId: KinRecordId.make(`r-${key}`),
+      orgId: target.orgId,
+      key: KinRecordKey.make(key),
+      title,
+      state: "open",
+      waitingOn: null,
+      owner: { _tag: "person", personId: zoya },
+      category: from === undefined ? "task" : "obligation",
+      side,
+      dueAt: null,
+      dueAllDay: false,
+      late: false,
+      confirmed: true,
+      sensitive: false,
+      working: false,
+      pullRequest: null,
+      rev: 1,
+      createdAt: "2026-11-01T10:00:00.000Z",
+      updatedAt: "2026-11-01T10:00:00.000Z",
+      closedAt: null,
+      ...(from === undefined ? {} : { from }),
+    });
+    setup({
+      page: {
+        ...clientPage({ weOwe: 2, theyOwe: 1 }),
+        weOwe: {
+          records: [
+            promise("W-1", "Send the revised quote", "ours", {
+              kind: "note",
+              note: "At the site visit",
+            }),
+            promise("W-2", "Book the training day", "ours"),
+          ],
+          total: 2,
+        },
+        theyOwe: {
+          records: [promise("W-3", "Signed order form", "theirs", { kind: "mail" })],
+          total: 1,
+        },
+        contract: { project: "P-1", renewsOn: "2027-03-01", noticeBy: "2026-12-31", soon: true },
+      },
+    });
+    await using _screen = await render(clientScreen(null));
+    await expect
+      .element(page.getByText("Renews 1 Mar · notice by 31 Dec"))
+      .toHaveClass(/text-warning-foreground/);
+    expect(page.getByText("Promised", { exact: true }).elements()).toHaveLength(2);
+    await expect.element(page.getByText("At the site visit")).toBeVisible();
+    await expect.element(page.getByText("From a mail")).toBeVisible();
+  });
+
+  it("has no contract line for a client with no renewal", async () => {
+    setup({ page: clientPage({}) });
+    await using _screen = await render(clientScreen(null));
+    await expect.element(page.getByText("Brightwater Clinics").first()).toBeVisible();
+    expect(page.getByText(/^Renews /).elements()).toHaveLength(0);
+  });
+
   it("keeps terms, Keep private and closing from a teammate the host says may only edit", async () => {
     setup({
       page: clientPage(

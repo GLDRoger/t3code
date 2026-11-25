@@ -90,9 +90,28 @@ const MARKDOWN_LINK = /!?\[[^\]\n]*\]\([^)\n]*\)/g;
 const BARE_URL = /<?https?:\/\/[^\s<>()]+>?/g;
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const NAME_MAX = 40;
+const MARKDOWN_MARK = /[\\`*_~<>[\]]/g;
+
+/** What a link reads as: an entry's name in place of its key, cut to a readable length. */
+const linkLabel = (link: KinMessageLink, written: string) => {
+  const name = link.name?.replace(/\s+/g, " ").trim();
+  if (name === undefined || name === "" || link.to._tag !== "record" || written !== link.to.key)
+    return written;
+  const cut = name.length > NAME_MAX ? `${name.slice(0, NAME_MAX - 1).trimEnd()}…` : name;
+  return cut.replace(MARKDOWN_MARK, (mark) => `\\${mark}`);
+};
+
+/** A link's hover: the key a name stands for, with the entry's line; nothing for a plain name. */
+export const kinLinkTitle = (link: KinMessageLink) =>
+  link.name === undefined || link.to._tag !== "record"
+    ? (link.note ?? undefined)
+    : [link.text, link.note].filter((part) => part !== null).join(" · ");
+
 /**
  * The body with each link's text, the first place it is written outside code and existing links,
- * made an in-app link. Longer texts go first, so "Orbit Dental retainer" isn't cut by "Orbit Dental".
+ * made an in-app link, an entry's key written as its name. Longer texts go first, so "Orbit Dental
+ * retainer" isn't cut by "Orbit Dental".
  */
 export function kinLinkedMarkdown(
   body: string,
@@ -125,7 +144,8 @@ export function kinLinkedMarkdown(
       href === "plain"
         ? `${LINK_KIND}:${one.index}`
         : formatComposerContextHref(LINK_KIND, ComposerContextId.make(String(one.index)));
-    out += `${body.slice(from, one.at)}[${body.slice(one.at, one.end)}](${target})`;
+    const written = body.slice(one.at, one.end);
+    out += `${body.slice(from, one.at)}[${linkLabel(links[one.index]!, written)}](${target})`;
     from = one.end;
   }
   return out + body.slice(from);

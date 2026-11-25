@@ -1,48 +1,49 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_RESTORE_ACTION,
   KIN_RETIRED_LABEL,
   kinAgentGroups,
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
+import { kinDomainLabel, KIN_AGENTS_COPY } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { KIN_DAILY_LIMIT, kinDailyLimitWaiting } from "@t3tools/client-runtime/kin/kinBudget";
+import { kinCount } from "@t3tools/client-runtime/kin/kinCount";
+import { KIN_SET_UP_ON_COMPUTER } from "@t3tools/client-runtime/kin/kinNavigation";
 import {
-  KIN_OTHER_PROVIDER_AGENTS,
-  kinDomainLabel,
-  KIN_AGENTS_COPY,
-} from "@t3tools/client-runtime/kin/kinLeadPresentation";
-import { EnvironmentId, KinOrgId, type ModelSelection } from "@t3tools/contracts";
-import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
+  KIN_TEAM_AGENT_COPY,
+  kinTeamAgentChoices,
+  kinTeamAgentLabel,
+} from "@t3tools/client-runtime/kin/kinProfiles";
+import { kinTeamAgentDetail } from "@t3tools/client-runtime/kin/kinReach";
+import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { AsyncResult } from "effect/reactivity";
-import { useState } from "react";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
+import { AppText as Text } from "../../components/ui/AppText";
+import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { KinFoldSection } from "./components/KinWorkPieces";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
+import { Menu } from "../../components/ui/Menu";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
-import { useEnvironmentServerConfig } from "../../state/entities";
-import { serverEnvironment } from "../../state/server";
+import { SettingsRow } from "../settings/components/SettingsRow";
+import { SettingsSection } from "../settings/components/SettingsSection";
 import { kinClient } from "./state/kinClient";
 import { useKinWorkingAgents } from "./state/useKinInbox";
 import { useAtomCommand } from "../../state/use-atom-command";
-import {
-  KinAgentEffortAdvice,
-  KinAgentEffortRow,
-  KinAgentModelRow,
-  kinPickedModel,
-  useKinAgentModelOptions,
-} from "./KinAgentModelRow";
 import { kinRetiredWhenNow, useKinAgentRetire } from "./state/useKinAgentRetire";
+
+const noBudgetAtom = Atom.make(AsyncResult.initial<never, never>());
 
 export type KinAgentsParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -99,13 +100,23 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
   const { environmentId, orgId } = props;
   // Only a session that may restore an agent asks the host for the retired ones.
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
-  const working = useKinWorkingAgents(environmentId);
+  const working = useKinWorkingAgents(environmentId, orgId);
   const atom = canRestore
     ? kinClient.agents({ environmentId, orgId })
     : kinClient.leads({ environmentId, input: { orgId } });
   const result = useAtomValue(atom);
   const canAdd = useAtomValue(kinClient.leadCreate.permissionAtom(environmentId));
   const retire = useKinAgentRetire(environmentId);
+  // Work the daily limit holds shows on its agent's row; the limit itself is set on the computer.
+  const budget = useAtomValue(
+    canAdd ? kinClient.budget({ environmentId, input: { orgId } }) : noBudgetAtom,
+  );
+  const held = new Map(
+    kinDailyLimitWaiting(Option.getOrNull(AsyncResult.value(budget))).map((agent) => [
+      agent.agentId,
+      agent.line,
+    ]),
+  );
   // What was last read stays up while a change is read again.
   const all = Option.getOrNull(AsyncResult.value(result))?.leads ?? null;
   const groups = all === null ? null : kinAgentGroups(all);
@@ -116,6 +127,7 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
     : undefined;
   return (
     <KinAgentsFrame onAdd={add}>
+      {canAdd ? <KinTeamAgentRow environmentId={environmentId} orgId={orgId} /> : null}
       {agents === null ? (
         AsyncResult.isFailure(result) ? (
           <KinLoadFailed
@@ -147,12 +159,16 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
               key={agent.agentId}
               icon="robot"
               label={agent.name}
-              description={kinDomainLabel(agent.domain)}
+              description={[kinDomainLabel(agent.domain), held.get(agent.agentId) ?? null]
+                .filter((line) => line !== null)
+                .join("\n")}
               {...(agent.paused !== undefined
                 ? { detail: "Paused" }
-                : working.has(agent.agentId)
-                  ? { detail: "Working" }
-                  : {})}
+                : held.has(agent.agentId)
+                  ? { detail: KIN_DAILY_LIMIT.waiting }
+                  : working.has(agent.agentId)
+                    ? { detail: "Working" }
+                    : {})}
               onPress={() =>
                 navigation.navigate("KinLead", { environmentId, orgId, agentId: agent.agentId })
               }
@@ -160,16 +176,10 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
           ))}
         </ListSection>
       )}
-      {canAdd && agents !== null && agents.length > 0 ? (
-        <>
-          <KinAgentDefaults environmentId={environmentId} orgId={orgId} />
-          <KinOtherProviderAgents environmentId={environmentId} />
-        </>
-      ) : null}
       {retired.length === 0 ? null : (
-        <ListSection
+        <KinFoldSection
           title={KIN_RETIRED_LABEL}
-          footer="A retired agent's chats, tasks and what it remembers are kept. Restoring it starts its reminders and scheduled tasks again."
+          summary={kinCount(retired.length, "agent", "agents")}
         >
           {retired.map((agent) => (
             <ListRow
@@ -182,87 +192,76 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
               onPress={() => retire.restore(agent)}
             />
           ))}
-        </ListSection>
+          <Text textRole="footnote" className="px-4 py-3 text-foreground-muted">
+            A retired agent's chats, tasks and what it remembers are kept. Restoring it starts its
+            reminders and scheduled tasks again.
+          </Text>
+        </KinFoldSection>
       )}
+      {canAdd && agents !== null && agents.length > 0 ? (
+        <Text textRole="footnote" className="px-4 text-foreground-muted">
+          {KIN_SET_UP_ON_COMPUTER.agents}
+        </Text>
+      ) : null}
     </KinAgentsFrame>
   );
 }
 
-/** The host's experimental switch that lets agents run on providers behind it. */
-function KinOtherProviderAgents(props: { readonly environmentId: EnvironmentId }) {
-  const config = useEnvironmentServerConfig(props.environmentId);
-  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
-    label: KIN_OTHER_PROVIDER_AGENTS.title,
-    reportFailure: true,
-  });
-  if (config === null) return null;
-  return (
-    <ListSection footer={KIN_OTHER_PROVIDER_AGENTS.detail}>
-      <ListToggleRow
-        label={KIN_OTHER_PROVIDER_AGENTS.title}
-        value={config.settings.kinNonClaudeAgents}
-        onValueChange={(on) =>
-          void updateSettings({
-            environmentId: props.environmentId,
-            input: { patch: { kinNonClaudeAgents: on } },
-          })
-        }
-      />
-    </ListSection>
-  );
-}
-
-/** The model new agents start on; each agent's own is on its page. */
-function KinAgentDefaults(props: {
+/** Which agent every teammate can chat with, or Off: the first choice on the Agents page. */
+function KinTeamAgentRow(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
 }) {
-  const { environmentId, orgId } = props;
-  const defaultsAtom = kinClient.agentDefaults({ environmentId, input: { orgId } });
-  const defaults = Option.getOrNull(AsyncResult.value(useAtomValue(defaultsAtom)));
-  const options = useKinAgentModelOptions(environmentId);
-  const save = useAtomCommand(kinClient.agentDefaultsSet, { reportFailure: false });
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-  const base = defaults?.model ?? null;
-  if (base === null) return null;
-  const choose = (model: ModelSelection) => {
-    setBusy(true);
-    void save({ environmentId, input: { orgId, model } }).then((outcome) => {
-      setBusy(false);
-      setProblem(
-        AsyncResult.isFailure(outcome)
-          ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENTS_COPY.saveFailed)
-          : null,
-      );
-      appAtomRegistry.refresh(defaultsAtom);
-    });
-  };
+  const leadsAtom = kinClient.leads({
+    environmentId: props.environmentId,
+    input: { orgId: props.orgId },
+  });
+  const result = useAtomValue(leadsAtom);
+  const refresh = useAtomRefresh(leadsAtom);
+  const canSet = useAtomValue(kinClient.teamAgentSet.permissionAtom(props.environmentId));
+  const set = useAtomCommand(kinClient.teamAgentSet, { reportFailure: false });
+  const list = Option.getOrNull(AsyncResult.value(result));
+  const reach = useAtomValue(
+    kinClient.reach({ environmentId: props.environmentId, input: { orgId: props.orgId } }),
+  );
+  const leads = list?.leads ?? [];
+  const current = list?.teamAgentId ?? null;
+  const choices = kinTeamAgentChoices(leads);
   return (
-    <View className="gap-2">
-      <ListSection
-        title={KIN_AGENT_PAGE.defaults}
-        footer={
-          problem ??
-          `${KIN_AGENT_PAGE.defaultsDetail}${defaults?.chosen === false ? ` ${KIN_AGENT_PAGE.defaultsUnchosen}` : ""}`
-        }
+    <SettingsSection
+      footer={kinTeamAgentDetail(Option.getOrNull(AsyncResult.value(reach)), current)}
+    >
+      <Menu
+        actions={choices.map((choice) => ({
+          id: choice.agentId ?? "off",
+          title: choice.label,
+          ...(choice.suggested ? { subtitle: KIN_TEAM_AGENT_COPY.suggested } : {}),
+          state: choice.agentId === current ? ("on" as const) : ("off" as const),
+        }))}
+        onPressAction={({ nativeEvent }) => {
+          const picked = choices.find((choice) => (choice.agentId ?? "off") === nativeEvent.event);
+          if (picked === undefined || picked.agentId === current) return;
+          void set({
+            environmentId: props.environmentId,
+            input: { orgId: props.orgId, agentId: picked.agentId },
+          }).then((outcome) => {
+            if (AsyncResult.isFailure(outcome))
+              Dialog.alert(
+                kinFailureText(squashAtomCommandFailure(outcome), KIN_TEAM_AGENT_COPY.failed),
+              );
+            refresh();
+          });
+        }}
       >
-        <KinAgentModelRow
-          label={KIN_AGENT_PAGE.model}
-          value={base}
-          options={options}
-          disabled={busy}
-          onPick={(selection) => choose(kinPickedModel(options, selection))}
+        <SettingsRow
+          labelWholeWords
+          icon="bubble.left.and.bubble.right"
+          label={KIN_TEAM_AGENT_COPY.label}
+          value={list === null ? "…" : kinTeamAgentLabel(leads, current)}
+          valuePosition="trailing"
+          disabled={!canSet || list === null}
         />
-        <KinAgentEffortRow
-          label={KIN_AGENT_PAGE.effort}
-          value={base}
-          options={options}
-          disabled={busy}
-          onPick={choose}
-        />
-      </ListSection>
-      <KinAgentEffortAdvice value={base} options={options} />
-    </View>
+      </Menu>
+    </SettingsSection>
   );
 }

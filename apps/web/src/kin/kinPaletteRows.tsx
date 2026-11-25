@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { kinChatListRows } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { type KinInboxState, selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
+import type { KinPlaces } from "@t3tools/client-runtime/kin/kinPlaces";
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 import { isMacPlatform } from "@t3tools/shared/keybindings";
@@ -11,6 +12,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { KIN_IMPORT } from "@t3tools/client-runtime/kin/kinImport";
 import {
   CalendarDaysIcon,
+  ChartLineIcon,
   FileUpIcon,
   ContactRoundIcon,
   FileTextIcon,
@@ -24,10 +26,14 @@ import {
 
 import { type CommandPaletteActionItem, ITEM_ICON_CLASS } from "../components/CommandPalette.logic";
 import { KinAvatar } from "./KinAvatar";
-import { kinDestinationLink, kinShownDestinationsAtom } from "./kinListSwitch";
+import { kinDestinationLink, kinNumbersLink } from "./kinListSwitch";
+import { useKinNumbersShown } from "./useKinNumbers";
 import { KIN_PLACE_PATH } from "./kinPlaces";
 import { kinClient } from "./kinClient";
-import { useKinHost } from "./useKinHost";
+import { kinHostKeptTarget, useKinHost } from "./useKinHost";
+import { kinPlacesAtom } from "./kinPlacesAtom";
+import { useKinSectionOn, useKinShell } from "./useKinShell";
+import { kinSectionNamed } from "@t3tools/client-runtime/kin/kinShell";
 
 const PLACE: Record<
   KinDestination,
@@ -60,21 +66,27 @@ const PLACE: Record<
   },
 };
 
+const noPlacesAtom = Atom.make<KinPlaces | null>(null);
+
 /**
  * One row per place this person's menu shows, with its shortcut, then the other words for where
  * things are (Projects, Lists, Dates), each only beside the place that holds it.
  */
 export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
   const navigate = useNavigate();
-  const shown = useAtomValue(kinShownDestinationsAtom);
+  const target = kinHostKeptTarget(useKinHost());
+  // T3's palette tests answer every atom with [], so the places may be absent there.
+  const shown = useAtomValue(target === null ? noPlacesAtom : kinPlacesAtom(target));
   // The owner level's, as the host has it: the same gate the host applies to the call.
-  // T3's palette tests answer every atom with [], so the target may be absent there.
   const canImport = useAtomValue(
-    kinClient.importApply.permissionAtom(shown?.target?.environmentId ?? null),
+    kinClient.importApply.permissionAtom(target?.environmentId ?? null),
   );
+  const dealsOn = useKinSectionOn(target?.environmentId ?? null, "deals");
+  const shell = useKinShell(target?.environmentId ?? null);
+  const named = (text: string) => kinSectionNamed(shell, text);
+  const numbersShown = useKinNumbersShown(target) === true;
   const destinations = shown?.destinations ?? [];
-  if (shown === null || destinations.length === 0) return [];
-  const { target } = shown;
+  if (target === null || destinations.length === 0) return [];
   const row = (
     value: string,
     title: string,
@@ -95,15 +107,32 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
     ...destinations.map((destination, index) => ({
       ...row(
         destination,
-        PLACE[destination].title,
+        named(PLACE[destination].title),
         PLACE[destination].icon,
-        ["go", "open", ...PLACE[destination].words],
+        // The company's own word for Clients finds it too.
+        ["go", "open", ...PLACE[destination].words.map(named), ...PLACE[destination].words],
         async () => {
           await navigate(kinDestinationLink(destination, target));
         },
       ),
       description: `${mod}${index + 1}`,
     })),
+    ...(numbersShown
+      ? [
+          {
+            ...row(
+              "numbers",
+              "Numbers: the figures your company watches, and today's values",
+              ChartLineIcon,
+              ["go", "open", "numbers", "figures", "daily", "watch", "refunds", "users", "stock"],
+              async () => {
+                await navigate(kinNumbersLink(target));
+              },
+            ),
+            description: `${mod}${destinations.length + 1}`,
+          },
+        ]
+      : []),
     ...(has("clients")
       ? [
           row(
@@ -125,7 +154,11 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
       ? [
           row(
             "import",
-            `${KIN_IMPORT.entry}: bring clients, contacts and deals in from a spreadsheet`,
+            named(
+              dealsOn
+                ? `${KIN_IMPORT.entry}: bring clients, contacts and deals in from a spreadsheet`
+                : `${KIN_IMPORT.entry}: bring clients and contacts in from a spreadsheet`,
+            ),
             FileUpIcon,
             [
               "import",
@@ -135,7 +168,7 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
               "excel",
               "crm",
               "contacts",
-              "deals",
+              ...(dealsOn ? ["deals"] : []),
               "bring in",
             ],
             async () => {

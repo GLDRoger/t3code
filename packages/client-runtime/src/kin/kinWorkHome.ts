@@ -2,6 +2,7 @@ import type {
   KinChatId,
   KinChatSummary,
   KinListDefinition,
+  KinMessageId,
   KinMoneySummary,
   KinRecord,
   KinRecordKey,
@@ -36,6 +37,8 @@ export const KIN_WORK_HOME = {
   addReceipt: "Receipt",
   addExpense: "Expense",
   elsewhere: "Clients, projects and docs",
+  /** The same, while the company has Clients off. */
+  elsewhereDocs: "Docs",
   places: {
     tasks: "Tasks",
     money: "Money",
@@ -126,7 +129,12 @@ export type KinNeedsYouOpen =
   | { readonly type: "task"; readonly key: KinRecordKey }
   | { readonly type: "list"; readonly open: KinListOpen }
   | { readonly type: "money" }
-  | { readonly type: "chat"; readonly chatId: KinChatId };
+  | {
+      readonly type: "chat";
+      readonly chatId: KinChatId;
+      /** The card's message, for the chat to open on; null for a row with none. */
+      readonly messageId: KinMessageId | null;
+    };
 
 export interface KinNeedsYouRow {
   readonly id: string;
@@ -187,18 +195,25 @@ export function kinNeedsYou(input: {
         ];
   const waiting = [...input.waiting]
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    .map((item): KinNeedsYouRow => {
-      const row = kinWaitingRowView(item, input.chats, input.agentNames);
-      return {
-        id: `waiting:${item.waitingId}`,
-        kind: "waiting",
-        title: `${row.label} · ${row.chatTitle}`,
-        detail: row.text ?? `Open the chat with ${row.chatTitle}`,
-        late: false,
-        open: { type: "chat", chatId: item.chatId },
-      };
-    });
+    .map((item) => kinNeedsWaitingRow(item, input.chats, input.agentNames));
   return [...late, ...owed, ...waiting, ...today];
+}
+
+/** What an agent waits on the viewer for, as a Needs-you row that opens its card. */
+export function kinNeedsWaitingRow(
+  item: KinWaitingItem,
+  chats: ReadonlyArray<KinChatSummary>,
+  agentNames: ReadonlyMap<string, string>,
+): KinNeedsYouRow {
+  const row = kinWaitingRowView(item, chats, agentNames);
+  return {
+    id: `waiting:${item.waitingId}`,
+    kind: "waiting",
+    title: `${row.label} · ${row.chatTitle}`,
+    detail: row.text ?? `Open the chat with ${row.chatTitle}`,
+    late: false,
+    open: { type: "chat", chatId: item.chatId, messageId: item.messageId },
+  };
 }
 
 // Tasks' one filter

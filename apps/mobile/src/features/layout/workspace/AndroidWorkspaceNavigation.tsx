@@ -25,6 +25,7 @@ export function AndroidTabBar<Tab extends string>(_props: {
   readonly tabs: ReadonlyArray<Tab>;
   readonly selectedTab: Tab;
   readonly onSelect: (tab: Tab) => void;
+  readonly titles?: Readonly<Record<string, string>>;
 }) {
   return null;
 }

@@ -13,11 +13,12 @@ import * as Presence from "../reply/KinPresence.ts";
 import * as Service from "./KinChatService.ts";
 import * as Groups from "./KinGroups.ts";
 import * as VisualHosts from "./KinVisualHosts.ts";
+import * as Records from "../work/KinRecords.ts";
 import { KinIdentity, KinIdentityConfig } from "./KinIdentity.ts";
 
 const stop = Stop.layer.pipe(Layer.provide(Presence.layer), Layer.provideMerge(Queue.layer));
 
-export const layer = Layer.mergeAll(
+const service = Layer.mergeAll(
   // A clear stops the turns answering what it deleted, through the same fan-out as a join.
   LevelGate.layer.pipe(
     Layer.provideMerge(Service.layer),
@@ -35,8 +36,16 @@ export const layer = Layer.mergeAll(
     Layer.provide(stop),
     Layer.provideMerge(KinIdentity.layer.pipe(Layer.provide(KinIdentityConfig.layer))),
   ),
-).pipe(
-  Layer.provideMerge(Layer.merge(Hub.layer, RefreshHub.layer)),
+);
+
+const storage = Layer.merge(Hub.layer, RefreshHub.layer).pipe(
   Layer.provideMerge(Repository.layer),
   Layer.provide(KinPersistence.layer),
+);
+
+export const layer = service.pipe(Layer.provideMerge(storage));
+
+export const layerWithWork = service.pipe(
+  Layer.provideMerge(Records.layer.pipe(Layer.provideMerge(Queue.layer))),
+  Layer.provideMerge(storage),
 );

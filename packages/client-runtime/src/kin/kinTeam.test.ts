@@ -14,9 +14,11 @@ import { AsyncResult } from "effect/reactivity";
 import type { AtomCommandResult } from "../state/runtime.ts";
 
 import {
+  KIN_NEW_TEAMMATE_SEES,
   KIN_TEAM_NO_EDITS,
   createKinTeamActions,
   kinInviteLink,
+  kinInviteTyped,
   KIN_INVITE_LOCAL_ONLY_NOTE,
   kinShareLink,
   kinNamesakeHandle,
@@ -27,6 +29,8 @@ import {
   kinTeamView,
   kinTeammateActions,
   kinTeammateKind,
+  kinTeammateNameMatch,
+  kinTeammatePage,
   kinTeammateKindEditable,
   type KinTeamEdits,
   type KinTeamList,
@@ -67,6 +71,28 @@ describe("kinTeamView", () => {
       ["Mira", "joined", null],
       ["Anouk", "invited", "i-new"],
       ["Tomas", "no_access", "i-tomas"],
+    ]);
+    // The list's row: who they are as its line, and a status only when they aren't simply here.
+    const withProfiles: KinTeamList = {
+      ...list,
+      people: [...list.people, person(KinPersonId.make("ines"), "Ines")],
+      profiles: [
+        { personId: mira, roleTags: ["design"], awayUntil: "2026-11-30" },
+        { personId: owner, roleTags: [] },
+      ] as never,
+    };
+    expect(
+      kinTeamView(withProfiles, KIN_TEAM_NO_EDITS, owner).map((row) => [
+        row.name,
+        row.line,
+        row.status,
+      ]),
+    ).toEqual([
+      ["Olu", "You", null],
+      ["Mira", "design", "Away"],
+      ["Anouk", "", "Invited"],
+      ["Ines", "", "No access"],
+      ["Tomas", "", "Invited"],
     ]);
     expect(kinTeamEntrySummary(list, owner)).toBe("1 teammate, 1 hasn't joined yet");
     // A co-owner's count holds the owner too: every row the Team page lists besides their own.
@@ -114,6 +140,7 @@ describe("kinTeamView", () => {
     // Mira, a co-owner, looking: the owner is shown as the owner, with nothing to do there.
     const [you, theOwner] = kinTeamView(kinds, KIN_TEAM_NO_EDITS, mira);
     expect([you?.detail, theOwner?.state, theOwner?.detail]).toEqual(["You", "owner", "Owner"]);
+    expect([you?.line, theOwner?.line]).toEqual(["You", "Owner"]);
     expect(kinTeammateActions(theOwner!, "co_owner")).toEqual({
       link: null,
       cancel: null,
@@ -121,7 +148,7 @@ describe("kinTeamView", () => {
     });
     expect(kinTeammateKindEditable(theOwner!, "owner")).toBe(false);
     const [, coOwner] = kinTeamView(kinds, KIN_TEAM_NO_EDITS, owner);
-    expect(coOwner?.detail).toBe("Co-owner");
+    expect([coOwner?.detail, coOwner?.line]).toEqual(["Co-owner", "Co-owner"]);
     expect(kinTeammateActions(coOwner!, "co_owner").remove).toBe(false);
     expect(kinTeammateActions(coOwner!, "owner").remove).toBe(true);
     expect(kinTeammateKindEditable(coOwner!, "owner")).toBe(true);
@@ -161,7 +188,68 @@ describe("kinTeamView", () => {
       ],
     };
     const [row] = kinTeamView(placed, KIN_TEAM_NO_EDITS, owner);
-    expect([row?.detail, row?.places?.clients]).toEqual(["Leads Atlas", true]);
+    expect([row?.detail, row?.line, row?.places?.clients]).toEqual([
+      "Leads Atlas",
+      "Leads Atlas",
+      true,
+    ]);
+  });
+
+  it("opens a teammate's page on what they can see and do, with the rest folded and removal last", () => {
+    const placed: KinTeamList = {
+      ...list,
+      places: [{ personId: mira, clients: true, docs: true, money: false, leads: [] }],
+    };
+    const [, joined, invited, noAccess] = kinTeamView(placed, KIN_TEAM_NO_EDITS, owner);
+    expect(kinTeammatePage(joined!, "owner")).toEqual({
+      canSee: true,
+      canDo: true,
+      folds: ["tasks", "projects", "reach", "profile", "devices"],
+      link: "devices",
+      remove: true,
+    });
+    // Before they join there is no person yet: the link is the page.
+    expect(kinTeammatePage(invited!, "owner")).toEqual({
+      canSee: false,
+      canDo: false,
+      folds: [],
+      link: "open",
+      remove: false,
+    });
+    // Without a device, the link to let them back in stays open, and there are no devices to fold.
+    expect(kinTeammatePage(noAccess!, "owner")).toMatchObject({
+      folds: ["tasks", "reach", "profile"],
+      link: "open",
+      remove: true,
+    });
+    // A co-owner looking at another: they see everything, so no switches, and only the owner acts.
+    const coOwner = kinTeamView(
+      { ...list, people: [{ ...person(mira, "Mira"), access: "co_owner" }] },
+      KIN_TEAM_NO_EDITS,
+      owner,
+    )[0]!;
+    expect(kinTeammatePage(coOwner, "co_owner")).toEqual({
+      canSee: false,
+      canDo: false,
+      folds: ["tasks", "reach", "profile"],
+      link: null,
+      remove: false,
+    });
+  });
+
+  it("warns, never refuses, when a new name shares a first name with the team or an open invite", () => {
+    expect(kinTeammateNameMatch(list, "mira k")).toBe(
+      "Someone called Mira is already on the team. Make the link only if this is someone else.",
+    );
+    expect(kinTeammateNameMatch(list, " Anouk ")).toBe(
+      "Anouk already has an invite that hasn't been opened. Make the link only if this is someone else.",
+    );
+    expect(kinTeammateNameMatch(list, "Priya")).toBeNull();
+    expect(kinTeammateNameMatch(list, "  ")).toBeNull();
+    // Someone removed is the host's bring-back offer, not this warning.
+    expect(
+      kinTeammateNameMatch({ ...list, removed: [{ personId: tomas, access: "member" }] }, "Tomas"),
+    ).toBeNull();
   });
 });
 
@@ -175,6 +263,17 @@ describe("kinInviteLink", () => {
       httpBaseUrl: "https://kin.example.test:8443/",
       kinInvite: true,
     });
+  });
+});
+
+describe("kinInviteTyped", () => {
+  it.each([
+    ["nothing typed", "", KIN_NEW_TEAMMATE_SEES, false],
+    ["only spaces", "   ", KIN_NEW_TEAMMATE_SEES, false],
+    ["a name", "Ishaan", KIN_NEW_TEAMMATE_SEES, true],
+    ["a switch moved", "", { ...KIN_NEW_TEAMMATE_SEES, money: true }, true],
+  ] as const)("%s: asks before closing is %s", (_what, name, sees, typed) => {
+    expect(kinInviteTyped({ name, sees })).toBe(typed);
   });
 });
 

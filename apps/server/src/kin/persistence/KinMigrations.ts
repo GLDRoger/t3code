@@ -114,7 +114,33 @@ import RecordTitleIndex from "./migrations/K190_RecordTitleIndex.ts";
 import HistoryIndexes from "./migrations/K191_HistoryIndexes.ts";
 import RecordOwnerListIndex from "./migrations/K192_RecordOwnerListIndex.ts";
 import ScheduleOwnerTime from "./migrations/K193_ScheduleOwnerTime.ts";
-import ConnectionReads from "./migrations/K194_ConnectionReads.ts";
+import DropWebhookSources from "./migrations/K194_DropWebhookSources.ts";
+import DreamCharges from "./migrations/K195_DreamCharges.ts";
+import GitHubReviewReceipts from "./migrations/K196_GitHubReviewReceipts.ts";
+import InvitePlaces from "./migrations/K197_InvitePlaces.ts";
+import ChatPins from "./migrations/K198_ChatPins.ts";
+import TaskStepsAndUrgent from "./migrations/K199_TaskStepsAndUrgent.ts";
+import SentUpDrafts from "./migrations/K200_SentUpDrafts.ts";
+import SearchDocKinds from "./migrations/K201_SearchDocKinds.ts";
+import AndroidPushDevices from "./migrations/K202_AndroidPushDevices.ts";
+import Watches from "./migrations/K203_Watches.ts";
+import BankAlerts from "./migrations/K204_BankAlerts.ts";
+import Arrivals from "./migrations/K205_Arrivals.ts";
+import CompanyShell from "./migrations/K206_CompanyShell.ts";
+import HostTroubles from "./migrations/K207_HostTroubles.ts";
+import QuietDelivery from "./migrations/K208_QuietDelivery.ts";
+import Pictures from "./migrations/K209_Pictures.ts";
+import PartnerReimbursements from "./migrations/K210_PartnerReimbursements.ts";
+import PersonMailbox from "./migrations/K211_PersonMailbox.ts";
+import NumberValues from "./migrations/K212_NumberValues.ts";
+import PushSent from "./migrations/K213_PushSent.ts";
+import MessageWithdrawn from "./migrations/K214_MessageWithdrawn.ts";
+import OfflineCatchUp from "./migrations/K215_OfflineCatchUp.ts";
+import OfflineSkips from "./migrations/K216_OfflineSkips.ts";
+import BillReads from "./migrations/K217_BillReads.ts";
+import AnsweredSeq from "./migrations/K218_AnsweredSeq.ts";
+import SeveralOwnMailboxes from "./migrations/K219_SeveralOwnMailboxes.ts";
+import ConnectionReads from "./migrations/K220_ConnectionReads.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -309,7 +335,33 @@ const migrations = {
   "191_HistoryIndexes": HistoryIndexes,
   "192_RecordOwnerListIndex": RecordOwnerListIndex,
   "193_ScheduleOwnerTime": ScheduleOwnerTime,
-  "194_ConnectionReads": ConnectionReads,
+  "194_DropWebhookSources": DropWebhookSources,
+  "195_DreamCharges": DreamCharges,
+  "196_GitHubReviewReceipts": GitHubReviewReceipts,
+  "197_InvitePlaces": InvitePlaces,
+  "198_ChatPins": ChatPins,
+  "199_TaskStepsAndUrgent": TaskStepsAndUrgent,
+  "200_SentUpDrafts": SentUpDrafts,
+  "201_SearchDocKinds": SearchDocKinds,
+  "202_AndroidPushDevices": AndroidPushDevices,
+  "203_Watches": Watches,
+  "204_BankAlerts": BankAlerts,
+  "205_Arrivals": Arrivals,
+  "206_CompanyShell": CompanyShell,
+  "207_HostTroubles": HostTroubles,
+  "208_QuietDelivery": QuietDelivery,
+  "209_Pictures": Pictures,
+  "210_PartnerReimbursements": PartnerReimbursements,
+  "211_PersonMailbox": PersonMailbox,
+  "212_NumberValues": NumberValues,
+  "213_PushSent": PushSent,
+  "214_MessageWithdrawn": MessageWithdrawn,
+  "215_OfflineCatchUp": OfflineCatchUp,
+  "216_OfflineSkips": OfflineSkips,
+  "217_BillReads": BillReads,
+  "218_AnsweredSeq": AnsweredSeq,
+  "219_SeveralOwnMailboxes": SeveralOwnMailboxes,
+  "220_ConnectionReads": ConnectionReads,
 };
 const loader = Migrator.fromRecord(migrations);
 

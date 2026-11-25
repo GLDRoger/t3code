@@ -8,6 +8,7 @@ import {
   KinAgentId,
   type KinChatId,
   KinMemoryItemId,
+  KinMessageId,
   KinPersonId,
   KinWakeupId,
   ProviderInstanceId,
@@ -37,13 +38,18 @@ import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testki
 import * as Kin from "../layer.ts";
 import { agentServices } from "../mcp/KinChatToolkit.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
+import { wakeEvent } from "../lead/ChatWake.ts";
 import * as Handoff from "../lead/Handoff.ts";
+import { markOutside, stampReads } from "../lead/OutsideContent.ts";
+import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import type { KinDecision } from "../memory/MemoryWriter.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
+import { laneFor } from "../reply/replyLane.ts";
 import * as Team from "./KinTeam.ts";
+import { teamTurnFacts } from "./prompt.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const at = "2026-10-01T00:00:00.000Z";
@@ -243,6 +249,10 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
         clientMessageId: "ask",
       });
       yield* wake("social", ask);
+      // No discussion is open yet: the refusal names the tool that starts one.
+      const none = yield* callAs("social", "team_say", { text: "Hi", intent: "answer" });
+      assert.isFalse(none.ok);
+      assert.include(JSON.stringify(none.value), "No Team-room discussion is open. team_open");
       const opened = yield* callAs("social", "team_open", {
         topic: "Brochure print run",
         question: "How many brochures do we print for the Kochi expo?",
@@ -266,13 +276,31 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
       assert.include(sent[0]!.body, "How many brochures do we print for the Kochi expo?");
       assert.deepStrictEqual(JSON.parse(sent[0]!.relay!), { kind: "sent_by", agentId: "social" });
       assert.strictEqual(sent[0]!.silent, 1);
+      // Where Rhea asked, one quiet line says the discussion started and names it.
+      const started = yield* sql<{ body: string; discussion: string; silent: number }>`SELECT body,
+          discussion_id AS discussion, silent FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${chatOf("social")} AND discussion_id IS NOT NULL
+          AND relay_json IS NULL ORDER BY seq`;
+      assert.deepStrictEqual(started, [
+        {
+          body: "Started a Team room discussion: Brochure print run",
+          discussion: "TD-1",
+          silent: 1,
+        },
+      ]);
 
       // Not Finance's turn yet for Growth: refused, and nothing posts.
       yield* wake("growth");
       const early = yield* callAs("growth", "team_say", { text: "Hi", intent: "answer" });
       assert.isFalse(early.ok);
+      assert.include(
+        JSON.stringify(early.value),
+        "It isn't your turn in any Team-room discussion.",
+      );
 
-      yield* wake("finance");
+      // Finance read the printer's page before it answered: the turn it wakes carries that read.
+      const financeWake = yield* wake("finance");
+      yield* markOutside({ orgId, wakeupId: financeWake }, "web:printer.example");
       const answer = yield* callAs("finance", "team_say", {
         text: "₹15,200 for 400 is over the ₹12,000 print budget. 300 copies fit at ₹11,400.",
         intent: "answer",
@@ -281,6 +309,14 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
       // Social answers (it spoke last); Growth, whose lane "expo" leads touch, may pitch in once.
       const keys = (yield* teamWakes(sql, orgId)).map(({ key }) => key);
       assert.match(keys.at(-1)!, /^team:TD-1:\d+:social:named$/);
+      const marks = yield* sql<{ key: string; source: string | null }>`SELECT e.dedupe_key AS key,
+          o.outside_from AS source FROM kin_events e LEFT JOIN kin_event_outside o
+          ON o.org_id = e.org_id AND o.event_id = e.event_id
+        WHERE e.org_id = ${orgId} AND e.dedupe_key LIKE 'team:%' ORDER BY e.rowid`;
+      // Social's opening words read nothing, so nothing marked them before Finance's read.
+      assert.deepStrictEqual(stampReads(marks.at(-1)!.source ?? ""), [
+        { k: "web", host: "printer.example" },
+      ]);
 
       yield* wake("social");
       const back = yield* callAs("social", "team_say", {
@@ -351,6 +387,16 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
         kind: string;
       };
       assert.strictEqual(objector.kind, "object");
+      // Decided but open to its one objection: the room's messages still say it is going.
+      const [roomNow] = yield* sql<{ chatId: KinChatId }>`SELECT chat_id AS "chatId"
+        FROM kin_chats WHERE org_id = ${orgId} AND team_id = 'team-room'`;
+      const going = (yield* chats.history(owner, {
+        chatId: roomNow!.chatId,
+        beforeSeq: 1_000,
+        limit: 100,
+      })).messages.filter((message) => message.discussionId === "TD-1");
+      assert.isNotEmpty(going);
+      assert.isTrue(going.every((message) => message.discussionOpen === true));
       yield* wake(objector.agentId);
       const objected = yield* callAs(objector.agentId, "team_say", {
         text: "Fine on count, but book the printer by Friday or the price goes up.",
@@ -417,6 +463,12 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
         WHERE org_id = ${orgId} AND team_id = 'team-room'`;
       const page = { chatId: room!.chatId, beforeSeq: 1_000, limit: 100 };
       assert.isAbove((yield* chats.history(owner, page)).messages.length, 0);
+      // The room's messages say the discussion has closed, read at the time they are read.
+      assert.isTrue(
+        (yield* chats.history(owner, page)).messages.every(
+          (message) => message.discussionId !== "TD-1" || message.discussionOpen === false,
+        ),
+      );
       assert.isAbove((yield* chats.history(person("meera"), page)).messages.length, 0);
       assert.strictEqual(yield* repo.unreadTotal({ orgId, personId: owner.personId }), 1);
       const ownerList = yield* chats
@@ -454,6 +506,115 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
   ),
 );
 
+// Rhea names Finance and the Chief of staff in the Team room: Kin opens their discussion once,
+// however often the message is handled. Finance, named first, takes the first discussion turn on
+// her words; the Chief of staff, whose call it is, is next. One name or none, a teammate's words,
+// or a message while a discussion is open opens nothing.
+it.effect("a person naming two agents in the Team room gets their discussion, opened by Kin", () =>
+  Effect.andThen(
+    TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, chatOf, wake } = yield* ambermill;
+      const team = yield* Team.KinTeam;
+      const room = (yield* team.ensureRoom(orgId)).chatId;
+      const say = (body: string, clientMessageId: string) =>
+        chats.send(owner, { chatId: room, body, clientMessageId });
+      const discussions = sql<{ id: string; question: string; origin: string }>`SELECT
+          discussion_id AS id, question, origin FROM kin_discussions WHERE org_id = ${orgId}
+        ORDER BY created_at`;
+
+      for (const [body, id] of [
+        ["Finance, how much does Orbit Dental still owe us?", "one"],
+        ["What should we chase this week?", "none"],
+      ] as const)
+        assert.isFalse(yield* team.personAsked(yield* say(body, id)));
+      const ask = yield* say(
+        "Finance and Chief of staff: agree in a few messages on what to chase this week.",
+        "ask",
+      );
+      // A teammate's words never open one, whatever membership row the room lists.
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at)
+        VALUES ('stray-dev', ${orgId}, ${room}, 'person', 'dev', 'member', ${at})`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+          created_at)
+        VALUES ('dev-ask', ${orgId}, ${room}, 99, 'human', 'dev', 'stray-dev', 'member', 'text',
+          ${ask.body}, '[]', 'posted', ${at})`;
+      assert.isFalse(yield* team.personAsked({ ...ask, messageId: KinMessageId.make("dev-ask") }));
+      yield* sql`DELETE FROM kin_messages WHERE message_id = 'dev-ask'`;
+      yield* sql`DELETE FROM kin_chat_members WHERE member_id = 'stray-dev'`;
+      assert.lengthOf(yield* discussions, 0);
+
+      assert.isTrue(yield* team.personAsked(ask));
+      assert.isTrue(yield* team.personAsked(ask));
+      assert.deepStrictEqual(yield* discussions, [
+        {
+          id: "TD-1",
+          question:
+            "Finance and Chief of staff: agree in a few messages on what to chase this week.",
+          origin: "owner",
+        },
+      ]);
+      const [row] = yield* sql<{ opener: string; decider: string; pending: string }>`SELECT
+          opened_by_agent_id AS opener, decider_agent_id AS decider, pending_json AS pending
+        FROM kin_discussions WHERE org_id = ${orgId}`;
+      assert.deepStrictEqual(
+        { ...row!, pending: JSON.parse(row!.pending) },
+        { opener: "finance", decider: "chief", pending: [{ agentId: "chief", kind: "named" }] },
+      );
+      // Finance's discussion turn, from her message, is the one wake-up; nobody relays it.
+      assert.deepStrictEqual(
+        (yield* teamWakes(sql, orgId)).map(({ agent, key }) => [agent, key]),
+        [["finance", `team:TD-1:${ask.seq}:finance:named`]],
+      );
+      assert.lengthOf(yield* relayed(sql, orgId, chatOf("chief")), 0);
+      const turn = yield* passedTurn(sql, orgId, "finance", yield* wake("finance"));
+      assert.deepInclude(
+        Option.getOrThrow(
+          yield* laneFor({ orgId, agentId: KinAgentId.make("finance"), wakeupId: turn }),
+        ),
+        { chatId: room, team: true },
+      );
+      const facts = (agent: string) =>
+        teamTurnFacts(orgId, agent, "TD-1").pipe(Effect.map((one) => one?.question));
+      assert.strictEqual(
+        yield* facts("finance"),
+        "Rhea Rao asked you and Chief of staff: Finance and Chief of staff: agree in a few messages on what to chase this week.",
+      );
+      assert.match((yield* facts("chief"))!, /^Rhea Rao asked you and Finance: Finance and/);
+
+      // Finance opening one of her own for the same ask is turned back to the open one.
+      const second = yield* callAs("finance", "team_open", {
+        topic: "What to chase this week",
+        question: "What do we chase this week?",
+        decider: "Chief of staff",
+        text: "Orbit Dental first.",
+      });
+      assert.isFalse(second.ok);
+      assert.match(String(second.value.message ?? JSON.stringify(second.value)), /TD-1.*team_say/);
+      assert.lengthOf(yield* discussions, 1);
+
+      const spoke = yield* callAs("finance", "team_say", {
+        text: "Orbit Dental first: ₹47,200, 11 days late.",
+        intent: "answer",
+      });
+      assert.isTrue(spoke.ok, JSON.stringify(spoke.value));
+      assert.strictEqual(spoke.value.next, "Chief of staff");
+      assert.match((yield* teamWakes(sql, orgId)).at(-1)!.key, /^team:TD-1:\d+:chief:decider$/);
+
+      // While it is open, her next message naming two agents is an ordinary message, as before,
+      // and stays one when handled again after the discussion ends (the model check found it).
+      const note = yield* say("Finance and Social: what does the brochure cost?", "note");
+      assert.isFalse(yield* team.personAsked(note));
+      yield* (yield* KinEventQueue).enqueue(wakeEvent(note, KinAgentId.make("chief"), undefined));
+      yield* sql`UPDATE kin_discussions SET final = 1, state = 'parked' WHERE org_id = ${orgId}`;
+      assert.isFalse(yield* team.personAsked(note));
+      assert.lengthOf(yield* discussions, 1);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 /** Marks the turn event `holder` holds as run by `wakeupId`, as claiming it would. */
 const passedTurn = Effect.fn("test.passedTurn")(function* (
   sql: SqlClient.SqlClient,
@@ -475,7 +636,7 @@ it.effect("an agent-started discussion is capped, held, and told at the owner's 
   Effect.andThen(
     TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
     Effect.gen(function* () {
-      const { sql, orgId, chatOf, wake } = yield* ambermill;
+      const { sql, chats, owner, orgId, chatOf, wake } = yield* ambermill;
       // 06:00 UTC is 11:30 for Ambermill, outside Rhea's quiet hours on any host clock.
       yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00',
           '02:00', 0, 1, '09:00', '{}')
@@ -572,6 +733,33 @@ it.effect("an agent-started discussion is capped, held, and told at the owner's 
       yield* team.sweep();
       yield* team.sweep();
       assert.strictEqual((yield* cards)[0]!.n, 1);
+
+      // Past 80% of the Team room's share of today's budget, an agent opens nothing; a person's ask
+      // naming two agents still opens.
+      const spent = yield* wake("growth");
+      yield* sql`UPDATE kin_events SET wakeup_id = ${spent} WHERE org_id = ${orgId}
+        AND event_id = (SELECT event_id FROM kin_events WHERE org_id = ${orgId}
+          AND dedupe_key LIKE 'team:%' ORDER BY rowid LIMIT 1)`;
+      yield* sql`INSERT INTO kin_budget_limits VALUES (${orgId}, '{"leadUnits":100}')
+        ON CONFLICT (org_id) DO UPDATE SET limits_json = excluded.limits_json`;
+      yield* sql`INSERT INTO kin_budget (org_id, day) VALUES (${orgId}, '2026-11-16')
+        ON CONFLICT DO NOTHING`;
+      yield* sql`INSERT INTO kin_budget_charges (org_id, wakeup_id, day, units, tokens_json)
+        VALUES (${orgId}, ${spent}, '2026-11-16', ${100 * 0.3 * 0.8}, '{}')`;
+      const late = yield* callAs("growth", "team_open", {
+        topic: "Lanyards",
+        question: "Do we print lanyards?",
+        decider: "Social",
+        text: "Thoughts?",
+      });
+      assert.isFalse(late.ok);
+      assert.include(JSON.stringify(late.value), "only discussions the owner asks for open");
+      const ask = yield* chats.send(owner, {
+        chatId: (yield* team.ensureRoom(orgId)).chatId,
+        body: "Social and Finance: settle the lanyard order between you.",
+        clientMessageId: "lanyards",
+      });
+      assert.isTrue(yield* team.personAsked(ask));
     }).pipe(Effect.provide(layer)),
   ),
 );

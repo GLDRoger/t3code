@@ -1,20 +1,45 @@
+import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
+import { BILL_TO_FIELDS } from "../work/billTo.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { OrchestratorMcpTarget } from "@t3tools/contracts";
 
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import * as McpToolPolicy from "./toolPolicy.ts";
 import { McpInvocationContext, type McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { KinServer, type Services } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { SHARED_REFUSAL } from "../lead/Audience.ts";
+import { OWN_MESSAGE_REFUSALS } from "../chat/ownMessages.ts";
+import { effectiveAudience, SHARED_REFUSAL, turnPeople } from "../lead/Audience.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
+import { readCallArguments } from "../connections/callArguments.ts";
+import { PRIVATE_WRITE, privateRefusal } from "../connections/privateTurn.ts";
+import { REVIEW_REFUSAL, reviewToolAllowed } from "../lead/outsideReview.ts";
+import { BILLS_REFUSAL, billToolAllowed } from "../lead/billsOnly.ts";
+import { APPROVED_REFUSAL, approvedRefusal, approvedToolAllowed } from "../lead/approvedDraft.ts";
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
+import { helperModelRefusal, isDevServer, kinHelperProviders } from "../lead/leadModels.ts";
+import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import {
+  looksLikeRecordReference,
+  resolveSections,
+  SECTIONS,
+  sectionOfList,
+  sectionOfTool,
+  type SectionId,
+} from "../shell/sections.ts";
+import * as ReadTools from "./readTools.ts";
 
 type Check = (
   turn: Parameters<typeof toolAdmitted>[0],
@@ -44,6 +69,83 @@ const namesOtherMachine = Effect.fnUntraced(function* (args: unknown) {
   ].some((environmentId) => environmentId !== undefined && environmentId !== here);
 });
 
+/** What a Kin agent reads when the check itself failed. */
+const HELPER_MODEL_UNCHECKED =
+  "Kin can't check this task's model right now, so it didn't start it. Leave target.model and target.providerInstanceId out to run it on your own model.";
+
+const decodeTarget = Schema.decodeUnknownOption(
+  Schema.Union([OrchestratorMcpTarget, Schema.fromJsonString(OrchestratorMcpTarget)]),
+);
+
+/** What a helper's check reads of the host, taken once when the gate is built. */
+export const helperModelHost = Effect.gen(function* () {
+  return {
+    settings: yield* Effect.serviceOption(ServerSettingsService),
+    registry: yield* Effect.serviceOption(ProviderRegistry),
+    devServer: yield* isDevServer,
+  };
+});
+type HelperModelHost = Effect.Success<typeof helperModelHost>;
+
+/**
+ * Why a Kin agent's `delegate_task` may not start on the provider and model its target names
+ * (`helperModelRefusal`), before any task exists; a target T3 can't decode is T3's to refuse.
+ */
+const helperModelRefused = Effect.fn("KinToolGate.helperModel")(
+  function* (tool: string, args: unknown, host: HelperModelHost) {
+    if (tool !== "delegate_task" || !Predicate.hasProperty(args, "target")) return undefined;
+    const target = Option.getOrUndefined(decodeTarget(args.target));
+    if (target === undefined) return undefined;
+    const callerInstanceId = Option.getOrUndefined(
+      yield* Effect.serviceOption(McpInvocationContext),
+    )?.thread?.providerInstanceId;
+    const named =
+      target.model !== undefined ||
+      target.driverKind !== undefined ||
+      (target.providerInstanceId !== undefined && target.providerInstanceId !== callerInstanceId);
+    if (!named) return undefined;
+    if (Option.isNone(host.settings)) return HELPER_MODEL_UNCHECKED;
+    const providers = Option.isNone(host.registry)
+      ? null
+      : yield* host.registry.value.getProviders.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't read the providers for a task", { cause }).pipe(
+              Effect.as(null),
+            ),
+          ),
+        );
+    return helperModelRefusal({
+      settings: yield* host.settings.value.getSettings,
+      providers,
+      devServer: host.devServer,
+      callerInstanceId,
+      target,
+    });
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin couldn't check a task's model; refusing", { cause }).pipe(
+      Effect.as<string | undefined>(HELPER_MODEL_UNCHECKED),
+    ),
+  ),
+);
+
+/** A Kin agent's `orchestrator_capabilities` offers what its helper tasks may run on. */
+const offeredToAgents = (
+  settings: Parameters<typeof kinHelperProviders>[0],
+  providers: Parameters<typeof kinHelperProviders>[1],
+) => Effect.succeed(kinHelperProviders(settings, providers));
+
+/** A Kin agent's helper tasks run only on what agents may, and it is offered only that. */
+export const helperModels = Layer.mergeAll(
+  McpToolPolicy.toolCallRefusal(
+    Effect.map(
+      helperModelHost,
+      (host) => (tool: string, args: unknown) => helperModelRefused(tool, args, host),
+    ),
+  ),
+  McpToolPolicy.providersOffered(offeredToAgents),
+);
+
 export const taskAdmitted: Check = Effect.fn("KinToolGate.taskAdmitted")(
   function* (turn, tool) {
     if (tool !== "delegate_task") return true;
@@ -60,36 +162,44 @@ export const taskAdmitted: Check = Effect.fn("KinToolGate.taskAdmitted")(
  * Runs `check` on the calling lead's running turn: no running lead turn admits nothing. The
  * endpoint's auth middleware provides the caller; without it nothing passes.
  */
-const gate = (name: string, check: Check) =>
+const inRunningTurn = <A, B>(
+  name: string,
+  check: (...input: Parameters<Check>) => Effect.Effect<A, never, Services>,
+  otherwise: B,
+) =>
   Effect.fn(name)(
     function* (tool: string, args: unknown) {
       const kin = yield* Effect.serviceOption(KinServer);
-      if (Option.isNone(kin) || Option.isNone(kin.value.services)) return false;
+      if (Option.isNone(kin) || Option.isNone(kin.value.services)) return otherwise;
       const identity = Context.get(kin.value.services.value, KinIdentity);
       const sql = Context.get(kin.value.services.value, SqlClient.SqlClient);
-      const agent = yield* identity.resolveAgent(yield* McpInvocationContext).pipe(Effect.option);
-      if (Option.isNone(agent)) return false;
+      const caller = yield* Effect.serviceOption(McpInvocationContext);
+      if (Option.isNone(caller)) return otherwise;
+      const agent = yield* identity.resolveAgent(caller.value).pipe(Effect.option);
+      if (Option.isNone(agent)) return otherwise;
       const { orgId, agentId, threadId } = agent.value;
       const [row] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
       WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${threadId}
         AND status = 'running'
       ORDER BY started_at, wakeup_id LIMIT 1`;
-      if (row === undefined) return false;
+      if (row === undefined) return otherwise;
       return yield* check({ orgId, agentId, wakeupId: row.wakeupId }, tool, args).pipe(
         Effect.provideContext(kin.value.services.value),
       );
     },
     Effect.catchCause((cause) =>
-      Effect.logWarning("Kin tool gate failed; refusing", { cause }).pipe(Effect.as(false)),
+      Effect.logWarning("Kin tool gate failed; refusing", { cause }).pipe(Effect.as(otherwise)),
     ),
   );
+
+const gate = (name: string, check: Check) => inRunningTurn(name, check, false);
 
 /**
  * The event a call acts on, from the lead's running turn: a left-out one is the turn's latest
  * message or tap, else its first event; a message id becomes its event. Anything else stays, and
  * the tool refuses it as before, except where the event only names the turn (`TURN_ONLY_EVENT_TOOLS`). The call's arguments are filled in before they are decoded.
  */
-const turnEvents = McpHttpServer.toolCallPrepare(
+const turnEvents = McpToolPolicy.toolCallPrepare(
   Effect.fn("KinToolGate.turnEvents")(
     function* (name: string, args: Record<string, unknown>) {
       if (!TURN_EVENT_TOOLS.has(name)) return;
@@ -123,9 +233,195 @@ const turnEvents = McpHttpServer.toolCallPrepare(
   ),
 );
 
+/** An outside review's turn refuses what it may not call with the review's own refusal. */
+const reviewOnly: Check = (turn, tool, args) =>
+  reviewToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
+/** A bills turn refuses all but `bill_read` with its own refusal. */
+const billsOnlyCheck: Check = (turn, tool, args) =>
+  billToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
+/** An approved draft's turn refuses what it may not call with its own refusal. */
+const approvedOnly: Check = (turn, tool, args) =>
+  approvedToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
+/** A confined turn (an outside review, bills, an approved draft) is decided by its own gate alone. */
+const confinedDecides = (turn: Parameters<Check>[0], tool: string, args: unknown) =>
+  reviewToolAllowed(turn, tool, args).pipe(
+    Effect.flatMap((review) =>
+      review !== undefined
+        ? Effect.succeed(true)
+        : billToolAllowed(turn, tool, args).pipe(
+            Effect.flatMap((bills) =>
+              bills !== undefined
+                ? Effect.succeed(true)
+                : approvedToolAllowed(turn, tool, args).pipe(
+                    Effect.map((approved) => approved !== undefined),
+                  ),
+            ),
+          ),
+    ),
+  );
+const besideReview =
+  (check: Check): Check =>
+  (turn, tool, args) =>
+    confinedDecides(turn, tool, args).pipe(
+      Effect.flatMap((confined) => (confined ? Effect.succeed(true) : check(turn, tool, args))),
+    );
+const sectionsOfArguments = (
+  args: unknown,
+  sectionOfReference: (value: string, field: string) => SectionId | null,
+  skipForeignArguments = false,
+) => {
+  const sections = new Set<SectionId>();
+  const pending = [{ value: args, field: "" }];
+  while (pending.length > 0) {
+    const { value, field } = pending.pop()!;
+    if (typeof value === "string") {
+      if (Object.hasOwn(BILL_TO_FIELDS, field)) continue;
+      const section =
+        sectionOfReference(value.trim(), field) ??
+        (field === "list" || field === "lists" ? sectionOfList(value) : null) ??
+        ((field === "client" || field === "project") && value.trim() !== "" ? "clients" : null);
+      if (section !== null) sections.add(section);
+    } else if (Array.isArray(value)) {
+      for (const item of value) pending.push({ value: item, field });
+    } else if (Predicate.isReadonlyObject(value)) {
+      for (const [key, child] of Object.entries(value))
+        if (!skipForeignArguments || key !== "arguments")
+          pending.push({ value: child, field: key });
+    }
+  }
+  return sections;
+};
+
+const sectionRefusal = (
+  message: string,
+  args: unknown,
+  section: SectionId,
+  sectionOfReference: (value: string, field: string) => SectionId | null,
+) => {
+  if (!Predicate.hasProperty(args, "records") || !Array.isArray(args.records)) return message;
+  const index = args.records.findIndex((row: unknown) =>
+    sectionsOfArguments(row, sectionOfReference).has(section),
+  );
+  if (index < 0) return message;
+  const row: unknown = args.records[index];
+  const named =
+    Predicate.hasProperty(row, "title") && typeof row.title === "string"
+      ? ` (${JSON.stringify(row.title.slice(0, 60))})`
+      : "";
+  return `Row ${index + 1}${named}: ${message} Nothing was saved.`;
+};
+
+/** A connection call as `KinConnections.call` reads it, a reason swallowed into text included. */
+const asCalled = (args: unknown) => {
+  if (!Predicate.isReadonlyObject(args)) return args;
+  const read = readCallArguments(
+    args.arguments,
+    typeof args.reason === "string" ? args.reason : undefined,
+  );
+  return read === undefined ? args : { ...args, ...read };
+};
+
+const referenceFields = new Set(["key", "keys", "entry", "against", "record", "attachments"]);
+const forwardedTools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
+const sectionAdmitted = McpToolPolicy.toolCallRefusal(
+  Effect.succeed((name: string, given: unknown) => {
+    if (!Object.hasOwn(SECTIONS.tools, name) || forwardedTools.has(name)) return Effect.undefined;
+    // Names, nouns and sources are words a company chose, never record references.
+    if (name === "company_sections" || name === "numbers_watch") return Effect.undefined;
+    const foreign = name === "kin_connection_call";
+    const args = foreign ? asCalled(given) : given;
+    const references = new Set<string>();
+    const sections = sectionsOfArguments(
+      args,
+      (value, field) => {
+        if (looksLikeRecordReference(value, referenceFields.has(field))) references.add(value);
+        return null;
+      },
+      foreign,
+    );
+    const tool = sectionOfTool(name);
+    const template =
+      name === "list_define" &&
+      Predicate.hasProperty(args, "template") &&
+      typeof args.template === "string"
+        ? sectionOfList(args.template)
+        : null;
+    if (tool !== null) sections.add(tool);
+    if (template !== null) sections.add(template);
+    if (sections.size === 0 && references.size === 0) return Effect.undefined;
+    const unavailable = "Kin couldn't check this company's sections. Nothing was done.";
+    return inRunningTurn(
+      "KinToolGate.section",
+      (turn) =>
+        Effect.gen(function* () {
+          const shell = yield* KinShell.get(turn.orgId);
+          if (KinShell.builtInsOn(shell)) return undefined;
+          const viewer =
+            references.size === 0 || (yield* effectiveAudience(turn)) === "owner_only"
+              ? KIN_OWNER_LEVEL
+              : viewerOfPeople((yield* turnPeople(turn))?.people ?? []);
+          const sectionOfReference = yield* resolveSections(turn.orgId, references, viewer);
+          const off =
+            tool !== null && !KinShell.sectionOn(shell, tool)
+              ? tool
+              : [...sectionsOfArguments(args, sectionOfReference, foreign), ...sections].find(
+                  (id) => !KinShell.sectionOn(shell, id),
+                );
+          return off === undefined
+            ? undefined
+            : sectionRefusal(
+                `${KinShell.sectionName(shell, off)} is turned off for this company.`,
+                args,
+                off,
+                sectionOfReference,
+              );
+        }).pipe(Effect.orElseSucceed(() => unavailable)),
+      unavailable,
+    )(name, args);
+  }),
+);
+const admitted = besideReview(toolAdmitted);
+
+/** A turn that read someone's own mailbox writes only where `privateRefusal` lets it. */
+const privateGate = Effect.fn("KinToolGate.private")(
+  function* (tool: string, args: unknown) {
+    const kin = yield* Effect.serviceOption(KinServer);
+    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return undefined;
+    const identity = Context.get(kin.value.services.value, KinIdentity);
+    const sql = Context.get(kin.value.services.value, SqlClient.SqlClient);
+    const agent = yield* identity.resolveAgent(yield* McpInvocationContext).pipe(Effect.option);
+    if (Option.isNone(agent)) return undefined;
+    const { orgId, agentId, threadId } = agent.value;
+    const [row] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+      WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${threadId}
+        AND status = 'running'
+      ORDER BY started_at, wakeup_id LIMIT 1`;
+    if (row === undefined) return undefined;
+    return yield* privateRefusal({ orgId, agentId, wakeupId: row.wakeupId }, tool, args).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin private-turn gate failed; refusing", { cause }).pipe(
+      Effect.as<string | undefined>(PRIVATE_FAILED),
+    ),
+  ),
+);
+const PRIVATE_FAILED = "Kin couldn't check this turn's mailbox privacy, so nothing was done.";
+const privateAdmitted: Check = (turn, tool, args) =>
+  privateRefusal(turn, tool, args).pipe(
+    Effect.map((refused) => refused === undefined),
+    Effect.orElseSucceed(() => false),
+  );
+const outside = besideReview(outsideToolAllowed);
+
 const kinChecks = [
+  [reviewOnly, REVIEW_REFUSAL],
+  [billsOnlyCheck, BILLS_REFUSAL],
+  [approvedOnly, APPROVED_REFUSAL],
   [toolAdmitted, SHARED_REFUSAL],
   [outsideToolAllowed, OUTSIDE_REFUSAL],
+  [privateAdmitted, PRIVATE_WRITE("this person")],
   [taskAdmitted, TASK_LIMIT_REFUSAL],
 ] as const;
 
@@ -135,7 +431,7 @@ const kinChecks = [
  * machine, each through the checks a call from the turn that asked for it passes
  * (`delegatedTurn`, as its shell follows). Every other thread's list and calls are T3's.
  */
-export const workerPolicy = (services: Context.Context<Services>) => {
+export const workerPolicy = (services: Context.Context<Services>, host: HelperModelHost) => {
   const sql = Context.get(services, SqlClient.SqlClient);
   // Per token: a thread's lineage is written before its session's token is issued.
   const known = new WeakMap<object, boolean>();
@@ -156,6 +452,13 @@ export const workerPolicy = (services: Context.Context<Services>) => {
   return {
     visible: (name: string) =>
       workerMayReach(name) ? Effect.succeed(true) : Effect.map(isWorker, (worker) => !worker),
+    offered: (
+      settings: Parameters<typeof kinHelperProviders>[0],
+      providers: Parameters<typeof kinHelperProviders>[1],
+    ) =>
+      Effect.map(isWorker, (worker) =>
+        worker ? kinHelperProviders(settings, providers) : providers,
+      ),
     refusal: Effect.fn("KinToolGate.workerRefusal")(
       function* (tool: string, args: unknown) {
         const { delegated, turn } = yield* lineage((yield* caller)?.thread);
@@ -166,7 +469,7 @@ export const workerPolicy = (services: Context.Context<Services>) => {
         for (const [check, refusal] of kinChecks)
           if (!(yield* check(turn, tool, args).pipe(Effect.provideContext(services))))
             return refusal;
-        return undefined;
+        return yield* helperModelRefused(tool, args, host);
       },
       Effect.catchCause((cause) =>
         Effect.logWarning("Kin worker tool gate failed; refusing", { cause }).pipe(
@@ -178,17 +481,58 @@ export const workerPolicy = (services: Context.Context<Services>) => {
 };
 
 /**
- * Every Kin MCP call passes here first, whatever registered it: nothing to another machine, where
- * none of these checks follow; nothing reaches the owner's context in a turn others read
- * (`SharedTools`); no run outside text could steer (`OutsideContent`); no task past the limit.
+ * How often agents call each Kin tool, to decide what loads up front: counted in memory and
+ * logged as one line an hour, and once more when the server stops; never stored.
  */
-export const layer = Layer.mergeAll(
-  turnEvents,
-  McpHttpServer.toolCallGate(
-    (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),
-    REMOTE_REFUSAL,
+export const callCounts = Layer.unwrap(
+  Effect.gen(function* () {
+    const counts = new Map<string, number>();
+    const flush = Effect.suspend(() => {
+      if (counts.size === 0) return Effect.void;
+      const calls = Object.fromEntries(counts);
+      counts.clear();
+      return Effect.logInfo("Kin tool calls", { calls });
+    });
+    yield* Effect.addFinalizer(() => flush);
+    yield* Effect.forkScoped(Effect.forever(Effect.delay(flush, "1 hour")));
+    return McpHttpServer.toolCallAround((effect, { target }) => {
+      counts.set(target, (counts.get(target) ?? 0) + 1);
+      return effect;
+    });
+  }),
+);
+
+/**
+ * Every Kin MCP call passes here first, whatever registered it: nothing to another machine, where
+ * none of these checks follow; only the review in a stranger's pull request's turn
+ * (`outsideReview`), only `bill_read` in a bills turn (`billsOnly`), only the one approved make in an approved draft's (`approvedDraft`); nothing reaches the owner's context in a turn others read (`SharedTools`); no
+ * run outside text could steer (`OutsideContent`); no task past the limit (or off `helperModels`).
+ */
+export const layer = ReadTools.layer.pipe(
+  // Built last, so outermost: a read tool's gates read on the reader too.
+  Layer.provideMerge(
+    Layer.mergeAll(
+      callCounts,
+      turnEvents,
+      McpToolPolicy.toolCallGate(
+        (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),
+        REMOTE_REFUSAL,
+      ),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.review", reviewOnly), REVIEW_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.bills", billsOnlyCheck), BILLS_REFUSAL),
+      McpToolPolicy.toolCallRefusal(
+        Effect.succeed(inRunningTurn("KinToolGate.approved", approvedRefusal, APPROVED_REFUSAL)),
+      ),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", admitted), SHARED_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outside), (_args, tool) =>
+        tool === "message_withdraw" || tool === "message_replace"
+          ? OWN_MESSAGE_REFUSALS.outside
+          : OUTSIDE_REFUSAL,
+      ),
+      McpToolPolicy.toolCallRefusal(Effect.succeed(privateGate)),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
+      helperModels,
+      sectionAdmitted,
+    ),
   ),
-  McpHttpServer.toolCallGate(gate("KinToolGate.admitted", toolAdmitted), SHARED_REFUSAL),
-  McpHttpServer.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
-  McpHttpServer.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
 );

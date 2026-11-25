@@ -1,14 +1,18 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format change dates for React render, outside an Effect runtime.
+import { kinDomainSlug } from "./kinLeadPresentation.ts";
 import { kinNow } from "./kinNow.ts";
-import { kinWorkAllDay } from "./kinWork.ts";
+import { kinMidSentence, kinWorkAllDay, kinWorkNameOfText } from "./kinWork.ts";
 import {
   type KinAgentPage,
+  type KinCharacterSeat,
   type KinPersonAccess,
   type ModelSelection,
   type ProviderOptionDescriptor,
   type ServerProviderModel,
   formatKinWhen,
+  kinCharacterSeat,
   KIN_PROVIDER_FACTS,
+  KIN_DISMISSED_FIELD,
   KIN_TAKEN_DEFAULT_FIELD,
 } from "@t3tools/contracts";
 
@@ -79,6 +83,12 @@ export const KIN_AGENT_PAGE = {
   characterRule:
     "A character changes how it sounds and what it cares about. It never changes what it may do or see.",
   characterEmpty: "Kin gives it a character on its next start.",
+  kinPart: "Kin's part",
+  kinPartDetail: "Kin keeps this part up to date.",
+  ownPart: "Your part",
+  ownPartHint:
+    "What this agent should know about your company, and anything you want done differently. Your part wins where the two differ.",
+  ownPartEmpty: "Nothing of your own yet.",
   editCharacter: "Edit",
   characterHistory: "History",
   rewrite: "Ask it to rewrite itself",
@@ -89,6 +99,8 @@ export const KIN_AGENT_PAGE = {
   reachDetail: "Every agent uses the same connections, only in your own chats with it.",
   playbooks: "Playbooks it follows",
   playbooksNone: "No playbooks yet.",
+  playbooksDetail:
+    "Playbooks are how this agent does a kind of work. Open one to read it; the owner or a co-owner changes them in Docs.",
   activity: "In hand",
   pause: "Pause",
   resume: "Resume",
@@ -103,7 +115,79 @@ export const KIN_AGENT_PAGE = {
   characterField: "Character",
   characterPlaceholder:
     "Who it is: an archetype, what it loves, what it pushes back on, how it writes.",
+  setOnComputer: "Character, model and effort are set on your computer.",
+  introPlaceholder: "What teammates can ask it for, in a line.",
 } as const;
+
+const counted = (n: number, one: string, many: string) =>
+  n === 0 ? "None" : `${n} ${n === 1 ? one : many}`;
+
+export type KinAgentFold = {
+  readonly id: "checkIns" | "reach" | "playbooks" | "changed";
+  readonly title: string;
+  /** Null while the count isn't read yet. */
+  readonly summary: string | null;
+};
+
+/**
+ * The agent page's folded blocks, in order, each with its count. `checkIns` is this agent's count,
+ * null until read; an older host that sends no changes gets no "Changed lately".
+ */
+export function kinAgentPageFolds(
+  page: Pick<KinAgentPage, "connections" | "playbooks" | "changed">,
+  checkIns: number | null,
+): ReadonlyArray<KinAgentFold> {
+  return [
+    {
+      id: "checkIns",
+      title: KIN_AGENT_PAGE.checkIns,
+      summary: checkIns === null ? null : counted(checkIns, "check-in", "check-ins"),
+    },
+    {
+      id: "reach",
+      title: KIN_AGENT_PAGE.reach,
+      summary: counted(page.connections.length, "account", "accounts"),
+    },
+    {
+      id: "playbooks",
+      title: KIN_AGENT_PAGE.playbooks,
+      summary: counted(page.playbooks.length, "playbook", "playbooks"),
+    },
+    ...(page.changed === undefined
+      ? []
+      : [
+          {
+            id: "changed" as const,
+            title: KIN_AGENT_CHANGES.title,
+            summary: counted(page.changed.length, "change", "changes"),
+          },
+        ]),
+  ];
+}
+
+const SEAT_WORDS: Readonly<Record<KinCharacterSeat, string>> = {
+  "chief-of-staff": "chief of staff",
+  engineering: "tech lead",
+  social: "social media",
+  finance: "finance",
+  growth: "sales",
+};
+
+/**
+ * Said on New agent when the area it will take (typed, else its name) brings one of Kin's
+ * ready-made characters; null when it starts on a plain one.
+ */
+export function kinAgentReadyCharacterLine(draft: {
+  readonly name: string;
+  readonly area: string;
+}): string | null {
+  const name = draft.name.trim();
+  const domain = kinDomainSlug(draft.area.trim() === "" ? name : draft.area);
+  const seat = domain === null ? null : kinCharacterSeat(domain);
+  return seat === null
+    ? null
+    : `Kin gives ${name} a ready-made ${SEAT_WORDS[seat]} character; change it on your computer.`;
+}
 
 /** Kin's advice on reasoning effort, the same on every client and for any provider. */
 export const KIN_AGENT_EFFORT = {
@@ -259,7 +343,13 @@ const FIELD_WORDS: Readonly<Record<string, string>> = {
   repo: "repo",
   side: "side",
 };
-const HIDDEN_FIELDS = new Set(["reason", "handedBack", "untold", KIN_TAKEN_DEFAULT_FIELD]);
+const HIDDEN_FIELDS = new Set([
+  "reason",
+  "handedBack",
+  "untold",
+  KIN_TAKEN_DEFAULT_FIELD,
+  KIN_DISMISSED_FIELD,
+]);
 const VALUE_MAX = 40;
 /** Links whose shown end is words, such as "PR #12"; other kinds name an id. */
 const SHOWN_LINKS = new Set(["url", "pull_request"]);
@@ -292,9 +382,11 @@ export function kinAgentChangeLine(
   }
   const value = (field: string, shown: string | null) => {
     if (shown === null || shown === "") return "none";
-    const principal = /^(person|agent):(.+)$/.exec(shown);
-    if (principal !== null && (field === "owner" || field === "waitingOn"))
-      return names.get(principal[2]!) ?? (principal[1] === "agent" ? "an agent" : "someone");
+    const who =
+      field === "owner" || field === "waitingOn"
+        ? kinWorkNameOfText(shown, { people: names, agents: names })
+        : null;
+    if (who !== null) return kinMidSentence(who);
     if (field === "party" || field === "project") {
       const title = change.named?.find((one) => one.key === shown)?.title;
       return title === undefined ? shown : short(`${shown} ${title}`);

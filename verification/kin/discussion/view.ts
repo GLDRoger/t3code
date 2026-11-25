@@ -4,7 +4,7 @@ type Vars = Record<string, Value>;
 export const title = "A discussion in the Team room";
 
 export const guide =
-  "Each box is where one discussion stands and whose turn it is. Social opened it, it is Finance's call, the Chief of staff chairs, and Growth has a stake and may pitch in uninvited. Each arrow is one message or a pass. Before it, agents open others against their caps, people are made co-owners and back, and a hand-off reports back; those draw no arrow, and the rules below say what each may do. Red boxes are where a rule below breaks.";
+  "Each box is where one discussion stands and whose turn it is. Social opened it (or you named Social first), it is Finance's call, the Chief of staff chairs, and Growth has a stake and may pitch in uninvited. Each arrow is one message or a pass. Before it, agents open others against their caps, people are made co-owners and back, and a hand-off reports back; those draw no arrow, and the rules below say what each may do. Red boxes are where a rule below breaks.";
 
 export const rules: Record<string, string> = {
   EndsWithinCaps:
@@ -18,6 +18,8 @@ export const rules: Record<string, string> = {
     "A teammate can never read the Team room, even after being a co-owner or being added to it.",
   ToldOnce: "You are told a discussion's outcome once, never twice.",
   ReportOnce: "A hand-off's answer comes back to the agent who asked once.",
+  AskAnsweredOnce:
+    "Your Team-room message naming two agents gets one answer: their discussion, or while another is open an ordinary reply; never both, never twice, and never a second discussion beside the one Kin opened.",
   AlwaysEnds: "Every discussion ends: decided, parked, or brought to you.",
   OwnerTold:
     "You are always told how a discussion ended: at once if you asked for it, else with your next check-in.",
@@ -74,6 +76,26 @@ export const variants = [
     name: "no-report-back",
     breaks: "AskerGetsReply",
     what: "the answer stays in the other agent's chat and never comes back",
+  },
+  {
+    name: "answerer-woken",
+    breaks: "AskAnsweredOnce",
+    what: "the room's agent also answers your message plainly, beside the discussion it opened",
+  },
+  {
+    name: "ask-unkeyed",
+    breaks: "AskAnsweredOnce",
+    what: "your message handled again after a restart finds a discussion open (its own) and is answered plainly too",
+  },
+  {
+    name: "plain-forgotten",
+    breaks: "AskAnsweredOnce",
+    what: "your message answered plainly while another discussion was open opens one too when handled again after that one ends (the code before this change)",
+  },
+  {
+    name: "open-beside",
+    breaks: "AskAnsweredOnce",
+    what: "the agent whose turn it is in the discussion your message opened opens a second one for the same ask (the code before this change)",
   },
   {
     name: "report-unclaimed",
@@ -166,6 +188,10 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "Its turn fails and is tried again";
     case "ReceiverEnds":
       return "Its turn ends: the answer goes back to the asker";
+    case "AskHandled":
+      return "Kin reads your message naming two agents";
+    case "OpensBeside":
+      return `${who(from)} opens a second discussion for your ask`;
     default:
       return null;
   }

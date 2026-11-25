@@ -1,22 +1,38 @@
 import {
   EnvironmentId,
+  KIN_CHOICE_CARD_ACTION,
+  KinChatError,
+  KIN_PUSH_KEPT_MS,
   KinPushCategory,
   KinPushData,
   kinDeferralItemIdFromWidgetId,
   type KinChatId,
+  type KinOrgId,
+  type KinPushTopic,
+  type KinPushReconcileResult,
+  type KinPushWithdrawn,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
+import {
+  kinChoiceActInput,
+  kinChoiceFailureNotice,
+} from "@t3tools/client-runtime/kin/kinChoicePresentation";
+import { kinActionFailureNotice } from "@t3tools/client-runtime/kin/kinDeferralPresentation";
 import { kinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { KIN_NOTIFICATION_CATEGORIES, type KinNotificationAction } from "./kinCategories";
+import {
+  KIN_CHOICE_ANSWERS,
+  KIN_NOTIFICATION_CATEGORIES,
+  type KinNotificationAction,
+} from "./kinCategories";
 
 /** expo-notifications' `DEFAULT_ACTION_IDENTIFIER`: the banner itself was tapped. */
 export const KIN_DEFAULT_ACTION_IDENTIFIER = "expo.modules.notifications.actions.DEFAULT";
 
 export interface KinNotificationRoute {
-  /** One per notification and button, so the live listener and the cold-start read act once. */
+  /** One per delivery and button, so the live listener and the cold-start read act once. */
   readonly responseKey: string;
   readonly environmentId: EnvironmentId;
   /** Opened in order: the chat, then what the push is about over it, so Back lands in the chat. */
@@ -84,7 +100,10 @@ function landing(
   const destination = opensChat
     ? kinNotificationDestination({ chatId: data.chatId, subject })
     : null;
-  if (destination === null) return [target.path];
+  if (destination === null)
+    return target.path.startsWith(`${kinPath(target.environmentId, data.orgId, "work")}/`)
+      ? [kinPath(target.environmentId, data.orgId, "work"), target.path]
+      : [target.path];
   if (destination._tag === "chat")
     return [
       destination.messageId === null
@@ -101,12 +120,18 @@ function landing(
 
 /**
  * Where a push's `deepLink` opens, checked against the ids it carries. The sender writes
- * `/kin/<environmentId>/<orgId>/(chats|actions)/<id>`, `/kin/<environmentId>/<orgId>/approvals` or
+ * `/kin/<environmentId>/<orgId>/(chats|actions|work|projects)/<id>`,
+ * `/kin/<environmentId>/<orgId>/(approvals|work)` or
  * `/kin/<environmentId>/<orgId>/people/<personId>/devices`; anything else is dropped.
  */
 function linkTarget(data: KinPushData): { environmentId: string; path: string } | null {
   const parts = data.deepLink.split("/");
   if (parts[0] !== "" || parts[1] !== "kin") return null;
+  if (parts.length === 5 && parts[4] === "work") {
+    const [environmentId, orgId] = parts.slice(2, 4).map(decodeSegment);
+    if (!environmentId || orgId !== data.orgId) return null;
+    return { environmentId, path: kinPath(environmentId, orgId, "work") };
+  }
   if (parts.length === 5 && parts[4] === "approvals") {
     const [environmentId, orgId] = parts.slice(2, 4).map(decodeSegment);
     if (!environmentId || orgId !== data.orgId) return null;
@@ -130,6 +155,9 @@ function linkTarget(data: KinPushData): { environmentId: string; path: string } 
     if (data.chatId !== undefined && data.chatId !== id) return null;
     return { environmentId, path: kinChatPath(environmentId, orgId, id) };
   }
+  // Someone's moves on the reader's tasks, told in no chat: the one task or project, over Tasks.
+  if (kind === "work" || kind === "projects")
+    return { environmentId, path: kinPath(environmentId, orgId, kind, id) };
   if (kind === "actions") {
     if (data.pendingActionId !== undefined && data.pendingActionId !== id) return null;
     // MOB-8: open the `KinApproval` route (this link, re-encoded) once it exists. Until then
@@ -143,13 +171,27 @@ function linkTarget(data: KinPushData): { environmentId: string; path: string } 
   return null;
 }
 
-function deferralAct(
+/** A button's widget action: a question's answer exactly as a tap on its card posts it. */
+function buttonAct(
   data: KinPushData,
   action: KinNotificationAction,
-  notificationId: string,
+  delivery: string,
 ): KinWidgetsActInput | null {
   if (action.identifier === "review") return null;
   if (data.widgetId === undefined || data.revision === undefined || data.revision < 1) return null;
+  // The host dedupes on this, so a replayed response can't act twice.
+  const clientActionId = `push:${delivery}:${action.identifier}`;
+  const answer = KIN_CHOICE_ANSWERS.findIndex((one) => one === action.identifier);
+  if (answer >= 0) {
+    const optionId = data.choices?.[answer];
+    return optionId === undefined
+      ? null
+      : kinChoiceActInput(
+          { widgetId: data.widgetId, revision: data.revision },
+          optionId,
+          clientActionId,
+        );
+  }
   const itemId = kinDeferralItemIdFromWidgetId(data.orgId, data.widgetId);
   if (itemId === null) return null;
   return {
@@ -157,8 +199,7 @@ function deferralAct(
     revision: data.revision,
     actionId: action.identifier,
     value: itemId,
-    // The host dedupes on this, so a replayed response can't act twice.
-    clientActionId: `push:${notificationId}:${action.identifier}`,
+    clientActionId,
   };
 }
 
@@ -174,6 +215,10 @@ export function kinNotificationRoute(response: unknown): KinNotificationRoute | 
   const notificationId = field(request, "identifier");
   const actionIdentifier = field(response, "actionIdentifier");
   if (typeof notificationId !== "string" || notificationId.length === 0) return null;
+  // A chat's pushes share one collapse id, which iOS and Android make the identifier: each
+  // delivery is told apart by its date.
+  const date = field(field(response, "notification"), "date");
+  const delivery = typeof date === "number" ? `${notificationId}:${date}` : notificationId;
   const pressed = typeof actionIdentifier === "string" ? actionIdentifier : "";
   const category = field(content, "categoryIdentifier");
   const actions: ReadonlyArray<KinNotificationAction> = isCategory(category)
@@ -184,14 +229,36 @@ export function kinNotificationRoute(response: unknown): KinNotificationRoute | 
       ? undefined
       : actions.find((candidate) => candidate.identifier === pressed);
   return {
-    responseKey: `${notificationId}\u0000${pressed}`,
+    responseKey: `${delivery}\u0000${pressed}`,
     environmentId: EnvironmentId.make(target.environmentId),
     paths: landing(data, read.subject, target),
-    act: action === undefined ? null : deferralAct(data, action, notificationId),
+    act: action === undefined ? null : buttonAct(data, action, delivery),
   };
 }
 
-/** Delivered notifications from this host's chats that `settled` says are done, by id. */
+const isKinChatError = Schema.is(KinChatError);
+
+/** What a notification button the host refused says, in its card's own words. */
+export function kinRefusedActionAlert(
+  actionId: string,
+  failure: { readonly message: string },
+): { readonly title: string; readonly message: string } {
+  if (actionId === KIN_CHOICE_CARD_ACTION)
+    return {
+      title: "Your answer wasn't recorded",
+      message: isKinChatError(failure) ? kinChoiceFailureNotice(failure).text : failure.message,
+    };
+  return {
+    title: "That wasn't done",
+    message: isKinChatError(failure) ? kinActionFailureNotice(failure).text : failure.message,
+  };
+}
+
+/**
+ * Delivered notifications from this host's chats that `settled` says are done, by id: only those
+ * from a host or build before topics. One that names its topic (a question still waiting in a read
+ * chat) goes only by its own withdrawal or reconcile answer.
+ */
 export function kinSettledNotificationIds(
   presented: ReadonlyArray<unknown>,
   environmentId: EnvironmentId,
@@ -202,9 +269,144 @@ export function kinSettledNotificationIds(
     const identifier = field(request, "identifier");
     const data = pushData(field(field(request, "content"), "data"))?.data;
     if (typeof identifier !== "string" || data?.chatId === undefined) return [];
+    if (data.topic !== undefined) return [];
     const target = linkTarget(data);
     return target?.environmentId === environmentId && settled(data.chatId) ? [identifier] : [];
   });
+}
+
+/** This host's delivered notifications that name what they are about, by org. */
+export function kinDeliveredTopics(
+  presented: ReadonlyArray<unknown>,
+  environmentId: EnvironmentId,
+): ReadonlyArray<{
+  readonly identifier: string;
+  readonly orgId: KinOrgId;
+  readonly topic: KinPushTopic;
+  /** 0 when the push named none: any withdrawal of its topic covers it. */
+  readonly version: number;
+  /** When it was delivered, if the OS says. */
+  readonly date: number | undefined;
+}> {
+  return presented.flatMap((notification) => {
+    const request = field(notification, "request");
+    const identifier = field(request, "identifier");
+    const data = pushData(field(field(request, "content"), "data"))?.data;
+    if (typeof identifier !== "string" || data?.topic === undefined) return [];
+    const date = field(notification, "date");
+    return linkTarget(data)?.environmentId === environmentId
+      ? [
+          {
+            identifier,
+            orgId: data.orgId,
+            topic: data.topic,
+            version: data.version ?? 0,
+            date: typeof date === "number" ? date : undefined,
+          },
+        ]
+      : [];
+  });
+}
+
+/**
+ * Of this host's delivered notifications for `where.orgId`, the ids of those the host settled: its
+ * topic at the version shown or a later one. A newer push that overtook the withdrawal stays, and
+ * a topic is one company's on one host, so another's is never touched.
+ */
+export function kinWithdrawnIds(
+  presented: ReadonlyArray<unknown>,
+  where: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId },
+  settled: ReadonlyArray<KinPushWithdrawn>,
+): ReadonlyArray<string> {
+  const upTo = new Map<string, number>();
+  for (const one of settled) upTo.set(one.topic, Math.max(one.version, upTo.get(one.topic) ?? 0));
+  return kinDeliveredTopics(presented, where.environmentId).flatMap((one) =>
+    one.orgId === where.orgId && one.version <= (upTo.get(one.topic) ?? -1) ? [one.identifier] : [],
+  );
+}
+
+/**
+ * What the host's reconcile answer takes off the phone: what it settled, by version, and what it
+ * keeps no record of once delivered longer ago than it remembers (`KIN_PUSH_KEPT_MS`). One it
+ * doesn't know that is younger may be another host's sending, so it stays.
+ */
+export function kinReconcileRemovals(
+  presented: ReadonlyArray<unknown>,
+  where: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId },
+  answer: Pick<KinPushReconcileResult, "remove" | "unknown">,
+  now: number,
+): ReadonlyArray<string> {
+  const settled = new Set(kinWithdrawnIds(presented, where, answer.remove));
+  const forgotten = new Set<string>(answer.unknown);
+  for (const one of kinDeliveredTopics(presented, where.environmentId))
+    if (
+      one.orgId === where.orgId &&
+      forgotten.has(one.topic) &&
+      one.date !== undefined &&
+      now - one.date > KIN_PUSH_KEPT_MS
+    )
+      settled.add(one.identifier);
+  return kinDeliveredTopics(presented, where.environmentId).flatMap((one) =>
+    settled.has(one.identifier) ? [one.identifier] : [],
+  );
+}
+
+/**
+ * Whether a push that just arrived is already settled, so it should not be shown: the host is
+ * asked about its own topic (`ask`, the reconcile call; null when it didn't answer in time, which
+ * shows it). Another host's push, or one with no topic, is never asked about.
+ */
+export async function kinIncomingSettled(
+  notification: unknown,
+  environmentId: EnvironmentId,
+  ask: (input: {
+    readonly orgId: KinOrgId;
+    readonly topics: ReadonlyArray<KinPushTopic>;
+  }) => Promise<Pick<KinPushReconcileResult, "remove" | "unknown"> | null>,
+): Promise<boolean> {
+  const [one] = kinDeliveredTopics([notification], environmentId);
+  if (one === undefined) return false;
+  const answer = await ask({ orgId: one.orgId, topics: [one.topic] });
+  if (answer === null) return false;
+  const where = { environmentId, orgId: one.orgId };
+  return kinReconcileRemovals([notification], where, answer, one.date ?? 0).length > 0;
+}
+
+/**
+ * What a host's silent push withdraws, from a background push's task payload (`data.dataString`
+ * is the push's `body`): its host and company, and the settled topics with their versions. Null
+ * for anything else.
+ */
+export function kinWithdrawal(payload: unknown): {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly withdraw: ReadonlyArray<KinPushWithdrawn>;
+  /** iOS: the badge to set, which Apple's background push can't carry in `aps`. */
+  readonly badge: number | undefined;
+} | null {
+  const data = pushData(field(field(payload, "data"), "dataString"))?.data;
+  if (data === undefined) return null;
+  const withdraw = data.withdraw ?? [];
+  if (withdraw.length === 0 && data.badge === undefined) return null;
+  const target = linkTarget(data);
+  return target === null
+    ? null
+    : {
+        environmentId: EnvironmentId.make(target.environmentId),
+        orgId: data.orgId,
+        withdraw,
+        badge: data.badge,
+      };
+}
+
+/** A Kin push with nothing to show: a withdrawal or a read's badge. It is never drawn. */
+export function kinIsSilentPush(notification: unknown): boolean {
+  const content = field(field(notification, "request"), "content");
+  const said = (key: string) => {
+    const value = field(content, key);
+    return typeof value === "string" && value.trim() !== "";
+  };
+  return pushData(field(content, "data")) !== null && !said("title") && !said("body");
 }
 
 /**
