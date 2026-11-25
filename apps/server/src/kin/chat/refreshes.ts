@@ -163,8 +163,13 @@ export const subscribeRefreshes = (
             if (
               reads.connections !== undefined &&
               (heard === undefined || heard.connections !== now.connections)
-            )
-              connections = hub.counted(counter("connections"), yield* reads.connections);
+            ) {
+              const key = counter("connections");
+              const shown = yield* reads.connections;
+              // A failed read says nothing: a move here would tell of someone else's change.
+              if (shown !== null) connections = hub.counted(key, shown);
+              else connections ??= hub.lastCount(key);
+            }
             if (heard === undefined || heard.company !== now.company) {
               const still = yield* waiting;
               waited ||= still;

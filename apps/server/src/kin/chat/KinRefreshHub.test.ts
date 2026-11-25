@@ -4,6 +4,7 @@ import {
   KIN_STREAMS,
   AuthSessionId,
   AuthStandardClientScopes,
+  KinChatError,
   KinConnectionId,
   KinOrgId,
   KinPersonId,
@@ -425,6 +426,62 @@ describe("KinRefreshHub", () => {
       assert.strictEqual((yield* Queue.take(rheaQueue)).connections, 3);
 
       assert.deepStrictEqual(yield* Stream.runHead(zoyaRefreshes), Option.some(zoyaNext));
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(paired, connections)));
+  });
+
+  it.effect("a member whose own connections read fails hears nothing of anyone's change", () => {
+    let readFails = false;
+    let mailbox: KinMyMailbox["mailbox"] = null;
+    const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+    const connections = Layer.mock(KinConnections)({
+      mine: (_people, { orgId }) =>
+        Effect.suspend(() =>
+          readFails
+            ? Effect.fail(unavailable)
+            : Effect.succeed({
+                orgId,
+                mailbox,
+                mailboxes: mailbox === null ? [] : [mailbox],
+                services: [{ service: "google", label: "Google", ready: true }],
+                signInAddress: "https://ambermill.example/sign-in",
+              } satisfies KinMyMailbox),
+        ),
+    });
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { touch } = yield* RefreshHub.KinRefreshObserver;
+      const { owner: rhea } = yield* KinIdentity;
+      const { orgId } = rhea;
+      const zoya = { ...rhea, personId: KinPersonId.make("zoya") };
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES (${zoya.personId}, ${orgId}, 'zoya', 'Zoya', '2026-11-09T00:00:00.000Z', 'member')`;
+      const refreshes = subscribeRefreshes([zoya], { orgId });
+      const queue = yield* Stream.toQueue(refreshes, { capacity: "unbounded" });
+      const first = yield* Queue.take(queue);
+      assert.strictEqual(first.connections, 0);
+      const burst = sql
+        .withTransaction(touch(orgId, "connections"))
+        .pipe(Effect.andThen(TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE)));
+
+      readFails = true;
+      yield* burst;
+      assert.strictEqual(yield* Queue.size(queue), 0);
+      yield* burst;
+      assert.strictEqual(yield* Queue.size(queue), 0);
+      assert.deepStrictEqual(yield* Stream.runHead(refreshes), Option.some(first));
+
+      readFails = false;
+      yield* burst;
+      assert.strictEqual(yield* Queue.size(queue), 0);
+      mailbox = {
+        connectionId: KinConnectionId.make("zoya-mail"),
+        preset: "google",
+        account: "zoya@ambermill.example",
+        state: "active",
+      };
+      yield* burst;
+      assert.strictEqual((yield* Queue.take(queue)).connections, (first.connections ?? 0) + 1);
+      assert.strictEqual(yield* Queue.size(queue), 0);
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(paired, connections)));
   });
 
