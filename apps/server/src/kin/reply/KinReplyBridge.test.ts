@@ -1490,22 +1490,36 @@ it.effect.each([
   {
     access: "member",
     before: "a join already",
-    expected: ["system:Ada didn't reply: someone joined while it was working. Send it again."],
+    expected: ["system:Ada didn't reply: someone joined before it answered. Send it again."],
+  },
+  // The join through Add says it, and the turn it aborted says nothing more.
+  {
+    access: "member",
+    before: "a join through Add",
+    expected: ["system:Ada didn't reply: someone joined before it answered. Send it again."],
   },
 ] as const)(
   "an owner-only reply posts where everyone reading is owner-level, never silently held ($access, $before)",
   ({ access, before, expected }) =>
     Effect.gen(function* () {
-      const { fake, runId, complete, posted, sql, wakeupId, owner, services } = yield* setup({
-        lane: "shared-group",
-        ask: "Draft the December retainer invoice",
-      });
+      const { fake, runId, complete, posted, sql, wakeupId, owner, services, chatId } =
+        yield* setup({
+          lane: "shared-group",
+          ask: "Draft the December retainer invoice",
+        });
       yield* sql`UPDATE kin_people SET access = ${access} WHERE person_id = 'mate'`;
       yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = ${wakeupId}`;
       if (before === "a tool call")
         yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${owner.orgId}, ${wakeupId}, 'item:task-1', 'fixture-hash')`;
       if (before === "a join already")
         yield* sql`UPDATE kin_events SET json = json_set(json, '$._audienceMoved', 1) WHERE wakeup_id = ${wakeupId}`;
+      if (before === "a join through Add") {
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('pat', ${owner.orgId}, 'pat', 'Pat', '1970-01-01T00:00:00.000Z')`;
+        yield* Context.get(services, KinGroups).addMember([owner], {
+          chatId,
+          principal: { _tag: "person", personId: KinPersonId.make("pat") },
+        });
+      }
       fake.items = [text("a", 1, "Draft INV-2 is ready: ₹40,000 + GST.", runId)];
       yield* complete;
       assert.deepStrictEqual(
@@ -1525,7 +1539,7 @@ it.effect.each([
           requeued
             ? { state: "queued", attempts: 0, wakeupId: null, moved: 1 }
             : {
-                state: "done",
+                state: before === "a join through Add" ? "expired" : "done",
                 attempts: 0,
                 wakeupId,
                 moved: before === "a join already" ? 1 : null,

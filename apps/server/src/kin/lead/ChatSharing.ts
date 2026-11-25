@@ -2,6 +2,7 @@ import {
   KinCardAsker,
   KinChatId,
   KinMessageId,
+  KinWakeupId,
   KinWidgetId,
   ThreadId,
   type KinAgentId,
@@ -19,11 +20,24 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { historyFloor } from "../chat/sharing.ts";
 import { abortChatTurns } from "./Audience.ts";
+import { didVisibleWork } from "./KinEventQueue.ts";
 import { cardAudience } from "./LeadDelivery.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 
 /** Chat events that answer a person's message, tap or reaction in its chat. */
 const CHAT_EVENT_TAGS = ["chat.message", "widget.action", "chat.reaction"] as const;
+
+/** What a person asks with, written by them (`stoppedLines`); a reaction asks nothing. */
+const PERSON_ASK_TAGS = ["chat.message", "widget.action"] as const;
+
+/**
+ * The line a chat hears when a join stopped an agent before it answered a person, on every path
+ * that stops it (`onPersonJoined`, `KinReplyBridge`). `partway`: the turn did something visible.
+ */
+export const stoppedByJoinNotice = (leadName: string, partway: boolean) =>
+  partway
+    ? `${leadName} didn't finish its reply: someone joined while it was working. What it had already done stays; ask again for the answer.`
+    : `${leadName} didn't reply: someone joined before it answered. Send it again.`;
 
 /** The fixed line a delegated task's card in a shared chat shows instead of its own. */
 const movedCardTitle = (lead: string) => `Moved to your private chat with ${lead}`;
@@ -48,7 +62,7 @@ const endChatThreads = Effect.fnUntraced(function* (
  * In every join's transaction, after `recordJoin`: aborts the running turns there and ends the
  * chat's lead threads; expires waiting events below the history floor; names the tasks agents
  * delegated there, whose cards the caller freezes, as only owner-only turns delegate. Returns what
- * runs after commit.
+ * runs after commit, the chat's lines for asks it left unanswered (`tellStopped`) included.
  */
 export const onPersonJoined = Effect.fn("KinChatSharing.onPersonJoined")(function* (input: {
   readonly orgId: KinOrgId;
@@ -68,18 +82,97 @@ export const onPersonJoined = Effect.fn("KinChatSharing.onPersonJoined")(functio
     WHERE w.org_id = ${input.orgId} AND w.chat_id = ${input.chatId} AND w.type = 'task'
       AND json_extract(w.state_json, '$.threadId') IS NOT NULL
     ORDER BY 1`;
-  if (chat === undefined || chat.floor === null) return { turns, threads, expired: [], moved };
+  if (chat === undefined || chat.floor === null)
+    return { turns, threads, expired: [], moved, stopped: [] };
   // Waiting, or held by a turn this join aborted: no fresh turn answers them where others read.
   const pending = sql`(e.state = 'queued' OR (e.state = 'claimed' AND EXISTS (SELECT 1
     FROM kin_wakeups w WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
       AND w.aborted_at IS NOT NULL)))`;
-  const expired = yield* sql<{ agentId: KinAgentId }>`UPDATE kin_events AS e SET state = 'expired'
+  const expired = yield* sql<{ agentId: KinAgentId; eventId: string }>`
+    UPDATE kin_events AS e SET state = 'expired'
     WHERE e.org_id = ${input.orgId} AND e.tag IN ${sql.in(CHAT_EVENT_TAGS)}
       AND json_extract(e.json, '$.chatId') = ${input.chatId} AND ${pending}
       AND EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = e.org_id
         AND m.message_id = json_extract(e.json, '$.messageId') AND m.seq < ${chat.floor})
-    RETURNING agent_id AS "agentId"`;
-  return { turns, threads, expired, moved };
+    RETURNING agent_id AS "agentId", event_id AS "eventId"`;
+  return { turns, threads, expired, moved, stopped: yield* stoppedLines(sql, input, expired) };
+});
+
+/**
+ * One line per agent whose person's ask this join expired, its id from the join so a retry
+ * posts it once. Read in the join's transaction: the aborted turn does nothing after it.
+ */
+const stoppedLines = Effect.fnUntraced(function* (
+  sql: SqlClient.SqlClient,
+  input: { readonly orgId: KinOrgId; readonly chatId: string; readonly personId: string },
+  expired: ReadonlyArray<{ readonly eventId: string }>,
+) {
+  if (expired.length === 0) return [];
+  const [join] = yield* sql<{ memberId: string; joinedSeq: number | null }>`
+    SELECT member_id AS "memberId", joined_seq AS "joinedSeq" FROM kin_chat_members
+    WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND principal_kind = 'person'
+      AND person_id = ${input.personId} AND left_at IS NULL
+    ORDER BY member_id LIMIT 1`;
+  if (join === undefined) return [];
+  const asked = yield* sql<{ agentId: KinAgentId; leadName: string; wakeupId: string | null }>`
+    SELECT DISTINCT e.agent_id AS "agentId", l.name AS "leadName", e.wakeup_id AS "wakeupId"
+    FROM kin_events e JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
+    JOIN kin_messages m ON m.org_id = e.org_id
+      AND m.message_id = json_extract(e.json, '$.messageId')
+    WHERE e.org_id = ${input.orgId} AND e.event_id IN ${sql.in(expired.map((row) => row.eventId))}
+      AND e.tag IN ${sql.in(PERSON_ASK_TAGS)} AND m.author_kind = 'human'
+    ORDER BY 1, 3`;
+  const lines = new Map<KinAgentId, { leadName: string; partway: boolean }>();
+  for (const row of asked) {
+    const partway =
+      row.wakeupId !== null &&
+      (yield* didVisibleWork({ orgId: input.orgId, wakeupId: KinWakeupId.make(row.wakeupId) }));
+    const line = lines.get(row.agentId);
+    lines.set(row.agentId, {
+      leadName: row.leadName,
+      partway: partway || line?.partway === true,
+    });
+  }
+  return [...lines].map(([agentId, line]) => ({
+    messageId: KinMessageId.make(
+      `kin-join-stopped:${join.memberId}:${join.joinedSeq ?? 0}:${agentId}`,
+    ),
+    body: stoppedByJoinNotice(line.leadName, line.partway),
+  }));
+});
+
+/** After the join commits: posts its `stoppedLines` where everyone in the chat now reads. */
+export const tellStopped = Effect.fn("KinChatSharing.tellStopped")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly chatId: string;
+  readonly lines: ReadonlyArray<{ readonly messageId: KinMessageId; readonly body: string }>;
+}) {
+  const repo = yield* KinChatRepository;
+  const hub = yield* KinChatHub;
+  for (const line of input.lines) {
+    if (Option.isSome(yield* repo.getMessage({ orgId: input.orgId, messageId: line.messageId })))
+      continue;
+    const message = yield* repo.insertMessage({
+      orgId: input.orgId,
+      chatId: KinChatId.make(input.chatId),
+      audience: "chat",
+      messageId: line.messageId,
+      author: { _tag: "system" },
+      kind: "system",
+      body: line.body,
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      clientMessageId: null,
+      createdAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+      editedAt: null,
+    });
+    yield* hub.publish({ type: "message.posted", orgId: input.orgId, message });
+  }
 });
 
 /**

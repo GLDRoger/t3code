@@ -38,7 +38,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
-import { freezeMovedCard, onPersonJoined, settleCards } from "../lead/ChatSharing.ts";
+import { freezeMovedCard, onPersonJoined, settleCards, tellStopped } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import * as Reach from "../lead/Reach.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
@@ -272,8 +272,9 @@ const make = Effect.gen(function* () {
   /**
    * In the join's transaction (`onPersonJoined`): a turn that may hold the owner's context, or
    * that read the chat before it was shared, never continues once someone else can read it; its
-   * run stops after commit. What was asked there before stays the owner's: it expires, and a task
-   * delegated there answers in the owner's chat, its card here frozen.
+   * run stops after commit. What was asked there before stays the owner's: it expires, the chat
+   * hears once which agent didn't answer, and a task delegated there answers in the owner's chat,
+   * its card here frozen.
    */
   const shareWith = Effect.fn("KinGroups.shareWith")(function* (
     chat: Pick<KinChat, "orgId" | "chatId">,
@@ -327,6 +328,12 @@ const make = Effect.gen(function* () {
         ),
       );
     }
+    if (shared.stopped.length > 0)
+      yield* sql.afterCommit(
+        withChat(tellStopped({ ...chat, lines: shared.stopped })).pipe(
+          Effect.ignore({ log: "Warn", message: "KinGroups.tellStopped" }),
+        ),
+      );
     if (shared.threads.length > 0)
       yield* sql.afterCommit(
         Effect.forEach(

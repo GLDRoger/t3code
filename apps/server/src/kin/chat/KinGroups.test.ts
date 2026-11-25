@@ -21,6 +21,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import * as ChatSharing from "../lead/ChatSharing.ts";
 import * as ChatWake from "../lead/ChatWake.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
@@ -693,6 +694,8 @@ it.effect(
         VALUES ('card-before', ${orgId}, ${chatId}, ${before.messageId}, 'native', 'task', 1, '{}',
           '[]', '1970-01-01T00:00:00.000Z')`;
       yield* chats.react(owner, { messageId: before.messageId, emoji: "👍", on: true });
+      // Answered already: a question the join left unanswered posts a line she reads.
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId}`;
 
       yield* groups.addMember([owner], {
         chatId,
@@ -824,6 +827,28 @@ it.effect(
           .map((row) => row.state),
         ["expired"],
       );
+      // What it was asked goes unanswered, and the chat hears it once, where Sam reads too.
+      const told = "Tech lead didn't reply: someone joined before it answered. Send it again.";
+      const lines = sql<{ messageId: KinMessageId; body: string }>`SELECT message_id AS
+        "messageId", body FROM kin_messages WHERE chat_id = ${chatId} AND author_kind = 'system'
+        ORDER BY seq`;
+      assert.deepStrictEqual(
+        (yield* lines).map((row) => row.body),
+        [told],
+      );
+      assert.deepStrictEqual(
+        (yield* chats.history([sam], { chatId, beforeSeq: 1000, limit: 50 })).messages.map(
+          (message) => message.body,
+        ),
+        [told],
+      );
+      // The join handled again, or its line retried, posts nothing more.
+      const again = yield* sql.withTransaction(
+        ChatSharing.onPersonJoined({ orgId, chatId, personId: sam.personId }),
+      );
+      assert.deepStrictEqual(again.stopped, []);
+      yield* ChatSharing.tellStopped({ orgId, chatId, lines: yield* lines });
+      assert.lengthOf(yield* lines, 1);
       yield* queue.finish({ orgId, wakeupId: running.wakeupId, status: "completed" });
       // Said after Sam joined, and a tap there on the card from before: only the first is his.
       const after = yield* say(sam, chatId, "Invented-sam-question");
@@ -832,12 +857,67 @@ it.effect(
         WHERE message_id = ${tap.messageId}`;
       const turn = yield* wake(tech);
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${turn.wakeupId}`;
-      assert.deepStrictEqual(yield* seen(turn), ["Invented-sam-question"]);
+      assert.deepStrictEqual(yield* seen(turn), [told, "Invented-sam-question"]);
       assert.deepStrictEqual(
         (yield* chats.read(turn, { chatId, afterSeq: after.seq - 1, limit: 1 })).map(
           (message) => message.messageId,
         ),
         [after.messageId],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+// Walk of 25 Nov: a join that expired the owner's question said nothing in the chat.
+it.effect.each([
+  {
+    joiner: "member",
+    before: "a tool call",
+    lines: [
+      "Tech lead didn't finish its reply: someone joined while it was working. What it had already done stays; ask again for the answer.",
+    ],
+  },
+  {
+    joiner: "member",
+    before: "still queued",
+    lines: ["Tech lead didn't reply: someone joined before it answered. Send it again."],
+  },
+  // `historyFloor` exempts only the chat's own owner member: a co-owner's join moves it too.
+  {
+    joiner: "co_owner",
+    before: "nothing",
+    lines: ["Tech lead didn't reply: someone joined before it answered. Send it again."],
+  },
+] as const)(
+  "a join that leaves a person's question unanswered says so in the chat once ($joiner, $before)",
+  ({ joiner, before, lines }) =>
+    Effect.gen(function* () {
+      const { sql, groups, queue, owner, orgId, tech, priya, say, events, wake } = yield* seed;
+      const { chatId } = yield* groups.create([owner], {
+        orgId,
+        title: "Planning",
+        agentIds: [tech],
+        personIds: [],
+      });
+      yield* sql`UPDATE kin_people SET access = ${joiner} WHERE person_id = ${priya.personId}`;
+      const ask = yield* say(owner, chatId, "Invented-owner-plan-ask");
+      const running = before === "still queued" ? undefined : yield* wake(tech);
+      if (before === "a tool call" && running !== undefined)
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+          VALUES (${orgId}, ${running.wakeupId}, 'item:task-1', 'fixture-hash')`;
+      yield* groups.addMember([owner], {
+        chatId,
+        principal: { _tag: "person", personId: priya.personId },
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${chatId}
+          AND author_kind = 'system' ORDER BY seq`,
+        lines.map((body) => ({ body })),
+      );
+      if (running !== undefined)
+        yield* queue.finish({ orgId, wakeupId: running.wakeupId, status: "completed" });
+      assert.deepStrictEqual(
+        (yield* events).filter((row) => row.messageId === ask.messageId).map((row) => row.state),
+        ["expired"],
       );
     }).pipe(Effect.provide(layer)),
 );
@@ -869,7 +949,10 @@ it.effect(
         (yield* chats.read(turn, { chatId, afterSeq: 0, limit: 100 })).map(
           (message) => message.body,
         ),
-        ["Invented-priya-is-back"],
+        [
+          "Tech lead didn't reply: someone joined before it answered. Send it again.",
+          "Invented-priya-is-back",
+        ],
       );
       yield* queue.finish({ orgId, wakeupId: turn.wakeupId, status: "completed" });
       // An owner-only turn's read is unchanged: in the owner's direct chat it reads from the start.

@@ -58,6 +58,7 @@ import { askedForSuffix } from "../github/askedFor.ts";
 import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
+import { stoppedByJoinNotice } from "../lead/ChatSharing.ts";
 import { didVisibleWork, LAST_RETRY_MS, requeueForAudience } from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { activityAt, waitWhileActive } from "../lead/runSilence.ts";
@@ -924,9 +925,7 @@ const make = Effect.gen(function* () {
             orgId: wake.orgId,
             chatId: wake.lane.chatId,
             audience: "chat",
-            body: partway
-              ? `${wake.lane.leadName} didn't finish its reply: someone joined while it was working. What it had already done stays; ask again for the answer.`
-              : `${wake.lane.leadName} didn't reply: someone joined while it was working. Send it again.`,
+            body: stoppedByJoinNotice(wake.lane.leadName, partway),
           });
         }
         if (result.reason === "limit")
