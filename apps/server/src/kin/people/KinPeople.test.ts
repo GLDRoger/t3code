@@ -2394,6 +2394,68 @@ const withRecords = People.layer.pipe(
   Layer.provideMerge(environment),
 );
 
+it.effect("removing a teammate ends the requests they passed on", () =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const { owner } = identity;
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Repository.KinChatRepository;
+    const chats = yield* Service.KinChatService;
+    const { orgId } = owner;
+    yield* pairSession(ownerSession.sessionId);
+    const tech = KinAgentId.make("tech");
+    yield* repo.insertAgent({
+      orgId,
+      agentId: tech,
+      ownerPersonId: owner.personId,
+      displayName: "Tech lead",
+      role: "lead",
+      createdAt: at,
+    });
+    yield* identity.registerAgentThread({
+      orgId,
+      agentId: tech,
+      threadId: ThreadId.make("tech-thread"),
+    });
+    const chat = yield* chats.createDirect(owner, { orgId, agentId: tech });
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+        worker_projects_json, owner_chat_id, thread_id)
+      VALUES (${tech}, ${orgId}, 'Tech lead', 0, '{}', '[]', ${chat.chatId}, 'tech-thread')`;
+    const passedOn = Effect.fn("KinPeopleTest.passedOn")(function* (
+      name: string,
+      question: string,
+    ) {
+      const { person } = yield* service.accept({
+        secret: (yield* service.createInvite(ownerSession, { orgId, displayName: name })).secret,
+      });
+      const { waiting } = yield* chats.notice({
+        orgId,
+        chatId: chat.chatId,
+        audience: "chat",
+        messageId: KinMessageId.make(`request-${person.personId}`),
+        from: tech,
+        waitingFor: owner.personId,
+        body: `${name} asked Tech lead:\n"${question}"`,
+        relay: { kind: "sent_by", agentId: tech, personId: person.personId, personName: name },
+      });
+      return { personId: person.personId, item: waiting! };
+    });
+    const zoya = yield* passedOn("Zoya", "Can the rollout move to Friday?");
+    const arjun = yield* passedOn("Arjun", "Can the demo move to Monday?");
+    assert.lengthOf(yield* repo.listOpenWaiting(owner), 2);
+    yield* service.removeAccess(ownerSession, { orgId, personId: zoya.personId });
+    assert.strictEqual(
+      Option.getOrThrow(yield* repo.getWaiting(zoya.item)).resolution,
+      "cancelled",
+    );
+    assert.deepStrictEqual(
+      (yield* repo.listOpenWaiting(owner)).map((item) => item.waitingId),
+      [arjun.item.waitingId],
+    );
+  }).pipe(Effect.provide(withRecords)),
+);
+
 it.effect("removing a person closes their open questions and leaves their tasks flagged", () =>
   Effect.gen(function* () {
     const service = yield* People.KinPeople;

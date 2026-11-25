@@ -1221,8 +1221,10 @@ export const make = Effect.gen(function* () {
                 hub.publish({ type: "member.removed", orgId: input.orgId, member: gone.value }),
               );
           }
-          // Anything still waiting on them outside the chats they just left.
-          for (const item of yield* repo.listOpenWaiting(input))
+          for (const item of [
+            ...(yield* repo.listOpenWaiting(input)),
+            ...(yield* repo.listOpenWaitingRelayedBy(input)),
+          ])
             if (
               yield* repo.resolveWaiting({ ...item, resolvedAt: leftAt, resolution: "cancelled" })
             ) {

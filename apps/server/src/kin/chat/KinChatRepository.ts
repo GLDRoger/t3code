@@ -578,6 +578,9 @@ export class KinChatRepository extends Context.Service<
     readonly listOpenWaiting: (
       input: Scope & { readonly personId: KinPersonId },
     ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
+    readonly listOpenWaitingRelayedBy: (
+      input: Scope & { readonly personId: KinPersonId },
+    ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
     /** What waits on the owner that this viewer, a co-owner, may see (`ownersWaiting`). */
     readonly listOwnersOpenWaiting: (
       input: Scope & { readonly personId: KinPersonId },
@@ -1727,6 +1730,24 @@ const make = Effect.gen(function* () {
         );
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listOpenWaiting")),
+    ),
+    listOpenWaitingRelayedBy: Effect.fn("KinChatRepository.listOpenWaitingRelayedBy")(
+      function* (input) {
+        return yield* SqlSchema.findAll({
+          Request: Schema.Unknown,
+          Result: WaitingRow,
+          execute: () =>
+            sql`SELECT ${sql.literal(waitingBaseColumns)} FROM kin_waiting
+              WHERE org_id = ${input.orgId} AND person_id <> ${input.personId}
+                AND reason = 'question' AND widget_id IS NULL AND resolved_at IS NULL
+                AND EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = kin_waiting.org_id
+                  AND m.message_id = kin_waiting.message_id AND m.chat_id = kin_waiting.chat_id
+                  AND json_extract(m.relay_json, '$.kind') = 'sent_by'
+                  AND json_extract(m.relay_json, '$.personId') = ${input.personId})
+              ORDER BY created_at, waiting_id`,
+        })(input).pipe(NodeSqliteClient.readOnly);
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.listOpenWaitingRelayedBy")),
     ),
     listOwnersOpenWaiting: Effect.fn("KinChatRepository.listOwnersOpenWaiting")(
       function* (input) {
