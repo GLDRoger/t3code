@@ -362,6 +362,70 @@ it.effect(
     ),
 );
 
+it.effect("an answer nobody asked for is not copied into the first agent's chat", () =>
+  run(({ ctx, handoff }) =>
+    Effect.gen(function* () {
+      const { sql, orgId, chiefChat, techChat, owner } = ctx;
+      const reply = "Tidewater Freight receipts match.";
+      for (const wantsAnswer of [false, true]) {
+        const sourceEventId = wantsAnswer ? "another-request" : "ask-event";
+        if (wantsAnswer) {
+          const sent = yield* ctx.chats.send(owner, {
+            chatId: chiefChat,
+            body: "Check the second receipt.",
+            clientMessageId: sourceEventId,
+          });
+          yield* ctx.claim(sourceEventId, chief, { messageId: sent.messageId });
+        }
+        yield* handoff.handOff(scopeFor(chief), {
+          to: "Tech lead",
+          request: "Check the receipts.",
+          sourceEventId,
+          wantsAnswer,
+        });
+        yield* sql`UPDATE kin_events SET wakeup_id = 'tech-wake', state = 'claimed'
+        WHERE org_id = ${orgId} AND agent_id = ${tech} AND dedupe_key LIKE 'handoff:%'`;
+        const answerId = `receipt-answer-${wantsAnswer}`;
+        yield* sql`UPDATE kin_chats SET last_seq = last_seq + 1 WHERE org_id = ${orgId} AND chat_id = ${techChat}`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_agent_id, author_owner_person_id, author_thread_id, author_member_id,
+          author_role, kind, body, mentions_json, status, created_at)
+        SELECT ${answerId}, c.org_id, c.chat_id, c.last_seq, 'agent', ${tech}, ${owner.personId},
+          'tech-thread', m.member_id, 'member', 'text', ${reply}, '[]', 'posted', ${at}
+        FROM kin_chats c JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+        WHERE c.org_id = ${orgId} AND c.chat_id = ${techChat} AND m.agent_id = ${tech}`;
+        const before = yield* personHistory(ctx, chiefChat);
+        const stored = () =>
+          sql`SELECT message_id FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${chiefChat} ORDER BY seq`;
+        const count = (yield* stored()).length;
+        const done = { orgId, agentId: tech, wakeupId: "tech-wake" };
+        yield* handoff.reportBack(done);
+        yield* handoff.reportBack(done);
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_handoffs WHERE org_id = ${orgId} AND reply_message_id = ${answerId}`,
+          1,
+        );
+        assert.lengthOf(
+          yield* stored(),
+          count + Number(wantsAnswer),
+          "stored rows in the first chat",
+        );
+        assert.deepStrictEqual(
+          yield* systemRows(sql, orgId, chiefChat),
+          wantsAnswer ? [{ body: reply }] : [],
+        );
+        const woke = yield* sql<{
+          messageId: string;
+        }>`SELECT json_extract(json, '$.messageId') AS "messageId"
+        FROM kin_events WHERE org_id = ${orgId} AND agent_id = ${chief} AND dedupe_key LIKE 'handoff-back:%'`;
+        assert.lengthOf(woke, Number(wantsAnswer));
+        if (wantsAnswer) assert.match(woke[0]!.messageId, /^kin-handoff-back:/);
+        assert.deepStrictEqual(yield* personHistory(ctx, chiefChat), before);
+      }
+    }),
+  ),
+);
+
 // The host's chats, 10 Nov 2026: asked "Check my repos", the Chief of staff could only tell the
 // owner what it wasn't set up for. The front door passes the request to the lead who owns it.
 it.effect.each([true, false, "legacy"] as const)(
@@ -423,8 +487,7 @@ it.effect.each([true, false, "legacy"] as const)(
         assert.lengthOf(yield* passedOn(sql, orgId, KinAgentId.make("theirs")), 0);
         assert.lengthOf(yield* systemRows(sql, orgId, ctx.chiefChat), 0);
 
-        // Tech lead's wake-up takes it and answers in its chat: the answer comes back to the
-        // Chief of staff, shown as from Tech lead in its chat with the owner, and wakes it, once.
+        // A requested answer wakes the Chief of staff once.
         yield* sql`UPDATE kin_events SET wakeup_id = 'tech-wake', state = 'claimed'
           WHERE org_id = ${orgId} AND event_id = ${passed!.event.eventId}`;
         // Its answer carries a choice for the owner, which lives in Tech lead's chat: open, the
@@ -469,16 +532,21 @@ it.effect.each([true, false, "legacy"] as const)(
         const back = yield* sql<{ body: string; relay: string; silent: number }>`SELECT body,
             relay_json AS relay, silent FROM kin_messages
           WHERE org_id = ${orgId} AND chat_id = ${ctx.chiefChat} AND relay_json IS NOT NULL`;
-        assert.deepStrictEqual(back, [
-          {
-            body:
-              wantsAnswer === true
-                ? "A flaky e2e test on main; I reran it and it passes.\n\nAnswer on the card in your chat with Tech lead."
-                : "A flaky e2e test on main; I reran it and it passes.",
-            relay: JSON.stringify({ kind: "reply_from", agentId: tech }),
-            silent: 1,
-          },
-        ]);
+        assert.deepStrictEqual(
+          back,
+          wantsAnswer === false
+            ? []
+            : [
+                {
+                  body:
+                    wantsAnswer === true
+                      ? "A flaky e2e test on main; I reran it and it passes.\n\nAnswer on the card in your chat with Tech lead."
+                      : "A flaky e2e test on main; I reran it and it passes.",
+                  relay: JSON.stringify({ kind: "reply_from", agentId: tech }),
+                  silent: 1,
+                },
+              ],
+        );
         const woke = yield* sql<{ json: string }>`SELECT json FROM kin_events
           WHERE org_id = ${orgId} AND agent_id = ${chief} AND dedupe_key LIKE 'handoff-back:%'`;
         assert.lengthOf(woke, wantsAnswer === false ? 0 : 1);

@@ -1663,7 +1663,7 @@ const make = Effect.gen(function* () {
             const claimed = yield* sql`UPDATE kin_handoffs SET reply_message_id = ${reply.messageId}
               WHERE org_id = ${input.orgId} AND message_id = ${handoff.messageId}
                 AND reply_message_id IS NULL RETURNING message_id`;
-            if (claimed.length === 0) return;
+            if (claimed.length === 0 || handoff.wantsAnswer === 0) return;
             const [asker] = yield* sql<{
               ownerChatId: KinChatId;
               ownerPersonId: KinPersonId;
@@ -1701,7 +1701,6 @@ const make = Effect.gen(function* () {
               relay: { kind: "reply_from", agentId: input.agentId, ...afterReading },
               silent: true,
             });
-            if (handoff.wantsAnswer === 0) return;
             // The asking lead's turn that handed the message on: this answer is its result.
             const asked = yield* sql<{ wakeupId: KinWakeupId }>`SELECT DISTINCT
                 wakeup_id AS "wakeupId" FROM kin_events
