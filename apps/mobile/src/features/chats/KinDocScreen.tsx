@@ -93,6 +93,7 @@ import { useKinShell } from "./state/useKinShell";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { ThreadMarkdownImage } from "../threads/ThreadMarkdownImage";
+import { KinDocReadersRow } from "./components/KinDocReadersRow";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { KinDocFileRows } from "./KinInvoice";
 import { KinLinkedSection, useKinOpenLinked } from "./KinWorkItemScreen";
@@ -738,9 +739,18 @@ function KinDocBody(
                 )}
               </View>
             }
-            {doc.archived ||
-            doc.sensitive ||
-            doc.sensitiveInherited === true ? null : doc.company === true ? (
+            {doc.archived || doc.sensitiveInherited === true ? null : doc.readers !== undefined ? (
+              <ListSection>
+                <KinDocReadersRow
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  doc={doc}
+                  names={names}
+                  disabled={false}
+                  onSettled={props.onRefresh}
+                />
+              </ListSection>
+            ) : doc.sensitive ? null : doc.company === true ? (
               <ListSection title={KIN_DOC_COMPANY.label}>
                 <View className="px-4 py-3">
                   <Text textRole="body" className="text-foreground-muted">

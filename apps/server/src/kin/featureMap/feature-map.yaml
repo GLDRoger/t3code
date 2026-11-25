@@ -1105,7 +1105,8 @@ features:
     note: >-
       The owner level, and a project's lead for that project's docs, change a section by hand
       (kin.docs.editSection); history keeps both versions. Anyone else's Suggest a change opens
-      their chat with the team agent, the doc attached.
+      their chat with the team agent, the doc attached. A teammate writing a doc chooses who reads
+      it (kin.docs.readers) and owners may widen it.
     tools: [doc_create, doc_read, doc_edit, doc_rewrite, doc_link]
     proof:
       - .agents/skills/verify-kin/scripts/member-suggests-playbook.sh
@@ -1817,7 +1818,6 @@ unlisted:
   "rpc:kin.levels.lower": Served; no client changes levels yet.
   "rpc:kin.levels.raise": Served; no client changes levels yet.
   "rpc:kin.docs.clearRecipeLabel": Served; no client clears a recipe's label yet.
-  "rpc:kin.docs.readers": Served; the doc reader controls are not wired to clients yet.
   "rpc:kin.work.statementPasswords": Served; no client manages statement passwords yet.
   "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.

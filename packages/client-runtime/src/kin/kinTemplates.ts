@@ -177,8 +177,9 @@ export function kinDocLabelAction(doc: {
   readonly sensitiveInherited?: true | undefined;
   readonly kindLabel?: KinDocDetail["kindLabel"];
   readonly draftOf?: KinDocDetail["draftOf"];
+  readonly readers?: KinDocDetail["readers"];
 }) {
-  if (doc.sensitiveInherited === true) return null;
+  if (doc.sensitiveInherited === true || doc.readers !== undefined) return null;
   const reader = doc.kindLabel?.reader;
   // The teammate it is drafted for: while they read it, under its kind's label or none, or not now.
   const keeps = reader !== undefined && reader.you !== true ? reader.name : doc.draftOf?.name;
