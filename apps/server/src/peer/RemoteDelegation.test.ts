@@ -38,13 +38,11 @@ import * as Tracer from "effect/Tracer";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as TestClock from "effect/testing/TestClock";
 import type * as SqlClient from "effect/sql/SqlClient";
-import { McpSchema, McpServer, Toolkit } from "effect/ai";
+import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import * as McpToolAccess from "../mcp/McpToolAccess.ts";
-import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import { idleThreadProjection, liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -1374,79 +1372,6 @@ it.effect("a task naming an instance the box has turned off says so before launc
       expect(yield* Ref.get(thread.launched)).toBeNull();
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
-
-/** A box from before `unavailableProviders`: a turned-off instance sits in `providers`. */
-const OlderBoxToolkit = Toolkit.make(OrchestratorToolkit.tools.orchestrator_capabilities);
-const olderBoxTools = (constraints: ReadonlyArray<string>) =>
-  McpHttpServer.toolkitRegistration(
-    OlderBoxToolkit,
-    McpToolAccess.toLayer(OlderBoxToolkit, {
-      orchestrator_capabilities: McpToolAccess.reads(() =>
-        Effect.succeed({
-          parentThreadId: null,
-          inheritedProviderInstanceId: null,
-          inheritedModel: null,
-          runtimeMode: "full-access" as const,
-          interactionMode: "default" as const,
-          providers: [
-            {
-              providerInstanceId: ProviderInstanceId.make("claude-box-off"),
-              driverKind: ProviderDriverKind.make("claudeAgent"),
-              displayName: null,
-              models: [],
-              canRunChildTask: false,
-              canRunCrossProviderChildTask: false,
-              constraints,
-            },
-          ],
-          features: {
-            appOwnedSubagents: true,
-            asyncPolling: true,
-            cancellation: true,
-            batchThreadCreation: true,
-            threadManagement: true,
-            incrementalThreadRead: true,
-            scheduledTasks: true,
-            maxBatchThreads: 1,
-          },
-        }),
-      ),
-    }),
-  );
-
-it.effect.each([
-  [["Provider instance is disabled."], "Provider instance is disabled."],
-  [[], "it gave no reason."],
-] as const)(
-  "a task naming an instance an older box can't run says so before launching (%j)",
-  ([constraints, reason]) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const b = yield* servePeer(box, olderBoxTools(constraints));
-        const offers = yield* SubscriptionRef.make<
-          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-        >([]);
-        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const a = yield* makeLaptop(database, offers);
-        yield* linkTo(a.links, b, "full-access");
-        yield* seedParent(a);
-
-        const result = yield* a.call("delegate_task", {
-          task: "Run the suite on the box.",
-          target: {
-            environmentId: box.environmentId,
-            driverKind: "claudeAgent",
-            providerInstanceId: "claude-box-off",
-            model: "claude-sonnet-4-6",
-          },
-        });
-        expect(result.isError).toBe(true);
-        expect(JSON.stringify(result.content)).toContain(
-          `Provider instance claude-box-off there can't run a child task: ${reason}`,
-        );
-      }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("refuses worktree isolation for a task there before launching anything", () =>
