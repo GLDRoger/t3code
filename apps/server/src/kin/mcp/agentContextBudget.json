@@ -2,20 +2,20 @@
   "mcpToolListJsonBytes": 64767,
   "kinToolListJsonBytes": 3044,
   "kinInstructionsBytes": {
-    "owner": 39635,
-    "confined": 39583
+    "owner": 39641,
+    "confined": 39589
   },
-  "kinSharedInstructionsHash": "0fd630e6a6d6fd09636923d4e48c48a879bf20955f9e462cba3d70ad1e05cbf0",
+  "kinSharedInstructionsHash": "5ad0401ec36b1fe89558b0c781e82ee161dcb8dd1243bf7ac4c65a34d5492e60",
   "kinLeadToolListJsonBytes": {
-    "engineering": 167385,
-    "engineeringBesideFinanceAndSales": 152323,
-    "finance": 146563,
-    "shared": 95884,
-    "social": 149636,
-    "socialBesideFinanceAndSales": 134574,
-    "support": 146563
+    "engineering": 167441,
+    "engineeringBesideFinanceAndSales": 152379,
+    "finance": 146619,
+    "shared": 95905,
+    "social": 149694,
+    "socialBesideFinanceAndSales": 134632,
+    "support": 146619
   },
-  "kinLeadAlwaysLoadedToolBytes": 73670,
+  "kinLeadAlwaysLoadedToolBytes": 73687,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -103,10 +103,10 @@
     },
     "kin_ask_person": {
       "desc": 789,
-      "schema": 875
+      "schema": 883
     },
     "kin_cancel": {
-      "desc": 229,
+      "desc": 231,
       "schema": 115
     },
     "kin_chart": {
@@ -130,7 +130,7 @@
       "schema": 226
     },
     "kin_connection_note": {
-      "desc": 288,
+      "desc": 291,
       "schema": 153
     },
     "kin_connection_offer": {
@@ -162,7 +162,7 @@
       "schema": 134
     },
     "kin_github_watch": {
-      "desc": 208,
+      "desc": 216,
       "schema": 114
     },
     "kin_hand_off": {
@@ -202,11 +202,11 @@
       "schema": 199
     },
     "kin_relay": {
-      "desc": 932,
-      "schema": 324
+      "desc": 938,
+      "schema": 325
     },
     "kin_schedule": {
-      "desc": 516,
+      "desc": 520,
       "schema": 991
     },
     "kin_take_private": {
@@ -226,7 +226,7 @@
       "schema": 2828
     },
     "memory_label": {
-      "desc": 357,
+      "desc": 374,
       "schema": 212
     },
     "memory_read": {
@@ -350,7 +350,7 @@
       "schema": 156
     },
     "social_week": {
-      "desc": 249,
+      "desc": 251,
       "schema": 151
     },
     "statement_read": {
@@ -362,12 +362,12 @@
       "schema": 494
     },
     "team_open": {
-      "desc": 433,
+      "desc": 439,
       "schema": 332
     },
     "team_say": {
-      "desc": 515,
-      "schema": 1113
+      "desc": 523,
+      "schema": 1114
     },
     "touch_log": {
       "desc": 362,
@@ -385,7 +385,7 @@
     "pulse": 3012,
     "scheduled": 3248,
     "reminder": 3019,
-    "groupReply": 3039,
+    "groupReply": 3040,
     "teamRoom": 2751
   }
 }

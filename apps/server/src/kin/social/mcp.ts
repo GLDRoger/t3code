@@ -81,7 +81,7 @@ export const KinSocialToolkit = Toolkit.make(
   Tool.make("social_week", {
     ...shared,
     description:
-      "Put one group's drafts still to come on one card for the owner: each post with its preview, a remove per post and one Confirm. One card per group; never mix clients. Only his Confirm schedules them; until then nothing is posted, so never say it was.",
+      "Put one group's drafts still to come on one card for the owner: each post with its preview, a remove per post and one Confirm. One card per group; never mix clients. Only their Confirm schedules them; until then nothing is posted, so never say it was.",
     parameters: Schema.Struct({
       group: Name,
       title: Schema.optional(Schema.String.check(Schema.isMaxLength(120))),
