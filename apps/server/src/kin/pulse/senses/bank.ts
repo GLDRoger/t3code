@@ -250,8 +250,8 @@ const keysOf = (keys: ReadonlyArray<string>, shown: number) =>
 export const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function* (
   ctx: SenseContext,
 ) {
-  const matches = (yield* repaidMatches(ctx.orgId)).filter(
-    (one) => one.marked === undefined && !one.noLine && !one.setBack,
+  const matches = (yield* repaidMatches(ctx.orgId, ctx.at)).filter(
+    (one) => one.marked === undefined && !one.noLine && !one.setBack && !one.ahead,
   );
   return matches.map(({ debit, partner, repays, owedMinor, owedCount }): SensedFact => {
     const paid = `${debit.key}, ${plain(debit.amountMinor, debit.currency)} paid ${shortDay(debit.date)}, names ${partner.name}`;

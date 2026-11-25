@@ -7,6 +7,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../../config.ts";
 import * as Sqlite from "../../../persistence/Sqlite.ts";
@@ -142,7 +143,7 @@ it.layer(layer)((it) => {
           ${rhea}, ${day("2026-11-24")}, 1240000, 'INR', 1, 'agent', 'finance', 'typed', 0, 0,
           '{"direction":"debit"}')`;
 
-        const matches = (yield* repaidMatches(orgId)).map((one) => ({
+        const matches = (yield* repaidMatches(orgId, NOW)).map((one) => ({
           title: one.debit.title,
           minor: one.debit.amountMinor,
           partner: one.partner.name,
@@ -192,6 +193,7 @@ it.layer(layer)((it) => {
 
 /** An invented company of its own: Rhea owns it, Zoya Rao funds expenses, all in Asia/Kolkata. */
 const company = Effect.fn("test.company")(function* (org: KinOrgId) {
+  yield* TestClock.setTime(NOW);
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES (${org}, 'Ambermill Studio', '2026-09-01')`;
   yield* sql`INSERT INTO kin_trigger_settings VALUES (${org}, 'Asia/Kolkata', '08:00', '18:00',
@@ -312,6 +314,20 @@ it.layer(layer)((it) => {
       assert.strictEqual(
         yield* kin.draw("BNK-3"),
         "BNK-3 names Zoya Rao but doesn't add up exactly to their oldest owed expenses, so Kin marks nothing and offers no card for it. Nothing was asked; tell the owner what you see instead.",
+      );
+    }),
+  );
+
+  // Typed with a day still to come: a repaid day can't be after today, so no card is offered.
+  it.effect("a debit dated after today raises nothing and draws no card", () =>
+    Effect.gen(function* () {
+      const kin = yield* company(KinOrgId.make("ambermill-ahead"));
+      yield* kin.expense("EXP-8", 5_000, "2026-11-01", { reimbursement: "owed" });
+      yield* kin.debit("BNK-6", 5_000, "2026-11-26");
+      assert.deepStrictEqual(yield* kin.told(), []);
+      assert.strictEqual(
+        yield* kin.draw("BNK-6"),
+        "BNK-6 is dated after today, so Kin offers no card for it.",
       );
     }),
   );

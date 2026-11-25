@@ -1,4 +1,5 @@
 import { KinChatError, type KinChoiceOutcome, type KinOrgId } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 
 import { retell } from "../../pulse/KinPulse.ts";
@@ -45,7 +46,7 @@ export const drawRepaid = Effect.fn("KinRepaidCard.draw")(function* (
     return yield* refuse(
       `${bank.key} was written or changed by an agent, so Kin can't take it as the bank's word that money went out. ${NOTHING_ASKED} A person can mark the expenses repaid in Money.`,
     );
-  const match = yield* repaidMatch(orgId, bank.recordId);
+  const match = yield* repaidMatch(orgId, bank.recordId, yield* Clock.currentTimeMillis);
   if (match === undefined)
     return yield* refuse(
       `${bank.key} isn't an unexplained debit that names one partner the company owes, so Kin offers no card for it. ${NOTHING_ASKED}`,
@@ -54,6 +55,8 @@ export const drawRepaid = Effect.fn("KinRepaidCard.draw")(function* (
     return yield* refuse(
       `A person set ${bank.key} back to ${stateLabel(def, bankStates(def).open)} after a card marked it repaid, so Kin offers no card for it.`,
     );
+  if (match.ahead)
+    return yield* refuse(`${bank.key} is dated after today, so Kin offers no card for it.`);
   if (match.marked !== undefined)
     return yield* refuse(
       `${bank.key} may be the repayment already marked by hand for ${match.partner.name} on ${match.marked}, so Kin offers no card for it. ${NOTHING_ASKED}`,
@@ -83,7 +86,8 @@ const planOf = (match: RepaidMatch, repays: NonNullable<RepaidMatch["repays"]>, 
 
 /** The same debit, partner, expenses and what stays owed as drawn: anything else marks nothing. */
 const asDrawn = (match: RepaidMatch | undefined, plan: RepaidPlan) => {
-  if (match === undefined || match.setBack || match.marked !== undefined) return false;
+  if (match === undefined || match.setBack || match.ahead || match.marked !== undefined)
+    return false;
   if (match.repays === undefined) return false;
   const now = planOf(match, match.repays, plan.draw);
   return (
@@ -178,7 +182,10 @@ export const markRepaid = Effect.fn("KinRepaidCard.mark")(function* (
   records: KinRecords["Service"],
 ) {
   const def = yield* findBankList(orgId);
-  if (def === undefined || !asDrawn(yield* repaidMatch(orgId, plan.recordId), plan)) {
+  if (
+    def === undefined ||
+    !asDrawn(yield* repaidMatch(orgId, plan.recordId, yield* Clock.currentTimeMillis), plan)
+  ) {
     yield* retell(orgId, repaidFactKey(plan.key));
     return undefined;
   }

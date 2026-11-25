@@ -4,6 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { homeCurrency } from "../companyProfile.ts";
 import { partnerPayees } from "../partnersOwed.ts";
+import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import type { ListDef } from "../registers.ts";
 import { bankStates, findBankList } from "./bankList.ts";
@@ -34,6 +35,8 @@ export type RepaidMatch = {
   readonly noLine: boolean;
   /** A card marked it repaid and a person set it back to Unexplained: the owner's no. */
   readonly setBack: boolean;
+  /** Dated after the day it was read on, in the owner's zone: nothing is repaid before it happens. */
+  readonly ahead: boolean;
 };
 export type RepaidItem = {
   readonly recordId: string;
@@ -47,14 +50,13 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
   orgId: KinOrgId,
   def: ListDef,
   debits: ReadonlyArray<OpenDebit>,
+  at: number,
 ) {
   if (debits.length === 0) return [];
   const sql = yield* SqlClient.SqlClient;
-  const partners = yield* partnerCandidates(
-    orgId,
-    yield* homeCurrency(orgId),
-    yield* ownerZone(orgId),
-  );
+  const zone = yield* ownerZone(orgId);
+  const today = dayIn(at, zone);
+  const partners = yield* partnerCandidates(orgId, yield* homeCurrency(orgId), zone);
   if (partners.length === 0) return [];
   const payees = yield* partnerPayees(orgId);
   const ownAccounts = (yield* sql<{ account: string }>`SELECT DISTINCT account
@@ -120,22 +122,27 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
           exact === undefined &&
           ((oldest !== undefined && debit.date < oldest) || plain.category === SALARIES),
         setBack: setBack.has(debit.recordId),
+        ahead: debit.date > today,
       },
     ];
   });
 });
 
-/** Every unexplained Bank transactions debit that names one partner the company owes. */
-export const repaidMatches = Effect.fn("KinDebitRepaid.matches")(function* (orgId: KinOrgId) {
+/** Every unexplained Bank transactions debit that names one partner the company owes, read at `at`. */
+export const repaidMatches = Effect.fn("KinDebitRepaid.matches")(function* (
+  orgId: KinOrgId,
+  at: number,
+) {
   const def = yield* findBankList(orgId);
   if (def === undefined) return [];
-  return yield* matchAll(orgId, def, yield* openEntries(orgId, def, "debit", undefined));
+  return yield* matchAll(orgId, def, yield* openEntries(orgId, def, "debit", undefined), at);
 });
 
 /** One debit as the matcher reads it now; undefined when it names no one partner Kin owes. */
 export const repaidMatch = Effect.fn("KinDebitRepaid.match")(function* (
   orgId: KinOrgId,
   bankRecordId: string,
+  at: number,
 ) {
   const def = yield* findBankList(orgId);
   if (def === undefined) return undefined;
@@ -143,6 +150,7 @@ export const repaidMatch = Effect.fn("KinDebitRepaid.match")(function* (
     orgId,
     def,
     yield* openEntries(orgId, def, "debit", { recordId: bankRecordId }),
+    at,
   );
   return match;
 });
