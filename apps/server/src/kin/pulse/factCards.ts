@@ -232,11 +232,10 @@ const nudgeBudget = (ctx: SenseContext, level: ReadonlySet<string>) => {
 type NudgeBudget = ReturnType<typeof nudgeBudget>;
 
 /**
- * Posts one card about a fact to `personId`, in their direct chat with `agentId` (else the team
- * agent, as holder notices go), opened if needed, its plans sealed in the same transaction. Posts
- * nothing while they are in quiet hours, away or outside their hours (the next pass posts it),
- * nor once a card for this fact and round was posted to them. Returns the card, or undefined.
- * @public the next card about a fact (a contract's notice day) posts through it.
+ * Posts one card about a fact to `personId` in their direct chat with `agentId` (else the team
+ * agent), plans sealed in its transaction: nothing outside their hours (a later pass posts it) or
+ * once asked for this fact and round. The next card about a fact posts through it.
+ * @public
  */
 export const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
   readonly ctx: SenseContext;
