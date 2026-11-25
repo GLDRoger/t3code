@@ -362,7 +362,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         ? yield* matchesOf(
             orgId,
             inMonth.map((row) => row.recordId),
-            withheldTax === undefined ? "Tax withheld on" : `${withheldTax} on`,
+            withheldTax === undefined ? "tax withheld on" : `${withheldTax} on`,
           )
         : new Map<string, string>();
     tables.set(

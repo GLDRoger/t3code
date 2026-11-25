@@ -513,7 +513,7 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
     const paidOn = input.paidOn;
     if ((input.amount === undefined && input.withheld === undefined) || paidOn === undefined)
       return yield* invalid(
-        "A payment needs amount (cash received), withheld (TDS) or both, and paidOn; or void to take one back.",
+        "A payment needs amount (cash received), withheld (tax the client withheld) or both, and paidOn; or void to take one back.",
       );
     const fallback = before.currency ?? (yield* homeCurrency(lead.orgId));
     const parsed = (text: string | undefined) => {

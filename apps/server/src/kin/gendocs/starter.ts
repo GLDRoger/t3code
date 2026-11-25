@@ -859,7 +859,7 @@ sheets:
       - { header: Currency, field: amount.currency }
   - name: Tax withheld
     input: tds
-    file: "tds-{month}.csv"
+    file: "tax-withheld-{month}.csv"
     columns:
       - { header: "Recorded on", field: paidOn }
       - { header: Invoice, field: invoice }
@@ -920,7 +920,7 @@ sheets:
       - { header: "Matched to", field: matched }
     leaveOutOfTotals: { field: stateKey, values: [dropped] }
     totalsBy: field_direction
-outputs: ["accounts-{month}.xlsx", "sales-register-{month}.csv", "receipts-{month}.csv", "tds-{month}.csv", "expenses-{month}.csv", "unpaid-expenses-{month}.csv", "owed-to-partners-{month}.csv", "bank-{month}.csv"]
+outputs: ["accounts-{month}.xlsx", "sales-register-{month}.csv", "receipts-{month}.csv", "tax-withheld-{month}.csv", "expenses-{month}.csv", "unpaid-expenses-{month}.csv", "owed-to-partners-{month}.csv", "bank-{month}.csv"]
 ---
 
 The month's pack for the accountant. Kin writes the rows as they are stored and adds the totals

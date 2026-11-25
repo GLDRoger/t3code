@@ -798,7 +798,7 @@ describe("recipe documents", () => {
           "November pack · accounts-2026-11.xlsx",
           "November pack · sales-register-2026-11.csv",
           "November pack · receipts-2026-11.csv",
-          "November pack · tds-2026-11.csv",
+          "November pack · tax-withheld-2026-11.csv",
           "November pack · expenses-2026-11.csv",
           "November pack · unpaid-expenses-2026-11.csv",
           "November pack · owed-to-partners-2026-11.csv",
