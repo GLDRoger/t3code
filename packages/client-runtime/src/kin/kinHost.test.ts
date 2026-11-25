@@ -350,8 +350,13 @@ describe("resolveKinHost", () => {
     expect(resolve({ [a]: noIdentity }, { savedHostId: a })).toMatchObject({ environmentId: a });
   });
 
-  it("ignores offline environments it has not saved", () => {
-    expect(resolve({ [a]: ready }, { offline: [a] })).toEqual({ _tag: "none" });
+  it("ignores offline environments it has not saved, saying Kin may be on one", () => {
+    expect(resolve({ [a]: ready }, { offline: [a] })).toEqual({ _tag: "none", unreachable: true });
+    // Signed out of the live computer: only ones that don't answer are left, not ones without Kin.
+    const down = { phase: "reconnecting", error: "Couldn't connect." } as const;
+    expect(resolve({}, { savedHostId: null, phases: { [a]: down, [b]: down, [c]: down } })).toEqual(
+      { _tag: "none", unreachable: true },
+    );
   });
 });
 

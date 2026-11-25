@@ -36,6 +36,7 @@ import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinDoc } from "./state/useKinDocs";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
+import { useKinSectionOn } from "./state/useKinShell";
 
 export type KinDocFileParams = {
   readonly environmentId: string;
@@ -120,7 +121,11 @@ function KinDocFileForm(
   const held = Option.getOrNull(
     AsyncResult.value(useAtomValue(kinWorkChoicesAtom({ environmentId, orgId }))),
   );
-  const clients = (held?.clients ?? []).filter((one) => one.active && one.kind === "client");
+  // With Clients off a doc is filed under the company or nothing, never a client.
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  const clients = clientsOn
+    ? (held?.clients ?? []).filter((one) => one.active && one.kind === "client")
+    : [];
   const [draft, setDraft] = useState<KinDocFileDraft>(() => kinDocFileDraft(doc));
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);

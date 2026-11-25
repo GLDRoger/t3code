@@ -32,6 +32,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 
 import * as ServerConfig from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -45,7 +46,13 @@ import * as Pulse from "../pulse/people.ts";
 import * as Goals from "./goals.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
-import { demandOfTick, makeMoneyStream, type MoneyDemand, subscribe } from "./moneyStream.ts";
+import {
+  demandOfTick,
+  demandOfTopics,
+  makeMoneyStream,
+  type MoneyDemand,
+  subscribe,
+} from "./moneyStream.ts";
 import * as Money from "./ownerMoney.ts";
 import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as Work from "./ownerWork.ts";
@@ -371,7 +378,9 @@ const moneyCase = (ops: ReadonlyArray<Op>) =>
               ? [new Set(demands.flatMap((one) => [...one]))]
               : demands;
           const events: Array<KinMoneyEvent> = [];
-          for (const demand of bursts) events.push(...(yield* screen.session.apply(demand)));
+          // Every screen hears each burst alike, so the owner's and co-owner's share its builds.
+          for (const [burst, demand] of bursts.entries())
+            events.push(...(yield* screen.session.apply(demand, `${step}:${burst}`)));
           for (const event of events) {
             if (event._tag !== "changed") return yield* Effect.die(new Error("Not a change."));
             for (const part of KIN_MONEY_PARTS)
@@ -400,16 +409,92 @@ const moneyCase = (ops: ReadonlyArray<Op>) =>
   );
 
 describe("Money's live stream", () => {
+  it("builds every part again when the company's sections change", () => {
+    assert.deepStrictEqual(
+      [...demandOfTopics({ shell: 1 }, { shell: 2 })].toSorted(),
+      [...KIN_MONEY_PARTS].toSorted(),
+    );
+  });
+
   it.effect("a co-owner made a member mid-stream is sent no more figures", () =>
     Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
       const session = yield* makeMoneyStream(as("cora"), { orgId, parts: KIN_MONEY_PARTS });
       yield* session.start();
+      // The owner's screen has just built every part for what both heard.
+      const owners = yield* makeMoneyStream(as("owner"), { orgId, parts: KIN_MONEY_PARTS });
+      yield* owners.start();
+      yield* owners.apply(new Set(KIN_MONEY_PARTS), "heard");
       yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'cora'`;
-      const after = yield* Effect.exit(session.apply(new Set(KIN_MONEY_PARTS)));
+      const after = yield* Effect.exit(session.apply(new Set(KIN_MONEY_PARTS), "heard"));
       // The stream ends; her client subscribes again and is refused, as a member is.
       assert.isTrue(after._tag === "Failure", "figures after she stopped being a co-owner");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("one change is built once for every owner-level screen, never for a member", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const pull = yield* Stream.toPull(records.changes(orgId));
+      yield* pull;
+      let built = 0;
+      const insideBuild = (span: Tracer.AnySpan | undefined): boolean =>
+        span?._tag === "Span" &&
+        (span.name === "KinMoneyStream.build" || insideBuild(Option.getOrUndefined(span.parent)));
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          const end = span.end.bind(span);
+          span.end = (endTime, exit) => {
+            end(endTime, exit);
+            if (typeof span.attributes.get("db.query.text") === "string" && insideBuild(span))
+              built += 1;
+          };
+          return span;
+        },
+      });
+      const statementsFor = Effect.fn("test.statementsFor")(function* (screens: number) {
+        const sessions = yield* Effect.forEach(
+          Array.from({ length: screens }, (_, index) => OWNER_LEVEL[index % 2]!).flatMap((who) =>
+            SCREENS.map((parts) => ({ who, parts })),
+          ),
+          ({ who, parts }) =>
+            Effect.gen(function* () {
+              const session = yield* makeMoneyStream(as(who), { orgId, parts });
+              yield* session.start();
+              return session;
+            }),
+        );
+        const [unpaid] = yield* sql<{ key: string; minor: number }>`SELECT key,
+            amount_minor AS minor FROM kin_records
+          WHERE org_id = ${orgId} AND register_id = 'invoices' AND state = 'waiting'
+          ORDER BY key LIMIT 1`;
+        yield* Money.recordPayment(as("owner"), {
+          orgId,
+          key: unpaid!.key as never,
+          amount: { minor: 1_000, currency: "INR" },
+          paidOn: day(0),
+          clientRequestId: `money-stream:shared:${screens}`,
+        });
+        const demand = new Set((yield* pull).flatMap((tick) => [...demandOfTick(tick)]));
+        built = 0;
+        for (const session of sessions)
+          yield* session.apply(demand, `shared:${screens}`).pipe(Effect.withTracer(tracer));
+        return built;
+      });
+      const one = yield* statementsFor(1);
+      assert.isAbove(one, 0);
+      assert.strictEqual(yield* statementsFor(4), one, "four screens, one build");
+
+      // A member's Money is their own read: never the stream, so never what owners share.
+      const mine = yield* Effect.exit(makeMoneyStream(as("mate"), { orgId, parts: ["summary"] }));
+      assert.isTrue(mine._tag === "Failure", "a member is refused the stream");
+      const owners = yield* Money.money(as("owner"), { orgId, upcomingRows: false });
+      const theirs = yield* Money.money(as("mate"), { orgId, upcomingRows: false });
+      assert.notDeepEqual(theirs.owed, owners.owed, "a member reads their own figures");
     }).pipe(Effect.provide(testLayer)),
   );
 

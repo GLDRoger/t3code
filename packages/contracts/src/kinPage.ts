@@ -103,6 +103,51 @@ function kinHasSections(body: string): boolean {
   return false;
 }
 
+/** A brief's Money section, by the names an agent may give it. */
+export const KIN_MONEY_SECTION = { title: "Money", match: /^(money|cash)$/i } as const;
+
+/**
+ * `body` with `lines` as items at the end of its section named by `section.match`, else as a new
+ * `## <title>` section after its Needs you, else before its first section: Kin's own lines in a
+ * page an agent wrote, wherever it put that section.
+ */
+export function kinPageWithLines(
+  body: string,
+  section: { readonly title: string; readonly match: RegExp },
+  lines: ReadonlyArray<string>,
+): string {
+  if (lines.length === 0) return body;
+  const items = lines.map((line) => `- ${line}`).join("\n");
+  const rows = body.split("\n");
+  const headings: Array<{ readonly index: number; readonly title: string }> = [];
+  let fenced = false;
+  for (const [index, line] of rows.entries()) {
+    if (FENCE.test(line)) fenced = !fenced;
+    const title = fenced ? null : headingOf(line);
+    if (title !== null) headings.push({ index, title });
+  }
+  const endOf = (at: number) => {
+    let end = headings[at + 1]?.index ?? rows.length;
+    while (end > headings[at]!.index + 1 && rows[end - 1]!.trim() === "") end -= 1;
+    return end;
+  };
+  const own = headings.findIndex(({ title }) => section.match.test(title.trim()));
+  if (own >= 0) {
+    const end = endOf(own);
+    return [...rows.slice(0, end), items, ...rows.slice(end)].join("\n");
+  }
+  const needs = headings.findIndex(({ title }) =>
+    /^(needs you|needs your attention|for you)$/i.test(title.trim()),
+  );
+  const added = `## ${section.title}\n\n${items}`;
+  if (needs >= 0) {
+    const end = endOf(needs);
+    return [...rows.slice(0, end), "", added, ...rows.slice(end)].join("\n");
+  }
+  const first = headings[0]?.index ?? rows.length;
+  return [...rows.slice(0, first), added, "", ...rows.slice(first)].join("\n").trim();
+}
+
 /** Text a brief's page can be as written: titled sections, not one label over a line. */
 export const kinIsPage = (body: string) =>
   kinHasSections(body) && kinPageSections(body).some(({ title }) => title !== null);

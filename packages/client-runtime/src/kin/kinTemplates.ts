@@ -1,8 +1,17 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
-import type { KinRecipe, KinRecordDetail } from "@t3tools/contracts";
+import type { KinDocDetail, KinRecipe, KinRecordDetail } from "@t3tools/contracts";
 
 import { formatKinTime } from "./kinScreenState.ts";
 import { kinWorkActorName, type KinWorkNames } from "./kinWork.ts";
+
+/** Web Settings: one row per template, each opening what can be done with it. */
+export const KIN_TEMPLATES_SETTINGS = {
+  detail: "How Kin makes your documents.",
+  open: (title: string) => `Open template: ${title}`,
+  done: "Done",
+  privateLabel: "Keep what it makes private",
+  usedFor: (list: string) => `Used for ${list.toLowerCase()}`,
+};
 
 export const KIN_TEMPLATES = {
   loadFailed: "Couldn't load your templates",
@@ -159,12 +168,34 @@ export function kinNotesVersions(
   });
 }
 
-/** The doc menu's way to raise or lower its private label; none while its client's label holds it. */
+/**
+ * The doc menu's way to raise or lower its private label; none while its client's label holds it.
+ * A teammate's draft is named: raising takes it from them, lowering gives it back.
+ */
 export function kinDocLabelAction(doc: {
   readonly sensitive: boolean;
   readonly sensitiveInherited?: true | undefined;
+  readonly kindLabel?: KinDocDetail["kindLabel"];
+  readonly draftOf?: KinDocDetail["draftOf"];
 }) {
   if (doc.sensitiveInherited === true) return null;
+  const reader = doc.kindLabel?.reader;
+  // The teammate it is drafted for: while they read it, under its kind's label or none, or not now.
+  const keeps = reader !== undefined && reader.you !== true ? reader.name : doc.draftOf?.name;
+  if (keeps !== undefined && (!doc.sensitive || reader !== undefined))
+    return {
+      sensitive: true,
+      label: "Keep to owners only",
+      title: "Keep this doc to owners only?",
+      detail: `${keeps} won't be able to read it any more, and will see that you kept it to owners only. Only owners will read it, and agents only in your own chats.`,
+    };
+  if (keeps !== undefined)
+    return {
+      sensitive: false,
+      label: `Let ${keeps} read it again`,
+      title: `Let ${keeps} read this doc again?`,
+      detail: `${keeps} will read it again, and it won't be private any more. Agents can't do this; only you can.`,
+    };
   return doc.sensitive
     ? {
         sensitive: false,
@@ -177,7 +208,7 @@ export function kinDocLabelAction(doc: {
         sensitive: true,
         label: "Mark as private",
         title: "Mark this doc as private?",
-        detail: "Only you will be able to read it, and agents only in your own chats.",
+        detail: "Only owners will be able to read it, and agents only in your own chats.",
       };
 }
 

@@ -3,6 +3,8 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   KIN_CAPABILITIES,
   KIN_CAPABILITY_WORDS,
+  KinAgentId,
+  KinOrgId,
   kinProviderFacts,
   type KinProviderLimit,
   type ThreadId,
@@ -12,11 +14,16 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../../../config.ts";
 import { kinSecretVariables } from "../../claudeConfinement.testkit.ts";
 import { KinServer, type Services as KinServices } from "../../KinServer.ts";
+import * as Sqlite from "../../../persistence/Sqlite.ts";
+import * as KinPersistence from "../../persistence/KinPersistence.ts";
+import { fullSessionRefusal } from "../AgentSession.ts";
 import { SESSION_REFUSAL } from "../Audience.ts";
+import { approvedWakeup, ownerOnlyWakeup } from "../Audience.testkit.ts";
 import { KinAgentSessionPolicy } from "../sessionPolicy.ts";
 import type { Answer, ProviderFake } from "./conformance.testkit.ts";
 import { KIN_PROVIDERS } from "./providers.ts";
@@ -37,14 +44,17 @@ const host = {
 };
 
 /** Kin's policy as `AgentSession` builds it, with the turn's state set by each case. */
-const kin = (refusal: (thread: ThreadId) => string | undefined) =>
+const kin = (
+  refusal: (thread: ThreadId) => string | undefined,
+  policy?: (thread: ThreadId) => Effect.Effect<string | undefined>,
+) =>
   Layer.succeed(KinServer, {
     taskCardUpdater: Layer.empty,
     services: Option.some(
       Context.make(
         KinAgentSessionPolicy,
         KinAgentSessionPolicy.of({
-          refusal: (thread) => Effect.sync(() => refusal(thread)),
+          refusal: (thread) => policy?.(thread) ?? Effect.sync(() => refusal(thread)),
           webSearch: (thread) => Effect.sync(() => refusal(thread)),
           delegated: (thread) => Effect.succeed(thread === "task-from-lead"),
           toolDirectories: [PINNED],
@@ -61,6 +71,8 @@ const open = (
   options: {
     readonly cwd?: (stateDir: string) => string;
     readonly refusal?: (thread: ThreadId) => string | undefined;
+    /** Kin's own check, run on a database, in place of `refusal`. */
+    readonly policy?: (thread: ThreadId) => Effect.Effect<string | undefined>;
     readonly enabled?: boolean;
     readonly model?: string;
   } = {},
@@ -77,7 +89,7 @@ const open = (
   }).pipe(
     Effect.provide(
       Layer.merge(
-        kin(options.refusal ?? (() => undefined)),
+        kin(options.refusal ?? (() => undefined), options.policy),
         ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: options.enabled ?? true })),
       ),
     ),
@@ -149,6 +161,40 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
   );
 
   it.effect(
+    "the owner's chat on the turn his Approve of a teammate's draft queued: Kin's own check refuses a shell step, and a read of its memory, with the line saying why",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const orgId = KinOrgId.make("org-approved");
+        const agentId = KinAgentId.make("tech");
+        const wakeupId = "wake-approved";
+        yield* ownerOnlyWakeup({ orgId, agentId, wakeupId });
+        yield* sql`UPDATE kin_wakeups SET status = 'running', thread_id = 'kin:tech',
+          audience = 'owner_only' WHERE wakeup_id = ${wakeupId}`;
+        const policy = (thread: ThreadId) =>
+          fullSessionRefusal(thread).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        // The same agent's ordinary owner-only turn has its shell.
+        const plain = yield* open(fake, "kin:tech", { policy });
+        assert.strictEqual(yield* asked(plain.askShell), "allowed");
+        yield* approvedWakeup({ orgId, agentId, wakeupId });
+        const approved = yield* open(fake, "kin:tech", { policy });
+        assert.deepStrictEqual(yield* asked(approved.askShell), {
+          refused: SESSION_REFUSAL.approved,
+        });
+        assert.deepStrictEqual(yield* asked(approved.askRead), {
+          refused: SESSION_REFUSAL.approved,
+        });
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            layer(`kin-conformance-approved-${driver}-`),
+            KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+          ),
+        ),
+      ),
+  );
+
+  it.effect(
     "a teammate's or group chat: Kin's tools only, no shell or files, web search only where the provider runs it, none of the user's own config, and any ask refused",
     () =>
       Effect.gen(function* () {
@@ -210,8 +256,8 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
             const session = yield* open(fake, thread, { model });
             assert.isTrue(session.kinToolsUpFront, `${model} ${thread}`);
             assert.isTrue(
-              session.heldBack.length === 0 || session.deferredFindable,
-              `${model} ${thread} holds back ${session.heldBack.join(", ")}`,
+              !session.holdsBack || session.deferredFindable,
+              `${model} ${thread} holds tools back that it can't find`,
             );
           }
       }).pipe(Effect.provide(layer(`kin-conformance-lookup-${driver}-`))),

@@ -1,13 +1,21 @@
 import type { ThreadId } from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous diagnostic hash; Digest would add a service.
+import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Types from "effect/Types";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { parseBearerToken } from "../../auth/EnvironmentAuth.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
-import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
+import { McpToolPolicy } from "./toolPolicy.ts";
+import {
+  type McpThreadInvocationScope,
+  type McpThreadCaller,
+} from "../../mcp/McpInvocationContext.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as AgentSession from "../lead/AgentSession.ts";
@@ -30,18 +38,58 @@ export class KinAgentSessions extends Context.Service<
 >()("t3/kin/mcp/layer/KinAgentSessions") {}
 
 const registration = McpHttpServer.toolkitRegistration(KinChatToolkit, handlers);
+
+const fromJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+const toJson = Schema.encodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
+/**
+ * A sha256 of each `tools/list` result a lead's session was served: two sessions' lines with the
+ * same hash carried the same tool block, which the prompt cache needs. A streamed reply isn't read.
+ */
+const logToolList = Effect.fnUntraced(function* (
+  request: HttpServerRequest.HttpServerRequest,
+  response: HttpServerResponse.HttpServerResponse,
+  thread: McpThreadCaller | undefined,
+) {
+  if (request.method !== "POST" || response.body._tag !== "Uint8Array") return;
+  const message = yield* Effect.orElseSucceed(request.json, () => undefined);
+  if (!Predicate.isReadonlyObject(message) || message.method !== "tools/list") return;
+  // An SSE frame per line of the JSON-RPC reply, which is one line.
+  const text = new TextDecoder()
+    .decode(response.body.body)
+    .trim()
+    .replace(/^data: /, "");
+  const reply = fromJson(text);
+  if (Option.isNone(reply) || !Predicate.isReadonlyObject(reply.value)) return;
+  const result = reply.value.result;
+  if (!Predicate.isReadonlyObject(result) || !Array.isArray(result.tools)) return;
+  const encoded = toJson(result);
+  if (Option.isNone(encoded)) return;
+  const served = encoded.value;
+  yield* Effect.logInfo("Kin endpoint tool list.", {
+    threadId: thread?.threadId,
+    providerSessionId: thread?.providerSessionId,
+    toolListSha256: NodeCrypto.createHash("sha256").update(served).digest("hex"),
+    toolListBytes: new TextEncoder().encode(served).length,
+    tools: result.tools.length,
+  });
+});
+class KinBearerScope extends Context.Service<KinBearerScope, McpThreadInvocationScope>()(
+  "t3/kin/mcp/layer/KinBearerScope",
+) {}
+
 type Auth = (
   effect: Effect.Effect<
     HttpServerResponse.HttpServerResponse,
     Types.unhandled,
-    McpInvocationContext | KinServer | KinIdentity
+    KinBearerScope | KinServer | KinIdentity
   >,
 ) => Effect.Effect<
   HttpServerResponse.HttpServerResponse,
   Types.unhandled,
   HttpServerRequest.HttpServerRequest
 >;
-const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer | KinIdentity }>()(
+const auth = HttpRouter.middleware<{ provides: KinBearerScope | KinServer | KinIdentity }>()(
   Effect.gen(function* () {
     const registry = yield* KinAgentSessions;
     const kin = yield* KinServer;
@@ -50,7 +98,7 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
       effect: Effect.Effect<
         HttpServerResponse.HttpServerResponse,
         Types.unhandled,
-        McpInvocationContext | KinServer | KinIdentity
+        KinBearerScope | KinServer | KinIdentity
       >,
     ) {
       const request = yield* HttpServerRequest.HttpServerRequest;
@@ -60,11 +108,15 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
       const identity = Context.get(kin.services.value, KinIdentity);
       const admitted = yield* identity.resolveAgent(scope).pipe(Effect.option);
       if (Option.isNone(admitted)) return HttpServerResponse.empty({ status: 403 });
-      return yield* effect.pipe(
-        Effect.provideService(McpInvocationContext, scope),
+      const response = yield* effect.pipe(
+        Effect.provideService(KinBearerScope, scope),
         Effect.provideService(KinServer, kin),
         Effect.provideService(KinIdentity, identity),
       );
+      yield* logToolList(request, response, scope.thread).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("Kin tool list log failed", { cause })),
+      );
+      return response;
     }) satisfies Auth;
   }),
 ).layer;
@@ -79,8 +131,13 @@ export const endpoint = <A, E, R>(registrations: Layer.Layer<A, E, R>) =>
         McpSessionRegistry.McpSessionRegistry,
         Effect.gen(function* () {
           const registry = yield* McpSessionRegistry.McpSessionRegistry;
-          const agents = yield* KinAgentSessions;
-          return { ...registry, resolve: agents.resolveAgent };
+          return {
+            ...registry,
+            // Kin auth already checked the bearer and agent before the transport runs.
+            resolve: Effect.fn("KinMcp.resolveAdmittedBearer")(() =>
+              Effect.serviceOption(KinBearerScope).pipe(Effect.map(Option.getOrUndefined)),
+            ),
+          };
         }),
       ),
     ),
@@ -97,13 +154,11 @@ export const transport = (base: typeof McpHttpServer.layer) =>
       if (Option.isNone(kin.services)) return base;
       // T3's own tools are served here too, shown to a lead only as `AgentSession` allows:
       // never scheduling or thread-launch tools, which would start work outside Kin's chats.
+      const host = yield* KinToolGate.helperModelHost;
       return Layer.merge(
         base.pipe(
           Layer.provide(
-            Layer.succeed(
-              McpHttpServer.McpToolPolicy,
-              KinToolGate.workerPolicy(kin.services.value),
-            ),
+            Layer.succeed(McpToolPolicy, KinToolGate.workerPolicy(kin.services.value, host)),
           ),
         ),
         endpoint(
@@ -113,7 +168,7 @@ export const transport = (base: typeof McpHttpServer.layer) =>
             KinConnectionsMcp.registration.pipe(
               Layer.provide(Layer.succeedContext(kin.services.value)),
             ),
-            KinLead.layerMcp.pipe(
+            KinLead.layerRuntime.pipe(
               // Agents' turns run on Kin's clock; T3's orchestration keeps the one its worker reads.
               Layer.provide(
                 Layer.mergeAll(

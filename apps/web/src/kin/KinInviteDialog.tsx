@@ -1,17 +1,21 @@
 import {
+  KIN_NEW_TEAMMATE_SEES,
+  KIN_PLACE_SWITCHES,
   KIN_TEAM_COPY,
   KIN_INVITE_PHONE_NOTE,
   KIN_TEAMMATE_NAME_MAX,
   KIN_TEAM_ADD_COPY,
   kinInviteLinkCopy,
+  kinInviteTyped,
   kinRemovedNamesake,
   kinShareLink,
   kinTeammateNameCheck,
+  kinTeammateNameMatch,
   type KinMadeInvite,
   type KinTeamActions,
   type KinTeamList,
 } from "@t3tools/client-runtime/kin/kinTeam";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, KinPersonPlaceSwitches } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { CheckIcon, CopyIcon, ShareIcon } from "lucide-react";
 import { useId, useState } from "react";
@@ -29,9 +33,11 @@ import {
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { usePreparedConnection } from "../state/session";
+import { useKinFormDiscard } from "./KinFormDiscard";
 import { useKinPublicUrl } from "./useKinOwnerLevel";
 
 /** What the dialog is showing: the name form, or a link the host just made. */
@@ -52,11 +58,14 @@ export function KinInviteDialog(props: {
   readonly onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  // Only the name form asks before closing; once the link is made there is nothing left to lose.
+  const [typed, setTyped] = useState(false);
+  const { close, ask } = useKinFormDiscard(props.state.stage === "name" && typed, props.onClose);
   return (
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open && !busy) props.onClose();
+        if (!open && !busy) close();
       }}
     >
       <DialogPopup className="max-w-lg">
@@ -67,7 +76,8 @@ export function KinInviteDialog(props: {
             actions={props.actions}
             list={props.list}
             onMade={props.onMade}
-            onClose={props.onClose}
+            onTyped={setTyped}
+            onClose={close}
           />
         ) : (
           <InviteLink
@@ -76,6 +86,7 @@ export function KinInviteDialog(props: {
             onClose={props.onClose}
           />
         )}
+        {ask}
       </DialogPopup>
     </Dialog>
   );
@@ -87,6 +98,8 @@ function NameForm(props: {
   readonly actions: KinTeamActions;
   readonly list: KinTeamList;
   readonly onMade: (invite: KinMadeInvite) => void;
+  /** Whether what is typed would be lost on closing (`kinInviteTyped`), told as it changes. */
+  readonly onTyped: (typed: boolean) => void;
   readonly onClose: () => void;
 }) {
   const { busy } = props;
@@ -97,8 +110,10 @@ function NameForm(props: {
     readonly text: string;
     readonly person: ReturnType<typeof kinRemovedNamesake>;
   } | null>(null);
+  const [sees, setSees] = useState<KinPersonPlaceSwitches>(KIN_NEW_TEAMMATE_SEES);
   const nameId = useId();
   const checked = kinTeammateNameCheck(name);
+  const match = kinTeammateNameMatch(props.list, name);
 
   const make = async (
     person: NonNullable<ReturnType<typeof kinRemovedNamesake>> | null,
@@ -112,6 +127,8 @@ function NameForm(props: {
       displayName: person?.displayName ?? checked.name,
       personId: person?.personId ?? null,
       ...(newPerson === true ? { newPerson } : {}),
+      // Someone coming back gets back what they had; only someone new starts with these.
+      ...(person === null ? { sees } : {}),
       replaces:
         person === null
           ? null
@@ -148,10 +165,45 @@ function NameForm(props: {
               maxLength={KIN_TEAMMATE_NAME_MAX}
               autoComplete="off"
               autoFocus
-              onChange={(event) => setName(event.target.value)}
+              onChange={(event) => {
+                setName(event.target.value);
+                props.onTyped(kinInviteTyped({ name: event.target.value, sees }));
+              }}
             />
             <p className="text-xs text-muted-foreground">{KIN_TEAM_ADD_COPY.nameHint}</p>
           </div>
+          {match === null ? null : (
+            <Alert variant="warning">
+              <AlertDescription>{match}</AlertDescription>
+            </Alert>
+          )}
+          <fieldset className="flex flex-col gap-3">
+            <legend className="mb-2 text-sm font-medium text-foreground">
+              {KIN_TEAM_COPY.canSee}
+            </legend>
+            {KIN_PLACE_SWITCHES.map((entry) => {
+              const id = `${nameId}-${entry.place}`;
+              return (
+                <div key={entry.place} className="flex items-start justify-between gap-3">
+                  <label htmlFor={id} className="flex min-w-0 flex-col gap-0.5">
+                    <span className="text-sm text-foreground">{entry.label}</span>
+                    <span className="text-xs text-muted-foreground">{entry.detail}</span>
+                  </label>
+                  <Switch
+                    id={id}
+                    checked={sees[entry.place]}
+                    disabled={busy}
+                    onCheckedChange={(on) => {
+                      const next = { ...sees, [entry.place]: on };
+                      setSees(next);
+                      props.onTyped(kinInviteTyped({ name, sees: next }));
+                    }}
+                  />
+                </div>
+              );
+            })}
+            <p className="text-xs text-muted-foreground">{KIN_TEAM_ADD_COPY.seesFooter}</p>
+          </fieldset>
           {problem === null ? null : (
             <Alert variant="error">
               <AlertDescription>{problem}</AlertDescription>

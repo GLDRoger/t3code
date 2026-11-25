@@ -107,7 +107,7 @@ export const verifySample =
   (change) =>
     renderSample(renderer, orgId, logo, change).pipe(
       Effect.map((rendered) =>
-        typeof rendered === "string" ? `its sample didn't render: ${rendered}` : undefined,
+        typeof rendered === "string" ? `its sample didn't render because ${rendered}` : undefined,
       ),
     );
 

@@ -17,17 +17,21 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as HttpClient from "effect/http/HttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 
 import { chatReaders, keysIn } from "../chat/messageLinks.ts";
 import { readStoredFile } from "../gendocs/brand.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
-import type { TextClock } from "../work/companyProfile.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { registerSectionColumns, sectionOfRegister } from "../shell/sections.ts";
+import { readProfile, type TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { clientRecipients } from "../work/billingContact.ts";
 import { formatMoney } from "../work/money.ts";
 import { listDef, stateLabel } from "../work/registers.ts";
 import { seenBy } from "../work/teamView.ts";
 import { logTouch } from "../work/touches.ts";
+import { MAIL_BODY_MAX } from "../textLimits.ts";
 import { KinGatewayError } from "./McpGateway.ts";
 import { MAIL_TOOL, type Mailbox, type MailProvider } from "./MailProvider.ts";
 
@@ -48,6 +52,8 @@ const Attachment = Schema.Struct({
   entryRecordId: Schema.NullOr(Schema.String),
   /** The entry's revision when the card was drawn: a Confirm approves that, not a later edit. */
   entryRev: Schema.optionalKey(Schema.Number),
+  /** An invoice's, while the company has no bank account or UPI id to be paid to. */
+  bankMissing: Schema.optionalKey(Schema.Literal(true)),
 });
 export type Attachment = typeof Attachment.Type;
 const From = Schema.Struct({ address: Schema.String, name: Schema.NullOr(Schema.String) });
@@ -76,6 +82,8 @@ export const Prepared = Schema.Union([
   }),
   Schema.TaggedStruct("event", {
     calendarId: Schema.String,
+    /** The calendar's name, read when the card was drawn; missing on asks from before. */
+    calendarName: Schema.optionalKey(Schema.NullOr(Schema.String)),
     eventId: Schema.NullOr(Schema.String),
     /** A changed event as it stood when the card was drawn; missing on asks from before. */
     current: Schema.optionalKey(
@@ -114,7 +122,7 @@ const refused = (message: string) => new KinGatewayError({ reason: "protocol", m
 
 const MAX_RECIPIENTS = 10;
 const MAX_INVITEES = 50;
-const MAX_BODY = 20_000;
+const MAX_BODY = MAIL_BODY_MAX;
 const MAX_ATTACHMENTS = 5;
 // Providers take the message inline as base64; a few invoices fit well inside their limits.
 const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
@@ -127,6 +135,8 @@ const strings = (value: unknown) =>
   Array.isArray(value)
     ? value.filter((one) => typeof one === "string").map((one) => one.trim())
     : [];
+const recipients = (value: unknown) =>
+  typeof value === "string" && value.trim() !== "" ? strings([value]) : strings(value);
 const optional = (args: Readonly<Record<string, unknown>>, name: string) => {
   const value = args[name];
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
@@ -206,6 +216,7 @@ export const attachmentOf = Effect.fn("KinSending.attachment")(function* (
         ]
           .filter((part) => part !== undefined)
           .join(" · ");
+  const bank = entry?.registerId === "invoices" ? (yield* readProfile(orgId)).bank : undefined;
   return {
     key: version.key,
     recordId: docId,
@@ -218,6 +229,9 @@ export const attachmentOf = Effect.fn("KinSending.attachment")(function* (
     label,
     entryRecordId: version.entryId,
     ...(entry === undefined ? {} : { entryRev: entry.rev }),
+    ...(bank !== undefined && bank.accountNumber === null && bank.upi === null
+      ? { bankMissing: true as const }
+      : {}),
   } satisfies Attachment;
 });
 
@@ -249,11 +263,23 @@ export const namedTask = Effect.fn("KinSending.namedTask")(function* (
       AND m.chat_id = ${turn.chatId} AND m.author_kind = 'human' AND m.status = 'posted'
     ORDER BY m.seq`;
   const keys = [...new Set([...asked.map((one) => one.body), ...words].flatMap(keysIn))];
-  if (keys.length === 0) return null;
+  // A follow-up woken for one person in this chat (`draftWake.ts`) is its own task's.
+  const woken =
+    keys.length > 0
+      ? []
+      : (yield* sql<{ recordId: string }>`SELECT DISTINCT f.subject_record_id AS "recordId"
+          FROM kin_events e, json_each(e.json, '$.factKeys') k
+          JOIN kin_pulse_facts f ON f.org_id = e.org_id AND f.fact_key = k.value
+          WHERE e.org_id = ${turn.orgId} AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'pulse'
+            AND json_extract(e.json, '$.chatId') = ${turn.chatId}
+            AND f.subject_record_id IS NOT NULL
+          ORDER BY f.subject_record_id`).map((row) => row.recordId);
+  if (keys.length === 0 && woken.length === 0) return null;
   const viewer = yield* chatReaders(turn.orgId, turn.chatId);
   const tasks = yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId"
     FROM kin_records r
-    WHERE r.org_id = ${turn.orgId} AND r.register_id = 'work' AND r.key IN ${sql.in(keys)}
+    WHERE r.org_id = ${turn.orgId} AND r.register_id = 'work'
+      AND ${keys.length > 0 ? sql`r.key IN ${sql.in(keys)}` : sql`r.record_id IN ${sql.in(woken)}`}
       AND r.state NOT IN ('done', 'dropped') AND ${seenBy(sql, viewer)}
     ORDER BY r.record_id LIMIT 2`;
   return tasks.length === 1 ? tasks[0]!.recordId : null;
@@ -275,6 +301,33 @@ export const attachmentsCurrent = Effect.fn("KinSending.current")(function* (
       return false;
   }
   return true;
+});
+
+export const subjectOff = Effect.fn("KinSending.subjectOff")(function* (
+  orgId: KinOrgId,
+  prepared: Prepared | undefined,
+) {
+  if (prepared?._tag !== "email") return null;
+  const ids = [
+    ...new Set(
+      prepared.attachments.flatMap((file) =>
+        file.entryRecordId === null ? [file.recordId] : [file.recordId, file.entryRecordId],
+      ),
+    ),
+  ];
+  if (ids.length === 0) return null;
+  const sql = yield* SqlClient.SqlClient;
+  const entries = yield* sql<Parameters<typeof sectionOfRegister>[0]>`SELECT DISTINCT
+    ${registerSectionColumns(sql)} FROM kin_records r
+    LEFT JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
+    WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(ids)} ORDER BY id`;
+  const shell = yield* KinShell.get(orgId);
+  for (const entry of entries) {
+    const section = sectionOfRegister(entry);
+    if (section !== null && !KinShell.sectionOn(shell, section))
+      return `${KinShell.sectionName(shell, section)} is turned off for this company, so this wasn't sent. Turn it on in Settings › Sections and confirm again.`;
+  }
+  return null;
 });
 
 /**
@@ -435,9 +488,16 @@ const prepareOne = Effect.fn("KinSending.prepareOne")(function* (input: {
                   : Effect.succeed({ title: read.summary, start: read.start, end: read.end });
               }),
             );
+    const calendarName = yield* input.token.pipe(
+      Effect.flatMap((token) =>
+        input.provider.calendarName(input.http, token, mailbox, calendarId),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
     return {
       _tag: "event",
       calendarId,
+      calendarName,
       eventId,
       current,
       title: title.slice(0, 300),
@@ -452,7 +512,7 @@ const prepareOne = Effect.fn("KinSending.prepareOne")(function* (input: {
   const body = typeof args.body === "string" ? args.body : "";
   if (body.trim() === "") return yield* refused(`${input.tool} needs body.`);
   if (body.length > MAX_BODY) return yield* refused(`The body is at most ${MAX_BODY} characters.`);
-  const cc = strings(args.cc);
+  const cc = recipients(args.cc);
   const badCc = checkAddresses(cc, "cc", MAX_RECIPIENTS);
   if (badCc !== undefined) return yield* badCc;
   const attachments = yield* attachmentsOf(input.orgId, strings(args.attachments));
@@ -488,7 +548,7 @@ const prepareOne = Effect.fn("KinSending.prepareOne")(function* (input: {
   }
   if (input.tool !== MAIL_TOOL.send)
     return yield* refused(`${input.provider.name} has no tool named ${input.tool}.`);
-  const to = strings(args.to);
+  const to = recipients(args.to);
   if (to.length === 0) return yield* refused(`${MAIL_TOOL.send} needs to.`);
   const badTo = checkAddresses(to, "to", MAX_RECIPIENTS);
   if (badTo !== undefined) return yield* badTo;
@@ -630,11 +690,14 @@ const whenOf = (
   return `${day(start)}, ${time(start)} to ${ending}${shownZone === null ? "" : ` (${shownZone})`}`;
 };
 const plainWhen = (...args: Parameters<typeof whenOf>) => `When: ${whenOf(...args)}`;
-/** Which calendar, when not the main one, and the event a change replaces as it stands now. */
 const eventTarget = (prepared: Extract<Prepared, { _tag: "event" }>, clock: TextClock) => {
   const current = prepared.current ?? null;
   return [
-    ...(prepared.calendarId === "primary" ? [] : [`In calendar: ${prepared.calendarId}`]),
+    prepared.calendarName?.trim()
+      ? `In calendar: ${prepared.calendarName.trim()}`
+      : prepared.calendarId === "primary"
+        ? "In your calendar"
+        : `In calendar: ${prepared.calendarId}`,
     ...(prepared.eventId === null || current === null
       ? []
       : [
@@ -713,6 +776,7 @@ const cardOf = (
           name: one.name,
           label: one.label,
           bytes: one.bytes,
+          ...(one.bankMissing === true ? { bankMissing: true as const } : {}),
         })),
         outcome: null,
       },
@@ -848,27 +912,30 @@ const filesOf = Effect.fn("KinSending.files")(function* (attachments: ReadonlyAr
 });
 
 /**
- * Sends exactly what was prepared, once, through the account's provider. `starting` runs right
- * before the request leaves, after every file is read and checked.
+ * Sends exactly what was prepared, once, through the account's provider. `handOff` wraps the
+ * request as it leaves, after every file is read and checked: the caller's last check runs there.
  */
 export const sendMail = Effect.fn("KinSending.sendMail")(function* (
   provider: MailProvider,
   http: HttpClient.HttpClient,
   token: string,
   prepared: Exclude<Prepared, { _tag: "call" }>,
-  starting: Effect.Effect<void>,
+  handOff: <A, E>(
+    request: Effect.Effect<A, E>,
+  ) => Effect.Effect<A, E | KinChatError | SqlError.SqlError>,
 ) {
-  if (prepared._tag === "event")
-    return yield* starting.pipe(Effect.andThen(provider.saveEvent(http, token, prepared)));
+  if (prepared._tag === "event") return yield* handOff(provider.saveEvent(http, token, prepared));
   const raw = mime(prepared, yield* filesOf(prepared.attachments));
-  yield* starting;
-  return yield* provider.sendMessage(http, token, { raw, threadId: prepared.threadId });
+  return yield* handOff(provider.sendMessage(http, token, { raw, threadId: prepared.threadId }));
 });
 
 /**
  * A sent mail is a contact with each client whose contact it went to: one email touch per client,
- * by the owner who confirmed it, with the subject as its note. A retry finds the same touch.
+ * by the owner who confirmed it, with the subject as its note. A retry finds the same touch. From
+ * a person's own mailbox (`own`) the touch is theirs and bare: that a mail went, and its task.
  */
+/** The note a send from a person's own mailbox leaves on its client: no subject, no address. */
+export const OWN_MAIL_TOUCH = "Mail sent";
 export const sentToClient = Effect.fn("KinSending.sentToClient")(function* (sent: {
   readonly orgId: KinOrgId;
   readonly askId: string;
@@ -877,6 +944,7 @@ export const sentToClient = Effect.fn("KinSending.sentToClient")(function* (sent
   readonly to: ReadonlyArray<string>;
   readonly subject: string;
   readonly now: number;
+  readonly own?: { readonly personId: string; readonly task: string | null };
 }) {
   const sql = yield* SqlClient.SqlClient;
   const addresses = [...new Set(sent.to.map((one) => one.toLowerCase()))];
@@ -885,16 +953,26 @@ export const sentToClient = Effect.fn("KinSending.sentToClient")(function* (sent
     FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       AND c.register_id = 'clients'
     WHERE r.org_id = ${sent.orgId} AND r.register_id = 'contacts'
-      AND lower(json_extract(r.fields_json, '$.email')) IN ${sql.in(addresses)}
+      AND (lower(json_extract(r.fields_json, '$.email')) IN ${sql.in(addresses)}
+        OR EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.emails') e
+          WHERE lower(e.value) IN ${sql.in(addresses)}))
     ORDER BY c.record_id`;
   for (const { partyId } of clients)
     yield* logTouch(sent.orgId, {
       partyId,
       kind: "email",
       at: sent.now,
-      note: sent.subject.slice(0, 300),
-      personId: sent.personId,
-      by: { kind: "agent", id: sent.agentId },
+      note:
+        sent.own === undefined
+          ? sent.subject.slice(0, 300)
+          : sent.own.task === null
+            ? OWN_MAIL_TOUCH
+            : `${OWN_MAIL_TOUCH} (${sent.own.task})`,
+      personId: sent.own?.personId ?? sent.personId,
+      by:
+        sent.own === undefined
+          ? { kind: "agent", id: sent.agentId }
+          : { kind: "person", id: sent.own.personId },
       originKey: `mail:${sent.askId}:${partyId}`,
       now: sent.now,
     });
@@ -987,12 +1065,14 @@ export type SentMail = typeof SentMailView.Type;
 
 /**
  * Mail that went out on a Confirm, newest first: all of it, or only mail carrying one of
- * `recordIds` (an invoice, quote or receipt) or sent or copied to one of `addresses`.
+ * `recordIds` (an invoice, quote or receipt) or sent or copied to one of `addresses`. Never mail
+ * from a person's own mailbox: the company keeps only its bare touch (`sentToClient`).
  */
 export const sentMail = Effect.fn("KinSending.sentMail")(function* (input: {
   readonly orgId: KinOrgId;
   readonly recordIds?: ReadonlyArray<string> | undefined;
   readonly addresses?: ReadonlyArray<string> | undefined;
+  readonly omitLists?: ReadonlyArray<string>;
   readonly limit?: number | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
@@ -1017,7 +1097,20 @@ export const sentMail = Effect.fn("KinSending.sentMail")(function* (input: {
     LEFT JOIN kin_people p ON p.org_id = k.org_id AND p.person_id = k.decided_by
     LEFT JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
     WHERE k.org_id = ${input.orgId} AND k.state = 'sent' AND k.done_at IS NOT NULL
+      AND c.person_id IS NULL
       AND k.tool_name IN ${sql.in([MAIL_TOOL.send, MAIL_TOOL.reply])}
+      ${
+        input.omitLists?.length
+          ? sql`AND NOT EXISTS (
+        SELECT 1 FROM kin_records r WHERE r.org_id = k.org_id
+          AND r.register_id IN ${sql.in(input.omitLists)}
+          AND (r.record_id = k.entry_record_id OR EXISTS (
+            SELECT 1 FROM json_each(k.payload_json, '$.attachments') a
+            WHERE r.record_id IN (json_extract(a.value, '$.recordId'), json_extract(a.value, '$.entryRecordId'))
+          ))
+      )`
+          : sql``
+      }
     ORDER BY k.done_at DESC, k.rowid DESC
     LIMIT ${SENT_SCAN}`;
   const sent: Array<SentMail> = [];

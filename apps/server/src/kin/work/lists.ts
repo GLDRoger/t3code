@@ -1,5 +1,6 @@
 import {
   KIN_DOC_KINDS,
+  KIN_LISTS_NEVER_TEAM,
   KIN_SENSITIVE_FIELDS,
   KinChatError,
   KinFieldValue,
@@ -10,6 +11,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { withArticle } from "../article.ts";
 import { formatMoney } from "./money.ts";
 
 /**
@@ -32,6 +34,15 @@ type List = {
   readonly fields: ReadonlyArray<string>;
 };
 
+export const WATCHED_NUMBER_FIELDS: ReadonlyArray<string> = [
+  "direction",
+  "above",
+  "below",
+  "every",
+  "spec",
+  "source",
+];
+
 export const LISTS: Record<ListName, List> = {
   work: {
     name: "Work",
@@ -40,8 +51,9 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "doing", "waiting", "done", "dropped"],
     categories: ["task", "issue", "obligation", "meeting"],
     // The project spine: a milestone's key, S/M/L, why its holder was picked, the doc section it
-    // came from with that section's hash then, a meeting's people and place, and the holder not
-    // told yet that it is theirs.
+    // came from with that section's hash then, a meeting's people and place, the holder not
+    // told yet that it is theirs, who is on it besides its holder (`person:<id>`, `agent:<id>`),
+    // where a promise was made (`promises.ts`), and the person it was promised to (`person:<id>`).
     fields: [
       "milestone",
       "size",
@@ -52,6 +64,9 @@ export const LISTS: Record<ListName, List> = {
       "fromHash",
       "attendees",
       "where",
+      "from",
+      "alsoOn",
+      "promisedTo",
     ],
   },
   clients: {
@@ -82,8 +97,18 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "done", "dropped"],
     // None is an ordinary project; a campaign's `audience` is a tag (`tags.ts`).
     categories: ["campaign"],
-    // `members` holds `person:<id>` and `agent:<id>`; days are `YYYY-MM-DD`.
-    fields: ["repos", "billing", "value", "startsOn", "renewsOn", "members", "audience"],
+    // `members` holds `person:<id>` and `agent:<id>`; days are `YYYY-MM-DD`; `noticeDays` a whole
+    // number as text.
+    fields: [
+      "repos",
+      "billing",
+      "value",
+      "startsOn",
+      "renewsOn",
+      "noticeDays",
+      "members",
+      "audience",
+    ],
   },
   milestones: {
     name: "Milestones",
@@ -101,7 +126,7 @@ export const LISTS: Record<ListName, List> = {
     noun: "goal",
     states: ["open", "done", "dropped"],
     categories: [],
-    fields: ["measure", "target", "current", "unit", "startsOn"],
+    fields: ["measure", "target", "current", "unit", "startsOn", ...WATCHED_NUMBER_FIELDS],
   },
   // What we hope to win from a client or prospect: done is won, dropped is lost. `stage` is a stage
   // id of the company's own (`deals.ts`), `value` a `KinMoney` in any currency.
@@ -124,6 +149,7 @@ export const LISTS: Record<ListName, List> = {
     fields: ["home"],
   },
 };
+export const TEAM_LIST_RESERVED = [...Object.keys(LISTS), ...KIN_LISTS_NEVER_TEAM];
 
 export const listOf = (registerId: string): ListName =>
   registerId in LISTS ? (registerId as ListName) : "work";
@@ -187,7 +213,7 @@ export const checkFor = (
   const def = LISTS[list];
   if (input.state !== undefined && !def.states.includes(input.state))
     return invalid(
-      `A ${def.noun} is ${def.states.join(", ")}; ${input.state} is for Work entries.`,
+      `${withArticle(def.noun, "A")} is ${def.states.join(", ")}; ${input.state} is for Work entries.`,
     );
   if (
     input.category !== undefined &&
@@ -196,10 +222,10 @@ export const checkFor = (
   )
     return invalid(
       def.categories.length === 0
-        ? `A ${def.noun} has no category.`
-        : `A ${def.noun}'s kind is ${def.categories.join(" or ")}.`,
+        ? `${withArticle(def.noun, "A")} has no category.`
+        : `${withArticle(def.noun, "A")}'s kind is ${def.categories.join(" or ")}.`,
     );
   const extra = Object.keys(input.fields ?? {}).filter((key) => !def.fields.includes(key));
-  if (extra.length > 0) return invalid(`A ${def.noun} has no ${extra.join(", ")}.`);
+  if (extra.length > 0) return invalid(`${withArticle(def.noun, "A")} has no ${extra.join(", ")}.`);
   return undefined;
 };

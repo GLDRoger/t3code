@@ -3,7 +3,9 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CONNECTIONS_COPY as COPY,
+  KIN_MY_MAILBOX_COPY as MINE,
   kinConnectionProvider,
+  kinIsMailConnection,
   kinConnectionStatus,
 } from "@t3tools/client-runtime/kin/kinConnections";
 import * as Option from "effect/Option";
@@ -29,6 +31,7 @@ import {
 import { KinVisualHosts } from "../KinVisualHosts";
 import { KinGitHubSection } from "./KinGitHubConnect";
 import { KinSocialSection } from "./KinSocialConnect";
+import { KinPicturesSection } from "./KinPicturesConnect";
 
 /** Settings → Connections: the owner's connections; one opens as its record. */
 export function KinConnectionsScreen({ route }: StaticScreenProps<KinConnectionsParams>) {
@@ -67,6 +70,7 @@ function ConnectionsList(props: {
         >
           <KinGitHubSection params={props.params} target={target} />
           <KinSocialSection params={props.params} target={target} />
+          <KinPicturesSection target={target} />
           {view === null ? (
             AsyncResult.isFailure(result) ? (
               <Notice
@@ -102,7 +106,11 @@ function ConnectionsList(props: {
                               : "link"
                       }
                       label={connection.label}
-                      description={`${kinConnectionProvider(connection)} · ${status.detail}`}
+                      description={[
+                        kinConnectionProvider(connection),
+                        ...(kinIsMailConnection(connection) ? [MINE.companys] : []),
+                        status.detail,
+                      ].join(" · ")}
                       detail={status.label}
                       onPress={() =>
                         navigation.navigate("KinConnection", {

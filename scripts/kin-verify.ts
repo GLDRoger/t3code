@@ -75,7 +75,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--say "<text>"] [--reply "<text>"] [--hold <s>] [--fail] [--raw]
                                           one real turn, no model: the agent calls the tool
   tool <agent> --script <file.json>       the same with several calls (and "shell"/"sleep" steps)
-  mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
+  mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id] [--auth results]
   mail expire <address> [--back]          the account's sign-in stops working (or works again)
   mail signin <address>                   the owner signs that fake account in again, as Settings'
                                           Sign in again does once the vendor approves (fake mailbox only)
@@ -85,6 +85,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   clock set "<mon 09:01|tomorrow 09:30|2026-11-23 09:30>"   move now forward to then (company zone)
   clock advance <90m|12h|3d|2w>           move now forward; nothing restarts
   clock age <3d>                          move every stored Kin time back instead (restarts)
+  week-measure                             last complete company week, read-only JSON
   db "<select …>"                         read-only SQL on this instance's database
   phone pair [--android] [--as <person>]  deep link that pairs the dev client to this instance
   phone metro [--full-app]                Metro for this checkout, as the Kin app (stopped by down)`;
@@ -796,7 +797,7 @@ async function main() {
       if (action === "expire") return console.log(mailExpire(instance, rest.slice(1)));
       if (action === "signin") return console.log(await mailSignIn(instance, args.positional[1]));
       throw new VerifyError(
-        "mail sent | mail deliver --to --from --subject --body [--thread] | mail expire <address> [--back] | mail signin <address>",
+        "mail sent | mail deliver --to --from --subject --body [--thread] [--auth] | mail expire <address> [--back] | mail signin <address>",
       );
     }
     case "social":
@@ -808,6 +809,19 @@ async function main() {
     }
     case "clock":
       return clock(instance, args);
+    case "week-measure": {
+      const filename = NodePath.join(instance.userdata, "statev2.sqlite");
+      if (!NodeFS.existsSync(filename))
+        throw new VerifyError("no database yet; run `kin-verify up`");
+      return process.stdout.write(
+        NodeChildProcess.execFileSync(process.execPath, [
+          NodePath.join(ROOT, "apps/server/scripts/kin-week-measure.ts"),
+          filename,
+          ORG,
+          String(Date.now() + readOffset(instance)),
+        ]),
+      );
+    }
     case "db": {
       const sql = args.positional[0];
       if (sql === undefined)

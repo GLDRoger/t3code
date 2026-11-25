@@ -43,21 +43,40 @@ const MEMBER = [
   "kin.chat.history",
   "kin.chat.members",
   "kin.chat.subscribe",
+  "kin.chat.working",
   "kin.chats.clear",
   "kin.chats.createDirect",
   "kin.chats.mute",
+  "kin.chats.pin",
   "kin.chats.subscribe",
   "kin.chats.withPerson",
+  // Their own mailbox only: `KinConnections.mine*` finds the caller's own row and no one
+  // else's (`MailEndToEnd.test.ts` pins that the owner level can't reach it either).
+  "kin.connections.mine",
+  "kin.connections.mineRemove",
+  "kin.connections.mineSignInFinish",
+  "kin.connections.mineSignInStart",
+  // A delete or its undo: `Docs.deleteByHand` allows exactly whom a hand edit allows, and
+  // never an agent's character or What we sell; the docs test pins who is refused.
+  "kin.docs.delete",
   "kin.docs.diff",
+  // A hand edit: `Docs.editSectionByHand` refuses all but the owner level and the doc's project
+  // lead, and keeps playbooks and What we sell to the owner level.
+  "kin.docs.editSection",
   "kin.docs.get",
   "kin.docs.history",
   "kin.docs.list",
+  // A teammate's own draft card: `sendUp` checks the card, the chat and the doc from stored rows.
+  "kin.docs.sendUp",
   "kin.docs.subscribe",
   "kin.goals.list",
   "kin.leads.list",
   "kin.messages.markRead",
   "kin.messages.react",
   "kin.messages.send",
+  "kin.numbers.list",
+  "kin.numbers.record",
+  "kin.numbers.values",
   "kin.open.read",
   "kin.open.subscribe",
   "kin.org.get",
@@ -74,6 +93,8 @@ const MEMBER = [
   "kin.pulse.handle",
   "kin.pulse.read",
   "kin.pulse.subscribe",
+  // Only their own topics: `KinPushTopics.settledOf` reads the caller's rows and no one else's.
+  "kin.push.reconcile",
   "kin.push.registerDevice",
   "kin.push.unregisterDevice",
   "kin.push.watch",
@@ -83,6 +104,12 @@ const MEMBER = [
   "kin.tasksKeys.list",
   "kin.tasksKeys.revoke",
   "kin.triggers.getTimeZone",
+  // What Kin keeps watch on: the service shows and acts on only the watches this person may see.
+  "kin.watches.again",
+  "kin.watches.list",
+  "kin.watches.log",
+  "kin.watches.look",
+  "kin.watches.stop",
   "kin.widgets.act",
   "kin.work.assign",
   "kin.work.comment",
@@ -96,6 +123,8 @@ const MEMBER = [
   // Deals': the gate lets a person through, and `deals.ts` decides the rest (Clients on, `crmSees`).
   "kin.work.createDeal",
   "kin.work.createParty",
+  // Both writes of `ownerClients.createParty` and `deals.createIn`, each deciding as alone.
+  "kin.work.createPartyWithDeal",
   "kin.work.dates",
   "kin.work.deal",
   "kin.work.dealStages",
@@ -123,6 +152,7 @@ const MEMBER = [
   "kin.work.removeTouch",
   "kin.work.subscribe",
   "kin.work.summary",
+  "kin.work.tickStep",
   "kin.work.update",
   "kin.work.updateContact",
   "kin.work.updateDeal",
@@ -178,6 +208,13 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           ],
         );
         assert.deepStrictEqual(table.member, MEMBER);
+        // Bills become the company's expenses: the owner level's, never a member's.
+        const bills = methods.filter((method) => method.startsWith("kin.bills."));
+        assert.lengthOf(bills, 6);
+        assert.deepStrictEqual(
+          bills.filter((method) => !table.coOwner.includes(method) || MEMBER.includes(method)),
+          [],
+        );
         // Every method is in the table, so a new one can't slip past the gate unlisted.
         assert.deepStrictEqual(
           methods.filter((method) => kinRpcAccess(method) === undefined),
@@ -191,10 +228,18 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         // Keeping them on the card unsent is for the same people.
         assert.isFalse(yield* allowed("ravi", "kin.connections.sendEdited"));
         assert.isFalse(yield* allowed("ravi", "kin.connections.saveEdited"));
+        // Moving a mailbox into or out of the company's is the owner level's, as they stand now.
+        assert.isFalse(yield* allowed("ravi", "kin.connections.moveMailbox"));
         yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = 'meera'`;
         assert.isTrue(yield* allowed("meera", "kin.work.recordPayment"));
         assert.isTrue(yield* allowed("meera", "kin.connections.sendEdited"));
         assert.isTrue(yield* allowed("meera", "kin.connections.saveEdited"));
+        assert.isTrue(yield* allowed("meera", "kin.connections.moveMailbox"));
+        // The picture service's key and monthly limit spend the company's money: owner level only.
+        for (const method of ["kin.pictures.get", "kin.pictures.set"]) {
+          assert.isFalse(yield* allowed("ravi", method));
+          assert.isTrue(yield* allowed("meera", method));
+        }
         // Someone the org doesn't know is refused, not admitted as a member of nothing.
         assert.isFalse(yield* allowed("stranger", "kin.work.recordPayment"));
         // Team memory is the owner's call: a co-owner (now Meera) may set it, a member never.
@@ -202,6 +247,30 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         assert.isFalse(yield* allowed("ravi", "kin.memory.setTeamMemory"));
         // Who may not message whom is set by owners and co-owners alone.
         for (const method of ["kin.reach.list", "kin.reach.set"]) {
+          assert.isTrue(yield* allowed("meera", method));
+          assert.isFalse(yield* allowed("ravi", method));
+          assert.isFalse(yield* allowed("stranger", method));
+        }
+        // Letting Kin set the webhook of an App it didn't make, and Check again, go as Disconnect does.
+        for (const method of [
+          "kin.github.app.disconnect",
+          "kin.github.app.hook.allow",
+          "kin.github.app.look",
+        ]) {
+          assert.isTrue(yield* allowed("kin-default-owner", method));
+          assert.isTrue(yield* allowed("meera", method));
+          assert.isFalse(yield* allowed("ravi", method));
+          assert.isFalse(yield* allowed("stranger", method));
+        }
+
+        // Kin's computer: its facts and its four fixed actions are for owners and co-owners alone.
+        for (const method of [
+          "kin.host.status",
+          "kin.host.freeSpace",
+          "kin.host.backUpNow",
+          "kin.host.retry",
+        ]) {
+          assert.isTrue(yield* allowed("kin-default-owner", method));
           assert.isTrue(yield* allowed("meera", method));
           assert.isFalse(yield* allowed("ravi", method));
           assert.isFalse(yield* allowed("stranger", method));

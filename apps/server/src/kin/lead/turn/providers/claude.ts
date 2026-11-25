@@ -61,19 +61,14 @@ const NO_PROVIDER_FOOTER = {
 
 type Options = ClaudeAdapterV2.ClaudeAgentSdkQueryOptions;
 
-/** Kin's tools load up front; the plan's deferred ones carry `deferredMeta` and wait for ToolSearch. */
+/**
+ * Kin's core carries `anthropic/alwaysLoad` from registration (`deferredTools.ts`) and loads up
+ * front; with ToolSearch on, Claude Code holds every other MCP tool back until it is searched for.
+ */
 const kinTools = (options: Options, plan: KinSessionPlan) =>
-  options.mcpServers === undefined || plan.deferredTools.size === 0
+  options.mcpServers === undefined || !plan.toolSearch
     ? { search: "false" as const, mcpServers: undefined }
-    : {
-        search: "true" as const,
-        mcpServers: Object.fromEntries(
-          Object.entries(options.mcpServers).map(([name, server]) => [
-            name,
-            { ...server, alwaysLoad: true },
-          ]),
-        ),
-      };
+    : { search: "true" as const, mcpServers: options.mcpServers };
 
 /**
  * One Kin session on Claude: no settings file (memory might carry a `CLAUDE.md`, `.mcp.json` or
@@ -103,11 +98,14 @@ const apply = (
       : { systemPrompt: { type: "custom" as const, prompt: plan.instructions, snapshot: false } }),
     ...(confined
       ? {
-          tools: [...(loading.search === "true" ? ["ToolSearch"] : []), CONFINED_SEARCH],
+          tools: [
+            ...(loading.search === "true" ? ["ToolSearch"] : []),
+            ...(plan.nativeSearch ? [CONFINED_SEARCH] : []),
+          ],
           disallowedTools: [
             ...new Set([
               ...(options.disallowedTools ?? []),
-              ...builtinTools.filter((name) => name !== CONFINED_SEARCH),
+              ...builtinTools.filter((name) => !plan.nativeSearch || name !== CONFINED_SEARCH),
             ]),
           ],
         }
@@ -142,6 +140,9 @@ const apply = (
           }),
       ENABLE_TOOL_SEARCH: loading.search,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      // Every wake-up is a fresh session: its first request otherwise may go out before Kin's
+      // tools are listed, and a different tool block misses the prompt cache.
+      ...(plan.seat === "delegated" ? {} : { MCP_CONNECTION_NONBLOCKING: "0" }),
     },
   };
 };
@@ -153,6 +154,17 @@ const refused = (reason?: string) => ({
     ...(reason === undefined ? {} : { permissionDecisionReason: reason }),
   },
 });
+
+const WEB_READS: ReadonlySet<string> = new Set([
+  ...capabilities.webSearch,
+  ...capabilities.webFetch,
+]);
+/** The host of a page fetch's `url`; a search has none. */
+const hostOf = (input: unknown) => {
+  const url =
+    typeof input === "object" && input !== null ? (input as { url?: unknown }).url : undefined;
+  return typeof url === "string" && URL.canParse(url) ? new URL(url).hostname : undefined;
+};
 
 /**
  * The plan's decision as a PreToolUse hook. It runs in this process before Claude Code's
@@ -174,7 +186,11 @@ const decisionHook = (plan: KinSessionPlan): HookCallbackMatcher => ({
       }
       if (kinTool && plan.seat !== "delegated") return {};
       const reason = await Effect.runPromise(plan.refusal);
-      return reason === undefined ? {} : refused(reason);
+      if (reason !== undefined) return refused(reason);
+      if (!WEB_READS.has(input.tool_name)) return {};
+      // What it reads is outside text: the turn is marked before the result reaches the model.
+      const marked = await Effect.runPromise(plan.webRead(hostOf(input.tool_input)));
+      return marked === undefined ? {} : refused(marked);
     },
   ],
 });

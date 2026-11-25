@@ -4,10 +4,12 @@ import {
   KIN_TASK_LINK,
   KIN_TASK_NOTE_COPY,
   KIN_TASK_RECORD,
+  KIN_TASK_WITH,
   type KinActivityIcon,
   type KinActivityLine,
   type KinNextStepView,
   type KinRecordChipTone,
+  type kinTaskWith,
   kinProjectNoteLine,
   kinTaskActivity,
   kinTaskLinkProblem,
@@ -43,7 +45,6 @@ import {
 } from "lucide-react";
 import { type ClipboardEvent, type KeyboardEvent, useId, useRef, useState } from "react";
 
-import { ComposerAttachButton } from "../components/chat/ComposerAttachmentStrip";
 import { shouldHandleComposerAttachmentPaste } from "../components/chat/composerAttachmentFiles";
 import { ComposerSurface } from "../components/chat/ComposerSurface";
 import { ExpandedImageDialogHost } from "../components/chat/ExpandedImageDialog";
@@ -59,11 +60,16 @@ import {
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { Menu, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
-import { KinComposerAttachmentStrip, useKinComposerAttachments } from "./KinComposerAttachments";
+import {
+  KinComposerAttachmentStrip,
+  useKinComposerAttachments,
+  KinAttachButton,
+} from "./KinComposerAttachments";
 import { KinMessageAttachments } from "./KinMessageAttachments";
 import { kinClient } from "./kinClient";
 import { kinDraftAtom, kinDraftKey } from "./kinDraft";
@@ -252,6 +258,8 @@ export function KinTaskActivity(
     readonly names: KinWorkNames;
     readonly now: Date;
     readonly note: string | null;
+    /** Why its holder has it, quoted under the hand-over (`kinTaskActivity`). */
+    readonly reason?: string | null;
     readonly onOpenProject: (key: KinRecordKey) => void;
   },
 ) {
@@ -281,6 +289,7 @@ export function KinTaskActivity(
     { changes: props.item.changes, comments: thread.comments },
     names,
     props.now,
+    props.reason ?? null,
   );
   const previewKey = `kin-task:${environmentId}:${itemKey}`;
   const me = names.me === null ? null : ({ _tag: "person", personId: names.me } as const);
@@ -374,6 +383,9 @@ export function KinTaskActivity(
                     )}
                     {activityTail(line)}
                   </p>
+                  {line.quote === null ? null : (
+                    <p className="wrap-break-word text-foreground/80">“{line.quote}”</p>
+                  )}
                   {comment === null || comment.removed ? null : (
                     <>
                       {comment.body === "" ? null : (
@@ -767,7 +779,7 @@ export function KinTaskNoteComposer(props: TaskTarget) {
               />
               <div className="flex items-end gap-1 p-1.5">
                 {files.canAttach ? (
-                  <ComposerAttachButton
+                  <KinAttachButton
                     addComposerAttachments={(picked) => files.add(picked)}
                     focusComposer={() => textareaRef.current?.focus()}
                   />
@@ -798,5 +810,78 @@ export function KinTaskNoteComposer(props: TaskTarget) {
         </ComposerSurface.Host>
       </ComposerSurface.Shell>
     </div>
+  );
+}
+
+/**
+ * Details' With line: each person's picture and first name, × for a reader who may
+ * change the task and Leave on their own name, and + to put someone on it (`picker`, the holder's
+ * people-and-agents list), absent once the task holds as many as it takes.
+ */
+export function KinTaskWithLine(props: {
+  readonly with: ReturnType<typeof kinTaskWith>;
+  readonly saving: boolean;
+  /** The menu's items: whoever can still be put on it. */
+  readonly picker: React.ReactNode;
+  readonly onRemove: (key: string) => void;
+  readonly onLeave: () => void;
+}) {
+  const { people, add, full } = props.with;
+  return (
+    <>
+      <dt className="text-muted-foreground">{KIN_TASK_WITH.label}</dt>
+      <dd className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
+        {people.map((who) => (
+          <span key={who.key} className="flex min-w-0 items-center gap-1.5">
+            <KinAvatar avatar={who.avatar} size="xs" />
+            <span className="truncate text-foreground">{who.name}</span>
+            {who.status === null ? null : (
+              <span className="shrink-0 text-xs text-muted-foreground">{who.status}</span>
+            )}
+            {who.act === "remove" ? (
+              <Button
+                size="icon-xs"
+                variant="ghost-muted"
+                disabled={props.saving}
+                aria-label={KIN_TASK_WITH.remove(who.name)}
+                onClick={() => props.onRemove(who.key)}
+              >
+                <XIcon />
+              </Button>
+            ) : who.act === "leave" ? (
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={props.saving}
+                aria-label={KIN_TASK_WITH.leaveLabel}
+                onClick={props.onLeave}
+              >
+                {KIN_TASK_WITH.leave}
+              </Button>
+            ) : null}
+          </span>
+        ))}
+        {!add ? null : (
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  disabled={props.saving}
+                  aria-label={KIN_TASK_WITH.add}
+                />
+              }
+            >
+              <PlusIcon />
+            </MenuTrigger>
+            <MenuPopup align="start">{props.picker}</MenuPopup>
+          </Menu>
+        )}
+      </dd>
+      {full === null ? null : (
+        <dd className="col-start-2 -mt-1 text-xs text-muted-foreground">{full}</dd>
+      )}
+    </>
   );
 }

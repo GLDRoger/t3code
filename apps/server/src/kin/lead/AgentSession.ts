@@ -5,7 +5,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfTool } from "../shell/sections.ts";
+import * as McpToolPolicy from "../mcp/toolPolicy.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpToolExposure from "../../mcp/McpToolExposure.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
@@ -22,19 +24,27 @@ import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { IssuesToolkit } from "../../mcp/toolkits/issues/tools.ts";
 import { MessageToolkit } from "../../mcp/toolkits/message/tools.ts";
 import { ThemeToolkit } from "../../mcp/toolkits/theme/tools.ts";
+import { FeedbackToolkit } from "../../mcp/toolkits/feedback/tools.ts";
+import { ToolSearchToolkit } from "../../mcp/toolkits/toolSearch/tools.ts";
+import { WorkflowToolkit } from "../../mcp/toolkits/workflow/tools.ts";
 import { ServerConfig } from "../../config.ts";
 import { toolDirectories } from "../gendocs/toolchain.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinServer } from "../KinServer.ts";
+import { approvalOf } from "../questions/approval.ts";
 import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { markOutside, outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
+import { BILLS_THREAD_PREFIX, BILLS_TOOLS } from "./billsOnly.ts";
+import { REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "./outsideReview.ts";
 import { CODING_T3_TOOLS, isEngineeringDomain, LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { wakeupOfRuns } from "../chat/wakeupRuns.ts";
 import { isSocialTool } from "../social/mcp.ts";
 import { socialSeatThread } from "../social/seat.ts";
 import { seatOf } from "./characterDefaults.ts";
+import { leftToHome, seatHomeOf } from "./seatHome.ts";
 
 const leadT3Tools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
 const codingT3Tools: ReadonlySet<string> = new Set(CODING_T3_TOOLS);
@@ -54,12 +64,18 @@ const T3_TOOLKITS = [
   IssuesToolkit,
   MessageToolkit,
   ThemeToolkit,
+  FeedbackToolkit,
+  WorkflowToolkit,
+  ToolSearchToolkit,
 ];
 const t3Tools: ReadonlySet<string> = new Set(
   T3_TOOLKITS.flatMap((toolkit) => Object.keys(toolkit.tools)),
 );
-/** Every tool T3's own endpoint serves; the Kin endpoint serves them too, mostly hidden. */
-const isT3Tool = (name: string) => t3Tools.has(name);
+/**
+ * Every tool T3's own endpoint serves; the Kin endpoint serves them too, mostly hidden. A toolkit
+ * missing from the list above would be shown to every agent: `AgentSession.test.ts` reads the folder.
+ */
+export const isT3Tool = (name: string) => t3Tools.has(name);
 
 type Turn = { orgId: KinOrgId; agentId: KinAgentId; wakeupId: string };
 
@@ -111,13 +127,14 @@ const governingTurn = Effect.fnUntraced(function* (threadId: ThreadId) {
 /**
  * Why a thread's built-in tools (shell, edits, web, sub-agents) may not run now, or `undefined`
  * when they may: the turn it follows (`governingTurn`) is owner-only, not aborted for its
- * audience, and has read no outside text. No such turn admits nothing, so a run Kin hasn't
- * adopted can't use them. A delegated task keeps them exactly as long as its asking turn would.
+ * audience, has read no outside text, and is no approved draft's (`approvalOf`), whose content a
+ * teammate's turn wrote. No such turn admits nothing. A delegated task follows its asking turn.
  */
 export const fullSessionRefusal = Effect.fn("KinAgentSession.fullSessionRefusal")(
   function* (threadId: ThreadId) {
     const { turn } = yield* governingTurn(threadId);
     if (turn === undefined) return SESSION_REFUSAL.none;
+    if ((yield* approvalOf(turn))._tag !== "none") return SESSION_REFUSAL.approved;
     if (yield* aborted(turn)) return SESSION_REFUSAL.aborted;
     if ((yield* effectiveAudience(turn)) !== "owner_only") return SESSION_REFUSAL.shared;
     if (yield* outsideRead(turn)) return SESSION_REFUSAL.outside;
@@ -131,15 +148,16 @@ export const fullSessionRefusal = Effect.fn("KinAgentSession.fullSessionRefusal"
 );
 
 /**
- * A confined session's web search: its results are outside text, so the turn it follows is marked
- * before they reach the model. No such turn, or a failed mark, refuses the search.
+ * A session's own web search or page fetch: its results are outside text, so the turn it follows
+ * is marked before they reach the model, by the page's host when it has one. No such turn, or a
+ * failed mark, refuses it.
  */
 export const webSearchRefusal = Effect.fn("KinAgentSession.webSearchRefusal")(
-  function* (threadId: ThreadId) {
+  function* (threadId: ThreadId, host?: string) {
     const { turn } = yield* governingTurn(threadId);
     if (turn === undefined) return SESSION_REFUSAL.none;
     if (yield* aborted(turn)) return SESSION_REFUSAL.aborted;
-    yield* markOutside(turn, "web search");
+    yield* markOutside(turn, host === undefined ? "web search" : `web:${host.slice(0, 120)}`);
     return undefined;
   },
   Effect.catchCause((cause) =>
@@ -210,50 +228,31 @@ const threadSeat = Effect.fn("KinAgentSession.threadSeat")(
   ),
 );
 
-/**
- * Money and pipeline tools an engineering or social lead leaves to the seat they belong to, once
- * the company has a lead in it; with none, every lead keeps them.
- */
-const SEAT_HOME: Readonly<Record<string, string>> = {
-  statement_read: "finance",
-  statement_rows: "finance",
-  money_query: "finance",
-  money_summary: "finance",
-  payment_record: "finance",
-  budget_set: "finance",
-  kin_receipt: "finance",
-  pipeline_read: "growth",
-  deal_stages: "growth",
-};
-const LEAVES_TO_HOME: ReadonlySet<string> = new Set(["engineering", "social"]);
-
-/** How far up T3's task links a lead's name is looked for. */
-const MAX_NAME_DEPTH = 8;
-
-/** The name of the lead whose thread this is, or whose task it is, up T3's task links. */
+/** The name of the lead whose thread this is, or whose turn delegated this task. */
 export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
   function* (threadId: ThreadId) {
     const sql = yield* SqlClient.SqlClient;
-    let current: string = threadId;
-    for (let depth = 0; depth <= MAX_NAME_DEPTH; depth++) {
-      const [lead] = yield* sql<{ name: string }>`SELECT l.name FROM kin_wakeups w
-        JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id
-        WHERE w.thread_id = ${current} ORDER BY w.started_at DESC LIMIT 1`;
-      if (lead !== undefined) return lead.name;
-      const [link] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId"
-        FROM orchestration_v2_projection_subagents
-        WHERE child_thread_id = ${current} AND origin = 'app_owned' ORDER BY subagent_id LIMIT 1`;
-      if (link === undefined) return undefined;
-      current = link.threadId;
-    }
-    return undefined;
+    const [own] = yield* sql<{ name: string }>`SELECT l.name FROM kin_wakeups w
+      JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id
+      WHERE w.thread_id = ${threadId} ORDER BY w.started_at DESC, w.wakeup_id LIMIT 1`;
+    if (own !== undefined) return own.name;
+    const { turn } = yield* governingTurn(threadId);
+    if (turn === undefined) return undefined;
+    const [lead] = yield* sql<{ name: string }>`SELECT name FROM kin_leads
+      WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId} ORDER BY agent_id`;
+    return lead?.name;
   },
   Effect.orElseSucceed((): string | undefined => undefined),
 );
 
 /** Kin's GitHub tools work through the owner's own login, so they show only while it's connected. */
 const isKinGitHubTool = (name: string) => name.startsWith("kin_github_");
-const LOGIN_GITHUB_TOOLS = new Set(["kin_github_review", "kin_github_watch", "kin_github_link"]);
+const LOGIN_GITHUB_TOOLS = new Set([
+  "kin_github_review",
+  "kin_github_review_ask",
+  "kin_github_watch",
+  "kin_github_link",
+]);
 const loginConnected = Effect.gen(function* () {
   const kin = yield* Effect.serviceOption(KinServer);
   if (Option.isNone(kin) || Option.isNone(kin.value.services)) return false;
@@ -262,32 +261,53 @@ const loginConnected = Effect.gen(function* () {
 
 /**
  * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
- * Shared threads list only what shared turns may run; T3 tools show only on an owner-only thread,
- * and its coding ones only on an engineering lead's (`threadSeat`, as `SEAT_HOME`'s).
- * `KinToolGate` checks each call.
+ * Shared threads list what shared turns may run, an outside review's `REVIEW_TOOLS`, a bills
+ * turn's `BILLS_TOOLS`; T3 tools only an owner-only thread, its coding ones only an engineering
+ * lead's (`SEAT_HOME`'s). `KinToolGate` checks each call.
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(function* (
   name: string,
   threadId: ThreadId,
 ) {
+  // A bills turn's reader may be any lead: it lists `bill_read` whatever its seat.
+  if (threadId.startsWith(BILLS_THREAD_PREFIX)) return BILLS_TOOLS.has(name);
   const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
-  if (shared && !listedOnSharedThread(name)) return false;
+  if (
+    threadId.startsWith(REVIEW_THREAD_PREFIX)
+      ? !REVIEW_TOOLS.has(name)
+      : shared && !listedOnSharedThread(name)
+  )
+    return false;
   if (isKinGitHubTool(name)) return LOGIN_GITHUB_TOOLS.has(name) && (yield* loginConnected);
   if (isSocialTool(name)) return yield* onSocialSeat(threadId);
-  const home = Object.hasOwn(SEAT_HOME, name) ? SEAT_HOME[name] : undefined;
-  if (home !== undefined) {
+  if (seatHomeOf(name) !== undefined) {
     const lead = yield* threadSeat(threadId);
-    return lead === undefined || !LEAVES_TO_HOME.has(lead.seat) || !lead.others.includes(home);
+    return lead === undefined || !leftToHome(name, lead);
   }
   if (!isT3Tool(name)) return true;
   if (!leadT3Tools.has(name) || shared) return false;
   return !codingT3Tools.has(name) || (yield* threadSeat(threadId))?.seat === "engineering";
 });
 
-export const endpointVisibility = McpHttpServer.toolVisibility((name) =>
+export const endpointVisibility = McpToolPolicy.toolVisibility((name, method) =>
   Effect.gen(function* () {
     const scope = yield* Effect.serviceOption(McpInvocationContext);
     if (Option.isNone(scope) || scope.value.thread === undefined) return false;
+    const section = sectionOfTool(name);
+    // Only the list hides a section; the call gate returns the refusal on tools/call.
+    if (method === "tools/list" && section !== null) {
+      const kin = yield* Effect.serviceOption(KinServer);
+      const services = Option.flatMap(kin, (entry) => entry.services);
+      if (Option.isNone(services)) return false;
+      const { owner } = Context.get(services.value, KinIdentity);
+      if (
+        !(yield* KinShell.sectionOnFor(owner.orgId, section).pipe(
+          Effect.provideContext(services.value),
+          Effect.orElseSucceed(() => false),
+        ))
+      )
+        return false;
+    }
     return yield* visibleOnKinEndpoint(name, scope.value.thread.threadId);
   }),
 );
@@ -302,8 +322,8 @@ export const sessionPolicyLayer = Layer.effect(
       refusal: Effect.fn("KinAgentSessionPolicy.refusal")((threadId: ThreadId) =>
         fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ),
-      webSearch: Effect.fn("KinAgentSessionPolicy.webSearch")((threadId: ThreadId) =>
-        webSearchRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      webSearch: Effect.fn("KinAgentSessionPolicy.webSearch")((threadId: ThreadId, host?: string) =>
+        webSearchRefusal(threadId, host).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ),
       delegated: Effect.fn("KinAgentSessionPolicy.delegated")((threadId: ThreadId) =>
         delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),

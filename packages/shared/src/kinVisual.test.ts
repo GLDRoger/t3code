@@ -8,6 +8,7 @@ import {
   kinVisualHost,
   kinVisualHostUnicode,
   kinVisualPageDocument,
+  KIN_VISUAL_FONT_ROUTE,
   kinVisualSaveFile,
   readKinVisualMessage,
   resolveKinVisualFileReferences,
@@ -105,6 +106,51 @@ describe("kinVisualPageDocument", () => {
       writeCall(kinVisualPageDocument("<p>x</p>", ["tiles.example.com", "x.com; script-src *"]))[1],
     ).toBe("https://tiles.example.com");
     expect(writeCall(kinVisualPageDocument("<p>x</p>"))[1]).toBe("");
+  });
+
+  it("gives the page the brand's colours, font and logo, each falling back to the theme", () => {
+    const branded = written(
+      kinVisualPageDocument(
+        '<img src="kin-brand:logo"><p style="color:var(--brand-primary)">',
+        [],
+        {
+          brand: {
+            primary: "#1F6F5C",
+            secondary: "#F2A541",
+            font: "Poppins",
+            logo: "/api/assets/kin-brand/logo",
+          },
+        },
+      ),
+    );
+    expect(branded).toContain(
+      ':root{--brand-primary:#1F6F5C;--brand-secondary:#F2A541;--brand-font:"Poppins",var(--font-sans)}',
+    );
+    expect(branded).toContain(`src:url("${KIN_VISUAL_FONT_ROUTE}/Poppins-Bold.ttf")`);
+    expect(branded).toContain('<img src="/api/assets/kin-brand/logo">');
+    expect(branded).not.toContain("html{padding:0");
+    // Anything not a colour, a known font or Kin's own picture is the theme's, and no load leaves.
+    const plain = written(
+      kinVisualPageDocument('<img src="kin-brand:logo">', [], {
+        brand: {
+          primary: "red;}body{display:none",
+          secondary: null,
+          font: "Comic Sans",
+          logo: "https://cdn.example.com/logo.png",
+        },
+        picture: true,
+      }),
+    );
+    expect(plain).toContain(
+      ":root{--brand-primary:var(--primary);--brand-secondary:var(--chart-2);--brand-font:var(--font-sans)}",
+    );
+    expect(plain).toContain("html{padding:0;background:var(--background);overflow:hidden}");
+    const blank = /<img src="(data:image\/svg\+xml;base64,[A-Za-z0-9+/=]+)">/.exec(plain)?.[1];
+    expect(plain).toContain(`img[src="${blank}"]{display:none!important}`);
+    expect(plain).not.toContain("cdn.example.com");
+    expect(written(kinVisualPageDocument('<img src="kin-brand:logo">'))).not.toContain(
+      "kin-brand:logo",
+    );
   });
 
   it("holds no agent content in the outer document, and its frame cannot download", () => {

@@ -9,6 +9,8 @@ import type {
   KinWorkAssignInput,
   KinWorkConfirmInput,
   KinWorkPrincipal,
+  KinWorkStep,
+  KinWorkTickStepInput,
   KinWorkUpdateInput,
 } from "@t3tools/contracts";
 
@@ -65,7 +67,31 @@ export type KinWorkAction =
   /** The task's own label; its client or project can still keep it private. */
   | { readonly type: "private"; readonly private: boolean }
   /** How it comes back once closed, from its due date; null stops it. */
-  | { readonly type: "repeat"; readonly rule: KinRepeatRule | null };
+  | { readonly type: "repeat"; readonly rule: KinRepeatRule | null }
+  | { readonly type: "urgent"; readonly urgent: boolean }
+  /** Ticks or unticks one step, as the page showed it. */
+  | {
+      readonly type: "tick";
+      readonly index: number;
+      readonly title: string;
+      readonly done: boolean;
+    }
+  /** The whole checklist after a step was added or removed, or put back. */
+  | {
+      readonly type: "steps";
+      readonly steps: ReadonlyArray<KinWorkStep>;
+      readonly said: "added" | "removed" | "back";
+    }
+  /**
+   * Who else is on it, the whole list after one person was put on or taken off (`who`); `left`
+   * is the reader taking themselves off, and `back` puts the list as it was.
+   */
+  | {
+      readonly type: "alsoOn";
+      readonly alsoOn: ReadonlyArray<KinWorkPrincipal>;
+      readonly who: KinWorkPrincipal;
+      readonly said: "added" | "removed" | "left" | "back";
+    };
 
 export const KIN_WORK_OFFLINE_CHANGE = "You're offline. Changes need a connection.";
 export const KIN_WORK_EDIT_CHANGED =
@@ -73,6 +99,8 @@ export const KIN_WORK_EDIT_CHANGED =
 
 export const KIN_WORK_COPY = {
   nowSays: (text: string) => `It now says: ${text}`,
+  /** What an empty field shows on its input line when it has no words of its own. */
+  typeHere: "Tap to type",
   done: "Mark done",
   reopen: "Reopen",
   status: "Status",
@@ -80,6 +108,7 @@ export const KIN_WORK_COPY = {
   waitingOn: "Waiting on",
   waitingOnNobody: "No one in particular",
   takeBack: "Take it back",
+  take: "Take it",
   keep: "Keep",
   decline: "Not needed",
   edit: "Edit",
@@ -135,6 +164,10 @@ type Patch = Partial<
     | "side"
     | "sensitive"
     | "repeat"
+    | "urgent"
+    | "steps"
+    | "checklist"
+    | "alsoOn"
   >
 >;
 
@@ -246,6 +279,16 @@ const stops = (record: KinRecord, action: KinWorkAction): boolean => {
   }
 };
 
+/** The reader gave the task to whoever has it, so taking it is taking it back. */
+const kinWorkGaveIt = (record: Pick<KinRecord, "givenBy">, names: Pick<KinWorkNames, "me">) =>
+  record.givenBy?._tag === "person" && record.givenBy.personId === names.me;
+
+/** Taking a task someone else has: "Take it back" only where the reader gave it to them. */
+export const kinWorkTakeLabel = (
+  record: Pick<KinRecord, "givenBy">,
+  names: Pick<KinWorkNames, "me">,
+) => (kinWorkGaveIt(record, names) ? KIN_WORK_COPY.takeBack : KIN_WORK_COPY.take);
+
 /** What happened, in a few words, once the host says it did. */
 function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames): string {
   const holder = kinWorkName(record.owner, names);
@@ -274,7 +317,7 @@ function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames
     case "give":
       return `Given to ${kinWorkName(action.to, names, "you")}.${told}`;
     case "takeBack":
-      return `It's yours again.${told}`;
+      return `${kinWorkGaveIt(record, names) ? "It's yours again." : "It's yours now."}${told}`;
     case "place":
       if (action.party != null) return `Now under ${action.party.title}.`;
       if (action.project != null) return `Now in ${action.project.title}.`;
@@ -287,20 +330,67 @@ function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames
       return action.rule === null
         ? "No longer repeats."
         : `Repeats ${kinRepeatText(action.rule).toLowerCase()}.`;
+    case "urgent":
+      return action.urgent ? "Marked urgent." : "No longer urgent.";
+    case "tick":
+      return action.done ? "Ticked." : "Unticked.";
+    case "steps":
+      return action.said === "added"
+        ? "Step added."
+        : action.said === "removed"
+          ? "Step removed."
+          : "Step put back.";
+    case "alsoOn": {
+      if (action.said === "left") return KIN_WORK_ALSO_ON_COPY.left(record.title);
+      const who = kinWorkName(action.who, names);
+      const you = action.who._tag === "person" && action.who.personId === names.me;
+      if (action.said === "back") return you ? "You're back on it." : `${who} is back on it.`;
+      if (action.said === "added") return you ? "You're on it." : `${who} is on it.`;
+      return you ? "You're off it." : `${who} is off it.`;
+    }
   }
 }
 
+/** Leaving a task, and the host refusing to put the reader back on it. */
+const KIN_WORK_ALSO_ON_COPY = {
+  left: (title: string) => `You left “${title}”. You may no longer see it.`,
+  backRefused: "You can't put yourself back on it now. Ask whoever holds it.",
+} as const;
+
+/** The steps a change would leave, shown at once with their count while the host answers. */
+const stepsShown = (steps: ReadonlyArray<KinWorkStep>): Patch => ({
+  checklist: steps,
+  steps:
+    steps.length === 0
+      ? undefined
+      : { done: steps.filter((step) => step.done).length, of: steps.length },
+});
+
 /** Closing and re-dating have a way back: to where the task stood. Nothing else needs one. */
-const undoOf = (record: KinRecord, action: KinWorkAction): KinWorkAction | null => {
+const undoOf = (
+  record: KinRecord | KinRecordDetail,
+  action: KinWorkAction,
+): KinWorkAction | null => {
   if (action.type === "due")
     return { type: "dueBack", dueAt: record.dueAt, allDay: record.dueAllDay };
+  if (action.type === "steps" && action.said === "removed" && "checklist" in record)
+    return { type: "steps", steps: record.checklist ?? [], said: "back" };
+  if (action.type === "alsoOn" && (action.said === "removed" || action.said === "left"))
+    // Someone only on it may leave but never put anyone on it, themselves included.
+    return action.said === "left" && "can" in record && record.can?.edit === false
+      ? null
+      : { type: "alsoOn", alsoOn: record.alsoOn ?? [], who: action.who, said: "back" };
   return !kinWorkClosed(record.state) &&
     (action.type === "decline" || (action.type === "state" && kinWorkClosed(action.state)))
     ? { type: "state", state: record.state, waitingOn: record.waitingOn }
     : null;
 };
 
-function patchOf(record: KinRecord, action: KinWorkAction, names: KinWorkNames): Patch {
+function patchOf(
+  record: KinRecord | KinRecordDetail,
+  action: KinWorkAction,
+  names: KinWorkNames,
+): Patch {
   switch (action.type) {
     case "state": {
       const closing = kinWorkClosed(action.state);
@@ -348,6 +438,22 @@ function patchOf(record: KinRecord, action: KinWorkAction, names: KinWorkNames):
       return { sensitive: action.private };
     case "repeat":
       return { repeat: action.rule ?? undefined };
+    case "urgent":
+      return { urgent: action.urgent ? true : undefined };
+    case "tick": {
+      const held = "checklist" in record ? record.checklist : undefined;
+      return held === undefined
+        ? {}
+        : stepsShown(
+            held.map((step, index) =>
+              index === action.index ? { title: step.title, done: action.done } : step,
+            ),
+          );
+    }
+    case "steps":
+      return stepsShown(action.steps);
+    case "alsoOn":
+      return { alsoOn: action.alsoOn.length === 0 ? undefined : action.alsoOn };
   }
 }
 
@@ -364,6 +470,7 @@ export function createKinWorkChanges(options: {
   readonly assign: (input: KinWorkAssignInput) => Sent;
   readonly confirm: (input: KinWorkConfirmInput) => Sent;
   readonly decline: (input: KinWorkConfirmInput) => Sent;
+  readonly tickStep: (input: KinWorkTickStepInput) => Sent;
   /** Reads a task again after the host said it had moved on. */
   readonly reread: (key: KinRecordKey) => void;
   readonly online: () => boolean;
@@ -440,12 +547,28 @@ export function createKinWorkChanges(options: {
         return kinWorkSettled(await options.update({ ...at, sensitive: action.private }));
       case "repeat":
         return kinWorkSettled(await options.update({ ...at, repeat: action.rule }));
+      case "urgent":
+        return kinWorkSettled(await options.update({ ...at, urgent: action.urgent }));
+      case "tick":
+        return kinWorkSettled(
+          await options.tickStep({
+            orgId,
+            key: record.key,
+            index: action.index,
+            title: action.title,
+            done: action.done,
+          }),
+        );
+      case "steps":
+        return kinWorkSettled(await options.update({ ...at, steps: action.steps }));
+      case "alsoOn":
+        return kinWorkSettled(await options.update({ ...at, alsoOn: action.alsoOn }));
     }
   };
 
   /** Makes one change to the task as the owner sees it. Resolves true when the host took it. */
   const run = async (
-    held: KinRecord,
+    held: KinRecord | KinRecordDetail,
     action: KinWorkAction,
     names: KinWorkNames,
   ): Promise<boolean> => {
@@ -467,12 +590,16 @@ export function createKinWorkChanges(options: {
       set({
         pending,
         answers: { ...state.answers, [key]: outcome.item },
-        notice: {
-          key,
-          kind: "saved",
-          text: savedText(record, action, names),
-          undo: undoOf(record, action),
-        },
+        // A tick shows in its own box; a notice for each would only cover the list.
+        notice:
+          action.type === "tick"
+            ? null
+            : {
+                key,
+                kind: "saved",
+                text: savedText(record, action, names),
+                undo: undoOf(record, action),
+              },
       });
       return true;
     }
@@ -482,7 +609,16 @@ export function createKinWorkChanges(options: {
       notice: {
         key,
         kind: outcome.changed ? "conflict" : "failed",
-        text: outcome.changed && action.type === "edit" ? KIN_WORK_EDIT_CHANGED : outcome.problem,
+        text:
+          outcome.changed && action.type === "edit"
+            ? KIN_WORK_EDIT_CHANGED
+            : !outcome.changed &&
+                action.type === "alsoOn" &&
+                action.said === "back" &&
+                action.who._tag === "person" &&
+                action.who.personId === names.me
+              ? KIN_WORK_ALSO_ON_COPY.backRefused
+              : outcome.problem,
         undo: null,
       },
     });

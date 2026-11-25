@@ -6,6 +6,7 @@ import {
   kinSetAsideDays,
   kinSnoozeDays,
   type KinAsideRow,
+  type KinAttentionMore,
   type KinAttentionOpen,
   type KinAttentionRow,
   type KinAttentionScope,
@@ -156,7 +157,12 @@ export function KinAttentionItem(
         <Menu>
           <MenuTrigger
             render={
-              <Button size="icon-xs" variant="ghost" aria-label="More answers" disabled={busy} />
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label={KIN_ATTENTION.menu(row.title)}
+                disabled={busy}
+              />
             }
           >
             <EllipsisIcon />
@@ -296,6 +302,29 @@ export function KinAttentionHandled(props: {
   );
 }
 
+/** "N more … not listed" at the foot of a group: nothing to answer; one about money opens Money. */
+export function KinAttentionNotListed(props: {
+  readonly lines: ReadonlyArray<KinAttentionMore>;
+  readonly onOpen: (open: KinAttentionOpen) => void;
+}) {
+  if (props.lines.length === 0) return null;
+  return (
+    <ul className="flex flex-col">
+      {props.lines.map((line) => (
+        <li key={line.id}>
+          {line.open.type === "none" ? (
+            <p className="px-2 py-1.5 text-xs text-muted-foreground">{line.text}</p>
+          ) : (
+            <Button size="xs" variant="ghost-muted" onClick={() => props.onOpen(line.open)}>
+              {line.text}
+            </Button>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /**
  * "Needs attention" at the top of a project, a client or Money: only what is about it, and
  * nothing at all when nothing is open or set aside.
@@ -313,7 +342,7 @@ export function KinAttentionSection(
   const read = props.read === undefined ? own : props.read;
   const handler = useKinAttentionHandle(props, props.scope);
   const now = new Date(useNowMinuteMs());
-  const { open, handled, asides } = kinAttention(read, {
+  const { open, handled, asides, more } = kinAttention(read, {
     scope: props.scope,
     names: kinAttentionNames(props.names),
     now,
@@ -334,6 +363,7 @@ export function KinAttentionSection(
           ))}
         </ul>
       )}
+      <KinAttentionNotListed lines={more} onOpen={props.onOpen} />
       <KinAttentionHandled rows={handled} asides={asides} handler={handler} />
       {handler.problem === null ? null : (
         <p role="alert" className="px-2 text-xs text-destructive-foreground">

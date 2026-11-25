@@ -1,4 +1,5 @@
 import {
+  formatKinMoney,
   KIN_EXPORT_HOLDS,
   KIN_EXPORT_LEAVES,
   KIN_EXPORT_ROUTE,
@@ -34,9 +35,16 @@ import type {
   ImportProject,
 } from "./importFormat.ts";
 import { LISTS, parseFields, type FieldValues } from "./lists.ts";
-import { currencyDigits, dayIn } from "./money.ts";
-import { iso, ownerZone, workFailure } from "./recordRows.ts";
-import { allLists, keyFor, PRESETS, type ListDef, type PresetId } from "./registers.ts";
+import { dayIn } from "./money.ts";
+import { iso, ownerZone, stepsOf, workFailure } from "./recordRows.ts";
+import {
+  allLists,
+  keyFor,
+  legacyFieldType,
+  PRESETS,
+  type ListDef,
+  type PresetId,
+} from "./registers.ts";
 import { zipStream, type ZipEntry } from "./zipStream.ts";
 
 /**
@@ -149,11 +157,8 @@ export const readExportToken = Effect.fn("KinExport.readToken")(function* (
   return Option.filter(claims, (one) => one.expiresAt > now);
 });
 
-const decimal = (minor: number, currency: string) => {
-  const digits = currencyDigits(currency);
-  const text = String(minor).padStart(digits + 1, "0");
-  return digits === 0 ? text : `${text.slice(0, -digits)}.${text.slice(-digits)}`;
-};
+const decimal = (minor: number, currency: string) =>
+  formatKinMoney(minor, currency, { bare: true, cents: "always" });
 const line = (row: unknown) => `${JSON.stringify(row)}\n`;
 const some = <A>(key: string, value: A | null | undefined | "") =>
   value === null || value === undefined || value === "" ? {} : { [key]: value };
@@ -177,6 +182,8 @@ type RecordRow = {
   readonly confirmed: number;
   readonly notes: string;
   readonly fieldsJson: string;
+  readonly stepsJson: string | null;
+  readonly urgent: number | null;
   readonly createdAt: number;
   readonly closedAt: number | null;
 };
@@ -199,9 +206,9 @@ const listSpec = (def: ListDef): ImportList => {
     return [
       {
         label: one.label,
-        type: one.type,
+        type: legacyFieldType(one),
         ...some("choices", one.choices),
-        ...some("link", one.link),
+        ...some("link", one.link === "list" ? undefined : one.link),
         ...(one.sensitive && one.type !== "money" && one.type !== "file"
           ? { sensitive: true }
           : {}),
@@ -287,7 +294,7 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
       } else if (typeof value === "string") {
         if (spec?.type === "person") {
           if (value === `person:${owner}`) out[outKey] = "owner";
-        } else if (spec?.type === "link") {
+        } else if (spec !== undefined && legacyFieldType(spec) === "link") {
           const linked = parties.get(value);
           if (linked !== undefined) out[outKey] = linked;
         } else if (value.trim() !== "" && value.length <= 500) out[outKey] = value;
@@ -300,7 +307,7 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
       title, state, category, party_id AS "partyId", project_id AS "projectId", due_at AS "dueAt",
       due_all_day AS "dueAllDay", date_at AS "dateAt", date_all_day AS "dateAllDay",
       amount_minor AS "amountMinor", currency, sensitive, confirmed, notes,
-      fields_json AS "fieldsJson", created_at AS "createdAt", closed_at AS "closedAt"
+      fields_json AS "fieldsJson", steps_json AS "stepsJson", urgent, created_at AS "createdAt", closed_at AS "closedAt"
     FROM kin_records`;
   /** One register's rows in pages, so a company's whole history never sits in memory. */
   const pages = (registers: ReadonlyArray<string>, not: boolean) =>
@@ -395,6 +402,7 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
         const number = numbers.find((one) => one.recordId === row.recordId)?.number;
         const paid = payments.filter((one) => one.recordId === row.recordId);
         const fields = fieldsOf(row, def);
+        const steps = stepsOf(row);
         const entry: ImportEntry = {
           source: row.key,
           list: row.registerId,
@@ -409,6 +417,8 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
             ? {}
             : { amount: decimal(row.amountMinor, row.currency), currency: row.currency }),
           ...some("notes", row.notes),
+          ...(steps.length > 0 ? { steps } : {}),
+          ...(row.registerId === "work" ? { urgent: row.urgent === 1 } : {}),
           ...(Object.keys(fields).length === 0 ? {} : { fields }),
           ...(row.sensitive === 1 ? { sensitive: true } : {}),
           ...(row.confirmed === 0 ? { suggested: true } : {}),

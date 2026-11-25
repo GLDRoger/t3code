@@ -23,8 +23,16 @@ export function setupFailure(failure: OrchestrationV2ProviderFailure): SetupFail
     return "model";
   return null;
 }
-/** The Claude CLI words a failed API call as the turn's own reply; it is the provider's text. */
-export const isProviderErrorText = (text: string) => text.trimStart().startsWith("API Error:");
+/** Some harnesses also put their terminal diagnostic in the assistant transcript. */
+export function isProviderErrorText(text: string, failure: OrchestrationV2ProviderFailure) {
+  const line = normalized(text);
+  return (
+    line !== "" &&
+    (line === normalized(failure.message) ||
+      line.startsWith("API Error:") ||
+      (setupFailure(failure) === "signin" && line === "Not logged in · Please run /login"))
+  );
+}
 /** The setup failure that ended a run from `rootRunId` on, if one did. */
 export function setupFailureIn(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">,
@@ -228,6 +236,7 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)memory_\w+$/, "Making a note"],
   [/(?:^|__|\.)kin_defer$/, "Setting a reminder"],
   [/(?:^|__|\.)kin_leads$/, "Checking who handles this"],
+  [/(?:^|__|\.)kin_computer$/, "Checking Kin's computer"],
   [/(?:^|__|\.)people_read$/, "Checking who's on the team"],
   [/(?:^|__|\.)people_update$/, "Updating a profile"],
   [/(?:^|__|\.)away_set$/, "Noting when you're away"],
@@ -241,13 +250,17 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)pulse_nudge$/, "Nudging a teammate"],
   [/(?:^|__|\.)kin_ask$/, "Writing a question"],
   [/(?:^|__|\.)kin_ask_close$/, "Closing a question"],
+  [/(?:^|__|\.)message_withdraw$/, "Taking back a message"],
+  [/(?:^|__|\.)message_replace$/, "Updating a message"],
   [/(?:^|__|\.)kin_ask_person$/, "Asking a teammate"],
   [/(?:^|__|\.)agent_update$/, "Updating an agent"],
   [/(?:^|__|\.)kin_chart$/, "Drawing a chart"],
   [/(?:^|__|\.)kin_visual$/, "Putting a visual together"],
+  [/(?:^|__|\.)kin_picture$/, "Making a picture"],
   [/(?:^|__|\.)kin_schedule$/, "Setting up a schedule"],
   [/(?:^|__|\.)kin_cancel$/, "Cancelling it"],
   [/(?:^|__|\.)kin_github_review$/, "Reviewing a pull request"],
+  [/(?:^|__|\.)kin_github_review_ask$/, "Starting a pull request review"],
   [/(?:^|__|\.)kin_github_link$/, "Linking GitHub to Work"],
   [/(?:^|__|\.)kin_github_watch$/, "Checking which repos Kin watches"],
   [/(?:^|__|\.)kin_github_\w+$/, "Checking GitHub"],

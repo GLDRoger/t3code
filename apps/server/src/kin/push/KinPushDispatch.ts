@@ -4,6 +4,7 @@ import type {
   KinChatId,
   KinMessageId,
   KinOrgId,
+  KinWakeupId,
   KinWidget,
   KinWidgetId,
 } from "@t3tools/contracts";
@@ -13,8 +14,10 @@ import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 
 import { ApproverKeys } from "../approvals/ApproverKeys.ts";
+import { KinPendingActions } from "../approvals/PendingActions.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinPushSender } from "./KinPushSender.ts";
+import { approvalTopic, cardTopic, chatTopic, taskTopic } from "./KinPushTopics.ts";
 
 const phaseOf = (widget: KinWidget) =>
   typeof widget.state === "object" && widget.state !== null && "phase" in widget.state
@@ -45,31 +48,20 @@ const make = Effect.gen(function* () {
   // An agent's turn in a chat, from its presence line to the line's end. A card the turn posts
   // waits for the turn's end: whoever its words rang heard of the card with them.
   type Turn = {
-    readonly agents: Set<KinAgentId>;
-    readonly said: Array<KinMessageId>;
+    /** Each agent showing a line here, and the wake-up it shows; null for a queue line. */
+    readonly agents: Map<KinAgentId, KinWakeupId | null>;
+    said: Array<KinMessageId>;
     readonly cards: Map<KinWidgetId, KinWidget>;
   };
   const turns = new Map<string, Turn>();
   const turnKey = (orgId: KinOrgId, chatId: KinChatId) => `${orgId}\u0000${chatId}`;
 
-  const onPresence = Effect.fn("KinPushDispatch.onPresence")(function* (
-    orgId: KinOrgId,
-    chatId: KinChatId,
-    agentId: KinAgentId,
-    on: boolean,
-  ) {
-    const key = turnKey(orgId, chatId);
-    const turn = turns.get(key);
-    if (on) {
-      if (turn === undefined)
-        turns.set(key, { agents: new Set([agentId]), said: [], cards: new Map() });
-      else turn.agents.add(agentId);
-      return;
-    }
-    if (turn === undefined) return;
-    turn.agents.delete(agentId);
-    if (turn.agents.size > 0) return;
-    turns.delete(key);
+  const release = Effect.fn("KinPushDispatch.release")(function* (orgId: KinOrgId, turn: Turn) {
+    if (turn.cards.size > 0)
+      yield* Effect.logInfo("Kin push sends the cards a turn held", {
+        orgId,
+        widgetIds: [...turn.cards.keys()],
+      });
     for (const card of turn.cards.values())
       yield* sender.notify({
         _tag: "widget",
@@ -79,9 +71,56 @@ const make = Effect.gen(function* () {
       });
   });
 
+  const onPresence = Effect.fn("KinPushDispatch.onPresence")(function* (
+    orgId: KinOrgId,
+    chatId: KinChatId,
+    agentId: KinAgentId,
+    wakeupId: KinWakeupId | null | undefined,
+  ) {
+    const key = turnKey(orgId, chatId);
+    const turn = turns.get(key);
+    if (wakeupId !== undefined) {
+      if (turn === undefined) {
+        turns.set(key, { agents: new Map([[agentId, wakeupId]]), said: [], cards: new Map() });
+        return;
+      }
+      const showing = turn.agents.get(agentId);
+      // A line that moves on to the next wake-up with no end between: the last one's turn is over.
+      if (showing !== undefined && showing !== null && wakeupId !== null && showing !== wakeupId) {
+        yield* release(orgId, turn);
+        turn.said = [];
+        turn.cards.clear();
+      }
+      if (wakeupId !== null || showing === undefined) turn.agents.set(agentId, wakeupId);
+      return;
+    }
+    if (turn === undefined) return;
+    turn.agents.delete(agentId);
+    if (turn.agents.size > 0) return;
+    turns.delete(key);
+    yield* release(orgId, turn);
+  });
+
   const onWidget = Effect.fn("KinPushDispatch.onWidget")(function* (widget: KinWidget) {
     const previous = announced.get(widget.widgetId);
     const turn = turns.get(turnKey(widget.orgId, widget.chatId));
+    // Closed, answered, or no longer waiting on someone: what its push told them may be settled.
+    if (
+      widget.closedAt !== null ||
+      widget.awaiting.length === 0 ||
+      [...(previous?.awaiting ?? [])].some(
+        (person) => !new Set<string>(widget.awaiting).has(person),
+      )
+    ) {
+      const actionId = actionOf(widget);
+      yield* sender.settle(widget.orgId, {
+        topics: [
+          cardTopic(widget.widgetId),
+          ...(actionId === null ? [] : [approvalTopic(actionId)]),
+        ],
+        messageIds: [widget.messageId],
+      });
+    }
     if (widget.closedAt !== null || widget.awaiting.length === 0) {
       announced.delete(widget.widgetId);
       turn?.cards.delete(widget.widgetId);
@@ -96,6 +135,11 @@ const make = Effect.gen(function* () {
     if (!fresh) return;
     if (widget.type !== "approval") {
       if (turn !== undefined && turn.said.includes(widget.messageId)) {
+        if (!turn.cards.has(widget.widgetId))
+          yield* Effect.logInfo("Kin push holds a card for its turn's end", {
+            orgId: widget.orgId,
+            widgetId: widget.widgetId,
+          });
         turn.cards.set(widget.widgetId, widget);
         return;
       }
@@ -117,6 +161,14 @@ const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
+  // An approval decided, withdrawn or run out, whether or not a card shows it.
+  const actionChanges = yield* (yield* KinPendingActions).changes;
+  yield* Effect.forever(
+    PubSub.take(actionChanges).pipe(
+      Effect.flatMap((ref) => sender.settle(ref.orgId, { topics: [approvalTopic(ref.actionId)] })),
+    ),
+  ).pipe(Effect.forkScoped);
+
   const onMessage = (event: Extract<KinChatHubEvent, { type: "message.posted" }>) => {
     const { message } = event;
     const turn = turns.get(turnKey(event.orgId, message.chatId));
@@ -132,7 +184,7 @@ const make = Effect.gen(function* () {
       : event.type === "widget.updated"
         ? onWidget(event.widget)
         : event.type === "presence.updated"
-          ? onPresence(event.orgId, event.chatId, event.agentId, event.presence !== null)
+          ? onPresence(event.orgId, event.chatId, event.agentId, event.presence?.wakeupId)
           : event.type === "read.updated"
             ? sender.notify({
                 _tag: "read",
@@ -140,8 +192,44 @@ const make = Effect.gen(function* () {
                 chatId: event.chatId,
                 memberId: event.memberId,
               })
-            : Effect.void,
+            : event.type === "chat.cleared"
+              ? sender.settle(event.orgId, {
+                  chatId: event.chatId,
+                  topics: [chatTopic(event.chatId)],
+                })
+              : event.type === "member.removed" && event.member.principal._tag === "person"
+                ? sender.settle(event.orgId, {
+                    chatId: event.member.chatId,
+                    topics: [chatTopic(event.member.chatId)],
+                    personId: event.member.principal.personId,
+                  })
+                : event.type === "message.changed" && event.message.status !== "posted"
+                  ? sender.settle(event.orgId, {
+                      messageIds: [event.message.messageId],
+                      topics: [chatTopic(event.message.chatId)],
+                    })
+                  : Effect.void,
   ).pipe(Effect.forkScoped);
+});
+
+/**
+ * A task done, dropped or handed on settles what pushes told of it: its own topic, and Kin's
+ * notices and quiet-hours bundles that name it among others, found by its key. Runs for as long as the caller's scope, from Kin's layer, which holds
+ * the tasks service this layer sits beside.
+ */
+export const settleTasks = Effect.fn("KinPushDispatch.settleTasks")(function* <E>(
+  orgId: KinOrgId,
+  changes: Stream.Stream<{ readonly key?: string | undefined }, E>,
+) {
+  const sender = yield* KinPushSender;
+  yield* Stream.runForEach(changes, (tick) =>
+    tick.key === undefined
+      ? Effect.void
+      : sender.settle(orgId, { topics: [taskTopic(tick.key)], keys: [`task:${tick.key}`] }),
+  ).pipe(
+    Effect.catchCause((cause) => Effect.logWarning("Kin push stopped following tasks", { cause })),
+    Effect.forkScoped,
+  );
 });
 
 export const layer = Layer.effectDiscard(make);

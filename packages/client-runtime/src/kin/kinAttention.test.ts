@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Fixtures read days relative to a fixed local date.
 import {
   KinAgentId,
+  KinChatId,
   KinPersonId,
   KinRecordId,
   type KinGoal,
@@ -178,6 +179,28 @@ describe("kinAttention", () => {
     expect(money.open).toHaveLength(0);
     expect(money.handled).toHaveLength(1);
     expect(kinAttentionCount(read(facts))).toBe(3);
+    // "N more not listed" is the quiet last line of its group, never a row or a count.
+    const overflow = (id: string, family: KinPulseFact["family"]): KinPulseFact => ({
+      ...fact("task_late", id),
+      sense: "sense_overflow",
+      family,
+      key: `sense_overflow:${id}`,
+      subject: { kind: "overflow", key: `sense_overflow:${id}`, title: `12 more ${id} not listed` },
+      scope: {},
+    });
+    const capped = read([...facts, overflow("late tasks", "work"), overflow("bills", "money")]);
+    const listed = kinAttention(capped, { scope: { type: "all" }, names, now });
+    expect(listed.open.map((row) => row.factKey)).not.toContain("sense_overflow:bills");
+    expect(listed.more).toEqual([
+      {
+        id: "sense_overflow:late tasks",
+        text: "12 more late tasks not listed",
+        open: { type: "none" },
+      },
+      { id: "sense_overflow:bills", text: "12 more bills not listed", open: { type: "money" } },
+    ]);
+    expect(kinAttention(capped, { scope: { type: "money" }, names, now }).more).toHaveLength(1);
+    expect(kinAttentionCount(capped)).toBe(3);
     const all = kinAttention(read([...facts.slice(0, 2), fact("invoice_overdue", "INV-2")]), {
       scope: { type: "all" },
       names,
@@ -220,6 +243,35 @@ describe("kinAttention", () => {
       kinTasksBadgeCount({ ownerLevel: true, attention: twoOwed, mineDue: null }),
     );
     expect(onMe?.onMe).toBe(1);
+    // What waits on you is never behind "See all": the sidebar's "Waiting on you" lists it.
+    const waitingRow: KinNeedsYouRow = {
+      id: "waiting:w-1",
+      kind: "waiting",
+      title: "Draft to approve · Chief of staff",
+      detail: "Approve it to go as a proposal?",
+      late: false,
+      open: { type: "chat", chatId: KinChatId.make("chat-1"), messageId: null },
+    };
+    const lateTask: KinNeedsYouRow = {
+      id: "task:W-9",
+      kind: "task",
+      title: "Send the deck",
+      detail: "W-9 · Late",
+      late: true,
+      open: { type: "task", key: "W-9" },
+    };
+    const full = kinTasksBlock({
+      ownerLevel: true,
+      onMe: new Set(),
+      attention: owing.rows,
+      needs: [...(owing.moneyRow === null ? [] : [owing.moneyRow]), lateTask, waitingRow],
+      hidden: 0,
+      handled: 0,
+      expanded: false,
+    });
+    expect(full?.needs.map((row) => row.id)).toEqual(["attention:money", waitingRow.id]);
+    expect(full?.attention).toHaveLength(2);
+    expect(full?.more).toBe(true);
     // A project or client fact does not repeat its own name after its key.
     const own = kinAttention(
       read([

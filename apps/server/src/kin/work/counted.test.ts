@@ -38,11 +38,19 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "work/exportBundle.ts": 2,
   // One settlement's parts, read to check a retry.
   "work/leadMoney.ts": 1,
-  // A new entry's repeats: entries of its exact amount, compared one by one, nothing summed.
-  "work/leadWork.ts": 1,
+  // Duplicate and paired-entry candidates, including the two sign filters for undated refunds.
+  "work/leadWork.ts": 4,
+  // The expenses one bill may already be, by its own amount; the expenses a batch's bills became,
+  // each shown on its own row as it stands. Nothing summed.
+  "work/bills.ts": 2,
   // A statement's own rows, and the entries and recorded payments one row may match.
   "work/statements/bankList.ts": 1,
+  // The entries one bank alert may already be, and a statement's alert entries listed one by
+  // one against its rows: amounts matched and named, nothing summed.
+  "work/statements/bankAlerts.ts": 2,
   "work/statements/statementReview.ts": 4,
+  // One invoice's own amount and payments: whether it is paid in full, so its watch closes.
+  "watches/kinds/invoicePaid.ts": 1,
   // Whether a figure in a message is the sum on some entry or payment its reader can't see.
   "work/teamView.ts": 3,
 };
@@ -127,6 +135,13 @@ describe("what a figure counts", () => {
     );
     const expected = Object.fromEntries(Object.entries(OWN_READS).filter(([, n]) => n > 0));
     assert.deepStrictEqual(counts, expected, JSON.stringify(seen, null, 2));
+    assert.deepStrictEqual(
+      seen["work/leadWork.ts"]?.filter((read) => read.startsWith("r.amount_minor IS NULL OR ")),
+      [
+        "r.amount_minor IS NULL OR r.amount_minor <= 0",
+        "r.amount_minor IS NULL OR r.amount_minor >= 0",
+      ],
+    );
   });
 
   it("sees a read however it is written", () => {

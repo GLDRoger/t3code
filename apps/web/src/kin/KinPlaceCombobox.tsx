@@ -15,6 +15,8 @@ import {
 } from "../components/ui/combobox";
 import { Label } from "../components/ui/label";
 import { useKinPickerSearch, type KinWorkTarget } from "./useKinWork";
+import { useKinShell } from "./useKinShell";
+import { kinPickerNamed, kinSectionNoun } from "@t3tools/client-runtime/kin/kinShell";
 
 // Not a record key: those are a prefix, a dash and a number.
 const NOTHING_KEY = "kin:nothing";
@@ -23,7 +25,7 @@ const NOTHING_KEY = "kin:nothing";
  * A client or a project, or neither, found by typing part of its name: the first page shows at
  * once, and typing asks the host about every one the person may see.
  */
-export function KinPlaceCombobox(props: {
+export function KinPlaceCombobox(given: {
   readonly target: KinWorkTarget;
   readonly noun: "client" | "project";
   readonly label: string;
@@ -33,11 +35,17 @@ export function KinPlaceCombobox(props: {
   readonly placeholder?: string;
   readonly value: KinWorkRef | null;
   readonly choices: ReadonlyArray<KinWorkRef>;
+  /** The only keys this viewer may pick (`kinTaskProjectsAllowed`); null or absent for any. */
+  readonly only?: ReadonlySet<string> | null;
   /** One more choice that is not a client or project, such as "No client", offered untyped. */
   readonly extra?: KinWorkRef;
   readonly onChange: (value: KinWorkRef | null) => void;
 }) {
+  // A client picker says the company's own word for Clients in its label and its own rows.
+  const clientShell = useKinShell(given.target.environmentId);
+  const props = kinPickerNamed(clientShell, given);
   const id = useId();
+  const clientNoun = kinSectionNoun(clientShell, "clients");
   const search = useKinPickerSearch(
     props.target,
     props.noun === "client" ? "clients" : "projects",
@@ -50,6 +58,8 @@ export function KinPlaceCombobox(props: {
     search: search.state,
     loaded: { open: props.choices, done: [] },
     held,
+    only: props.only ?? null,
+    called: props.noun === "client" ? clientNoun : "project",
   });
   const typed = search.state.text.trim() !== "";
   const nothing =

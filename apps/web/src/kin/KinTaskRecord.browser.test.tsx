@@ -69,6 +69,7 @@ vi.mock(import("./useKinHost"), async (importOriginal) => ({
 }));
 // Files take the chat's upload path, which is its own; this note carries words only.
 vi.mock(import("./KinComposerAttachments"), () => ({
+  KinAttachButton: (() => null) as never,
   KinComposerAttachmentStrip: () => null,
   useKinComposerAttachments: (() => ({
     count: 0,

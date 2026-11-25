@@ -16,6 +16,7 @@ const run = (
 
 const left = { type: "end-check", isAtEnd: false } as const;
 const reached = { type: "end-check", isAtEnd: true } as const;
+const landed = { type: "land" } as const;
 const scrolled = (seq = 40) => ({ type: "navigated", seq }) as const;
 
 describe("resolveKinFeedFollow", () => {
@@ -53,6 +54,18 @@ describe("resolveKinFeedFollow", () => {
       events: [{ type: "page-start" }, { type: "page-settled", added: true }, reached],
       follows: true,
     },
+    // Opened on a card above the end: the end's re-pin must not take the reader back down.
+    { name: "opened on a card", events: [landed], follows: false },
+    {
+      name: "opened on a card; the list still reads the end",
+      events: [landed, reached],
+      follows: false,
+    },
+    {
+      name: "opened on a card, then back at the end",
+      events: [landed, left, reached],
+      follows: true,
+    },
   ])("$name → follows $follows", ({ events, follows }) => {
     expect(kinFollowsEnd(run(events))).toBe(follows);
   });
@@ -62,6 +75,7 @@ describe("resolveKinFeedFollow", () => {
     expect(kinRepinsEnd(run([left]), true)).toBe(false);
     expect(kinRepinsEnd(run([scrolled()]), false)).toBe(false);
     expect(kinRepinsEnd(run([{ type: "page-start" }]), false)).toBe(false);
+    expect(kinRepinsEnd(run([left, landed]), false)).toBe(false);
   });
 
   it("counts only messages that arrive after the person scrolled away", () => {

@@ -6,8 +6,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail } from "../connections/Sending.ts";
 import { formatMoney } from "../work/money.ts";
-import { countedPayment, recordName } from "../work/recordRows.ts";
-import { seenBy, type KinViewer } from "../work/teamView.ts";
+import { countedPayment, dueText, ownerZone, recordName } from "../work/recordRows.ts";
+import { listMoneySeenBy, seenBy, type KinViewer } from "../work/teamView.ts";
+import { leadNamer, toolNameOfText } from "../work/toolNames.ts";
 
 /**
  * What happened in Kin's records between `from` and `until` (the company's day), for the evening
@@ -48,7 +49,13 @@ const STATE_WORDS: Record<string, string> = {
 
 const decodeFields = Schema.decodeUnknownOption(
   Schema.fromJsonString(
-    Schema.Array(Schema.Struct({ field: Schema.String, to: Schema.NullOr(Schema.String) })),
+    Schema.Array(
+      Schema.Struct({
+        field: Schema.String,
+        from: Schema.optional(Schema.NullOr(Schema.String)),
+        to: Schema.NullOr(Schema.String),
+      }),
+    ),
   ),
 );
 const excerpt = (text: string) => {
@@ -86,26 +93,17 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
   readonly from: number;
   readonly until: number;
   readonly viewer: KinViewer;
+  /** The lead the day is read to. */
+  readonly agentId: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, from, until, viewer } = input;
-  const people = yield* sql<{ id: string; name: string }>`SELECT person_id AS id,
-      display_name AS name FROM kin_people WHERE org_id = ${orgId} ORDER BY person_id`;
-  const agents = yield* sql<{ id: string; name: string }>`SELECT agent_id AS id,
-      display_name AS name FROM kin_agents WHERE org_id = ${orgId} ORDER BY agent_id`;
-  const personName = new Map(people.map((one) => [one.id, one.name]));
-  const agentName = new Map(agents.map((one) => [one.id, one.name]));
+  const name = yield* leadNamer(orgId, input.agentId);
+  const zone = yield* ownerZone(orgId);
+  const principalName = (shown: string | null) =>
+    shown === null ? "nobody" : toolNameOfText(shown, name);
   const nameOf = (kind: string, id: string | null) =>
-    kind === "person"
-      ? (personName.get(id ?? "") ?? "a person")
-      : kind === "agent"
-        ? (agentName.get(id ?? "") ?? "an agent")
-        : "Kin";
-  const principalName = (shown: string | null) => {
-    if (shown === null) return "nobody";
-    const at = shown.indexOf(":");
-    return at < 0 ? shown : nameOf(shown.slice(0, at), shown.slice(at + 1));
-  };
+    id === null || (kind !== "person" && kind !== "agent") ? "Kin" : principalName(`${kind}:${id}`);
 
   const changes = yield* sql<{
     recordId: string;
@@ -114,13 +112,16 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
     list: string;
     state: string;
     confirmed: number;
+    dueAllDay: number;
     kind: string;
+    codingAgent: number;
     actorKind: string;
     actorId: string | null;
     fieldsJson: string;
   }>`SELECT c.record_id AS "recordId", r.key, r.title, r.register_id AS list, r.state,
-      r.confirmed, c.kind, c.actor_kind AS "actorKind", c.actor_id AS "actorId",
-      c.fields_json AS "fieldsJson"
+      r.confirmed, r.due_all_day AS "dueAllDay", c.kind, c.actor_kind AS "actorKind",
+      c.actor_id AS "actorId", c.fields_json AS "fieldsJson",
+      c.coding_agent_key IS NOT NULL AS "codingAgent"
     FROM kin_record_changes c JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
     WHERE c.org_id = ${orgId} AND c.at >= ${from} AND c.at < ${until} AND ${seenBy(sql, viewer)}
     ORDER BY c.seq`;
@@ -134,32 +135,46 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
   for (const rows of byRecord.values()) {
     const first = rows[0]!;
     const named = `${first.key} ${first.title}`;
+    const listWord = LIST_WORDS[first.list] ?? first.list;
     const created = rows.find((row) => row.kind === "created");
     if (created !== undefined)
       made.push(
-        `${named} (${LIST_WORDS[first.list] ?? first.list}${first.confirmed === 1 ? "" : ", suggested, not kept yet"}), by ${nameOf(created.actorKind, created.actorId)}`,
+        `${named} (${listWord}${first.confirmed === 1 ? "" : ", suggested, not kept yet"}), by ${nameOf(created.actorKind, created.actorId)}`,
       );
     const moves: Array<string> = [];
     let doneBy: string | undefined;
+    // The day's due moves as one: from where it stood before the first to where the last left it.
+    let due:
+      | { readonly from: string | null; readonly to: string | null; readonly who: string }
+      | undefined;
     for (const row of rows) {
       if (row.kind !== "updated") continue;
       const who = nameOf(row.actorKind, row.actorId);
       for (const field of Option.getOrElse(decodeFields(row.fieldsJson), () => [])) {
         if (field.field === "notes") notes.push(`${named}: notes edited by ${who}`);
         if (!(WORK_LISTS as ReadonlyArray<string>).includes(first.list)) continue;
-        if (field.field === "state" && field.to === "done") doneBy = who;
+        if (field.field === "state" && field.to === "done")
+          doneBy = row.codingAgent === 1 ? `${who} (through a coding agent)` : who;
+        else if (field.field === "due")
+          due = { from: due === undefined ? (field.from ?? null) : due.from, to: field.to, who };
         else if (field.field === "state")
-          moves.push(`now ${STATE_WORDS[field.to ?? ""] ?? field.to} (${who})`);
+          moves.push(`now ${STATE_WORDS[field.to ?? ""] ?? field.to} by ${who}`);
         else if (field.field === "owner")
-          moves.push(`given to ${principalName(field.to)} (${who})`);
+          moves.push(`given to ${principalName(field.to)} by ${who}`);
         else if (field.field === "waitingOn" && field.to !== null)
-          moves.push(`waiting on ${principalName(field.to)} (${who})`);
+          moves.push(`marked waiting on ${principalName(field.to)} by ${who}`);
       }
     }
+    if (due !== undefined && due.from !== due.to)
+      moves.push(
+        due.to === null
+          ? `due date taken off by ${due.who}`
+          : `due moved to ${dueText(Date.parse(due.to), first.dueAllDay === 1, zone)} by ${due.who}`,
+      );
     // Finished and still done now; one reopened since reads as a change.
     if (doneBy !== undefined && first.state === "done")
-      finished.push(`${named}, done by ${doneBy}`);
-    else if (doneBy !== undefined) moves.push(`was done (${doneBy})`);
+      finished.push(`${named} (${listWord}): marked done by ${doneBy}`);
+    else if (doneBy !== undefined) moves.push(`was done by ${doneBy}`);
     if (moves.length > 0) changed.push(`${named}: ${moves.join(", ")}`);
   }
 
@@ -168,16 +183,19 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
     title: string;
     authorKind: string;
     authorId: string;
+    codingAgent: number;
     body: string;
-  }>`SELECT r.key, r.title, k.author_kind AS "authorKind", k.author_id AS "authorId", k.body
+  }>`SELECT r.key, r.title, k.author_kind AS "authorKind", k.author_id AS "authorId", k.body,
+      k.coding_agent_key IS NOT NULL AS "codingAgent"
     FROM kin_record_comments k JOIN kin_records r ON r.org_id = k.org_id AND r.record_id = k.record_id
     WHERE k.org_id = ${orgId} AND k.created_at >= ${from} AND k.created_at < ${until}
       AND k.removed_at IS NULL AND ${seenBy(sql, viewer)}
     ORDER BY k.created_at, k.comment_id`;
-  for (const comment of comments)
-    notes.push(
-      `${comment.key} ${comment.title}: note by ${nameOf(comment.authorKind, comment.authorId)}: "${excerpt(comment.body)}"`,
-    );
+  for (const comment of comments) {
+    const name = nameOf(comment.authorKind, comment.authorId);
+    const by = comment.codingAgent === 1 ? `${name} (coding agent)` : name;
+    notes.push(`${comment.key} ${comment.title}: note by ${by}: "${excerpt(comment.body)}"`);
+  }
 
   const payments = yield* sql<{
     key: string;
@@ -193,7 +211,7 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
       json_extract(r.fields_json, '$.number') AS number
     FROM kin_record_payments p JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND p.created_at >= ${from} AND p.created_at < ${until}
-      AND ${countedPayment(sql)} AND ${seenBy(sql, viewer)}
+      AND ${countedPayment(sql)} AND ${seenBy(sql, viewer)} AND ${listMoneySeenBy(sql, viewer)}
     ORDER BY p.created_at, p.payment_id`;
   const money = payments.map(
     (one) =>

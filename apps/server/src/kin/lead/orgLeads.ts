@@ -22,15 +22,21 @@ export interface LiveLead {
 }
 
 /**
- * The live lead that work in `orgId` belongs to: the chat's first-joined lead (as the floor picks
- * it), else the first lead created in `prefer`'s domain, else the first lead created.
+ * The live lead that work in `orgId` belongs to: `agentId` while it is live, else the chat's
+ * first-joined lead (as the floor picks it), else the first lead created in `prefer`'s domain,
+ * else the first lead created.
  */
 export const liveLead = Effect.fn("KinOrgLeads.liveLead")(function* (
   sql: SqlClient.SqlClient,
   orgId: KinOrgId,
-  options: { readonly chatId?: string | null | undefined; readonly prefer: KinLeadDomain },
+  options: {
+    readonly agentId?: string | undefined;
+    readonly chatId?: string | null | undefined;
+    readonly prefer: KinLeadDomain;
+  },
 ) {
   const chatId = options.chatId ?? null;
+  const agentId = options.agentId ?? null;
   const [row] = yield* sql<{
     agentId: string;
     name: string;
@@ -47,7 +53,8 @@ export const liveLead = Effect.fn("KinOrgLeads.liveLead")(function* (
     LEFT JOIN kin_chat_members m ON m.org_id = l.org_id AND m.chat_id = ${chatId}
       AND m.principal_kind = 'agent' AND m.agent_id = l.agent_id AND m.left_at IS NULL
     WHERE l.org_id = ${orgId}
-    ORDER BY CASE WHEN m.member_id IS NULL THEN 1 ELSE 0 END, m.joined_at,
+    ORDER BY CASE WHEN l.agent_id = ${agentId} THEN 0 ELSE 1 END,
+      CASE WHEN m.member_id IS NULL THEN 1 ELSE 0 END, m.joined_at,
       CASE WHEN l.domain = ${options.prefer} THEN 0 ELSE 1 END, a.created_at, l.agent_id
     LIMIT 1`;
   return row === undefined

@@ -22,9 +22,11 @@ import { kinRatesOf } from "../kinCurrency.ts";
 import { kinReadDates, type KinDatesWindow } from "../kinDates.ts";
 import { KIN_INVOICES, kinIssueNotice, kinReceiptNotice } from "../kinInvoices.ts";
 import {
+  kinAmountConfirmed,
   kinListQuery,
   kinListSameFilter,
   kinListSend,
+  type KinAmountAsk,
   type KinListContext,
   type KinListFilter,
 } from "../kinLists.ts";
@@ -37,6 +39,7 @@ import {
   type KinPagedListState,
 } from "../kinWorkList.ts";
 import type { KinHookApp, KinUseMoneyLive, KinUseOpenChat } from "./kinHookApp.ts";
+import { runKinCommand } from "../kinRunCommand.ts";
 
 /** The app's own hooks and atoms Money's hooks read through. */
 export interface KinMoneyUses {
@@ -198,7 +201,10 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
         onChange: setState,
         schedule,
         read: async (input, filter) => {
-          const result = await kinClient.workList.run(registry, { environmentId, input });
+          const result = await runKinCommand(registry, kinClient.workList, {
+            environmentId,
+            input,
+          });
           if (AsyncResult.isSuccess(result) && result.value.totals !== undefined)
             setTotals({ filter, totals: result.value.totals });
           return result;
@@ -248,12 +254,15 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
     useEffect(() => {
       if (from === null || to === null) return;
       let current = true;
-      void kinReadDates((input) => kinClient.workDates.run(registry, { environmentId, input }), {
-        orgId,
-        from,
-        to,
-        ...(openOnly ? { open: true } : {}),
-      }).then((result) => {
+      void kinReadDates(
+        (input) => runKinCommand(registry, kinClient.workDates, { environmentId, input }),
+        {
+          orgId,
+          from,
+          to,
+          ...(openOnly ? { open: true } : {}),
+        },
+      ).then((result) => {
         if (!current) return;
         setHeld((before) =>
           AsyncResult.isSuccess(result)
@@ -288,7 +297,11 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
     const takeBack = useAtomCommand(kinClient.workPaymentVoid, { reportFailure: false });
     const [busy, setBusy] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
-    const run = async <A>(send: () => Promise<AsyncResult.AsyncResult<A, unknown>>) => {
+    const [asked, setAsked] = useState<KinAmountAsk | null>(null);
+    const run = async <A>(
+      send: () => Promise<AsyncResult.AsyncResult<A, unknown>>,
+      about?: string,
+    ) => {
       setBusy(true);
       setProblem(null);
       const outcome = await kinReads.sendEntryChange(
@@ -298,25 +311,42 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
         send as Parameters<typeof kinListSend<A>>[0]["send"],
       );
       setBusy(false);
+      if (!outcome.ok && outcome.slip !== undefined && about !== undefined)
+        setAsked({ line: outcome.slip, about });
       return outcome;
     };
-    const shown = async <A>(send: () => Promise<AsyncResult.AsyncResult<A, unknown>>) => {
-      const outcome = await run(send);
-      if (!outcome.ok) setProblem(outcome.problem);
+    const shown = async <A>(
+      send: () => Promise<AsyncResult.AsyncResult<A, unknown>>,
+      about?: string,
+    ) => {
+      const outcome = await run(send, about);
+      if (!outcome.ok && outcome.slip === undefined) setProblem(outcome.problem);
       return outcome.ok;
     };
     type Patch = Omit<Parameters<typeof update>[0]["input"], "orgId" | "key" | "rev">;
+    /** With the amount as typed, a form that asks once about an amount far above its list. */
+    const send = (rev: number, patch: Patch, about: string | undefined) =>
+      update({
+        environmentId,
+        input: {
+          orgId,
+          key,
+          rev,
+          ...patch,
+          ...(about === undefined ? {} : kinAmountConfirmed(asked, about)),
+        },
+      });
     return {
       busy,
       problem,
+      /** The amount question standing, for the form to show while the amount is `about`. */
+      ask: asked,
       dismiss: () => setProblem(null),
-      update: (rev: number, patch: Patch) =>
-        shown(() => update({ environmentId, input: { orgId, key, rev, ...patch } })),
+      update: (rev: number, patch: Patch, about?: string) =>
+        shown(() => send(rev, patch, about), about),
       /** For a box that shows its own problem beside what was typed: the reason, or null once saved. */
-      edit: async (rev: number, patch: Patch) => {
-        const outcome = await run(() =>
-          update({ environmentId, input: { orgId, key, rev, ...patch } }),
-        );
+      edit: async (rev: number, patch: Patch, about?: string) => {
+        const outcome = await run(() => send(rev, patch, about), about);
         return outcome.ok ? null : outcome.problem;
       },
       pay: (input: Omit<Parameters<typeof pay>[0]["input"], "orgId" | "key">) =>
@@ -340,18 +370,16 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
       let current = true;
       const cancel = schedule(
         () =>
-          void kinClient.workFiles
-            .run(registry, {
-              environmentId,
-              input: { orgId, limit: 50, ...(words === "" ? {} : { text: words }) },
-            })
-            .then((result) => {
-              if (current)
-                setHeld({
-                  request,
-                  files: AsyncResult.isSuccess(result) ? result.value.files : null,
-                });
-            }),
+          void runKinCommand(registry, kinClient.workFiles, {
+            environmentId,
+            input: { orgId, limit: 50, ...(words === "" ? {} : { text: words }) },
+          }).then((result) => {
+            if (current)
+              setHeld({
+                request,
+                files: AsyncResult.isSuccess(result) ? result.value.files : null,
+              });
+          }),
         words === "" ? 0 : 250,
       );
       return () => {

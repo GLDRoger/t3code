@@ -35,12 +35,13 @@ export function signed(body: string, agentName: string): string {
 export const postKey = (text: string) =>
   NodeCrypto.createHash("sha256").update(text.replace(/\r\n?/g, "\n").trim()).digest("hex");
 
-/** The keys in an `agent-posts.log`, from lines written at or after `since` (unix seconds). */
-export const agentPostKeys = (log: string, since: number): ReadonlySet<string> => {
-  const keys = new Set<string>();
-  for (const line of log.split("\n")) {
+/** Each `[at, key]` line of an `agent-posts.log`, `at` in unix seconds. */
+export const agentPostLines = (log: string): ReadonlyArray<readonly [number, string]> =>
+  log.split("\n").flatMap((line) => {
     const [at, key] = line.split("\t");
-    if (key !== undefined && /^[0-9a-f]{64}$/.test(key) && Number(at) >= since) keys.add(key);
-  }
-  return keys;
-};
+    return key !== undefined && /^[0-9a-f]{64}$/.test(key) ? [[Number(at), key] as const] : [];
+  });
+
+/** The keys in an `agent-posts.log`, from lines written at or after `since` (unix seconds). */
+export const agentPostKeys = (log: string, since: number): ReadonlySet<string> =>
+  new Set(agentPostLines(log).flatMap(([at, key]) => (at >= since ? [key] : [])));

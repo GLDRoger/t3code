@@ -57,6 +57,7 @@ const unavailable = new KinChatError({
 
 const secretName = (connectionId: string) => `kin-connection-${connectionId}`;
 const socialName = (groupId: string) => `kin-social-${groupId}`;
+const picturesName = (vendor: string) => `kin-pictures-${vendor}`;
 // The store keeps each secret as `<name>.bin`; connection ids are `conn_` and 24 hex digits.
 const storedName = /^kin-connection-(conn_[0-9a-f]{24})\.bin$/;
 
@@ -99,6 +100,15 @@ export class KinConnectionSecrets extends Context.Service<
       key: Redacted.Redacted<string>,
     ) => Effect.Effect<void, KinChatError>;
     readonly removeSocialKey: (groupId: string) => Effect.Effect<void, KinChatError>;
+    /** The company's key for a picture service, by vendor name. */
+    readonly getPicturesKey: (
+      vendor: string,
+    ) => Effect.Effect<Option.Option<Redacted.Redacted<string>>, KinChatError>;
+    readonly setPicturesKey: (
+      vendor: string,
+      key: Redacted.Redacted<string>,
+    ) => Effect.Effect<void, KinChatError>;
+    readonly removePicturesKey: (vendor: string) => Effect.Effect<void, KinChatError>;
     /** The connection ids that have a credential stored, for the sweep at start. */
     readonly stored: () => Effect.Effect<ReadonlyArray<string>, KinChatError>;
   }
@@ -158,6 +168,15 @@ const make = Effect.gen(function* () {
     }),
     removeSocialKey: Effect.fn("KinConnectionSecrets.removeSocialKey")(function* (groupId) {
       yield* store.remove(socialName(groupId)).pipe(Effect.mapError(() => unavailable));
+    }),
+    getPicturesKey: Effect.fn("KinConnectionSecrets.getPicturesKey")(function* (vendor) {
+      return Option.map(yield* read(picturesName(vendor)), Redacted.make);
+    }),
+    setPicturesKey: Effect.fn("KinConnectionSecrets.setPicturesKey")(function* (vendor, key) {
+      yield* write(picturesName(vendor), Redacted.value(key));
+    }),
+    removePicturesKey: Effect.fn("KinConnectionSecrets.removePicturesKey")(function* (vendor) {
+      yield* store.remove(picturesName(vendor)).pipe(Effect.mapError(() => unavailable));
     }),
     stored: Effect.fn("KinConnectionSecrets.stored")(function* () {
       const names = yield* fs

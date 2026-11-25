@@ -46,14 +46,18 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
+import * as KinWatches from "../watches/KinWatches.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { type AssignNotice, movedNotices } from "./assignNotices.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
+import { sectionOnFor as sectionOn } from "../shell/KinShell.ts";
+import { DEALS_OFF } from "../shell/sections.ts";
 import { campaignsNamed, dealsFromCampaign, sourceShown } from "./crm.ts";
 import { DEFAULT_STAGES, stageLine, stageMove, stagesOf } from "./dealStages.ts";
 import * as Docs from "./docs.ts";
 import { WINNING_CUSTOMERS_ORIGIN } from "./playbookSeeds.ts";
 import { playbookThreshold } from "./playbooks.ts";
+import { fromsOf } from "./promises.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
 import { fieldList, fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
 import { dayIn, monthOf, shiftMonth } from "./money.ts";
@@ -63,6 +67,8 @@ import {
   byKey,
   endOfDay,
   iso,
+  isSuggestion,
+  notBouncedBack,
   ownerZone,
   parseChanges,
   principal,
@@ -71,19 +77,23 @@ import {
   selectRecords,
   startOfDay,
   type StoredChange,
+  toRecord,
   workFailure,
 } from "./recordRows.ts";
 import {
   crmSeenBy,
   crmVisible,
   KIN_OWNER_LEVEL,
+  keyedViewer,
   placesOf,
   teamClients,
   teamSeesField,
+  teamRecordIn,
   teamSeq,
   viewerOfPeople,
   type KinViewer,
 } from "./teamView.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * KinDeals. Every rule is decided here, in the write's transaction, from stored rows; `KinRecords`
@@ -451,8 +461,7 @@ export const updateAs = Effect.fn("KinDeals.update")(function* (
     ...(change.sensitive === undefined ? {} : { sensitive: change.sensitive }),
     ...(Object.keys(fields).length === 0 ? {} : { fields }),
   };
-  const steps =
-    change.owner === undefined ? [] : yield* keepersSteps(actor.orgId, row, change.owner);
+  const steps = change.owner === undefined ? [] : yield* keepersSteps(actor, row, change.owner);
   const after =
     Object.keys(patch).length === 0
       ? row
@@ -481,16 +490,23 @@ export const updateAs = Effect.fn("KinDeals.update")(function* (
   return { row: after, notices };
 });
 
-/**
- * The deal's open next steps its keeper holds, which go with it to a person who takes it on; one
- * held by anyone else, or kept private, stays.
- */
 const keepersSteps = Effect.fn("KinDeals.keepersSteps")(function* (
-  orgId: KinOrgId,
+  actor: DealActor,
   deal: RecordRow,
   to: KinWorkPrincipal,
 ) {
-  if (to._tag !== "person" || samePrincipal(to, ownerOf(deal))) return [];
+  if (samePrincipal(to, ownerOf(deal))) return [];
+  const { orgId, writer } = actor;
+  const byOwner =
+    actor.members.length === 0 &&
+    writer.actor._tag === "person" &&
+    writer.via === "owner" &&
+    writer.codingAgentKey === undefined &&
+    writer.wakeupId === undefined;
+  const turn =
+    writer.actor._tag === "agent" && writer.wakeupId !== undefined
+      ? { agentId: writer.actor.agentId, wakeupId: writer.wakeupId }
+      : undefined;
   const sql = yield* SqlClient.SqlClient;
   const keys = yield* sql<{ key: string }>`SELECT r.key FROM kin_record_links l
       JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
@@ -501,7 +517,11 @@ const keepersSteps = Effect.fn("KinDeals.keepersSteps")(function* (
   const steps: Array<RecordRow> = [];
   for (const { key } of keys) {
     const step = yield* byKey(orgId, key).pipe(workFailure);
-    if (step !== undefined) steps.push(step);
+    if (
+      step !== undefined &&
+      (byOwner || (yield* notBouncedBack(orgId, step, to, turn)) === undefined)
+    )
+      steps.push(step);
   }
   return steps;
 });
@@ -655,7 +675,8 @@ const canFor = (viewer: KinViewer, row: RecordRow): KinDealCan => {
 
 /**
  * Open follow-ups linked to these deals that this viewer reads in Clients (`crmSeenBy`), soonest
- * first, and the deals that have such a step this viewer doesn't read (`hidden`): only that.
+ * first, the deal's own steps before its promises at the head (its `next`), and the deals that
+ * have such a step this viewer doesn't read (`hidden`): only that.
  */
 const stepsFor = Effect.fn("KinDeals.steps")(function* (
   orgId: KinOrgId,
@@ -666,6 +687,7 @@ const stepsFor = Effect.fn("KinDeals.steps")(function* (
   const out = new Map<string, Array<KinDealNext>>();
   const hidden = new Set<string>();
   if (dealIds.length === 0) return { steps: out, hidden };
+  const promises = new Set<string>();
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
     dealId: string;
@@ -674,8 +696,10 @@ const stepsFor = Effect.fn("KinDeals.steps")(function* (
     dueAt: number | null;
     dueAllDay: number;
     seen: number;
+    promise: number;
   }>`SELECT l.target AS "dealId", r.key, r.title, r.due_at AS "dueAt",
-      r.due_all_day AS "dueAllDay", CASE WHEN ${crmSeenBy(sql, viewer)} THEN 1 ELSE 0 END AS seen
+      r.due_all_day AS "dueAllDay", CASE WHEN ${crmSeenBy(sql, viewer)} THEN 1 ELSE 0 END AS seen,
+      COALESCE(r.category = 'obligation', 0) AS promise
     FROM kin_record_links l JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
     WHERE l.org_id = ${orgId} AND l.kind = 'record' AND l.target IN ${sql.in([...dealIds])}
       AND r.register_id = 'work' AND r.state NOT IN ('done', 'dropped') AND r.side = 'ours'
@@ -687,14 +711,20 @@ const stepsFor = Effect.fn("KinDeals.steps")(function* (
     }
     const steps = out.get(row.dealId) ?? [];
     if (steps.some((step) => step.key === row.key)) continue;
-    steps.push({
+    const step: KinDealNext = {
       key: row.key,
       title: row.title as KinDealNext["title"],
       dueAt: row.dueAt === null ? null : iso(row.dueAt),
       dueAllDay: row.dueAllDay === 1,
       late: row.dueAt !== null && row.dueAt < now,
-    });
+    };
+    steps.push(step);
+    if (row.promise === 1) promises.add(row.key);
     out.set(row.dealId, steps);
+  }
+  for (const steps of out.values()) {
+    const own = steps.findIndex((step) => !promises.has(step.key));
+    if (own > 0) steps.unshift(...steps.splice(own, 1));
   }
   return { steps: out, hidden };
 });
@@ -950,6 +980,27 @@ const totalsOf = (rows: ReadonlyArray<Summed>) => {
   };
 };
 
+const openPipelineRows = Effect.fn("KinDeals.openPipelineRows")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const where = pipelineWhere(sql, orgId, viewer);
+  return yield* sql<Summed & { stage: string | null }>`SELECT
+      json_extract(r.fields_json, '$.stage') AS stage,
+      json_extract(r.fields_json, '$.value.currency') AS currency,
+      SUM(json_extract(r.fields_json, '$.value.minor')) AS minor, COUNT(*) AS count
+    FROM kin_records r WHERE ${sql.and([...where, sql`r.state = 'open'`])}
+    GROUP BY stage, json_extract(r.fields_json, '$.value.currency')
+    ORDER BY stage, json_extract(r.fields_json, '$.value.currency')`;
+});
+
+export const openPipelineValue = Effect.fn("KinDeals.openPipelineValue")(function* (
+  orgId: KinOrgId,
+) {
+  return totalsOf(yield* openPipelineRows(orgId, KIN_OWNER_LEVEL)).values;
+});
+
 /**
  * The pipeline as `viewer` sees it, counted here: open deals by stage, in the company's order,
  * and won and lost, each per currency; a deal with no value counts only in its count.
@@ -960,13 +1011,7 @@ export const pipelineTotals = Effect.fn("KinDeals.pipelineTotals")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const where = pipelineWhere(sql, orgId, viewer);
-  const open = yield* sql<Summed & { stage: string | null }>`SELECT
-      json_extract(r.fields_json, '$.stage') AS stage,
-      json_extract(r.fields_json, '$.value.currency') AS currency,
-      SUM(json_extract(r.fields_json, '$.value.minor')) AS minor, COUNT(*) AS count
-    FROM kin_records r WHERE ${sql.and([...where, sql`r.state = 'open'`])}
-    GROUP BY stage, json_extract(r.fields_json, '$.value.currency')
-    ORDER BY stage, json_extract(r.fields_json, '$.value.currency')`;
+  const open = yield* openPipelineRows(orgId, viewer);
   const closed = yield* sql<Summed & { state: string }>`SELECT r.state,
       json_extract(r.fields_json, '$.value.currency') AS currency,
       SUM(json_extract(r.fields_json, '$.value.minor')) AS minor, COUNT(*) AS count
@@ -1030,7 +1075,6 @@ export const pipelineConcerns = Effect.fn("KinDeals.pipelineConcerns")(function*
 
 // Numbers: every figure counted here, in SQL, over the deals the viewer sees (`crmSeenBy`).
 
-const DAY_MS = 86_400_000;
 const WIN_RATE_DAYS = 90;
 const WEEK_ROWS_CAP = 50;
 
@@ -1357,8 +1401,12 @@ const seqFor = Effect.fn("KinDeals.seq")(function* (orgId: KinOrgId, viewer: Kin
 export const deals = Effect.fn("KinDeals.list")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinDealsInput,
+  /** A coding agent's key reads it: nothing a key never carries (`keyedViewer`). */
+  options: { readonly keyed?: boolean } = {},
 ) {
-  const { actor, viewer } = yield* dealReader(people, input.orgId);
+  const reading = yield* dealReader(people, input.orgId);
+  const { actor } = reading;
+  const viewer = options.keyed === true ? keyedViewer(reading.viewer) : reading.viewer;
   const sql = yield* SqlClient.SqlClient;
   const party =
     input.party === undefined ? undefined : yield* seenParty(actor, input.party).pipe(workFailure);
@@ -1502,6 +1550,7 @@ export const page = Effect.fn("KinDeals.page")(function* (
     deal!.can.edit && (yield* readsQuotes(input.orgId, actor))
       ? yield* quoteChoices(input.orgId, viewer, row).pipe(workFailure)
       : undefined;
+  const readers = people.filter((one) => one.orgId === input.orgId).map((one) => one.personId);
   return {
     deal: deal!,
     stages,
@@ -1509,9 +1558,44 @@ export const page = Effect.fn("KinDeals.page")(function* (
     changes: dealChanges(detail.changes, stages, viewer),
     steps: steps.get(row.recordId) ?? [],
     ...(quotes === undefined ? {} : { quotes }),
+    promises: yield* promisesOf(input.orgId, viewer, row, now, readers).pipe(workFailure),
     seq: yield* seqFor(input.orgId, viewer),
   } satisfies KinDealPage;
 });
+
+/**
+ * The promises on a deal this viewer reads in Clients, open or done, never dropped: ours, then
+ * theirs, each by its day; each with where it was made, as `readers` may follow it.
+ */
+export const promisesOf = Effect.fn("KinDeals.promises")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  deal: RecordRow,
+  now: number,
+  readers: ReadonlyArray<string>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<RecordRow>`${selectRecords(sql)}
+    WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.category = 'obligation'
+      AND r.state <> 'dropped' AND ${crmSeenBy(sql, viewer)}
+      AND EXISTS (SELECT 1 FROM kin_record_links dl WHERE dl.org_id = r.org_id
+        AND dl.record_id = r.record_id AND dl.kind = 'record' AND dl.target = ${deal.recordId})
+    ORDER BY r.side = 'theirs', r.state = 'done', r.due_at IS NULL, r.due_at, r.key
+    LIMIT ${KIN_DEAL_PROMISES_CAP}`;
+  const froms = yield* fromsOf(
+    orgId,
+    rows.map((one) => one.recordId),
+    readers,
+  );
+  const clients = new Set(deal.partyId === null ? [] : [deal.partyId]);
+  return rows.map((one) => {
+    const record = toRecord(one, now);
+    const shown = viewer._tag === "ownerLevel" ? record : teamRecordIn(record, new Set(), clients);
+    const from = froms.get(one.recordId);
+    return from === undefined ? shown : { ...shown, from };
+  });
+});
+const KIN_DEAL_PROMISES_CAP = 50;
 
 // Writes from a person's own app: decode, decide inside one transaction, answer as they read it.
 
@@ -1521,7 +1605,14 @@ const written = Effect.fn("KinDeals.written")(function* <A, E extends { readonly
   moved?: (result: A) => RecordRow,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const result = yield* sql.withTransaction(write).pipe(workFailure);
+  const result = yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        if (!(yield* sectionOn(orgId, "deals"))) return yield* refused(DEALS_OFF);
+        return yield* write;
+      }),
+    )
+    .pipe(workFailure);
   yield* (yield* KinRecords).announce(
     orgId,
     moved === undefined ? undefined : [moved(result).recordId],
@@ -1541,37 +1632,48 @@ const answer = Effect.fn("KinDeals.answer")(function* (
 const originOf = (actor: DealActor) =>
   actor.members.length === 0 ? "owner:deal" : `member:${actor.person}:deal`;
 
-export const create = Effect.fn("KinDeals.rpc.create")(function* (
+/** A person's new deal, written in the caller's transaction; `told` and `answer` follow its commit. */
+export const createIn = Effect.fn("KinDeals.createIn")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinDealCreateInput,
 ) {
   const { actor, viewer, person } = yield* personActor(people, input.orgId);
   const { clientRequestId, orgId: _orgId, ...asked } = input;
-  const { row, notices } = yield* written(
-    input.orgId,
-    Effect.gen(function* () {
-      const due = yield* expectedAt(input.orgId, input.expectedOn);
-      return yield* createAs(actor, {
-        partyKey: input.party,
-        title: input.title,
-        stage: input.stage,
-        value: input.value,
-        ...due,
-        source: input.source,
-        owner: input.owner,
-        sensitive: input.sensitive,
-        notes: input.notes,
-        quoteKey: input.quote,
-        next: input.next,
-        originKey: `${originOf(actor)}:${clientRequestId}`,
-        requestHash: requestHashOf({ clientRequestId, ...asked }),
-      });
-    }),
-    (made) => made.row,
-  );
-  for (const notice of notices)
-    yield* tellOnScreen(person, `${notice.row.recordId}:${notice.row.rev}`, [notice]);
-  return yield* answer(input.orgId, viewer, row, false);
+  const due = yield* expectedAt(input.orgId, input.expectedOn);
+  const made = yield* createAs(actor, {
+    partyKey: input.party,
+    title: input.title,
+    stage: input.stage,
+    value: input.value,
+    ...due,
+    source: input.source,
+    owner: input.owner,
+    sensitive: input.sensitive,
+    notes: input.notes,
+    quoteKey: input.quote,
+    next: input.next,
+    originKey: `${originOf(actor)}:${clientRequestId}`,
+    requestHash: requestHashOf({ clientRequestId, ...asked }),
+  });
+  return { ...made, viewer, person };
+});
+
+/** After `createIn` commits: its keeper hears of the step, and the deal as its writer reads it. */
+export const createdOut = Effect.fn("KinDeals.createdOut")(function* (
+  orgId: KinOrgId,
+  made: Effect.Success<ReturnType<typeof createIn>>,
+) {
+  for (const notice of made.notices)
+    yield* tellOnScreen(made.person, `${notice.row.recordId}:${notice.row.rev}`, [notice]);
+  return yield* answer(orgId, made.viewer, made.row, false);
+});
+
+export const create = Effect.fn("KinDeals.rpc.create")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinDealCreateInput,
+) {
+  const made = yield* written(input.orgId, createIn(people, input), (done) => done.row);
+  return yield* createdOut(input.orgId, made);
 });
 
 export const update = Effect.fn("KinDeals.rpc.update")(function* (
@@ -1832,6 +1934,7 @@ export type LeaverHeld = {
   readonly clients: number;
   readonly followUps: number;
   readonly promises: number;
+  readonly watches: number;
 };
 
 /**
@@ -1843,8 +1946,13 @@ const leaverRows = Effect.fn("KinDeals.leaverRows")(function* (
   personId: KinPersonId,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql<{ key: string; registerId: string; category: string | null }>`SELECT key,
-      register_id AS "registerId", category FROM kin_records
+  return yield* sql<{
+    key: string;
+    registerId: string;
+    category: string | null;
+    confirmed: number;
+  }>`SELECT key,
+      register_id AS "registerId", category, confirmed FROM kin_records
     WHERE org_id = ${orgId} AND owner_kind = 'person' AND owner_id = ${personId}
       AND ((register_id = 'clients' AND category IN ('client', 'prospect') AND state = 'open')
         OR (register_id = 'deals' AND state = 'open')
@@ -1867,7 +1975,10 @@ export const leaverHeld = Effect.fn("KinDeals.leaverHeld")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
 ) {
-  return heldOf(yield* leaverRows(orgId, personId).pipe(workFailure)) satisfies LeaverHeld;
+  return {
+    ...heldOf(yield* leaverRows(orgId, personId).pipe(workFailure)),
+    watches: yield* KinWatches.countForPerson(orgId, personId).pipe(workFailure),
+  } satisfies LeaverHeld;
 });
 
 /** Whether `personId` may take a leaver's clients and deals: on the team, owner level or Clients on. */
@@ -1891,8 +2002,8 @@ const leaverReceiver = Effect.fn("KinDeals.leaverReceiver")(function* (
 });
 
 /**
- * Gives every open deal, prospect, client, follow-up and promise `from` looked after to `to`, in
- * the caller's transaction: each logs who gave it and that `from` left, and one refusal moves
+ * Gives every open deal, prospect, client, follow-up, promise and watch `from` looked after to `to`, in
+ * the caller's transaction: records log who gave them and that `from` left, and one refusal moves
  * none. The owner level only, for someone removed from the team.
  */
 export const handOverLeaver = Effect.fn("KinDeals.handOverLeaver")(function* (input: {
@@ -1936,5 +2047,12 @@ export const handOverLeaver = Effect.fn("KinDeals.handOverLeaver")(function* (in
     );
     yield* seesItAfter(orgId, after, to);
   }
-  return heldOf(rows) satisfies LeaverHeld;
+  const watches = yield* KinWatches.handOver(orgId, input.from, input.to).pipe(workFailure);
+  return {
+    moved: { ...heldOf(rows), watches },
+    given: {
+      ...heldOf(rows.filter((row) => row.registerId !== "work" || !isSuggestion(row))),
+      watches,
+    },
+  };
 });

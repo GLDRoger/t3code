@@ -28,6 +28,7 @@ import {
   kinWorkItemNotice,
   kinWorkListNotice,
   kinWorkStatusOffer,
+  kinWorkTakeLabel,
 } from "./kinWorkChanges.ts";
 import { KIN_WORK_NOTHING_NAMED, kinWorkNote } from "./kinWorkStream.ts";
 
@@ -98,6 +99,7 @@ function harness(answers?: KinWorkAnswers) {
     assign: call("assign"),
     confirm: call("confirm"),
     decline: call("decline"),
+    tickStep: call("tickStep"),
     reread: (key) => reread.push(key),
     online: () => online,
     ...(answers === undefined ? {} : { answers }),
@@ -145,6 +147,88 @@ describe("createKinWorkChanges", () => {
       text: "Reopened. Tech lead has it again.",
       undo: null,
     });
+  });
+
+  it("ticks a step at once with its count, sends no revision, and puts a removed step back", async () => {
+    const h = harness();
+    const checklist = [
+      { title: "Wireframe", done: false },
+      { title: "Review with Zoya", done: false },
+    ];
+    const held = task({ checklist, steps: { done: 0, of: 2 } });
+    const ticked = h.changes.run(
+      held,
+      { type: "tick", index: 1, title: "Review with Zoya", done: true },
+      names,
+    );
+    expect(kinWorkApplied(held, h.state())).toMatchObject({
+      steps: { done: 1, of: 2 },
+      checklist: [checklist[0], { title: "Review with Zoya", done: true }],
+    });
+    expect(h.sent).toEqual([
+      ["tickStep", { orgId, key: "W-1", index: 1, title: "Review with Zoya", done: true }],
+    ]);
+    const after = task({
+      rev: 4,
+      checklist: [checklist[0]!, { title: "Review with Zoya", done: true }],
+    });
+    h.answer(AsyncResult.success(after));
+    expect(await ticked).toBe(true);
+    // The box says it; no notice covers the list for each tick.
+    expect(h.state().notice).toBeNull();
+
+    const removed = h.changes.run(
+      after,
+      { type: "steps", steps: [checklist[0]!], said: "removed" },
+      names,
+    );
+    expect(h.sent[1]).toEqual(["update", { orgId, key: "W-1", rev: 4, steps: [checklist[0]] }]);
+    const shorter = task({ rev: 5, checklist: [checklist[0]!] });
+    h.answer(AsyncResult.success(shorter));
+    expect(await removed).toBe(true);
+    expect(h.state().notice).toMatchObject({
+      text: "Step removed.",
+      undo: { type: "steps", steps: after.checklist, said: "back" },
+    });
+    const urgent = h.changes.run(shorter, { type: "urgent", urgent: true }, names);
+    expect(h.sent[2]).toEqual(["update", { orgId, key: "W-1", rev: 5, urgent: true }]);
+    h.answer(AsyncResult.success(task({ rev: 6, urgent: true })));
+    expect(await urgent).toBe(true);
+    expect(h.state().notice).toMatchObject({ text: "Marked urgent.", undo: null });
+  });
+
+  it("offers Undo on leaving only to a reader the host lets put people on it", async () => {
+    const zoya = { _tag: "person", personId: KinPersonId.make("invented-zoya") } as const;
+    const can = {
+      states: [],
+      edit: true,
+      party: false,
+      project: false,
+      clearProject: false,
+      give: false,
+      takeBack: false,
+      mark: false,
+      unmark: false,
+      share: false,
+      confirm: false,
+    };
+    const leave = { type: "alsoOn", alsoOn: [zoya], who: me, said: "left" } as const;
+    const left = async (edit: boolean) => {
+      const h = harness();
+      const held = task({ owner: lead, alsoOn: [me, zoya], can: { ...can, edit } });
+      const run = h.changes.run(held, leave, names);
+      h.answer(AsyncResult.success(task({ rev: 4, owner: lead, alsoOn: [zoya] })));
+      expect(await run).toBe(true);
+      return h.state().notice;
+    };
+    expect((await left(true))?.undo).toEqual({
+      type: "alsoOn",
+      alsoOn: [me, zoya],
+      who: me,
+      said: "back",
+    });
+    // Only on it: the host refuses them back, so no Undo promises it.
+    expect(await left(false)).toMatchObject({ kind: "saved", undo: null });
   });
 
   it("takes a refused change back and says why without the host's wording", async () => {
@@ -285,6 +369,20 @@ describe("createKinWorkChanges", () => {
     const h = harness();
     void h.changes.run(task({ owner: lead, confirmed: false }), action, names);
     expect(h.sent).toEqual([[method, input]]);
+  });
+
+  it.each([
+    ["one the reader gave away comes back", { givenBy: me }, "Take it back", "It's yours again."],
+    ["one that was never the reader's is taken", {}, "Take it", "It's yours now."],
+  ] as const)("taking a task: %s", async (_name, patch, label, said) => {
+    const teammate = { _tag: "person", personId: KinPersonId.make("invented-teammate") } as const;
+    const held = task({ owner: teammate, ...patch });
+    expect(kinWorkTakeLabel(held, names)).toBe(label);
+    const h = harness();
+    const taken = h.changes.run(held, { type: "takeBack" }, names);
+    h.answer(AsyncResult.success(task({ rev: 4 })));
+    await taken;
+    expect(h.state().notice?.text).toBe(said);
   });
 
   it("says a closed task has to be reopened before it is given to anyone", async () => {

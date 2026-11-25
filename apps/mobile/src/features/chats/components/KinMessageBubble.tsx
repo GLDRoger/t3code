@@ -13,6 +13,7 @@ import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
 import type { FilePreviewSource } from "../../../components/ui/FilePreviewModal";
 import { FilePreviewGallery } from "../../../components/ui/FilePreviewGallery";
+import { Button } from "../../../components/ui/Button";
 import { Chip } from "../../../components/ui/Chip";
 import * as Dialog from "../../../components/ui/Dialog";
 import * as Haptics from "expo-haptics";
@@ -26,11 +27,13 @@ import {
 } from "../../../native/SelectableMarkdownText";
 import {
   kinBodyMarkdown,
+  kinChangedMark,
   kinImageSource,
   kinImageText,
   kinMessageLabel,
   kinMessageLinks,
   kinPlainText,
+  kinWithdrawnLine,
   type KinFeedRow,
   type KinNoticeOpen,
   KIN_CHAT_COPY,
@@ -58,6 +61,7 @@ import {
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinTurnReceiptOpen, kinTurnReceiptLine } from "@t3tools/client-runtime/kin/kinTurnReceipt";
+import { kinReplyButtons, type KinReplyButton } from "@t3tools/client-runtime/kin/kinReplyButtons";
 import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   kinDraftMarkdown,
@@ -77,6 +81,7 @@ import { KinVisualInView } from "../widgets/KinVisual";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 import { KinCardGroup } from "../widgets/KinCardGroup";
 import { KinAvatar } from "./KinAvatar";
+import { kinLines, useKinTextGrows } from "./kinTextGrows";
 import { KinDocRefs } from "./KinDocRefs";
 import { KinLinkedText, KinMessagePage, useKinOpenTarget } from "./KinMessagePage";
 
@@ -172,7 +177,41 @@ function KinAuthorLine(props: {
 }
 
 /** One message: the viewer's own in the user bubble on the right, everyone else's in a bubble on the left. */
-export function KinMessageBubble(props: {
+export function KinMessageBubble(props: Parameters<typeof KinMessageBubbleRow>[0]) {
+  const withdrawn = kinWithdrawnLine(props.row);
+  if (withdrawn === null) return <KinMessageBubbleRow {...props} />;
+  return <KinWithdrawnLine line={withdrawn} said={props.row.message.withdrawn?.said ?? null} />;
+}
+
+/**
+ * A message its agent took back: one quiet line in its place. The owner side may open what it
+ * said; the server sends those words to no one else.
+ */
+function KinWithdrawnLine(props: { readonly line: string; readonly said: string | null }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View className="items-center gap-2 px-8 py-2">
+      <Text textRole="caption" className="text-center text-foreground-muted">
+        {props.line}
+      </Text>
+      {props.said === null ? null : (
+        <Chip
+          label={open ? KIN_CHAT_COPY.hideWithdrawn : KIN_CHAT_COPY.showWithdrawn}
+          size="small"
+          icon={open ? "chevron.up" : "chevron.down"}
+          onPress={() => setOpen(!open)}
+        />
+      )}
+      {open && props.said !== null ? (
+        <Text textRole="body" selectable className="text-foreground-muted">
+          {kinPlainText(props.said)}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function KinMessageBubbleRow(props: {
   readonly row: MessageRow;
   /** `useMarkdownPreviewStyles().nativeTextStyle`, read once by the screen. */
   readonly markdownStyle: NativeMarkdownTextStyle;
@@ -187,6 +226,8 @@ export function KinMessageBubble(props: {
   readonly viewerPersonId: KinPersonId | null;
   /** The card's agent by name when it is retired. */
   readonly heldFor?: string | null;
+  /** The viewer may only read this chat: its cards offer nothing that writes in it. */
+  readonly readOnly?: boolean;
   /** The chat's agents by id, for a doc card's "by Growth". */
   readonly agentNames?: ReadonlyMap<string, string>;
   readonly reactions: ReadonlyArray<KinReactionChip>;
@@ -215,6 +256,7 @@ export function KinMessageBubble(props: {
   const { message } = row;
   const deleted = message.status === "deleted";
   const suggested = message.status === "suggested";
+  const changed = kinChangedMark(message, formatTime);
   const hasBody = !deleted && message.body.trim().length > 0;
   const window = useWindowDimensions();
   // A wide table scrolls sideways in the bubble; its bar shows only mid-swipe, so a line says so.
@@ -237,6 +279,8 @@ export function KinMessageBubble(props: {
     (!hasCard && attachments.length === 0) || hasBody || suggested || message.editedAt !== null;
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
   const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
+  const grows = useKinTextGrows();
+  const buttons = kinReplyButtons(message);
   // The sheet's actions, reachable without the long press.
   const sheetActions = [
     ...(onReact === null || deleted
@@ -266,6 +310,7 @@ export function KinMessageBubble(props: {
         viewerPersonId={props.viewerPersonId}
         onOpenLink={props.onLinkPress}
         heldFor={props.heldFor ?? null}
+        readOnly={props.readOnly === true}
         {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
         {...longPress}
       />
@@ -292,17 +337,19 @@ export function KinMessageBubble(props: {
           onOpenTarget={onOpenTarget}
           head={kinPageHead(message, props.firstName ?? null)}
           foot={hasCard ? card : null}
+          // As in a bubble: the long press opens the sheet, not the system's text menu too.
+          selectable={onOpenActions === null}
         />
         {wideTable ? (
           <Text textRole="caption" className="text-foreground-muted">
             Swipe the table sideways to see all of it
           </Text>
         ) : null}
-        {message.editedAt !== null ? (
+        {changed === null ? null : (
           <Text textRole="caption" className="text-foreground-muted">
-            Edited
+            {changed}
           </Text>
-        ) : null}
+        )}
       </View>
     ) : null;
   const bubble =
@@ -311,7 +358,10 @@ export function KinMessageBubble(props: {
         accessible
         accessibilityLabel={kinMessageLabel(row, formatTime(message.createdAt))}
         accessibilityActions={[
-          ...inApp.map((link, index) => ({ name: `kin-${index}`, label: `Open ${link.text}` })),
+          ...inApp.map((link, index) => ({
+            name: `kin-${index}`,
+            label: `Open ${link.name === undefined ? link.text : `${link.name}, ${link.text}`}`,
+          })),
           ...links.map((link, index) => ({ name: `link-${index}`, label: `Open ${link.label}` })),
           ...sheetActions,
         ]}
@@ -365,12 +415,12 @@ export function KinMessageBubble(props: {
             Swipe the table sideways to see all of it
           </Text>
         ) : null}
-        {suggested || message.editedAt !== null ? (
+        {suggested || changed !== null ? (
           <Text
             textRole="caption"
             className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
           >
-            {suggested ? KIN_CHAT_COPY.suggestion : "Edited"}
+            {suggested ? KIN_CHAT_COPY.suggestion : changed}
           </Text>
         ) : null}
       </View>
@@ -453,6 +503,9 @@ export function KinMessageBubble(props: {
         </Pressable>
       )}
       {hasCard && page === null ? <View className="w-[85%]">{card}</View> : null}
+      {buttons.length === 0 ? null : (
+        <KinReplyButtons buttons={buttons} onOpenTarget={onOpenTarget} />
+      )}
       {receipt === null ? null : (
         <Pressable
           accessibilityRole="button"
@@ -461,7 +514,11 @@ export function KinMessageBubble(props: {
           onPress={props.onOpenReceipt}
           className="max-w-full px-1 active:opacity-60"
         >
-          <Text textRole="caption" numberOfLines={1} className="text-foreground-muted">
+          <Text
+            textRole="caption"
+            numberOfLines={kinLines(1, grows)}
+            className="text-foreground-muted"
+          >
             {receipt}
           </Text>
         </Pressable>
@@ -485,6 +542,26 @@ export function KinMessageBubble(props: {
           ))}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/** Up to three buttons under an agent's reply, each opening what it named; they wrap, never cut. */
+function KinReplyButtons(props: {
+  readonly buttons: ReadonlyArray<KinReplyButton>;
+  readonly onOpenTarget: ReturnType<typeof useKinOpenTarget>;
+}) {
+  return (
+    <View className="max-w-full flex-row flex-wrap gap-2 px-1 pt-1">
+      {props.buttons.map((button) => (
+        <Button
+          key={button.id}
+          label={button.label}
+          tone="outline"
+          {...(button.note === null ? {} : { accessibilityHint: button.note })}
+          onPress={() => props.onOpenTarget(button.to)}
+        />
+      ))}
     </View>
   );
 }
@@ -556,8 +633,11 @@ export function KinSystemLine(props: {
   readonly onRetry: (() => void) | null;
   /** Opens the task or project the line names, when it names one. */
   readonly onOpen: (open: KinNoticeOpen) => void;
+  /** Opens the Team-room discussion the line names; null when there is no room to open. */
+  readonly onOpenDiscussion: ((discussionId: string) => void) | null;
 }) {
-  const { open } = props.row;
+  const { open, discussionId } = props.row;
+  const onOpenDiscussion = props.onOpenDiscussion;
   return (
     <View className="items-center gap-2 px-8 py-2">
       <Text textRole="caption" className="text-center text-foreground-muted">
@@ -569,6 +649,14 @@ export function KinSystemLine(props: {
           size="small"
           icon={open.kind === "project" ? "folder.fill" : "checkmark.circle"}
           onPress={() => props.onOpen(open)}
+        />
+      )}
+      {discussionId === null || onOpenDiscussion === null ? null : (
+        <Chip
+          label={KIN_CARD_COPY.openDiscussion}
+          size="small"
+          icon="bubble.left.and.bubble.right"
+          onPress={() => onOpenDiscussion(discussionId)}
         />
       )}
       {props.onRetry === null ? null : (
@@ -610,7 +698,7 @@ export function KinRelayBubble(props: {
       <View className="items-start px-4 pt-3">
         <View
           accessible
-          accessibilityLabel={`Sent by ${row.personLabel}, via ${row.agentLabel}, ${time}: ${words}`}
+          accessibilityLabel={`Sent by ${row.personLabel}, via ${row.agentLabel}, ${time}: ${words}${row.afterReading === undefined ? "" : `. ${row.afterReading}`}`}
           className={cn(OTHER_WIDTH_CLASS_NAME, OTHER_BUBBLE_CLASS_NAME, "gap-1")}
         >
           <View className="flex-row flex-wrap items-center gap-1.5">
@@ -630,6 +718,11 @@ export function KinRelayBubble(props: {
           <Text textRole="body" selectable className="text-foreground">
             {words}
           </Text>
+          {row.afterReading === undefined ? null : (
+            <Text textRole="footnote" className="text-foreground-muted">
+              {row.afterReading}
+            </Text>
+          )}
         </View>
       </View>
     );
@@ -700,6 +793,17 @@ export function KinRelayBubble(props: {
             iconSubtleColor={iconSubtleColor}
             reply={!sent}
           />
+          {row.afterReading === undefined ? null : (
+            <Text
+              textRole="footnote"
+              className={cn(
+                "px-3.5 pb-2",
+                sent ? "text-user-bubble-foreground opacity-80" : "text-foreground-muted",
+              )}
+            >
+              {row.afterReading}
+            </Text>
+          )}
           {expanded ? <View className="gap-1 px-3.5 pb-2.5">{words}</View> : null}
           {seeHow === null ? null : <View className="px-3.5 pb-1.5">{seeHow}</View>}
         </View>

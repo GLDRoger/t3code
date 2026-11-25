@@ -22,6 +22,7 @@ import {
   type KinPulseEvent,
   type KinPulseFact,
   type KinPulseSubscribeInput,
+  type KinWaitingItem,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -33,14 +34,16 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 
-import { KinChatState, type KinInboxState } from "./kinInboxModel.ts";
+import { KinChatState, KinInboxState } from "./kinInboxModel.ts";
 import { kinPulseLiveStream } from "./kinPulseStream.ts";
 import {
   isKinRetryable,
   KIN_CHAT_LABEL,
+  KIN_INBOX_LABEL,
   KinCacheEviction,
   kinInboxStream,
   makeKinChatStream,
+  onKinDirectChatsChange,
   retryKinProbe,
   type KinSynced,
 } from "./kinStreams.ts";
@@ -97,6 +100,12 @@ const CachedChat = Schema.fromJsonString(
 );
 const encodeCachedChat = Schema.encodeSync(CachedChat);
 const decodeCachedChat = Schema.decodeSync(CachedChat);
+const inboxRowKey = queryPersistenceKey(KIN_INBOX_LABEL, {});
+const CachedInbox = Schema.fromJsonString(
+  Schema.toCodecJson(Schema.Struct({ inbox: KinInboxState, savedAt: Schema.String })),
+);
+const encodeCachedInbox = Schema.encodeSync(CachedInbox);
+const decodeCachedInbox = Schema.decodeSync(CachedInbox);
 
 /** An in-memory device cache: rows keyed by query key, as a client's store would hold them. */
 function fakeCache(rows: Map<string, string>) {
@@ -360,6 +369,7 @@ describe("Kin streams", () => {
             contiguousSeq: 1,
             changeSeq: 0,
             reads: {},
+            readSeq: null,
             memberChanges: 0,
             drafts: [],
             presence: [],
@@ -534,6 +544,7 @@ describe("Kin streams", () => {
             drafts: [],
             presence: [],
             reads: {},
+            readSeq: null,
             memberChanges: 0,
             needsHistoryReload: false,
             clearedSeq: 0,
@@ -639,6 +650,7 @@ describe("Kin streams", () => {
         drafts: [],
         presence: [],
         reads: {},
+        readSeq: null,
         memberChanges: 0,
         needsHistoryReload: false,
         clearedSeq: 0,
@@ -678,6 +690,55 @@ describe("Kin streams", () => {
     }),
   );
 
+  it.effect("never keeps what waits for someone else in the offline inbox", () =>
+    Effect.gen(function* () {
+      const row = (waitingId: string, personId: string) =>
+        ({
+          waitingId,
+          orgId: "org",
+          personId,
+          chatId,
+          messageId: null,
+          widgetId: null,
+          reason: "question",
+          createdAt: at,
+          resolvedAt: null,
+          resolution: null,
+        }) as KinWaitingItem;
+      const own = row("w-own", "meera");
+      const owners = {
+        ...row("w-rhea", "rhea"),
+        waitsFor: { personId: "rhea", name: "Rhea Rao" },
+      } as KinWaitingItem;
+      const ids = (inbox: KinInboxState) => inbox.waiting.map((item) => item.waitingId);
+      // A cache an older build saved with the owner's row in it shows her own row only.
+      const rows = new Map([
+        [
+          inboxRowKey,
+          encodeCachedInbox({ inbox: { chats: [], waiting: [own, owners] }, savedAt: at }),
+        ],
+      ]);
+      const inbox = yield* Queue.unbounded<KinChatListEvent>();
+      const views = yield* Queue.unbounded<KinSynced<KinInboxState>>();
+      const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+        Option.some(fakeSession({ chat: () => Stream.never, inbox: Stream.fromQueue(inbox) })),
+      );
+      const provide = yield* provider(activeSession, rows);
+      const fiber = yield* kinInboxStream({}).pipe(
+        Stream.runForEach((view) => Queue.offer(views, view)),
+        provide,
+        Effect.forkChild,
+      );
+      const cached = yield* Queue.take(views);
+      expect([cached.live, ids(cached.value)]).toEqual([false, ["w-own"]]);
+      // Live, both show; what is saved keeps her own only.
+      yield* Queue.offer(inbox, { _tag: "snapshot", chats: [], waiting: [own, owners] });
+      expect(ids((yield* Queue.take(views)).value)).toEqual(["w-own", "w-rhea"]);
+      yield* Fiber.interrupt(fiber);
+      expect(ids(decodeCachedInbox(rows.get(inboxRowKey) ?? "").inbox)).toEqual(["w-own"]);
+    }),
+  );
+
   it.effect("reads the open chat again when the viewer's access moves, so a lost link goes", () =>
     Effect.gen(function* () {
       const linked = { ...message(1), links: [{ text: "INV-1" }] } as unknown as KinMessage;
@@ -706,6 +767,31 @@ describe("Kin streams", () => {
       page = message(1);
       yield* Queue.offer(moves, "1");
       expect((yield* Queue.take(views)).value.messages[0]?.links).toBeUndefined();
+    }),
+  );
+
+  it.effect("rereads the leads when a group or the Team room starts or stops working", () =>
+    Effect.gen(function* () {
+      const provide = yield* provider(
+        yield* SubscriptionRef.make<Option.Option<RpcSession>>(Option.none()),
+        new Map(),
+      );
+      const group = (working: boolean) =>
+        ({ ...summary("team-room"), kind: "team_group", working }) as KinChatSummary;
+      const view = (...chats: ReadonlyArray<KinChatSummary>) =>
+        ({ value: { chats } }) as unknown as KinSynced<KinInboxState>;
+      const rereads: Array<ReadonlyArray<string>> = [];
+      yield* Stream.fromIterable([
+        view(summary("d1"), group(false)),
+        view(summary("d1"), group(true)),
+        view(summary("d1"), group(true)),
+        view(summary("d1"), group(false)),
+      ]).pipe(
+        onKinDirectChatsChange((_environmentId, orgIds) => void rereads.push(orgIds)),
+        Stream.runDrain,
+        provide,
+      );
+      expect(rereads).toEqual([["org"], ["org"]]);
     }),
   );
 });

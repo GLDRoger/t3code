@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
 import { assert, it } from "@effect/vitest";
@@ -38,6 +39,7 @@ import * as KinRecords from "./KinRecords.ts";
 import * as Clients from "./ownerClients.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import { indexRecord } from "./searchIndex.ts";
 import { presetDefinition } from "./registers.ts";
 import { teamSeesKey } from "./teamView.ts";
 
@@ -102,6 +104,19 @@ const seed = Effect.gen(function* () {
     hush: (yield* party("Invented Hush Clinic", { sensitive: true })).key,
     supplies: (yield* party("Invented Supplies", { kind: "vendor" })).key,
   };
+});
+
+const seedSales = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const agent = { _tag: "agent" as const, agentId: KinAgentId.make("sales") };
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+    VALUES (${agent.agentId}, ${orgId}, 'Sales', 'lead', ${ownerId}, ${at})`;
+  yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+    VALUES ('sales-chat', ${orgId}, 'direct', ${`${ownerId}:sales`}, 0, ${at})`;
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+      worker_projects_json, owner_chat_id)
+    VALUES (${agent.agentId}, ${orgId}, 'Sales', 0, 'sales-thread', '{}', '[]', 'sales-chat')`;
+  return agent;
 });
 
 const refusal = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
@@ -275,7 +290,10 @@ it.effect(
         yield* refusal(
           Deals.create(
             [zoya],
-            newDeal(corran, "Invented for Rhea", { owner: { _tag: "person", personId: ownerId } }),
+            newDeal(corran, "Invented for Rhea", {
+              owner: { _tag: "person", personId: ownerId },
+              notes: "Invented: refused, so never written",
+            }),
           ),
         ),
         "not_allowed",
@@ -286,11 +304,24 @@ it.effect(
         ),
         "not_allowed",
       );
+      // What was said about price rides in on the same write, as the deal's notes.
       const hers = yield* Deals.create(
         [zoya],
-        newDeal(corran, "Invented stock system", { value: euros(1_800_000) }),
+        newDeal(corran, "Invented stock system", {
+          value: euros(1_800_000),
+          notes: "Invented: they said about 18k on the call",
+        }),
       );
       assert.deepInclude(hers.deal, { owner: asZoya, stage: "new", state: "open" });
+      assert.strictEqual(
+        (yield* Deals.page([zoya], { orgId, key: hers.deal.key })).notes,
+        "Invented: they said about 18k on the call",
+      );
+      const refusedNote = yield* (yield* SqlClient.SqlClient)<{
+        n: number;
+      }>`SELECT COUNT(*) AS n FROM kin_records
+        WHERE notes = 'Invented: refused, so never written'`;
+      assert.strictEqual(refusedNote[0]!.n, 0);
       assert.deepStrictEqual(hers.deal.can, { edit: true, move: true, give: true, mark: false });
       const rheas = yield* Deals.create([owner], newDeal(brightwater, "Invented pilot"));
       const hidden = yield* Deals.create(
@@ -475,16 +506,8 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       const records = yield* KinRecords.KinRecords;
       const { corran } = yield* seed;
-      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id,
-          created_at, retired_at)
-        VALUES ('sales', ${orgId}, 'Sales', 'lead', ${ownerId}, ${at}, NULL)`;
-      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
-        VALUES ('sales-chat', ${orgId}, 'direct', ${`${ownerId}:sales`}, 0, ${at})`;
-      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
-          worker_projects_json, owner_chat_id)
-        VALUES ('sales', ${orgId}, 'Sales', 0, 'sales-thread', '{}', '[]', 'sales-chat')`;
+      const agent = yield* seedSales;
       const person = (personId: KinPersonId) => ({ _tag: "person" as const, personId });
-      const agent = { _tag: "agent" as const, agentId: KinAgentId.make("sales") };
       const deal = (yield* Deals.create([owner], newDeal(corran, "Invented revised quote"))).deal;
       const dealRow = (yield* records.get(orgId, deal.key))!;
       const step = (title: string, holder: KinWorkPrincipal, extra: object = {}) =>
@@ -570,7 +593,77 @@ it.effect(
           ["taken", zoyaId, theirs],
         ],
       );
+      // Given to an agent, the keeper's steps go to it too; Dev's stays with Dev.
+      const page = yield* Deals.page([owner], { orgId, key: deal.key });
+      yield* Deals.update([owner], { orgId, key: deal.key, rev: page.deal.rev, owner: agent });
+      assert.strictEqual(
+        `${(yield* records.get(orgId, theirs))!.ownerKind}:${(yield* records.get(orgId, theirs))!.ownerId}`,
+        "agent:sales",
+      );
+      assert.strictEqual((yield* records.get(orgId, devs))!.ownerId, devId);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { how: "in its own turn", holder: "person:owner" },
+  { how: "from the owner's app", holder: "agent:sales" },
+  { how: "when the owner asks in person", holder: "agent:sales" },
+] as const)("a deal moves $how after its new keeper handed back a step", ({ how, holder }) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const records = yield* KinRecords.KinRecords;
+    const { corran } = yield* seed;
+    const agent = yield* seedSales;
+    const { deal } = yield* Deals.create(
+      [owner],
+      newDeal(corran, "Invented revised quote", { next: { title: "Send the revised quote" } }),
+    );
+    const step = deal.next!.key;
+    yield* records.update(orgId, OwnerWork.ownerWriter(owner), step, { owner: agent });
+    const back = yield* records.handBack(
+      orgId,
+      { actor: agent, via: "lead" },
+      step,
+      agent,
+      "Waiting on the revised price.",
+    );
+    assert.strictEqual(back.ownerId, ownerId);
+
+    if (how === "from the owner's app") {
+      yield* Deals.update([owner], { orgId, key: deal.key, rev: deal.rev, owner: agent });
+    } else {
+      const wakeupId = "sales-wake";
+      const asked = how === "when the owner asks in person";
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+        VALUES (${wakeupId}, ${orgId}, ${agent.agentId}, 'test', 0, 'running', '[]')`;
+      if (asked) {
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES ('sales-owner', ${orgId}, 'sales-chat', 'person', ${ownerId}, 'owner', ${at})`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('deal-ask', ${orgId}, 'sales-chat', 1, 'human', ${ownerId}, 'sales-owner', 'owner', 'text',
+            ${`Take over ${deal.key}, including its step ${step}.`}, '[]', 'posted', ${at})`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, wakeup_id)
+          VALUES ('deal-ask-event', ${orgId}, ${agent.agentId}, 'chat.message', 'P0',
+            ${JSON.stringify({ chatId: "sales-chat", messageId: "deal-ask" })}, 0, 0, 'claimed', ${wakeupId})`;
+      } else {
+        yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = ${wakeupId}
+          WHERE org_id = ${orgId} AND agent_id = ${agent.agentId} AND tag = 'record.changed'`;
+      }
+      const actor = yield* Deals.agentActor(orgId, {
+        actor: agent,
+        via: "lead",
+        wakeupId,
+        askedBy: asked ? ownerId : null,
+      });
+      yield* sql.withTransaction(Deals.updateAs(actor, deal.key, { owner: agent }));
+    }
+    const movedDeal = (yield* records.get(orgId, deal.key))!;
+    assert.strictEqual(`${movedDeal.ownerKind}:${movedDeal.ownerId}`, "agent:sales");
+    const movedStep = (yield* records.get(orgId, step))!;
+    assert.strictEqual(`${movedStep.ownerKind}:${movedStep.ownerId}`, holder);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect(
@@ -891,6 +984,78 @@ it.effect(
 );
 
 it.effect(
+  "a new client with its deal is one transaction: a retry returns both, a refused deal keeps no client",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      const count = (list: string) =>
+        sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records WHERE register_id = ${list}`.pipe(
+          Effect.map((rows) => rows[0]!.n),
+        );
+      const clients = yield* count("clients");
+      const input = {
+        orgId,
+        name: "Invented Tidewater",
+        prospect: true,
+        contact: { name: "Invented Ira", phones: ["+1 555 0100"] },
+        deal: { title: "Invented Tidewater", value: euros(400_000) },
+        clientRequestId: "tidewater",
+      };
+      const made = yield* Clients.createPartyWithDeal([zoya], input);
+      const again = yield* Clients.createPartyWithDeal([zoya], input);
+      assert.strictEqual(again.party.key, made.party.key);
+      if (again.deal === undefined || made.deal === undefined)
+        return assert.fail("Deals was on, so both results must include the deal.");
+      assert.strictEqual(again.deal.key, made.deal.key);
+      assert.isTrue(made.party.prospect);
+      assert.strictEqual(made.deal.party.key, made.party.key);
+      assert.deepStrictEqual(made.deal.value, euros(400_000));
+      assert.deepStrictEqual(made.deal.owner, asZoya);
+      assert.strictEqual(yield* count("clients"), clients + 1);
+      assert.strictEqual(yield* count("deals"), 1);
+      assert.strictEqual(yield* count("contacts"), 1);
+      // A deal refused after its client is written takes the client, and its contact, with it.
+      const ghost = { ...input, name: "Invented Ghost Co", clientRequestId: "ghost" };
+      assert.strictEqual(
+        yield* refusal(
+          Clients.createPartyWithDeal([owner], {
+            ...ghost,
+            deal: { ...ghost.deal, stage: "nope" },
+          }),
+        ),
+        "invalid_state",
+      );
+      assert.strictEqual(
+        yield* refusal(Clients.createPartyWithDeal([dev], { ...ghost, clientRequestId: "dev" })),
+        "not_allowed",
+      );
+      assert.strictEqual(yield* count("clients"), clients + 1);
+      assert.strictEqual(yield* count("contacts"), 1);
+      assert.strictEqual(yield* count("deals"), 1);
+
+      yield* setShellFixture(false).pipe(Effect.provide(KinShell.layer));
+      const omitted = {
+        ...input,
+        name: "Invented Reedwater",
+        deal: { ...input.deal, title: "Invented Reedwater work" },
+        clientRequestId: "reedwater",
+      };
+      const clientOnly = yield* Clients.createPartyWithDeal([zoya], omitted);
+      assert.notProperty(clientOnly, "deal");
+      assert.include(clientOnly, { dealLeftOut: "Deals is turned off for this company." });
+      assert.deepStrictEqual(yield* Clients.createPartyWithDeal([zoya], omitted), clientOnly);
+      assert.strictEqual(yield* count("clients"), clients + 2);
+      assert.strictEqual(yield* count("contacts"), 2);
+      assert.strictEqual(yield* count("deals"), 1);
+      assert.deepInclude(
+        yield* Effect.flip(Deals.create([owner], newDeal(made.party.key, "Invented direct deal"))),
+        { reason: "not_allowed", message: "Deals is turned off for this company." },
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "open deals total per currency, never summed across; a deal with no value counts only",
   () =>
     Effect.gen(function* () {
@@ -1001,6 +1166,12 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+const setShellFixture = Effect.fn("test.setShell")(function* (on: boolean) {
+  const shell = yield* KinShell.KinShell;
+  const { rev } = yield* shell.get(orgId);
+  yield* shell.set(orgId, ownerId, rev, [{ id: "deals", on }]);
+});
+
 it.effect("a deal is found by its key and its title by whoever sees it, and by nobody else", () =>
   Effect.gen(function* () {
     const { corran, hush } = yield* seed;
@@ -1027,6 +1198,50 @@ it.effect("a deal is found by its key and its title by whoever sees it, and by n
       // Docs' own box finds docs alone.
       assert.deepStrictEqual(yield* found(owner, text, { kinds: ["docs"] }), [], `docs: ${text}`);
     }
+    yield* setShellFixture(false).pipe(Effect.provide(KinShell.layer));
+    for (const text of [open.deal.key, "scheduling pilot"]) {
+      assert.deepStrictEqual(yield* found(owner, text), []);
+      assert.deepStrictEqual(yield* found(zoya, text, elsewhere), []);
+    }
+    assert.strictEqual(
+      (yield* OwnerWork.get([owner], { orgId, key: open.deal.key })).key,
+      open.deal.key,
+    );
+    yield* setShellFixture(true).pipe(Effect.provide(KinShell.layer));
+    assert.deepStrictEqual(yield* found(owner, open.deal.key), [shown]);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0), (${orgId}, 'receipts', 'Receipts', 'RCT', 0)`;
+    yield* Clients.createProject([owner], {
+      orgId,
+      party: corran,
+      name: "Invented Corran project",
+      clientRequestId: "find-corran-project",
+    });
+    for (const [list, key] of [
+      ["invoices", "INV-1"],
+      ["receipts", "RCT-1"],
+    ] as const) {
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+        owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json, confirmed)
+        VALUES (${orgId}, ${key!}, ${list!}, ${key!}, 'Invented Corran payment', 'person', ${ownerId},
+          'person', ${key}, 0, 0, '{}', 1)`;
+      yield* indexRecord(orgId, key);
+    }
+    const kinds = { kinds: ["clients", "projects", "invoices", "receipts"] };
+    assert.lengthOf(yield* found(owner, "corran", kinds), 4);
+    yield* KinShell.KinShell.use((shell) =>
+      shell.set(orgId, ownerId, 2, [
+        { id: "clients", on: false },
+        { id: "money", on: false },
+        { id: "invoices", on: false },
+      ]),
+    ).pipe(Effect.provide(KinShell.layer));
+    assert.deepStrictEqual(yield* found(owner, "corran", kinds), []);
+    assert.strictEqual((yield* OwnerWork.get([owner], { orgId, key: corran })).key, corran);
+    yield* KinShell.KinShell.use((shell) => shell.set(orgId, ownerId, 3, [])).pipe(
+      Effect.provide(KinShell.layer),
+    );
     // Under a client kept private, the owner level finds it and a teammate doesn't.
     for (const text of [kept.deal.key, "confidential"]) {
       assert.deepStrictEqual(yield* found(owner, text), [
@@ -1281,8 +1496,35 @@ it.effect(
       const on = yield* weeklyFigures({ orgId, now });
       assert.include(on, lines.join("\n"));
       assert.strictEqual(on.replace(`\n\n${lines.join("\n")}`, ""), before);
+      yield* setShellFixture(false).pipe(Effect.provide(KinShell.layer));
+      assert.strictEqual(yield* weeklyFigures({ orgId, now }), before);
+      yield* setShellFixture(true).pipe(Effect.provide(KinShell.layer));
+      assert.strictEqual(yield* weeklyFigures({ orgId, now }), on);
       // Off again: the next Monday is byte for byte what it was.
       yield* setWeeklyPipeline(orgId, false, now);
+      assert.strictEqual(yield* weeklyFigures({ orgId, now }), before);
+      const set = (rev: number, sections: Parameters<KinShell.KinShell["Service"]["set"]>[3]) =>
+        KinShell.KinShell.use((shell) => shell.set(orgId, ownerId, rev, sections)).pipe(
+          Effect.provide(KinShell.layer),
+        );
+      yield* set(2, [{ id: "invoices", on: false }]);
+      const noInvoices = yield* weeklyFigures({ orgId, now });
+      assert.notInclude(noInvoices, "\n\nOverdue:");
+      assert.notInclude(noInvoices, "\n\nOpen quotes:");
+      assert.include(noInvoices, "\n\nRenewals this month:");
+      yield* set(3, [{ id: "money", on: false }]);
+      const noMoney = yield* weeklyFigures({ orgId, now });
+      assert.notInclude(noMoney, "\n\nRenewals this month:");
+      assert.notInclude(noMoney, "\n\nOverdue:");
+      yield* set(4, [
+        { id: "clients", on: false },
+        { id: "invoices", on: false },
+      ]);
+      const noClients = yield* weeklyFigures({ orgId, now });
+      assert.notInclude(noClients, "\n\nCold clients:");
+      assert.notInclude(noClients, "\n\nQuiet clients:");
+      assert.notInclude(noClients, "\n\nBehind:");
+      yield* set(5, []);
       assert.strictEqual(yield* weeklyFigures({ orgId, now }), before);
       // With euros at home and a krone rate, the krone line says what it is about, and as of when.
       yield* setProfile(
@@ -1343,6 +1585,7 @@ it.effect(
         clients: 1,
         followUps: 1,
         promises: 1,
+        watches: 0,
       });
       assert.strictEqual(
         yield* message(handOver(arjunId, arjunId)),
@@ -1367,12 +1610,13 @@ it.effect(
       yield* records.update(orgId, { ...byOwner, deal: true }, hushDeal.key, {
         owner: { _tag: "person", personId: ownerId },
       });
-      assert.deepStrictEqual(yield* handOver(ownerId, arjunId), {
+      assert.deepStrictEqual((yield* handOver(ownerId, arjunId)).moved, {
         deals: 1,
         prospects: 1,
         clients: 1,
         followUps: 1,
         promises: 1,
+        watches: 0,
       });
       const moved = moving.filter((key) => key !== hushDeal.key);
       assert.deepStrictEqual(

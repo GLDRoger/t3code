@@ -7,6 +7,7 @@ import {
   KinConnectionKey,
   KinSocialPackCard,
   KinSocialWeekCard,
+  type EnvironmentId,
   type KinOrgId,
   type KinSocialAccount,
   type KinSocialCardPost,
@@ -32,7 +33,11 @@ import * as Schema from "effect/Schema";
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinFailureText } from "./kinAnswers.ts";
 import type { KinConnectionTone } from "./kinConnections.ts";
-import { kinActionFailureNotice, type KinCardNotice } from "./kinDeferralPresentation.ts";
+import {
+  createKinCardActions,
+  kinActionFailureNotice,
+  type KinCardNotice,
+} from "./kinDeferralPresentation.ts";
 
 /**
  * Settings → Connections → Social accounts, the weekly card and the ready-to-post pack. Web and
@@ -57,7 +62,7 @@ export const KIN_SOCIAL_COPY = {
   keyLabel: "Profile key",
   keyPlaceholder: "Paste the key",
   keyHint: (service: string) =>
-    `Make a key in ${service} limited to this one profile, so it can't reach anyone else's accounts. It goes to your Kin's computer and is never shown again.`,
+    `Make a key in ${service} limited to this one profile, so it can't reach anyone else's accounts. It goes to your Kin and is never shown again.`,
   openService: (service: string) => `Open ${service}`,
   check: "Check the key",
   checking: "Checking…",
@@ -88,6 +93,11 @@ export const KIN_SOCIAL_COPY = {
   loadFailed: "Couldn't load your social accounts",
   loading: "Loading…",
   empty: "Nothing connected yet. Social can still draft, and hands you ready-to-post packs.",
+  /** Web Settings: the agent may not be called Social, so the line names no agent. */
+  settingsEmpty:
+    "Nothing connected yet. Your agents can still draft posts for you to put up yourself.",
+  open: "Open",
+  noAccountsYet: "No accounts yet. Send a connect link to add one.",
 } as const;
 
 const makeKey = Schema.decodeSync(KinConnectionKey);
@@ -446,7 +456,7 @@ export const KIN_SOCIAL_ACTION_LABELS: Record<
 };
 
 /** A tap on a social card: which post, the digest Confirm signs, or the client switch. */
-export function kinSocialActInput(
+function kinSocialActInput(
   view: Pick<KinSocialWeekView, "widgetId" | "revision">,
   tap: {
     readonly actionId: KinSocialWeekCardAction | KinSocialPackCardAction;
@@ -464,9 +474,76 @@ export function kinSocialActInput(
 }
 
 /** Kin's refusals on these cards are already in the owner's words, so they're shown as said. */
-export function kinSocialFailureNotice(cause: KinChatError): KinCardNotice {
+function kinSocialFailureNotice(cause: KinChatError): KinCardNotice {
   const said = cause.message.trim();
   if ((cause.reason === "invalid_state" || cause.reason === "not_allowed") && said !== "")
     return { kind: "error", text: said };
   return kinActionFailureNotice(cause);
+}
+
+type KinSocialTarget = Pick<KinSocialWeekView, "widgetId" | "revision">;
+export type KinSocialTap = Parameters<typeof kinSocialActInput>[1];
+/** A refusal, tied to the card revision it was raised on. */
+export type KinSocialNotice = { readonly revision: number; readonly notice: KinCardNotice } | null;
+
+/** What a social card keeps between renders outside React: its tap queue and each tap's value. */
+export interface KinSocialCardTaps {
+  queue: ReturnType<typeof createKinCardActions<KinSocialTarget, string>> | null;
+  readonly taps: Map<string, KinSocialTap>;
+}
+export const kinSocialCardTaps = (): KinSocialCardTaps => ({ queue: null, taps: new Map() });
+
+/**
+ * One tap at a time per card, the same on every client; a refusal shows in the owner's words
+ * until the card changes (`kinSocialNoticeShown`). Each app holds the state and draws it.
+ */
+export function kinSocialCardActions(options: {
+  readonly view: KinSocialTarget;
+  readonly environmentId: EnvironmentId;
+  readonly newId: () => string;
+  /** Made once per card (`kinSocialCardTaps`). */
+  readonly taps: KinSocialCardTaps;
+  readonly post: (value: {
+    readonly environmentId: EnvironmentId;
+    readonly input: KinWidgetsActInput;
+  }) => Promise<AtomCommandResult<unknown, unknown>>;
+  readonly set: {
+    readonly pending: (key: string | null) => void;
+    readonly notice: (notice: KinSocialNotice) => void;
+  };
+}) {
+  const { view, environmentId, taps, set } = options;
+  const press = async (key: string, tap: KinSocialTap) => {
+    taps.taps.set(key, tap);
+    if (taps.queue === null)
+      taps.queue = createKinCardActions<KinSocialTarget, string>({
+        newId: options.newId,
+        toInput: (target, actionKey, clientActionId) =>
+          kinSocialActInput(target, taps.taps.get(actionKey)!, clientActionId),
+        failureNotice: (cause) => kinSocialFailureNotice(cause),
+        post: async (input) => {
+          const result = await options.post({ environmentId, input });
+          return AsyncResult.isFailure(result)
+            ? { ok: false as const, cause: squashAtomCommandFailure(result) }
+            : { ok: true as const };
+        },
+      });
+    const revision = view.revision;
+    const outcome = await taps.queue(view, key, () => {
+      set.pending(key);
+      set.notice(null);
+    });
+    if (outcome.status === "ignored") return;
+    set.pending(null);
+    if (outcome.status === "failed") set.notice({ revision, notice: outcome.notice });
+  };
+  return { press };
+}
+
+/** The refusal to show: only while the card is still the one it was raised on. */
+export function kinSocialNoticeShown(
+  notice: KinSocialNotice,
+  view: Pick<KinSocialWeekView, "revision">,
+): KinCardNotice | null {
+  return notice !== null && notice.revision === view.revision ? notice.notice : null;
 }

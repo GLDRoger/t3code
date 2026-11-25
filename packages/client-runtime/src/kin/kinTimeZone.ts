@@ -8,6 +8,7 @@ import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import type { Atom, AtomRegistry } from "effect/reactivity";
 
+import { runKinCommand } from "./kinRunCommand.ts";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
 import type { AtomCommandResult } from "../state/runtime.ts";
 import { createKinRpcCommand } from "./kinAccess.ts";
@@ -52,7 +53,11 @@ const FIXED_OFFSET = /^Etc\/GMT([+-])(\d{1,2})$/;
  * A zone as a person names it, in the platform's words for this device's language: "India
  * Standard Time", "Pacific Time". Never the id; "Kolkata" where the platform has no name for it.
  */
+const UNIVERSAL = /^(?:Etc\/)?(?:UTC|UCT|GMT|GMT0|Universal|Zulu|Greenwich)$/;
+
 export function kinZoneLabel(zone: string, locale?: string, at = kinNowMs()): string {
+  // People say "UTC"; the platform's long name ("Coordinated Universal Time") reads as jargon.
+  if (UNIVERSAL.test(zone)) return "UTC";
   for (const style of ["longGeneric", "long"] as const) {
     try {
       const name = new Intl.DateTimeFormat(locale, { timeZone: zone, timeZoneName: style })
@@ -113,13 +118,15 @@ export function createKinOwnerTimeZoneSync<R, ER>(
         if (!answered(result)) started.delete(key);
       };
       const target = { environmentId, input: { orgId } };
-      const me = await accessRead.run(registry, target);
+      const me = await runKinCommand(registry, accessRead, target);
       if (me._tag !== "Success") return settled(me);
       if (me.value.access !== "owner") return;
-      const stored = await read.run(registry, target);
+      const stored = await runKinCommand(registry, read, target);
       if (stored._tag !== "Success") return settled(stored);
       if (stored.value.fromHost !== true && kinSameTimeZone(stored.value.timeZone, device)) return;
-      settled(await set.run(registry, { environmentId, input: { orgId, timeZone: device } }));
+      settled(
+        await runKinCommand(registry, set, { environmentId, input: { orgId, timeZone: device } }),
+      );
     };
     return Promise.all(orgIds.map(sync)).then(() => undefined);
   };

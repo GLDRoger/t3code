@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import { cappedRows } from "./capped.ts";
 
 import { fieldList, parseFields } from "../../work/lists.ts";
 import { milestoneRisk, principalOfText, specChangesOf } from "../../work/projectSpine.ts";
@@ -24,7 +25,6 @@ import {
   type SensedFact,
   whenOf,
 } from "./shared.ts";
-import { SENSE_CAP } from "./work.ts";
 
 const OPEN = ["open", "doing", "waiting"];
 // The widest heads-up a playbook may set (`playbooks.ts` bounds).
@@ -98,11 +98,20 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
   const soon = limits("due_soon_hours");
 
   // milestone_late and milestone_at_risk: the spine's own rule, on open milestones of open projects.
-  const milestones = yield* sql<EntryRow>`SELECT ${entryColumns(sql)} FROM ${entryJoins(sql)}
+  const milestones = yield* cappedRows<EntryRow>(
+    ctx,
+    facts,
+    {
+      sense: "milestone_late",
+      plural: "milestones",
+      access: "work",
+    },
+    sql`SELECT ${entryColumns(sql)} FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'milestones' AND r.state = 'open'
       AND r.due_at IS NOT NULL AND r.due_at <= ${at + MILESTONE_WIDEST_MS}
       AND (p.record_id IS NULL OR p.state = 'open')
-    ORDER BY r.due_at, r.key LIMIT ${SENSE_CAP}`;
+    ORDER BY r.due_at, r.key`,
+  );
   const tasks =
     milestones.length === 0
       ? []
@@ -151,7 +160,15 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
   }
 
   // project_no_plan: an open project past its first day with no milestones and no open tasks.
-  const unplanned = yield* sql<EntryRow & { billing: string | null }>`SELECT ${entryColumns(sql)},
+  const unplanned = yield* cappedRows<EntryRow & { billing: string | null }>(
+    ctx,
+    facts,
+    {
+      sense: "project_no_plan",
+      plural: "projects without a plan",
+      access: "owner",
+    },
+    sql`SELECT ${entryColumns(sql)},
       json_extract(r.fields_json, '$.billing') AS billing
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'projects' AND r.state = 'open'
@@ -159,7 +176,8 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
       AND NOT EXISTS (SELECT 1 FROM kin_records t WHERE t.org_id = r.org_id
         AND t.project_id = r.record_id AND t.register_id IN ('milestones', 'work')
         AND t.state IN ${sql.in(OPEN)})
-    ORDER BY r.created_at, r.key LIMIT ${SENSE_CAP}`;
+    ORDER BY r.created_at, r.key`,
+  );
   for (const row of unplanned) {
     // A retainer runs on its renewals, not a plan.
     if (row.billing === "retainer") continue;
@@ -179,7 +197,15 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
   }
 
   // project_quiet: an open project with work on it and nothing changed for the threshold.
-  const quiet = yield* sql<EntryRow & { lastAt: number }>`SELECT * FROM (
+  const quiet = yield* cappedRows<EntryRow & { lastAt: number }>(
+    ctx,
+    facts,
+    {
+      sense: "project_quiet",
+      plural: "quiet projects",
+      access: "owner",
+    },
+    sql`SELECT * FROM (
     SELECT ${entryColumns(sql)},
       ${projectLastMoved(sql)} AS "lastAt"
     FROM ${entryJoins(sql)}
@@ -188,7 +214,8 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
         AND t.project_id = r.record_id AND t.register_id IN ('milestones', 'work')
         AND t.state IN ${sql.in(OPEN)}))
     WHERE "lastAt" >= 0 AND "lastAt" <= ${at - DAY_MS}
-    ORDER BY "lastAt", key LIMIT ${SENSE_CAP}`;
+    ORDER BY "lastAt", key`,
+  );
   for (const row of quiet) {
     const limit = limits("project_quiet_days", row.clientId ?? undefined);
     if (row.lastAt > at - toMs(limit)) continue;
@@ -210,10 +237,19 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
   }
 
   // spec_changed: an open task written from a doc section that reads differently now.
-  const anchored = yield* sql<RecordRow>`${selectRecords(sql)}
+  const anchored = yield* cappedRows<RecordRow>(
+    ctx,
+    facts,
+    {
+      sense: "spec_changed",
+      plural: "tasks with a linked spec",
+      access: "work",
+    },
+    sql`${selectRecords(sql, undefined, false)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state IN ${sql.in(OPEN)}
       AND json_extract(r.fields_json, '$.fromDoc') IS NOT NULL AND r.updated_at <= ${at}
-    ORDER BY r.key LIMIT ${SENSE_CAP}`;
+    ORDER BY r.key`,
+  );
   const changed = yield* specChangesOf(orgId, anchored, KIN_OWNER_LEVEL);
   if (changed.length > 0) {
     const rows = yield* sql<EntryRow & { hash: string | null }>`SELECT ${entryColumns(sql)},
@@ -239,13 +275,22 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
   }
 
   // meeting_passed and meeting_soon: meetings with no outcome noted, by their time.
-  const meetings = yield* sql<EntryRow & { fieldsJson: string }>`SELECT ${entryColumns(sql)},
+  const meetings = yield* cappedRows<EntryRow & { fieldsJson: string }>(
+    ctx,
+    facts,
+    {
+      sense: "meeting_soon",
+      plural: "meetings with no outcome noted",
+      access: "meeting",
+    },
+    sql`SELECT ${entryColumns(sql)},
       r.fields_json AS "fieldsJson"
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.category = 'meeting'
       AND r.state IN ${sql.in(OPEN)} AND r.date_at IS NOT NULL
       AND r.date_at > ${at - MEETING_LOOKBACK_MS} AND r.date_at <= ${at + toMs(soon)}
-    ORDER BY r.date_at, r.key LIMIT ${SENSE_CAP}`;
+    ORDER BY r.date_at, r.key`,
+  );
   if (meetings.length > 0) {
     const names = new Map(
       (yield* sql<{ id: string; name: string }>`SELECT person_id AS id, display_name AS name

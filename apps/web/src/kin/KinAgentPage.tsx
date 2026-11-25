@@ -113,7 +113,7 @@ function KinAgentSheet(props: { readonly target: KinAgentPageTarget }) {
   const closePage = () =>
     void navigate({ to: ".", search: ({ agent: _closed, ...rest }) => rest, replace: true });
   const can = useKinAgentPageCan(environmentId);
-  const working = useKinWorkingAgents(environmentId);
+  const working = useKinWorkingAgents(environmentId, orgId);
   const leads = Option.getOrNull(
     AsyncResult.value(useAtomValue(kinClient.leads({ environmentId, input: { orgId } }))),
   );
@@ -396,6 +396,7 @@ function AgentPageBody(props: {
             ))}
           </ul>
         )}
+        <p className="text-xs text-muted-foreground">{KIN_AGENT_PAGE.playbooksDetail}</p>
       </KinAgentSection>
       <AgentInHand
         lead={lead}
@@ -521,6 +522,11 @@ function AgentCharacter(props: {
 }) {
   const { environmentId, orgId, page } = props;
   const { character } = page;
+  // Kin's part and the owner's, from a host that sends them; else the one text, as before.
+  const parts =
+    page.kinCharacter === undefined || page.kinCharacter === null
+      ? null
+      : { kin: page.kinCharacter, own: page.ownCharacter ?? "" };
   const save = useAtomCommand(kinClient.characterSet, { reportFailure: false });
   const canSave = useAtomValue(kinClient.characterSet.permissionAtom(environmentId));
   const navigate = useNavigate();
@@ -529,7 +535,7 @@ function AgentCharacter(props: {
   const [problem, setProblem] = useState<string | null>(null);
 
   const submit = async () => {
-    if (draft === null || draft.trim() === "") return;
+    if (draft === null || (parts === null && draft.trim() === "")) return;
     setBusy(true);
     const outcome = await save({
       environmentId,
@@ -545,6 +551,55 @@ function AgentCharacter(props: {
     props.onChanged();
   };
 
+  const editor =
+    draft === null ? null : (
+      <form
+        className="flex flex-col gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        <Textarea
+          aria-label={
+            parts === null
+              ? `${page.profile.name}'s character`
+              : `${KIN_AGENT_PAGE.ownPart} of ${page.profile.name}'s character`
+          }
+          rows={14}
+          value={draft}
+          disabled={busy}
+          onChange={(event) => setDraft(event.target.value)}
+        />
+        <div className="flex gap-2">
+          <Button
+            type="submit"
+            size="sm"
+            disabled={busy || (parts === null && draft.trim() === "")}
+          >
+            Save character
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => {
+              setDraft(null);
+              setProblem(null);
+            }}
+          >
+            Cancel
+          </Button>
+        </div>
+      </form>
+    );
+  const shown = (text: string) => (
+    <div className="max-h-96 overflow-y-auto rounded-md border border-border px-3 py-2 text-sm">
+      <ChatMarkdown text={kinDocMarkdown(text)} cwd={undefined} environmentId={environmentId} />
+    </div>
+  );
+
   return (
     <KinAgentSection
       title={KIN_AGENT_PAGE.character}
@@ -552,7 +607,11 @@ function AgentCharacter(props: {
         character !== null && draft === null ? (
           <div className="flex gap-1">
             {canSave && !props.retired ? (
-              <Button size="xs" variant="ghost" onClick={() => setDraft(character.body)}>
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => setDraft(parts === null ? character.body : parts.own)}
+              >
                 {KIN_AGENT_PAGE.editCharacter}
               </Button>
             ) : null}
@@ -576,47 +635,36 @@ function AgentCharacter(props: {
     >
       {character === null ? (
         <p className="text-sm text-muted-foreground">{KIN_AGENT_PAGE.characterEmpty}</p>
-      ) : draft === null ? (
-        <div className="max-h-96 overflow-y-auto rounded-md border border-border px-3 py-2 text-sm">
-          <ChatMarkdown
-            text={kinDocMarkdown(character.body)}
-            cwd={undefined}
-            environmentId={environmentId}
-          />
-        </div>
+      ) : parts === null ? (
+        (editor ?? shown(character.body))
       ) : (
-        <form
-          className="flex flex-col gap-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void submit();
-          }}
-        >
-          <Textarea
-            aria-label={`${page.profile.name}'s character`}
-            rows={14}
-            value={draft}
-            disabled={busy}
-            onChange={(event) => setDraft(event.target.value)}
-          />
-          <div className="flex gap-2">
-            <Button type="submit" size="sm" disabled={busy || draft.trim() === ""}>
-              Save character
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => {
-                setDraft(null);
-                setProblem(null);
-              }}
-            >
-              Cancel
-            </Button>
+        <>
+          <details className="rounded-md border border-border px-3 py-2 text-sm">
+            <summary className="cursor-pointer select-none rounded-sm outline-none ring-ring focus-visible:ring-2 focus-visible:ring-inset">
+              <span className="font-medium">{KIN_AGENT_PAGE.kinPart}</span>
+              <span className="block text-xs text-muted-foreground">
+                {KIN_AGENT_PAGE.kinPartDetail}
+              </span>
+            </summary>
+            <div className="mt-2 max-h-96 overflow-y-auto">
+              <ChatMarkdown
+                text={kinDocMarkdown(parts.kin)}
+                cwd={undefined}
+                environmentId={environmentId}
+              />
+            </div>
+          </details>
+          <div className="flex flex-col gap-1">
+            <p className="text-sm font-medium">{KIN_AGENT_PAGE.ownPart}</p>
+            <p className="text-xs text-muted-foreground">{KIN_AGENT_PAGE.ownPartHint}</p>
+            {editor ??
+              (parts.own.trim() === "" ? (
+                <p className="text-sm text-muted-foreground">{KIN_AGENT_PAGE.ownPartEmpty}</p>
+              ) : (
+                shown(parts.own)
+              ))}
           </div>
-        </form>
+        </>
       )}
       <p className="text-xs text-muted-foreground">{KIN_AGENT_PAGE.characterRule}</p>
       {problem === null ? null : (

@@ -1,3 +1,4 @@
+import * as KinShell from "../../shell/KinShell.ts";
 import {
   KinChatError,
   KinChatId,
@@ -17,7 +18,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinRecords, type Writer } from "../KinRecords.ts";
 import type { RecordRow } from "../recordRows.ts";
-import { type FieldValue, parseFields } from "../lists.ts";
+import { type FieldValue, fieldText, parseFields } from "../lists.ts";
+import { fundingOf } from "../reimbursement.ts";
+import { dayIn } from "../money.ts";
 import { endOfDay, isSuggestion, ownerZone, stillSuggestion } from "../recordRows.ts";
 import { homeCurrency } from "../companyProfile.ts";
 import { defineList, listDef, PRESETS, presetDefinition } from "../registers.ts";
@@ -41,6 +44,7 @@ import {
   reviewOf,
   selectionOf,
   statementRow,
+  storeReview,
   updateCard,
 } from "./statementReview.ts";
 import type { Review } from "./statementCard.ts";
@@ -65,6 +69,12 @@ const changed = new KinChatError({
   message:
     "Something changed since this card was made, so nothing was applied. Ask Kin to read the statement again.",
 });
+/** What moved on one entry since its card was made, in the words Confirm refuses with. */
+const changedOn = (what: string) =>
+  new KinChatError({
+    reason: "conflict",
+    message: `Nothing was applied: ${what} since this card was made. Ask Kin to read the statement again.`,
+  });
 const Prior = Schema.Struct({
   bank: Schema.Struct({ state: Schema.String, category: Schema.NullOr(Schema.String) }),
   expense: Schema.optional(
@@ -77,6 +87,13 @@ const Prior = Schema.Struct({
   ),
   /** A payment recorded before this statement that its line was matched to (`paymentSourceColumns`). */
   matched: Schema.optional(Schema.String),
+  /** A partner's expense this line paid back: its reimbursement and day before. */
+  repaid: Schema.optional(
+    Schema.Struct({
+      reimbursement: Schema.NullOr(Schema.String),
+      repaidOn: Schema.NullOr(Schema.String),
+    }),
+  ),
 });
 const PriorJson = Schema.fromJsonString(Prior);
 const encodePrior = Schema.encodeEffect(PriorJson);
@@ -89,25 +106,37 @@ const Snapshot = Schema.Struct({
   paidWith: Schema.NullOr(Schema.String),
   notes: Schema.String,
   category: Schema.NullOr(Schema.String),
+  // Optional: entries kept before these were snapshotted compare on the rest.
+  reimbursement: Schema.optional(Schema.NullOr(Schema.String)),
+  repaidOn: Schema.optional(Schema.NullOr(Schema.String)),
+  fundedBy: Schema.optional(Schema.NullOr(Schema.String)),
+  currency: Schema.optional(Schema.NullOr(Schema.String)),
 });
 const After = Schema.Struct({ bank: Snapshot, target: Schema.optional(Snapshot) });
 const AfterJson = Schema.fromJsonString(After);
 const encodeAfter = Schema.encodeEffect(AfterJson);
 const decodeAfter = Schema.decodeUnknownOption(AfterJson);
 const snapshot = (row: RecordRow): typeof Snapshot.Type => {
-  const paid = parseFields(row.fieldsJson).paidWith;
+  const fields = parseFields(row.fieldsJson);
   return {
     state: row.state,
     dateAt: row.dateAt,
     amountMinor: row.amountMinor,
-    paidWith: typeof paid === "string" ? paid : null,
+    paidWith: fieldText(fields, "paidWith"),
     notes: row.notes,
     category: row.category,
+    reimbursement: fieldText(fields, "reimbursement"),
+    repaidOn: fieldText(fields, "repaidOn"),
+    fundedBy: fieldText(fields, "fundedBy"),
+    currency: row.currency,
   };
 };
-/** Whether an entry is as Kin left it; one from before snapshots were kept counts as unchanged. */
-const asLeft = (row: RecordRow, kept: typeof Snapshot.Type | undefined) =>
-  kept === undefined || JSON.stringify(snapshot(row)) === JSON.stringify(kept);
+/** Whether an entry is as Kin left it, on what was snapshotted; none kept counts as unchanged. */
+const asLeft = (row: RecordRow, kept: typeof Snapshot.Type | undefined) => {
+  if (kept === undefined) return true;
+  const now: Record<string, unknown> = snapshot(row);
+  return Object.entries(kept).every(([key, value]) => now[key] === value);
+};
 
 /** The stored review, read for the owner on the card they act on. */
 const ownersReview = Effect.fn("KinStatements.ownersReview")(function* (
@@ -204,6 +233,10 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           reason: "widget_changed",
           message: "This statement was already applied.",
         });
+      if (!(yield* KinShell.sectionOnFor(input.orgId, "money")))
+        return yield* invalid(
+          "Money is turned off for this company, so nothing was applied. Turn it on in Settings › Sections and confirm again.",
+        );
       if (input.revision === undefined) return yield* outdated;
       const selection = selectionOf(stored, review);
       if (selection.revision !== input.revision)
@@ -428,6 +461,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         tds: 0,
         paid: 0,
         linked: 0,
+        repaid: 0,
         created: 0,
         transfers: 0,
         ignored: 0,
@@ -448,6 +482,54 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           if (targetRow === undefined) return yield* changed;
           // A suggestion's line applies nothing: not its payment, not its bill, until it is kept.
           if (isSuggestion(targetRow)) return yield* invalid(stillSuggestion(targetRow.key));
+          if (candidate.repays !== undefined) {
+            // Each must still be a kept Paid expense owed to a partner at the amount read, and the
+            // run must still add up to the line: otherwise it would be paid back wrong or twice.
+            const owed: Array<RecordRow> = [];
+            for (const one of candidate.repays) {
+              const expense = yield* records.getById(input.orgId, one.recordId);
+              if (expense === undefined) return yield* changed;
+              if (isSuggestion(expense)) return yield* invalid(stillSuggestion(expense.key));
+              const funding = fundingOf(parseFields(expense.fieldsJson));
+              if (expense.state !== "done" || funding.by !== "partner" || funding.state !== "owed")
+                return yield* changed;
+              const day = dayIn(expense.dateAt ?? expense.createdAt, zone);
+              if (day > row.date)
+                return yield* changedOn(`${expense.key} is dated after this bank line`);
+              if (
+                one.by !== undefined &&
+                (funding.personId ?? `address:${funding.unmatched}`) !== one.by
+              )
+                return yield* changedOn(`someone else paid ${expense.key}`);
+              if (expense.currency !== currency || expense.amountMinor !== one.amountMinor)
+                return yield* changedOn(`the amount of ${expense.key} changed`);
+              if (one.day !== undefined && day !== one.day)
+                return yield* changedOn(`the date of ${expense.key} changed`);
+              if (one.rev === undefined || expense.rev !== one.rev)
+                return yield* changedOn(`${expense.key} was edited`);
+              owed.push(expense);
+            }
+            const signed = BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor);
+            if (owed.reduce((sum, one) => sum + BigInt(one.amountMinor!), 0n) !== signed)
+              return yield* changed;
+            const prior = yield* settleBank(row, states.explained, "expense");
+            for (const expense of owed) {
+              const fields = parseFields(expense.fieldsJson);
+              yield* records.update(input.orgId, writer, expense.key, {
+                fields: { reimbursement: "repaid", repaidOn: row.date },
+              });
+              yield* entry(row, "expense_linked", expense.recordId, null, {
+                bank: prior,
+                repaid: {
+                  reimbursement: fieldText(fields, "reimbursement"),
+                  repaidOn: fieldText(fields, "repaidOn"),
+                },
+              });
+              yield* linkBoth(row, expense.recordId, expense.key);
+              tally.repaid += 1;
+            }
+            continue;
+          }
           if (candidate.kind === "invoice" && candidate.paymentId !== undefined) {
             yield* livePayment(candidate.paymentId);
             const prior = yield* settleBank(row, states.explained, "payment received");
@@ -501,6 +583,11 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
             }
           } else {
             const fields = parseFields(targetRow.fieldsJson);
+            // A partner's own money never left this account, and an edited one may not be this line.
+            if (fundingOf(fields).by !== "company")
+              return yield* changedOn(`${targetRow.key} is now a partner's to be paid back`);
+            if (candidate.rev !== undefined && targetRow.rev !== candidate.rev)
+              return yield* changedOn(`${targetRow.key} was edited`);
             const priorExpense = {
               state: targetRow.state,
               dateAt: targetRow.dateAt,
@@ -606,6 +693,11 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           ? []
           : [
               `Linked ${tally.linked} paid expense${tally.linked === 1 ? "" : "s"} to their bank rows.`,
+            ]),
+        ...(tally.repaid === 0
+          ? []
+          : [
+              `Marked ${tally.repaid} partner-paid expense${tally.repaid === 1 ? "" : "s"} repaid.`,
             ]),
         ...(tally.created === 0
           ? []
@@ -771,10 +863,13 @@ export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
       const keptRows = new Set([...receipted.keys(), ...changed.keys()]);
 
       const tally = { payments: 0, expenses: 0, others: 0 };
-      const reversed: Array<number> = [];
+      // Unbound first: a repaid expense its entry binds refuses the very edits undo makes.
+      const reversed = entries.filter((one) => !keptRows.has(one.row)).map((one) => one.seq);
+      for (let at = 0; at < reversed.length; at += 500)
+        yield* sql`DELETE FROM kin_bank_statement_entries WHERE org_id = ${input.orgId}
+          AND statement_id = ${input.statementId} AND seq IN ${sql.in(reversed.slice(at, at + 500))}`;
       for (const entry of entries) {
         if (keptRows.has(entry.row)) continue;
-        reversed.push(entry.seq);
         const prior =
           entry.prior === null ? undefined : Option.getOrUndefined(decodePrior(entry.prior));
         const target = entry.target === null ? undefined : targets.get(entry.target);
@@ -784,7 +879,15 @@ export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
           if (entry.action === "payment") tally.payments += 1;
         } else if (entry.action.startsWith("expense")) {
           if (target !== undefined) {
-            if (entry.action === "expense_paid" && prior?.expense !== undefined)
+            // A row whose expense was changed since (`asLeft`) is kept whole, above.
+            if (prior?.repaid !== undefined)
+              yield* records.update(input.orgId, writer, target.key, {
+                fields: {
+                  reimbursement: prior.repaid.reimbursement,
+                  repaidOn: prior.repaid.repaidOn,
+                },
+              });
+            else if (entry.action === "expense_paid" && prior?.expense !== undefined)
               yield* records.update(input.orgId, writer, target.key, {
                 state: prior.expense.state as KinRecordState,
                 dateAt: prior.expense.dateAt,
@@ -823,15 +926,52 @@ export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
           category: first.bank.category,
         });
       }
-      // Only what was taken back stops being recorded: a kept row's entries stay for a later undo.
-      for (let at = 0; at < reversed.length; at += 500)
-        yield* sql`DELETE FROM kin_bank_statement_entries WHERE org_id = ${input.orgId}
-          AND statement_id = ${input.statementId} AND seq IN ${sql.in(reversed.slice(at, at + 500))}`;
+      // Only what was taken back stopped being recorded: a kept row's entries stay for a later undo.
       yield* sql`UPDATE kin_bank_statements SET applied_at = NULL, applied_by = NULL,
           undone_at = ${input.now}, generation = generation + 1
         WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
       yield* (yield* KinRefreshObserver).touch(input.orgId, "moneyStatements");
-      const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
+      const read = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
+      // Expenses put back as the card saw them carry the revision this undo left, so the card
+      // confirms again; Confirm still refuses one anybody else changed since.
+      const restored = new Map<string, number>();
+      for (const entry of back)
+        if (entry.action.startsWith("expense") && entry.target !== null) {
+          const now = yield* records.getById(input.orgId, entry.target);
+          if (now !== undefined) restored.set(now.recordId, now.rev);
+        }
+      const review =
+        read === undefined || restored.size === 0
+          ? read
+          : {
+              ...read,
+              matches: new Map(
+                [...read.matches].map(([index, match]) => [
+                  index,
+                  {
+                    ...match,
+                    candidates: match.candidates.map((one) => ({
+                      ...one,
+                      ...(one.rev !== undefined && restored.has(one.recordId)
+                        ? { rev: restored.get(one.recordId)! }
+                        : {}),
+                      ...(one.repays === undefined
+                        ? {}
+                        : {
+                            repays: one.repays.map((each) =>
+                              restored.has(each.recordId)
+                                ? { ...each, rev: restored.get(each.recordId)! }
+                                : each,
+                            ),
+                          }),
+                    })),
+                  },
+                ]),
+              ),
+            };
+      if (review !== read && review !== undefined)
+        yield* sql`UPDATE kin_bank_statements SET review_json = ${yield* storeReview(review)}
+          WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
       const categories = yield* expenseCategories(input.orgId);
       const held = yield* heldRows(input.orgId, input.statementId);
       const card =

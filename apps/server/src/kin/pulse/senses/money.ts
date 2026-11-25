@@ -1,17 +1,38 @@
-import { KinMoney } from "@t3tools/contracts";
+import {
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
+  KinMoney,
+  KinPersonId,
+  KinRecordId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { cappedRows } from "./capped.ts";
 
+import { billedParty } from "../../work/billTo.ts";
 import { budgetsAnswer, budgetsView } from "../../work/budgets.ts";
+import { noticeDay } from "../../work/crm.ts";
 import { formatMoneyPlain } from "../../work/money.ts";
-import { countedEntry, daysOverdue, endOfDay, invoiceDue } from "../../work/recordRows.ts";
+import {
+  countedEntry,
+  daysOverdue,
+  endOfDay,
+  invoiceDue,
+  startOfDay,
+} from "../../work/recordRows.ts";
 import { DAY_MS, thresholds, toMs } from "../thresholds.ts";
-import { statementSenses } from "./bank.ts";
+import {
+  paymentSeenSenses,
+  repaidSeenSenses,
+  statementSenses,
+  unreadableBankAlerts,
+} from "./bank.ts";
 import {
   agentOrOwner,
   dayOf,
+  daysAgoText,
   daysText,
   elapsed,
   entryColumns,
@@ -24,7 +45,6 @@ import {
   type SenseContext,
   type SensedFact,
 } from "./shared.ts";
-import { SENSE_CAP } from "./work.ts";
 
 type ClientKey =
   | "chase_invoice_after_days"
@@ -49,7 +69,7 @@ const moneyFact = (
   ctx: SenseContext,
   row: EntryRow,
   fact: Pick<SensedFact, "sense" | "key" | "since" | "consequence" | "wake"> &
-    Partial<Pick<SensedFact, "measure">>,
+    Partial<Pick<SensedFact, "measure" | "quietForMs" | "scope">>,
 ): SensedFact => ({
   family: "money",
   subject: entrySubject(row),
@@ -58,6 +78,14 @@ const moneyFact = (
   sensitive: true,
   ...fact,
 });
+
+const billingScope = (row: EntryRow & { fieldsJson: string | null }, registerId: string) => {
+  const billTo =
+    row.fieldsJson === null
+      ? undefined
+      : billedParty({ registerId, fieldsJson: row.fieldsJson }, undefined)?.name;
+  return { ...entryScope(row), ...(billTo === undefined ? {} : { billTo }) };
+};
 
 export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: SenseContext) {
   const sql = yield* SqlClient.SqlClient;
@@ -69,15 +97,27 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   const forClient = (key: ClientKey, clientId: string | null) => limits(key, clientId ?? undefined);
 
   // invoice_overdue: issued, still owed, and past its due date (else its client's terms) plus the grace.
-  const invoices = yield* sql<EntryRow & { base: number; paid: number }>`SELECT * FROM (
+  const invoices = yield* cappedRows<
+    EntryRow & { base: number; paid: number; fieldsJson: string | null }
+  >(
+    ctx,
+    facts,
+    {
+      sense: "invoice_overdue",
+      plural: "overdue invoices",
+      access: "money",
+    },
+    sql`SELECT * FROM (
     SELECT ${entryColumns(sql)}, ${invoiceDue(sql)} AS base,
+      CASE WHEN c.record_id IS NULL THEN r.fields_json END AS "fieldsJson",
       (SELECT COALESCE(SUM(pay.amount_minor), 0) FROM kin_record_payments pay
         WHERE pay.org_id = r.org_id AND pay.record_id = r.record_id AND pay.voided_at IS NULL) AS paid
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
       AND r.state = 'waiting' AND r.amount_minor IS NOT NULL)
     WHERE base IS NOT NULL AND base <= ${at - DAY_MS} AND "amountMinor" > paid
-    ORDER BY base, key LIMIT ${SENSE_CAP}`;
+    ORDER BY base, key`,
+  );
   for (const row of invoices) {
     const chase = forClient("chase_invoice_after_days", row.clientId);
     if (row.base > at - toMs(chase)) continue;
@@ -86,24 +126,37 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     facts.push(
       moneyFact(ctx, row, {
         sense: "invoice_overdue",
+        scope: billingScope(row, "invoices"),
         key: `invoice_overdue:${row.key}:base=${row.base}`,
         since: iso(row.base + toMs(chase)),
         measure: measure(days, chase),
         consequence: `${owed} owed, ${daysText(days)} past due (${dayOf(ctx, row.base)}).`,
         wake: "now",
+        // Still owed, it is not a problem only until the next chase is due.
+        quietForMs: toMs(chase),
       }),
     );
   }
 
   // quote_unanswered: sent, and nothing recorded on it since for the threshold.
-  const quotes = yield* sql<EntryRow & { lastAt: number }>`SELECT * FROM (
-    SELECT ${entryColumns(sql)}, COALESCE((SELECT MAX(ch.at) FROM kin_record_changes ch
+  const quotes = yield* cappedRows<EntryRow & { lastAt: number; fieldsJson: string | null }>(
+    ctx,
+    facts,
+    {
+      sense: "quote_unanswered",
+      plural: "unanswered quotes",
+      access: "money",
+    },
+    sql`SELECT * FROM (
+    SELECT ${entryColumns(sql)}, CASE WHEN c.record_id IS NULL THEN r.fields_json END AS "fieldsJson",
+      COALESCE((SELECT MAX(ch.at) FROM kin_record_changes ch
         WHERE ch.org_id = r.org_id AND ch.record_id = r.record_id), r.updated_at) AS "lastAt"
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'quotes' AND ${countedEntry(sql)}
       AND r.state = 'waiting')
     WHERE "lastAt" <= ${at - DAY_MS}
-    ORDER BY "lastAt", key LIMIT ${SENSE_CAP}`;
+    ORDER BY "lastAt", key`,
+  );
   for (const row of quotes) {
     const followUp = forClient("quote_follow_up_days", row.clientId);
     if (row.lastAt > at - toMs(followUp)) continue;
@@ -112,23 +165,33 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     facts.push(
       moneyFact(ctx, row, {
         sense: "quote_unanswered",
+        scope: billingScope(row, "quotes"),
         key: `quote_unanswered:${row.key}:last=${row.lastAt}`,
         since: iso(row.lastAt + toMs(followUp)),
         measure: measure(days, followUp),
         consequence: `Quote${amount === undefined ? "" : ` for ${amount}`} sent, with no answer recorded for ${daysText(days)}.`,
-        wake: "sweep",
+        wake: "now",
       }),
     );
   }
 
   // retainer_due: a repeating invoice's next one is still a draft as its day comes up.
-  const drafts = yield* sql<EntryRow & { goesOut: number; kept: number }>`SELECT * FROM (
+  const drafts = yield* cappedRows<EntryRow & { goesOut: number; kept: number }>(
+    ctx,
+    facts,
+    {
+      sense: "retainer_due",
+      plural: "repeating invoice drafts",
+      access: "money",
+    },
+    sql`SELECT * FROM (
     SELECT ${entryColumns(sql)}, COALESCE(r.date_at, r.due_at) AS "goesOut", r.confirmed AS kept
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND r.state = 'open'
       AND r.repeat_json IS NOT NULL)
     WHERE "goesOut" IS NOT NULL AND "goesOut" <= ${at + toMs(retainer)}
-    ORDER BY "goesOut", key LIMIT ${SENSE_CAP}`;
+    ORDER BY "goesOut", key`,
+  );
   for (const row of drafts) {
     const amount = row.kept === 1 ? amountText(row) : undefined;
     const days = elapsed(at, row.goesOut, "days");
@@ -146,23 +209,53 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
 
   // renewal_due: a renewal in Dates or Subscriptions, or an open project's renews-on day, coming
   // up within the heads-up or passed and still open. One renewal is one fact.
-  const listed = yield* sql<EntryRow & { kept: number }>`SELECT ${entryColumns(sql)},
+  const listed = yield* cappedRows<EntryRow & { kept: number }>(
+    ctx,
+    facts,
+    {
+      id: "listed_renewals",
+      sense: "renewal_due",
+      plural: "renewals in Dates or Subscriptions",
+      access: "money",
+    },
+    sql`SELECT ${entryColumns(sql)},
       r.confirmed AS kept
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId}
       AND ((r.register_id = 'dates' AND r.category = 'renewal') OR r.register_id = 'subscriptions')
       AND r.state IN ('open', 'doing', 'waiting') AND r.due_at IS NOT NULL
       AND r.due_at <= ${at + RENEWAL_WIDEST_MS}
-    ORDER BY r.due_at, r.key LIMIT ${SENSE_CAP}`;
-  const projects = yield* sql<
-    EntryRow & { renewsOn: string; value: string | null; kept: number }
-  >`SELECT
+    ORDER BY r.due_at, r.key`,
+  );
+  const projects = yield* cappedRows<
+    EntryRow & {
+      renewsOn: string;
+      value: string | null;
+      kept: number;
+      noticeDays: string | null;
+      clientOwnerKind: string | null;
+      clientOwnerId: string | null;
+    }
+  >(
+    ctx,
+    facts,
+    {
+      id: "project_renewals",
+      also: "clients",
+      sense: "renewal_due",
+      plural: "project renewals",
+      access: "money",
+    },
+    sql`SELECT
       ${entryColumns(sql)}, json_extract(r.fields_json, '$.renewsOn') AS "renewsOn",
-      json_extract(r.fields_json, '$.value') AS value, r.confirmed AS kept
+      json_extract(r.fields_json, '$.value') AS value, r.confirmed AS kept,
+      json_extract(r.fields_json, '$.noticeDays') AS "noticeDays",
+      c.owner_kind AS "clientOwnerKind", c.owner_id AS "clientOwnerId"
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'projects' AND r.state = 'open'
       AND json_extract(r.fields_json, '$.renewsOn') IS NOT NULL
-    ORDER BY "renewsOn", r.key LIMIT ${SENSE_CAP}`;
+    ORDER BY "renewsOn", r.key`,
+  );
   // A suggested renewal is still a day to know, but its fee is nobody's yet.
   const renewals: Array<EntryRow> = listed.map((row) =>
     row.kept === 1 ? row : { ...row, amountMinor: null, currency: null },
@@ -210,9 +303,69 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
         since: iso(row.dueAt! - toMs(renewal)),
         measure: measure(days, renewal),
         consequence: `Renewal due ${dayOf(ctx, row.dueAt!)}${row.dueAt! < at ? ", already passed" : `, in ${daysText(days)}`}${amount === undefined ? "" : ` (${amount})`}${stage === "heads_up" ? `; drafting starts ${dayOf(ctx, draftFrom)}, not before` : ""}.`,
-        wake: "sweep",
+        wake: stage === "draft" ? "now" : "sweep",
       }),
       stage,
+    });
+  }
+
+  // notice_due: an open project's last day to give notice (`renewsOn` less `noticeDays`) is
+  // within the renewal heads-up, or passed while the renewal is still ahead. It reaches whoever
+  // looks after the client, as a deal's facts do; a new notice day is a new fact.
+  const noticed = projects.filter((project) => project.noticeDays !== null);
+  const present =
+    noticed.length === 0
+      ? new Set<string>()
+      : new Set(
+          (yield* sql<{ personId: string }>`SELECT person_id AS "personId" FROM kin_people
+            WHERE org_id = ${orgId} AND removed_at IS NULL ORDER BY person_id`).map(
+            (row) => row.personId,
+          ),
+        );
+  for (const project of noticed) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(project.renewsOn)) continue;
+    const day = noticeDay(project.renewsOn, project.noticeDays);
+    if (day === undefined) continue;
+    const renews = endOfDay(project.renewsOn, ctx.zone);
+    const by = endOfDay(day, ctx.zone);
+    const heads = forClient("renewal_heads_up_days", project.clientId);
+    // From the start of the day that many days before it: 60 days' notice before 1 March, by
+    // 31 December, is told from 17 December.
+    const from = startOfDay(day, ctx.zone) - toMs(heads);
+    if (at > renews || from > at) continue;
+    const when = (ms: number) =>
+      formatKinWhen(ms, "day", { zone: ctx.zone, locale: KIN_TEXT_LOCALE });
+    const name = project.clientTitle ?? project.title;
+    const looks = [
+      { kind: project.clientOwnerKind, id: project.clientOwnerId },
+      { kind: project.ownerKind, id: project.ownerId },
+    ].find((one) => one.kind === "person" && one.id !== null && present.has(one.id));
+    facts.push({
+      sense: "notice_due",
+      family: "work",
+      key: `notice_due:${project.key}:on=${day}`,
+      // About the client, so it reaches whoever reads that client and a hold on it covers it.
+      subject:
+        project.clientId === null || project.clientKey === null
+          ? entrySubject(project)
+          : {
+              kind: "record",
+              key: project.clientKey,
+              title: project.clientTitle ?? project.clientKey,
+              recordId: KinRecordId.make(project.clientId),
+            },
+      scope: entryScope({ ...project, projectKey: project.key, projectTitle: project.title }),
+      since: iso(from),
+      consequence:
+        by < at
+          ? `${name}: notice was due by ${when(by)}, ${daysAgoText(ctx, by)}; ${project.title} renews ${when(renews)}.`
+          : `${name}: notice by ${when(by)} if the contract changes; ${project.title} renews ${when(renews)}.`,
+      actor:
+        looks === undefined
+          ? { _tag: "owner" }
+          : { _tag: "person", personId: KinPersonId.make(looks.id!) },
+      sensitive: project.sensitive === 1,
+      wake: "sweep",
     });
   }
 
@@ -247,5 +400,9 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     });
   });
   facts.push(...(yield* statementSenses(ctx)));
+  facts.push(...(yield* paymentSeenSenses(ctx)));
+  facts.push(...(yield* repaidSeenSenses(ctx)));
+  const unreadable = yield* unreadableBankAlerts(ctx, ctx.finance);
+  if (unreadable !== undefined) facts.push(unreadable);
   return facts;
 });

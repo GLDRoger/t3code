@@ -1,3 +1,4 @@
+import { KinShell } from "./kinShell.ts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
@@ -91,6 +92,8 @@ export const KinPeopleCreateInviteInput = Schema.Struct({
   personId: Schema.optional(KinPersonId),
   // Someone else who shares a removed person's name: a new person instead of the bring-back offer.
   newPerson: Schema.optional(Schema.Literal(true)),
+  // What a new person sees once they join, chosen by the owner level; absent, the usual start.
+  sees: Schema.optional(KinPersonPlaceSwitches),
   ttlHours: Schema.optional(
     PositiveInt.check(Schema.isLessThanOrEqualTo(KIN_INVITE_MAX_TTL_HOURS)),
   ),
@@ -218,11 +221,17 @@ export const KinAccessMeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinAccessMeInput = typeof KinAccessMeInput.Type;
 /** The caller's own kind, which decides their dock and screens. */
 export const KinAccessMeResult = Schema.Struct({
+  shell: Schema.optional(KinShell),
   personId: KinPersonId,
   access: KinPersonAccess,
   // Absent from a host older than places; an owner-level person's are all on.
   places: Schema.optional(KinPersonPlaceSwitches),
   leads: Schema.optional(Schema.Array(KinRecordRef)),
+  /**
+   * The places this host refuses the caller, by the check Money and Docs refuse with. Work is never
+   * refused to a caller this answers. Absent from an older host.
+   */
+  refused: Schema.optional(Schema.Struct({ money: Schema.Boolean, docs: Schema.Boolean })),
   /** The company's home currency, which every member's forms start amounts in; absent from an older host. */
   homeCurrency: Schema.optional(KinCurrency),
   /** The company's country, ISO 3166 alpha-2, null for none; absent from an older host. */
@@ -273,6 +282,11 @@ export const KinPersonProfile = Schema.Struct({
    */
   holdOutsideHours: Schema.optional(Schema.Boolean),
   /**
+   * In their quiet hours a reply to what they asked still rings (`ANSWER_RINGS_WITHIN_MS`);
+   * absent, on. Only on their own profile.
+   */
+  answersRing: Schema.optional(Schema.Boolean),
+  /**
    * Away until this day, on their own calendar: Kin holds non-urgent lines until it starts.
    * Absent once the day has come, and from older hosts.
    */
@@ -309,6 +323,8 @@ export const KinPeopleUpdateProfileInput = Schema.Struct({
   /** Null goes back to the company's. */
   quietHours: Schema.optional(Schema.NullOr(KinPersonQuietHours)),
   holdOutsideHours: Schema.optional(Schema.Boolean),
+  /** Only their own. */
+  answersRing: Schema.optional(Schema.Boolean),
   /** Away until this day on their calendar; null is "I'm back". The owner level sets a teammate's. */
   awayUntil: Schema.optional(Schema.NullOr(KinDay)),
   picture: Schema.optional(Schema.NullOr(KinAttachment)),

@@ -26,6 +26,8 @@ export function Chip(props: {
   readonly onPress?: () => void;
   readonly accessibilityLabel?: string;
   readonly disabled?: boolean;
+  /** Lets a long label wrap instead of cutting at the chip's width, as at large text. */
+  readonly wrap?: boolean;
 }) {
   const small = props.size === "small";
   const layout = cn(
@@ -41,10 +43,10 @@ export function Chip(props: {
       ) : null}
       <AppText
         textRole={small ? "caption" : "footnote"}
-        numberOfLines={small ? undefined : 1}
+        numberOfLines={small || props.wrap ? undefined : 1}
         className={cn(
           "shrink",
-          !small && "max-w-[180px]",
+          !small && !props.wrap && "max-w-[180px]",
           !small && "font-t3-medium",
           props.selected ? "text-primary-foreground" : "text-foreground-muted",
         )}

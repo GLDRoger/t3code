@@ -14,7 +14,6 @@ import { formatKinTime } from "./kinScreenState.ts";
 export const KIN_TASKS_KEY_LABEL_MAX = 60;
 // The name each setup below gives Kin's server in the coding agent's own config.
 const SERVER_NAME = "kin";
-const CODEX_KEY_ENV = "KIN_TASKS_KEY";
 /** Where the key goes in the setup lines the section always shows. */
 export const KIN_TASKS_KEY_STAND_IN = "YOUR_KEY";
 const ADDRESS_UNKNOWN = "The connection dropped before the address could be shown.";
@@ -44,8 +43,9 @@ export const KIN_TASKS_KEYS_COPY = {
   done: "Done",
   madeTitle: (label: string) => `Key made: ${label}`,
   once: "Copy it now. Kin won't show this key again. If you lose it, remove it and make another.",
-  can: "With it, your coding agent can read the tasks you hold, add notes to them, and set them to to-do, in progress or done.",
-  cannot: "It can't reach anyone else's tasks, or any chats, money or files.",
+  can: "With it, your coding agent can read the tasks you hold, add comments to them, and set them to to-do, in progress or done. It can also read the projects, clients and docs you can see in Kin, money if you have Money, and, for owners and co-owners, team memory.",
+  cannot:
+    "It can't change anything else, reach anyone else's tasks or your chats, or read anything you can't see yourself. Anything marked private, and everything under a private client or project, stays in Kin.",
   keyLabel: "Key",
   addressLabel: "Address",
   setupTitle: "Set up your coding agent",
@@ -57,7 +57,14 @@ export const KIN_TASKS_KEYS_COPY = {
   dropped: `${ADDRESS_UNKNOWN} Remove this key and make another.`,
   addressUnknown: ADDRESS_UNKNOWN,
   setupHow: "How to set it up",
+  setupDetail: "The address and the lines to paste into your coding agent",
+  addressMissing: "Address unknown",
+  foldedTitle: "Use Kin from your coding agent",
+  foldedDetail: "For people who write code with Claude Code, Codex or Cursor",
+  show: "Show",
   standIn: `Each line has ${KIN_TASKS_KEY_STAND_IN} where your key goes. Kin shows a key only once, when it is made.`,
+  check:
+    "To check it worked, ask your coding agent to list your Kin tasks. This key's row then says when it was last used.",
 } as const;
 
 /** One key as a row: its label and one line of when it was made, when it ends and when last used. */
@@ -140,8 +147,9 @@ export interface KinTasksKeySetup {
 }
 
 /**
- * Ready-to-paste setup for each common coding agent. Shapes: `claude mcp add --help` (2.1),
- * `codex mcp add --help` (0.166), and Cursor's `mcp.json` (`McpServerConfig` in @cursor/sdk).
+ * Ready-to-paste setup for each common coding agent, the key in the agent's own config. Shapes:
+ * `claude mcp add --help` (2.1); Codex's `config.toml` (`http_headers`), since `codex mcp add` can
+ * only name an environment variable; and Cursor's `mcp.json` (`McpServerConfig` in @cursor/sdk).
  */
 function kinTasksKeySetups(address: string, secret: string): readonly KinTasksKeySetup[] {
   return [
@@ -152,8 +160,8 @@ function kinTasksKeySetups(address: string, secret: string): readonly KinTasksKe
     },
     {
       agent: "Codex",
-      where: `Run in a terminal; Codex reads the key from ${CODEX_KEY_ENV}, so keep the first line in your shell profile:`,
-      text: `export ${CODEX_KEY_ENV}="${secret}"\ncodex mcp add ${SERVER_NAME} --url ${address} --bearer-token-env-var ${CODEX_KEY_ENV}`,
+      where: "Add these lines to the end of ~/.codex/config.toml, then start a new Codex session:",
+      text: `[mcp_servers.${SERVER_NAME}]\nurl = "${address}"\nhttp_headers = { "Authorization" = "Bearer ${secret}" }`,
     },
     {
       agent: "Cursor",

@@ -3,6 +3,7 @@ import {
   KinChatId,
   KinEvent,
   type KinOrgId,
+  KinPersonId,
   type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -10,8 +11,10 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { historyFloor } from "../chat/sharing.ts";
 import { ownerOnlyChat } from "../lead/Audience.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
+import { directKey } from "../lead/LeadAccess.ts";
 import { ownsAgent } from "../people/KinAccess.ts";
 
 export type DeferralSource = Pick<MemoryItemHead, "chat" | "source_event">;
@@ -180,4 +183,142 @@ export const askersChat = Effect.fn("Deferrals.askersChat")(function* (
   return row === undefined
     ? undefined
     : { chatId: KinChatId.make(item.chat), theirs: row.handle === item.said_by };
+});
+
+/**
+ * A shared chat's own reminder or routine: set for the chat it was asked in (`for_chat`, a
+ * schedule's `audience` 'shared'), never someone's own. It fires back into that chat as the agent
+ * that set it. `open` is false once the chat is archived or gone, or that agent left it.
+ */
+export const sharedChatOf = Effect.fn("Deferrals.sharedChatOf")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  item: (DeferralSource & { readonly for_chat?: true | undefined }) | undefined,
+) {
+  if (item?.for_chat !== true || item.chat === undefined || item.source_event === undefined)
+    return undefined;
+  const [row] = yield* sql<{
+    agentId: string;
+    kind: string | null;
+    title: string | null;
+    open: number;
+    leadName: string | null;
+    ownerChatId: string | null;
+  }>`SELECT e.agent_id AS "agentId", c.kind, c.title,
+      (c.archived_at IS NULL AND EXISTS (SELECT 1 FROM kin_chat_members m
+        WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id AND m.principal_kind = 'agent'
+          AND m.agent_id = e.agent_id AND m.left_at IS NULL)) AS open,
+      l.name AS "leadName", l.owner_chat_id AS "ownerChatId"
+    FROM kin_events e
+    LEFT JOIN kin_chats c ON c.org_id = e.org_id AND c.chat_id = ${item.chat}
+    LEFT JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+      AND a.role = 'lead' AND a.retired_at IS NULL
+    LEFT JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
+    WHERE e.org_id = ${orgId} AND e.event_id = ${item.source_event}
+    ORDER BY e.event_id`;
+  if (row === undefined || row.kind === "direct") return undefined;
+  return {
+    chatId: KinChatId.make(item.chat),
+    agentId: KinAgentId.make(row.agentId),
+    name: row.title ?? "a group chat",
+    open: row.kind !== null && row.open === 1 && row.leadName !== null,
+    lead:
+      row.leadName === null || row.ownerChatId === null
+        ? undefined
+        : { name: row.leadName, ownerChatId: KinChatId.make(row.ownerChatId) },
+  };
+});
+
+/** Who asked, for a shared chat's card: by person id or handle, and whether they left. */
+export const askerOf = Effect.fn("Deferrals.askerOf")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  saidBy: string,
+) {
+  const [row] = yield* sql<{ personId: string; name: string; removed: number }>`
+    SELECT person_id AS "personId", display_name AS name, removed_at IS NOT NULL AS removed
+    FROM kin_people WHERE org_id = ${orgId} AND (person_id = ${saidBy} OR handle = ${saidBy})
+    ORDER BY person_id LIMIT 1`;
+  return row === undefined
+    ? undefined
+    : {
+        personId: KinPersonId.make(row.personId),
+        name: row.name,
+        ...(row.removed === 1 ? { left: true as const } : {}),
+      };
+});
+
+/**
+ * Someone's own direct chat with `agentId` (the lead's owner chat for its owner), where what they
+ * asked to come to them alone goes; undefined when they have none open.
+ */
+export const directChatWith = Effect.fn("Deferrals.directChatWith")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  personId: string,
+  agentId: string,
+) {
+  const [row] = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c
+    JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+      AND m.principal_kind = 'person' AND m.person_id = ${personId} AND m.left_at IS NULL
+    WHERE c.org_id = ${orgId} AND c.kind = 'direct' AND c.archived_at IS NULL
+      AND c.direct_key = ${directKey(KinPersonId.make(personId), KinAgentId.make(agentId))}
+    ORDER BY c.chat_id LIMIT 1`;
+  if (row !== undefined) return KinChatId.make(row.chatId);
+  // The lead's owner chat is its owner's own chat with it.
+  const [owners] = yield* sql<{ chatId: string }>`SELECT l.owner_chat_id AS "chatId"
+    FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+    JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = l.owner_chat_id
+      AND c.archived_at IS NULL
+    WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId} AND a.owner_person_id = ${personId}
+    ORDER BY l.agent_id`;
+  return owners === undefined ? undefined : KinChatId.make(owners.chatId);
+});
+
+/**
+ * `chatId` when it is someone's own open direct chat with `agentId`, not that lead's owner chat,
+ * and they are still in it: what they set up there for themselves alone runs there.
+ */
+export const theirDirectChat = Effect.fn("Deferrals.theirDirectChat")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  chatId: string,
+  agentId: string,
+) {
+  const suffix = `:${agentId}`;
+  const [row] = yield* sql`SELECT 1 FROM kin_chats c
+    JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+      AND m.principal_kind = 'person' AND m.left_at IS NULL
+      AND m.person_id = substr(c.direct_key, 1, instr(c.direct_key, ':') - 1)
+    JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = m.person_id AND p.removed_at IS NULL
+    WHERE c.org_id = ${orgId} AND c.chat_id = ${chatId} AND c.kind = 'direct'
+      AND c.archived_at IS NULL AND substr(c.direct_key, ${-suffix.length}) = ${suffix}
+      AND NOT EXISTS (SELECT 1 FROM kin_leads l WHERE l.org_id = c.org_id
+        AND l.agent_id = ${agentId} AND l.owner_chat_id = c.chat_id)
+    LIMIT 1`;
+  return row === undefined ? undefined : KinChatId.make(chatId);
+});
+
+/**
+ * Whether everyone reading the chat now could read the message that set an item there: it is at
+ * or after the chat's history floor (`historyFloor`), or the chat was never shared. False when
+ * that message can't be found. Its stored words fire there only then.
+ */
+export const wordsReadable = Effect.fn("Deferrals.wordsReadable")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  sourceEvent: string,
+) {
+  const [row] = yield* sql<{ seq: number; chatId: string }>`SELECT m.seq, m.chat_id AS "chatId"
+    FROM kin_events e JOIN kin_messages m ON m.org_id = e.org_id
+      AND m.message_id = json_extract(e.json, '$.messageId')
+      AND m.chat_id = json_extract(e.json, '$.chatId')
+    WHERE e.org_id = ${orgId} AND e.event_id = ${sourceEvent} ORDER BY e.event_id`;
+  if (row === undefined) return false;
+  const [chat] = yield* sql<{ floor: number | null; shared: number }>`SELECT
+      ${historyFloor(sql, orgId, row.chatId)} AS floor,
+      (SELECT shared_at IS NOT NULL FROM kin_chats WHERE org_id = ${orgId}
+        AND chat_id = ${row.chatId}) AS shared`;
+  if (chat === undefined) return false;
+  return chat.floor === null ? chat.shared !== 1 : row.seq >= chat.floor;
 });

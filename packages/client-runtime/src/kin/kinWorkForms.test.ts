@@ -25,6 +25,7 @@ import {
   kinContactDraftCheck,
   kinContactDraftOf,
   kinContactUpdateInput,
+  kinFormTyped,
   kinProjectCreateInput,
   kinProjectDraftCheck,
   kinProjectDraftOf,
@@ -33,6 +34,7 @@ import {
   kinTaskProjectMenu,
   kinWorkFormMoved,
   kinWorkReadState,
+  kinWorkReadUnreachable,
   kinWorkSend,
   type KinClientDraft,
   type KinWorkFormState,
@@ -98,6 +100,20 @@ describe("createKinWorkForm", () => {
     ]);
     // A billing address typed away clears it, rather than keeping blank lines.
     expect(kinClientUpdateInput({ address: " \n " })).toEqual({ address: null });
+  });
+
+  it("takes a newer read while the owner types, keeps the typing and saves against the newer one", async () => {
+    const { form, sent, state } = clientForm([]);
+    form.edit({ terms: "Invented net 45" });
+    // Every render hands the form the record as read; only a newer revision counts.
+    form.latest({ ...state().from, name: "Invented Foods Pvt" }, 4);
+    expect(state().latest).toBeNull();
+    form.latest({ ...state().from, name: "Invented Foods Ltd" }, 6);
+    form.latest({ ...state().from, name: "Invented Foods Old" }, 5);
+    expect(state().draft).toMatchObject({ name: "Invented Foods", terms: "Invented net 45" });
+    expect(kinWorkFormMoved(state())).toEqual({ name: "Invented Foods Ltd" });
+    expect(await form.save()).toEqual({ saved: true, value: "ok" });
+    expect(sent).toEqual([{ rev: 6, terms: "Invented net 45" }]);
   });
 
   it("sends a prospect, where it came from and its tags, and switches prospect and client", () => {
@@ -271,6 +287,20 @@ describe("createKinWorkPageWatch", () => {
     expect(rereads()).toBe(2);
   });
 
+  it("reads once when the company's sections change, which the host's page answers with", () => {
+    const { watch, page, rereads } = watching();
+    watch.shell(4, page);
+    watch.shell(4, page);
+    expect(rereads()).toBe(0);
+    watch.shell(5, page);
+    watch.shell(5, page);
+    expect(rereads()).toBe(1);
+    // The same read, opened again after another change, is read again too.
+    const reopened = watching();
+    reopened.watch.shell(6, page);
+    expect(reopened.rereads()).toBe(1);
+  });
+
   it("reads a campaign's page for any client, contact or deal, which its counts read", () => {
     let rereads = 0;
     const watch = createKinWorkPageWatch({
@@ -325,6 +355,18 @@ describe("kinWorkReadState", () => {
       stale: true,
     });
   });
+
+  // Money's Cash in the bank and Next 30 days offline: no "Loading…" under the page's offline line.
+  it("says nothing of a read it can't reach and holds nothing of, and shows what it holds", () => {
+    const waiting = kinWorkReadState(AsyncResult.initial(true));
+    const failed = kinWorkReadState(AsyncResult.failure(Cause.fail("down")));
+    const held = kinWorkReadState(AsyncResult.success("Cash 1,200"));
+    expect(kinWorkReadUnreachable(waiting, "offline")).toBe(true);
+    expect(kinWorkReadUnreachable(failed, "offline")).toBe(true);
+    expect(kinWorkReadUnreachable(held, "offline")).toBe(false);
+    expect(kinWorkReadUnreachable(waiting, "connecting")).toBe(false);
+    expect(kinWorkReadUnreachable(failed, "connected")).toBe(false);
+  });
 });
 
 describe("kinTaskProjectMenu", () => {
@@ -364,6 +406,22 @@ describe("kinProjectDraftCheck", () => {
     expect(kinProjectTargetHint(null)).toBe("Leave it empty for no target date.");
     expect(kinProjectTargetHint("2026-12-03")).toBeNull();
     expect(kinProjectTargetHint("2026-02-30")).toBe("Enter a real date.");
+  });
+});
+
+describe("kinFormTyped", () => {
+  const opened = { ...kinClientDraftOf(), name: "Tallmoor Freight", tags: "freight" };
+  it.each([
+    ["nothing touched", {}, false],
+    ["spaces only", { notes: "   ", contactName: " " }, false],
+    ["an empty Add another row", { contactPhones: ["", " "] }, false],
+    ["typed then erased", { name: "Tallmoor Freight " }, false],
+    ["a word typed", { contactName: "Ingrid" }, true],
+    ["a phone typed in a second row", { contactPhones: ["", "+47 912 34 567"] }, true],
+    ["a switch moved", { private: true }, true],
+    ["a kind picked", { kind: "prospect" as const }, true],
+  ])("%s", (_, change, typed) => {
+    expect(kinFormTyped(opened, { ...opened, ...change })).toBe(typed);
   });
 });
 

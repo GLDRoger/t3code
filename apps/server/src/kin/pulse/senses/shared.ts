@@ -10,10 +10,13 @@ import {
   KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { billingClientFromProject } from "../../work/billTo.ts";
 import type * as SqlClient from "effect/sql/SqlClient";
 
+import type { Overflow } from "./capped.ts";
+import type { SectionId } from "../../shell/sections.ts";
 import { dayIn } from "../../work/money.ts";
-import { issuedNumber, sensitiveNow } from "../../work/recordRows.ts";
+import { issuedNumber, labelledNow } from "../../work/recordRows.ts";
 import { DAY_MS, HOUR_MS, type Threshold } from "../thresholds.ts";
 
 /** What every sense reads with: the org, the instant, the owner's zone and who acts by default. */
@@ -33,9 +36,15 @@ export interface SenseContext {
 /**
  * A fact before its stored handling is joined on. `yours` words it for one person it names
  * ("Your meeting …"); the read for that person uses it, and it never leaves the server.
+ * `quietForMs` bounds "not a problem" on a fact that stays true as it worsens.
  */
 export type SensedFact = Omit<KinPulseFact, "handled"> & {
   readonly yours?: (personId: string) => string | undefined;
+  readonly quietForMs?: number;
+  /** The section whose switch silences it, when its sense alone doesn't say: a list's own too. */
+  readonly section?: SectionId | `list:${string}`;
+  readonly overflow?: Overflow;
+  readonly extraSection?: SectionId;
 };
 
 /** An entry with its project and client, as every record sense selects it (`r`, `p`, `c`). */
@@ -63,13 +72,13 @@ export interface EntryRow {
 export const entryColumns = (sql: SqlClient.SqlClient) => sql`r.record_id AS "recordId", r.key,
   r.title, r.owner_kind AS "ownerKind", r.owner_id AS "ownerId", r.due_at AS "dueAt",
   r.date_at AS "dateAt", r.created_at AS "createdAt", r.updated_at AS "updatedAt",
-  r.amount_minor AS "amountMinor", r.currency, ${sensitiveNow(sql)} AS sensitive,
+  r.amount_minor AS "amountMinor", r.currency, ${labelledNow(sql)} AS sensitive,
   p.key AS "projectKey", p.title AS "projectTitle", c.key AS "clientKey", c.title AS "clientTitle",
   c.record_id AS "clientId", json_extract(r.fields_json, '$.number') AS "number"`;
 
 export const entryJoins = (sql: SqlClient.SqlClient) => sql`kin_records r
   LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
-  LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = COALESCE(r.party_id, p.party_id)`;
+  LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = ${billingClientFromProject(sql, sql`p.party_id`)}`;
 
 export const entrySubject = (row: EntryRow) => ({
   kind: "record" as const,

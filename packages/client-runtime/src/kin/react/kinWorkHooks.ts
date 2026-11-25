@@ -1,4 +1,4 @@
-// @effect-diagnostics globalTimers:off - React hooks pace list and search reads outside an Effect runtime.
+// @effect-diagnostics globalTimers:off globalDate:off - React hooks pace and keep list and search reads outside an Effect runtime.
 import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
@@ -9,6 +9,7 @@ import type {
   KinPeopleListResult,
   KinProjectPage,
   KinProjectRow,
+  KinRecordDetail,
   KinWorkHistoryItem,
   KinRecordKey,
 } from "@t3tools/contracts";
@@ -16,11 +17,26 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
 
+import { runKinCommand } from "../kinRunCommand.ts";
+import { kinAccessMeAtom } from "../kinAccess.ts";
+import { kinSectionOn } from "../kinShell.ts";
 import { kinHostLink, type KinRouteHost } from "../kinHost.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinInvitedPeople } from "../kinTeam.ts";
-import { kinWorkNames, kinWorkScreenState, type KinWorkScreenState } from "../kinWork.ts";
-import { createKinWorkItemWatch } from "../kinWorkChanges.ts";
+import {
+  kinWorkNames,
+  kinWorkScreenState,
+  kinWorkAnswerKept,
+  kinWorkAnswerOf,
+  type KinWorkAnswers,
+  type KinWorkAnswersHeld,
+  type KinWorkScreenState,
+} from "../kinWork.ts";
+import {
+  createKinWorkChanges,
+  createKinWorkItemWatch,
+  kinWorkChangesStart,
+} from "../kinWorkChanges.ts";
 import {
   KIN_PROJECTS_DEFAULT_FILTER,
   kinClientPageKeys,
@@ -42,6 +58,7 @@ import {
 } from "../kinWorkForms.ts";
 import {
   KIN_PICKER_SEARCH_IDLE,
+  createKinListKeeper,
   createKinPagedList,
   createKinPickerSearch,
   createKinPickerSearchSlot,
@@ -61,6 +78,8 @@ export interface KinWorkUses {
     readonly isReady: boolean;
     readonly entries: { readonly has: (id: EnvironmentId) => boolean };
   }>;
+  /** The phone keeps the host's answers to a task's changes for every screen of that task. */
+  readonly keepAnswers?: boolean;
 }
 
 // Read only by a session that may read Work; others ask the host nothing.
@@ -76,6 +95,14 @@ const noZoneAtom: Atom.Atom<AsyncResult.AsyncResult<KinOwnerTimeZone, unknown>> 
 const noInvitesAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleListInvitesResult, unknown>> =
   Atom.make(AsyncResult.initial());
 
+/** Who is signed in to this host, by person id; null until the host says. */
+export function useKinViewer<R, ER>(
+  runtime: KinHookApp<R, ER>["runtime"],
+  environmentId: EnvironmentId,
+): string | null {
+  return useAtomValue(kinAccessMeAtom(runtime, environmentId))?.personId ?? null;
+}
+
 export const kinSchedule = (run: () => void, ms: number) => {
   const timer = setTimeout(run, ms);
   return () => clearTimeout(timer);
@@ -84,6 +111,16 @@ export const kinSchedule = (run: () => void, ms: number) => {
 type Paged<Filter extends { readonly text: string }, Row> = ReturnType<
   typeof createKinPagedList<Filter, Row>
 >;
+
+/** Lists of one kind kept while their screen is away (`createKinListKeeper`). */
+export type KinPagedKeeper<Filter extends { readonly text: string }, Row> = ReturnType<
+  typeof createKinListKeeper<Paged<Filter, Row>, KinPagedListState<Filter, Row>>
+>;
+
+export const kinPagedKeeper = <Filter extends { readonly text: string }, Row>(): KinPagedKeeper<
+  Filter,
+  Row
+> => createKinListKeeper<Paged<Filter, Row>, KinPagedListState<Filter, Row>>(Date.now);
 
 const NO_WORDS = { text: "" };
 
@@ -102,8 +139,68 @@ const noChoicesAtom: Atom.Atom<
 export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUses) {
   const { kinClient, registry, kinHostConnected } = app;
   const { useKinHostAt, catalogValueAtom } = uses;
+  const clientLists = kinPagedKeeper<KinClientsFilter, KinPartyRow>();
+  const projectLists = kinPagedKeeper<KinProjectsFilter, KinProjectRow>();
   const kinWorkLiveAtom = ({ environmentId, orgId }: KinScreenTarget) =>
     kinClient.workLive({ environmentId, input: { orgId } });
+
+  // The host's answers to a person's changes, per host and org, read by every screen of a task.
+  const kinWorkAnswersAtom = Atom.family((_key: string) =>
+    Atom.make<KinWorkAnswersHeld>({}).pipe(Atom.keepAlive),
+  );
+  const answersAtomOf = ({ environmentId, orgId }: KinScreenTarget) =>
+    kinWorkAnswersAtom(JSON.stringify([environmentId, orgId]));
+  const viewerAtomOf = (environmentId: EnvironmentId) =>
+    kinAccessMeAtom(app.runtime, environmentId);
+
+  function kinWorkAnswersOf(target: KinScreenTarget): KinWorkAnswers {
+    const atom = answersAtomOf(target);
+    // Who is signed in when asked: another person on the same host never reads these.
+    const viewer = () => registry.get(viewerAtomOf(target.environmentId))?.personId ?? null;
+    return {
+      get: (key) => kinWorkAnswerOf(registry.get(atom), key, viewer()),
+      put: (item) => registry.set(atom, kinWorkAnswerKept(registry.get(atom), item, viewer())),
+    };
+  }
+
+  /** The host's latest answer to this person's change to this task from any screen; null with none. */
+  function useKinWorkAnswer(target: KinScreenTarget, key: KinRecordKey) {
+    const viewer = useAtomValue(viewerAtomOf(target.environmentId))?.personId ?? null;
+    return kinWorkAnswerOf(useAtomValue(answersAtomOf(target)), key, viewer) ?? null;
+  }
+
+  /** The owner's changes to tasks on one host, for a list or a task on screen. */
+  function useKinWorkChanges(
+    { environmentId, orgId }: KinScreenTarget,
+    /** A form that opens already typing over this task. */
+    editing?: KinRecordDetail,
+  ) {
+    const update = app.useAtomCommand(kinClient.workUpdate, { reportFailure: false });
+    const assign = app.useAtomCommand(kinClient.workAssign, { reportFailure: false });
+    const confirm = app.useAtomCommand(kinClient.workConfirm, { reportFailure: false });
+    const decline = app.useAtomCommand(kinClient.workDecline, { reportFailure: false });
+    const tickStep = app.useAtomCommand(kinClient.workTickStep, { reportFailure: false });
+    const [state, setState] = useState(() => kinWorkChangesStart(editing));
+    const [changes] = useState(() =>
+      createKinWorkChanges({
+        orgId,
+        update: (input) => update({ environmentId, input }),
+        assign: (input) => assign({ environmentId, input }),
+        confirm: (input) => confirm({ environmentId, input }),
+        decline: (input) => decline({ environmentId, input }),
+        tickStep: (input) => tickStep({ environmentId, input }),
+        reread: (key) =>
+          registry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
+        online: () => kinHostConnected(environmentId),
+        ...(uses.keepAnswers === true
+          ? { answers: kinWorkAnswersOf({ environmentId, orgId }) }
+          : {}),
+        ...(editing === undefined ? {} : { editing }),
+        onChange: setState,
+      }),
+    );
+    return { state, changes };
+  }
 
   /** Work's counts and change number as one screen state, kept current by the host. */
   function useKinWork(target: KinScreenTarget): KinWorkScreenState {
@@ -197,20 +294,44 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     };
   }
 
-  /** One of Work's lists on screen: started when it shows, told each change number while current. */
+  /**
+   * One of Work's lists on screen: started when it shows, told each change number while current.
+   * With `keep`, coming back shows what it held, kept by that keeper under that key.
+   */
   function useKinPagedList<Filter extends { readonly text: string }, Row>(
     initial: Filter,
     make: (onChange: (state: KinPagedListState<Filter, Row>) => void) => Paged<Filter, Row>,
     /** The host's latest change number; null while what is held may be behind. */
     seq: number | null,
+    keep?: {
+      readonly keeper: KinPagedKeeper<Filter, Row>;
+      readonly key: string;
+      /** The signed-in person (`useKinViewer`): another's kept list is never shown. */
+      readonly viewer: string | null;
+    },
   ) {
-    const [state, setState] = useState(() => kinPagedListInitial<Filter, Row>(initial));
-    const [list] = useState(() => make(setState));
-    // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when it shows, and abandons what is in flight when it leaves
+    const [kept] = useState(() =>
+      keep === undefined ? null : keep.keeper.take(keep.key, make, keep.viewer),
+    );
+    const [resumed] = useState(
+      () => kept !== null && keep !== undefined && keep.keeper.wasKept(kept),
+    );
+    const [state, setState] = useState(() =>
+      resumed && kept !== null ? kept.list.getState() : kinPagedListInitial<Filter, Row>(initial),
+    );
+    const [list] = useState(() => kept?.list ?? make(setState));
+    const keeper = keep?.keeper ?? null;
+    // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when it shows (or catches a kept one up), and abandons what is in flight when it leaves
     useEffect(() => {
-      list.start();
-      return list.dispose;
-    }, [list]);
+      if (keeper === null || kept === null) {
+        list.start();
+        return list.dispose;
+      }
+      keeper.show(kept, setState);
+      if (resumed) keeper.resume(kept);
+      else list.start();
+      return () => keeper.hide(kept);
+    }, [keeper, kept, list, resumed]);
     // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the list's reader the host's latest change number, so it reads again only when the rows are behind
     useEffect(() => {
       if (seq !== null) list.changed(seq);
@@ -236,7 +357,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
           schedule: kinSchedule,
           read: async (filter, page) =>
             mapPage(
-              await kinClient.workClients.run(registry, {
+              await runKinCommand(registry, kinClient.workClients, {
                 environmentId,
                 input: { ...kinClientsQuery(orgId, filter), ...page },
               }),
@@ -244,6 +365,11 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
             ),
         }),
       seq,
+      {
+        keeper: clientLists,
+        key: JSON.stringify([environmentId, orgId, initial]),
+        viewer: useKinViewer(app.runtime, environmentId),
+      },
     );
   }
 
@@ -265,7 +391,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
           schedule: kinSchedule,
           read: async (filter, page) =>
             mapPage(
-              await kinClient.workProjects.run(registry, {
+              await runKinCommand(registry, kinClient.workProjects, {
                 environmentId,
                 input: { ...kinProjectsQuery(orgId, filter), ...page },
               }),
@@ -273,6 +399,11 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
             ),
         }),
       seq,
+      {
+        keeper: projectLists,
+        key: JSON.stringify([environmentId, orgId, view]),
+        viewer: useKinViewer(app.runtime, environmentId),
+      },
     );
   }
 
@@ -293,7 +424,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
           schedule: kinSchedule,
           read: async (_filter, page) =>
             mapPage(
-              await kinClient.workHistory.run(registry, {
+              await runKinCommand(registry, kinClient.workHistory, {
                 environmentId,
                 input: { orgId, key, ...page },
               }),
@@ -308,7 +439,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
   function useKinWorkPageWatch(
     { environmentId, orgId }: KinScreenTarget,
     own: KinRecordKey,
-    page: { readonly seq: number; readonly held: ReadonlySet<string> } | null,
+    page: { readonly of: object; readonly seq: number; readonly held: ReadonlySet<string> } | null,
     reread: () => void,
   ) {
     const live = Option.getOrNull(
@@ -319,7 +450,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
         own,
         reread,
         newest: async () => {
-          const result = await kinClient.workHistory.run(registry, {
+          const result = await runKinCommand(registry, kinClient.workHistory, {
             environmentId,
             input: { orgId, key: own, limit: 1 },
           });
@@ -331,6 +462,11 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     useEffect(() => {
       if (live !== null) watch.changed(live, page);
     }, [watch, live, page]);
+    const shellRev = useAtomValue(kinAccessMeAtom(app.runtime, environmentId))?.shell?.rev;
+    // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the open page from the host again when the company's sections change, which shape what the host sends
+    useEffect(() => {
+      watch.shell(shellRev, page?.of ?? null);
+    }, [watch, shellRev, page]);
   }
 
   /** A client's page, kept current without reading it for changes that are someone else's. */
@@ -378,8 +514,13 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     kinClient.workChoices({ environmentId, input: { orgId } });
 
   /** The clients and projects a task can be put under. `enabled` is off on a host without them. */
+  /** The client and project pickers' choices: none while the company has Clients off. */
   function useKinWorkChoices(target: KinScreenTarget, enabled: boolean) {
-    const result = useAtomValue(enabled ? kinWorkChoicesAtom(target) : noChoicesAtom);
+    const clientsOn = kinSectionOn(
+      useAtomValue(kinAccessMeAtom(app.runtime, target.environmentId))?.shell,
+      "clients",
+    );
+    const result = useAtomValue(enabled && clientsOn ? kinWorkChoicesAtom(target) : noChoicesAtom);
     const held = Option.getOrNull(AsyncResult.value(result));
     return {
       clients: (held?.clients ?? []).map(kinWorkRefOf),
@@ -404,12 +545,12 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
         const search: KinPickerSearch = createKinPickerSearch({
           ...target,
           readClients: (input) =>
-            kinClient.workClients.run(registry, {
+            runKinCommand(registry, kinClient.workClients, {
               environmentId: target.environmentId,
               input,
             }),
           readProjects: (input) =>
-            kinClient.workProjects.run(registry, {
+            runKinCommand(registry, kinClient.workProjects, {
               environmentId: target.environmentId,
               input,
             }),
@@ -475,9 +616,13 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     useKinWorkChoices,
     useKinPickerSearch,
     useKinWorkForm,
+    kinWorkAnswersOf,
+    useKinWorkAnswer,
+    useKinWorkChanges,
   };
 }
 
 export type KinWorkHooks = ReturnType<typeof makeKinWorkHooks>;
+export type KinWorkChangesHandle = ReturnType<KinWorkHooks["useKinWorkChanges"]>;
 export type KinWorkDirectory = ReturnType<KinWorkHooks["useKinWorkDirectory"]>;
 export type KinWorkChoices = ReturnType<KinWorkHooks["useKinWorkChoices"]>;

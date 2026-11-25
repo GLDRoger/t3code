@@ -53,6 +53,7 @@ import { KinProjectPeopleSection } from "./KinProjectPeople";
 import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
 import { KinCampaignDealsDialog } from "./KinDeals";
 import { KinCampaignResultsSection, KinContactListDialog } from "./KinMarketing";
+import { useKinSectionOn, useKinShell } from "./useKinShell";
 import { KinWorkClientsList } from "./KinWorkClients";
 import {
   KinWorkHealthBadge,
@@ -133,6 +134,7 @@ function ProjectPage(
   const { names } = props.directory;
   const canChange = useAtomValue(kinClient.workProjectUpdate.permissionAtom(environmentId));
   const canNote = useAtomValue(kinClient.workProjectNote.permissionAtom(environmentId));
+  const dealsOn = useKinSectionOn(environmentId, "deals");
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const now = new Date(useNowMinuteMs());
   const [editing, setEditing] = useState(false);
@@ -142,7 +144,7 @@ function ProjectPage(
   const [choosingLead, setChoosingLead] = useState(false);
   const [openResult, setOpenResult] = useState<KinCampaignResultId | null>(null);
   const privateId = useId();
-  const view = kinProjectPageView(page, names, now);
+  const view = kinProjectPageView(page, names, now, useKinShell(props.environmentId));
   const { party } = view;
   const opened =
     openResult === null ? null : kinCampaignResultOpens(orgId, view.key, view.name, openResult);
@@ -174,9 +176,9 @@ function ProjectPage(
   const leads =
     view.lead.personId !== null &&
     view.lead.personId === kinFeedViewer(props.directory.orgs, orgId).personId;
-  const addsMilestone = (canChange || leads) && view.closed === null;
+  const addsMilestone = (canChange || leads) && view.adds && view.closed === null;
   const addTask =
-    props.onAddTask === null || view.closed !== null
+    props.onAddTask === null || view.closed !== null || !view.adds
       ? null
       : () => props.onAddTask?.(kinWorkDraftFor({ party, project: view.ref }));
   const summary = (
@@ -292,6 +294,7 @@ function ProjectPage(
         <KinCampaignResultsSection
           results={page.results}
           audience={view.audience}
+          deals={dealsOn}
           onOpen={setOpenResult}
         />
       )}

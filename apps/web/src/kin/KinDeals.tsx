@@ -20,12 +20,12 @@ import {
   kinDealsRaisedInput,
   kinDealsSection,
   kinDealStepHint,
+  kinDealValueRead,
   kinDealStageBeside,
   type KinDealNextView,
   type KinDealRowView,
   type KinDealsFilter,
 } from "@t3tools/client-runtime/kin/kinDeals";
-import { kinParseMoney } from "@t3tools/client-runtime/kin/kinLists";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import type {
   KinDealMove,
@@ -54,6 +54,7 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
+import { Textarea } from "../components/ui/textarea";
 import { Label } from "../components/ui/label";
 import {
   Menu,
@@ -76,7 +77,7 @@ import {
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { cn, randomUUID } from "../lib/utils";
 import { KinPlaceCombobox } from "./KinPlaceCombobox";
-import { Field, FormShell } from "./KinWorkForms";
+import { Field, FormShell, oneParagraph } from "./KinWorkForms";
 import {
   KinLoadFailed,
   KinWorkNotice,
@@ -1142,6 +1143,7 @@ export function KinDealNewDialog(
   const [party, setParty] = useState<KinWorkRef | null>(props.party);
   const [title, setTitle] = useState("");
   const [value, setValue] = useState("");
+  const [notes, setNotes] = useState("");
   const [expected, setExpected] = useState("");
   const stagesRead = useKinDealStages(props).state;
   const stages = stagesRead._tag === "ready" ? stagesRead.value.stages : [];
@@ -1157,6 +1159,7 @@ export function KinDealNewDialog(
   const ids = {
     title: useId(),
     value: useId(),
+    notes: useId(),
     expected: useId(),
     stage: useId(),
     owner: useId(),
@@ -1165,8 +1168,9 @@ export function KinDealNewDialog(
     stepDay: useId(),
     none: useId(),
   };
-  const money = value.trim() === "" ? null : kinParseMoney(value, home);
-  const moneyBad = value.trim() !== "" && money === null;
+  const read = kinDealValueRead(value, home);
+  const { money } = read;
+  const moneyBad = read.bad;
   const stepHint = kinDealStepHint(step, noneYet);
   const canSave = party !== null && title.trim() !== "" && !moneyBad && stepHint === undefined;
   const people = [...props.directory.names.people.entries()].filter(
@@ -1183,6 +1187,7 @@ export function KinDealNewDialog(
       ...(money === null ? {} : { value: money }),
       ...(expected === "" ? {} : { expectedOn: expected }),
       ...(source.trim() === "" ? {} : { source: source.trim() }),
+      ...(notes.trim() === "" ? {} : { notes: notes.trim() }),
       ...(owner === ME ? {} : { owner: { _tag: "person", personId: owner as KinPersonId } }),
       ...(noneYet || step.trim() === ""
         ? {}
@@ -1209,6 +1214,15 @@ export function KinDealNewDialog(
       onOpenExisting={() => {}}
       onSave={() => void save()}
       onClose={props.onClose}
+      typed={
+        (party === null ? null : party.key) !== (props.party === null ? null : props.party.key) ||
+        [title, value, notes, expected, source, step, stepDay].some(
+          (typed) => typed.trim() !== "",
+        ) ||
+        picked !== null ||
+        owner !== ME ||
+        noneYet
+      }
     >
       {props.party !== null ? (
         <p className="text-sm text-muted-foreground">For {props.party.title}</p>
@@ -1223,23 +1237,22 @@ export function KinDealNewDialog(
         />
       )}
       <Field id={ids.title} label={KIN_DEALS.what}>
-        <Input
+        <Textarea
           id={ids.title}
           autoFocus
+          rows={1}
           maxLength={280}
+          placeholder={KIN_DEALS.whatPlaceholder}
           value={title}
+          onKeyDown={oneParagraph}
           onChange={(event) => setTitle(event.target.value)}
         />
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field
-          id={ids.value}
-          label={KIN_DEALS.value}
-          hint={moneyBad ? KIN_DEALS.notAmount : KIN_DEALS.valueHint}
-        >
+        <Field id={ids.value} label={KIN_DEALS.value} hint={read.hint}>
           <Input
             id={ids.value}
-            inputMode="decimal"
+            placeholder={KIN_DEALS.valuePlaceholder}
             value={value}
             onChange={(event) => setValue(event.target.value)}
           />
@@ -1253,6 +1266,16 @@ export function KinDealNewDialog(
           />
         </Field>
       </div>
+      <Field id={ids.notes} label={KIN_DEALS.notes} hint={KIN_DEALS.notesHint}>
+        <Textarea
+          id={ids.notes}
+          rows={2}
+          maxLength={4_000}
+          placeholder={KIN_DEALS.notesPlaceholder}
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+        />
+      </Field>
       <div className="grid grid-cols-2 gap-3">
         <Field id={ids.stage} label={KIN_DEALS.stage}>
           <Select value={stage} onValueChange={(next) => setPicked(String(next))}>

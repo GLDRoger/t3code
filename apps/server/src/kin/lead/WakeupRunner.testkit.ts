@@ -1,5 +1,10 @@
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
-import type { ChatAttachment, KinAttachment, ThreadId } from "@t3tools/contracts";
+import type {
+  ChatAttachment,
+  KinAttachment,
+  OrchestrationV2DomainEvent,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -11,12 +16,14 @@ import {
   KinAgentId,
   KinEvent,
   KinOrgId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ProviderDriverKind,
   ProviderThreadId,
   ProviderTurnId,
   RuntimeRequestId,
+  TurnItemId,
   type ProviderApprovalDecision,
   type RuntimeMode,
 } from "@t3tools/contracts";
@@ -27,7 +34,6 @@ import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -53,6 +59,7 @@ import { recordAudience, turnAudience } from "./Audience.ts";
 import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as TaskFolders from "../../workspace/TaskFolders.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -81,7 +88,11 @@ export const agentId = KinAgentId.make("lead");
 const timestamp = "2026-11-08T00:00:00.000Z";
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeEvent = Schema.decodeSync(KinEvent);
-const selection = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-4-6" };
+/** The lead's own model in this harness. */
+export const selection = {
+  instanceId: ProviderInstanceId.make("claudeAgent"),
+  model: "claude-opus-4-6",
+};
 const project = {
   id: ProjectId.make("kin:org"),
   title: "Kin · Org",
@@ -122,6 +133,24 @@ export const event = (id: string) =>
     routine: "owner_check",
   });
 
+/** One tool call by the running turn (`work`), back once T3 has recorded it. */
+export const toolCall = Effect.fn("test.toolCall")(function* (
+  work: Queue.Queue<void>,
+  threadId: ThreadId,
+) {
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const afterSequence = yield* threads.getThreadEventSequence(threadId);
+  yield* Queue.offer(work, undefined);
+  yield* threads
+    .streamStoredEventsFrom({ threadId, afterSequence, eventType: "turn-item.updated" })
+    .pipe(
+      Stream.filter(
+        ({ event }) => event.type === "turn-item.updated" && event.payload.type === "dynamic_tool",
+      ),
+      Stream.take(1),
+      Stream.runDrain,
+    );
+});
 type HarnessOptions = {
   readonly sharedWith?: ReadonlyArray<ThreadId>;
   readonly releaseEntered?: Deferred.Deferred<void>;
@@ -130,8 +159,12 @@ type HarnessOptions = {
   readonly hold?: Deferred.Deferred<void>;
   readonly entered?: Deferred.Deferred<void>;
   readonly failed?: boolean;
+  readonly beforeTurn?: ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"];
+  readonly replyText?: string;
   /** The failed turn's failure code, as an adapter names it. */
   readonly failureCode?: string;
+  /** The failed turn's failure text; a full disk names itself here. */
+  readonly failureMessage?: string;
   readonly writer?: Layer.Layer<Writer.MemoryWriter, never, SqlClient.SqlClient>;
   readonly piUsage?: boolean;
   readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
@@ -156,6 +189,8 @@ type HarnessOptions = {
   readonly onTurn?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
   /** Each turn reports itself running, then completes only once this does. */
   readonly holdRunning?: Deferred.Deferred<void>;
+  /** Each item is one tool call a running turn makes (`holdRunning`, `untilInterrupted`). */
+  readonly work?: Queue.Queue<void>;
   /** Messages the provider received as steers into a running turn. */
   readonly providerSteers?: Queue.Queue<{ readonly runId: string; readonly messageId: string }>;
   /** Runs as the provider takes a steer; failing it fails the steer, as a rejecting provider would. */
@@ -182,9 +217,15 @@ type HarnessOptions = {
   readonly wholeThreadReads?: Array<ThreadId>;
   /** Called each time the runner subscribes to T3's domain events. */
   readonly onDomainSubscribe?: () => void;
+  /** More of T3's events the runner hears, as if a turn outside the fake provider made them. */
+  readonly domainEvents?: Queue.Queue<OrchestrationV2DomainEvent>;
 };
 
 export function harness(options: HarnessOptions = {}) {
+  return harnessWith(options, Layer.empty);
+}
+
+export function harnessWith<A, E, R>(options: HarnessOptions, extra: Layer.Layer<A, E, R>) {
   // Only the runner's own reads count: T3's launch reads the thread it just created.
   const counted = Layer.effect(
     ThreadManagement.ThreadManagementService,
@@ -197,13 +238,16 @@ export function harness(options: HarnessOptions = {}) {
       streamDomainEvents: Stream.unwrap(
         Effect.sync(() => {
           options.onDomainSubscribe?.();
-          return service.streamDomainEvents;
+          return options.domainEvents === undefined
+            ? service.streamDomainEvents
+            : Stream.merge(service.streamDomainEvents, Stream.fromQueue(options.domainEvents));
         }),
       ),
     })),
   );
   return WakeupRunner.layer.pipe(
     Layer.provide(counted),
+    Layer.provideMerge(extra),
     Layer.provideMerge(orchestrationHarness(options)),
   );
 }
@@ -228,11 +272,51 @@ function parts(options: HarnessOptions) {
     openSession: (session) =>
       Effect.gen(function* () {
         const now = yield* DateTime.now;
-        const events = yield* PubSub.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+        // Buffered as a real adapter's are, so a turn's events wait for T3's session pump to read them.
+        const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const open = new Map<
           string,
           Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0]
         >();
+        let toolCalls = 0;
+        // The turn's tool calls, one per item `work` gives, while `live` says it is still open.
+        const working = (
+          input: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0],
+          providerTurnId: ProviderTurnId,
+          live: () => boolean,
+        ) =>
+          Effect.gen(function* () {
+            while (options.work !== undefined) {
+              yield* Queue.take(options.work);
+              if (!live()) return;
+              const time = yield* DateTime.now;
+              const n = ++toolCalls;
+              yield* Queue.offer(events, {
+                type: "turn_item.updated",
+                driver,
+                turnItem: {
+                  id: TurnItemId.make(`tool-${providerTurnId}-${n}`),
+                  threadId: input.threadId,
+                  runId: input.runId,
+                  nodeId: input.rootNodeId,
+                  providerThreadId: input.providerThread.id,
+                  providerTurnId,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: input.runOrdinal * 1000 + n,
+                  status: "completed",
+                  title: null,
+                  startedAt: time,
+                  completedAt: time,
+                  updatedAt: time,
+                  type: "dynamic_tool",
+                  toolName: "fixture_tool",
+                  input: {},
+                },
+              });
+            }
+            return yield* Effect.never;
+          });
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
           instanceId,
           driver,
@@ -249,7 +333,7 @@ function parts(options: HarnessOptions) {
             updatedAt: now,
             lastError: null,
           },
-          events: Stream.fromPubSub(events),
+          events: Stream.fromQueue(events),
           ensureThread: (input) =>
             Effect.sync(() => ({
               id: ProviderThreadId.make(`native-${++nativeOrdinal}`),
@@ -271,6 +355,7 @@ function parts(options: HarnessOptions) {
             })),
           resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
           startTurn: Effect.fn("test.startTurn")(function* (input) {
+            if (options.beforeTurn !== undefined) yield* options.beforeTurn(input);
             options.runtimeModes?.push(input.runtimePolicy.runtimeMode);
             options.turnAttachments?.push(input.message?.attachments ?? []);
             if (options.entered !== undefined) yield* Deferred.succeed(options.entered, undefined);
@@ -280,7 +365,7 @@ function parts(options: HarnessOptions) {
             // Turn ids are unique across threads, as a real provider's are.
             const id = ProviderTurnId.make(`turn-${input.threadId}-${input.runOrdinal}`);
             if (!options.piUsage)
-              yield* PubSub.publish(events, {
+              yield* Queue.offer(events, {
                 type: "provider_turn.updated",
                 driver,
                 providerTurn: {
@@ -312,10 +397,12 @@ function parts(options: HarnessOptions) {
               });
             if (options.untilInterrupted) {
               open.set(id, input);
+              if (options.work !== undefined)
+                yield* working(input, id, () => open.has(id)).pipe(Effect.forkDetach);
               return;
             }
             if (options.approval !== undefined)
-              yield* PubSub.publish(events, {
+              yield* Queue.offer(events, {
                 type: "runtime_request.updated",
                 driver,
                 threadId: input.threadId,
@@ -335,7 +422,32 @@ function parts(options: HarnessOptions) {
                 },
               });
             const finish = Effect.gen(function* () {
-              yield* PubSub.publish(events, {
+              if (options.replyText !== undefined)
+                yield* Queue.offer(events, {
+                  type: "turn_item.updated",
+                  driver,
+                  turnItem: {
+                    id: TurnItemId.make(`reply:${id}`),
+                    threadId: input.threadId,
+                    runId: input.runId,
+                    nodeId: input.rootNodeId,
+                    providerThreadId: input.providerThread.id,
+                    providerTurnId: id,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: input.runOrdinal * 100,
+                    status: "completed",
+                    title: null,
+                    startedAt: time,
+                    completedAt: time,
+                    updatedAt: time,
+                    type: "assistant_message",
+                    messageId: MessageId.make(`reply:${id}`),
+                    text: options.replyText,
+                    streaming: false,
+                  },
+                });
+              yield* Queue.offer(events, {
                 type: "provider_turn.updated",
                 driver,
                 providerTurn: {
@@ -369,7 +481,7 @@ function parts(options: HarnessOptions) {
                   },
                 },
               });
-              yield* PubSub.publish(events, {
+              yield* Queue.offer(events, {
                 type: "turn.terminal",
                 driver,
                 providerThreadId: input.providerThread.id,
@@ -381,7 +493,7 @@ function parts(options: HarnessOptions) {
                       failureItemOrdinal: 1,
                       failure: {
                         class: "provider_error" as const,
-                        message: "Fixture provider failure",
+                        message: options.failureMessage ?? "Fixture provider failure",
                         code: options.failureCode ?? null,
                         retryable: false,
                       },
@@ -392,6 +504,7 @@ function parts(options: HarnessOptions) {
             });
             if (options.holdRunning !== undefined)
               return yield* Deferred.await(options.holdRunning).pipe(
+                Effect.raceFirst(working(input, id, () => true)),
                 Effect.andThen(finish),
                 Effect.forkDetach,
               );
@@ -418,7 +531,7 @@ function parts(options: HarnessOptions) {
             if (turn === undefined) return;
             open.delete(providerTurnId);
             const time = yield* DateTime.now;
-            yield* PubSub.publish(events, {
+            yield* Queue.offer(events, {
               type: "provider_turn.updated",
               driver,
               providerTurn: {
@@ -433,7 +546,7 @@ function parts(options: HarnessOptions) {
                 completedAt: time,
               },
             });
-            yield* PubSub.publish(events, {
+            yield* Queue.offer(events, {
               type: "turn.terminal",
               driver,
               providerThreadId: turn.providerThread.id,
@@ -521,6 +634,7 @@ function parts(options: HarnessOptions) {
         )
       : Layer.mock(ProjectService.ProjectService)({
           bootstrap: () => Effect.sync(() => ({ project: current(), created: true })),
+          update: () => Effect.sync(current),
           getById: () => Effect.sync(() => Option.some(current())),
           getByWorkspaceRoot: () => Effect.sync(() => Option.some(current())),
         });
@@ -542,6 +656,8 @@ function parts(options: HarnessOptions) {
       isScratchProject: () => Effect.succeed(false),
       folderForThread: () => Effect.succeedNone,
     }),
+    // A lead's thread is never a multi-repository task folder.
+    Layer.mock(TaskFolders.TaskFolders)({ plan: () => Effect.succeed(null) }),
     ProviderRegistryMock.layer(),
     settings,
   );
@@ -563,6 +679,8 @@ function parts(options: HarnessOptions) {
         ).pipe(Layer.provide(KinEventQueue.layer));
   const kin = Layer.mergeAll(
     queueLayer,
+    // As in production, the runner reads chats and cards (`WakeupRunner.staleStart`).
+    KinChatRepository.layer,
     KinStop.layer.pipe(
       Layer.provide(
         Layer.mergeAll(

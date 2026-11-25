@@ -13,12 +13,12 @@ import { useState } from "react";
 import { View } from "react-native";
 
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient } from "./state/kinClient";
 import type { KinWorkTarget } from "./state/useKinWork";
+import { KinWorkToggleRow } from "./components/KinWorkPieces";
 
 /** The owner's switch for whether teammates see a task or doc; a teammate never gets it. */
 export function KinWorkShareRow(
@@ -42,7 +42,7 @@ export function KinWorkShareRow(
   if (!canShare) return null;
   const shared = asked !== null && asked.from === props.shared ? asked.to : props.shared;
   return (
-    <ListToggleRow
+    <KinWorkToggleRow
       icon="person.2"
       label={copy.label}
       description={failed ? copy.failed : shared ? copy.on : copy.off}
@@ -101,14 +101,18 @@ export function KinWorkAudienceRow(
     props.names,
   );
   if (props.onMark === null) return null;
-  const description = failed ? KIN_WORK_AUDIENCE.failed : audience.answer;
+  // One line: who in a few words; the whole answer is read out.
   const row = (
-    <ListRowLayout
-      icon={audience.current === "me" ? "lock" : "person.2"}
-      label={KIN_WORK_AUDIENCE.label}
-      description={description}
-      disabled={props.disabled || pending}
-    />
+    <View accessible accessibilityLabel={`${KIN_WORK_AUDIENCE.label}: ${audience.answer}`}>
+      <ListRowLayout
+        icon={audience.current === "me" ? "lock" : "eye"}
+        label={KIN_WORK_AUDIENCE.label}
+        detail={audience.short}
+        detailEllipsizeMode="tail"
+        {...(failed ? { description: KIN_WORK_AUDIENCE.failed } : {})}
+        disabled={props.disabled || pending}
+      />
+    </View>
   );
   if (audience.choices.length === 0) return row;
   return (

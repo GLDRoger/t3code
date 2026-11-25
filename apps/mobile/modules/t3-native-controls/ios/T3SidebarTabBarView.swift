@@ -41,9 +41,9 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   private lazy var tabBarTrailing = tabBar.trailingAnchor.constraint(equalTo: trailingAnchor)
   private var itemsByTab: [String: UITabBarItem] = [:]
   private let labels = [
-    "threads": "Chats", "pullRequests": "PRs", "issues": "Issues", "usage": "Usage",
-    "settings": "Settings", "tasks": "Tasks", "money": "Money", "clients": "Clients",
-    "docs": "Docs",
+    "threads": "Chats", "pullRequests": "PRs", "issues": "Issues", "workflows": "Workflows",
+    "usage": "Usage", "settings": "Settings", "tasks": "Tasks", "money": "Money",
+    "clients": "Clients", "docs": "Docs",
   ]
   var tabs = ["threads", "pullRequests", "issues", "usage", "settings"] {
     didSet { if tabs != oldValue { updateItems() } }
@@ -51,6 +51,8 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   var selectedTab = "threads" { didSet { updateSelection() } }
   /// A small count on a tab, such as what needs attention on Tasks; absent tabs show none.
   var badges: [String: String] = [:] { didSet { if badges != oldValue { updateBadges() } } }
+  /// Titles that name a tab, such as a company list shown as a section or a renamed Clients.
+  var titles: [String: String] = [:] { didSet { if titles != oldValue { updateItems() } } }
   /// Titles under the icons, as a stock UITabBar draws them; the workspace dock stays icon-only.
   var showsLabels = false { didSet { if showsLabels != oldValue { updateItems() } } }
   var selectedColor: UIColor = .systemBlue { didSet { tabBar.tintColor = selectedColor } }
@@ -120,7 +122,8 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
     let pullRequestIcon = UIImage(named: "pull-request", in: iconBundle, compatibleWith: nil)?.withRenderingMode(.alwaysTemplate)
     let issueIcon = UIImage(named: "issue", in: iconBundle, compatibleWith: nil)?.withRenderingMode(.alwaysTemplate)
     let symbols = [
-      "threads": "text.bubble", "usage": "chart.bar.xaxis", "settings": "gearshape",
+      "threads": "text.bubble", "workflows": "point.3.connected.trianglepath.dotted",
+      "usage": "chart.bar.xaxis", "settings": "gearshape",
       "tasks": "checkmark.circle", "money": "banknote", "clients": "person.2", "docs": "doc.text",
     ]
     for (tab, label) in labels {
@@ -135,13 +138,23 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
 
   private func updateItems() {
     tabBar.items = tabs.enumerated().compactMap { index, tab in
-      guard let item = itemsByTab[tab] else { return nil }
+      guard let item = itemsByTab[tab] ?? titledItem(tab) else { return nil }
+      let title = titles[tab] ?? labels[tab]
       item.tag = index
-      item.title = showsLabels ? labels[tab] : nil
+      item.accessibilityLabel = title
+      item.title = showsLabels ? title : nil
       return item
     }
     updateBadges()
     updateSelection()
+  }
+
+  private func titledItem(_ tab: String) -> UITabBarItem? {
+    guard titles[tab] != nil else { return nil }
+    let item = UITabBarItem(title: nil, image: tabIcon(UIImage(systemName: "list.bullet")), tag: 0)
+    item.accessibilityIdentifier = "workspace-tab-\(tab)"
+    itemsByTab[tab] = item
+    return item
   }
 
   private func updateBadges() {

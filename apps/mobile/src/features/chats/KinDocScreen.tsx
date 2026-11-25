@@ -1,5 +1,5 @@
 import { getComposerDraftSnapshot, setComposerDraftText } from "../../state/use-composer-drafts";
-import { kinDraftKey } from "./components/KinComposer";
+import { kinDraftKey } from "./state/kinDraftKey";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -18,8 +18,15 @@ import {
   KIN_DOC_KIND_LABELS,
   kinDocKindOf,
   kinDocUnfiled,
+  kinDocChangeItem,
   kinDocChangeLine,
+  kinDocDeletedLine,
+  kinDocCanEdit,
   kinDocChat,
+  kinDocCopyText,
+  kinDocEditInput,
+  kinDocEditOpen,
+  kinDocEditOutcome,
   kinDocSuggestStarter,
   kinDocExport,
   kinDocHasContents,
@@ -35,17 +42,24 @@ import {
   kinPendingRefAtom,
   kinPendingRefKey,
   type KinDocAsk,
+  type KinDocEditOpened,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
-import { EnvironmentId, KinOrgId, KinRecordKey, type KinDocDetail } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  KinOrgId,
+  KinRecordKey,
+  KinWidgetId,
+  type KinDocDetail,
+} from "@t3tools/contracts";
 import * as Linking from "expo-linking";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 import { Fragment, useRef, useState, type ComponentRef, type ReactNode } from "react";
 import { File, Paths } from "expo-file-system";
-import { Alert, Pressable, View } from "react-native";
+import { Alert, Pressable, TextInput, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import type { AppBarMenu } from "../../components/ui/AppBar.types";
@@ -84,12 +98,14 @@ import { KinLinkedSection, useKinOpenLinked } from "./KinWorkItemScreen";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
 import { useKinDocLabel } from "./state/useKinDocLabel";
+import { kinDocLeftDeletedAtom, useKinDocDelete } from "./state/useKinDocDelete";
 import { useKinDoc } from "./state/useKinDocs";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinEmbedView } from "./widgets/KinEmbedView";
+import { KinWatchLine } from "./KinWatchLine";
 
 export type KinDocParams = {
   readonly environmentId: string;
@@ -100,6 +116,8 @@ export type KinDocParams = {
   readonly section?: string;
   /** An earlier version to read; the latest otherwise. */
   readonly v?: string;
+  /** The long draft card it was opened from: its reader may read that version without Docs. */
+  readonly card?: string;
   /** The version that was latest before a restore, which restoring again undoes. */
   readonly undo?: string;
 };
@@ -142,12 +160,16 @@ function useKinDocImageSource(environmentId: EnvironmentId): MarkdownImageSource
   };
 }
 
-/** A teammate's Change is a suggestion the owner decides on. */
-const sectionActions = (ownerLevel: boolean) => [
+/** Change is by hand for whoever may; else the owner level asks an agent and a teammate suggests. */
+const sectionActions = (ownerLevel: boolean, byHand: boolean) => [
   { id: "ask", title: KIN_DOCS.ask, image: "questionmark.bubble" },
-  { id: "change", title: ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest, image: "pencil" },
+  {
+    id: "change",
+    title: kinDocChangeItem({ byHand, ownerLevel }).label,
+    image: "pencil",
+  },
   { id: "link", title: KIN_DOCS.copyLink, image: "link" },
-  { id: "copy", title: "Copy text", image: "doc.on.doc" },
+  { id: "copy", title: KIN_DOCS.copyText, image: "doc.on.doc" },
 ];
 
 /** A doc as a document: who last changed it and how, then everything the agent wrote. */
@@ -175,6 +197,7 @@ export function KinDocScreen({ route }: StaticScreenProps<KinDocParams>) {
       orgId={orgId}
       docKey={key}
       version={kinDocVersionParam(route.params.v)}
+      card={route.params.card === undefined ? null : KinWidgetId.make(route.params.card)}
       section={route.params.section ?? null}
       undo={kinDocVersionParam(route.params.undo)}
     />
@@ -184,13 +207,14 @@ export function KinDocScreen({ route }: StaticScreenProps<KinDocParams>) {
 type DocTarget = KinWorkTarget & {
   readonly docKey: KinRecordKey;
   readonly version: number | null;
+  readonly card?: KinWidgetId | null;
   readonly section: string | null;
   readonly undo: number | null;
 };
 
 function KinDocStates(props: DocTarget) {
   const navigation = useNavigation();
-  const { state, refresh } = useKinDoc(props, props.docKey, props.version);
+  const { state, refresh } = useKinDoc(props, props.docKey, props.version, props.card ?? null);
   if (state._tag === "ready")
     return <KinDocBody {...props} doc={state.value} stale={state.stale} onRefresh={refresh} />;
   return (
@@ -199,6 +223,8 @@ function KinDocStates(props: DocTarget) {
         <KinWorkLoading label="Loading doc" />
       ) : state._tag === "gone" ? (
         <EmptyState variant="plain" {...KIN_DOCS.gone} />
+      ) : state._tag === "private" ? (
+        <EmptyState variant="plain" {...KIN_DOCS.privateNow(state.by)} />
       ) : state._tag === "refused" ? (
         <EmptyState variant="plain" {...KIN_DOCS.unavailable} />
       ) : (
@@ -255,6 +281,63 @@ export function useKinDocRestore(target: KinWorkTarget, key: KinRecordKey) {
   };
 }
 
+/**
+ * One section changed by hand: it saves against the section as opened (`kinDocEditOpen`), however
+ * the doc refreshes meanwhile, and its typed text is kept on any refusal.
+ */
+function useKinDocEdit(target: KinWorkTarget, onSaved: () => void) {
+  const { environmentId, orgId } = target;
+  const send = useAtomCommand(kinClient.docEditSection, { reportFailure: false });
+  const [editing, setEditing] = useState<{
+    readonly opened: KinDocEditOpened;
+    readonly text: string;
+    readonly requestId: string;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [saved, setSaved] = useState<number | null>(null);
+  const save = async () => {
+    if (editing === null || busy) return;
+    if (!kinHostConnected(environmentId)) return setProblem(KIN_DOCS.editOffline);
+    const input = kinDocEditInput(orgId, editing.opened, editing.text, editing.requestId);
+    setBusy(true);
+    setProblem(null);
+    const outcome = kinDocEditOutcome(await send({ environmentId, input }));
+    setBusy(false);
+    if (outcome._tag === "refused") return setProblem(outcome.text);
+    setEditing(null);
+    setSaved(outcome.doc.version.version);
+    onSaved();
+  };
+  const close = () => {
+    setEditing(null);
+    setProblem(null);
+  };
+  return {
+    editing,
+    busy,
+    problem,
+    saved,
+    dismissSaved: () => setSaved(null),
+    start: (doc: KinDocDetail, section: string) => {
+      const opened = kinDocEditOpen(doc, section);
+      if (opened === null) return;
+      setSaved(null);
+      setProblem(null);
+      setEditing({ opened, text: opened.was, requestId: uuidv4() });
+    },
+    type: (text: string) => setEditing((held) => (held === null ? held : { ...held, text })),
+    save,
+    cancel: () => {
+      if (editing === null || editing.text === editing.opened.was) return close();
+      Alert.alert(KIN_DOCS.discard.title, undefined, [
+        { text: KIN_DOCS.discard.keep, style: "cancel" },
+        { text: KIN_DOCS.discard.confirm, style: "destructive", onPress: close },
+      ]);
+    },
+  };
+}
+
 function KinDocBody(
   props: DocTarget & {
     readonly doc: KinDocDetail;
@@ -274,6 +357,7 @@ function KinDocBody(
   const styles = useMarkdownPreviewStyles();
   const openLink = useOpenPullRequest();
   const restore = useKinDocRestore(target, doc.key);
+  const edit = useKinDocEdit(target, props.onRefresh);
   const canRender = useAtomValue(kinClient.docRender.permissionAtom(environmentId));
   const render = useAtomCommand(kinClient.docRender, { reportFailure: false });
   const [making, setMaking] = useState(false);
@@ -282,12 +366,14 @@ function KinDocBody(
   const bar = useContentTopInset();
   const offsets = useRef(new Map<string, number>());
   const arrived = useRef(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
   const [preview, setPreview] = useState<FilePreviewSource | null>(null);
   const resolveImageSource = useKinDocImageSource(environmentId);
   const undo = props.undo !== null && props.undo < doc.latest.version ? props.undo : null;
 
   const sections = kinDocSections(doc.body, doc.outline);
+  // By hand only where the sections are cut as the host cuts them.
+  const byHand = kinDocCanEdit(doc) && sections !== null;
   const outline = kinDocOutline(doc.outline);
   const line = kinDocChangeLine(
     {
@@ -303,6 +389,8 @@ function KinDocBody(
   const previous = kinDocPrevious(doc.version);
   const privacy = kinDocPrivacy(doc);
   const label = useKinDocLabel(target, doc);
+  const deleting = useKinDocDelete(target);
+  const mayDelete = deleting.allowed && doc.deletable === true;
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
   const fileIt = () => navigation.navigate("KinDocFile", { environmentId, orgId, doc: doc.key });
   const kind = kinDocKindOf(doc);
@@ -343,7 +431,11 @@ function KinDocBody(
     const url = Linking.createURL(`kin/${environmentId}/${orgId}/docs/${doc.key}`, {
       queryParams: section === null ? {} : { section },
     });
-    if (await tryCopyTextWithHaptic(url, { target: "link" })) setCopied(true);
+    if (await tryCopyTextWithHaptic(url, { target: "link" })) setCopied(KIN_DOCS.copied);
+  };
+  const copyText = async (markdown: string) => {
+    if (await tryCopyTextWithHaptic(kinDocCopyText(markdown), { target: "text" }))
+      setCopied(KIN_DOCS.textCopied);
   };
   const share = async () => {
     const exported = kinDocExport(doc);
@@ -378,9 +470,10 @@ function KinDocBody(
     if (y !== undefined) scroll.current?.scrollTo({ y: y - bar, animated: true });
   };
   const act = (section: string | null, text: string, action: string) => {
-    if (action === "ask" || action === "change") point(section, action);
+    if (action === "change" && byHand && section !== null) edit.start(doc, section);
+    else if (action === "ask" || action === "change") point(section, action);
     else if (action === "link") void copyLink(section);
-    else if (action === "copy") void tryCopyTextWithHaptic(text, { target: "section" });
+    else if (action === "copy") void copyText(text);
   };
   const onLinkPress = (href: string) => {
     const url = kinLinkToOpen(href);
@@ -404,37 +497,123 @@ function KinDocBody(
     {
       title: "More",
       icon: "ellipsis" as const,
+      // The few used in the day first; the rest fold under More.
       items: [
+        ...(doc.body.trim() === ""
+          ? []
+          : [{ id: "copy", title: KIN_DOCS.copyText, onPress: () => void copyText(doc.body) }]),
+        byHand && sections.length > 1
+          ? {
+              id: "change",
+              title: KIN_DOCS.change,
+              items: sections.map((one) => ({
+                id: `change:${one.id}`,
+                title: one.title,
+                onPress: () => {
+                  jump(one.id);
+                  edit.start(doc, one.id);
+                },
+              })),
+            }
+          : {
+              id: "change",
+              title: kinDocChangeItem({ byHand, ownerLevel }).label,
+              onPress: () =>
+                byHand && sections[0] !== undefined
+                  ? edit.start(doc, sections[0].id)
+                  : point(null, "change"),
+            },
         { id: "ask", title: KIN_DOCS.ask, onPress: () => point(null, "ask") },
-        {
-          id: "change",
-          title: ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest,
-          onPress: () => point(null, "change"),
-        },
-        { id: "link", title: KIN_DOCS.copyLink, onPress: () => void copyLink(null) },
-        {
-          id: "history",
-          title: KIN_DOCS.history,
-          onPress: () =>
-            navigation.navigate("KinDocHistory", { environmentId, orgId, doc: doc.key }),
-        },
-        { id: "export", title: KIN_DOCS.export, onPress: () => void share() },
         ...(canRender && kinDocPdfInput(orgId, doc, "pdf") !== null
           ? [
               {
                 id: "pdf",
-                title: making ? KIN_DOCS.exportingPdf : KIN_DOCS.exportPdf,
+                title: making ? KIN_DOCS.exportingPdf : KIN_DOCS.sharePdf,
                 onPress: () => void exportPdf(),
               },
             ]
           : []),
-        ...(canFile ? [{ id: "file", title: KIN_DOC_HOMES.fileTitle, onPress: fileIt }] : []),
-        ...(label.action === null
-          ? []
-          : [{ id: "label", title: label.action.label, onPress: label.ask }]),
+        {
+          id: "more",
+          title: KIN_DOCS.more,
+          items: [
+            {
+              id: "history",
+              title: KIN_DOCS.history,
+              onPress: () =>
+                navigation.navigate("KinDocHistory", { environmentId, orgId, doc: doc.key }),
+            },
+            { id: "link", title: KIN_DOCS.copyLink, onPress: () => void copyLink(null) },
+            { id: "export", title: KIN_DOCS.export, onPress: () => void share() },
+            ...(canFile ? [{ id: "file", title: KIN_DOC_HOMES.fileTitle, onPress: fileIt }] : []),
+            ...(label.action === null
+              ? []
+              : [{ id: "label", title: label.action.label, onPress: label.ask }]),
+            ...(mayDelete && !doc.archived && deleting.busy === null
+              ? [
+                  {
+                    id: "delete",
+                    title: KIN_DOCS.delete,
+                    destructive: true,
+                    onPress: () =>
+                      void deleting.remove(doc.key).then((why) => {
+                        if (why !== null) return;
+                        // Docs offers the Undo, as the web's list does once a doc is deleted.
+                        appAtomRegistry.set(kinDocLeftDeletedAtom, {
+                          environmentId,
+                          orgId,
+                          key: doc.key,
+                          title: doc.title,
+                        });
+                        navigation.goBack();
+                      }),
+                  },
+                ]
+              : []),
+          ],
+        },
       ],
     },
   ];
+
+  const editor =
+    edit.editing === null ? null : (
+      <View className="mb-3 gap-2">
+        <TextInput
+          accessibilityLabel={KIN_DOCS.editing(edit.editing.opened.title)}
+          value={edit.editing.text}
+          editable={!edit.busy}
+          multiline
+          autoFocus
+          onChangeText={edit.type}
+          textAlignVertical="top"
+          placeholderTextColorClassName="accent-placeholder"
+          className="min-h-32 rounded-lg border border-border px-3 py-2 font-sans text-base text-foreground"
+        />
+        {edit.problem === null ? null : <Notice tone="danger" message={edit.problem} />}
+        <View className="flex-row gap-2">
+          <Button
+            tone="primary"
+            size="compact"
+            label={edit.busy ? KIN_DOCS.saving : KIN_DOCS.save}
+            loading={edit.busy}
+            disabled={edit.busy || edit.editing.text === edit.editing.opened.was}
+            onPress={() => void edit.save()}
+          />
+          <Button
+            tone="secondary"
+            size="compact"
+            label={KIN_DOCS.cancel}
+            disabled={edit.busy}
+            onPress={edit.cancel}
+          />
+        </View>
+      </View>
+    );
+  // A draft whose section no longer reads as opened is kept, above the doc.
+  const editorAside =
+    edit.editing !== null &&
+    !(sections ?? []).some((one) => one.id === edit.editing?.opened.section);
 
   const renderImage: MarkdownImageRenderer = (image) => {
     const attachmentId = kinDocFileId(image.href);
@@ -580,6 +759,7 @@ function KinDocBody(
                 />
               </ListSection>
             )}
+            <KinWatchLine {...target} recordKey={doc.key} />
             {previous === null ? null : (
               <Pressable
                 accessibilityRole="button"
@@ -616,13 +796,41 @@ function KinDocBody(
             {label.problem === null ? null : (
               <Notice tone="danger" message={label.problem} onDismiss={label.dismiss} />
             )}
+            {deleting.problem === null ? null : (
+              <Notice tone="danger" message={deleting.problem} onDismiss={deleting.dismiss} />
+            )}
+            {!doc.archived ? null : (
+              <Notice
+                message={
+                  deleting.justDeleted === doc.key
+                    ? KIN_DOCS.deletedNotice(doc.title)
+                    : doc.deleted === undefined
+                      ? KIN_DOCS.deletedBanner
+                      : `${kinDocDeletedLine(doc.deleted, names, now)}. ${KIN_DOCS.deletedBanner}`
+                }
+                {...(mayDelete
+                  ? {
+                      action: {
+                        label:
+                          deleting.justDeleted === doc.key ? KIN_DOCS.undo : KIN_DOCS.restoreDoc,
+                        pending: deleting.busy !== null,
+                        onPress: () =>
+                          void deleting
+                            .restore(doc.key)
+                            .then((why) => why === null && props.onRefresh()),
+                      },
+                    }
+                  : {})}
+              />
+            )}
             {props.stale ? <Notice message="Offline. Showing the last copy read." /> : null}
             {restore.problem === null ? null : (
               <Notice tone="danger" message={restore.problem} onDismiss={restore.dismiss} />
             )}
-            {copied ? (
-              <Notice message={KIN_DOCS.copied} onDismiss={() => setCopied(false)} />
-            ) : null}
+            {edit.saved === null ? null : (
+              <Notice message={KIN_DOCS.saved(edit.saved)} onDismiss={edit.dismissSaved} />
+            )}
+            {copied === null ? null : <Notice message={copied} onDismiss={() => setCopied(null)} />}
             {undo === null ? null : (
               <Notice
                 message={KIN_DOCS.restored(doc.latest.version)}
@@ -664,6 +872,15 @@ function KinDocBody(
               </View>
             ) : null}
           </View>
+          {editorAside ? editor : null}
+          {doc.version.file?.mimeType.startsWith("image/") === true ? (
+            <ThreadMarkdownImage
+              environmentId={environmentId}
+              resource={{ _tag: "attachment", attachmentId: doc.version.file.attachmentId }}
+              alt={doc.version.file.name}
+              onPressPreview={setPreview}
+            />
+          ) : null}
           {doc.version.file === undefined ? null : (
             <KinDocFileRows environmentId={environmentId} file={doc.version.file} />
           )}
@@ -677,7 +894,7 @@ function KinDocBody(
             content(doc.body, (children) => (
               <Menu
                 shouldOpenOnLongPress
-                actions={sectionActions(ownerLevel)}
+                actions={sectionActions(ownerLevel, false)}
                 onPressAction={({ nativeEvent }) => act(null, doc.body, nativeEvent.event)}
               >
                 {children}
@@ -699,19 +916,21 @@ function KinDocBody(
                   }
                 }}
               >
-                {content(section.text, (children) => (
-                  <Menu
-                    title={section.title}
-                    shouldOpenOnLongPress
-                    accessibilityLabel={`${section.title}. Hold for actions`}
-                    actions={sectionActions(ownerLevel)}
-                    onPressAction={({ nativeEvent }) =>
-                      act(section.id, section.text, nativeEvent.event)
-                    }
-                  >
-                    {children}
-                  </Menu>
-                ))}
+                {edit.editing?.opened.section === section.id
+                  ? editor
+                  : content(section.text, (children) => (
+                      <Menu
+                        title={section.title}
+                        shouldOpenOnLongPress
+                        accessibilityLabel={`${section.title}. Hold for actions`}
+                        actions={sectionActions(ownerLevel, byHand)}
+                        onPressAction={({ nativeEvent }) =>
+                          act(section.id, section.text, nativeEvent.event)
+                        }
+                      >
+                        {children}
+                      </Menu>
+                    ))}
               </View>
             ))
           )}

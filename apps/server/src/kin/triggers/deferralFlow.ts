@@ -8,8 +8,10 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  type KinCardAsker,
   type KinReminderCard,
   type KinTriggerFired,
+  type KinTriggerFireId,
   KinWidgetId,
   type MemoryItemHead,
   kinReminderWidgetId,
@@ -38,7 +40,14 @@ import { isOrgPaused } from "../lead/orgState.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { readGithubLinks } from "./deferralGithub.ts";
-import { askersChat, cardChatFor } from "./deferralOrigin.ts";
+import {
+  askerOf,
+  askersChat,
+  cardChatFor,
+  directChatWith,
+  sharedChatOf,
+  wordsReadable,
+} from "./deferralOrigin.ts";
 import {
   DeferralSnapshot,
   GRACE_MS,
@@ -50,7 +59,13 @@ import {
   ownerDateTime,
   ownerTime,
   snapshotChanges,
+  askText,
+  decisionActions,
+  deferralFingerprint,
   deferralLead,
+  promiserLead,
+  makeDeferralRedraw,
+  deferredSectionOff,
   startsAtLevel,
   makeDeferralCards,
   makeDeferralStarter,
@@ -58,6 +73,7 @@ import {
 } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as Pings from "./pings.ts";
+import { KinPushSender } from "../push/KinPushSender.ts";
 import { deliverHeld } from "./heldDelivery.ts";
 import { settleDue } from "../questions/openQuestions.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -149,11 +165,14 @@ const make = Effect.gen(function* () {
   const ticks = yield* Scheduler.Scheduler;
   const cards = yield* makeDeferralCards;
   const start = yield* makeDeferralStarter;
+  const redraw = yield* makeDeferralRedraw;
   const budget = yield* KinBudget.KinBudget;
   const deliveries = yield* LeadDelivery.KinLeadDelivery;
   const queue = yield* KinEventQueue.KinEventQueue;
   // A question's default that runs its own action writes through it (`settleDue`).
   const records = yield* Effect.serviceOption(KinRecords);
+  // Task news held for a banner rings through it (`deliverHeld`).
+  const push = Option.getOrUndefined(yield* Effect.serviceOption(KinPushSender));
 
   /**
    * Hands a due reminder to its lead, who writes it in its own voice; the server attaches the
@@ -179,6 +198,21 @@ const make = Effect.gen(function* () {
     readonly fallbackChat: KinChatId | null;
     /** Set when someone set it in their own chat with the lead: Kin reminds them there. */
     readonly askersChat: { readonly chatId: KinChatId; readonly theirs: boolean } | undefined;
+    /**
+     * A shared chat's own (`sharedChatOf`): its lead writes it there. Once it can't (`moved`),
+     * Kin's line goes to whoever asked, saying where it was meant for.
+     */
+    readonly inChat:
+      | {
+          readonly chatId: KinChatId;
+          readonly askedBy: KinCardAsker | undefined;
+          readonly moved: { readonly to: KinChatId; readonly why: string } | undefined;
+          /** The chat's bare line, when someone there now couldn't read where it was set. */
+          readonly bare: string | undefined;
+          /** One bare line for the owner, when neither the chat nor the asker can be reached. */
+          readonly owner: { readonly to: KinChatId; readonly body: string } | undefined;
+        }
+      | undefined;
   }) {
     const { orgId, itemId, title, fire, fireAt, now } = input;
     const card = {
@@ -190,6 +224,81 @@ const make = Effect.gen(function* () {
     const widgetId = KinWidgetId.make(kinReminderWidgetId(orgId, itemId, fireAt));
     const reminder = `Reminder: ${title}.${lateNote(fireAt, now, input.clock)}`;
     const fallbackBody = `${reminder} (${input.leadName ?? "Your agent"} couldn't write this one, so Kin sent it.)`;
+    if (input.inChat !== undefined) {
+      const { chatId, askedBy, moved, bare, owner } = input.inChat;
+      const state = { ...card, ...(askedBy === undefined ? {} : { askedBy }) };
+      if (bare !== undefined)
+        yield* chat.notice({
+          orgId,
+          chatId,
+          messageId: KinMessageId.make(`reminder-bare-${fire.fireId}`),
+          audience: "chat",
+          body: bare,
+        });
+      if (owner !== undefined)
+        yield* chat.notice({
+          orgId,
+          chatId: owner.to,
+          messageId: KinMessageId.make(`reminder-unreached-${fire.fireId}`),
+          audience: "owner",
+          body: owner.body,
+        });
+      if (bare !== undefined || owner !== undefined || moved !== undefined) {
+        if (moved === undefined) return;
+        yield* deliveries.fallback({
+          orgId,
+          eventId: KinEventId.make(`reminder-moved-${fire.fireId}`),
+          kind: "reminder",
+          agentId: KinAgentId.make("kin"),
+          chatId: moved.to,
+          widget: { widgetId, type: "reminder", state: card },
+          fallbackBody: `${reminder} ${moved.why}`,
+          deadlineAt: now,
+          forChat: true,
+        });
+        return;
+      }
+      if (input.lead !== undefined) {
+        const dedupeKey = fire.fireId;
+        const eventId = KinEventId.make(`reminder_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`);
+        const event = yield* decodeEvent({
+          _tag: "deferral.due",
+          eventId,
+          orgId,
+          agentId: input.lead.agentId,
+          receivedAt: fire.firedAt,
+          provenance: { _tag: "system" },
+          dedupeKey,
+          subject: { type: "reminder", itemId },
+          lateByMs: Math.max(0, now - fireAt),
+          origin: { agentId: input.lead.agentId, chatId },
+          chatId,
+        });
+        yield* deliveries.handOff(event, {
+          orgId,
+          eventId,
+          kind: "reminder",
+          agentId: input.lead.agentId,
+          chatId,
+          widget: { widgetId, type: "reminder", state },
+          fallbackBody,
+          deadlineAt: now + LeadDelivery.DELIVERY_DEADLINE_MS.reminder,
+        });
+        return;
+      }
+      yield* deliveries.fallback({
+        orgId,
+        eventId: KinEventId.make(`reminder-fallback-${fire.fireId}`),
+        kind: "reminder",
+        agentId: KinAgentId.make("kin"),
+        chatId,
+        widget: { widgetId, type: "reminder", state: { ...state, fallback: true } },
+        fallbackBody,
+        deadlineAt: now,
+        forChat: true,
+      });
+      return;
+    }
     // The lead's wake-up answers in its owner's chat, so a teammate's own reminder is Kin's line.
     if (input.askersChat !== undefined) {
       const theirs = input.askersChat.theirs;
@@ -257,6 +366,15 @@ const make = Effect.gen(function* () {
       FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = ${itemId} ORDER BY item_id`.pipe(
       Effect.map((rows) => rows[0]),
     );
+  /** The committed item with its body, which a decision card's fingerprint covers. */
+  const readCommitted = (orgId: KinOrgId, itemId: KinMemoryItemId) =>
+    memory.readItemQuietly(orgId, itemId, "triggers").pipe(
+      Effect.map((item): { head: MemoryItemHead; body: string } | undefined => item),
+      Effect.catchTags({
+        MemoryNotFound: () => Effect.undefined,
+        MemoryDuplicateId: () => Effect.undefined,
+      }),
+    );
   const readItem = (orgId: KinOrgId, itemId: KinMemoryItemId) =>
     memory.readItemQuietly(orgId, itemId, "triggers").pipe(
       Effect.map((item): MemoryItemHead | undefined => item.head),
@@ -272,10 +390,7 @@ const make = Effect.gen(function* () {
     item: MemoryItemHead | undefined,
   ) {
     if (item?.chat !== undefined) {
-      const lead = yield* liveLead(sql, orgId, {
-        chatId: item.chat,
-        prefer: CHIEF_OF_STAFF_DOMAIN,
-      });
+      const lead = yield* promiserLead(sql, orgId, item);
       const chatId = yield* cardChatFor(sql, orgId, item.chat, lead?.ownerChatId ?? null);
       if (chatId !== null) return chatId;
     }
@@ -294,6 +409,74 @@ const make = Effect.gen(function* () {
     return person !== undefined;
   });
 
+  /**
+   * Where a shared chat's own reminder goes and who asked. Its words go to the chat only while
+   * everyone reading it now could read where it was set (`wordsReadable`); else the chat gets a
+   * bare line and the asker the reminder, in their own chat with a live agent. Gone, archived or
+   * left by its agent: the asker alone; with no chat of theirs, the owner one bare line.
+   */
+  const inChatReminder = Effect.fn("KinDeferralFlow.inChatReminder")(function* (
+    orgId: KinOrgId,
+    item: MemoryItemHead | undefined,
+    chat: NonNullable<Effect.Success<ReturnType<typeof sharedChatOf>>>,
+    clock: TextClock,
+  ) {
+    const askedBy = item === undefined ? undefined : yield* askerOf(sql, orgId, item.said_by);
+    const readable =
+      item?.source_event !== undefined && (yield* wordsReadable(sql, orgId, item.source_event));
+    const base = {
+      chatId: chat.chatId,
+      askedBy,
+      moved: undefined,
+      bare: undefined,
+      owner: undefined,
+    };
+    if (chat.open && readable) return base;
+    const agent =
+      chat.lead === undefined
+        ? (yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN }))?.agentId
+        : chat.agentId;
+    const theirs =
+      askedBy === undefined || askedBy.left === true || agent === undefined
+        ? undefined
+        : yield* directChatWith(sql, orgId, askedBy.personId, agent);
+    const name = askedBy?.left === true ? "Someone who has left" : (askedBy?.name ?? "Someone");
+    const set =
+      item === undefined ? "" : ` on ${ownerDateTime(Date.parse(item.recorded_at), clock)}`;
+    if (chat.open)
+      return {
+        ...base,
+        bare: `A reminder ${name} set${set} is due.`,
+        moved:
+          theirs === undefined
+            ? undefined
+            : {
+                to: theirs,
+                why: `${chat.name} got only that it is due: someone there now couldn't read where you set it.`,
+              },
+      };
+    if (theirs !== undefined)
+      return {
+        ...base,
+        moved: {
+          to: theirs,
+          why: `It was for ${chat.name}, which ${chat.lead?.name ?? "its agent"} can no longer post in.`,
+        },
+      };
+    const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
+    if (lead === undefined) return base;
+    const [inRoom] = yield* sql`SELECT 1 FROM kin_chat_members WHERE org_id = ${orgId}
+      AND chat_id = ${chat.chatId} AND principal_kind = 'person'
+      AND person_id = ${lead.ownerPersonId} AND left_at IS NULL LIMIT 1`;
+    return {
+      ...base,
+      owner: {
+        to: lead.ownerChatId,
+        body: `A reminder ${name} set${set}${inRoom === undefined ? "" : ` for ${chat.name}`} is due, but it couldn't reach them or that chat.`,
+      },
+    };
+  });
+
   const prepareChase = Effect.fn("KinDeferralFlow.prepareChase")(function* (
     orgId: KinOrgId,
     item: MemoryItemHead,
@@ -303,7 +486,7 @@ const make = Effect.gen(function* () {
     const handle = item.owner ?? item.said_by;
     const [person] = yield* sql<{ personId: string }>`SELECT person_id AS "personId"
       FROM kin_people WHERE org_id = ${orgId} AND handle = ${handle} ORDER BY person_id`;
-    const owner = yield* liveLead(sql, orgId, { chatId: item.chat, prefer: CHIEF_OF_STAFF_DOMAIN });
+    const owner = yield* promiserLead(sql, orgId, item);
     if (person === undefined || owner === undefined || item.chat === undefined)
       return `I couldn't chase ${handle}`;
     const put = yield* pings
@@ -350,7 +533,8 @@ const make = Effect.gen(function* () {
       return yield* inbox.markConsumed(orgId, [fire.fireId]).pipe(Effect.as(false));
 
     // Read-only or idempotent I/O; a replay repeats it.
-    const item = yield* readItem(orgId, itemId);
+    const committed = yield* readCommitted(orgId, itemId);
+    const item = committed?.head;
     const onDue = run.onDue;
     const decodedOnDue = yield* decodeOnDue(onDue);
     const gates: Array<string> = [];
@@ -358,13 +542,24 @@ const make = Effect.gen(function* () {
       const github = yield* readGithubLinks(orgId, item?.links ?? snapshot.links);
       gates.push(...snapshotChanges(snapshot, item, github));
       if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
-        gates.push("the stop switch is on");
+        gates.push("Kin asks before every start for now");
     }
     // A reminder is the lead's to write when a wake-up can run; budget is read outside the writer.
-    const ownChat = onDue === "remind" ? yield* askersChat(sql, orgId, item) : undefined;
+    const chatOwn = onDue === "remind" ? yield* sharedChatOf(sql, orgId, item) : undefined;
+    const inChat =
+      chatOwn === undefined ? undefined : yield* inChatReminder(orgId, item, chatOwn, clock);
+    const ownChat =
+      onDue === "remind" && chatOwn === undefined ? yield* askersChat(sql, orgId, item) : undefined;
     const reminderLead =
       onDue === "remind" && ownChat === undefined
-        ? yield* deferralLead(sql, orgId, item)
+        ? chatOwn === undefined
+          ? yield* deferralLead(sql, orgId, item)
+          : inChat?.moved === undefined &&
+              inChat?.bare === undefined &&
+              inChat?.owner === undefined &&
+              chatOwn.lead !== undefined
+            ? { agentId: chatOwn.agentId, ...chatOwn.lead, origin: undefined }
+            : undefined
         : undefined;
     const reminderAdmitted =
       reminderLead === undefined
@@ -392,6 +587,33 @@ const make = Effect.gen(function* () {
           return false;
         const dueAt = step.dueAt;
         const title = item?.title ?? itemId;
+        if (
+          yield* deferredSectionOff(orgId, title, item?.links).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          )
+        ) {
+          return "section_off" as const;
+        }
+        // A reminder never asks, so it needs no lead here.
+        const lead = onDue === "remind" ? undefined : yield* deferralLead(sql, orgId, item);
+        // A tap's start needs the item's chat and source event, which the run keeps from here on.
+        const startable = item !== undefined && lead !== undefined;
+        // What the card is drawn from: the links just checked and the committed work, which a
+        // tap must still find (`deferralFingerprint`).
+        const kept: DeferralSnapshot =
+          committed === undefined
+            ? snapshot
+            : {
+                ...snapshot,
+                links: committed.head.links,
+                source: {
+                  ...(committed.head.chat === undefined ? {} : { chat: committed.head.chat }),
+                  ...(committed.head.source_event === undefined
+                    ? {}
+                    : { sourceEvent: committed.head.source_event }),
+                },
+                drawn: { fingerprint: deferralFingerprint(committed) },
+              };
         const card = (phase: KinDeferralCard["phase"], text: string, graceEndsAt?: number) => ({
           itemId,
           title,
@@ -400,28 +622,29 @@ const make = Effect.gen(function* () {
           text,
           phase,
           ...(graceEndsAt === undefined ? {} : { graceEndsAt: iso(graceEndsAt) }),
+          actions: phase === "started" ? [] : decisionActions(startable),
+          ...(lead === undefined ? {} : { agent: lead.name }),
         });
-        const setState = (state: string) =>
-          sql`UPDATE kin_deferral_runs SET state = ${state}, updated_at = ${now}
+        const setState = Effect.fn("KinDeferralFlow.setState")(function* (
+          state: string,
+          next: DeferralSnapshot = kept,
+        ) {
+          const json = yield* encodeSnapshot(next);
+          yield* sql`UPDATE kin_deferral_runs SET state = ${state}, snapshot_json = ${json},
+              updated_at = ${now}
             WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
               AND state = ${run.state}`;
+        });
         const post = Effect.fn("KinDeferralFlow.post")(function* (state: KinDeferralCard) {
           const chatId = yield* cardChat(orgId, item);
           yield* cards.write({ orgId, itemId, state, chatId, now });
         });
         const ask = Effect.fn("KinDeferralFlow.ask")(function* (why: ReadonlyArray<string>) {
-          const reason = why.length === 0 ? "" : ` I won't start it on my own: ${why.join("; ")}.`;
-          yield* post(
-            card(
-              "asked",
-              `${title} is due at ${ownerTime(dueAt, now, clock)}. Start it, move it to Monday, or cancel it?${reason}${lateNote(dueAt, now, clock)}`,
-            ),
-          );
+          yield* post(card("asked", askText({ dueAt, now, clock, startable, why })));
           yield* setState("asked");
         });
 
         if (onDue === "start") {
-          const lead = yield* deferralLead(sql, orgId, item);
           if (lead === undefined) reasons.push("there is no active agent");
           else if (!startsAtLevel(lead.level)) reasons.push("starting work isn't open to me here");
         }
@@ -451,11 +674,7 @@ const make = Effect.gen(function* () {
               updated_at = max(updated_at, ${now})
               WHERE org_id = ${orgId} AND trigger_id = ${deferralTriggerId(itemId, "due")}
                 AND enabled = 1`;
-            const graced = yield* encodeSnapshot({ ...snapshot, graceEndsAt: graceEnd });
-            yield* sql`UPDATE kin_deferral_runs SET snapshot_json = ${graced}
-              WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
-                AND state = ${run.state}`;
-            yield* setState("grace");
+            yield* setState("grace", { ...kept, graceEndsAt: graceEnd });
           } else {
             const started = yield* start({
               orgId,
@@ -512,6 +731,7 @@ const make = Effect.gen(function* () {
             leadName: reminderLead?.name,
             fallbackChat: reminderLead?.ownerChatId ?? (yield* cardChat(orgId, item)),
             askersChat: ownChat,
+            inChat,
           });
           yield* setState("reminded");
         }
@@ -543,6 +763,47 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Decision cards drawn before taps bound to their item (no fingerprint): drawn again from the
+   * committed item with a new revision, so their taps work and an old revision gains none.
+   */
+  const redrawUnbound = Effect.fn("KinDeferralFlow.redrawUnbound")(function* (
+    orgId: KinOrgId,
+    now: number,
+    clock: TextClock,
+  ) {
+    const rows = yield* sql<{ itemId: string }>`SELECT item_id AS "itemId" FROM kin_deferral_runs
+      WHERE org_id = ${orgId} AND state IN ('asked', 'heads_up', 'grace')
+        AND json_extract(snapshot_json, '$.drawn') IS NULL ORDER BY item_id`;
+    for (const row of rows) {
+      const itemId = KinMemoryItemId.make(row.itemId);
+      const committed = yield* readCommitted(orgId, itemId);
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const run = yield* readRun(orgId, itemId);
+          if (run === undefined || run.dueAt === null) return;
+          const snapshot = yield* decodeSnapshot(run.snapshot);
+          if (snapshot.drawn !== undefined || !["asked", "heads_up", "grace"].includes(run.state))
+            return;
+          yield* redraw({
+            orgId,
+            itemId,
+            run: {
+              state: run.state,
+              dueAt: run.dueAt,
+              onDue: yield* decodeOnDue(run.onDue),
+              snapshot,
+            },
+            item: committed,
+            why: [],
+            clock,
+            now,
+          });
+        }),
+      );
+    }
+  });
+
   const drain = Effect.fn("KinDeferralFlow.drain")(
     function* (orgId: KinOrgId) {
       const now = yield* Clock.currentTimeMillis;
@@ -556,7 +817,7 @@ const make = Effect.gen(function* () {
           Effect.catch((cause) => Effect.logWarning("Kin pings sweep failed", { orgId, cause })),
           // Lines held through someone's quiet hours post once those end.
           Effect.andThen(
-            deliverHeld(orgId, chat).pipe(
+            deliverHeld(orgId, chat, push).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.catch((cause) =>
                 Effect.logWarning("Kin held lines not delivered", { orgId, cause }),
@@ -579,69 +840,82 @@ const make = Effect.gen(function* () {
           zone: yield* cache.ownerTimeZone(orgId),
           locale: yield* textLocale(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
         };
-        const fires = yield* inbox.listPending(orgId, 100, "deferral");
+        yield* redrawUnbound(orgId, now, clock).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin couldn't redraw an older deferral card", { orgId, cause }),
+          ),
+        );
         const orgRetries = retries.get(orgId) ?? new Map();
         retries.set(orgId, orgRetries);
-        // A full page may hide pending fires, so only a short one can prove an entry stale.
-        if (fires.length < 100) {
-          const pending = new Set(fires.map((fire) => fire.fireId));
-          for (const fireId of orgRetries.keys())
-            if (!pending.has(fireId)) orgRetries.delete(fireId);
-        }
-        // Catch-up fires share received_at; handle them by due time.
-        for (const fire of fires.toSorted(
-          (a, b) =>
-            Date.parse(a.dueAt) - Date.parse(b.dueAt) ||
-            (a.fireId < b.fireId ? -1 : a.fireId > b.fireId ? 1 : 0),
-        )) {
-          if (fire.payload.kind !== "time" || fire.payload.subject.type !== "deferral") continue;
-          const { itemId, phase } = fire.payload.subject;
-          const retry = orgRetries.get(fire.fireId);
-          const giveUp = now - Date.parse(fire.dueAt) > GIVE_UP_MS;
-          if (retry !== undefined && now < retry.notBefore && !giveUp) continue;
-          yield* process(orgId, fire, itemId, phase, now, clock).pipe(
-            Effect.tap((put) =>
-              Effect.sync(() => {
-                orgRetries.delete(fire.fireId);
-                if (put) chased = true;
-              }),
-            ),
-            Effect.mapError((cause) =>
-              isSqlError(cause) ? toPersistenceSqlError("KinDeferralFlow.drain")(cause) : cause,
-            ),
-            Effect.catch((cause) =>
-              Effect.gen(function* () {
-                const consume = isPermanent(cause) || giveUp;
-                const failures = (retry?.failures ?? 0) + 1;
-                yield* (consume || failures === 1 ? Effect.logWarning : Effect.logDebug)(
-                  "Kin deferral fire processing failed",
-                  {
-                    orgId,
-                    fireId: fire.fireId,
-                    cause,
-                    failures,
-                    disposition: consume ? "consumed" : "retry",
-                  },
-                );
-                if (!consume) {
-                  const delay = Math.min(RETRY_MAX_MS, RETRY_FIRST_MS * 2 ** (failures - 1));
-                  orgRetries.set(fire.fireId, { notBefore: now + delay, failures });
-                  return;
-                }
-                orgRetries.delete(fire.fireId);
-                yield* noticeFailure(orgId, fire, itemId, clock).pipe(
-                  Effect.catch((cause) =>
-                    Effect.logWarning("Kin deferral failure notice failed", {
+        const unseenRetries = new Set(orgRetries.keys());
+        let remaining = 100;
+        let after: KinTriggerFireId | undefined;
+        while (remaining > 0) {
+          const limit = remaining;
+          const fires = yield* inbox.listPending(orgId, limit, "deferral", undefined, after);
+          // Catch-up fires share received_at; handle them by due time.
+          for (const fire of fires.toSorted(
+            (a, b) =>
+              Date.parse(a.dueAt) - Date.parse(b.dueAt) ||
+              (a.fireId < b.fireId ? -1 : a.fireId > b.fireId ? 1 : 0),
+          )) {
+            unseenRetries.delete(fire.fireId);
+            remaining--;
+            if (fire.payload.kind !== "time" || fire.payload.subject.type !== "deferral") continue;
+            const { itemId, phase } = fire.payload.subject;
+            const retry = orgRetries.get(fire.fireId);
+            const giveUp = now - Date.parse(fire.dueAt) > GIVE_UP_MS;
+            if (retry !== undefined && now < retry.notBefore && !giveUp) continue;
+            const result = yield* process(orgId, fire, itemId, phase, now, clock).pipe(
+              Effect.tap((put) =>
+                Effect.sync(() => {
+                  orgRetries.delete(fire.fireId);
+                  if (put === true) chased = true;
+                }),
+              ),
+              Effect.mapError((cause) =>
+                isSqlError(cause) ? toPersistenceSqlError("KinDeferralFlow.drain")(cause) : cause,
+              ),
+              Effect.catch((cause) =>
+                Effect.gen(function* () {
+                  const consume = isPermanent(cause) || giveUp;
+                  const failures = (retry?.failures ?? 0) + 1;
+                  yield* (consume || failures === 1 ? Effect.logWarning : Effect.logDebug)(
+                    "Kin deferral fire processing failed",
+                    {
                       orgId,
                       fireId: fire.fireId,
                       cause,
-                    }),
-                  ),
-                );
-                yield* inbox.markConsumed(orgId, [fire.fireId]);
-              }),
-            ),
-          );
+                      failures,
+                      disposition: consume ? "consumed" : "retry",
+                    },
+                  );
+                  if (!consume) {
+                    const delay = Math.min(RETRY_MAX_MS, RETRY_FIRST_MS * 2 ** (failures - 1));
+                    orgRetries.set(fire.fireId, { notBefore: now + delay, failures });
+                    return;
+                  }
+                  orgRetries.delete(fire.fireId);
+                  yield* noticeFailure(orgId, fire, itemId, clock).pipe(
+                    Effect.catch((cause) =>
+                      Effect.logWarning("Kin deferral failure notice failed", {
+                        orgId,
+                        fireId: fire.fireId,
+                        cause,
+                      }),
+                    ),
+                  );
+                  yield* inbox.markConsumed(orgId, [fire.fireId]);
+                }),
+              ),
+            );
+            if (result === "section_off") remaining++;
+          }
+          if (fires.length < limit) {
+            for (const fireId of unseenRetries) orgRetries.delete(fireId);
+            break;
+          }
+          after = fires.at(-1)?.fireId;
         }
       }).pipe(Effect.ensuring(sweep));
     },

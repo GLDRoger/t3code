@@ -2,7 +2,7 @@ import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { kinSecretsTest } from "./layer.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, it, vi } from "@effect/vitest";
 import {
   AuthSessionId,
   CommandId,
@@ -49,6 +49,7 @@ import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { KinHandoff } from "./Handoff.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
+import { markOutside, stampReads, storedStamp } from "./OutsideContent.ts";
 import * as Lead from "./LeadMemory.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { recordingSchedules } from "../triggers/kinSchedules.testkit.ts";
@@ -143,6 +144,8 @@ it.live(
           due: null,
           review_by: "2000-01-01",
           invalid_at: "2000-01-01",
+          superseded_by: "spare-item",
+          what: `Invented maintenance window ${"detail ".repeat(40)}`,
         }),
       );
       // One thing the team can know and one for the owner alone; `a-item` was never labelled.
@@ -366,6 +369,7 @@ it.live(
           );
         assert.sameMembers(yield* visible(scope), [
           "kin_leads",
+          "kin_computer",
           "agent_update",
           "people_read",
           "people_update",
@@ -381,6 +385,8 @@ it.live(
           "kin_chart",
           "kin_visual",
           "kin_react",
+          "message_withdraw",
+          "message_replace",
           "memory_search",
           "memory_read",
           "memory_write",
@@ -390,6 +396,7 @@ it.live(
           "kin_cancel",
           "kin_journal",
           "kin_github_review",
+          "kin_github_review_ask",
           "kin_github_watch",
           "kin_github_link",
         ]);
@@ -444,8 +451,44 @@ it.live(
           );
         assert.isFalse(toolRead.isError);
         assert.include(JSON.stringify(toolRead), "a-item");
+        // A hit carries enough to choose what to read; the rest of its front matter is a read away.
+        const toolSearch = yield* server
+          .callTool({ name: "memory_search", arguments: { kind: "claim" } })
+          .pipe(
+            Effect.provideService(McpInvocationContext, scope),
+            Effect.provideService(KinIdentity, identity),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+        assert.isFalse(toolSearch.isError);
+        const hits = toolSearch.structuredContent as typeof Lead.SearchResult.Encoded;
+        assert.deepStrictEqual(
+          ["a-item", "spare-item"].map((id) => hits.find((hit) => hit.id === id)),
+          [
+            {
+              id: "a-item",
+              kind: "claim",
+              title: "Invented service maintenance",
+              what: `Invented maintenance window ${"detail ".repeat(40)}`.slice(0, 199) + "…",
+              status: "open",
+              due: null,
+              reviewOverdue: false,
+              misleading: true,
+              supersededBy: "spare-item",
+              duplicate: false,
+            },
+            {
+              id: "spare-item",
+              kind: "claim",
+              title: "Invented service maintenance",
+              status: "open",
+              due: null,
+              reviewOverdue: true,
+              duplicate: false,
+            },
+          ],
+        );
         const opened = yield* service.read(scope, { id: KinMemoryItemId.make("a-item") });
-        assert.isTrue("head" in opened && opened.reviewOverdue);
+        assert.isTrue("head" in opened && !opened.reviewOverdue);
         assert.isTrue("head" in opened && opened.misleading);
         assert.lengthOf(
           yield* sql`SELECT 1 FROM kin_memory_reads WHERE org_id = ${orgId} AND item_id = 'a-item'`,
@@ -620,17 +663,34 @@ it.live(
         );
         const second = yield* service.defer(scope, { ...deferred, what: "Another invented task" });
         assert.notStrictEqual(second.itemId, first.itemId);
+        // Each keeps the stamp its turn had when it was made: none here, and a retry after a read
+        // keeps none; one made after the read carries it.
+        const madeUnder = (itemId: string) => storedStamp(orgId, `memory-item:${itemId}`);
+        assert.strictEqual(yield* madeUnder(first.itemId), "");
+        const fixtureTurn = { orgId, wakeupId: "fixture-wakeup" };
+        yield* markOutside(fixtureTurn, "web:example.org");
+        assert.deepStrictEqual(yield* service.defer(scope, deferred), first);
+        assert.strictEqual(yield* madeUnder(first.itemId), "");
+        const afterPage = yield* service.defer(scope, {
+          ...deferred,
+          what: "Invented after a page",
+        });
+        assert.deepStrictEqual(stampReads((yield* madeUnder(afterPage.itemId)) ?? ""), [
+          { k: "web", host: "example.org" },
+        ]);
+        yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE wakeup_id = 'fixture-wakeup'`;
         // Every follow-up says what its due run does, whoever it is for.
         assert.strictEqual(first.scheduled, "due_card");
         assert.strictEqual(
           first.note,
-          "No question was posted. Planned for its due time: a card asking to start, move or cancel it; Kin checks then who and what still stand.",
+          "No question was posted. Planned for its due time: a card asking to start, move or cancel it; Kin checks then who and what still stand. Nothing starts on its own then, so confirm that they will be asked, not that it will start.",
         );
-        for (const [onDue, ask, scheduled, asks] of [
-          ["remind", undefined, "reminder", undefined],
-          ["start", undefined, "start", undefined],
-          ["chase", undefined, "chase_ping", { name: "Owner" }],
-          ["chase", "Memb", "chase_ping", { name: "Member" }],
+        // A due start asks first while LEAD-11's stop switch is unbuilt: the note says so.
+        for (const [onDue, ask, scheduled, asks, planned] of [
+          ["remind", undefined, "reminder", undefined, "a reminder"],
+          ["start", undefined, "start", undefined, "a card asking to start, move or cancel it"],
+          ["chase", undefined, "chase_ping", { name: "Owner" }, "a ping to Owner"],
+          ["chase", "Memb", "chase_ping", { name: "Member" }, "a ping to Member"],
         ] as const) {
           const set = yield* service.defer(scope, {
             ...deferred,
@@ -639,7 +699,7 @@ it.live(
             ...(ask === undefined ? {} : { ask }),
           });
           assert.strictEqual(set.scheduled, scheduled, `${onDue} ${ask}`);
-          assert.match(set.note ?? "", /^No question was posted\. Planned for its due time: a /);
+          assert.include(set.note, `No question was posted. Planned for its due time: ${planned};`);
           assert.deepStrictEqual(set.asks, asks, `${onDue} ${ask}`);
         }
         // Who to ask is named as people are found here, and kept as the item's person.
@@ -935,7 +995,45 @@ it.live(
           "Only the owner's own message can set up a scheduled task",
         );
         yield* copied(null);
-        const scheduled = yield* service.schedule(scope, scheduleInput);
+        // A feed of watched numbers changes only through numbers_watch, and its ids are its own.
+        yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id,
+            patch_json, base_rev, widget_id, proposed_at, applied_at)
+          VALUES (${orgId}, 'nw_feed', 'chief', 'earlier', ${JSON.stringify({
+            numbers: [],
+            feed: { source: "Invented analytics", every: "day", at: "08:00" },
+            base: "invented",
+          })}, 0, NULL, 0, 0)`;
+        yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+            source_event, said_by, audience, content_sha256, inbox_thread_id, created_at,
+            updated_at)
+          VALUES ('task-feed', ${orgId}, 'feed-invented', 'chief', 'first-chat',
+            'kin-numbers:nw_feed', 'fixture-member', 'owner_only', 'hash', 'inbox', 0, 0)`;
+        assert.strictEqual(
+          (yield* Effect.flip(
+            service.schedule(scope, {
+              ...scheduleInput,
+              replaces: KinMemoryItemId.make("feed-invented"),
+            }),
+          )).message,
+          "That schedule fetches watched numbers. Change it with numbers_watch, or archive the number to stop it.",
+        );
+        assert.include(
+          (yield* Effect.flip(
+            service.schedule(scope, {
+              ...scheduleInput,
+              itemId: KinMemoryItemId.make("feed-mine"),
+            }),
+          )).message,
+          "That id is a feed's.",
+        );
+        // The owner's own time, as he said it, is kept; the native task runs it on the host's clock.
+        const scheduled = yield* Effect.gen(function* () {
+          using _host = vi.spyOn(KinSchedules, "hostTimeZone").mockReturnValue("Asia/Tokyo");
+          yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Asia/Kolkata' WHERE org_id = ${orgId}`;
+          const made = yield* service.schedule(scope, scheduleInput);
+          yield* sql`UPDATE kin_trigger_settings SET time_zone = 'UTC' WHERE org_id = ${orgId}`;
+          return made;
+        });
         yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
             project_id, workspace_strategy_json, model_selection_json, runtime_mode,
             interaction_mode, created_by, creation_source, created_at, updated_at,
@@ -1022,7 +1120,8 @@ it.live(
           scheduleId: scheduled.itemId,
           existing: false,
           prompt: "Summarise the open PRs",
-          every: { at: "08:00", days: [1, 5] },
+          every: { at: "11:30", days: [1, 5] },
+          ownerTime: { at: "08:00", days: [1, 5] },
           sourceEvent: "fixture-event",
         });
         assert.deepStrictEqual(nativeCancels, [scheduled.itemId, recurring.itemId]);
@@ -1053,9 +1152,9 @@ it.live(
         yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
         yield* writerService.discard(orgId, "fixture-wakeup");
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'fixture-wakeup'`;
-        // A turn that only set up a schedule saved it at once: its end is no restart.
+        // A turn that only set up a schedule or posted a review saved it at once: its end is no restart.
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'schedule-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', event_ids, audience FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
-        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'schedule-wakeup', 'schedule:sch-fixture', 'fixture-hash')`;
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'schedule-wakeup', 'schedule:sch-fixture', 'fixture-hash'), (${orgId}, 'schedule-wakeup', 'github-review:evt-fixture', 'posting')`;
         yield* writerService.commitWakeup(orgId, "schedule-wakeup", "completed");
         assert.isFalse(notices.some((notice) => notice.includes("lost on restart")));
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'schedule-wakeup'`;
@@ -1113,6 +1212,14 @@ it.live(
         assert.strictEqual(notices.length, noticesBefore + 1);
         yield* writerService.discard(orgId, "shared-wakeup");
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'shared-wakeup'`;
+        // A turn this server began has lived through no restart: its tool calls with nothing
+        // staged are no loss to tell the owner of (C13).
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'fresh-wakeup', org_id, agent_id, thread_id, run_id, model, 8640000000000000, 'running', '[]', 'shared' FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'fresh-wakeup', 'item:team-claim', 'fixture-hash')`;
+        assert.isFalse(yield* writerService.staged(orgId, "fresh-wakeup"));
+        assert.strictEqual(notices.length, noticesBefore + 1);
+        yield* writerService.discard(orgId, "fresh-wakeup");
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'fresh-wakeup'`;
         yield* (yield* Orchestrator.OrchestratorV2).dispatch({
           type: "run.interrupt",
           commandId: CommandId.make("interrupt:fixture-wakeup"),
@@ -1146,12 +1253,36 @@ it.live(
           whole(yield* service.read(scope, { id: reminder.itemId })).head.title,
           "Invented stretch",
         );
+        // What a tap did to its run is what the lead reads: moved to Monday, or cancelled.
+        const runOf = (set: string) =>
+          sql.unsafe(`UPDATE kin_deferral_runs SET ${set} WHERE org_id = ? AND item_id = ?`, [
+            orgId,
+            reminder.itemId,
+          ]);
+        const memoryDue = Date.parse("2026-11-09T16:09:12Z");
+        const monday = Date.parse("2026-11-16T03:30:00.000Z");
+        yield* runOf(
+          `due_at = ${monday}, snapshot_json = json_set(snapshot_json, '$.movedFrom', ${memoryDue})`,
+        );
+        const found = (yield* service.search(scope, { kind: "deferral", status: "open" })).find(
+          (item) => item.id === reminder.itemId,
+        );
+        assert.strictEqual(
+          found !== undefined && "due" in found ? found.due : undefined,
+          "2026-11-16T03:30:00.000Z",
+        );
+        yield* runOf(`state = 'undone'`);
+        assert.notInclude(yield* openDeferrals("open"), reminder.itemId);
+        assert.strictEqual(
+          whole(yield* service.read(scope, { id: reminder.itemId })).head.status,
+          "cancelled",
+        );
+        yield* runOf(
+          `state = 'armed', due_at = ${memoryDue}, snapshot_json = json_remove(snapshot_json, '$.movedFrom')`,
+        );
         // The owner's words show only while he can open the message they came from.
         const quotesShown = Effect.gen(function* () {
           const read = whole(yield* service.read(scope, { id: KinMemoryItemId.make("new-claim") }));
-          const found = (yield* service.search(scope, { kind: "claim" })).find(
-            (item) => item.id === "new-claim",
-          );
           // And in the files the lead greps, its checkout.
           const { read: checkout } = yield* memory.prepareWakeup(orgId, "shadow-wakeup", {
             lead: agentId,
@@ -1159,14 +1290,13 @@ it.live(
           const file = yield* fs.readFileString(`${checkout}/claims/new-claim.md`);
           return [
             read.head.quote,
-            found !== undefined && "quote" in found ? found.quote : "none",
             file.includes(`quote: ${quoted.quote}`),
             file.includes("Invented"),
           ];
         });
-        assert.deepStrictEqual(yield* quotesShown, [quoted.quote, quoted.quote, true, true]);
+        assert.deepStrictEqual(yield* quotesShown, [quoted.quote, true, true]);
         yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id = ${message.messageId}`;
-        assert.deepStrictEqual(yield* quotesShown, [undefined, "none", false, true]);
+        assert.deepStrictEqual(yield* quotesShown, [undefined, false, true]);
         yield* sql`UPDATE kin_messages SET status = 'posted' WHERE message_id = ${message.messageId}`;
         const armed = () =>
           sql<{ nextRunAt: number | null }>`SELECT next_run_at AS "nextRunAt" FROM kin_triggers

@@ -59,7 +59,6 @@ import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 import * as Repository from "./KinChatRepository.ts";
 import { makeKinHandlers } from "../rpcHandlers.ts";
-import { KIN_OPEN_CHATS_PER_CONNECTION } from "./rpcHandlers.ts";
 
 const decodeTaskState = Schema.decodeEffect(KinTaskCardState);
 
@@ -368,12 +367,15 @@ it.effect(
       const backlog = yield* Queue.take(events);
       assert.strictEqual(backlog._tag, "backlog");
       if (backlog._tag === "backlog") assert.deepStrictEqual(backlog.messages, [concurrent]);
+      // A person's own send moves their read mark to it.
+      assert.include(yield* Queue.take(events), { _tag: "read", seq: concurrent.seq });
       const live = yield* chat.send(person, {
         chatId: direct.chatId,
         body: "After read",
         clientMessageId: "live",
       });
       assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message: live });
+      assert.include(yield* Queue.take(events), { _tag: "read", seq: live.seq });
       const delayed = yield* repo.insertMessage({
         audience: "chat",
         ...live,
@@ -394,26 +396,57 @@ it.effect(
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
-// QA Q17: one socket held 1,000 subscriptions to a chat, about 240 KB of server memory each.
-it.effect("caps the chats one connection keeps open with a plain refusal", () =>
-  Effect.gen(function* () {
-    const { direct } = yield* seed;
-    const handlers = yield* makeKinHandlers(session);
-    const client = yield* RpcTest.makeClient(group).pipe(
-      Effect.provide(
-        Layer.merge(
-          group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
-          RpcAuthorization.layer(AuthStandardClientScopes),
+it.effect(
+  "replaces repeated subscriptions without disturbing a second chat on the same connection",
+  () =>
+    Effect.gen(function* () {
+      const { direct, chat, person, repo } = yield* seed;
+      const agentId = KinAgentId.make("second-lead");
+      yield* repo.insertAgent({
+        ...person,
+        agentId,
+        ownerPersonId: person.personId,
+        displayName: "Finance",
+        role: "lead",
+        createdAt: "1970-01-01T00:00:00.000Z",
+      });
+      const second = yield* chat.createDirect(person, { ...person, agentId });
+      const handlers = yield* makeKinHandlers(session);
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(
+            group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
+            RpcAuthorization.layer(AuthStandardClientScopes),
+          ),
         ),
-      ),
-    );
-    const subscribe = () => client["kin.chat.subscribe"]({ chatId: direct.chatId });
-    for (let open = 0; open < KIN_OPEN_CHATS_PER_CONNECTION; open++) {
-      const events = yield* Stream.toQueue(subscribe(), { capacity: "unbounded" });
-      assert.include(yield* Queue.take(events), { _tag: "backlog" });
-    }
-    assert.include(yield* Stream.runHead(subscribe()).pipe(Effect.flip), { reason: "limit" });
-  }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+      );
+      const subscribe = (chatId: KinChatId) =>
+        Stream.toQueue(client["kin.chat.subscribe"]({ chatId }), { capacity: "unbounded" });
+      const other = yield* subscribe(second.chatId);
+      assert.include(yield* Queue.take(other), { _tag: "backlog" });
+      const streams = [];
+      for (let open = 0; open < 1_000; open++) {
+        const events = yield* subscribe(direct.chatId);
+        assert.include(yield* Queue.take(events), { _tag: "backlog" });
+        streams.push(events);
+      }
+      for (const stale of streams.slice(0, -1))
+        assert.isTrue(yield* Effect.isFailure(Queue.take(stale)));
+      for (const [id, events] of [
+        [direct.chatId, streams.at(-1)!],
+        [second.chatId, other],
+      ] as const) {
+        for (const body of ["Invented first", "Invented second"]) {
+          const message = yield* client["kin.messages.send"]({
+            chatId: id,
+            body,
+            clientMessageId: body,
+          });
+          assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message });
+          assert.include(yield* Queue.take(events), { _tag: "read", seq: message.seq });
+        }
+      }
+    }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
 it.effect("keeps transport handlers out of persistence", () =>
@@ -471,22 +504,24 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
     );
     let cursor = yield* Queue.take(events);
     assert.strictEqual(cursor._tag, "backlog");
-    for (let i = 0; i < 201; i++)
-      yield* chat.send(person, {
+    const held = new Set<string>();
+    let afterSeq = 201;
+    // A screen that keeps up: each message read as it arrives, with every hundredth's checkpoint.
+    for (let i = 0; i < 201; i++) {
+      const sent = yield* chat.send(person, {
         chatId: direct.chatId,
         body: `Live ${i}`,
         clientMessageId: `live-${i}`,
       });
-    const held = new Set<string>();
-    let afterSeq = 201;
-    for (let i = 0; i < 201; i++) {
-      const event = yield* Queue.take(events);
-      if (event._tag === "message") {
-        held.add(event.message.messageId);
-        afterSeq = Math.max(afterSeq, event.message.seq);
-      } else if (event._tag === "backlog") {
-        assert.isFalse(event.messages.some((m) => held.has(m.messageId)));
-        cursor = event;
+      while (!held.has(sent.messageId)) {
+        const event = yield* Queue.take(events);
+        if (event._tag === "message") {
+          held.add(event.message.messageId);
+          afterSeq = Math.max(afterSeq, event.message.seq);
+        } else if (event._tag === "backlog") {
+          assert.isFalse(event.messages.some((m) => held.has(m.messageId)));
+          cursor = event;
+        }
       }
     }
     assert.strictEqual(cursor._tag, "backlog");

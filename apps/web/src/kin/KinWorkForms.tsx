@@ -1,13 +1,16 @@
+import { KIN_PROMISES } from "@t3tools/client-runtime/kin/kinPromises";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
 import {
   KIN_CLIENTS,
+  kinClientPrivateNote,
   KIN_PROJECT_PEOPLE,
   KIN_PROJECTS,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_FORM_COPY,
+  kinFormTyped,
   KIN_WORK_FORM_LIMITS,
   KIN_GST_STATE_NAMES,
   kinClientCreateInput,
@@ -71,6 +74,7 @@ import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinCountryFirstField } from "./KinCountryFirst";
+import { useKinFormDiscard } from "./KinFormDiscard";
 import { KinCameFromField, KinTagEditor, useKinMarketing } from "./KinMarketing";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./useKinMoney.ts";
 import { KinProjectPeoplePicker } from "./KinProjectPeople";
@@ -86,6 +90,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
+import { useKinSectionNamed, useKinSectionWords } from "./useKinShell";
 
 const COPY = KIN_WORK_FORM_COPY;
 
@@ -102,13 +107,16 @@ export function FormShell(props: {
   readonly aside?: React.ReactNode;
   /** The field whose hint says why Save waits, read with the button. */
   readonly waitsOn?: string | undefined;
+  /** Something typed and not saved: closing asks before it is thrown away. */
+  readonly typed?: boolean;
   readonly children: React.ReactNode;
 }) {
+  const { close, ask } = useKinFormDiscard(props.typed === true, props.onClose);
   return (
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open && !props.saving) props.onClose();
+        if (!open && !props.saving) close();
       }}
     >
       <DialogPopup className="max-w-lg">
@@ -132,7 +140,7 @@ export function FormShell(props: {
           </DialogPanel>
           <DialogFooter>
             {props.aside === undefined ? null : <div className="me-auto">{props.aside}</div>}
-            <Button type="button" variant="outline" disabled={props.saving} onClick={props.onClose}>
+            <Button type="button" variant="outline" disabled={props.saving} onClick={close}>
               {COPY.cancel}
             </Button>
             <Button
@@ -147,6 +155,7 @@ export function FormShell(props: {
             </Button>
           </DialogFooter>
         </form>
+        {ask}
       </DialogPopup>
     </Dialog>
   );
@@ -155,6 +164,13 @@ export function FormShell(props: {
 const fieldHintId = (id: string) => `${id}-hint`;
 
 /** One labelled field, with what someone else changed it to while the owner was typing. */
+/** A one-paragraph field that wraps as it grows: Return submits the form, as in a one-line field. */
+export function oneParagraph(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+  if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+  event.preventDefault();
+  event.currentTarget.form?.requestSubmit();
+}
+
 export function Field(props: {
   readonly id: string;
   readonly label: string;
@@ -242,7 +258,7 @@ function ContactDetails(props: {
   );
 }
 
-function PrivateSwitch(props: {
+export function PrivateSwitch(props: {
   readonly label: string;
   readonly note: string;
   readonly checked: boolean;
@@ -281,11 +297,16 @@ export function KinClientDialog(
     readonly start?: KinClientDraftKind;
     /** Leaves out what only the owner level changes; a teammate's by default. */
     readonly member?: boolean;
+    /** Who stops seeing it once kept private (`KinPartyPage.privateHides`). */
+    readonly privateHides?: ReadonlyArray<string> | undefined;
     readonly onSaved: (key: KinRecordKey) => void;
     readonly onOpenExisting: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
 ) {
+  // The company's own word for Clients, in the form's title, buttons and choices.
+  const COPY = useKinSectionWords(props.environmentId, KIN_WORK_FORM_COPY);
+  const named = useKinSectionNamed(props.environmentId);
   const { environmentId, orgId, editing } = props;
   const ownerLevel = useKinOwnerLevel(environmentId);
   const member = props.member ?? !ownerLevel;
@@ -371,13 +392,16 @@ export function KinClientDialog(
             ? COPY.party.prospectTitle
             : COPY.party.newTitle
       }
-      submit={editing !== null ? COPY.save : newProspect ? KIN_CLIENTS.addProspect : COPY.party.add}
+      submit={
+        editing !== null ? COPY.save : newProspect ? named(KIN_CLIENTS.addProspect) : COPY.party.add
+      }
       saving={state.saving}
       canSave={draft.name.trim() !== ""}
       problem={nameMissing ? null : state.problem}
       onOpenExisting={props.onOpenExisting}
       onSave={() => void save()}
       onClose={props.onClose}
+      typed={kinFormTyped(state.from, draft)}
     >
       <Field id={ids.name} label={COPY.party.name} moved={moved.name}>
         <Input
@@ -611,7 +635,11 @@ export function KinClientDialog(
       ) : (
         <PrivateSwitch
           label={KIN_CLIENTS.privateLabel}
-          note={draft.private ? KIN_CLIENTS.privateOn : KIN_CLIENTS.privateOff}
+          note={kinClientPrivateNote({
+            private: draft.private,
+            wasPrivate: editing?.sensitive ?? false,
+            hides: props.privateHides,
+          })}
           checked={draft.private}
           disabled={state.saving}
           onChange={(checked) => form.edit({ private: checked })}
@@ -712,6 +740,7 @@ export function KinContactDialog(
       problem={state.problem ?? aside.problem}
       // Two people at one client can't share a name; the one there is on this same page.
       onOpenExisting={props.onClose}
+      typed={kinFormTyped(state.from, draft)}
       {...(editing === null
         ? {}
         : {
@@ -876,6 +905,7 @@ export function KinProjectDialog(
     value: useId(),
     startsOn: useId(),
     renewsOn: useId(),
+    noticeDays: useId(),
     audience: useId(),
   };
   const marketing = useKinMarketing(props);
@@ -896,6 +926,7 @@ export function KinProjectDialog(
       onOpenExisting={props.onOpenExisting}
       onSave={() => void save()}
       onClose={props.onClose}
+      typed={kinFormTyped(state.from, draft) || members.length > 0}
     >
       <Field id={ids.name} label={COPY.project.name} moved={moved.name}>
         <Input
@@ -1002,6 +1033,21 @@ export function KinProjectDialog(
             />
           </Field>
         ) : null}
+        {draft.renewsOn === null ? null : (
+          <Field
+            id={ids.noticeDays}
+            label={KIN_PROMISES.noticeDays}
+            hint={KIN_PROMISES.noticeDaysHint}
+            moved={moved.noticeDays ?? undefined}
+          >
+            <Input
+              id={ids.noticeDays}
+              inputMode="numeric"
+              value={draft.noticeDays}
+              onChange={(event) => form.edit({ noticeDays: event.target.value })}
+            />
+          </Field>
+        )}
       </div>
       {editing === null && props.directory !== undefined ? (
         <div className="flex flex-col gap-1.5">
@@ -1136,6 +1182,7 @@ export function KinMilestoneDialog(
       onOpenExisting={props.onOpenExisting}
       onSave={() => void save()}
       onClose={props.onClose}
+      typed={name.trim() !== "" || due !== ""}
     >
       <Field id={ids.name} label={COPY.project.name}>
         <Input

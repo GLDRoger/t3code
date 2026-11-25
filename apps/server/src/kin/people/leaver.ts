@@ -1,13 +1,23 @@
 import {
+  KinCardAsker,
   KinChatId,
   type KinChoiceOutcome,
+  KinEventId,
+  KinMessageId,
   type KinOrgId,
   KinPersonId,
   KinWidgetId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { sharedChatOf } from "../triggers/deferralOrigin.ts";
 
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
@@ -38,13 +48,15 @@ const heldText = (held: LeaverHeld) => {
     held.clients > 0 ? plural(held.clients, "client", "clients") : null,
     held.followUps > 0 ? plural(held.followUps, "follow-up", "follow-ups") : null,
     held.promises > 0 ? plural(held.promises, "promise", "promises") : null,
+    held.watches > 0 ? plural(held.watches, "watch", "watches") : null,
   ].filter((part) => part !== null);
   return parts.length < 2
     ? (parts[0] ?? "nothing open")
     : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
 };
-const heldCount = (held: LeaverHeld) =>
+const recordCount = (held: LeaverHeld) =>
   held.deals + held.prospects + held.clients + held.followUps + held.promises;
+const heldCount = (held: LeaverHeld) => recordCount(held) + held.watches;
 
 const clamp = (text: string, max: number) =>
   text.length <= max ? text : `${text.slice(0, max - 1)}…`;
@@ -124,9 +136,9 @@ export const leaverCards = Effect.fn("KinLeaver.cards")(function* (input: {
   const more = receivers.length - shown.length;
   const detail = [
     `Until someone chooses, they stay in ${gone.displayName}'s name and can still be found.`,
-    ...(more > 0
+    ...(more > 0 && recordCount(held) > 0
       ? [
-          `${plural(more, "more person", "more people")} could take them; to give one to them, change who looks after it on its page.`,
+          `${plural(more, "more person", "more people")} could take them; to give ${held.watches === 0 ? "one" : "a record"} to them, change who looks after it on its page.`,
         ]
       : []),
   ].join(" ");
@@ -268,7 +280,7 @@ export const runLeaver = Effect.fn("KinLeaver.run")(function* (
     );
   }
   const to = KinPersonId.make(plan.to.personId);
-  const held = yield* handOverLeaver({
+  const { moved: held, given } = yield* handOverLeaver({
     orgId,
     by: tap.personId,
     from: KinPersonId.make(plan.personId),
@@ -285,30 +297,127 @@ export const runLeaver = Effect.fn("KinLeaver.run")(function* (
     return yield* settle(none, none);
   }
   const what = heldText(held);
-  if (to !== tap.personId) {
+  const someRecords = recordCount(held) > 0;
+  const tell = to !== tap.personId && heldCount(given) > 0;
+  if (tell) {
     const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
     if (lead !== undefined)
       yield* noticeHolder({
         orgId,
         personId: to,
         agentId: lead.agentId,
-        body: `${byName} gave you what ${gone} looked after: ${what}. Each one's Activity says so.`,
+        body: `${byName} gave you what ${gone} looked after: ${heldText(given)}.${
+          given.watches === 0
+            ? " Each one's Activity says so."
+            : recordCount(given) > 0
+              ? " Each record's Activity says so."
+              : ""
+        }`,
         key: `leaver-${plan.personId}-${plan.removedAt}`,
       });
   }
   const title = clamp(`Given to ${toName}`, 120);
-  const after = "To move one on, change who looks after it on its page.";
+  const after =
+    held.watches === 0
+      ? " To move one on, change who looks after it on its page."
+      : someRecords
+        ? " To move a record on, change who looks after it on its page."
+        : "";
   return yield* settle(
     {
       title,
       text:
         to === tap.personId
-          ? `You now look after ${what} that ${gone} looked after. ${after}`
-          : `${toName} now looks after ${what} that ${gone} looked after, and was told. ${after}`,
+          ? `You now look after ${what} that ${gone} looked after.${after}`
+          : `${toName} now looks after ${what} that ${gone} looked after${tell ? ", and was told" : ""}.${after}`,
     },
     {
       title,
-      text: `${byName} gave ${toName} ${what} that ${gone} looked after. ${after}`,
+      text: `${byName} gave ${toName} ${what} that ${gone} looked after.${after}`,
     },
   );
+});
+
+const decodeAsked = Schema.decodeUnknownOption(Schema.Struct({ askedBy: KinCardAsker }));
+
+/**
+ * In the removal's transaction: what `gone` asked for in shared chats stays, as the chat's. Their
+ * reminder and routine cards there say they left; their routines pause, and the owner is told
+ * once, in his chat with the Chief of staff, which ones and that each resumes from its card.
+ */
+export const leaverChatOwn = Effect.fn("KinLeaver.chatOwn")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly gone: { readonly personId: KinPersonId; readonly displayName: string };
+  readonly removedAt: number;
+}) {
+  const { orgId, gone, removedAt } = input;
+  const sql = yield* SqlClient.SqlClient;
+  const repo = yield* KinChatRepository;
+  const hub = yield* KinChatHub;
+  const at = DateTime.formatIso(DateTime.makeUnsafe(removedAt));
+  const cards = yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId" FROM kin_widgets
+    WHERE org_id = ${orgId} AND closed_at IS NULL
+      AND type IN ('reminder', 'scheduled_task', 'deferral')
+      AND json_extract(state_json, '$.askedBy.personId') = ${gone.personId}
+    ORDER BY widget_id`;
+  for (const { widgetId } of cards) {
+    const found = yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(widgetId) });
+    if (Option.isNone(found)) continue;
+    const state = found.value.state;
+    const asked = decodeAsked(state);
+    if (Option.isNone(asked) || typeof state !== "object" || state === null) continue;
+    const updated = yield* repo.updateWidget({
+      ...found.value,
+      audience: "chat",
+      state: { ...state, askedBy: { ...asked.value.askedBy, left: true } },
+      expectedRevision: found.value.revision,
+      updatedAt: at,
+    });
+    yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget: updated }));
+  }
+  const routines = yield* sql<{
+    taskId: string;
+    chatId: string;
+    sourceEvent: string;
+    title: string;
+  }>`SELECT s.task_id AS "taskId", s.chat_id AS "chatId", s.source_event AS "sourceEvent",
+      n.title FROM kin_schedules s JOIN scheduled_tasks n ON n.task_id = s.task_id
+    WHERE s.org_id = ${orgId} AND s.said_by = ${gone.personId} AND s.deleted_at IS NULL
+      AND s.audience = 'shared' AND COALESCE(s.pending_enabled, n.enabled) = 1
+    ORDER BY s.task_id`;
+  const paused: Array<string> = [];
+  for (const row of routines) {
+    const own = yield* sharedChatOf(sql, orgId, {
+      chat: KinChatId.make(row.chatId),
+      source_event: KinEventId.make(row.sourceEvent),
+      for_chat: true,
+    });
+    if (own === undefined) continue;
+    yield* sql`UPDATE kin_schedules SET pending_enabled = 0, updated_at = ${removedAt}
+      WHERE org_id = ${orgId} AND task_id = ${row.taskId}`;
+    paused.push(`"${row.title}" in ${own.name}`);
+  }
+  if (paused.length === 0) return;
+  const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
+  if (lead === undefined) return;
+  const message = yield* repo.insertMessage({
+    orgId,
+    chatId: lead.ownerChatId,
+    audience: "owner",
+    messageId: KinMessageId.make(`kin-leaver-routines:${gone.personId}:${removedAt}`),
+    author: { _tag: "system" },
+    kind: "system",
+    body: `${gone.displayName} left, so ${plural(paused.length, "routine", "routines")} they set up ${paused.length === 1 ? "is" : "are"} paused: ${paused.join(", ")}. Resume or delete each from its card.`,
+    intent: null,
+    mentions: [],
+    replyTo: null,
+    widgetId: null,
+    floorRunId: null,
+    status: "posted",
+    sentBy: null,
+    clientMessageId: null,
+    createdAt: at,
+    editedAt: null,
+  });
+  yield* sql.afterCommit(hub.publish({ type: "message.posted", orgId, message }));
 });

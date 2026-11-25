@@ -1,4 +1,9 @@
-import { KIN_REFRESH_TOPICS, type KinOrgId, type KinRefreshTopic } from "@t3tools/contracts";
+import {
+  KIN_REFRESH_TOPICS,
+  type KinChatError,
+  type KinOrgId,
+  type KinRefreshTopic,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -26,6 +31,11 @@ export class KinRefreshObserver extends Context.Reference<{
   /** Moves `topic` once the current transaction commits, once per transaction; at once outside one. */
   readonly touch: (orgId: KinOrgId, topic: KinRefreshTopic) => Effect.Effect<void>;
 }>("t3/kin/chat/KinRefreshObserver", { defaultValue: () => ({ touch: () => Effect.void }) }) {}
+
+/** The Work stream's existing whole-view announcement, supplied by KinRecords. */
+export const KinWorkRefresh = Context.Reference<
+  (orgId: KinOrgId) => Effect.Effect<void, KinChatError>
+>("t3/kin/work/KinWorkRefresh", { defaultValue: () => () => Effect.void });
 
 /**
  * Fails when `services` would run on the no-op observer: every notice would be dropped, and the
