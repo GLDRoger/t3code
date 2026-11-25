@@ -1402,7 +1402,6 @@ const make = Effect.gen(function* () {
       .slice(0, messageBodyLimit);
     const read = yield* outsideStamp(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const named = yield* readNames(ctx, read, target.ownerPersonId);
-    // Shown the T3 way, on the owner's side as sent by the passing agent; he didn't write it.
     const { message } = yield* chat.notice({
       orgId: ctx.orgId,
       chatId: target.ownerChatId,

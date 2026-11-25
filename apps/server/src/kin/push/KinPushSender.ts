@@ -52,7 +52,7 @@ import { ApproverKeys } from "../approvals/ApproverKeys.ts";
 import { KinPendingActions } from "../approvals/PendingActions.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { withLinks } from "../chat/messageLinks.ts";
-import { memberReads } from "../chat/sharing.ts";
+import { memberReads, visibleToPeople } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
 import { isHolderNotice } from "../pulse/holderNotice.ts";
 import { DM_NEWS, HELD_ID } from "../triggers/heldDelivery.ts";
@@ -706,7 +706,7 @@ const make = Effect.gen(function* () {
           ORDER BY c.seq) t) AS turn_cards
       FROM kin_messages m
       WHERE m.org_id = ${orgId} AND m.message_id = ${messageId} AND m.status = 'posted'
-        AND m.kind != 'widget_action' AND m.silent = 0
+        AND m.kind != 'widget_action' AND m.silent = 0 AND ${visibleToPeople(sql, "m")}
         AND NOT (m.widget_id IS NOT NULL AND m.source_wakeup_id IS NOT NULL AND m.body != '')
         -- A key change's notice rings as that change's own push instead.
         AND NOT EXISTS (SELECT 1 FROM kin_key_pushes p

@@ -25,7 +25,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
-import { memberReads } from "./sharing.ts";
+import { isAgentHandoff, memberReads } from "./sharing.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as PubSub from "effect/PubSub";
@@ -261,6 +261,12 @@ const make = Effect.gen(function* () {
               if (stopped) return false;
             }
           }
+          if (
+            identity._tag === "person" &&
+            (event.type === "message.posted" || event.type === "message.changed") &&
+            isAgentHandoff(event.message)
+          )
+            return false;
           const memberOption = yield* memberIn(chatId);
           if (Option.isNone(memberOption)) return false;
           const member = memberOption.value;

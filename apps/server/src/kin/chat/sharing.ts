@@ -1,3 +1,4 @@
+import type { KinMessage } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import type * as SqlClient from "effect/sql/SqlClient";
@@ -79,6 +80,24 @@ const joinedFrom = (sql: SqlClient.SqlClient, orgId: string, memberId: string) =
   sql`COALESCE((SELECT joined.joined_seq FROM kin_chat_members joined
     WHERE joined.org_id = ${orgId} AND joined.member_id = ${memberId}), 0)`;
 
+const handoffPrefixes = ["kin-handoff:", "kin-handoff-back:"] as const;
+
+export const visibleToPeople = (sql: SqlClient.SqlClient, alias = "kin_messages") =>
+  sql`NOT (${sql.literal(`${alias}.discussion_id IS NULL AND ${alias}.relay_json IS NOT NULL
+    AND json_extract(${alias}.relay_json, '$.personId') IS NULL`)}
+    AND (${sql.or(
+      handoffPrefixes.map(
+        (prefix) =>
+          sql`substr(${sql.literal(`${alias}.message_id`)}, 1, ${prefix.length}) = ${prefix}`,
+      ),
+    )}))`;
+
+export const isAgentHandoff = (message: KinMessage) =>
+  message.discussionId === undefined &&
+  message.relay !== undefined &&
+  message.relay.personId === undefined &&
+  handoffPrefixes.some((prefix) => message.messageId.startsWith(prefix));
+
 /**
  * Whether a row of `kin_messages` (unaliased) is one `memberId` may read: from their join on,
  * and not a tap on a card from before it, whose text would carry that card's. Undefined: any.
@@ -94,7 +113,14 @@ export const readableBy = (
   const joined = memberId === undefined ? undefined : joinedFrom(sql, orgId, memberId);
   const from =
     joined === undefined ? floor : floor === undefined ? joined : sql`MAX(${joined}, ${floor})`;
-  return from === undefined ? sql`1 = 1` : readableFrom(sql, orgId, from);
+  if (from === undefined) return sql`1 = 1`;
+  const person =
+    memberId === undefined
+      ? sql`0`
+      : sql`EXISTS (SELECT 1 FROM kin_chat_members viewer
+        WHERE viewer.org_id = ${orgId} AND viewer.member_id = ${memberId}
+          AND viewer.principal_kind = 'person')`;
+  return readableFrom(sql, orgId, from, person);
 };
 
 /** `readableBy` from the seq `from` (SQL) on; a query's own member row can give it. */
@@ -102,8 +128,9 @@ export const readableFrom = (
   sql: SqlClient.SqlClient,
   orgId: string | Statement.Fragment,
   from: Statement.Fragment,
+  person = sql`1`,
 ) =>
-  sql`(kin_messages.seq >= ${from} AND (kin_messages.widget_id IS NULL OR NOT EXISTS (
+  sql`(kin_messages.seq >= ${from} AND (${visibleToPeople(sql)} OR NOT ${person}) AND (kin_messages.widget_id IS NULL OR NOT EXISTS (
     SELECT 1 FROM kin_widgets card JOIN kin_messages anchor ON anchor.org_id = card.org_id
       AND anchor.message_id = card.message_id
     WHERE card.org_id = ${orgId} AND card.widget_id = kin_messages.widget_id
