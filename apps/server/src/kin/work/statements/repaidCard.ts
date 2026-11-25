@@ -21,7 +21,7 @@ import { agentWrote } from "./invoiceCredits.ts";
 
 const refuse = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const NOTHING_ASKED = "Nothing was asked; tell the owner what you see instead.";
-export const repaidFactKey = (bankKey: string) => `repaid_seen:${bankKey}`;
+const repaidFactKey = (bankKey: string) => `repaid_seen:${bankKey}`;
 
 export const drawRepaid = Effect.fn("KinRepaidCard.draw")(function* (
   orgId: KinOrgId,
