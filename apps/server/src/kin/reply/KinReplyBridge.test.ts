@@ -34,6 +34,7 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -447,9 +448,15 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
 // A teammate asked for reviews in their own chat (`reviewAsk.ts`): the agent's line is theirs,
 // the owner's chat gets nothing, and one ask's reviews read as one message.
 it.effect.each([
-  { name: "alone", earlier: undefined },
-  { name: "after another of the same ask", earlier: "Reviewed acme/app#6: nothing blocking." },
-])("a review someone asked for answers in their chat: $name", ({ earlier }) =>
+  { name: "alone", earlier: undefined, notices: 0 },
+  {
+    name: "after another of the same ask",
+    earlier: "Reviewed acme/app#6: nothing blocking.",
+    notices: 0,
+  },
+  // Owed to the person who asked: never held back by the hourly room for unprompted notices.
+  { name: "past the hourly notice limit", earlier: undefined, notices: 10 },
+])("a review someone asked for answers in their chat: $name", ({ earlier, notices }) =>
   Effect.gen(function* () {
     const line =
       "Reviewed acme/app#7: one blocking bug in the date parser. https://github.com/acme/app/pull/7#pullrequestreview-9";
@@ -471,6 +478,22 @@ it.effect.each([
               { orgId: owner.orgId, agentId },
             )
             .pipe(Effect.orDie)).chatId;
+          const now = yield* Clock.currentTimeMillis;
+          for (let index = 0; index < notices; index++) {
+            yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+                author_agent_id, author_owner_person_id, author_member_id, author_thread_id,
+                author_role, kind, body, mentions_json, status, created_at)
+              SELECT ${`notice-${index}`}, ${owner.orgId}, ${mateChat}, ${500 + index}, 'agent',
+                ${agentId}, ${owner.personId}, member_id, ${threadId}, 'member', 'text',
+                'A notice.', '[]', 'posted', '1970-01-01T00:00:00.000Z'
+              FROM kin_chat_members WHERE chat_id = ${mateChat} AND agent_id = ${agentId}`.pipe(
+              Effect.orDie,
+            );
+            yield* sql`INSERT INTO kin_floor_notices (org_id, message_id, chat_id, agent_id, posted_at)
+              VALUES (${owner.orgId}, ${`notice-${index}`}, ${mateChat}, ${agentId}, ${now})`.pipe(
+              Effect.orDie,
+            );
+          }
           if (earlier !== undefined) {
             yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
                 started_at, status, event_ids, audience)
@@ -522,7 +545,8 @@ it.effect.each([
     yield* complete;
     assert.deepStrictEqual(yield* posted, []);
     const inMate = yield* sql<{ body: string }>`SELECT body FROM kin_messages
-      WHERE chat_id = ${mateChat} AND author_kind = 'agent' ORDER BY seq`;
+      WHERE chat_id = ${mateChat} AND author_kind = 'agent' AND message_id NOT LIKE 'notice-%'
+      ORDER BY seq`;
     assert.deepStrictEqual(
       inMate.map((row) => row.body),
       [earlier === undefined ? line : `${earlier}\n\n${line}`],
