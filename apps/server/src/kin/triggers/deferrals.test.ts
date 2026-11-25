@@ -1422,6 +1422,54 @@ it.effect("a follow-up about an invoice is skipped while its client is set aside
   }).pipe(Effect.provide(layerFor([followUp])));
 });
 
+it.effect("a follow-up about two records fires while one of them is still live", () => {
+  const title = "Follow up on INV-13 and INV-12";
+  const partial = makeDeferral("def-partly-held", { title, on_due: "remind", trust: "agent" });
+  const both = makeDeferral("def-both-held", {
+    title,
+    on_due: "remind",
+    trust: "agent",
+    due: "2026-11-13T09:01+05:30",
+  });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* seedInvoice(dueAt);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at, fields_json)
+      VALUES (${orgId}, 'invoice-13', 'invoices', 'INV-13', 'Tidewater Freight supplies', 'agent',
+        'lead-a', 'person', 'owner-a', 'invoice-13', 0, 0, '{}')`;
+    const hold = Effect.fn("test.holdInvoice")(function* (recordKey: string) {
+      yield* KinPulse.aside({
+        orgId,
+        at: yield* Clock.currentTimeMillis,
+        viewer: { _tag: "owner" },
+        by: { _tag: "person", personId: KinPersonId.make("owner-a") },
+        recordKey,
+        action: "set",
+        until: null,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: null },
+      });
+    });
+    yield* hold("INV-12");
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(partial);
+    yield* tick(dueAt);
+    assert.equal((yield* runOf(partial.id))?.state, "reminded");
+
+    yield* hold("INV-13");
+    yield* service.syncItem(both);
+    yield* tick(dueAt + 60_000);
+    assert.equal((yield* runOf(both.id))?.state, "undone");
+    const [skipped] = yield* sql<{ record: string }>`SELECT
+      json_extract(snapshot_json, '$.skipped.record') AS record
+      FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = ${both.id}`;
+    assert.equal(skipped?.record, "INV-12");
+    assert.deepStrictEqual(yield* handedReminders(), [{ itemId: partial.id, lateByMs: 0 }]);
+  }).pipe(Effect.provide(layerFor([partial, both])));
+});
+
 it.effect("remind, ask and chase act at due, noting lateness", () => {
   const remind = makeDeferral("def-r", { on_due: "remind" });
   const ask = makeDeferral("def-a", { on_due: "ask" });

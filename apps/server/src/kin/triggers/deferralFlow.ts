@@ -543,14 +543,17 @@ const make = Effect.gen(function* () {
       const record = keys.get(reference.toUpperCase()) ?? numbers.get(reference);
       if (record != null) records.set(record.recordId, record.key);
     }
-    if (records.size === 0) return undefined;
+    const firstKey = [...records.values()].sort()[0];
+    if (firstKey === undefined) return undefined;
+    const pending = new Set(records.keys());
     const holds = (yield* liveHolds(orgId, now)).filter(
       (hold) => hold.forPersonId === null && (hold.byKind === "person" || hold.onWordOf !== null),
     );
     if (holds.length > 0) {
       const scopes = yield* recordHoldScopes(orgId, [...records.values()]);
-      const held = scopes.find((row) => holds.some((hold) => holdCoversRecord(hold, row)));
-      if (held !== undefined) return records.get(held.recordId);
+      for (const row of scopes)
+        if (holds.some((hold) => holdCoversRecord(hold, row))) pending.delete(row.recordId);
+      if (pending.size === 0) return firstKey;
     }
 
     const { facts } = yield* KinPulse.read({
@@ -562,15 +565,15 @@ const make = Effect.gen(function* () {
     });
     for (const { subject, aside, handled } of facts) {
       if (subject.kind !== "record" || subject.recordId === undefined) continue;
-      const key = records.get(subject.recordId);
       if (
-        key !== undefined &&
-        (handled?.by._tag === "person" ||
-          (aside !== undefined &&
-            !aside.mine &&
-            (aside.by._tag === "person" || aside.onWordOf !== null)))
-      )
-        return key;
+        handled?.by._tag === "person" ||
+        (aside !== undefined &&
+          !aside.mine &&
+          (aside.by._tag === "person" || aside.onWordOf !== null))
+      ) {
+        pending.delete(subject.recordId);
+        if (pending.size === 0) return firstKey;
+      }
     }
     return undefined;
   });
