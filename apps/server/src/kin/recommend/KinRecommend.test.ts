@@ -464,6 +464,42 @@ it.effect(
     ),
 );
 
+it.effect("six tasks due today hold a suggestion; later or undated tasks do not", () =>
+  run(({ ctx }) =>
+    Effect.gen(function* () {
+      const { sql, orgId, owner } = ctx;
+      yield* techWaits(ctx);
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Asia/Kolkata' WHERE org_id = ${orgId}`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'work', 'Work', 'W', 1, 0)
+        ON CONFLICT DO NOTHING`;
+      const tomorrow = Date.parse("1970-01-03T18:30:00.000Z");
+      // Unconfirmed tasks stay in Needs you even when dated later or undated.
+      for (const n of [1, 2, 3, 4, 5, 6])
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, due_at, due_all_day, created_by_kind, created_by_id, origin_key,
+            created_at, updated_at, confirmed)
+          VALUES (${orgId}, ${`busy-task-${n}`}, 'work', ${`W-${n}`}, ${`Offsite task ${n}`},
+            'doing', 'person', ${owner.personId}, ${tomorrow - 1}, 1, 'person', ${owner.personId},
+            ${`busy-task-${n}`}, ${now}, ${now}, 0)`;
+      assert.deepStrictEqual(yield* tick(ctx), { _tag: "skipped", why: "busy" });
+
+      yield* sql`UPDATE kin_records
+        SET due_at = CASE WHEN key IN ('W-1', 'W-2', 'W-3') THEN ${tomorrow} ELSE NULL END,
+          due_all_day = 0
+        WHERE org_id = ${orgId} AND register_id = 'work'`;
+      const open = yield* KinOpen.compute({
+        orgId,
+        viewer: { personId: owner.personId, ownerLevel: true },
+        at: now,
+      });
+      assert.strictEqual(open.counts.needsYou, 6);
+      assert.include(yield* tick(ctx), { _tag: "posted" });
+    }),
+  ),
+);
+
 it.effect(
   "a name changed after the card was drawn: either answer changes nothing, says why and counts no Not now",
   () =>
