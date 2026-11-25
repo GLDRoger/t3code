@@ -41,11 +41,14 @@ import {
   DRAFT_CHASE,
   DRAFT_DEAL,
   DRAFT_DOCUMENT,
+  DRAFT_MEETING_OUTCOME,
   DRAFT_MEETING_PREP,
   docHeadStart,
   draftWakeGone,
   DRAFT_FROM_MAILBOX,
   draftWakeText,
+  PROPOSE_PLAN,
+  PROPOSE_STEP,
 } from "./draftWake.ts";
 import { buildPulseSection } from "./prompt.ts";
 import { screenFacts } from "./people.ts";
@@ -1330,6 +1333,283 @@ describe("KinPulse", () => {
     }).pipe(Effect.provide(chatLayer)),
   );
 
+  it.effect(
+    "a deal or prospect with no next step gets one suggested to whoever looks after it, and none for 14 days after Not this",
+    () =>
+      Effect.gen(function* () {
+        yield* salesDay;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-30'`;
+        yield* sql`UPDATE kin_people SET access = 'owner' WHERE person_id = ${owner}`;
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+          VALUES (${orgId}, 'deals', 'deals', 'DL', 1, 0)`;
+        yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${mate}
+          WHERE record_id = 'r-C-1'`;
+        const fresh = NOON_LA - 2 * DAY;
+        // Hers, moved two days ago; the Chief of staff's on her client, quiet for a month; the Chief
+        // of staff's on a client nobody looks after (the owner's); and her prospect.
+        yield* insert({
+          id: "DL-1",
+          list: "deals",
+          title: "Lumen pilot",
+          ownerKind: "person",
+          ownerId: mate,
+          partyId: "r-C-1",
+          createdAt: fresh,
+          fields: '{"stage":"proposal"}',
+        });
+        yield* insert({ id: "DL-2", list: "deals", title: "Lumen refit", partyId: "r-C-1" });
+        yield* insert({ id: "DL-3", list: "deals", partyId: "r-C-2", createdAt: fresh });
+        yield* insert({
+          id: "C-5",
+          list: "clients",
+          category: "prospect",
+          title: "Tidewater Freight",
+          ownerKind: "person",
+          ownerId: mate,
+          createdAt: fresh,
+        });
+        yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, body,
+            author_kind, author_id, request_hash, created_at)
+          VALUES (${orgId}, 'cm-1', 'r-DL-1', 1, 'Demo done; Ravi asked for the pilot proposal.',
+            'person', ${mate}, 'cm-1', ${fresh})`;
+        const step = (key: string, since: number) => `deal_no_next_step:${key}:${since}`;
+        const drafted = Effect.fn("test.drafted")(function* (at: number) {
+          yield* TestClock.setTime(at);
+          return (yield* KinPulse.tick(orgId, at)).drafted
+            .filter((one) => one.key.startsWith("deal_"))
+            .toSorted((a, b) => (a.key < b.key ? -1 : 1));
+        });
+        // A quiet deal keeps its drafted mail, which suggests a step itself.
+        assert.deepStrictEqual(yield* drafted(NOON_LA), [
+          { personId: mate, key: step("C-5", fresh) },
+          { personId: mate, key: step("DL-1", fresh) },
+          { personId: owner, key: step("DL-3", fresh) },
+          { personId: mate, key: `deal_quiet:DL-2:${B - 30 * DAY}` },
+        ]);
+        const events = yield* draftEvents;
+        const wakeOf = (key: string) => events.find((one) => one.factKeys[0] === key)!;
+        assert.strictEqual(wakeOf(step("DL-1", fresh)).agentId, growth);
+        const read = yield* draftWakeText(orgId, wakeOf(step("DL-1", fresh)));
+        assert.strictEqual(read?.text, PROPOSE_STEP("Meera", true));
+        assert.deepStrictEqual(read?.data, {
+          deal: "DL-1",
+          title: "Lumen pilot",
+          client: "Lumen",
+          stage: "Proposal",
+          lastContacts: [],
+          lastComment: "Demo done; Ravi asked for the pilot proposal.",
+        });
+        const prospect = yield* draftWakeText(orgId, wakeOf(step("C-5", fresh)));
+        assert.strictEqual(prospect?.text, PROPOSE_STEP("Meera", false));
+        assert.deepStrictEqual(prospect?.data, {
+          prospect: "C-5",
+          title: "Tidewater Freight",
+          lastContacts: [],
+        });
+        // Once a stretch with no step: the next passes and days add nothing.
+        assert.deepStrictEqual(yield* drafted(NOON_LA + HOUR), []);
+        assert.deepStrictEqual(yield* drafted(NOON_LA + DAY), []);
+        // Its suggested step is a step; Not this drops it, and a new stretch starts at once.
+        yield* insert({
+          id: "W-50",
+          ownerKind: "person",
+          ownerId: mate,
+          partyId: "r-C-1",
+          confirmed: 0,
+          createdAt: NOON_LA + DAY,
+        });
+        yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation,
+            created_at)
+          VALUES (${orgId}, 'r-W-50', 'record', 'r-DL-1', 'relates', ${NOON_LA + DAY})`;
+        yield* drafted(NOON_LA + DAY + HOUR);
+        const standing = sql<{ key: string }>`SELECT fact_key AS key FROM kin_pulse_facts
+          WHERE org_id = ${orgId} AND sense = 'deal_no_next_step'
+            AND subject_record_id = 'r-DL-1' AND cleared_at IS NULL ORDER BY fact_key`;
+        assert.deepStrictEqual(yield* standing, []);
+        const dropped = NOON_LA + 2 * DAY;
+        yield* sql`UPDATE kin_records SET state = 'dropped', closed_at = ${dropped},
+            updated_at = ${dropped}
+          WHERE record_id = 'r-W-50'`;
+        assert.deepStrictEqual(yield* drafted(dropped + MINUTE), []);
+        assert.deepStrictEqual(yield* standing, [{ key: step("DL-1", dropped) }]);
+        // Fourteen days it is left alone (a note keeps it from going quiet meanwhile).
+        yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, body,
+            author_kind, author_id, request_hash, created_at)
+          VALUES (${orgId}, 'cm-2', 'r-DL-1', 2, 'Ravi is back next week.', 'person', ${mate},
+            'cm-2', ${dropped + 10 * DAY})`;
+        assert.deepStrictEqual(yield* drafted(dropped + 13 * DAY), []);
+        assert.deepStrictEqual(yield* drafted(dropped + 14 * DAY + HOUR), [
+          { personId: mate, key: step("DL-1", dropped) },
+        ]);
+        // Deals off for the company: no step for a deal or a prospect.
+        yield* insert({
+          id: "DL-4",
+          list: "deals",
+          ownerKind: "person",
+          ownerId: mate,
+          partyId: "r-C-1",
+          createdAt: dropped + 20 * DAY,
+        });
+        yield* sql`INSERT INTO kin_company_shell VALUES (${orgId}, '[{"id":"deals","on":false}]',
+            1, ${owner}, 0)`;
+        assert.deepStrictEqual(yield* drafted(dropped + 22 * DAY), []);
+      }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect(
+    "a project with no plan gets its owner a suggested breakdown once, and none for 14 days after one is dropped",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_people SET access = 'owner' WHERE person_id = ${owner}`;
+        // P-2 is Finance's, with notes and a linked doc; P-1 is a retainer.
+        yield* sql`UPDATE kin_records SET owner_id = ${finance},
+            notes = 'Dashboard for the depots: login, live map, weekly export.',
+            fields_json = ${JSON.stringify({ billing: "fixed", members: [`person:${mate}`] })}
+          WHERE record_id = 'r-P-2'`;
+        yield* insert({ id: "D-9", list: "docs", title: "Dashboard brief" });
+        yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation,
+            created_at)
+          VALUES (${orgId}, 'r-D-9', 'record', 'r-P-2', 'relates', 0)`;
+        const key = "project_no_plan:P-2";
+        const at = B + 3 * DAY + 12 * HOUR;
+        const drafted = Effect.fn("test.drafted")(function* (when: number) {
+          yield* TestClock.setTime(when);
+          return (yield* KinPulse.tick(orgId, when)).drafted.filter((one) =>
+            one.key.startsWith("project_no_plan:"),
+          );
+        });
+        assert.deepStrictEqual(yield* drafted(at), [{ personId: owner, key }]);
+        const [made] = (yield* draftEvents).filter((one) => one.factKeys[0] === key);
+        assert.strictEqual(made?.agentId, finance);
+        const read = yield* draftWakeText(orgId, made!);
+        assert.strictEqual(read?.text, PROPOSE_PLAN("Arjun"));
+        assert.deepStrictEqual(read?.data, {
+          project: "P-2",
+          title: "Invented P-2",
+          notes: "Dashboard for the depots: login, live map, weekly export.",
+          docs: [{ key: "D-9", title: "Dashboard brief" }],
+          members: ["fin", "Meera"],
+        });
+        // Its turn files no doc: it makes tasks.
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+            started_at, status, event_ids)
+          VALUES ('w-plan', ${orgId}, ${finance}, 't-plan', 'test', 0, 'running', '[]')`;
+        yield* sql`UPDATE kin_events SET wakeup_id = 'w-plan' WHERE event_id = ${made!.eventId}`;
+        assert.isUndefined(yield* docHeadStart(orgId, finance, "w-plan"));
+        assert.deepStrictEqual(yield* drafted(at + DAY), []);
+        // Its suggested tasks are a plan; dropping the last brings the fact back, and 14 days
+        // pass before another breakdown.
+        yield* insert({ id: "W-60", projectId: "P-2", confirmed: 0, createdAt: at + DAY });
+        yield* drafted(at + DAY + HOUR);
+        const dropped = at + 2 * DAY;
+        yield* sql`UPDATE kin_records SET state = 'dropped', closed_at = ${dropped}
+          WHERE record_id = 'r-W-60'`;
+        assert.deepStrictEqual(yield* drafted(dropped + MINUTE), []);
+        assert.deepStrictEqual(yield* drafted(dropped + 13 * DAY), []);
+        assert.deepStrictEqual(yield* drafted(dropped + 14 * DAY + HOUR), [
+          { personId: owner, key },
+        ]);
+      }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect(
+    "a client meeting that passed asks its holder once how it went, while no question or card stands for it",
+    () =>
+      Effect.gen(function* () {
+        yield* salesDay;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-30'`;
+        yield* sql`UPDATE kin_people SET access = 'owner' WHERE person_id = ${owner}`;
+        const held = NOON_LA - 20 * HOUR;
+        const meeting = (id: string, kind: string, by: string, partyId?: string) =>
+          insert({
+            id,
+            title: "Pilot review with Lumen",
+            category: "meeting",
+            ownerKind: kind,
+            ownerId: by,
+            dateAt: held,
+            ...(partyId === undefined ? {} : { partyId }),
+            fields: JSON.stringify({ attendees: [`person:${mate}`, `person:${owner}`] }),
+          });
+        // Hers with Lumen; his, which she was in; hers with no client; the Chief of staff's.
+        yield* meeting("W-40", "person", mate, "r-C-1");
+        yield* meeting("W-41", "person", owner, "r-C-1");
+        yield* meeting("W-42", "person", mate);
+        yield* meeting("W-43", "agent", chief, "r-C-1");
+        const passed = (id: string) => `meeting_passed:${id}:at=${held}`;
+        const drafted = Effect.fn("test.drafted")(function* (at: number) {
+          yield* TestClock.setTime(at);
+          return (yield* KinPulse.tick(orgId, at)).drafted.filter((one) =>
+            one.key.startsWith("meeting_passed:"),
+          );
+        });
+        // Each holder alone, whoever else was in it.
+        assert.sameDeepMembers(yield* drafted(NOON_LA), [
+          { personId: mate, key: passed("W-40") },
+          { personId: owner, key: passed("W-41") },
+        ]);
+        const made = (yield* draftEvents).find((one) => one.factKeys[0] === passed("W-40"))!;
+        assert.strictEqual(made.agentId, growth);
+        const read = yield* draftWakeText(orgId, made);
+        // No mailbox of hers: call notes for the follow-up.
+        assert.strictEqual(
+          read?.text,
+          DRAFT_MEETING_OUTCOME(
+            "Meera",
+            { key: "W-40", title: "Pilot review with Lumen" },
+            undefined,
+          ),
+        );
+        assert.deepStrictEqual(read?.data, {
+          meeting: "W-40",
+          title: "Pilot review with Lumen",
+          at: "Tue 3 Nov, 16:00",
+          attendees: ["Meera", "Arjun"],
+          client: "Lumen",
+          writeTo: { name: "Ravi Menon", email: "ravi@lumen.example" },
+          mailbox: "none connected",
+        });
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+            url_host, auth, reach, state, account_label, created_at, updated_at, person_id)
+          VALUES (${orgId}, 'conn-mate', 'google', 'meera@invented.example', 'builtin',
+            'gmail.googleapis.com', 'oauth', 'closed', 'active', 'meera@invented.example', 0, 0,
+            ${mate})`;
+        assert.strictEqual(
+          (yield* draftWakeText(orgId, made))?.text,
+          DRAFT_MEETING_OUTCOME(
+            "Meera",
+            { key: "W-40", title: "Pilot review with Lumen" },
+            { to: "Ravi Menon", from: ["meera@invented.example"] },
+          ),
+        );
+        // An open question about it, or a mail card on it, stands for it as the turn starts.
+        yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id,
+            kind, question, safe, about, asked_at, due_at, act_at, state)
+          VALUES ('q-1', ${orgId}, ${growth}, ${mate}, 'c', 'choice', 'How did it go?', 0, 'W-40',
+            0, 0, 0, 'open')`;
+        assert.isUndefined(yield* draftWakeText(orgId, made));
+        yield* sql`UPDATE kin_questions SET state = 'answered'`;
+        yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+            pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at)
+          VALUES (${orgId}, 'ask-1', 'conn-mate', 'mail_send', 'p', '{}', ${growth}, 'w', 'c',
+            'r-W-40', 0)`;
+        assert.isUndefined(yield* draftWakeText(orgId, made));
+        yield* sql`DELETE FROM kin_connection_asks`;
+        assert.isDefined(yield* draftWakeText(orgId, made));
+        // Asked once: later passes and days add nothing, nor does its wake a day late.
+        assert.deepStrictEqual(yield* drafted(NOON_LA + HOUR), []);
+        assert.deepStrictEqual(yield* drafted(NOON_LA + DAY), []);
+        assert.isUndefined(yield* draftWakeText(orgId, made));
+        // Its outcome noted: nothing more.
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-40'`;
+        assert.deepStrictEqual(yield* drafted(NOON_LA + DAY + HOUR), []);
+      }).pipe(Effect.provide(chatLayer)),
+  );
+
   it.effect("a wake checks again as it starts: holder, quiet hours, cards, a private client", () =>
     Effect.gen(function* () {
       yield* salesDay;
@@ -1407,8 +1687,9 @@ describe("KinPulse", () => {
       });
       yield* TestClock.setTime(NOON_LA);
       const ticked = yield* KinPulse.tick(orgId, NOON_LA);
+      // The seed's unplanned P-2 is his too; this is about tasks.
       assert.deepStrictEqual(
-        ticked.drafted.map((one) => one.personId),
+        ticked.drafted.filter((one) => one.key.startsWith("task_")).map((one) => one.personId),
         [owner],
       );
     }).pipe(Effect.provide(chatLayer)),
