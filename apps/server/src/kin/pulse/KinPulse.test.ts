@@ -363,7 +363,7 @@ const keyed = (facts: ReadonlyArray<KinPulseFact>, sense: string, subject: strin
   facts.filter((fact) => fact.sense === sense && fact.subject.key === subject);
 
 // One row per sense: the subject it is about and the instant it becomes true.
-const SENSES: ReadonlyArray<readonly [string, string, number, string?]> = [
+const SENSES: ReadonlyArray<readonly [string, string, number, string?, string?]> = [
   ["task_late", "W-1", B + 10 * DAY],
   ["task_due_soon", "W-2", B + 20 * DAY - 24 * HOUR],
   ["task_stalled", "W-3", B + 3 * DAY],
@@ -397,7 +397,13 @@ const SENSES: ReadonlyArray<readonly [string, string, number, string?]> = [
   ["meeting_passed", "W-14", B + 5 * DAY + 2 * HOUR],
   // C-2's silence counts from P-4, the project we finished for them, not from its creation.
   ["client_cold", "C-2", B + 40 * DAY],
-  ["bill_due", "EXP-90", B + 26 * DAY, "bill_due:EXP-90:soon=2026-11-30"],
+  [
+    "bill_due",
+    "EXP-90",
+    B + 26 * DAY,
+    "bill_due:EXP-90:soon=2026-11-30",
+    "₹450 to Acme Hosting, due today.",
+  ],
   ["bill_due", "EXP-90", B + 30 * DAY, "bill_due:EXP-90:due=2026-11-30"],
   ["bill_paid_seen", "BNK-90", B + 26 * DAY],
 ];
@@ -464,11 +470,13 @@ describe("KinPulse", () => {
         amount: 450_00,
         fields: '{"direction":"debit"}',
       });
-      for (const [sense, subject, at, key] of SENSES) {
+      for (const [sense, subject, at, key, onDueDay] of SENSES) {
         const matching = (facts: ReadonlyArray<KinPulseFact>) =>
           keyed(facts, sense, subject).filter((fact) => key === undefined || key === fact.key);
         assert.lengthOf(matching((yield* read(at - MINUTE)).facts), 0, `${sense} early`);
         assert.lengthOf(matching((yield* read(at)).facts), 1, `${sense} at its line`);
+        if (onDueDay !== undefined)
+          assert.strictEqual(matching((yield* read(at + 3 * DAY)).facts)[0]?.consequence, onDueDay);
       }
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,

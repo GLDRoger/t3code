@@ -94,7 +94,7 @@ const matchAll = Effect.fn("KinDebitBill.matchAll")(function* (
       ORDER BY c.record_id`).map((one) => one.recordId),
   );
   // openEntries excludes agent-written debits and carries no foreign amount.
-  return debits.flatMap((debit) => {
+  const matches = debits.flatMap((debit) => {
     if (debit.date > today || setBack.has(debit.recordId)) return [];
     const possible = byAmount.get(amountKey(debit.currency, debit.amountMinor)) ?? [];
     const ranked = possible
@@ -106,6 +106,8 @@ const matchAll = Effect.fn("KinDebitBill.matchAll")(function* (
     const first = levelWithBest(ranked, (one) => one.score);
     return first.length === 1 ? [{ debit, bill: first[0]!.bill }] : [];
   });
+  const byBill = Map.groupBy(matches, ({ bill }) => bill.recordId);
+  return matches.filter(({ bill }) => byBill.get(bill.recordId)?.length === 1);
 });
 
 export const billMatches = Effect.fn("KinDebitBill.matches")(function* (
@@ -121,13 +123,6 @@ export const billMatch = Effect.fn("KinDebitBill.match")(function* (
   orgId: KinOrgId,
   bankRecordId: string,
 ) {
-  const def = yield* findBankList(orgId);
-  if (def === undefined) return undefined;
-  const [match] = yield* matchAll(
-    orgId,
-    def,
-    yield* openEntries(orgId, def, "debit", { recordId: bankRecordId }),
-    yield* Clock.currentTimeMillis,
-  );
-  return match;
+  const matches = yield* billMatches(orgId, yield* Clock.currentTimeMillis);
+  return matches.find(({ debit }) => debit.recordId === bankRecordId);
 });

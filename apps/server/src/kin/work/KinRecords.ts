@@ -2712,15 +2712,17 @@ const make = Effect.gen(function* () {
                 : row.state
             : undefined;
         const wanted = patch.state ?? settled ?? row.state;
-        if (
-          writer.actor._tag === "agent" &&
-          list === "expenses" &&
-          row.state === "open" &&
-          wanted === "done"
-        )
-          return yield* invalid(
-            `Only the owner or a co-owner marks a bill paid, by a tap. Nothing changed. If a bank debit paid it, offer kin_ask with action mark_bill_paid on that debit's key; else tell them it is marked paid on ${row.key}'s page in Money.`,
-          );
+        const agentExpense = writer.actor._tag === "agent" && list === "expenses";
+        if (agentExpense && row.state !== wanted) {
+          if (wanted === "done")
+            return yield* invalid(
+              `Only the owner or a co-owner marks a bill paid, by a tap. Nothing changed. If a bank debit paid it, offer kin_ask with action mark_bill_paid on that debit's key; else say the owner or a co-owner marks it paid on ${row.key}'s page in Money.`,
+            );
+          if (wanted === "open" && !isSuggestion(row))
+            return yield* invalid(
+              `Only the owner or a co-owner puts a bill back to pay, on ${row.key}'s page in Money. Nothing changed.`,
+            );
+        }
         // A turn no person started settles nothing paid over time, and voids or reopens no
         // numbered entry, by its state: the other ways to a payment or a void (`refuseKinOwn`).
         const settles = wanted === "done" && row.takesPayments === 1;
@@ -2768,7 +2770,7 @@ const make = Effect.gen(function* () {
         const keeping =
           patch.confirmed === true &&
           isSuggestion(row) &&
-          !(writer.actor._tag === "agent" && list === "expenses" && wanted === "open") &&
+          (!agentExpense || state === "dropped") &&
           (yield* mayKeep(orgId, writer));
         const unkeeping =
           patch.confirmed === false &&

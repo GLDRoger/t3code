@@ -97,7 +97,7 @@ export const billDueConsequence = (
   days: number,
   late: boolean,
 ) =>
-  `${amount} to ${vendor}, ${late ? `was due ${day}, ${daysText(days)} ago` : `due ${day}, in ${daysText(days)}`}.`;
+  `${amount} to ${vendor}, ${late ? `was due ${day}, ${daysText(days)} ago` : days === 0 ? "due today" : `due ${day}, in ${daysText(days)}`}.`;
 
 export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: SenseContext) {
   const sql = yield* SqlClient.SqlClient;

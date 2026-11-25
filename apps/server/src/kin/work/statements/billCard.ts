@@ -70,11 +70,20 @@ export const recordBill = Effect.fn("KinBillCard.record")(function* (
     row.rev !== plan.rev ||
     row.confirmed !== 0 ||
     row.state !== "open"
-  )
-    return {
-      title: "Not recorded",
-      text: `${plan.key} changed since this card was made, so nothing was recorded. It is in Money's suggestions.`,
-    } satisfies KinChoiceOutcome;
+  ) {
+    const changed = `${plan.key} changed since this card was made, so nothing was recorded.`;
+    const text =
+      row === undefined || row.recordId !== plan.recordId
+        ? `${plan.key} isn't there any more, so nothing was recorded.`
+        : row.state === "dropped"
+          ? `${plan.key} is void, so nothing was recorded.`
+          : row.confirmed !== 0
+            ? `${plan.key} is already recorded.`
+            : row.state === "open"
+              ? `${changed} It is in Money's suggestions.`
+              : changed;
+    return { title: "Not recorded", text } satisfies KinChoiceOutcome;
+  }
   yield* records.update(orgId, writer, plan.key, { confirmed: true }, plan.rev);
   return {
     title: "Recorded",

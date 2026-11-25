@@ -700,9 +700,16 @@ export function KinMoneyArea(props: Shared) {
     ),
     toPay:
       view.toPay === null || view.dueSoon === null ? null : (
-        <View className="flex-row gap-4 px-2">
-          <Figure figure={view.toPay} onOpen={openList} estimates={estimates} />
-          <Figure figure={view.dueSoon} onOpen={openList} estimates={estimates} />
+        <View className="gap-4">
+          <View className="flex-row gap-4 px-2">
+            <Figure figure={view.toPay} onOpen={openList} estimates={estimates} />
+            <Figure figure={view.dueSoon} onOpen={openList} estimates={estimates} />
+          </View>
+          {!invoicesOn && missing.length > 0 ? (
+            <View className="px-2">
+              <KinSetRateLink {...target} currencies={missing} />
+            </View>
+          ) : null}
         </View>
       ),
     month: (

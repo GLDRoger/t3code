@@ -80,6 +80,7 @@ import { plansOf, takesAsDefault } from "./cardPlans.ts";
 import { FEWER_THAN_TWO, NOTHING_TIMED } from "./choiceCard.ts";
 import { dayIn } from "../work/money.ts";
 import { ensureBankList } from "../work/statements/bankList.ts";
+import { drawBill, recordBill } from "../work/statements/billCard.ts";
 import { parseFields } from "../work/lists.ts";
 import { buildReview } from "../work/statements/statementReview.ts";
 
@@ -447,7 +448,15 @@ it.effect("a tap on an action option runs it once, as the server wrote it", () =
       const checked = yield* kin.records.update(orgId, ownerWrites, debit.key, {
         notes: "Checked against the bank.",
       });
+      const factKey = `bill_paid_seen:${debit.key}`;
+      yield* kin.sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id, sig, told_at)
+        VALUES (${orgId}, ${owner.personId}, ${factKey}, 'bill-check-in', '', ${MON})`;
       yield* kin.tap(owner, offerPaid.value.widgetId, "option-1", "stale-debit");
+      assert.deepStrictEqual(
+        yield* kin.sql`SELECT fact_key FROM kin_pulse_told WHERE org_id = ${orgId}
+          AND fact_key = ${factKey} ORDER BY person_id, event_id`,
+        [],
+      );
       assert.include(yield* kin.records.get(orgId, bill.key), {
         state: "open",
         rev: edited.rev + 1,
@@ -498,6 +507,51 @@ it.effect("a tap on an action option runs it once, as the server wrote it", () =
       });
       const reopened = yield* askBill("mark_bill_paid", debit.key);
       assert.isFalse(reopened.ok, JSON.stringify(reopened.value));
+      const original = (yield* plansOf(orgId, String(offered.value.widgetId))).get("option-1");
+      if (original?.kind !== "record_bill") return yield* Effect.die("Expected a record_bill plan");
+      const staleOutcomes = [];
+      for (const changed of ["kept", "void", "gone"] as const) {
+        const { row: otherBill } = yield* kin.records.create(orgId, ownerWrites, {
+          list: "expenses",
+          title: `Acme Hosting ${changed}`,
+          state: "open",
+          owner: { _tag: "person", personId: owner.personId },
+          amount: { minor: 450_00, currency: "INR" },
+          originKey: `hosting-${changed}`,
+          confirmed: false,
+        });
+        const stale = yield* drawBill(orgId, otherBill.key, original.draw);
+        if (changed === "gone") {
+          yield* kin.sql`DELETE FROM kin_record_changes WHERE org_id = ${orgId}
+            AND record_id = ${otherBill.recordId}`;
+          yield* kin.sql`DELETE FROM kin_records WHERE org_id = ${orgId}
+            AND record_id = ${otherBill.recordId}`;
+        } else {
+          yield* kin.records.update(
+            orgId,
+            ownerWrites,
+            otherBill.key,
+            changed === "kept" ? { confirmed: true } : { state: "dropped" },
+          );
+        }
+        staleOutcomes.push({
+          changed,
+          outcome: yield* recordBill(orgId, stale, ownerWrites, kin.records),
+          expected: {
+            title: "Not recorded",
+            text:
+              changed === "kept"
+                ? `${otherBill.key} is already recorded.`
+                : changed === "void"
+                  ? `${otherBill.key} is void, so nothing was recorded.`
+                  : `${otherBill.key} isn't there any more, so nothing was recorded.`,
+          },
+        });
+      }
+      assert.deepStrictEqual(
+        staleOutcomes.map(({ changed, outcome }) => ({ changed, outcome })),
+        staleOutcomes.map(({ changed, expected }) => ({ changed, outcome: expected })),
+      );
       const row = yield* kin.task("Set up the appointments API");
       yield* kin.turn("finance", kin.chatOf("finance"), "Where is the API work?");
       const asked = yield* callAs("finance", "kin_ask", {

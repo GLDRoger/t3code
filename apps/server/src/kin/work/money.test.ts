@@ -1410,7 +1410,7 @@ describe("lists through the tools", () => {
         if (first === "invoice")
           assert.strictEqual(
             one.records[1]!.bill,
-            `${entry.key} keeps the receipt and stays To pay: only the owner or a co-owner marks it paid. Tell them, or offer mark_bill_paid if a bank debit paid it.`,
+            `${entry.key} keeps the receipt and stays To pay: only the owner or a co-owner marks it paid. Say so, or offer mark_bill_paid if a bank debit paid it.`,
           );
         assert.include(entry.fieldsJson, '"card"');
         assert.sameMembers((yield* files(entry.key))!, names);
@@ -3319,6 +3319,7 @@ describe("the owner's taps", () => {
         minor: number,
         due: string,
         kept: boolean,
+        fields = {},
       ) =>
         records.create(
           orgId,
@@ -3332,10 +3333,27 @@ describe("the owner's taps", () => {
             dateAt: Date.parse(`${due}T12:00:00Z`),
             originKey: title,
             confirmed: kept,
+            fields,
           },
         );
       assert.notProperty(yield* moneySummary(orgId, NOW, KIN_OWNER_LEVEL), "toPay");
-      yield* bill("Acme Hosting", "open", "USD", 450_00, "2026-11-14", true);
+      const sql = yield* SqlClient.SqlClient;
+      const teammate = KinPersonId.make("zoya");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access,
+        sees_money) VALUES (${teammate}, ${orgId}, 'zoya', 'Zoya', ${at}, 'member', 1),
+        ('meera', ${orgId}, 'meera', 'Meera', ${at}, 'owner', 1)`;
+      const { row: shared } = yield* bill(
+        "Acme Hosting",
+        "open",
+        "USD",
+        450_00,
+        "2026-11-14",
+        true,
+      );
+      yield* records.update(orgId, { actor: people[0]!, via: "owner" }, shared.key, { team: true });
+      yield* bill("Invented partner-funded bill", "open", "INR", 600_00, "2026-11-14", true, {
+        fundedBy: "person:meera",
+      });
       yield* bill("Invented late bill", "open", "INR", 250_00, "2026-11-11", true);
       yield* bill("Invented future bill", "open", "USD", 200_00, "2026-11-19", true);
       yield* bill("Invented suggested bill", "open", "INR", 750_00, "2026-11-14", false);
@@ -3347,6 +3365,14 @@ describe("the owner's taps", () => {
         bills: 3,
         dueSoonBills: 2,
         lateBills: 1,
+      });
+      const scoped = yield* moneySummary(orgId, NOW, viewerOfPeople([teammate]));
+      assert.deepStrictEqual(scoped.toPay, {
+        total: [{ currency: "USD", minor: 450_00 }],
+        dueSoon: [{ currency: "USD", minor: 450_00 }],
+        bills: 1,
+        dueSoonBills: 1,
+        lateBills: 0,
       });
     }).pipe(Effect.provide(layer)),
   );

@@ -24,7 +24,7 @@ import { KinLevelGate } from "../../lead/LevelGate.ts";
 import * as KinPersistence from "../../persistence/KinPersistence.ts";
 import * as KinRecords from "../KinRecords.ts";
 import { ensureBankList } from "./bankList.ts";
-import { billMatches } from "./debitBill.ts";
+import { billMatch, billMatches } from "./debitBill.ts";
 
 const orgId = KinOrgId.make("ambermill-vendor-bills");
 const rhea = KinPersonId.make("ambermill-rhea");
@@ -86,6 +86,16 @@ it.layer(layer)((it) => {
       assert.deepStrictEqual(yield* pairs, [["BNK-4", "EXP-7"]]);
       yield* row("EXP-8", "expenses", '{"vendor":"Acme Hosting"}');
       assert.deepStrictEqual(yield* pairs, []);
+      yield* sql`UPDATE kin_records SET state = 'dropped' WHERE org_id = ${orgId} AND record_id = 'EXP-8'`;
+      yield* row("BNK-6", bank.id, '{"direction":"debit"}');
+      assert.deepStrictEqual(
+        [
+          yield* pairs,
+          (yield* billMatch(orgId, "BNK-4"))?.bill.key,
+          (yield* billMatch(orgId, "BNK-6"))?.bill.key,
+        ],
+        [[], undefined, undefined],
+      );
     }),
   );
 });

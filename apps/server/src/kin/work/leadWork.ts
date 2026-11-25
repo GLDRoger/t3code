@@ -3131,7 +3131,7 @@ const createRow = Effect.fnUntraced(function* (
       ? {}
       : pair?.receipt === true
         ? {
-            bill: `${stored.key} keeps the receipt and stays To pay: only the owner or a co-owner marks it paid. Tell them, or offer mark_bill_paid if a bank debit paid it.`,
+            bill: `${stored.key} keeps the receipt and stays To pay: only the owner or a co-owner marks it paid. Say so, or offer mark_bill_paid if a bank debit paid it.`,
           }
         : isSuggestion(stored) && stored.amountMinor !== null
           ? {

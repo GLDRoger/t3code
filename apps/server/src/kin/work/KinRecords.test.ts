@@ -709,9 +709,70 @@ it.effect("record_update changes only named fields, logs each change, and both o
       assert.include(paid.failure, {
         reason: "invalid_state",
         message:
-          "Only the owner or a co-owner marks a bill paid, by a tap. Nothing changed. If a bank debit paid it, offer kin_ask with action mark_bill_paid on that debit's key; else tell them it is marked paid on EXP-1's page in Money.",
+          "Only the owner or a co-owner marks a bill paid, by a tap. Nothing changed. If a bank debit paid it, offer kin_ask with action mark_bill_paid on that debit's key; else say the owner or a co-owner marks it paid on EXP-1's page in Money.",
       });
     assert.deepStrictEqual(yield* records.get(orgId, bill.key), unchanged);
+    const createExpense = (title: string, state: "open" | "done") =>
+      LeadWork.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        records: [{ list: "expenses", title, state, amount: "4500" }],
+      }).pipe(Effect.map(({ records }) => records[0]!.key));
+    const suggestedVoid = yield* createExpense("Invented suggested void", "open");
+    const createdPaid = yield* createExpense("Invented paid receipt", "done");
+    const keptVoid = yield* createExpense("Invented kept void", "open");
+    for (const [key, confirmed] of [
+      [bill.key, false],
+      [suggestedVoid, false],
+      [keptVoid, true],
+    ] as const) {
+      yield* LeadWork.update(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        key,
+        state: "dropped",
+        ...(confirmed ? { confirmed } : {}),
+      });
+    }
+    const transitions = [
+      [bill.key, { state: "done" }, { state: "dropped", confirmed: 1 }],
+      [suggestedVoid, { state: "done", confirmed: true }, { state: "dropped", confirmed: 0 }],
+      [createdPaid, { state: "open" }, { state: "done", confirmed: 1 }],
+      [keptVoid, { state: "open" }, { state: "dropped", confirmed: 1 }],
+    ] as const;
+    const outcomes = [];
+    for (const [key, patch, before] of transitions) {
+      const row = yield* records.get(orgId, key);
+      assert.include(row, before);
+      const result = yield* Effect.result(
+        LeadWork.update(scopeOf(lead), { sourceEventId: "ask-event", key, ...patch }),
+      );
+      outcomes.push({
+        key,
+        reason:
+          result._tag === "Success"
+            ? "accepted"
+            : "reason" in result.failure
+              ? result.failure.reason
+              : result.failure._tag,
+        message: result._tag === "Failure" ? result.failure.message : undefined,
+        unchanged: (yield* records.get(orgId, key))?.rev === row?.rev,
+      });
+    }
+    assert.deepStrictEqual(
+      outcomes,
+      transitions.map(([key, patch]) => ({
+        key,
+        reason: "invalid_state",
+        message:
+          patch.state === "done"
+            ? `Only the owner or a co-owner marks a bill paid, by a tap. Nothing changed. If a bank debit paid it, offer kin_ask with action mark_bill_paid on that debit's key; else say the owner or a co-owner marks it paid on ${key}'s page in Money.`
+            : `Only the owner or a co-owner puts a bill back to pay, on ${key}'s page in Money. Nothing changed.`,
+        unchanged: true,
+      })),
+    );
+    for (const [key, patch] of transitions) {
+      const updated = yield* records.update(orgId, { actor: owner, via: "owner" }, key, patch);
+      assert.include(updated, { state: patch.state, confirmed: 1 });
+    }
     const moved = yield* LeadWork.update(scopeOf(lead), {
       key: "W-2",
       sourceEventId: "ask-event",
