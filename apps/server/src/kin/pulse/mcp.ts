@@ -28,6 +28,7 @@ import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { mailboxPerson } from "../connections/turnMailbox.ts";
 import { KinServer } from "../KinServer.ts";
 import { agentServices } from "../mcp/KinChatToolkit.ts";
 import { isHeld } from "../lead/LevelGate.ts";
@@ -131,7 +132,11 @@ const viewerOf = Effect.fn("KinPulseTools.viewer")(function* (lead: Lead) {
   const behind = yield* turnPeople(lead);
   if (behind === undefined || behind.people.length === 0)
     return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
-  return { _tag: "people", people: behind.people } as const;
+  return {
+    _tag: "people",
+    people: behind.people,
+    excludeOwnMail: behind.people.length !== 1 || (yield* mailboxPerson(lead)) !== behind.people[0],
+  } as const;
 });
 
 const WAITS_KIND: Record<string, string> = {
