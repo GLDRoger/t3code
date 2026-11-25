@@ -42,7 +42,6 @@ import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { liveHolds } from "../pulse/holds.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
-import { looksLikeRecordReference } from "../shell/sections.ts";
 import { pauseTriggers } from "./KinTriggerStore.ts";
 import { readGithubLinks } from "./deferralGithub.ts";
 import {
@@ -59,6 +58,7 @@ import {
   HEADS_UP_MS,
   LATE_NOTE_MS,
   KinDeferralStopSwitch,
+  deferralRecordReferences,
   deferralTriggerId,
   deferralWidgetId,
   lateNote,
@@ -525,12 +525,10 @@ const make = Effect.gen(function* () {
     now: number,
   ) {
     if (item?.trust !== "agent") return undefined;
-    const references = item.links
-      .map((link) => link.trim())
-      .filter((link) => looksLikeRecordReference(link, true));
-    if (references.length === 0) return undefined;
+    const references = deferralRecordReferences(item.title, item.links);
+    if (references.size === 0) return undefined;
     const rows = yield* sql<{ recordId: string; key: string; number: string | null }>`
-      WITH wanted AS (SELECT value FROM json_each(${yield* encodeReferences(references)}))
+      WITH wanted AS (SELECT value FROM json_each(${yield* encodeReferences([...references])}))
       SELECT record_id AS "recordId", key, json_extract(fields_json, '$.number') AS number
       FROM kin_records WHERE org_id = ${orgId}
         AND (key IN (SELECT upper(value) FROM wanted)

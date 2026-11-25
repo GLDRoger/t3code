@@ -1300,6 +1300,59 @@ it.effect("a record a person set aside skips an agent's own start at heads-up", 
   }).pipe(openGates(new Map()), Effect.provide(layerFor([start])));
 });
 
+it.effect("an agent's own follow-up naming a held record in its title is skipped", () => {
+  const title = "Follow up on INV-12 with Tidewater Freight";
+  const held = makeDeferral("def-title-held", {
+    title,
+    what: title,
+    on_due: "remind",
+    trust: "agent",
+    links: [],
+  });
+  const lifted = makeDeferral("def-title-lifted", {
+    title,
+    what: title,
+    on_due: "remind",
+    trust: "agent",
+    links: [],
+    due: "2026-11-13T09:01+05:30",
+  });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* seedInvoice();
+    const sql = yield* SqlClient.SqlClient;
+    const service = yield* TriggerService.KinTriggerService;
+    const at = yield* Clock.currentTimeMillis;
+    const viewer = { _tag: "owner" } as const;
+    const by = { _tag: "person", personId: KinPersonId.make("owner-a") } as const;
+    const fact = (yield* KinPulse.read({ orgId, at, viewer })).facts.find(
+      (fact) => fact.sense === "invoice_overdue" && fact.subject.key === "INV-12",
+    );
+    assert.isDefined(fact);
+    const handling = { orgId, viewer, by, factKey: fact!.key };
+    yield* KinPulse.handle({
+      ...handling,
+      at,
+      action: "got_it",
+      until: dueAt + 24 * 60 * 60_000,
+    });
+    yield* service.syncItem(held);
+    yield* tick(dueAt);
+    assert.equal((yield* runOf(held.id))?.state, "undone");
+    const [skipped] = yield* sql<{ record: string }>`SELECT
+      json_extract(snapshot_json, '$.skipped.record') AS record
+      FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = ${held.id}`;
+    assert.equal(skipped?.record, "INV-12");
+    assert.isEmpty(yield* handedReminders());
+
+    yield* KinPulse.handle({ ...handling, at: dueAt, action: "undo" });
+    yield* service.syncItem(lifted);
+    yield* tick(dueAt + 60_000);
+    assert.equal((yield* runOf(lifted.id))?.state, "reminded");
+    assert.deepStrictEqual(yield* handedReminders(), [{ itemId: lifted.id, lateByMs: 0 }]);
+  }).pipe(Effect.provide(layerFor([held, lifted])));
+});
+
 it.effect("remind, ask and chase act at due, noting lateness", () => {
   const remind = makeDeferral("def-r", { on_due: "remind" });
   const ask = makeDeferral("def-a", { on_due: "ask" });

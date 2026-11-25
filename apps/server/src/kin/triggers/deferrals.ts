@@ -377,19 +377,23 @@ export const hex = (value: string) =>
     "",
   );
 
+export function deferralRecordReferences(title: string, links: ReadonlyArray<string> = []) {
+  const mentioned =
+    title.match(
+      /(?<![\w/-])(?:[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}|[A-Z0-9-]+(?:\/[A-Z0-9-]+)+)(?![\w/-])/gi,
+    ) ?? [];
+  return new Set([
+    ...links.map((value) => value.trim()).filter((value) => looksLikeRecordReference(value, true)),
+    ...mentioned.filter((value) => looksLikeRecordReference(value)),
+  ]);
+}
+
 export const deferredSectionOff = Effect.fn("Deferrals.sectionOff")(function* (
   orgId: KinOrgId,
   title: string,
   links: ReadonlyArray<string> = [],
 ) {
-  const mentioned =
-    title.match(
-      /(?<![\w/-])(?:[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}|[A-Z0-9-]+(?:\/[A-Z0-9-]+)+)(?![\w/-])/gi,
-    ) ?? [];
-  const references = new Set([
-    ...links.map((value) => value.trim()).filter((value) => looksLikeRecordReference(value, true)),
-    ...mentioned.filter((value) => looksLikeRecordReference(value)),
-  ]);
+  const references = deferralRecordReferences(title, links);
   if (references.size === 0) return false;
   const shell = yield* KinShell.get(orgId);
   if (KinShell.builtInsOn(shell)) return false;
