@@ -27,6 +27,10 @@ export interface FakeRepo {
   collaborators?: string[];
   /** Each login's role here as GitHub's permission read says it; unlisted, see `permissionOf`. */
   roles?: Record<string, "admin" | "maintain" | "write" | "triage" | "read" | "none">;
+  /** Its files by ref (a branch, tag or commit), then path; the default branch's under its name. */
+  files?: Record<string, Record<string, string>>;
+  /** GitHub's code search hasn't indexed it: a search finds nothing. */
+  unindexed?: boolean;
 }
 export interface FakeRuleset {
   id: number;
@@ -167,7 +171,7 @@ export interface FakeWorld {
    * GitHub's rate limit: from the issue read after `reads` more, every call is refused (429),
    * saying to wait `retryAfter` seconds.
    */
-  limit?: { reads: number; retryAfter: number; hit?: boolean };
+  limit?: { reads: number; retryAfter: number; hit?: boolean; status?: 403 | 429; reset?: number };
   /** The seconds GitHub asks between looks; real GitHub says 60. */
   pollInterval?: number;
   repos: FakeRepo[];
@@ -695,6 +699,117 @@ export class FakeGitHub {
     });
   }
 
+  private filesAt(repo: FakeRepo, ref: string | null) {
+    const files = repo.files ?? {};
+    const at = ref ?? repo.default_branch ?? "main";
+    const pull = /^refs\/pull\/(\d+)\/head$/.exec(at);
+    const head = pull
+      ? this.world.items.find(
+          (item) =>
+            item.repo.toLowerCase() === repo.full_name.toLowerCase() &&
+            item.number === Number(pull[1]),
+        )?.head_sha
+      : undefined;
+    return files[head ?? at];
+  }
+
+  /** GitHub's contents API: a folder's entries, or a file base64-encoded (raw when asked). */
+  private contents(
+    fullName: string,
+    rawPath: string,
+    ref: string | null,
+    headers: Record<string, string>,
+  ): FakeAnswer {
+    const missing: FakeAnswer = { status: 404, headers: {}, body: { message: "Not Found" } };
+    const repo = this.world.repos.find(
+      (entry) => entry.full_name.toLowerCase() === fullName.toLowerCase(),
+    );
+    const files = repo === undefined ? undefined : this.filesAt(repo, ref);
+    if (files === undefined) return missing;
+    const path = decodeURIComponent(rawPath).replace(/\/$/, "");
+    const file = files[path];
+    if (file !== undefined) {
+      const bytes = Buffer.from(file, "utf8");
+      if (headers.accept === "application/vnd.github.raw")
+        return { status: 200, headers: {}, body: file };
+      const large = bytes.length > 1_000_000;
+      return {
+        status: 200,
+        headers: {},
+        body: {
+          type: "file",
+          name: path.split("/").at(-1),
+          path,
+          size: bytes.length,
+          encoding: large ? "none" : "base64",
+          content: large ? "" : (bytes.toString("base64").match(/.{1,60}/g) ?? []).join("\n"),
+        },
+      };
+    }
+    const prefix = path === "" ? "" : `${path}/`;
+    const entries = new Map<string, { type: string; name: string; path: string; size: number }>();
+    for (const [name, text] of Object.entries(files)) {
+      if (!name.startsWith(prefix)) continue;
+      const [first, ...more] = name.slice(prefix.length).split("/");
+      const entryPath = `${prefix}${first}`;
+      entries.set(entryPath, {
+        type: more.length > 0 ? "dir" : "file",
+        name: first!,
+        path: entryPath,
+        size: more.length > 0 ? 0 : Buffer.byteLength(text, "utf8"),
+      });
+    }
+    if (entries.size === 0) return missing;
+    return {
+      status: 200,
+      headers: {},
+      body: [...entries.values()].sort((a, b) => a.path.localeCompare(b.path)),
+    };
+  }
+
+  /** GitHub's code search, `repo:` qualified, on the default branch; text matches when asked. */
+  private searchCode(params: URLSearchParams, headers: Record<string, string>): FakeAnswer {
+    const query = params.get("q") ?? "";
+    const scoped = /(?:^|\s)repo:(\S+)/.exec(query)?.[1];
+    const words = query
+      .replace(/(?:^|\s)repo:\S+/, " ")
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((word) => word !== "");
+    const repo = this.world.repos.find(
+      (entry) => entry.full_name.toLowerCase() === scoped?.toLowerCase(),
+    );
+    if (repo === undefined || words.length === 0)
+      return { status: 422, headers: {}, body: { message: "Validation Failed" } };
+    const files = repo.unindexed === true ? {} : (this.filesAt(repo, null) ?? {});
+    const items = Object.entries(files)
+      .filter(([, text]) => words.every((word) => text.toLowerCase().includes(word)))
+      .map(([path, text]) => ({
+        name: path.split("/").at(-1),
+        path,
+        repository: { full_name: repo.full_name },
+        ...(headers.accept === "application/vnd.github.text-match+json"
+          ? {
+              text_matches: [
+                {
+                  fragment: text
+                    .split("\n")
+                    .filter((line) => line.toLowerCase().includes(words[0]!))
+                    .slice(0, 2)
+                    .join("\n"),
+                },
+              ],
+            }
+          : {}),
+      }));
+    return {
+      status: 200,
+      headers: {},
+      body: { total_count: items.length, incomplete_results: false, items },
+    };
+  }
+
   /** One REST call, as `gh api` makes it. */
   handle(
     method: string,
@@ -730,8 +845,11 @@ export class FakeGitHub {
       }
       if (limit.hit === true)
         return {
-          status: 429,
-          headers: { "retry-after": String(limit.retryAfter) },
+          status: limit.status ?? 429,
+          headers:
+            limit.reset === undefined
+              ? { "retry-after": String(limit.retryAfter) }
+              : { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(limit.reset) },
           body: { message: "API rate limit exceeded" },
         };
     }
@@ -1013,6 +1131,8 @@ export class FakeGitHub {
         })),
       );
     }
+    if (method === "GET" && path === "search/code")
+      return this.searchCode(url.searchParams, headers);
     const whole = /^repos\/([^/]+\/[^/]+)$/.exec(path);
     if (method === "GET" && whole !== null) {
       const repo = this.world.repos.find(
@@ -1027,6 +1147,9 @@ export class FakeGitHub {
     const repo = match[1]!;
     const rest = match[2]!;
     let found: RegExpExecArray | null;
+    const contents = /^contents(?:\/(.*))?$/.exec(rest);
+    if (method === "GET" && contents !== null)
+      return this.contents(repo, contents[1] ?? "", url.searchParams.get("ref"), headers);
     const guarded = this.rulesAnswer(method, repo, rest, body, actor, installation !== undefined);
     if (guarded !== undefined) return guarded;
     try {

@@ -32,7 +32,9 @@ import { McpSchema, McpServer } from "effect/ai";
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
-import { turnAudience } from "../lead/Audience.ts";
+import { recordAudience, turnAudience } from "../lead/Audience.ts";
+import { outsideStamp, stampKey } from "../lead/OutsideContent.ts";
+import { SHARED_TOOLS } from "../lead/SharedTools.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -68,6 +70,7 @@ import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr, runGh } from "./fakeG
 import * as GitHubWatch from "./GitHubWatch.ts";
 import { setRepo } from "./githubWatchStore.ts";
 import { headKey, POSTING } from "./boundReview.ts";
+import { READ_NEXT, READ_REFUSAL } from "./repoRead.ts";
 import { ASK_REFUSAL, DIFF_NEXT, DIFF_REFUSAL, POST_REFUSAL, PULL_REFUSAL } from "./reviewAsk.ts";
 const { DIFF_CAP } = GitHubWatch;
 import { KIN_OWN_REFUSAL } from "../people/KinAccess.ts";
@@ -1443,6 +1446,406 @@ it.effect(
       assert.include(
         String(answer.next),
         ` GitHub refused Kin's requests for now, so ${refusedRefs.join(", ")} weren't queued; GitHub takes requests again in about 10 minutes`,
+      );
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+// A teammate asked the Tech lead how a product works; the turn could not open the code and sent
+// them to the owner. A repo is read through Kin's GitHub connection, by the review ask's own check.
+it.effect(
+  "a repo is read for whoever GitHub lets see it: a folder, a file whole or by lines, a search, at a ref; everything else is its one line",
+  () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      const late = "export const lateAfter = (eta: number) => eta + 15 * 60_000;\n";
+      const long = Array.from({ length: 3000 }, (_, index) => `const line${index} = ${index};`);
+      const huge = `${"x".repeat(99)}\n`.repeat(12_000);
+      const repoOf = (name: string) => github.world.repos.find((one) => one.full_name === name)!;
+      const pull = github.openItem({
+        repo: APP,
+        pull: true,
+        author: "dev-gh",
+        association: "MEMBER",
+        title: "Alert sooner",
+      });
+      repoOf(APP).files = {
+        main: {
+          "README.md": "# App\n",
+          "src/alerts/late.ts": late,
+          "src/long.ts": `${long.join("\n")}\n`,
+          "src/huge.txt": huge,
+          "logo.png": "\u0089PNG\r\n\u001a\n\u0000\u0000",
+        },
+        "release/1": { "src/alerts/late.ts": "export const lateAfter = () => 0;\n" },
+        [headOf(github, APP, pull)]: {
+          "src/alerts/late.ts": "export const lateAfter = () => 1;\n",
+        },
+      };
+      repoOf(LEDGER).files = { main: { "totals.ts": "export const round = Math.round;\n" } };
+      repoOf(SITE).files = { main: { "index.html": "<h1>Late alerts</h1>\n" } };
+      repoOf(SITE).unindexed = true;
+      const { ask, directOf, sql, orgId, owner } = yield* ambermill(github);
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('room', ${orgId}, 'team_group', 0, ${at})`;
+      for (const [member, kind, person, agent] of [
+        ["room-dev", "person", "dev", null],
+        ["room-meera", "person", "meera", null],
+        ["room-tech", "agent", null, "tech"],
+      ] as const)
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, agent_id, role, joined_at)
+          VALUES (${member}, ${orgId}, 'room', ${kind}, ${person}, ${agent}, 'member', ${at})`;
+      const chatOf = {
+        dev: yield* directOf("dev"),
+        zoya: yield* directOf("zoya"),
+        meera: yield* directOf("meera"),
+        owner: yield* directOf(owner.personId),
+        room: KinChatId.make("room"),
+      };
+      const read = (args: Record<string, unknown>) => callAs("tech", "kin_github_read", args);
+      const running = sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId"
+        FROM kin_wakeups WHERE org_id = ${orgId} AND agent_id = 'tech' AND status = 'running'
+        ORDER BY rowid DESC LIMIT 1`.pipe(Effect.map(([row]) => row!.wakeupId));
+      const refusal = (message: string, reason = "not_allowed") => ({
+        _tag: "KinChatError",
+        reason,
+        message,
+      });
+      const longPage = (from: number) => {
+        let to = from - 1;
+        let size = 0;
+        while (to < long.length && size + long[to]!.length + 1 <= DIFF_CAP)
+          size += long[to++]!.length + 1;
+        return { to, text: long.slice(from - 1, to).join("\n") };
+      };
+      const first = longPage(1);
+      const second = longPage(first.to + 1);
+
+      const table: ReadonlyArray<{
+        readonly name: string;
+        readonly who: keyof typeof chatOf;
+        readonly args: Record<string, unknown>;
+        readonly ownerOnly?: true;
+        readonly before?: (now: number) => void;
+        readonly answer?: Record<string, unknown>;
+        readonly refused?: Record<string, unknown>;
+        /** No call reached GitHub's visibility or collaborator reads. */
+        readonly unchecked?: true;
+      }> = [
+        {
+          name: "a teammate lists the top of a public repo",
+          who: "zoya",
+          args: { repo: APP },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "",
+            entries: [
+              { path: "logo.png", type: "file", size: 11 },
+              { path: "README.md", type: "file", size: 6 },
+              { path: "src", type: "dir" },
+            ],
+            next: READ_NEXT.listed,
+          },
+        },
+        {
+          name: "a folder",
+          who: "zoya",
+          args: { repo: APP.toUpperCase(), path: "/src/alerts/" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "src/alerts",
+            entries: [{ path: "src/alerts/late.ts", type: "file", size: late.length }],
+            next: READ_NEXT.listed,
+          },
+        },
+        {
+          name: "a small file, whole",
+          who: "zoya",
+          args: { repo: APP, path: "src/alerts/late.ts" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "src/alerts/late.ts",
+            text: late,
+            lines: { from: 1, to: 1, of: 1 },
+            next: READ_NEXT.end,
+          },
+        },
+        {
+          name: "a long file's first part, saying how many lines and where to go on",
+          who: "zoya",
+          args: { repo: APP, path: "src/long.ts" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "src/long.ts",
+            text: first.text,
+            lines: { from: 1, to: first.to, of: 3000 },
+            next: READ_NEXT.more(first.to + 1, 3000),
+          },
+        },
+        {
+          name: "and on from that line",
+          who: "zoya",
+          args: { repo: APP, path: "src/long.ts", line: first.to + 1 },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "src/long.ts",
+            text: second.text,
+            lines: { from: first.to + 1, to: second.to, of: 3000 },
+            next: second.to < 3000 ? READ_NEXT.more(second.to + 1, 3000) : READ_NEXT.end,
+          },
+        },
+        {
+          name: "a line past the end",
+          who: "zoya",
+          args: { repo: APP, path: "src/long.ts", line: 4000 },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "src/long.ts",
+            text: "",
+            lines: { from: 4000, to: 3000, of: 3000 },
+            next: READ_NEXT.past(3000),
+          },
+        },
+        {
+          name: "a binary file is said plainly, none of its bytes",
+          who: "zoya",
+          args: { repo: APP, path: "logo.png" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "logo.png",
+            next: READ_REFUSAL.binary("logo.png", 11),
+          },
+        },
+        {
+          name: "at a branch",
+          who: "zoya",
+          args: { repo: APP, path: "src/alerts/late.ts", ref: "release/1" },
+          answer: {
+            repo: APP,
+            ref: "release/1",
+            path: "src/alerts/late.ts",
+            text: "export const lateAfter = () => 0;\n",
+            lines: { from: 1, to: 1, of: 1 },
+            next: READ_NEXT.end,
+          },
+        },
+        {
+          name: "at a pull request's head",
+          who: "zoya",
+          args: { repo: APP, path: "src/alerts/late.ts", ref: `pull/${pull}` },
+          answer: {
+            repo: APP,
+            ref: `pull/${pull}`,
+            path: "src/alerts/late.ts",
+            text: "export const lateAfter = () => 1;\n",
+            lines: { from: 1, to: 1, of: 1 },
+            next: READ_NEXT.end,
+          },
+        },
+        {
+          name: "a pull request that isn't there",
+          who: "zoya",
+          args: { repo: APP, path: "README.md", ref: "pull/999" },
+          refused: refusal(READ_REFUSAL.noPull(APP, 999), "not_found"),
+        },
+        {
+          name: "a path that isn't there",
+          who: "zoya",
+          args: { repo: APP, path: "src/nowhere.ts" },
+          refused: refusal(
+            READ_REFUSAL.missing(APP, "src/nowhere.ts", "the default branch"),
+            "not_found",
+          ),
+        },
+        {
+          name: "a path that climbs out",
+          who: "zoya",
+          args: { repo: APP, path: "src/../../other" },
+          refused: refusal(READ_REFUSAL.path),
+        },
+        {
+          name: "a search, scoped to the repo",
+          who: "zoya",
+          args: { repo: APP, search: "lateAfter  eta" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            matches: [{ path: "src/alerts/late.ts", fragments: [late.trimEnd()] }],
+            next: READ_NEXT.found,
+          },
+        },
+        {
+          name: "a search GitHub hasn't indexed the repo for",
+          who: "zoya",
+          args: { repo: SITE, search: "late", ref: "release/1" },
+          answer: {
+            repo: SITE,
+            ref: "the default branch",
+            matches: [],
+            next: READ_NEXT.none(SITE, "late") + READ_NEXT.defaultOnly,
+          },
+        },
+        {
+          name: "a repo the connection doesn't reach",
+          who: "zoya",
+          args: { repo: "elsewhere/tool" },
+          refused: refusal(READ_REFUSAL.unreached("elsewhere/tool")),
+          unchecked: true,
+        },
+        {
+          name: "Kin's memory repo",
+          who: "dev",
+          args: { repo: MEMORY },
+          refused: refusal(READ_REFUSAL.memory(MEMORY)),
+          unchecked: true,
+        },
+        {
+          name: "a private repo for a collaborator",
+          who: "dev",
+          args: { repo: LEDGER, path: "totals.ts" },
+          answer: {
+            repo: LEDGER,
+            ref: "the default branch",
+            path: "totals.ts",
+            text: "export const round = Math.round;\n",
+            lines: { from: 1, to: 1, of: 1 },
+            next: READ_NEXT.end,
+          },
+        },
+        {
+          name: "a private repo GitHub doesn't let her see",
+          who: "meera",
+          args: { repo: LEDGER, path: "totals.ts" },
+          refused: refusal(READ_REFUSAL.notCollaborator(LEDGER, "Meera Iyer")),
+        },
+        {
+          name: "a private repo, no GitHub username on file",
+          who: "zoya",
+          args: { repo: LEDGER, search: "round" },
+          refused: refusal(READ_REFUSAL.noLogin(LEDGER, "Zoya Sheikh")),
+        },
+        {
+          name: "a private repo in a chat with other people, a collaborator asking",
+          who: "room",
+          args: { repo: LEDGER, path: "totals.ts" },
+          refused: refusal(READ_REFUSAL.notHere(LEDGER)),
+        },
+        {
+          name: "a public repo in that chat",
+          who: "room",
+          args: { repo: APP, path: "README.md" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "README.md",
+            text: "# App\n",
+            lines: { from: 1, to: 1, of: 1 },
+            next: READ_NEXT.end,
+          },
+        },
+        {
+          name: "the owner alone reads any connected repo, with no check on GitHub",
+          who: "owner",
+          ownerOnly: true,
+          args: { repo: LEDGER, path: "totals.ts" },
+          unchecked: true,
+          answer: {
+            repo: LEDGER,
+            ref: "the default branch",
+            path: "totals.ts",
+            text: "export const round = Math.round;\n",
+            lines: { from: 1, to: 1, of: 1 },
+            next: READ_NEXT.end,
+          },
+        },
+        {
+          name: "GitHub's 429",
+          who: "zoya",
+          args: { repo: APP, path: "README.md" },
+          before: () => {
+            github.world.limit = { reads: 0, retryAfter: 600, hit: true };
+          },
+          refused: refusal(READ_REFUSAL.refused(10), "unavailable"),
+        },
+        {
+          name: "GitHub's 403, by its reset time",
+          who: "owner",
+          ownerOnly: true,
+          args: { repo: APP, search: "late" },
+          before: (now) => {
+            github.world.limit = {
+              reads: 0,
+              retryAfter: 0,
+              hit: true,
+              status: 403,
+              reset: Math.floor((now + 30 * 60_000) / 1000),
+            };
+          },
+          refused: refusal(READ_REFUSAL.refused(30), "unavailable"),
+        },
+      ];
+      const before = github.world.calls.length;
+      for (const row of table) {
+        delete github.world.limit;
+        row.before?.(yield* Clock.currentTimeMillis);
+        const limit = github.world.limit;
+        delete github.world.limit;
+        const asker = row.who === "room" ? "dev" : row.who === "owner" ? owner.personId : row.who;
+        yield* ask(asker, chatOf[row.who], `Read (${row.name})`);
+        const turn = { orgId, wakeupId: yield* running };
+        if (row.ownerOnly === true) yield* recordAudience(turn, "owner_only");
+        if (limit !== undefined) github.world.limit = limit;
+        const calls = github.world.calls.length;
+        const called = yield* read(row.args);
+        const checked = github.world.calls
+          .slice(calls)
+          .filter((call) => /^GET repos\/[^/]+\/[^/]+(?:\/collaborators\/.*)?$/.test(call));
+        if (row.unchecked === true) assert.deepStrictEqual(checked, [], row.name);
+        const stamp = yield* outsideStamp(turn);
+        if (row.refused !== undefined) {
+          assert.deepStrictEqual(called.value, row.refused, row.name);
+          assert.strictEqual(stamp, undefined, row.name);
+          continue;
+        }
+        assert.deepStrictEqual(called.value, row.answer, row.name);
+        // What the repo said is outside text for the rest of the turn, as a diff is.
+        const shown =
+          row.answer?.text !== undefined ||
+          row.answer?.entries !== undefined ||
+          row.answer?.matches !== undefined;
+        assert.strictEqual(
+          stamp === undefined ? undefined : stampKey(stamp),
+          shown ? "github" : undefined,
+          row.name,
+        );
+      }
+      delete github.world.limit;
+      // A file over GitHub's 1 MB comes raw, and gh's output stops at Kin's limit: said, not hidden.
+      yield* ask("zoya", chatOf.zoya, "Read the huge file");
+      const hugeRead = (yield* read({ repo: APP, path: "src/huge.txt" })).value;
+      const hugeLines = hugeRead.lines as { from: number; to: number; of: number };
+      assert.isBelow(hugeLines.of, 12_000);
+      assert.strictEqual(
+        hugeRead.next,
+        `${READ_NEXT.more(hugeLines.to + 1, hugeLines.of)} ${READ_NEXT.partial(hugeLines.of)}`,
+      );
+      assert.strictEqual(
+        (yield* read({ repo: APP, path: "src/huge.txt", line: hugeLines.of })).value.next,
+        READ_NEXT.partial(hugeLines.of),
+      );
+      // Its own row in a shared turn's table, tied to no review; and nothing it did wrote to GitHub.
+      assert.strictEqual(SHARED_TOOLS.kin_github_read, "allowed");
+      assert.deepStrictEqual(
+        github.world.calls.slice(before).filter((call) => !call.startsWith("GET ")),
+        [],
       );
     }).pipe(Effect.provide(layer));
   },

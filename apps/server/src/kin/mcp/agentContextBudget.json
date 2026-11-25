@@ -157,6 +157,10 @@
       "desc": 172,
       "schema": 143
     },
+    "kin_github_read": {
+      "desc": 543,
+      "schema": 596
+    },
     "kin_github_review": {
       "desc": 196,
       "schema": 499

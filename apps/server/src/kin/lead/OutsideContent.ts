@@ -87,6 +87,8 @@ export const OUTSIDE_TOOLS = {
   kin_github_review: "allowed",
   // Reads only the diff of the pull request its review turn is for.
   kin_github_diff: "allowed",
+  // Reads only; what it reads is outside text too (`readRepo` marks it).
+  kin_github_read: "allowed",
   kin_github_link: "allowed",
   // Outside text could start reviews in a person's name.
   kin_github_review_ask: "refused",
