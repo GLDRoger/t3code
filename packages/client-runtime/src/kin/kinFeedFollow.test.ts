@@ -84,6 +84,8 @@ describe("resolveKinFeedFollow", () => {
     expect(away.seenSeq).toBe(49);
     expect(run([{ type: "seen", seq: 12 }], away)).toBe(away);
     expect(run([{ type: "seen", seq: 52 }], away).seenSeq).toBe(52);
+    // Opening on a row after a cached backlog catches seenSeq up so held messages don't light the pill.
+    expect(run([{ type: "land", seq: 58 }]).seenSeq).toBe(58);
   });
 
   it("holds the place through a page at the end, and a drag lets go of the hold", () => {

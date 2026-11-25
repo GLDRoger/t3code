@@ -61,6 +61,7 @@ const KIN_PULSE_SENSES = [
   ...KIN_PROMISE_SENSES,
   "payment_seen",
   "repaid_seen",
+  "mail_gap",
   "bill_due",
   "bill_paid_seen",
 ] as const;
@@ -83,6 +84,7 @@ export const KIN_PULSE_LATER_SENSES = [
   ...KIN_PROMISE_SENSES,
   "payment_seen",
   "repaid_seen",
+  "mail_gap",
   "bill_due",
   "bill_paid_seen",
 ] as const;
@@ -172,6 +174,7 @@ export const KinPulseFact = Schema.Struct({
       "pull_request",
       "bank",
       "overflow",
+      "mailbox",
     ]),
     /** A record's key (INV-4), a task's thread, an agent id, a budget id, or owner/name#12 (PR). */
     key: TrimmedNonEmptyString,

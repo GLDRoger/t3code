@@ -40,6 +40,7 @@ import { KinDealRowButton } from "./KinDealsList";
 import { KinExportListRow } from "./KinMarketing";
 import { kinClient } from "./state/kinClient";
 import { useKinDeals } from "./state/useKinDeals";
+import { useKinSectionNamed } from "./state/useKinShell";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import {
   useKinClientsList,
@@ -124,6 +125,7 @@ export function KinMarketingListScreen({ route }: StaticScreenProps<KinMarketing
 
 function ContactList(props: KinWorkTarget & { readonly input: KinContactListInput }) {
   const navigation = useNavigation();
+  const named = useKinSectionNamed(props.environmentId);
   const result = useAtomValue(
     kinClient.workContactList({ environmentId: props.environmentId, input: props.input }),
   );
@@ -154,7 +156,7 @@ function ContactList(props: KinWorkTarget & { readonly input: KinContactListInpu
           <EmptyState
             variant="plain"
             title={KIN_MARKETING.listEmpty}
-            detail={KIN_MARKETING.listEmptyDetail}
+            detail={named(KIN_MARKETING.listEmptyDetail)}
           />
         ) : (
           view.rows.map((row) => (
@@ -226,6 +228,7 @@ function CampaignDeals(props: KinWorkTarget & { readonly input: KinDealsInput })
 
 function CameFromList(props: KinWorkTarget & { readonly filter: KinClientsFilter }) {
   const navigation = useNavigation();
+  const named = useKinSectionNamed(props.environmentId);
   const work = useKinWork(props);
   const directory = useKinWorkDirectory(props, true);
   const now = new Date(useNowMinuteMs());
@@ -252,8 +255,8 @@ function CameFromList(props: KinWorkTarget & { readonly filter: KinClientsFilter
         {state.records.length === 0 ? (
           <EmptyState
             variant="plain"
-            title={KIN_MARKETING.cameFromEmpty}
-            detail={KIN_MARKETING.cameFromEmptyDetail}
+            title={named(KIN_MARKETING.cameFromEmpty)}
+            detail={named(KIN_MARKETING.cameFromEmptyDetail)}
           />
         ) : (
           state.records.map((record) => {

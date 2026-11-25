@@ -19,6 +19,7 @@ import type { KinRetiredActions } from "./lead/Retirement.ts";
 import type { KinStop } from "./lead/KinStop.ts";
 import type { KinLevelGate } from "./lead/LevelGate.ts";
 import type { KinLevelControl } from "./levels/LevelControl.ts";
+import type { MemoryRecoveryHooks } from "./memory/Memory.ts";
 import type { KinMemoryChanges } from "./memory/MemoryChanges.ts";
 import type { KinOwnerTimeZone } from "./triggers/ownerTimeZone.ts";
 import type { KinPushDevices } from "./push/KinPushDevices.ts";
@@ -43,7 +44,10 @@ import type { KinShell } from "./shell/KinShell.ts";
 
 import type { KinNumbers } from "./numbers/KinNumbers.ts";
 
+import type { KinFollowUpItems } from "./watches/followUps.ts";
+
 export type Services =
+  | KinFollowUpItems
   | KinNumbers
   | KinShell
   | KinIdentity
@@ -63,6 +67,7 @@ export type Services =
   | KinLevelGate
   | KinLevelControl
   | KinMemoryChanges
+  | MemoryRecoveryHooks
   | ApproverKeys
   | GrantVerifier
   | KinRetiredActions

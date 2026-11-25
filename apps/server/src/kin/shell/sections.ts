@@ -215,6 +215,7 @@ export const SECTIONS = {
     worker_failed: null,
     task_stuck: null,
     work_held: null,
+    mail_gap: null,
     client_quiet: "clients",
     client_cold: "clients",
     client_waiting_on_us: "clients",

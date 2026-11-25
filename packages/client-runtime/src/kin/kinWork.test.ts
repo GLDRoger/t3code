@@ -942,6 +942,23 @@ describe("kinWorkItemState", () => {
     // A read from before the change still gives way to its answer.
     expect(shown(detail({ rev: 3, seq: 6 }), answer)).toBe(answer);
     expect(shown(detail({ rev: 4, seq: 6 }), answer)).toBe(answer);
+    // Not found and not allowed look identical so a reader can't tell them apart.
+    expect(
+      kinWorkItemState(
+        AsyncResult.failure(
+          Cause.fail(new KinChatError({ reason: "not_found", message: "missing" })),
+        ),
+        null,
+      ),
+    ).toEqual({ _tag: "gone" });
+    expect(
+      kinWorkItemState(
+        AsyncResult.failure(
+          Cause.fail(new KinChatError({ reason: "not_allowed", message: "refused" })),
+        ),
+        null,
+      ),
+    ).toEqual({ _tag: "gone" });
   });
 });
 

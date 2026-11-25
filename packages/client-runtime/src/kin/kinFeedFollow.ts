@@ -27,7 +27,7 @@ export type KinFeedFollowEvent =
   | { readonly type: "drag-begin" }
   | { readonly type: "jump-to-end" }
   /** The chat brings a message it was opened on into view; like a scroll, it lets go of the end. */
-  | { readonly type: "land" };
+  | { readonly type: "land"; readonly seq?: number };
 
 /** What the chat held when it opened counts as seen. */
 export const initialKinFeedFollow = (latestSeq: number): KinFeedFollow => ({
@@ -73,10 +73,12 @@ export function resolveKinFeedFollow(
         : { ...state, holding: false };
     case "drag-begin":
       return state.holding ? { ...state, holding: false } : state;
-    case "land":
-      return state.following || state.holding
-        ? { ...state, following: false, away: false, holding: false }
+    case "land": {
+      const seenSeq = event.seq === undefined ? state.seenSeq : Math.max(state.seenSeq, event.seq);
+      return state.following || state.holding || seenSeq !== state.seenSeq
+        ? { ...state, following: false, away: false, holding: false, seenSeq }
         : state;
+    }
     case "jump-to-end":
       return kinFollowsEnd(state) && !state.away
         ? state

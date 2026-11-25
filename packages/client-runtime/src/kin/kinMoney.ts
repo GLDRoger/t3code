@@ -6,6 +6,7 @@ import type {
   KinMoneySummary,
   KinMoneyTotals,
   KinRecordKey,
+  KinShell,
 } from "@t3tools/contracts";
 
 import { kinBilledName } from "./kinBillTo.ts";
@@ -26,6 +27,7 @@ import {
   type KinListFilter,
 } from "./kinLists.ts";
 import { kinCount } from "./kinCount.ts";
+import { kinSectionNamed } from "./kinShell.ts";
 
 /**
  * The Money part of Work: what is owed to us, what came in and went out, and the year so far.
@@ -44,7 +46,7 @@ export const KIN_MONEY = {
   noClient: "No client",
   nothingOwed: "Nobody owes you anything right now.",
   received: "Received",
-  tdsDeducted: "TDS deducted",
+  tdsDeducted: "Tax withheld",
   spent: "Spent",
   byCategory: "Spent by category",
   uncategorised: "No category",
@@ -220,10 +222,14 @@ export interface KinMoneyView {
 const lines = (totals: KinMoneyTotals) =>
   totals.length === 0 ? [KIN_MONEY_NOTHING] : kinTotalsLines(totals);
 
-/** The Money summary as the screen shows it. `lists` says which figures have entries to open. */
+/**
+ * The Money summary as the screen shows it. `lists` says which figures have entries to open;
+ * `shell` says Kin's words about clients in the company's own name for them.
+ */
 export function kinMoneyView(
   summary: KinMoneySummary,
   lists: ReadonlyArray<KinListDefinition>,
+  shell?: KinShell | null,
 ): KinMoneyView {
   // An archived list's entries still count, so its figures still open it, marked archived.
   const has = (id: string) => lists.find((def) => def.list === id);
@@ -340,7 +346,7 @@ export function kinMoneyView(
     clients: summary.owed.byClient.map((client) => ({
       key: client.party?.key ?? "none",
       // The no-client group names the typed names it holds, when the host sends them.
-      name: client.party?.title ?? client.billTo ?? KIN_MONEY.noClient,
+      name: client.party?.title ?? client.billTo ?? kinSectionNamed(shell, KIN_MONEY.noClient),
       owed: lines(client.owed),
       overdue:
         client.oldestOverdueDays === null
@@ -357,7 +363,7 @@ export function kinMoneyView(
     clientsMore:
       (summary.owed.byClientMore ?? 0) === 0
         ? null
-        : KIN_MONEY.clientsMore(summary.owed.byClientMore ?? 0),
+        : kinSectionNamed(shell, KIN_MONEY.clientsMore(summary.owed.byClientMore ?? 0)),
     monthLabel: kinMonthLabel(summary.thisMonth),
     received: {
       id: "received",
