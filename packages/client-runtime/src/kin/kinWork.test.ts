@@ -25,6 +25,7 @@ import {
   KIN_WORK_TITLE_TOO_LONG,
   kinWorkDueChoices,
   kinWorkDueDays,
+  kinWorkNames,
   kinWorkDueLabel,
   kinWorkDueText,
   kinWorkTitleCount,
@@ -57,6 +58,7 @@ import {
 } from "./kinWork.ts";
 import { KIN_CHANGED } from "./kinAnswers.ts";
 import { kinDatesAgenda } from "./kinDates.ts";
+import { kinLeadTrackingDetail } from "./kinLeadPresentation.ts";
 
 const orgId = KinOrgId.make("invented-org");
 const me = { _tag: "person", personId: KinPersonId.make("invented-owner") } as const;
@@ -1091,6 +1093,35 @@ describe("kinWorkRow", () => {
       if (held === undefined) delete process.env.TZ;
       else process.env.TZ = held;
     }
+  });
+
+  // QA W5: a timed due reads on the reader's profile clock; an all-day due stays the company's day.
+  it("shows a timed due in the reader's own zone and an all-day due on the company's day", () => {
+    const now = new Date("2026-12-27T17:00:00.000Z");
+    const timed = record({ dueAt: "2026-12-28T04:30:00.000Z", dueAllDay: false });
+    const company = { ...names, zone: "Asia/Kolkata" };
+    const reader = kinWorkNames({
+      orgs: null,
+      orgId,
+      people: null,
+      zone: "Asia/Kolkata",
+      readerZone: "America/Los_Angeles",
+    });
+    expect(kinWorkDueText(timed, company, now)).toBe("tomorrow, 10:00 AM");
+    expect(kinWorkDueText(timed, reader, now)).toBe("today, 8:30 PM");
+    expect(kinWorkDueDays(timed, reader, now)).toBe(0);
+    expect(
+      kinLeadTrackingDetail(
+        { kind: "reminder", dueAt: timed.dueAt!, dueAllDay: false },
+        undefined,
+        now,
+        reader,
+      ),
+    ).toBe("Reminder, Sun, Dec 27, 8:30 PM");
+    // 28 Dec's last millisecond in Los Angeles is 29 Dec in Kolkata: the day is the company's.
+    const allDay = record({ dueAt: "2026-12-29T07:59:59.999Z", dueAllDay: true });
+    const westCompany = { ...reader, zone: "America/Los_Angeles", readerZone: "Asia/Kolkata" };
+    expect(kinWorkDueText(allDay, westCompany, now)).toBe("tomorrow");
   });
 
   // The play-test's M-1: 4 Dec 10:16 UTC is 5 Dec 00:16 for a UTC+14 company, wherever it is read.
