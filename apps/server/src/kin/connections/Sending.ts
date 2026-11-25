@@ -427,7 +427,10 @@ const billedTo = Effect.fn("KinSending.billedTo")(function* (
   const [party, ...more] = parties.values();
   if (party === undefined) return null;
   const needsTo = (why: string) => refused(`${MAIL_TOOL.send} needs to: ${why}.`);
-  if (more.length > 0) return yield* needsTo("these are for different clients");
+  if (more.length > 0)
+    return yield* needsTo(
+      parties.has("none") ? "one of these has no client" : "these are for different clients",
+    );
   if (party.typed !== undefined)
     return party.typed.email === null
       ? yield* needsTo(`it bills ${party.typed.name} by name, with no email`)

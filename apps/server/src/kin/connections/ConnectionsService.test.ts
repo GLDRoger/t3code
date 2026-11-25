@@ -2759,6 +2759,11 @@ describe("KinConnections sending", () => {
           (yield* Effect.flip(mail("Invoice"))).message,
           "mail_send needs to: it has no client.",
         );
+        // A plain mail with no `to` and nothing billed attached is still refused for it.
+        assert.include(
+          (yield* Effect.flip(sendCall("mail_send", { subject: "Hello", body: "Hi." }))).message,
+          "mail_send needs to.",
+        );
         yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
           VALUES (${orgId}, 'clients', 'Clients', 'C', 0), (${orgId}, 'contacts', 'Contacts', 'CT', 0)`;
         const row = (id: string, list: string, title: string, fields: object) =>
