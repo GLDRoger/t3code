@@ -1146,6 +1146,39 @@ describe("KinLeadProvision", () => {
       assert.strictEqual(yield* refusal(edit({ name: "X" }, growth.agentId)), "retired");
     }).pipe(Effect.provide(paired)),
   );
+  it.effect("refuses a name another live agent has, in any case, and frees a retired one's", () =>
+    Effect.gen(function* () {
+      const ada = (yield* Provision.create(input(owner, []))).lead;
+      const growth = (yield* Provision.create({
+        ...input(owner, []),
+        name: "Growth",
+        domain: "growth",
+      })).lead;
+      const refused = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.flip,
+          Effect.map((error) => (isRefusal(error) ? `${error.reason}: ${error.message}` : error)),
+        );
+      const rename = (name: string, agentId = ada.agentId) =>
+        Provision.update({ editor: owner, orgId: ada.orgId, agentId, fields: { name } });
+      const taken = (name: string) => `conflict: Another agent is already called ${name}.`;
+      for (const name of ["Growth", "growth", " GROWTH "])
+        assert.strictEqual(yield* refused(rename(name)), taken("Growth"));
+      assert.strictEqual(
+        yield* refused(Provision.create({ ...input(owner, []), name: "ADA", domain: "sales" })),
+        taken("Ada"),
+      );
+      // A re-run of the same create still reports the agent it made.
+      assert.strictEqual((yield* Provision.create(input(owner, [])))._tag, "existing");
+      // Keeping its own name, or changing only its case, isn't a clash.
+      assert.deepInclude(yield* rename("Ada"), { name: "Ada" });
+      assert.deepInclude(yield* rename("ADA"), { name: "ADA" });
+      // A retired agent's name is free, and it can't come back while another agent has it.
+      yield* Provision.retireOnHost(growth.agentId);
+      assert.deepInclude(yield* rename("growth"), { name: "growth" });
+      assert.strictEqual(yield* refused(Provision.restoreOnHost(growth.agentId)), taken("growth"));
+    }).pipe(Effect.provide(paired)),
+  );
   it.effect(
     "changes an agent's model and the company default, pauses and resumes it, and refuses a teammate",
     () =>
