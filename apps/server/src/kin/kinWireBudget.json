@@ -193,7 +193,7 @@
   "reconnect.coOwner.refreshBytes": 299,
   "reconnect.coOwner.topicsMoved": 0,
   "reconnect.member.pulseBytes": 42,
-  "reconnect.member.refreshBytes": 155,
+  "reconnect.member.refreshBytes": 171,
   "reconnect.member.topicsMoved": 0,
   "reconnect.owner.pulseBytes": 42,
   "reconnect.owner.refreshBytes": 319,
