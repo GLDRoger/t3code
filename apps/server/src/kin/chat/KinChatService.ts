@@ -1161,6 +1161,7 @@ const make = Effect.gen(function* () {
     if (sender === undefined || wakeupId === undefined || message.author._tag !== "agent") return;
     const { orgId, chatId } = message;
     const { agentId } = message.author;
+    const sendPrefix = Repository.storedClientId("send", "");
     const [request] = yield* sql<{ waitingId: KinWaitingId }>`SELECT w.waiting_id AS "waitingId"
       FROM kin_chats c
       JOIN kin_chat_members recipient ON recipient.org_id = c.org_id AND recipient.chat_id = c.chat_id
@@ -1187,14 +1188,17 @@ const make = Effect.gen(function* () {
         AND w.chat_id <> c.chat_id AND ${sql.literal(ownerLevelSql("w.org_id", "w.person_id"))}
         AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
         AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = m.org_id
-          AND m.client_message_id = ${Repository.storedClientId("send", "")} || h.message_id)
+          AND h.message_id = substr(m.client_message_id, ${sendPrefix.length + 1})
+          AND substr(m.client_message_id, 1, ${sendPrefix.length}) = ${sendPrefix})
         AND NOT EXISTS (SELECT 1 FROM kin_messages sent WHERE sent.org_id = c.org_id
           AND sent.chat_id = c.chat_id AND sent.author_agent_id = ${agentId}
           AND sent.seq < ${message.seq}
           AND (sent.client_message_id = ${Repository.storedClientId("send", relayKey)}
-            OR sent.message_id IN (SELECT ${HELD_ID} || h.hold_id FROM kin_held_posts h
-              WHERE h.org_id = c.org_id AND h.chat_id = c.chat_id AND h.kind = ${relayKey}
-                AND h.agent_id = ${agentId})))
+            OR (substr(sent.message_id, 1, ${HELD_ID.length}) = ${HELD_ID}
+              AND EXISTS (SELECT 1 FROM kin_held_posts h
+                WHERE h.hold_id = substr(sent.message_id, ${HELD_ID.length + 1})
+                  AND h.org_id = c.org_id AND h.chat_id = c.chat_id AND h.kind = ${relayKey}
+                  AND h.agent_id = ${agentId}))))
       ORDER BY CASE WHEN e.tag = 'chat.message' AND m.reply_to = r.message_id THEN 0 ELSE 1 END,
         r.seq, w.waiting_id LIMIT 1`.pipe(
       Effect.mapError(toPersistenceSqlError("KinChatService.resolveRelayedRequest")),
