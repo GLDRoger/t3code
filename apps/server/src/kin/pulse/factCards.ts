@@ -28,12 +28,13 @@ import {
   isFactCard,
   plansOf,
   sealPlans,
+  type StallPlan,
   type WaitedPlan,
 } from "../widgets/cardPlans.ts";
 import { dayIn } from "../work/money.ts";
 import { startOfDay } from "../work/recordRows.ts";
 import { daysText, type SenseContext } from "./senses/shared.ts";
-import { DAY_MS } from "./thresholds.ts";
+import { DAY_MS, thresholds, toMs } from "./thresholds.ts";
 
 /*
  * Kin's own card about a pulse fact, posted to the one person who can answer it, in their direct
@@ -52,6 +53,10 @@ export const dayWord = (ms: number, zone: string) =>
 
 /** The card's button and the line under it, for each sealed answer. */
 export const factCardShown = (plan: FactCardPlan) => {
+  if (plan.kind === "stall_answer")
+    return plan.answer === "still"
+      ? { label: "Still on it", line: `Kin asks again on ${plan.day} if it hasn't moved` }
+      : { label: "Done", line: `Mark ${plan.key} done` };
   switch (plan.answer) {
     case "done":
       return {
@@ -74,7 +79,8 @@ export const factCardShown = (plan: FactCardPlan) => {
 /** What an unanswered card says once its fact stopped being true. */
 const closedOutcome = (plan: FactCardPlan): KinChoiceOutcome => ({
   title: "No longer needed",
-  text: `${plan.key} no longer waits on you.`,
+  text:
+    plan.kind === "stall_answer" ? `${plan.key} moved on.` : `${plan.key} no longer waits on you.`,
 });
 
 type CardOption = { readonly label: string; readonly plan?: FactCardPlan };
@@ -392,6 +398,93 @@ const waitedCards = Effect.fn("KinFactCards.waited")(function* (input: {
 });
 
 /**
+ * A task a teammate holds that has been in progress with no change: one card to them, through the
+ * Chief of staff, as their nudge of the day. Still on it holds it until then, after which Kin asks
+ * once more; Stuck is a plain answer, so its tap wakes the agent to ask what is in the way. Not for
+ * owner-level holders (their check-ins tell it).
+ */
+const stallCards = Effect.fn("KinFactCards.stalled")(function* (input: {
+  readonly ctx: SenseContext;
+  readonly open: ReadonlyArray<KinPulseFact>;
+  readonly sees: (
+    personId: KinPersonId,
+    facts: ReadonlyArray<KinPulseFact>,
+  ) => Effect.Effect<ReadonlyArray<{ readonly key: string }>, SqlError, SqlClient.SqlClient>;
+  readonly level: ReadonlySet<string>;
+  readonly posted: ReadonlyArray<CardRow>;
+}) {
+  const { ctx } = input;
+  const { orgId, chief } = ctx;
+  if (chief === undefined) return;
+  const sql = yield* SqlClient.SqlClient;
+  const after = toMs((yield* thresholds(orgId))("stalled_after_days"));
+  for (const fact of input.open) {
+    if (fact.sense !== "task_stalled" || fact.subject.recordId === undefined) continue;
+    if (fact.actor._tag !== "person" || input.level.has(fact.actor.personId)) continue;
+    const personId = fact.actor.personId;
+    // Each Still on it that ran asks once more after it, as its line says.
+    const round = input.posted.filter(
+      (row) =>
+        row.factKey === fact.key &&
+        row.personId === personId &&
+        row.answer === "still" &&
+        row.ran !== null,
+    ).length;
+    if (
+      input.posted.some(
+        (row) => row.factKey === fact.key && row.personId === personId && row.round === round,
+      )
+    )
+      continue;
+    const [row] = yield* sql<{
+      key: string;
+      title: string;
+      rev: number;
+      name: string;
+      zone: string | null;
+    }>`SELECT r.key, r.title, r.rev, p.display_name AS name, p.time_zone AS zone
+      FROM kin_records r
+      JOIN kin_people p ON p.org_id = r.org_id AND p.person_id = r.owner_id
+        AND p.removed_at IS NULL
+      WHERE r.org_id = ${orgId} AND r.record_id = ${fact.subject.recordId}
+        AND r.state = 'doing' AND r.owner_kind = 'person' AND r.owner_id = ${personId}`;
+    if (row === undefined) continue;
+    if ((yield* input.sees(personId, [fact])).length === 0) continue;
+    const until = ctx.at + after;
+    const base = {
+      factKey: fact.key,
+      round,
+      personId,
+      personName: row.name,
+      agentId: chief,
+      recordId: fact.subject.recordId,
+      key: row.key,
+      title: row.title,
+      rev: row.rev,
+      until,
+      day: dayWord(until, row.zone ?? ctx.zone),
+    };
+    const plans = (["still", "done"] as const).map(
+      (answer) => ({ kind: "stall_answer", answer, ...base }) satisfies StallPlan,
+    );
+    yield* postFactCard({
+      ctx,
+      personId,
+      agentId: chief,
+      factKey: fact.key,
+      round,
+      question: `${row.key} ${row.title} has been in progress with no change for ${daysText(Math.max(1, fact.measure?.value ?? 1))}. Where is it?`,
+      options: [
+        ...plans.map((plan) => ({ label: factCardShown(plan).label, plan })),
+        { label: "Stuck" },
+      ],
+      nudge: true,
+      posted: input.posted,
+    });
+  }
+});
+
+/**
  * In the pulse's tick, after holders are told: Kin's cards about facts that stand open, and the
  * way out of each whose fact cleared. A card that can't be posted is logged and never fails it.
  */
@@ -411,4 +504,5 @@ export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
   yield* settleFactCards(orgId, posted, new Set(input.sensed.map((fact) => fact.key)));
   const level = yield* ownerLevelPeople(orgId);
   yield* waitedCards({ ...input, level, posted });
+  yield* stallCards({ ...input, level, posted });
 });

@@ -244,6 +244,18 @@ const WaitedPlan = Schema.Struct({
   day: Schema.NullOr(Schema.String),
 });
 export type WaitedPlan = typeof WaitedPlan.Type;
+/**
+ * A task's holder answers that it has been in progress with no change: still on it, which holds
+ * the fact until `until` (on `day`, in their words), or done. Never drawn by an agent.
+ */
+const StallPlan = Schema.Struct({
+  kind: Schema.Literal("stall_answer"),
+  answer: Schema.Literals(["still", "done"]),
+  ...FactCardFields,
+  until: Schema.Number,
+  day: Schema.String,
+});
+export type StallPlan = typeof StallPlan.Type;
 export const CardPlan = Schema.Union([
   RecordPlan,
   StartPlan,
@@ -256,10 +268,14 @@ export const CardPlan = Schema.Union([
   AnsweredPlan,
   LeaverPlan,
   WaitedPlan,
+  StallPlan,
 ]);
 export type CardPlan = typeof CardPlan.Type;
-export type FactCardPlan = WaitedPlan;
-const FACT_CARD_KINDS: ReadonlySet<string> = new Set<FactCardPlan["kind"]>(["waited_answer"]);
+export type FactCardPlan = WaitedPlan | StallPlan;
+const FACT_CARD_KINDS: ReadonlySet<string> = new Set<FactCardPlan["kind"]>([
+  "waited_answer",
+  "stall_answer",
+]);
 /** Kin's own card about a pulse fact: it answers nothing else and no agent draws or redraws it. */
 export const isFactCard = (plan: CardPlan): plan is FactCardPlan => FACT_CARD_KINDS.has(plan.kind);
 export const FACT_CARD_KIND_LIST = [...FACT_CARD_KINDS];

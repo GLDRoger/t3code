@@ -78,9 +78,13 @@ const seed = Effect.fn("FactCardsTest.seed")(function* (services: Context.Contex
       sees_clients) VALUES (${zoyaId}, ${orgId}, 'zoya', 'Zoya', ${stamp}, 'member', 1),
       (${arjunId}, ${orgId}, 'arjun', 'Arjun', ${stamp}, 'member', 1),
       (${meeraId}, ${orgId}, 'meera', 'Meera', ${stamp}, 'co_owner', 1)`;
-  for (const person of [zoyaId, arjunId])
+  for (const person of [zoyaId, arjunId]) {
     yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
       VALUES (${orgId}, ${chief}, ${person}, ${owner.personId}, 0)`;
+    // Signed in on their phones: still let in to Work (`teamGuard`).
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES (${`phone-${person}`}, ${orgId}, ${person}, ${stamp})`;
+  }
   // The company's clock and everyone's own: UTC, whatever zone the tests run in.
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
       dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
@@ -354,4 +358,90 @@ it.effect("no card while an agent already nudged them today, nor on a task they 
       assert.deepStrictEqual(yield* cards(ctx), []);
     }),
   ),
+);
+
+/** A task `holder` started on at `since`, with no change after it. */
+const inProgress = (ctx: Ctx, title: string, holder: KinPersonId, since: number) =>
+  Effect.gen(function* () {
+    const made = yield* ctx.records.create(ctx.orgId, ctx.byOwner, {
+      title,
+      owner: { _tag: "person", personId: holder },
+      originKey: title,
+      team: true,
+    });
+    yield* ctx.records.update(ctx.orgId, ctx.byOwner, made.row.key, { state: "doing" });
+    yield* startedWaiting(ctx.sql, ctx.orgId, made.row.key, since);
+    return made.row.key;
+  });
+/** Whether a tap's message wakes the card's agent: one Kin finished itself says `handled`. */
+const wakesAgent = (message: { readonly body: string }) =>
+  (JSON.parse(message.body) as { handled?: boolean }).handled !== true;
+
+it.effect(
+  "a task a teammate holds in progress with no change gets one card: Still on it holds it and Kin asks again on its day, Done marks it done, Stuck wakes the agent; a change closes it; none for the owner's own",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        // Started on Friday and untouched: 4 days, past the playbook's 3. Rhea's own is hers.
+        const guide = yield* inProgress(ctx, "Draft onboarding guide", zoyaId, NOW - 4 * DAY);
+        yield* inProgress(ctx, "Board pack", ctx.owner.personId, NOW - 4 * DAY);
+        for (const key of ["W-1", "W-2"])
+          yield* ctx.records.update(ctx.orgId, ctx.byOwner, key, { state: "done" });
+        yield* tickAt(ctx, NOW);
+        const [card, ...more] = yield* cards(ctx);
+        assert.deepStrictEqual(more, []);
+        assert.strictEqual(card!.who, zoyaId);
+        assert.strictEqual(
+          card!.question,
+          `${guide} Draft onboarding guide has been in progress with no change for 4 days. Where is it?`,
+        );
+        assert.deepStrictEqual(card!.labels, ["Still on it", "Done", "Stuck"]);
+        assert.deepStrictEqual(card!.lines, [
+          "Kin asks again on Sat 28 Nov if it hasn't moved",
+          `Mark ${guide} done`,
+          undefined,
+        ]);
+        assert.isFalse(wakesAgent(yield* tap(ctx, zoyaId, card!, "Still on it")));
+        assert.deepStrictEqual((yield* cards(ctx))[0]!.outcome, {
+          title: "Noted",
+          text: `Kin asks again on Sat 28 Nov if ${guide} hasn't moved.`,
+        });
+        assert.isFalse(yield* ownerSees(ctx, "task_stalled", guide, NOW + HOUR));
+        assert.strictEqual((yield* ctx.records.get(ctx.orgId, guide))?.state, "doing");
+
+        // On Saturday it still hasn't moved: Kin asks once more, and Done closes the task.
+        yield* freshDay(ctx);
+        yield* tickAt(ctx, NOW + 3 * DAY + HOUR);
+        const again = (yield* cards(ctx)).find((one) => !one.closed)!;
+        assert.notStrictEqual(again.widgetId, card!.widgetId);
+        yield* tap(ctx, zoyaId, again, "Done");
+        assert.strictEqual((yield* ctx.records.get(ctx.orgId, guide))?.state, "done");
+        assert.deepStrictEqual(
+          (yield* cards(ctx)).find((one) => one.widgetId === again.widgetId)?.outcome,
+          { title: "Marked done", text: `${guide} is done.` },
+        );
+
+        // Stuck is the person's own answer: the Chief of staff is woken by the tap to ask.
+        const site = yield* inProgress(ctx, "Plan the second site", zoyaId, NOW - 4 * DAY);
+        yield* freshDay(ctx);
+        yield* tickAt(ctx, NOW + 3 * DAY + 2 * HOUR);
+        const stuck = (yield* cards(ctx)).find((one) => !one.closed)!;
+        assert.isTrue(wakesAgent(yield* tap(ctx, zoyaId, stuck, "Stuck")));
+        assert.strictEqual((yield* ctx.records.get(ctx.orgId, site))?.state, "doing");
+
+        // A change on the task before anyone answers closes its card.
+        const deck = yield* inProgress(ctx, "Pilot deck", zoyaId, NOW - 4 * DAY);
+        yield* freshDay(ctx);
+        yield* tickAt(ctx, NOW + 3 * DAY + 3 * HOUR);
+        const moved = (yield* cards(ctx)).find((one) => !one.closed)!;
+        assert.match(moved.question, new RegExp(`^${deck} Pilot deck`));
+        yield* ctx.records.update(ctx.orgId, ctx.byOwner, deck, { notes: "Slides 1-6 drafted" });
+        yield* tickAt(ctx, NOW + 3 * DAY + 4 * HOUR);
+        assert.deepStrictEqual(
+          (yield* cards(ctx)).find((one) => one.widgetId === moved.widgetId)?.outcome,
+          { title: "No longer needed", text: `${deck} moved on.` },
+        );
+      }),
+    ),
 );

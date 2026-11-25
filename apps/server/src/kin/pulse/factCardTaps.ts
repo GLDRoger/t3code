@@ -11,7 +11,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevel } from "../people/KinAccess.ts";
-import type { FactCardPlan, WaitedPlan } from "../widgets/cardPlans.ts";
+import type { FactCardPlan, StallPlan, WaitedPlan } from "../widgets/cardPlans.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { noticeHolder } from "./holderNotice.ts";
 import * as KinPulse from "./KinPulse.ts";
@@ -166,6 +166,52 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
   }
 });
 
+const runStall = Effect.fn("KinFactCards.runStall")(function* (
+  tap: FactTap,
+  plan: StallPlan,
+  records: KinRecords["Service"],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ state: string; rev: number; ownerKind: string; ownerId: string }>`
+    SELECT state, rev, owner_kind AS "ownerKind", owner_id AS "ownerId" FROM kin_records
+    WHERE org_id = ${tap.orgId} AND record_id = ${plan.recordId}`;
+  if (
+    row === undefined ||
+    row.state !== "doing" ||
+    row.ownerKind !== "person" ||
+    row.ownerId !== tap.personId ||
+    row.rev !== plan.rev
+  )
+    return nothingDone(`${plan.key} changed since this was offered`);
+  if (plan.answer === "still") {
+    if (plan.until <= tap.now) return nothingDone(`${plan.day} has passed`);
+    const held = yield* holdFact(tap, plan, {
+      factKey: plan.factKey,
+      action: "got_it",
+      until: plan.until,
+      note: `${plan.personName}: still on it`,
+    });
+    if (!held) return nothingDone(`${plan.key} moved on`);
+    return { title: "Noted", text: `Kin asks again on ${plan.day} if ${plan.key} hasn't moved.` };
+  }
+  // As the holder marks it done on their own task, under the same rule as their screens.
+  const own = yield* ownerLevel(tap.orgId, tap.personId);
+  yield* records.update(
+    tap.orgId,
+    {
+      actor: { _tag: "person", personId: tap.personId },
+      via: "owner",
+      chatId: tap.widget.chatId,
+      answering: [tap.widget.widgetId],
+      ...(own ? {} : { teammate: true }),
+    },
+    plan.key,
+    { state: "done" },
+    plan.rev,
+  );
+  return { title: "Marked done", text: `${plan.key} is done.` };
+});
+
 /**
  * A tap on Kin's card about a fact, in the tap's transaction: only the person it asks may answer,
  * and only while what it asked about is as it was; else nothing is done and the card says why.
@@ -183,5 +229,7 @@ export const runFactCard = Effect.fn("KinFactCards.run")(function* (
   switch (plan.kind) {
     case "waited_answer":
       return yield* runWaited(tap, plan, records);
+    case "stall_answer":
+      return yield* runStall(tap, plan, records);
   }
 });

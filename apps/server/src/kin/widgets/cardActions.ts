@@ -121,6 +121,7 @@ const labelOf = (plan: CardPlan): string => {
     case "leaver":
       return leaverShown(plan).label;
     case "waited_answer":
+    case "stall_answer":
       return factCardShown(plan).label;
     case "undo_default":
       return "Undo";
@@ -156,6 +157,7 @@ const lineOf = (plan: CardPlan): string => {
     case "leaver":
       return leaverShown(plan).line;
     case "waited_answer":
+    case "stall_answer":
       return factCardShown(plan).line;
     case "undo_default":
       return undoLine(plan);
