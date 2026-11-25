@@ -23,7 +23,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
 import { KinChatService } from "../chat/KinChatService.ts";
-import { mayActAsOwner } from "../people/KinAccess.ts";
+import { mayActAsOwner, ownerLevelSql } from "../people/KinAccess.ts";
 import {
   applyOperations,
   DOC_BODY_MAX,
@@ -130,6 +130,9 @@ export const CHARACTER_ORIGIN = "kin-character:";
 /** The company's What we sell is the doc with this origin; `offerings.ts` keeps the same, as a test pins. */
 export const OFFERINGS_ORIGIN = "kin-offerings";
 
+/** What the person a draft was filed for, alone, hears once an owner kept it to owners only. */
+export const privateNowLine = (key: string, owner: string) =>
+  `${key} is private now: ${owner} kept it to owners only.`;
 export const docNotFound = (key: string) =>
   new KinChatError({ reason: "not_found", message: `No doc ${key.slice(0, 40)}.` });
 const fileOnly = (key: string) =>
@@ -237,10 +240,38 @@ export const docRow = Effect.fn("KinDocs.row")(function* (
       (viewer.keyed === true &&
         (yield* sql`SELECT 1 FROM kin_records r WHERE r.org_id = ${orgId}
           AND r.record_id = ${row.recordId} AND NOT ${keyedAs(sql, viewer)}`).length > 0));
+  if (hidden && viewer._tag === "people" && viewer.keyed !== true && viewer.people.length === 1) {
+    const [kept] = yield* privateNow(sql, orgId, row.recordId, viewer.people[0]!);
+    if (kept !== undefined)
+      return yield* new KinChatError({
+        reason: "not_found",
+        privateNow: { by: kept.name },
+        message: privateNowLine(row.key, kept.name),
+      });
+  }
   if (row === undefined || hidden || listOf(row.registerId) !== "docs")
     return yield* docNotFound("key" in ref ? ref.key : "with that id");
   return row;
 });
+
+/**
+ * Who labelled `recordId` for owners only, when it is a live doc filed as `personId`'s own draft:
+ * they knew it existed, so they alone hear it went private. Anyone else still finds no doc.
+ */
+const privateNow = (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  recordId: string,
+  personId: KinPersonId,
+) =>
+  sql<{ name: string }>`SELECT p.display_name AS name FROM kin_records r
+    JOIN kin_people p ON p.org_id = r.org_id AND p.person_id = r.marked_by_person_id
+    WHERE r.org_id = ${orgId} AND r.record_id = ${recordId} AND r.register_id = 'docs'
+      AND r.state <> 'dropped' AND r.sensitive = 1
+      AND json_extract(r.fields_json, '$.draftFor') = ${personId}
+      AND r.marked_by_person_id <> ${personId}
+      AND ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
+    ORDER BY r.record_id LIMIT 1`;
 
 /**
  * Which of a doc's versions the viewer reads: every one, but a picture's each by its own rule

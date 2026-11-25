@@ -2566,6 +2566,11 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     assert.deepStrictEqual((yield* OwnerDocs.get([mate], { orgId, key: first.key })).kindLabel, {
       reader: { name: "Mate", you: true },
     });
+    // Whose draft it is reaches the owner's menu only.
+    assert.deepStrictEqual((yield* OwnerDocs.get([owner], { orgId, key: first.key })).draftOf, {
+      name: "Mate",
+    });
+    assert.notProperty(yield* OwnerDocs.get([mate], { orgId, key: first.key }), "draftOf");
     // The same call again in the same wake-up finds the doc it made, and says nothing is unwritten.
     const again = yield* draft("Acme refit");
     assert.strictEqual(again.key, first.key);
@@ -2645,6 +2650,32 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     const labelled = yield* OwnerDocs.label([owner], { orgId, key: marked.key, sensitive: true });
     assert.notProperty(labelled, "kindLabel");
     assert.isFalse(yield* reads(mate, marked.key));
+    // Kept to owners, then given back, the owner's page still names whose draft it is.
+    assert.deepStrictEqual(labelled.draftOf, { name: "Mate" });
+    const given = yield* OwnerDocs.label([owner], { orgId, key: marked.key, sensitive: false });
+    assert.deepInclude(given, { sensitive: false, draftOf: { name: "Mate" } });
+    assert.isTrue(yield* reads(mate, marked.key));
+    yield* OwnerDocs.label([owner], { orgId, key: marked.key, sensitive: true });
+    assert.isFalse(yield* reads(mate, marked.key));
+    // The draft's person knew it existed, so they alone hear it went private, and by whom; through
+    // a key, to another teammate, or for a doc the owner only edited, it is no doc at all.
+    const refusal = (who: typeof mate, key: KinRecordKey, keyed?: true) =>
+      Effect.flip(OwnerDocs.get([who], { orgId, key }, keyed === undefined ? {} : { keyed }));
+    const privateLine = `${marked.key} is private now: Owner kept it to owners only.`;
+    assert.deepInclude(yield* refusal(mate, marked.key), {
+      reason: "not_found",
+      privateNow: { by: "Owner" },
+      message: privateLine,
+    });
+    for (const [who, key, keyed] of [
+      [others[0], marked.key, undefined],
+      [mate, marked.key, true],
+      [mate, handEdited.key, undefined],
+    ] as const) {
+      const plain = yield* refusal(who, key, keyed);
+      assert.deepInclude(plain, { reason: "not_found", message: `No doc ${key}.` });
+      assert.notProperty(plain, "privateNow");
+    }
     // An agent's label in a co-owner's turn, with no one asking by name, is the owner's too.
     const raised = yield* draft("Acme raised");
     const coAsked = yield* wake("co-wake", other, "co-chat", coOwner, "owner_only");
@@ -2660,6 +2691,10 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     // Her own turn's agent reads it; a group turn with another teammate reads none of it.
     yield* wake("own-wake", lead, "mate-chat", mateId, "shared");
     assert.strictEqual((yield* LeadDocs.read(scopeOf(lead), { key: first.key })).key, first.key);
+    assert.deepInclude(yield* Effect.flip(LeadDocs.read(scopeOf(lead), { key: marked.key })), {
+      privateNow: { by: "Owner" },
+      message: privateLine,
+    });
     yield* sql`UPDATE kin_chats SET kind = 'team_group', direct_key = NULL WHERE chat_id = 'mate-chat'`;
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
         role, joined_at)
@@ -2668,6 +2703,9 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     assert.isTrue(
       Exit.isFailure(yield* Effect.exit(LeadDocs.read(scopeOf(lead), { key: first.key }))),
     );
+    const inGroup = yield* Effect.flip(LeadDocs.read(scopeOf(lead), { key: marked.key }));
+    assert.deepInclude(inGroup, { message: `No doc ${marked.key}.` });
+    assert.notProperty(inGroup, "privateNow");
     for (const key of [first.key, handEdited.key, byAgent.key, marked.key, raised.key])
       yield* nobodyElse(key);
 

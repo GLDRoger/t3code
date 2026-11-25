@@ -223,6 +223,8 @@ function KinDocStates(props: DocTarget) {
         <KinWorkLoading label="Loading doc" />
       ) : state._tag === "gone" ? (
         <EmptyState variant="plain" {...KIN_DOCS.gone} />
+      ) : state._tag === "private" ? (
+        <EmptyState variant="plain" {...KIN_DOCS.privateNow(state.by)} />
       ) : state._tag === "refused" ? (
         <EmptyState variant="plain" {...KIN_DOCS.unavailable} />
       ) : (

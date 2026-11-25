@@ -42,6 +42,7 @@ import {
   kinDocSameWords,
   kinDocSections,
   kinDocRow,
+  kinDocState,
   kinWhatWeSellAgent,
   kinWhatWeSellShown,
   type KinSearchState,
@@ -681,6 +682,19 @@ describe("kinDocEditOutcome", () => {
       moved: false,
       text: refusal,
     });
+  });
+});
+
+describe("kinDocState", () => {
+  it("reads the reader's own draft an owner kept to owners only as private now, any other as gone", () => {
+    const missing = (patch: { readonly privateNow?: { readonly by: string } }) =>
+      kinDocState(
+        AsyncResult.failure(
+          Cause.fail(new KinChatError({ reason: "not_found", message: "D-31", ...patch })),
+        ),
+      );
+    expect(missing({ privateNow: { by: "Rhea" } })).toEqual({ _tag: "private", by: "Rhea" });
+    expect(missing({})).toEqual({ _tag: "gone" });
   });
 });
 
