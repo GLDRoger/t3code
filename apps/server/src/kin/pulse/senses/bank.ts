@@ -1,4 +1,4 @@
-import { formatKinWhen, KIN_TEXT_LOCALE, KinRecordId } from "@t3tools/contracts";
+import { formatKinMoney, formatKinWhen, KIN_TEXT_LOCALE, KinRecordId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -6,6 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { dayIn, formatMoneyPlain, monthOf, shiftMonth } from "../../work/money.ts";
 import { endOfDay, owedInvoices, recordName, startOfDay } from "../../work/recordRows.ts";
 import { bankKnown, shortDay } from "../../work/statements/bankKnown.ts";
+import { repaidMatches } from "../../work/statements/debitRepaid.ts";
 import {
   type CreditMatch,
   type CreditPair,
@@ -229,5 +230,67 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
         ),
       },
     ];
+  });
+});
+
+/** Keys as a person writes them, "EXP-4, EXP-7 and EXP-9", the rest counted past `shown`. */
+const keysOf = (keys: ReadonlyArray<string>, shown: number) =>
+  shown < keys.length
+    ? `${keys.slice(0, shown).join(", ")} and ${keys.length - shown} more`
+    : keys.length === 1
+      ? keys[0]!
+      : `${keys.slice(0, -1).join(", ")} and ${keys.at(-1)}`;
+
+/**
+ * repaid_seen: one fact per unexplained debit that names one partner the company owes. One that
+ * adds up exactly to their oldest owed expenses wakes Finance, which may offer the owner a card
+ * that marks them repaid; one that doesn't is a line in the brief, and Kin marks nothing. A
+ * debit matching a repayment already marked by hand that day is not raised.
+ */
+export const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function* (
+  ctx: SenseContext,
+) {
+  const matches = (yield* repaidMatches(ctx.orgId, ctx.at)).filter(
+    (one) => one.marked === undefined && !one.noLine && !one.setBack && !one.ahead,
+  );
+  return matches.map(({ debit, partner, repays, owedMinor, owedCount }): SensedFact => {
+    const paid = `${debit.key}, ${plain(debit.amountMinor, debit.currency)} paid ${shortDay(debit.date)}, names ${partner.name}`;
+    const shared = {
+      sense: "repaid_seen" as const,
+      family: "money" as const,
+      subject: {
+        kind: "record" as const,
+        key: debit.key,
+        title: "Bank debit",
+        recordId: KinRecordId.make(debit.recordId),
+      },
+      scope: {},
+      since: iso(Math.min(debit.dateAt, ctx.at)),
+      actor: agentOrOwner(ctx.finance),
+      sensitive: true,
+      // Bank transactions lives in Money: with Money off, nothing about it is told.
+      extraSection: "money" as const,
+    };
+    if (repays === undefined)
+      return {
+        ...shared,
+        key: `repaid_seen:${debit.key}:short`,
+        consequence: `${paid} but doesn't add up to their oldest owed expenses (${formatKinMoney(owedMinor, debit.currency)} over ${owedCount} expense${owedCount === 1 ? "" : "s"}), so Kin marks nothing. Mark what it repaid on the expenses in Money.`,
+        wake: "brief",
+      };
+    const one = repays.length === 1;
+    return {
+      ...shared,
+      key: `repaid_seen:${debit.key}`,
+      consequence: fitted(
+        (shown) =>
+          `${paid} and adds up exactly to their ${one ? "oldest owed expense" : `${repays.length} oldest owed expenses`}: ${keysOf(
+            repays.map((each) => each.key),
+            Math.max(shown, 1),
+          )}. ${one ? "It isn't" : "They aren't"} marked repaid until the owner confirms.`,
+        repays.length,
+      ),
+      wake: "now",
+    };
   });
 });
