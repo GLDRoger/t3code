@@ -342,11 +342,12 @@ const refusedFor = (answer: ApiAnswer, now: number) => {
   const after = Number(answer.headers["retry-after"]);
   const reset = Number(answer.headers["x-ratelimit-reset"]);
   return {
-    until: Number.isFinite(after) && after > 0
-      ? now + after * 1000
-      : Number.isFinite(reset) && reset > 0
-        ? reset * 1000
-        : undefined,
+    until:
+      Number.isFinite(after) && after > 0
+        ? now + after * 1000
+        : Number.isFinite(reset) && reset > 0
+          ? reset * 1000
+          : undefined,
   };
 };
 
@@ -1140,9 +1141,7 @@ export const make = Effect.gen(function* () {
     const ahead =
       range.status === 200 &&
       Option.exists(decodeCompare(range.body), (found) => found.status === "ahead");
-    const since = ahead
-      ? yield* readDiff(get, thread.repo, { base: from, headSha })
-      : undefined;
+    const since = ahead ? yield* readDiff(get, thread.repo, { base: from, headSha }) : undefined;
     if (since !== undefined) return { diff: since, reReview: { from, whole: false } };
     const whole = yield* readDiff(get, thread.repo, { base: baseSha ?? baseRef, headSha });
     return whole === undefined ? null : { diff: whole, reReview: { from, whole: true } };

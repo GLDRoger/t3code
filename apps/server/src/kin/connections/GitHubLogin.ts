@@ -49,9 +49,7 @@ const ACCOUNT_TTL_MS = 60_000;
 const MAX_OUTPUT = 512 * 1024;
 /** What Kin keeps of one run's output, and whether it was cut. */
 export const cappedOutput = (out: string) =>
-  out.length > MAX_OUTPUT
-    ? { out: out.slice(0, MAX_OUTPUT), truncated: true as const }
-    : { out };
+  out.length > MAX_OUTPUT ? { out: out.slice(0, MAX_OUTPUT), truncated: true as const } : { out };
 const LOGIN_ARGS = ["auth", "login", "--hostname", HOST, "--git-protocol", "https"];
 /** `workflow` lets agents change CI files too; gh adds `repo`, `read:org` and `gist`. */
 const DEVICE_ARGS = [...LOGIN_ARGS, "--web", "--scopes", "workflow"];

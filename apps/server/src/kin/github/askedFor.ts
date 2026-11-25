@@ -36,7 +36,11 @@ const TITLE_MAX = 120;
  */
 const quotedTitle = (title: string) => {
   const chars = Array.from(
-    title.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\s]+/gu, " ").trim().replace(/"/g, "\u201d").replace(/'/g, "\u2019"),
+    title
+      .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\s]+/gu, " ")
+      .trim()
+      .replace(/"/g, "\u201d")
+      .replace(/'/g, "\u2019"),
   );
   const line =
     chars.length > TITLE_MAX ? `${chars.slice(0, TITLE_MAX - 1).join("")}\u2026` : chars.join("");
@@ -135,25 +139,25 @@ const notice = Effect.fn("KinGitHubReviewAsk.notice")(function* (
     WHERE org_id = ${input.orgId} AND message_id = ${input.id}`;
   if (there !== undefined) return;
   const posted = yield* deps.repo.insertMessage({
-      orgId: input.orgId,
-      chatId: input.chatId,
-      // Fixed words from Kin's own records.
-      audience: "chat",
-      messageId: KinMessageId.make(input.id),
-      author: { _tag: "system" },
-      kind: "system",
-      body: input.body,
-      intent: null,
-      mentions: [],
-      replyTo: null,
-      widgetId: null,
-      floorRunId: null,
-      status: "posted",
-      sentBy: null,
-      clientMessageId: null,
-      createdAt: input.now,
-      editedAt: null,
-    });
+    orgId: input.orgId,
+    chatId: input.chatId,
+    // Fixed words from Kin's own records.
+    audience: "chat",
+    messageId: KinMessageId.make(input.id),
+    author: { _tag: "system" },
+    kind: "system",
+    body: input.body,
+    intent: null,
+    mentions: [],
+    replyTo: null,
+    widgetId: null,
+    floorRunId: null,
+    status: "posted",
+    sentBy: null,
+    clientMessageId: null,
+    createdAt: input.now,
+    editedAt: null,
+  });
   if (Option.isSome(deps.hub))
     yield* sql.afterCommit(
       deps.hub.value.publish({ type: "message.posted", orgId: input.orgId, message: posted }),
