@@ -4365,6 +4365,55 @@ it.effect("an answer's turn answers in the chat that asked, or nowhere", () =>
   ),
 );
 
+it.effect("withdrawing a question its person never saw says so", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, orgId, owner, chatOf, chiefChat, askFor, wakeOn, cardOf } = yield* askingTeam;
+      yield* sql`UPDATE kin_people SET display_name = 'Rhea',
+          quiet_hours_json = '{"from":"11:00","to":"13:00"}'
+        WHERE org_id = ${orgId} AND person_id = ${owner.personId}`;
+      const zoyaChat = yield* chiefChat("zoya");
+      const turn = yield* wakeOn("chief", "zoya", zoyaChat, "Ask Rhea about the shoot.");
+      const held = yield* askFor("chief", turn, { to: "Rhea" });
+      assert.strictEqual(held.state, "held");
+      assert.isNull((yield* cardOf(held.questionId)).widgetId);
+      const close = (question: string, outcome: "answered" | "withdrawn") =>
+        callAs("chief", "kin_ask_close", { question, outcome });
+      const withdrawn = yield* close(held.questionId, "withdrawn");
+      assert.isTrue(withdrawn.ok, JSON.stringify(withdrawn.value));
+      assert.strictEqual(
+        withdrawn.value.note,
+        "Rhea never saw it. If you ask again, ask as the first they hear of it.",
+      );
+
+      yield* sql`UPDATE kin_people SET quiet_hours_json = NULL
+        WHERE org_id = ${orgId} AND person_id = ${owner.personId}`;
+      const posted = yield* askFor("chief", turn, {
+        to: "Rhea",
+        question: "Should the demo move to Thursday?",
+        about: [],
+        intent: "demo date",
+      });
+      assert.isNotNull((yield* cardOf(posted.questionId)).widgetId);
+      const closed = yield* close(posted.questionId, "withdrawn");
+      assert.isTrue(closed.ok, JSON.stringify(closed.value));
+      assert.notProperty(closed.value, "note");
+
+      const waiting = yield* askFor("chief", turn, {
+        to: "Rhea",
+        question: "Should the review start at noon?",
+        about: [],
+        intent: "review time",
+      });
+      yield* wakeOn("chief", "rhea", chatOf("chief"), "Noon works for the review.");
+      const answered = yield* close(waiting.questionId, "answered");
+      assert.isTrue(answered.ok, JSON.stringify(answered.value));
+      assert.notProperty(answered.value, "note");
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 // In words, only from the asked person's own message in her chat; withdrawn, only from the side
 // that asked, and her card says who withdrew it.
 it.effect(

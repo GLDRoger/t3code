@@ -100,7 +100,11 @@ export const CloseInput = Schema.Struct({
   outcome: Schema.Literals(["answered", "withdrawn"]),
   answer: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(200))),
 });
-export const CloseResult = Schema.Struct({ question: KinTrimmedText, state: KinTrimmedText });
+export const CloseResult = Schema.Struct({
+  question: KinTrimmedText,
+  state: KinTrimmedText,
+  note: Schema.optional(Schema.String),
+});
 
 const decode = Schema.decodeUnknownEffect(KinChoiceCardState);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });

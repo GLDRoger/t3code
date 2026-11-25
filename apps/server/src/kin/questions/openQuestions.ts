@@ -1204,6 +1204,15 @@ export const closeQuestion = Effect.fn("KinQuestions.close")(function* (
         );
     }
   }
+  const neverPosted =
+    input.outcome === "withdrawn" &&
+    row.widgetId === null &&
+    row.raiseWidgetId === null &&
+    (yield* sql`SELECT 1 FROM kin_questions WHERE org_id = ${input.orgId}
+      AND question_id = ${row.questionId} AND card_json IS NOT NULL`).length > 0;
+  const note = neverPosted
+    ? `${who} never saw it. If you ask again, ask as the first they hear of it.`
+    : undefined;
   yield* sql`UPDATE kin_questions SET state = ${input.outcome}, answer = ${answer},
       closed_at = ${input.now}
     WHERE org_id = ${input.orgId} AND question_id = ${row.questionId} AND state = 'open'`;
@@ -1239,7 +1248,12 @@ export const closeQuestion = Effect.fn("KinQuestions.close")(function* (
   // Sent on already, her answer has no Undo here: she says so in the chat if it was wrong.
   if (input.outcome === "answered" && cards.length > 0 && backTo === undefined)
     yield* offerUndo(input.orgId, row, answer, input.now, chat);
-  return { questionId: row.questionId, state: input.outcome, changed: true } as const;
+  return {
+    questionId: row.questionId,
+    state: input.outcome,
+    changed: true,
+    ...(note === undefined ? {} : { note }),
+  } as const;
 });
 
 /** What a question's card says once its asker took its answer from the person's words. */

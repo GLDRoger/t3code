@@ -330,7 +330,11 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           Context.get(services, KinEventQueue),
         ),
       );
-      return { question: closed.questionId, state: closed.state };
+      return {
+        question: closed.questionId,
+        state: closed.state,
+        ...(!closed.changed || closed.note === undefined ? {} : { note: closed.note }),
+      };
     }, Effect.mapError(failure)),
   ),
   kin_chart: McpToolAccess.actsAsCaller(
