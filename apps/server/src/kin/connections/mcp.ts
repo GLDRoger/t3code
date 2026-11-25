@@ -64,7 +64,7 @@ export const KinConnectionsToolkit = Toolkit.make(
   Tool.make("kin_connection_offer", {
     ...shared,
     description:
-      "When the answer needs a service that isn't connected (github, posthog, sentry, google, microsoft, zoho_books or custom), ask the owner to connect it: he sees a card and connects it himself; never ask for a key or password in chat. Offer it even when another connected service can stand in; then answer with what you have.",
+      "When the answer needs a service that isn't connected (github, posthog, sentry, google, microsoft, zoho_books or custom), ask the owner to connect it: the owner sees a card and connects it there; never ask for a key or password in chat. Offer it even when another connected service can stand in; then answer with what you have.",
     parameters: KinConnectionOfferInput,
     success: KinConnectionOfferResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
