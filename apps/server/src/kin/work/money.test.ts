@@ -1969,7 +1969,7 @@ describe("invoices", () => {
         note: "No bank statement is confirmed, so Kin can't see what reached the bank.",
       });
       // Unexplained credits the statement matcher would offer for it are named beside the bank;
-      // an explained, ignored, other-currency or outgoing one isn't, and at most five, newest first.
+      // an explained, ignored or outgoing one isn't, and at most five, newest first.
       const number = String(read.fields?.number);
       const bankList = yield* ensureBankList(orgId, NOW);
       const credit = (
@@ -1993,7 +1993,9 @@ describe("invoices", () => {
       const cited = yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-10");
       yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-11", { state: "done" });
       yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-11", { state: "dropped" });
-      yield* credit(`SWIFT CR-INVENTED ACME-${number}`, 600, "2026-11-11", { currency: "USD" });
+      const foreign = yield* credit(`SWIFT CR-INVENTED ACME-${number}`, 600, "2026-11-11", {
+        currency: "USD",
+      });
       yield* credit(`NEFT DR-INVENTED ACME-${number}`, 60_000, "2026-11-11", {
         direction: "debit",
       });
@@ -2001,8 +2003,15 @@ describe("invoices", () => {
         LeadWork.get(scope, { key: "INV-1" }).pipe(Effect.map((one) => one.bank?.credits));
       assert.deepStrictEqual((yield* LeadWork.get(scope, { key: "INV-1" })).bank, {
         knownThrough: null,
-        note: `No bank statement is confirmed. Bank transactions has an unexplained credit that looks like this invoice's payment: ${cited}, ₹60,000.00 on 10 Nov. The invoice isn't recorded as paid until the owner confirms.`,
+        note: `No bank statement is confirmed. Bank transactions has unexplained credits that look like this invoice's payment: ${foreign}, USD 600.00 on 11 Nov; ${cited}, ₹60,000.00 on 10 Nov. The invoice isn't recorded as paid until the owner confirms.`,
         credits: [
+          {
+            key: foreign,
+            date: "2026-11-11",
+            amount: "USD 600.00",
+            title: `SWIFT CR-INVENTED ACME-${number}`,
+            reason: `USD 600.00 for INR 60,000.00 owed, a rate of 0.01, and it cites ${number}`,
+          },
           {
             key: cited,
             date: "2026-11-10",
@@ -2019,14 +2028,20 @@ describe("invoices", () => {
       assert.deepStrictEqual(
         five?.map((one) => [one.date, one.reason]),
         [
+          [
+            "2026-11-11",
+            `USD 600.00 for INR 60,000.00 owed, a rate of 0.01, and it cites ${number}`,
+          ],
           ["2026-11-10", `cites ${number}`],
           ["2026-11-09", "same amount from Invented Acme"],
           ["2026-11-05", "part of what is owed from Invented Acme"],
           ["2026-11-04", "part of what is owed from Invented Acme"],
-          ["2026-11-03", "part of what is owed from Invented Acme"],
         ],
       );
-      assert.deepStrictEqual([five?.[0]?.key, five?.[1]?.key], [cited, same]);
+      assert.deepStrictEqual(
+        five?.slice(0, 3).map((one) => one.key),
+        [foreign, cited, same],
+      );
       const stored = yield* (yield* KinRecords.KinRecords).detail(
         (yield* (yield* KinRecords.KinRecords).get(orgId, "INV-1"))!,
       );
@@ -2135,7 +2150,15 @@ describe("invoices", () => {
       assert.strictEqual((yield* records.get(orgId, "INV-1"))!.paid, 6_000_000);
 
       // A turn a teammate reads gets the invoice and the bank's line, never Bank transactions.
-      assert.lengthOf((yield* credits()) ?? [], 4);
+      const reopened = (yield* credits()) ?? [];
+      assert.lengthOf(reopened, 5);
+      assert.deepStrictEqual(
+        reopened.slice(1, 3).map(({ key, reason }) => [key, reason]),
+        [
+          [cited, `it cites ${number}`],
+          [same, "it names Invented Acme"],
+        ],
+      );
       const sqlTeam = yield* SqlClient.SqlClient;
       yield* sqlTeam`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, sees_money)
         VALUES ('banker-mate', ${orgId}, 'banker-mate', 'Banker Mate', ${at}, 1)`;

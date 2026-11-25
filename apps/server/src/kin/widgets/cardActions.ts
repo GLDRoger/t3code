@@ -45,7 +45,7 @@ import {
   deferralWidgetId,
   makeDeferralStarter,
 } from "../triggers/deferrals.ts";
-import { isHelperRefusal, type KinRecords } from "../work/KinRecords.ts";
+import { isHelperRefusal, KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
 import { repeatOf } from "../work/recordRows.ts";
 import {
@@ -57,6 +57,10 @@ import {
 } from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
 import {
+  applyCredit,
+  applyLabel,
+  applyLine,
+  drawApply,
   drawPayment,
   paymentLabel,
   paymentLine,
@@ -112,6 +116,8 @@ const labelOf = (plan: CardPlan): string => {
       return "Create the list";
     case "record_payment":
       return paymentLabel(plan);
+    case "apply_credit":
+      return applyLabel(plan);
     case "mark_repaid":
       return repaidLabel(plan);
     case "take_default": {
@@ -152,6 +158,8 @@ const lineOf = (plan: CardPlan): string => {
       return `Create the list ${quoted(plan.name, 60)}`;
     case "record_payment":
       return paymentLine(plan);
+    case "apply_credit":
+      return applyLine(plan);
     case "mark_repaid":
       return repaidLine(plan);
     case "take_default": {
@@ -382,6 +390,10 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
         yield* ownerTier("payment_record");
         return yield* drawPayment(orgId, input.target, drawn);
       }
+      case "apply_credit": {
+        yield* ownerTier("payment_record");
+        return yield* drawApply(orgId, input.target, drawn);
+      }
       case "mark_repaid": {
         yield* ownerTier("record_update");
         return yield* drawRepaid(orgId, input.target, drawn);
@@ -465,8 +477,10 @@ const actionOf = (plan: RunPlan): RunInput => ({
       : plan.kind === "create_list"
         ? plan.proposalId
         : plan.kind === "record_payment"
-          ? `${plan.bankKey} ${plan.key}`
-          : plan.key,
+          ? [plan.bankKey, ...(plan.splits?.map((part) => part.key) ?? [plan.key])].join(" ")
+          : plan.kind === "apply_credit"
+            ? `${plan.receipt} ${plan.key}`
+            : plan.key,
 });
 /** The same action on the same thing at the same revision, whoever drew it and whatever it's labelled. */
 const sameAction = (a: CardPlan, b: CardPlan) =>
@@ -924,8 +938,22 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
         },
         tap.widget.widgetId,
         records,
-      );
+      ).pipe(Effect.provideService(KinRecords, records));
       return done ?? nothingDone(`${plan.bankKey} or ${plan.key} changed since this was offered`);
+    }
+    case "apply_credit": {
+      if (!owner) return yield* notAllowed("Only the owner or a co-owner applies credit.");
+      yield* refuseOff("invoices");
+      const why = yield* drawsHold(orgId, draws);
+      if (why !== undefined) return nothingDone(why);
+      const done = yield* applyCredit(orgId, plan, {
+        actor: { _tag: "person", personId },
+        via: "owner",
+        askedBy: personId,
+        chatId: tap.widget.chatId,
+        answering: [tap.widget.widgetId, ...alsoAnswering],
+      }).pipe(Effect.provideService(KinRecords, records));
+      return done ?? nothingDone(`${plan.receipt} or ${plan.key} changed since this was offered`);
     }
     case "mark_repaid": {
       if (!owner)

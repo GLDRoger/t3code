@@ -9,6 +9,7 @@ import {
   type KinCompanyProfileSetInput,
   type KinDatesInput,
   type KinIssueInput,
+  type KinDraftCreditNoteInput,
   type KinListsInput,
   type KinListUpdateInput,
   type KinMoney,
@@ -36,7 +37,9 @@ import { readableFrom } from "../chat/sharing.ts";
 import { remakeForEntry } from "../gendocs/make.ts";
 import { issueEntry } from "../gendocs/amounts.ts";
 import * as Numbers from "../gendocs/numbering.ts";
-import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts.ts";
+import * as CreditNotes from "../gendocs/creditNotes.ts";
+import { undo } from "./statements/creditPayment.ts";
+import { listReceipts, makeReceipt as makeReceiptFor, unsetAgainst } from "../gendocs/receipts.ts";
 import { readProfile, setProfile, waitingOnCountry } from "./companyProfile.ts";
 import { wakeRefused } from "./countryWake.ts";
 import { KinRecords } from "./KinRecords.ts";
@@ -347,55 +350,64 @@ export const moneyViewer = (orgId: KinOrgId, personId: KinPersonId) =>
  * The owner's Issue tap: the entry's number from its list's series, the same one if asked twice.
  * On a quote it is Mark sent, so a draft quote also reads sent.
  */
-export const issue = Effect.fn("KinMoney.issue")(function* (
-  people: ReadonlyArray<PersonIdentity>,
-  input: KinIssueInput,
-) {
-  const person = yield* theOwner(people, input.orgId);
-  const writer = ownerWriter(person);
-  const sql = yield* SqlClient.SqlClient;
-  const records = yield* KinRecords;
-  const issued = yield* sql.withTransaction(
-    Effect.gen(function* () {
-      const issued = yield* issueEntry(input.orgId, writer, input.key);
-      if (issued.number === null || issued.state !== "open") return issued;
-      if ((yield* records.get(input.orgId, issued.key))?.registerId !== "quotes") return issued;
-      const sent = yield* records.update(input.orgId, writer, issued.key, { state: "waiting" });
-      return { ...issued, state: sent.state };
-    }),
-  );
-  const remade =
-    issued.number !== null && issued.state !== "dropped"
-      ? yield* remakeForEntry({
-          orgId: input.orgId,
-          entryKey: issued.key,
-          requester: { _tag: "owner", personId: person.personId, writer },
-          admit: Effect.void,
-        })
-      : { documents: [], problems: [] };
-  return {
-    ...issued,
-    documents: remade.documents.map((doc) => ({
-      key: KinRecordKey.make(doc.key),
-      title: doc.title,
-      version: doc.version,
-    })),
-    problems: remade.problems,
-  };
-}, workFailure);
+export const issue = Effect.fn("KinMoney.issue")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinIssueInput) {
+    const person = yield* theOwner(people, input.orgId);
+    const writer = ownerWriter(person);
+    const sql = yield* SqlClient.SqlClient;
+    const records = yield* KinRecords;
+    const notes = yield* CreditNotes.CreditNotes;
+    const issued = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        if ((yield* records.get(input.orgId, input.key))?.registerId === "credit_notes")
+          return yield* notes.issue(input.orgId, writer, input.key);
+        const issued = yield* issueEntry(input.orgId, writer, input.key);
+        if (issued.number === null || issued.state !== "open") return issued;
+        if ((yield* records.get(input.orgId, issued.key))?.registerId !== "quotes") return issued;
+        const sent = yield* records.update(input.orgId, writer, issued.key, { state: "waiting" });
+        return { ...issued, state: sent.state };
+      }),
+    );
+    const remade =
+      issued.number !== null && issued.state !== "dropped"
+        ? yield* remakeForEntry({
+            orgId: input.orgId,
+            entryKey: issued.key,
+            requester: { _tag: "owner", personId: person.personId, writer },
+            admit: Effect.void,
+          })
+        : { documents: [], problems: [] };
+    return {
+      ...issued,
+      documents: remade.documents.map((doc) => ({
+        key: KinRecordKey.make(doc.key),
+        title: doc.title,
+        version: doc.version,
+      })),
+      problems: remade.problems,
+    };
+  },
+  (effect) => effect.pipe(Effect.provide(CreditNotes.layer), workFailure),
+);
 
 /** The owner's Void tap: kept with its number, so the series stays complete. */
-export const voidEntry = Effect.fn("KinMoney.void")(function* (
-  people: ReadonlyArray<PersonIdentity>,
-  input: KinVoidInput,
-) {
-  const person = yield* theOwner(people, input.orgId);
-  return {
-    ...(yield* Numbers.voidEntry(input.orgId, ownerWriter(person), input.key)),
-    documents: [],
-    problems: [],
-  };
-}, workFailure);
+export const voidEntry = Effect.fn("KinMoney.void")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinVoidInput) {
+    const person = yield* theOwner(people, input.orgId);
+    const records = yield* KinRecords;
+    const row = yield* records.get(input.orgId, input.key);
+    const notes = yield* CreditNotes.CreditNotes;
+    const writer = ownerWriter(person);
+    return {
+      ...(yield* row?.registerId === "credit_notes"
+        ? notes.voidEntry(input.orgId, writer, input.key)
+        : Numbers.voidEntry(input.orgId, writer, input.key)),
+      documents: [],
+      problems: [],
+    };
+  },
+  (effect) => effect.pipe(Effect.provide(CreditNotes.layer), workFailure),
+);
 
 /** The owner's Undo void: back to owed, or paid, with the number it had. */
 export const unvoidEntry = Effect.fn("KinMoney.unvoid")(function* (
@@ -618,3 +630,31 @@ export const makeReceipt = Effect.fn("KinMoney.makeReceipt")(function* (
     });
   return { receipt: made.receipt, problems: made.problems };
 }, workFailure);
+
+export const undoCreditPayment = Effect.fn("KinMoney.undoCreditPayment")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinIssueInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const result = yield* undo(input.orgId, ownerWriter(person), input.key);
+  return { key: KinRecordKey.make(result.key) };
+}, workFailure);
+
+export const unapplyCredit = Effect.fn("KinMoney.unapplyCredit")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinIssueInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const result = yield* unsetAgainst(input.orgId, ownerWriter(person), input.key);
+  return { key: KinRecordKey.make(result.key) };
+}, workFailure);
+
+export const draftCreditNote = Effect.fn("KinMoney.draftCreditNote")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinDraftCreditNoteInput) {
+    const person = yield* theOwner(people, input.orgId);
+    const notes = yield* CreditNotes.CreditNotes;
+    const { row } = yield* notes.draft(input.orgId, ownerWriter(person), input);
+    return { key: KinRecordKey.make(row.key) };
+  },
+  (effect) => effect.pipe(Effect.provide(CreditNotes.layer), workFailure),
+);

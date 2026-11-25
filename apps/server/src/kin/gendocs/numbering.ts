@@ -15,7 +15,7 @@ import type { Documented } from "./amounts.ts";
 import { followsCodingAgent } from "../lead/OutsideContent.ts";
 import { markedKey } from "../work/keyCall.ts";
 import { companyMoney } from "../work/companyProfile.ts";
-import { KinRecords, type Writer } from "../work/KinRecords.ts";
+import { CREDIT_NOTE_TAP, CREDIT_NOTE_VOID, KinRecords, type Writer } from "../work/KinRecords.ts";
 import { KIN_OWN_REFUSAL, refuseKinOwn } from "../people/KinAccess.ts";
 import { isMoney, parseFields } from "../work/lists.ts";
 import { dayIn, financialYearOf, formatMoney } from "../work/money.ts";
@@ -202,6 +202,8 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
       if (row === undefined) return yield* notFound(key);
+      if (row.registerId === "credit_notes" && writer.creditNote !== true)
+        return yield* new KinChatError({ reason: "not_allowed", message: CREDIT_NOTE_TAP });
       const def = yield* listDef(orgId, row.registerId);
       if (def === undefined) return yield* unknownList(row.registerId);
       const rule = numberingOf(def);
@@ -391,6 +393,8 @@ export const adopt = Effect.fn("KinNumbers.adopt")(function* (
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
       if (row === undefined) return yield* notFound(key);
+      if (row.registerId === "credit_notes")
+        return yield* new KinChatError({ reason: "not_allowed", message: CREDIT_NOTE_TAP });
       const def = yield* listDef(orgId, row.registerId);
       if (def === undefined) return yield* unknownList(row.registerId);
       const rule = numberingOf(def);
@@ -469,6 +473,7 @@ export const unvoidEntry = Effect.fn("KinNumbers.unvoid")(function* (
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
       if (row === undefined) return yield* notFound(key);
+      if (row.registerId === "credit_notes") return yield* invalid(CREDIT_NOTE_VOID);
       const def = yield* listDef(orgId, row.registerId);
       if (def === undefined) return yield* unknownList(row.registerId);
       if (def.id === "receipts")
@@ -522,6 +527,8 @@ export const voidEntry = Effect.fn("KinNumbers.void")(function* (
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
       if (row === undefined) return yield* notFound(key);
+      if (row.registerId === "credit_notes" && writer.creditNote !== true)
+        return yield* new KinChatError({ reason: "not_allowed", message: CREDIT_NOTE_TAP });
       const def = yield* listDef(orgId, row.registerId);
       if (def === undefined) return yield* unknownList(row.registerId);
       if (numberingOf(def) === undefined || !def.states.includes("dropped"))

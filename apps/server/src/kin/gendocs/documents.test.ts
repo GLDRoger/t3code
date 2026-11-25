@@ -61,6 +61,7 @@ import { assembleInputs, needsEntry, parseRecipe } from "./recipe.ts";
 import { labelChange } from "./recipeLabels.ts";
 import { checkReferences } from "./references.ts";
 import * as Render from "./render.ts";
+import { unsetAgainst } from "./receipts.ts";
 import { STARTER_FILES } from "./starter.ts";
 import { sheetCells } from "./tables.ts";
 import { KinToolchain } from "./toolchain.ts";
@@ -3092,6 +3093,26 @@ describe("receipts", () => {
             AND t.register_id = 'invoices'`;
         assert.deepStrictEqual(linked, [{ key: retainer }]);
 
+        const summary = () => moneySummary(orgId, Date.parse(at), KIN_OWNER_LEVEL);
+        const received = (yield* summary()).received;
+        const writer = {
+          actor: { _tag: "person" as const, personId: ownerId },
+          via: "owner" as const,
+        };
+        assert.deepStrictEqual(yield* unsetAgainst(orgId, writer, advance.receipt), {
+          key: advance.receipt,
+        });
+        assert.deepStrictEqual((yield* summary()).received, received);
+        assert.isNull(
+          (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+            (one) => one.key === advance.receipt,
+          )!.invoice,
+        );
+        yield* receipt({
+          entry: KinRecordKey.make(advance.receipt),
+          against: KinRecordKey.make(retainer),
+        });
+
         // A void receipt's number never shows against its advance; the one made after it does.
         const advances = () =>
           LeadDocuments.make(
@@ -3113,7 +3134,11 @@ describe("receipts", () => {
           sourceEventId: asked,
         });
         assert.isNull((yield* advances())!.receipt);
-        const remade = yield* receipt({ payment: setPayment.paymentId });
+        const reapplied = (yield* OwnerWork.get(people, {
+          orgId,
+          key: KinRecordKey.make(retainer),
+        })).payments!.find((one) => one.paidOn === "2026-11-05" && one.voidedAt === null)!;
+        const remade = yield* receipt({ payment: reapplied.paymentId });
         assert.notStrictEqual(remade.number, advance.number);
         assert.strictEqual((yield* advances())!.receipt, remade.number);
       }).pipe(Effect.provide(layer)),

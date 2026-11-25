@@ -381,6 +381,15 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.receipts": Effect.fn("KinWork.rpc.receipts")(function* (input) {
         return yield* call((people) => Money.receipts(people, input));
       }),
+      "kin.work.undoCreditPayment": Effect.fn("KinWork.rpc.undoCreditPayment")(function* (input) {
+        return yield* call((people) => Money.undoCreditPayment(people, input));
+      }),
+      "kin.work.draftCreditNote": Effect.fn("KinWork.rpc.draftCreditNote")(function* (input) {
+        return yield* call((people) => Money.draftCreditNote(people, input));
+      }),
+      "kin.work.unapplyCredit": Effect.fn("KinWork.rpc.unapplyCredit")(function* (input) {
+        return yield* call((people) => Money.unapplyCredit(people, input));
+      }),
       "kin.work.makeReceipt": Effect.fn("KinWork.rpc.makeReceipt")(function* (input) {
         return yield* call((people) => Money.makeReceipt(people, input));
       }),

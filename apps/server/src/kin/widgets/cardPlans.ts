@@ -19,6 +19,7 @@ const CARD_ACTIONS = [
   "create_list",
   "take_default",
   "record_payment",
+  "apply_credit",
   "mark_repaid",
 ] as const;
 export const CardActionInput = Schema.Struct({
@@ -84,7 +85,23 @@ const PaymentPlan = Schema.Struct({
   key: Schema.String,
   title: Schema.String,
   number: Schema.String,
-  client: Schema.NullOr(Schema.String),
+  client: Schema.Union([
+    Schema.NullOr(Schema.String),
+    Schema.Struct({ id: Schema.String, name: Schema.String }),
+  ]),
+  splits: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        recordId: Schema.String,
+        key: Schema.String,
+        number: Schema.String,
+        seen: Schema.String,
+        amountMinor: Schema.Number,
+        owedAfterMinor: Schema.Number,
+      }),
+    ),
+  ),
+  leftMinor: Schema.optionalKey(Schema.Number),
   seen: Schema.String,
   bankRecordId: Schema.String,
   bankKey: Schema.String,
@@ -130,7 +147,22 @@ const RepaidPlan = Schema.Struct({
   draw: CardDraw,
 });
 export type RepaidPlan = typeof RepaidPlan.Type;
-const RunPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, PaymentPlan, RepaidPlan]);
+const ApplyPlan = Schema.Struct({
+  kind: Schema.Literal("apply_credit"),
+  key: Schema.String,
+  receipt: Schema.String,
+  client: Schema.String,
+  receiptRev: Schema.Number,
+  invoiceRev: Schema.Number,
+  paymentId: Schema.String,
+  number: Schema.String,
+  amount: KinMoney,
+  receivedOn: Schema.String,
+  owedAfterMinor: Schema.Number,
+  draw: CardDraw,
+});
+export type ApplyPlan = typeof ApplyPlan.Type;
+const RunPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, PaymentPlan, RepaidPlan, ApplyPlan]);
 export type RunPlan = typeof RunPlan.Type;
 const DefaultPlan = Schema.Struct({
   kind: Schema.Literal("take_default"),
@@ -309,6 +341,7 @@ export const CardPlan = Schema.Union([
   StartPlan,
   ListPlan,
   PaymentPlan,
+  ApplyPlan,
   RepaidPlan,
   DefaultPlan,
   RoutePlan,

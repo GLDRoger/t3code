@@ -14,7 +14,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, paymentIdFor, type Writer } from "../work/KinRecords.ts";
-import { KIN_OWN_REFUSAL, refuseKinOwn } from "../people/KinAccess.ts";
+import { KIN_OWN_REFUSAL, ownerLevel, refuseKinOwn } from "../people/KinAccess.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
 import {
   endOfDay,
@@ -57,7 +57,7 @@ const principalOf = (writer: Writer): KinWorkPrincipal | undefined =>
  * The receipts list, made from Kin's preset the first time the owner asks for a receipt. Its
  * series takes the prefix the old system's receipt numbers carry, so Kin continues that series.
  */
-const receiptsList = Effect.fn("KinReceipts.list")(function* (orgId: KinOrgId) {
+export const receiptsList = Effect.fn("KinReceipts.list")(function* (orgId: KinOrgId) {
   const existing = yield* listDef(orgId, RECEIPTS);
   if (existing !== undefined) return existing;
   const sql = yield* SqlClient.SqlClient;
@@ -169,7 +169,8 @@ const receiptOfPayment = Effect.fn("KinReceipts.ofPayment")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ key: string; state: string }>`SELECT key, state FROM kin_records
-    WHERE org_id = ${orgId} AND register_id = ${RECEIPTS} AND origin_key LIKE 'receipt:%'
+    WHERE org_id = ${orgId} AND register_id = ${RECEIPTS}
+      AND (origin_key LIKE 'receipt:%' OR origin_key LIKE 'bank-credit:%:left')
       AND json_extract(fields_json, '$.payment') = ${paymentId}
     ORDER BY created_at, record_id LIMIT 100`;
   // A voided receipt stays void; the payment may get a new one, made once per voided one.
@@ -238,6 +239,8 @@ const forPayment = Effect.fn("KinReceipts.forPayment")(function* (
     return yield* invalid(
       `That is the advance ${payment.invoiceKey} received; it is its own receipt. Nothing was made.`,
     );
+  if (payment.originKey.startsWith("credit_note:"))
+    return yield* invalid("A credit note is not money received, so it gets no receipt.");
   if (payment.withheld === 1)
     return yield* invalid(
       "That line is TDS the client deducted, not money received, so it gets no receipt. Make the receipt for the payment that came in. Nothing was made.",
@@ -323,7 +326,7 @@ export const createsMoney = Effect.fn("KinReceipts.createsMoney")(function* (
  * receipt is void or set against an invoice. One whose payment was taken back stays taken back:
  * numbering it again would make that money up. Refused when it has no amount or day to record.
  */
-const backed = Effect.fn("KinReceipts.backed")(function* (
+export const backed = Effect.fn("KinReceipts.backed")(function* (
   orgId: KinOrgId,
   writer: Writer,
   key: string,
@@ -453,7 +456,7 @@ const forEntry = Effect.fn("KinReceipts.forEntry")(function* (
  * the place of the advance's own. Once only, to one invoice, and never more than the invoice
  * still owes.
  */
-const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
+export const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
   orgId: KinOrgId,
   writer: Writer,
   receiptKey: string,
@@ -542,6 +545,56 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
       });
       yield* tie(orgId, writer, receipt, { invoice: invoice.key, payment: paymentId });
       return receipt.key;
+    }),
+  );
+});
+
+export const unsetAgainst = Effect.fn("KinReceipts.unsetAgainst")(function* (
+  orgId: KinOrgId,
+  writer: Writer,
+  receiptKey: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      if (writer.actor._tag !== "person" || !(yield* ownerLevel(orgId, writer.actor.personId)))
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: "Only the owner or a co-owner un-applies credit.",
+        });
+      yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.payment);
+      const receipt = yield* records.get(orgId, receiptKey);
+      if (receipt === undefined || receipt.registerId !== RECEIPTS)
+        return yield* new KinChatError({
+          reason: "not_found",
+          message: `No receipt ${receiptKey.slice(0, 40)}.`,
+        });
+      const fields = parseFields(receipt.fieldsJson);
+      const applied =
+        typeof fields.payment === "string" && typeof fields.invoice === "string"
+          ? yield* sql<{ key: string; voidedAt: number | null; origin: string }>`SELECT i.key,
+          p.voided_at AS "voidedAt", p.origin_key AS origin
+        FROM kin_record_payments p JOIN kin_records i ON i.org_id = p.org_id AND i.record_id = p.record_id
+        WHERE p.org_id = ${orgId} AND p.payment_id = ${fields.payment} AND i.register_id = 'invoices'`
+          : [];
+      const payment = applied[0];
+      const origin = `receipt:${receipt.recordId}`;
+      if (
+        payment === undefined ||
+        (payment.origin !== origin && !payment.origin.startsWith(`${origin}:after:`))
+      )
+        return { key: receipt.key };
+      if (receipt.state === "dropped" || payment.voidedAt !== null)
+        return yield* invalid(`${receipt.key} is void; it can't be un-applied.`);
+      yield* records.voidPayment(orgId, writer, payment.key, String(fields.payment));
+      yield* sql`UPDATE kin_records SET fields_json = json_remove(fields_json, '$.invoice', '$.payment')
+      WHERE org_id = ${orgId} AND record_id = ${receipt.recordId}`;
+      yield* records.update(orgId, writer, receipt.key, {}, undefined, [
+        { field: "invoice", from: payment.key, to: null },
+      ]);
+      yield* backed(orgId, writer, receipt.key);
+      return { key: receipt.key };
     }),
   );
 });

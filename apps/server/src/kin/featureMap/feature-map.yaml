@@ -1791,6 +1791,9 @@ features:
       - apps/server/src/kin/numbers/KinNumbers.test.ts
 
 unlisted:
+  "rpc:kin.work.undoCreditPayment": Served for owner-level split payment undo; client controls land separately.
+  "rpc:kin.work.unapplyCredit": Served for owner-level credit reversal; client controls land separately.
+  "rpc:kin.work.draftCreditNote": Served for owner-level credit note drafting; client controls land separately.
   "web:team": Old address; opens the Settings modal on Team.
   "web:memory": Old address; opens the Settings modal on Memory.
   "web:settings/approvals": The app's old address; opens Kin's Settings → Approvals.
