@@ -10,6 +10,8 @@ import {
 
 import {
   kinFollowUpView,
+  kinHeldFollowUps,
+  kinHeldFollowUpsLine,
   KIN_WATCH_LOG_INTRO,
   KIN_WATCH_LOG_TITLE,
   kinWatchAbout,
@@ -324,5 +326,24 @@ describe("a follow-up", () => {
     expect(kinFollowUpView(followUp({ onDue: "ask" }), rhea, words).lines[0]).toBe(
       "Due Wed 25 Nov, 16:30. Chief of staff will ask about it.",
     );
+  });
+
+  it("counts the held ones by the switch that holds them, for that section's line on Sections", () => {
+    const held = kinHeldFollowUps([
+      followUp({ held: { section: "clients", sectionName: "Clients" } }),
+      followUp(),
+      followUp({ held: { section: "money", sectionName: "Money" } }),
+      followUp({ held: { section: "clients", sectionName: "Clients" } }),
+      followUp({ held: { section: "clients", sectionName: "Clients" } }),
+    ]);
+    expect(held).toEqual({ clients: 3, money: 1 });
+    expect(kinHeldFollowUpsLine(held.clients)).toBe(
+      "3 follow-ups are waiting for this to be switched back on.",
+    );
+    expect(kinHeldFollowUpsLine(held.money)).toBe(
+      "1 follow-up is waiting for this to be switched back on.",
+    );
+    expect(kinHeldFollowUpsLine(held.deals)).toBeNull();
+    expect(kinHeldFollowUpsLine(0)).toBeNull();
   });
 });

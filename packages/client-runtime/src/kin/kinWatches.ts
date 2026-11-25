@@ -270,6 +270,24 @@ export function kinFollowUpView(
   };
 }
 
+/** How many due follow-ups each switched-off section holds back, by the switch that frees them. */
+export function kinHeldFollowUps(
+  followUps: ReadonlyArray<KinFollowUp>,
+): Partial<Record<NonNullable<KinFollowUp["held"]>["section"], number>> {
+  const counts: Partial<Record<NonNullable<KinFollowUp["held"]>["section"], number>> = {};
+  for (const { held } of followUps)
+    if (held !== undefined) counts[held.section] = (counts[held.section] ?? 0) + 1;
+  return counts;
+}
+
+/** The Sections page's line under an off section holding follow-ups; null when it holds none. */
+export function kinHeldFollowUpsLine(count: number | undefined): string | null {
+  if (count === undefined || count < 1) return null;
+  return count === 1
+    ? "1 follow-up is waiting for this to be switched back on."
+    : `${count} follow-ups are waiting for this to be switched back on.`;
+}
+
 /** Today's page of the log before any look. */
 export function kinWatchNothingToday(nextLookAt: string | null, words: KinWatchWords = {}): string {
   if (nextLookAt === null) return "No checks yet today.";
