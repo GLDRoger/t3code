@@ -29,6 +29,7 @@ import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
 import * as Reach from "../lead/Reach.ts";
 import type { Services } from "../KinServer.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { factCards } from "./factCards.ts";
 import * as KinPulse from "./KinPulse.ts";
@@ -1049,6 +1050,45 @@ it.effect(
         assert.lengthOf(yield* noticeCards(ctx), 1);
       }),
     ),
+);
+
+it.effect("a tap on a fact card whose section is switched off does nothing and says so", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      yield* contract(ctx, { _tag: "agent", agentId: sales });
+      yield* TestClock.setTime(NOW);
+      const { milestone } = yield* plan(ctx, "Pilot live", ctx.byOwner.actor, NOV_27, [
+        { title: "Load test", dueAt: NOV_30 },
+      ]);
+      yield* tickAt(ctx, NOW);
+      const shown = yield* cards(ctx);
+      const move = shown.find((card) => card.labels.includes("Move to Mon 30 Nov"))!;
+      const renew = shown.find((card) => card.labels.includes("Let it renew"))!;
+      assert.strictEqual(move.who, ctx.owner.personId);
+      assert.strictEqual(renew.who, ctx.owner.personId);
+
+      yield* KinShell.set(ctx.orgId, ctx.owner.personId, 0, [
+        { id: "clients", on: false, name: "Accounts" },
+      ]);
+      yield* tap(ctx, ctx.owner.personId, move, "Move to Mon 30 Nov");
+      yield* tap(ctx, ctx.owner.personId, renew, "Let it renew");
+
+      const answered = yield* cards(ctx);
+      const outcome = {
+        title: "Nothing was done",
+        text: "Accounts is turned off for this company, so nothing was done.",
+      };
+      assert.deepStrictEqual(
+        {
+          dueAt: (yield* ctx.records.get(ctx.orgId, milestone))?.dueAt,
+          move: answered.find((card) => card.widgetId === move.widgetId)?.outcome,
+          renew: answered.find((card) => card.widgetId === renew.widgetId)?.outcome,
+          noticeOpen: yield* noticeOpen(ctx, { _tag: "owner" }, NOW + HOUR),
+        },
+        { dueAt: NOV_27, move: outcome, renew: outcome, noticeOpen: true },
+      );
+    }),
+  ),
 );
 
 it.effect("Give notice wakes the card's agent and has nothing in hand", () =>
