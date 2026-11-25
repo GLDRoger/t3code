@@ -39,6 +39,7 @@ import { headStarts } from "./headStart.ts";
 import {
   DRAFT_CALL_NOTES,
   DRAFT_CHASE,
+  DRAFT_DEAL,
   DRAFT_DOCUMENT,
   draftWakeGone,
   DRAFT_FROM_MAILBOX,
@@ -1140,6 +1141,135 @@ describe("KinPulse", () => {
       assert.deepStrictEqual(yield* drafted(NOON_LA + DAY), []);
       assert.deepStrictEqual(yield* drafted(NOON_LA + 2 * DAY), []);
       assert.deepStrictEqual(yield* drafted(NOON_LA + 3 * DAY + HOUR), [key]);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect(
+    "a deal gone quiet gets a drafted follow-up for whoever looks after it, once a quiet stretch",
+    () =>
+      Effect.gen(function* () {
+        yield* salesDay;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-30'`;
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+          VALUES (${orgId}, 'deals', 'deals', 'DL', 1, 0)`;
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+            url_host, auth, reach, state, account_label, created_at, updated_at, person_id)
+          VALUES (${orgId}, 'conn-mate', 'google', 'meera@invented.example', 'builtin',
+            'gmail.googleapis.com', 'oauth', 'closed', 'active', 'meera@invented.example', 0, 0,
+            ${mate})`;
+        // Hers; an agent's on her client; an agent's on a client nobody looks after (the owner's).
+        yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${mate}
+          WHERE record_id = 'r-C-1'`;
+        // C-2 is in the seed, held by the Chief of staff.
+        yield* insert({
+          id: "DL-1",
+          list: "deals",
+          title: "Lumen pilot",
+          ownerKind: "person",
+          ownerId: mate,
+          partyId: "r-C-1",
+        });
+        yield* insert({ id: "DL-2", list: "deals", title: "Lumen refit", partyId: "r-C-1" });
+        yield* insert({ id: "DL-3", list: "deals", title: "Harbor fitout", partyId: "r-C-2" });
+        const comment = (id: string, seq: number, body: string, at: number) =>
+          sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, body,
+              author_kind, author_id, request_hash, created_at)
+            VALUES (${orgId}, ${id}, 'r-DL-1', ${seq}, ${body}, 'person', ${mate}, ${id}, ${at})`;
+        yield* comment("cm-1", 1, "Ravi wanted the pilot scoped to two sites.", B - 20 * DAY);
+        const quietKey = (deal: string, last: number) => `deal_quiet:${deal}:${last}`;
+        const drafted = Effect.fn("test.drafted")(function* (at: number) {
+          yield* TestClock.setTime(at);
+          return (yield* KinPulse.tick(orgId, at)).drafted.map((one) => one.key).toSorted();
+        });
+        assert.deepStrictEqual(yield* drafted(NOON_LA), [
+          quietKey("DL-1", B - 20 * DAY),
+          quietKey("DL-2", B - 30 * DAY),
+        ]);
+        const made = (yield* draftEvents).find((one) => one.factKeys[0]!.includes("DL-1"))!;
+        const read = yield* draftWakeText(orgId, made);
+        assert.strictEqual(
+          read?.text,
+          DRAFT_DEAL(
+            "Meera",
+            ["meera@invented.example"],
+            "has had no contact, note or move for 23 days",
+          ),
+        );
+        assert.deepStrictEqual(read?.data, {
+          deal: "DL-1",
+          title: "Lumen pilot",
+          quietDays: 23,
+          client: "Lumen",
+          lastComment: "Ravi wanted the pilot scoped to two sites.",
+          writeTo: { name: "Ravi Menon", email: "ravi@lumen.example" },
+          from: "meera@invented.example",
+        });
+        // A card its wake drew stands for it as the turn starts.
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+            started_at, status, event_ids)
+          VALUES ('w-deal', ${orgId}, ${growth}, 't-deal', 'test', 0, 'running', '[]')`;
+        yield* sql`UPDATE kin_events SET wakeup_id = 'w-deal' WHERE event_id = ${made.eventId}`;
+        yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+            pin_digest, payload_json, agent_id, wakeup_id, chat_id, proposed_at)
+          VALUES (${orgId}, 'ask-deal', 'conn-mate', 'mail_send', 'p', '{}', ${growth}, 'w-deal',
+            'c', 0)`;
+        assert.isUndefined(yield* draftWakeText(orgId, made));
+        yield* sql`DELETE FROM kin_connection_asks`;
+        // The same quiet stretch the next days: nothing more.
+        assert.deepStrictEqual(yield* drafted(NOON_LA + DAY), []);
+        assert.deepStrictEqual(yield* drafted(NOON_LA + 2 * DAY), []);
+        // A note on it ends the stretch; once it is quiet again, one more.
+        yield* comment("cm-2", 2, "Ravi is away until the 20th.", NOON_LA + 2 * DAY);
+        assert.deepStrictEqual(yield* drafted(NOON_LA + 3 * DAY), []);
+        assert.deepStrictEqual(yield* drafted(NOON_LA + 30 * DAY), [
+          quietKey("DL-1", NOON_LA + 2 * DAY),
+        ]);
+        // Deals off for the company: no follow-up for a deal.
+        yield* sql`INSERT INTO kin_company_shell VALUES (${orgId}, '[{"id":"deals","on":false}]',
+            1, ${owner}, 0)`;
+        yield* comment("cm-3", 3, "Still away.", NOON_LA + 31 * DAY);
+        assert.deepStrictEqual(yield* drafted(NOON_LA + 60 * DAY), []);
+      }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a deal past its expected day gets a follow-up drafted, and again a week on", () =>
+    Effect.gen(function* () {
+      yield* salesDay;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-30'`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'deals', 'deals', 'DL', 1, 0)`;
+      yield* insert({
+        id: "DL-1",
+        list: "deals",
+        title: "Lumen pilot",
+        ownerKind: "person",
+        ownerId: mate,
+        partyId: "r-C-1",
+        dueAt: B + 2 * DAY,
+        createdAt: B + 2 * DAY,
+      });
+      const key = `deal_date_passed:DL-1:due=${B + 2 * DAY}`;
+      const drafted = Effect.fn("test.drafted")(function* (at: number) {
+        yield* TestClock.setTime(at);
+        return (yield* KinPulse.tick(orgId, at)).drafted.map((one) => one.key);
+      });
+      assert.deepStrictEqual(yield* drafted(NOON_LA), [key]);
+      const [made] = yield* draftEvents;
+      const read = yield* draftWakeText(orgId, made!);
+      // No mailbox of hers: call notes, with the day it was expected by.
+      assert.strictEqual(read?.text, DRAFT_CALL_NOTES("Meera", false));
+      assert.deepStrictEqual(read?.data, {
+        deal: "DL-1",
+        title: "Lumen pilot",
+        expectedBy: "2026-11-02",
+        client: "Lumen",
+        writeTo: { name: "Ravi Menon", email: "ravi@lumen.example" },
+        mailbox: "none connected",
+      });
+      for (const day of [1, 2, 6]) assert.deepStrictEqual(yield* drafted(NOON_LA + day * DAY), []);
+      assert.deepStrictEqual(yield* drafted(NOON_LA + 7 * DAY), [key]);
     }).pipe(Effect.provide(chatLayer)),
   );
 

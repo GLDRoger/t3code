@@ -24,13 +24,14 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import * as Reach from "../lead/Reach.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import { touchesOf } from "../work/touches.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { personQuietUntil, validZone } from "../triggers/quietHold.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
-import { placesOf, seenBy, viewerOfPeople } from "../work/teamView.ts";
+import { crmSeenBy, placesOf, seenBy, viewerOfPeople } from "../work/teamView.ts";
 import { HEAD_STARTS_PER_DAY } from "./prepareSenses.ts";
-import { iso, type SenseContext } from "./senses/shared.ts";
+import { daysText, iso, type SenseContext } from "./senses/shared.ts";
 import { DAY_MS, HOUR_MS } from "./thresholds.ts";
 import { lateBandDays } from "./told.ts";
 
@@ -39,7 +40,17 @@ import { lateBandDays } from "./told.ts";
 const draftParty = (personId: string) => `draft:${personId}`;
 /** A follow-up's slot in that ledger: by its task's own id, whichever sense it is now. */
 const taskSlot = (recordId: string) => `task:${recordId}`;
-const FOLLOW_UPS = new Set<KinPulseFact["sense"]>(["task_late", "task_due_soon", "theirs_late"]);
+/** A deal's facts its person gets a drafted follow-up for (`stillQuiet`). */
+const DEAL_FOLLOW_UPS = new Set<string>(["deal_quiet", "deal_date_passed"]);
+const FOLLOW_UPS = new Set<string>([
+  "task_late",
+  "task_due_soon",
+  "theirs_late",
+  ...DEAL_FOLLOW_UPS,
+]);
+/** A deal still open this long after its follow-up for a passed date was drafted gets another. */
+const DATE_PASSED_AGAIN_MS = 7 * DAY_MS;
+const senseOf = (factKey: string) => factKey.split(":")[0] ?? "";
 /** A mail sent for an entry this recently is its follow-up still: no other is drafted. */
 const SENT_WITHIN_MS = 3 * DAY_MS;
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
@@ -151,15 +162,95 @@ const stillDue = Effect.fnUntraced(function* (
       return undefined;
     if (viewer._tag !== "ownerLevel" && !(yield* placesOf(orgId, personId)).reaches.docs)
       return undefined;
-    return { zone, path: "doc" as const };
+    return { zone, path: "doc" as const, of: "task" as const };
   }
   if (row.seesClients !== 1 || row.carded === 1) return undefined;
   if (row.sentAt !== null && row.sentAt > at - SENT_WITHIN_MS) return undefined;
   const on = (section: "clients" | "deals") =>
     KinShell.sectionOnFor(orgId, section).pipe(Effect.orElseSucceed(() => false));
   if (!(yield* on("clients")) || (row.deal === 1 && !(yield* on("deals")))) return undefined;
-  return { zone, path: "mail" as const, theirs: row.theirs === 1 };
+  return {
+    zone,
+    path: "mail" as const,
+    of: row.theirs === 1 ? ("theirs" as const) : ("task" as const),
+  };
 });
+
+/**
+ * Their zone when `dealId` is an open deal `personId` looks after (`deals.ts` `hearer`: theirs, or
+ * an agent's on a client of theirs) and sees in Clients, `factKey` still stands, Clients and Deals
+ * are on, and no mail card is open on it or from a wake for it. Drafted once a quiet stretch; for a
+ * passed date, again after `DATE_PASSED_AGAIN_MS`. Undefined when not.
+ */
+const stillQuiet = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  factKey: string,
+  dealId: string,
+  at: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const viewer = (yield* ownerLevel(orgId, personId))
+    ? ({ _tag: "ownerLevel" } as const)
+    : viewerOfPeople([personId]);
+  const woken = `${draftParty(personId)}:${taskSlot(dealId)}:`;
+  const [row] = yield* sql<{
+    zone: string | null;
+    seesClients: number;
+    standing: number;
+    carded: number;
+  }>`SELECT p.time_zone AS zone,
+      (p.sees_clients = 1 OR p.access IN ('owner', 'co_owner')) AS "seesClients",
+      EXISTS (SELECT 1 FROM kin_pulse_facts f WHERE f.org_id = r.org_id
+        AND f.fact_key = ${factKey} AND f.subject_record_id = r.record_id
+        AND f.cleared_at IS NULL) AS standing,
+      -- A deal's mail names no entry (only tasks are named): a card from its own wake counts.
+      EXISTS (SELECT 1 FROM kin_connection_asks k JOIN kin_connections c
+          ON c.org_id = k.org_id AND c.connection_id = k.connection_id
+        WHERE k.org_id = r.org_id AND k.state = 'open'
+          AND (c.person_id IS NULL OR c.person_id = ${personId})
+          AND (k.entry_record_id = r.record_id OR k.wakeup_id IN (SELECT e.wakeup_id
+            FROM kin_events e WHERE e.org_id = r.org_id AND e.wakeup_id IS NOT NULL
+              AND substr(e.dedupe_key, 1, ${woken.length}) = ${woken}))) AS carded
+    FROM kin_records r
+    JOIN kin_records cl ON cl.org_id = r.org_id AND cl.record_id = r.party_id
+    JOIN kin_people p ON p.org_id = r.org_id AND p.person_id = ${personId}
+      AND p.removed_at IS NULL
+    WHERE r.org_id = ${orgId} AND r.record_id = ${dealId} AND r.register_id = 'deals'
+      AND r.state = 'open'
+      AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
+        OR (r.owner_kind = 'agent' AND cl.owner_kind = 'person' AND cl.owner_id = ${personId}))
+      AND ${crmSeenBy(sql, viewer)}`;
+  if (row === undefined || row.standing !== 1 || row.seesClients !== 1 || row.carded === 1)
+    return undefined;
+  const on = (section: "clients" | "deals") =>
+    KinShell.sectionOnFor(orgId, section).pipe(Effect.orElseSucceed(() => false));
+  if (!(yield* on("clients")) || !(yield* on("deals"))) return undefined;
+  const zone = validZone(row.zone) ?? (yield* ownerZone(orgId));
+  // `deal_quiet:<key>:<last moved>`: a new key is a new quiet stretch.
+  const since =
+    senseOf(factKey) === "deal_quiet"
+      ? Number(factKey.slice(factKey.lastIndexOf(":") + 1))
+      : at - DATE_PASSED_AGAIN_MS + 1;
+  if (
+    !Number.isFinite(since) ||
+    (yield* chasedSince(orgId, personId, dealId, since, dayIn(at, zone)))
+  )
+    return undefined;
+  return { zone, path: "mail" as const, of: "deal" as const };
+});
+
+/** How to draft the follow-up `factKey` names on `recordId` for `personId` now, if still wanted. */
+const stillWanted = (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  factKey: string,
+  recordId: string,
+  at: number,
+) =>
+  DEAL_FOLLOW_UPS.has(senseOf(factKey))
+    ? stillQuiet(orgId, personId, factKey, recordId, at)
+    : stillDue(orgId, personId, recordId, at);
 
 /**
  * A person's own task that is due (`stillDue`): one wake, in their own chat, of the first agent
@@ -202,7 +293,7 @@ export const draftWakes = Effect.fn("KinPulse.draftWakes")(function* (input: {
     for (const fact of facts.toSorted((a, b) => (a.key < b.key ? -1 : 1))) {
       const recordId = fact.subject.recordId!;
       if (!seen.has(fact.key) || tasks.has(recordId)) continue;
-      const still = yield* stillDue(orgId, personId, recordId, at);
+      const still = yield* stillWanted(orgId, personId, fact.key, recordId, at);
       if (still === undefined) continue;
       tasks.add(recordId);
       ready.push({ fact, recordId, ...still });
@@ -456,7 +547,7 @@ export const draftWakeGone = Effect.fn("KinPulse.draftWakeGone")(function* (
     FROM kin_pulse_facts WHERE org_id = ${orgId} AND fact_key = ${event.factKeys[0] ?? ""}`;
   if (fact?.recordId == null) return true;
   const at = yield* DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
-  const still = yield* stillDue(orgId, personId, fact.recordId, at);
+  const still = yield* stillWanted(orgId, personId, event.factKeys[0] ?? "", fact.recordId, at);
   if (
     still !== undefined &&
     (yield* mayDraft(orgId, personId, fact.recordId, still.path, event.agentId))
@@ -483,6 +574,9 @@ const ownMailbox = (addresses: ReadonlyArray<string>) =>
 /** The wake's own line when the person has their own mailbox and a contact to write to. */
 export const DRAFT_FROM_MAILBOX = (name: string, addresses: ReadonlyArray<string>) =>
   `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. Draft the mail to the contact below from ${ownMailbox(addresses)} with kin_connection_call mail_send, naming the task's key in the mail, so it waits on a Confirm card for them. Nothing goes until they tap Confirm: never say it was sent. Then tell them in one short line that it is ready.`;
+/** The wake's own line for a deal gone quiet or past its day (`reason`), from their own mailbox. */
+export const DRAFT_DEAL = (name: string, addresses: ReadonlyArray<string>, reason: string) =>
+  `Kin woke you for ${name}: their deal below ${reason}, and no mail for it waits on a card. Draft a short follow-up to the contact below from ${ownMailbox(addresses)} with kin_connection_call mail_send, naming the deal's key: pick up from the last contact, ask where it stands, and suggest one next step. Never offer a price, date or term the records don't hold. Nothing goes until they tap Confirm: never say it was sent. Then tell them in one short line that it is ready.`;
 /** The same, for something a client owes us that is late: a chase. */
 export const DRAFT_CHASE = (name: string, addresses: ReadonlyArray<string>) =>
   `Kin woke you for ${name}: the client below owed this to us by the day below and it hasn't come, and no mail for it waits on a card. Draft a short, friendly chase to the contact below from ${ownMailbox(addresses)} with kin_connection_call mail_send, naming the entry's key, asking for it or for a day it will come. Nothing goes until they tap Confirm: never say it was sent, and promise nothing for us. Then tell them in one short line that it is ready.`;
@@ -510,7 +604,8 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
     FROM kin_pulse_facts WHERE org_id = ${orgId} AND fact_key = ${event.factKeys[0] ?? ""}`;
   if (fact?.recordId == null) return undefined;
   const at = yield* DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
-  const still = yield* stillDue(orgId, personId, fact.recordId, at);
+  const factKey = event.factKeys[0] ?? "";
+  const still = yield* stillWanted(orgId, personId, factKey, fact.recordId, at);
   if (still === undefined) return undefined;
   const { zone } = still;
   if (!(yield* mayDraft(orgId, personId, fact.recordId, still.path, event.agentId)))
@@ -528,6 +623,74 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
   const viewer = (yield* ownerLevel(orgId, personId))
     ? ({ _tag: "ownerLevel" } as const)
     : viewerOfPeople([personId]);
+  const [person] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+    WHERE org_id = ${orgId} AND person_id = ${personId} AND removed_at IS NULL`;
+  if (person === undefined) return undefined;
+  const addresses = (yield* personConnections(orgId, personId))
+    .filter((row) => row.state === "active" && row.pausedAt === null)
+    .map((row) => row.accountLabel ?? row.label);
+  const from =
+    addresses.length === 0
+      ? { mailbox: "none connected" }
+      : { from: addresses.length === 1 ? addresses[0]! : addresses };
+  const [said] = yield* sql<{ text: string }>`SELECT m.body AS text FROM kin_record_comments m
+    WHERE m.org_id = ${orgId} AND m.record_id = ${fact.recordId} AND m.removed_at IS NULL
+    ORDER BY m.seq DESC LIMIT 1`;
+  const lastComment =
+    said === undefined ? {} : { lastComment: Array.from(said.text.trim()).slice(0, 200).join("") };
+  if (still.of === "deal") {
+    const [deal] = yield* sql<{
+      key: string;
+      title: string;
+      dueAt: number | null;
+      client: string | null;
+      partyId: string | null;
+    }>`SELECT d.key, d.title, d.due_at AS "dueAt", c.title AS client, c.record_id AS "partyId"
+      FROM kin_records d
+      LEFT JOIN kin_records c ON c.org_id = d.org_id AND c.record_id = d.party_id
+        AND c.record_id IN (SELECT r.record_id FROM kin_records r
+          WHERE r.org_id = ${orgId} AND r.register_id = 'clients' AND ${crmSeenBy(sql, viewer)})
+      WHERE d.org_id = ${orgId} AND d.record_id = ${fact.recordId}`;
+    if (deal === undefined) return undefined;
+    const contact = yield* contactOf(orgId, deal.partyId, crmSeenBy(sql, viewer));
+    const [touch] =
+      deal.partyId === null ? [] : yield* touchesOf(orgId, deal.partyId, at, 1, viewer);
+    const quiet = senseOf(factKey) === "deal_quiet";
+    const quietDays = Math.floor(
+      (at - Number(factKey.slice(factKey.lastIndexOf(":") + 1))) / DAY_MS,
+    );
+    const expectedBy = deal.dueAt === null ? undefined : dayIn(deal.dueAt, zone);
+    const reason =
+      quiet || expectedBy === undefined
+        ? `has had no contact, note or move for ${daysText(quietDays)}`
+        : `was expected by ${expectedBy} and is still open`;
+    return {
+      text:
+        addresses.length > 0 && contact !== undefined
+          ? DRAFT_DEAL(person.name, addresses, reason)
+          : DRAFT_CALL_NOTES(person.name, addresses.length > 0),
+      data: {
+        deal: deal.key,
+        title: deal.title,
+        ...(quiet || expectedBy === undefined ? { quietDays } : { expectedBy }),
+        ...(deal.client === null ? {} : { client: deal.client }),
+        ...(touch === undefined
+          ? {}
+          : {
+              lastContact: {
+                on: dayIn(Date.parse(touch.at), zone),
+                kind: touch.kind,
+                ...(touch.note.trim() === ""
+                  ? {}
+                  : { note: Array.from(touch.note.trim()).slice(0, 200).join("") }),
+              },
+            }),
+        ...lastComment,
+        ...(contact === undefined ? {} : { writeTo: contact }),
+        ...from,
+      },
+    };
+  }
   const [task] = yield* sql<{
     key: string;
     title: string;
@@ -544,13 +707,8 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
       AND c.record_id IN (SELECT r.record_id FROM kin_records r
         WHERE r.org_id = ${orgId} AND r.register_id = 'clients' AND ${seenBy(sql, viewer)})
     WHERE r.org_id = ${orgId} AND r.record_id = ${fact.recordId}`;
-  const [person] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
-    WHERE org_id = ${orgId} AND person_id = ${personId} AND removed_at IS NULL`;
-  if (task === undefined || person === undefined) return undefined;
-  const [said] = yield* sql<{ text: string }>`SELECT m.body AS text FROM kin_record_comments m
-    WHERE m.org_id = ${orgId} AND m.record_id = ${fact.recordId} AND m.removed_at IS NULL
-    ORDER BY m.seq DESC LIMIT 1`;
-  const theirs = still.path === "mail" && still.theirs;
+  if (task === undefined) return undefined;
+  const theirs = still.of === "theirs";
   const when = theirs
     ? task.dueAt === null
       ? {}
@@ -558,25 +716,12 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
     : task.late === 1
       ? { late: true }
       : { dueToday: true };
-  const lastComment =
-    said === undefined ? {} : { lastComment: Array.from(said.text.trim()).slice(0, 200).join("") };
   if (still.path === "doc")
     return {
       text: DRAFT_DOCUMENT(person.name),
       data: { task: task.key, title: task.title, ...when, ...lastComment },
     };
-  const [contact] =
-    task.partyId === null
-      ? []
-      : yield* sql<{ name: string; email: string }>`SELECT r.title AS name,
-          trim(json_extract(r.fields_json, '$.email')) AS email FROM kin_records r
-        WHERE r.org_id = ${orgId} AND r.register_id = 'contacts' AND r.state = 'open'
-          AND r.party_id = ${task.partyId} AND ${seenBy(sql, viewer)}
-          AND trim(COALESCE(json_extract(r.fields_json, '$.email'), '')) <> ''
-        ORDER BY lower(r.title), r.key LIMIT 1`;
-  const addresses = (yield* personConnections(orgId, personId))
-    .filter((row) => row.state === "active" && row.pausedAt === null)
-    .map((row) => row.accountLabel ?? row.label);
+  const contact = yield* contactOf(orgId, task.partyId, seenBy(sql, viewer));
   return {
     text:
       addresses.length > 0 && contact !== undefined
@@ -589,9 +734,24 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
       ...(task.client === null ? {} : theirs ? { owedBy: task.client } : { client: task.client }),
       ...(contact === undefined ? {} : { writeTo: contact }),
       ...lastComment,
-      ...(addresses.length === 0
-        ? { mailbox: "none connected" }
-        : { from: addresses.length === 1 ? addresses[0]! : addresses }),
+      ...from,
     },
   };
+});
+
+/** The first open contact of `partyId` with an address, among those `seen` lets them see. */
+const contactOf = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  partyId: string | null,
+  seen: ReturnType<typeof seenBy>,
+) {
+  if (partyId === null) return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const [contact] = yield* sql<{ name: string; email: string }>`SELECT r.title AS name,
+      trim(json_extract(r.fields_json, '$.email')) AS email FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'contacts' AND r.state = 'open'
+      AND r.party_id = ${partyId} AND ${seen}
+      AND trim(COALESCE(json_extract(r.fields_json, '$.email'), '')) <> ''
+    ORDER BY lower(r.title), r.key LIMIT 1`;
+  return contact;
 });
