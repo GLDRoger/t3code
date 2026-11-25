@@ -832,7 +832,7 @@ const roomWork = Effect.fn("KinTeamView.roomWork")(function* (
 const teamWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
   sql`(${personSees(sql, personId)} AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
     OR (r.assigned_by_person_id = ${personId} AND r.register_id <> 'docs')
-    OR r.marked_by_person_id = ${personId}
+    OR (r.marked_by_person_id = ${personId} AND r.register_id <> 'docs')
     OR ${leadWrites(sql, personId)}))`;
 
 const leadWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>

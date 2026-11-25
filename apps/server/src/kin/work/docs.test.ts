@@ -22,6 +22,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
+import { expect } from "vite-plus/test";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -44,6 +45,7 @@ import {
   offeringsPromptIndex,
 } from "./offerings.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
+import * as Work from "./ownerWork.ts";
 import { playbookIndex, playbookThreshold } from "./playbooks.ts";
 import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
 import { characters, parseCharacter, seedCharacters, setCharacter } from "../lead/characters.ts";
@@ -2779,6 +2781,75 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     const rhea = owner;
     const arjun = others[0];
     const meera = { _tag: "person" as const, orgId, personId: coOwner };
+    const outcome = { onFailure: reasonOf, onSuccess: () => "allowed" };
+    const readAsZoya = (key: KinRecordKey) => OwnerDocs.get([zoya], { orgId, key });
+    const setAsZoya = (key: KinRecordKey, to: "draft" | "owners" | "team") =>
+      OwnerDocs.setReaders([zoya], { orgId, key, to });
+
+    const pricedPage = yield* readAsZoya(quote.key);
+    expect.soft(pricedPage).not.toHaveProperty("readers");
+    expect.soft(pricedPage).not.toHaveProperty("readersCan");
+    for (const to of ["draft", "owners", "team"] as const) {
+      expect
+        .soft(yield* setAsZoya(quote.key, to).pipe(Effect.match(outcome)), to)
+        .toBe("not_allowed");
+      const [label] = yield* sql<{ sensitive: number; marked: string | null }>`SELECT
+        sensitive, marked_by_person_id AS marked FROM kin_records
+        WHERE org_id = ${orgId} AND key = ${quote.key}`;
+      expect.soft(label, to).toEqual({ sensitive: 1, marked: null });
+    }
+
+    const freshAsk = yield* wake("readers-fresh-wake", lead, "mate-chat", zoya.personId, "shared");
+    const fresh = yield* LeadDocs.create(scopeOf(lead), {
+      sourceEventId: freshAsk,
+      title: "Invented launch checklist",
+      body: "## Scope\n\nCheck the launch notes.",
+    });
+    assert.strictEqual((yield* readAsZoya(fresh.key)).readers, "owners");
+    assert.isFalse(yield* reads(arjun, fresh.key));
+    assert.strictEqual((yield* setAsZoya(fresh.key, "draft")).readers, "draft");
+    assert.isFalse(yield* reads(arjun, fresh.key));
+
+    yield* LeadDocs.edit(scopeOf(lead), {
+      key: fresh.key,
+      sourceEventId: freshAsk,
+      summary: "Revise the launch notes",
+      operations: [
+        {
+          op: "replace_phrase",
+          find: "Check the launch notes.",
+          replace: "Check the revised launch notes.",
+        },
+      ],
+    });
+    assert.include((yield* readAsZoya(fresh.key)).body, "Check the revised launch notes.");
+    for (const patch of [{ title: "Unwanted title" }, { state: "dropped" }] as const) {
+      expect
+        .soft(
+          yield* Work.update([zoya], { orgId, key: fresh.key, ...patch }).pipe(
+            Effect.match(outcome),
+          ),
+          JSON.stringify(patch),
+        )
+        .toBe("not_allowed");
+    }
+
+    assert.strictEqual((yield* setAsZoya(fresh.key, "team")).readers, "team");
+    assert.isTrue(yield* reads(arjun, fresh.key));
+    const freshOwners = yield* setAsZoya(fresh.key, "owners");
+    assert.strictEqual(freshOwners.readers, "owners");
+    assert.isFalse(yield* reads(arjun, fresh.key));
+
+    yield* OwnerDocs.file([rhea], { orgId, key: fresh.key, rev: freshOwners.rev, company: true });
+    const companyPage = yield* readAsZoya(fresh.key);
+    assert.isTrue(companyPage.company);
+    assert.isTrue(yield* reads(arjun, fresh.key));
+    expect.soft(companyPage).not.toHaveProperty("readers");
+    expect.soft(companyPage).not.toHaveProperty("readersCan");
+    expect
+      .soft(yield* setAsZoya(fresh.key, "draft").pipe(Effect.match(outcome)))
+      .toBe("not_allowed");
+
     const projectMembers = (members: ReadonlyArray<string>) =>
       sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.members',
           json(${JSON.stringify(members)}))

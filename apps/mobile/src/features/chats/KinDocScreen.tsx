@@ -390,7 +390,7 @@ function KinDocBody(
   const old = doc.version.version !== doc.latest.version;
   const previous = kinDocPrevious(doc.version);
   const shell = useKinShell(environmentId);
-  const privacy = kinDocPrivacy(doc, shell);
+  const privacy = doc.readers === undefined ? kinDocPrivacy(doc, shell) : null;
   const label = useKinDocLabel(target, doc);
   const deleting = useKinDocDelete(target);
   const mayDelete = deleting.allowed && doc.deletable === true;

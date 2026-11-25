@@ -137,7 +137,12 @@ describe("a doc's private line and its label item", () => {
       [
         { sensitive: false, readers: "owners" as const, draftOf: { name: "Zoya Sheikh" } },
         null,
+        "Keep to owners only",
+      ],
+      [
+        { sensitive: false, readers: "team" as const, draftOf: { name: "Zoya Sheikh" } },
         null,
+        "Keep to owners only",
       ],
       [
         { sensitive: false, sensitiveInherited: true as const },
@@ -147,7 +152,7 @@ describe("a doc's private line and its label item", () => {
     ] as const;
     for (const [doc, line, item] of rows) {
       expect(kinDocPrivacy(doc), JSON.stringify(doc)).toBe(line);
-      expect(kinDocLabelAction(doc)?.label ?? null, JSON.stringify(doc)).toBe(item);
+      expect.soft(kinDocLabelAction(doc)?.label ?? null, JSON.stringify(doc)).toBe(item);
     }
   });
 

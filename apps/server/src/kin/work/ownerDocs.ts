@@ -246,27 +246,24 @@ const draftOfFor = Effect.fn("KinDocs.draftOf")(function* (orgId: KinOrgId, row:
   return teammate === undefined ? {} : { draftOf: { name: teammate.name } };
 });
 
-const draftWriterOf = (row: RecordRow) => fieldText(parseFields(row.fieldsJson), "draftFor");
+const readersWriterOf = (row: RecordRow) => {
+  const fields = parseFields(row.fieldsJson);
+  const draftFor = fieldText(fields, "draftFor");
+  return fields.home === "company" || (row.sensitive === 1 && row.markedBy !== draftFor)
+    ? null
+    : draftFor;
+};
 
 const readersOf = (
   row: RecordRow,
   readerId: KinPersonId,
   ownerLevel: boolean,
 ): Pick<KinDocDetail, "readers" | "readersCan"> => {
-  const draftFor = draftWriterOf(row);
+  const draftFor = readersWriterOf(row);
   if (draftFor === null || (!ownerLevel && draftFor !== readerId)) return {};
-  if (row.sensitive === 1 && row.markedBy !== null && row.markedBy !== draftFor) return {};
 
-  const readers: KinDocDetail["readers"] =
-    row.sensitive === 0
-      ? row.teamShared === 1
-        ? "team"
-        : "owners"
-      : row.markedBy === draftFor
-        ? "draft"
-        : undefined;
   return {
-    ...(readers === undefined ? {} : { readers }),
+    readers: row.sensitive === 1 ? "draft" : row.teamShared === 1 ? "team" : "owners",
     readersCan: ownerLevel ? ["owners", "team"] : ["draft", "owners", "team"],
   };
 };
@@ -1017,7 +1014,7 @@ export const setReaders = Effect.fn("KinDocs.setReaders")(
             KinChatError: (error) => (error.reason === "not_found" ? Docs.docNotFound(key) : error),
           }),
         );
-        const draftFor = draftWriterOf(row);
+        const draftFor = readersWriterOf(row);
         if (draftFor === null || (teammate && draftFor !== person.personId))
           return yield* notDraftWriter;
         if (to === "draft" && !teammate) return yield* onlyWriterMakesDraft;
