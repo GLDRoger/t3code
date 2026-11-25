@@ -524,7 +524,7 @@ const make = Effect.gen(function* () {
     item: MemoryItemHead | undefined,
     now: number,
   ) {
-    if (item?.trust !== "agent") return undefined;
+    if (item === undefined || item.trust === "owner" || item.trust === "member") return undefined;
     const references = deferralRecordReferences(item.title, item.links);
     if (references.size === 0) return undefined;
     const rows = yield* sql<{ recordId: string; key: string; number: string | null }>`

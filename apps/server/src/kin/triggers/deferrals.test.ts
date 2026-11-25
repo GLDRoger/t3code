@@ -1353,6 +1353,36 @@ it.effect("an agent's own follow-up naming a held record in its title is skipped
   }).pipe(Effect.provide(layerFor([held, lifted])));
 });
 
+it.effect(
+  "a follow-up an agent set up from a pulse wake is skipped when its record is set aside",
+  () => {
+    const followUp = makeDeferral("def-pulse", {
+      title: "Follow up on INV-12 with Tidewater Freight",
+      on_due: "remind",
+      trust: "external",
+    });
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* seedInvoice(dueAt);
+      yield* KinPulse.aside({
+        orgId,
+        at: yield* Clock.currentTimeMillis,
+        viewer: { _tag: "owner" },
+        by: { _tag: "person", personId: KinPersonId.make("owner-a") },
+        recordKey: "INV-12",
+        action: "set",
+        until: null,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: null },
+      });
+      yield* (yield* TriggerService.KinTriggerService).syncItem(followUp);
+      yield* tick(dueAt);
+      assert.equal((yield* runOf(followUp.id))?.state, "undone");
+      assert.isEmpty(yield* handedReminders());
+    }).pipe(Effect.provide(layerFor([followUp])));
+  },
+);
+
 it.effect("remind, ask and chase act at due, noting lateness", () => {
   const remind = makeDeferral("def-r", { on_due: "remind" });
   const ask = makeDeferral("def-a", { on_due: "ask" });
