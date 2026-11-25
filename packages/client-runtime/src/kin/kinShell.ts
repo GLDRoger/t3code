@@ -104,6 +104,7 @@ const NO_SINGULAR: Readonly<Record<string, string>> = {
     "Prospect, Lead → prospect; anything else → Clients",
   "Client name": "Name in Clients",
   "Prospect or client": "Prospect, or in Clients",
+  "Find a client": "Find in Clients",
 };
 
 /**
