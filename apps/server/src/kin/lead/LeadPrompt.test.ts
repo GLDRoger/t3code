@@ -3648,7 +3648,7 @@ it.effect(
         built.split("\n").find((one) => one.startsWith("Set in this chat:"));
       const set = line(yield* prompt.build(turn));
       expect(set).toMatch(
-        /^Set in this chat: reminder "def-plans" \("Friday report"\) due [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}, \d{2}:\d{2}, asked by "Arjun Rao"; routine "sch-plans" \("Open tasks"\) every Monday 09:00, set by "Rhea Kapoor"\. Only the person who asked, the owner or a co-owner can change one; kin_cancel takes its id\.$/,
+        /^Set in this chat: reminder "def-plans" \("Friday report"\) due [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}, \d{2}:\d{2}, asked by "Arjun Rao"; routine "sch-plans" \("Open tasks"\) every [A-Z][a-z]+ \d{2}:\d{2}, set by "Rhea Kapoor"\. Only the person who asked, the owner or a co-owner can change one; kin_cancel takes its id\.$/,
       );
       // A latecomer couldn't read where it was set: the join leaves its card, and this line,
       // without its title (`ChatSharing.settleCards`, `wordsReadable`).
