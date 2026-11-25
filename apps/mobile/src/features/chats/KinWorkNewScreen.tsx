@@ -431,7 +431,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
             <ListSection>
               <KinWorkFieldBox label={KIN_WORK_NEW_COPY.notesLabel} input={notesField}>
                 <KinWorkNotesInput
-                  input={notesField}
+                  ref={notesField}
                   value={draft.notes}
                   disabled={saving}
                   onChangeText={(notes) => setDraft((held) => ({ ...held, notes }))}
@@ -566,16 +566,19 @@ function KinWorkNewWith(props: {
 }
 
 /** The new task's notes, lifted above the keyboard as they grow (inside `KinWorkAboveKeyboard`). */
-function KinWorkNotesInput(props: {
-  readonly input: React.RefObject<ComponentRef<typeof TextInput> | null>;
+function KinWorkNotesInput({
+  ref,
+  ...props
+}: {
+  readonly ref: React.RefObject<ComponentRef<typeof TextInput> | null>;
   readonly value: string;
   readonly disabled: boolean;
   readonly onChangeText: (notes: string) => void;
 }) {
-  const lift = useKinWorkLiftWhileTyping(props.input);
+  const lift = useKinWorkLiftWhileTyping(ref);
   return (
     <TextInput
-      ref={props.input}
+      ref={ref}
       accessibilityLabel={KIN_WORK_NEW_COPY.notesLabel}
       value={props.value}
       editable={!props.disabled}
