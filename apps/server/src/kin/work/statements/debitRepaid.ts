@@ -9,7 +9,14 @@ import { ownerZone } from "../recordRows.ts";
 import type { ListDef } from "../registers.ts";
 import { bankStates, findBankList } from "./bankList.ts";
 import { openEntries } from "./invoiceCredits.ts";
-import { identifies, markedByHand, repayment, SALARIES, suggest } from "./statementMatch.ts";
+import {
+  daysBetween,
+  identifies,
+  markedByHand,
+  repayment,
+  SALARIES,
+  suggest,
+} from "./statementMatch.ts";
 import { partnerCandidates } from "./statementReview.ts";
 
 type OpenDebit = Effect.Success<ReturnType<typeof openEntries>>[number];
@@ -21,7 +28,7 @@ export const MARKED_REPAID = "Marked repaid";
  * One unexplained debit naming exactly one partner Kin owes in its currency (whole name or import
  * address). `repays`: the run of their oldest owed expenses adding up to it exactly, else undefined.
  * `marked`: the day the same money was marked repaid within ten days (`markedByHand`), excluding
- * amounts tied to another Bank transactions entry.
+ * amounts tied to another Bank transactions entry dated more than two days away.
  */
 export type RepaidMatch = {
   readonly debit: OpenDebit;
@@ -93,7 +100,12 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
     const payee = payees.find((one) => one.id === id);
     const tiedElsewhere = new Map<string, number>();
     for (const tied of payee?.tied ?? []) {
-      if (tied.bankRecordId === debit.recordId || tied.currency !== debit.currency) continue;
+      if (
+        tied.bankRecordId === debit.recordId ||
+        tied.currency !== debit.currency ||
+        Math.abs(daysBetween(tied.bankDay, debit.date)) <= 2
+      )
+        continue;
       tiedElsewhere.set(tied.day, (tiedElsewhere.get(tied.day) ?? 0) + tied.amountMinor);
     }
     const marked = payee?.repaid.find((one) => {

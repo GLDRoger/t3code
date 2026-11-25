@@ -264,6 +264,26 @@ const company = Effect.fn("test.company")(function* (org: KinOrgId) {
   };
 });
 
+const cardMarkedCompany = Effect.fn("test.cardMarkedCompany")(function* (org: KinOrgId) {
+  const kin = yield* company(org);
+  const records = yield* KinRecords.KinRecords;
+  const owner = {
+    actor: { _tag: "person" as const, personId: KinPersonId.make(`${org}-rhea`) },
+    via: "owner" as const,
+  };
+  yield* kin.expense("EXP-4", 5_000, "2026-10-01", { reimbursement: "owed" });
+  yield* kin.expense("EXP-8", 5_000, "2026-11-01", { reimbursement: "owed" });
+  yield* kin.debit("BNK-9", 5_000, "2026-11-20");
+  const plan = yield* kin.drawPlan("BNK-9");
+  assert.deepStrictEqual(
+    plan.repays.map((one) => one.key),
+    ["EXP-4"],
+  );
+  const outcome = yield* kin.sql.withTransaction(markRepaid(org, plan, owner, records));
+  assert.strictEqual(outcome?.title, "Marked repaid");
+  return { kin, records, owner };
+});
+
 it.layer(layer)((it) => {
   it.effect("newer unexplained credits do not hide a repayment debit", () =>
     Effect.gen(function* () {
@@ -312,22 +332,7 @@ it.layer(layer)((it) => {
     () =>
       Effect.gen(function* () {
         const org = KinOrgId.make("ambermill-second-debit");
-        const kin = yield* company(org);
-        const records = yield* KinRecords.KinRecords;
-        const owner = {
-          actor: { _tag: "person" as const, personId: KinPersonId.make(`${org}-rhea`) },
-          via: "owner" as const,
-        };
-        yield* kin.expense("EXP-4", 5_000, "2026-10-01", { reimbursement: "owed" });
-        yield* kin.expense("EXP-8", 5_000, "2026-11-01", { reimbursement: "owed" });
-        yield* kin.debit("BNK-9", 5_000, "2026-11-20");
-        const plan = yield* kin.drawPlan("BNK-9");
-        assert.deepStrictEqual(
-          plan.repays.map((one) => one.key),
-          ["EXP-4"],
-        );
-        const outcome = yield* kin.sql.withTransaction(markRepaid(org, plan, owner, records));
-        assert.strictEqual(outcome?.title, "Marked repaid");
+        const { kin, records, owner } = yield* cardMarkedCompany(org);
 
         const at = day("2026-11-25");
         yield* TestClock.setTime(at);
@@ -361,6 +366,22 @@ it.layer(layer)((it) => {
         assert.strictEqual(reopened?.marked, "2026-11-20");
         assert.deepStrictEqual(yield* kin.told(at), ["repaid_seen:BNK-12"]);
       }),
+  );
+
+  it.effect("the same payment recorded twice gets no second card", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("ambermill-duplicate-debit");
+      const { kin } = yield* cardMarkedCompany(org);
+      yield* kin.debit("BNK-10", 5_000, "2026-11-20", "UPI to Zoya Rao");
+      yield* kin.debit("BNK-11", 5_000, "2026-11-22", "UPI debit to Zoya Rao");
+
+      assert.deepStrictEqual(yield* kin.told(), []);
+      for (const key of ["BNK-10", "BNK-11"])
+        assert.strictEqual(
+          yield* kin.draw(key),
+          `${key} may be the repayment already marked by hand for Zoya Rao on 2026-11-20, so Kin offers no card for it. Nothing was asked; tell the owner what you see instead.`,
+        );
+    }),
   );
 
   // The same, with Repaid on left blank: the day the mark was written stands in, in the

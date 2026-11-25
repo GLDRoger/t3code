@@ -122,6 +122,7 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
     linked: number;
     markedAt: number;
     bankRecordId: string | null;
+    bankDateAt: number | null;
   }>`
     SELECT r.amount_minor AS minor, r.currency, r.fields_json AS "fieldsJson",
       EXISTS (SELECT 1 FROM kin_bank_statement_entries e WHERE e.org_id = r.org_id
@@ -130,12 +131,14 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
         WHERE c.org_id = r.org_id AND c.record_id = r.record_id
           AND json_extract(f.value, '$.field') = ${REIMBURSEMENT}
         ORDER BY c.seq DESC LIMIT 1), r.created_at) AS "markedAt",
-      (SELECT l.target FROM kin_record_links l
+      bank_entry.record_id AS "bankRecordId", bank_entry.date_at AS "bankDateAt"
+    FROM kin_records r
+    LEFT JOIN kin_records bank_entry ON bank_entry.org_id = r.org_id
+      AND bank_entry.record_id = (SELECT l.target FROM kin_record_links l
         JOIN kin_records b ON b.org_id = l.org_id AND b.record_id = l.target
         WHERE l.org_id = r.org_id AND l.record_id = r.record_id
           AND l.kind = 'record' AND l.relation = 'evidence' AND b.register_id = ${bank?.id ?? null}
-        ORDER BY l.created_at DESC, l.target DESC LIMIT 1) AS "bankRecordId"
-    FROM kin_records r
+        ORDER BY l.created_at DESC, l.target DESC LIMIT 1)
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
       AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${partnerFunded(sql)}
     ORDER BY r.key`;
@@ -143,6 +146,7 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
     (yield* sql<{ id: string; name: string }>`SELECT person_id AS id, display_name AS name
       FROM kin_people WHERE org_id = ${orgId} ORDER BY person_id`).map((one) => [one.id, one.name]),
   );
+  type BankTotals = { bankDay: string; amounts: Map<string, bigint> };
   const payees = new Map<
     string,
     {
@@ -150,7 +154,7 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
       id: string;
       ids: Array<string>;
       repaid: Map<string, bigint>;
-      tied: Map<string, Map<string, bigint>>;
+      tied: Map<string, BankTotals>;
     }
   >();
   for (const row of rows) {
@@ -166,15 +170,18 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
       id,
       ids: funding.personId === null ? [funding.unmatched!] : [],
       repaid: new Map<string, bigint>(),
-      tied: new Map<string, Map<string, bigint>>(),
+      tied: new Map<string, BankTotals>(),
     };
     if (funding.state === "repaid" && row.linked === 0) {
       const at = `${row.currency} ${funding.repaidOn ?? dayIn(row.markedAt, zone)}`;
       const minor = BigInt(row.minor);
       payee.repaid.set(at, (payee.repaid.get(at) ?? 0n) + minor);
-      if (row.bankRecordId !== null) {
-        const tied = payee.tied.get(row.bankRecordId) ?? new Map<string, bigint>();
-        tied.set(at, (tied.get(at) ?? 0n) + minor);
+      if (row.bankRecordId !== null && row.bankDateAt !== null) {
+        const tied = payee.tied.get(row.bankRecordId) ?? {
+          bankDay: dayIn(row.bankDateAt, zone),
+          amounts: new Map<string, bigint>(),
+        };
+        tied.amounts.set(at, (tied.amounts.get(at) ?? 0n) + minor);
         payee.tied.set(row.bankRecordId, tied);
       }
     }
@@ -190,8 +197,8 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
     id: payee.id,
     ids: payee.ids,
     repaid: [...payee.repaid].map(total),
-    tied: [...payee.tied].flatMap(([bankRecordId, totals]) =>
-      [...totals].map((entry) => ({ bankRecordId, ...total(entry) })),
+    tied: [...payee.tied].flatMap(([bankRecordId, { bankDay, amounts }]) =>
+      [...amounts].map((entry) => ({ bankRecordId, bankDay, ...total(entry) })),
     ),
   }));
 });
