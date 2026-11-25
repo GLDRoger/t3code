@@ -20,6 +20,7 @@ import {
 import {
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
+  KIN_CARD_REREAD_COPY,
   kinChoiceCardActions,
   kinChoiceCardTaps,
   kinChoiceOutcomeSentence,
@@ -31,6 +32,7 @@ import {
   kinChoiceDismissible,
   kinChoiceDismissInput,
   kinChoiceUndoneLine,
+  kinChoiceClosedLine,
   createKinHeldPress,
   kinMailCancels,
   kinQuotedInZone,
@@ -130,6 +132,16 @@ describe("kinCardView", () => {
     expect(kinCardView(widget({ type: "poll", state: { options: [] } }), HOST, known())).toEqual({
       kind: "unknown",
       text: null,
+    });
+    // A bills card from before this build, or one it can't read, says the host's own sentence.
+    const bills = { text: "Reading 12 bills: 4 done.", batchId: "b-1", status: "reading" };
+    expect(kinCardView(widget({ type: "bill_batch_v2", state: bills }), HOST, known())).toEqual({
+      kind: "unknown",
+      text: "Reading 12 bills: 4 done.",
+    });
+    expect(kinCardView(widget({ type: "bill_batch", state: bills }), HOST, known())).toEqual({
+      kind: "unknown",
+      text: "Reading 12 bills: 4 done.",
     });
     // A chart from a newer host, of a kind this build can't draw, still says its title.
     const pie = widget({ type: "chart", state: { chart: "pie", title: "Spend by team" } });
@@ -367,6 +379,54 @@ describe("choice cards", () => {
     return view.choice;
   };
 
+  // A sent-up draft renders as a doc between the card's own lines; a long one's opening never
+  // folds under Show all and opens the version that went up. An older host's has no doc: as before.
+  it("a sent-up draft: short as written, a long one's opening opens its version", () => {
+    const head = "Zoya Sheikh asks, through Chief of staff.";
+    const text = Array.from({ length: 14 }, (_, n) => `Phase ${n + 1} is priced as agreed.`).join(
+      "\n",
+    );
+    const note = "This is only the opening. Open D-12 to read the whole draft before you approve.";
+    const sentUp = (draftDoc?: object, more = "") =>
+      choice({
+        state: {
+          ...choiceState(),
+          detail: `${head}\n\n${text}\n\n${more}Proposal for Harbourline Hotels`,
+          draft: text,
+          ...(draftDoc === undefined ? {} : { draftDoc }),
+        },
+      }).draft;
+    const short = sentUp();
+    expect(short).toMatchObject({ before: head, folds: true, open: null });
+    expect(sentUp({ recordId: "rec-d12", key: "D-12", version: 4 }, `${note}\n\n`)).toEqual({
+      ...short,
+      after: `${note}\n\nProposal for Harbourline Hotels`,
+      folds: false,
+      open: { key: "D-12", version: 4 },
+    });
+    // Refused as moved: nothing is left to approve, so it neither asks for a read first nor says
+    // anyone chose Approve.
+    const refused = choice({
+      revision: 2,
+      state: {
+        ...choiceState({
+          optionId: "option-1",
+          personId: "rhea",
+          via: "tap",
+          emoji: null,
+          answeredAt: "2026-11-08T09:05:00.000Z",
+        }),
+        detail: `${head}\n\n${text}\n\n${note}\n\nProposal for Harbourline Hotels`,
+        draft: text,
+        draftDoc: { recordId: "rec-d12", key: "D-12", version: 4 },
+        outcome: { title: "Not approved", text: "This draft changed.", refused: true },
+        decidedBy: { personId: "rhea", name: "Rhea Rao" },
+      },
+    });
+    expect(refused.draft?.after).toBe("Proposal for Harbourline Hotels");
+    expect(kinChoiceDecidedLine(refused, "meera" as never)).toBeNull();
+  });
+
   it("takes taps until it is answered, closed or a day old", () => {
     const open = choice();
     expect(open.question).toBe("Ship today?");
@@ -524,6 +584,32 @@ describe("choice cards", () => {
       "No answer by Tuesday, so Finance went with “Wait”.",
     ]);
     expect(kinChoiceUndoneLine(taken, null)).toBeNull();
+    // A host's closing words, from an older host too, read as they are.
+    expect(kinChoiceClosedLine(taken, null)).toBe(taken.closedText);
+    // Lapsed unanswered: who was asked and the day, "you" to them; the text for older clients.
+    const lapsedAt = new Date(2026, 10, 19, 19, 30);
+    const lapsed = choice({
+      closedAt: lapsedAt.toISOString(),
+      state: {
+        ...choiceState(),
+        untilAnswered: true,
+        outcome: {
+          title: "Lapsed",
+          text: "Lapsed on Thu 19 Nov: Zoya Sheikh didn't answer.",
+          lapsed: { personId: "zoya", name: "Zoya Sheikh", at: lapsedAt.toISOString() },
+        },
+      },
+    });
+    expect([kinChoicePhase(lapsed, posted), lapsed.closedText]).toEqual([
+      "expired",
+      "Lapsed on Thu 19 Nov: Zoya Sheikh didn't answer.",
+    ]);
+    expect(kinChoiceClosedLine(lapsed, "zoya" as never, new Date(2026, 10, 19, 21))).toBe(
+      "Lapsed today: you didn't answer.",
+    );
+    expect(kinChoiceClosedLine(lapsed, "rhea" as never, new Date(2026, 10, 21))).toBe(
+      `Lapsed on ${formatKinWhen(lapsedAt, "day")}: Zoya Sheikh didn't answer.`,
+    );
     // A taken default's note, undone from Settings: who and when, said to each reader.
     const at = new Date(2026, 10, 10, 9, 52);
     const undone = choice({
@@ -1179,8 +1265,10 @@ describe("choice cards", () => {
       {
         revision: 1,
         optionId: "option-1",
-        notice: kinChoiceFailureNotice(changed),
+        notice: { kind: "stale", text: KIN_CARD_REREAD_COPY.settled },
         holding: false,
+        // Settled or changed on the host: the card shows no answers until its newer one arrives.
+        behind: true,
       },
     ]);
 

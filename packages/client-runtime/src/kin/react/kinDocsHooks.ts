@@ -8,15 +8,18 @@ import type {
   KinOrgId,
   KinRecordKey,
   KinSearchKind,
+  KinWidgetId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
 
+import { runKinCommand } from "../kinRunCommand.ts";
 import {
   KIN_DOCS_DEFAULT_FILTER,
   KIN_SEARCH_INITIAL,
   createKinSearch,
+  kinDocState,
   kinDocsQuery,
   kinDocsSameFilter,
   kinWhatWeSellAgent,
@@ -25,11 +28,11 @@ import {
   type KinSearchState,
 } from "../kinDocs.ts";
 import { kinCaughtUp } from "../kinCaughtUp.ts";
+import { kinWhatWeSellAnswer } from "../kinSetUp.ts";
 import { type KinDocsLive, kinDocsPageFollower } from "../kinDocsStream.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinWorkFailuresOf, kinWorkRefused } from "../kinWork.ts";
 import { createKinWorkItemWatch } from "../kinWorkChanges.ts";
-import { kinWorkReadState } from "../kinWorkForms.ts";
 import { createKinPagedList, mapPage } from "../kinWorkList.ts";
 import type { KinHookApp, KinUseOpenChat } from "./kinHookApp.ts";
 import { kinPagedKeeper, kinSchedule, useKinViewer, type KinWorkHooks } from "./kinWorkHooks.ts";
@@ -53,6 +56,10 @@ const noCountsAtom: Atom.Atom<
     unknown
   >
 > = Atom.make(AsyncResult.initial());
+
+const noDocAtom: Atom.Atom<AsyncResult.AsyncResult<KinDocDetail, unknown>> = Atom.make(
+  AsyncResult.initial(),
+);
 
 const NO_WORDS = { text: "" };
 
@@ -120,7 +127,7 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
           read: async (filter, page) =>
             mapPage(
               await follow.read(page, () =>
-                kinClient.docsList.run(registry, {
+                runKinCommand(registry, kinClient.docsList, {
                   environmentId,
                   input: { ...kinDocsQuery(orgId, filter), ...page },
                 }),
@@ -176,6 +183,24 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
   }
 
   /**
+   * The answer a new company gave to what it sells, read from What we sell; null when it has none,
+   * undefined until read. Off, it reads nothing.
+   */
+  function useKinWhatWeSellAnswer(target: KinScreenTarget, enabled: boolean) {
+    const row = useKinWhatWeSell(target, enabled);
+    const atom =
+      row === undefined || row === null
+        ? noDocAtom
+        : kinClient.doc({
+            environmentId: target.environmentId,
+            input: { orgId: target.orgId, key: row.key },
+          });
+    const detail = Option.getOrNull(AsyncResult.value(useAtomValue(atom)));
+    if (row === null) return null;
+    return detail === null ? undefined : kinWhatWeSellAnswer(detail.body);
+  }
+
+  /**
    * How many docs there are and how many changed since `since`, read again when a doc changes.
    * `refused` is a viewer the host keeps docs from.
    */
@@ -218,28 +243,38 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
   }
 
   /** One doc at a version, kept current when the host says it changed. */
-  function useKinDoc(target: KinScreenTarget, key: KinRecordKey, version: number | null) {
+  /** `card`: the long draft card it was opened from, which reads it without the Docs place. */
+  function useKinDoc(
+    target: KinScreenTarget,
+    key: KinRecordKey,
+    version: number | null,
+    card: KinWidgetId | null = null,
+  ) {
     const { environmentId, orgId } = target;
     const atom = kinClient.doc({
       environmentId,
-      input: { orgId, key, ...(version === null ? {} : { version }) },
+      input: {
+        orgId,
+        key,
+        ...(version === null ? {} : { version }),
+        ...(card === null ? {} : { card }),
+      },
     });
-    const state = kinWorkReadState<KinDocDetail>(useAtomValue(atom));
+    const state = kinDocState(useAtomValue(atom));
     const { live } = useKinDocsLive(target);
     const [watch] = useState(() =>
       createKinWorkItemWatch({ key, reread: () => registry.refresh(atom) }),
     );
     const named = live?.changed[key] ?? 0;
     const unnamed = live?.unnamed ?? 0;
-    const heldSeq = state._tag === "ready" ? state.value.seq : null;
+    // A teammate's Docs number is her own count, not the doc's `seq`, so only its moving says the
+    // copy held is old; a doc that is private now or gone reads again when it changes, too.
+    const held = state._tag !== "loading";
     // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the open doc from the host again when the host announces a change to it
     useEffect(() => {
       if (live === null) return;
-      watch.changed(
-        { changed: { [key]: named }, unnamed },
-        heldSeq === null ? null : { seq: heldSeq },
-      );
-    }, [watch, key, live, named, unnamed, heldSeq]);
+      watch.changed({ changed: { [key]: named }, unnamed }, held ? {} : null);
+    }, [watch, key, live, named, unnamed, held]);
     return { state, refresh: () => registry.refresh(atom) };
   }
 
@@ -260,7 +295,7 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
           schedule: kinSchedule,
           read: async (_filter, page) =>
             mapPage(
-              await kinClient.docHistory.run(registry, {
+              await runKinCommand(registry, kinClient.docHistory, {
                 environmentId,
                 input: { orgId, key, ...page },
               }),
@@ -283,7 +318,7 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
         onChange: setState,
         schedule: kinSchedule,
         read: ({ text, closed }) =>
-          kinClient.search.run(registry, {
+          runKinCommand(registry, kinClient.search, {
             environmentId,
             input: {
               orgId,
@@ -305,6 +340,7 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
     useKinDocsList,
     useKinDocsUnder,
     useKinWhatWeSell,
+    useKinWhatWeSellAnswer,
     useKinDocsCounts,
     useKinWhatWeSellStart,
     useKinDoc,

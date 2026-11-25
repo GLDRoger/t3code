@@ -3,6 +3,8 @@ import {
   CommandId,
   KinAgentId,
   KinChatId,
+  KinMemberId,
+  KinMessageId,
   KinPersonId,
   KinWakeupId,
   MessageId,
@@ -194,6 +196,7 @@ describe("KinStop", () => {
           causeFor: () => Effect.undefined,
           refresh: () => Effect.void,
           checkBackup: () => Effect.void,
+          postOfflineNotice: () => Effect.die("no startup pass here"),
           status: () => Effect.die("not read here"),
           freeSpace: () => Effect.die("not tapped here"),
           backUpNow: () => Effect.die("not tapped here"),
@@ -422,7 +425,43 @@ describe("KinStop", () => {
       yield* stop.pause(owner, { orgId }).pipe(told);
       assert.deepStrictEqual(touched, [`${orgId}:stop`]);
       assert.isTrue(yield* stop.isPaused(orgId));
-      yield* queue.enqueue(event("old"));
+      const directChat = KinChatId.make("direct");
+      const groupChat = KinChatId.make("renewals");
+      const meera = KinPersonId.make("meera");
+      const createdAt = "2026-11-08T00:00:00.000Z";
+      yield* sql`UPDATE kin_chats SET title = 'Chief of staff' WHERE org_id = ${orgId} AND chat_id = 'owner-chat'`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, direct_key, last_seq, created_at)
+        VALUES (${directChat}, ${orgId}, 'direct', NULL, 'meera:lead', 1, ${createdAt}),
+          (${groupChat}, ${orgId}, 'project_group', 'Renewals', NULL, 1, ${createdAt})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${meera}, ${orgId}, 'meera', 'Meera', ${createdAt})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('direct-lead', ${orgId}, ${directChat}, 'agent', ${agentId}, 'member', ${createdAt})`;
+      for (const [id, chatId] of [
+        ["old-direct", directChat],
+        ["old-group", groupChat],
+      ] as const) {
+        const memberId = KinMemberId.make(`member-${id}`);
+        const messageId = KinMessageId.make(`message-${id}`);
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES (${memberId}, ${orgId}, ${chatId}, 'person', ${meera}, 'member', ${createdAt})`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+          VALUES (${messageId}, ${orgId}, ${chatId}, 1, 'human', ${meera}, ${memberId}, 'member',
+            'text', 'Can you check the renewal?', '[]', 'posted', ${createdAt})`;
+        yield* queue.enqueue({
+          ...event(id),
+          _tag: "chat.message",
+          provenance: { _tag: "human", personId: meera, memberId },
+          chatId,
+          messageId,
+        });
+      }
+      for (let n = 0; n < 10; n++)
+        yield* queue.enqueue({
+          ...event(`routine-${n}`),
+          receivedAt: DateTime.makeUnsafe("2026-11-08T00:01:00.000Z"),
+        });
       yield* TestClock.adjust("25 hours");
       yield* queue.enqueue(event("fresh"));
 
@@ -438,18 +477,23 @@ describe("KinStop", () => {
       assert.deepStrictEqual(touched, [`${orgId}:stop`, `${orgId}:stop`]);
       assert.isFalse(yield* stop.isPaused(orgId));
       assert.deepStrictEqual(
-        yield* sql`SELECT author_kind, body FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`,
+        yield* sql`SELECT body FROM kin_messages WHERE org_id = ${orgId} AND author_kind = 'system' ORDER BY seq`,
         [
-          { author_kind: "system", body: KinStop.PAUSED_NOTICE },
-          { author_kind: "system", body: "Kin resumed. 1 queued event expired." },
+          { body: KinStop.PAUSED_NOTICE },
+          {
+            body: [
+              "Kin resumed. 11 queued events expired.",
+              "Renewals (from Meera)",
+              ...Array.from({ length: 9 }, () => "Chief of staff (from Kin)"),
+              "and 1 more",
+            ].join("\n"),
+          },
         ],
       );
       assert.deepStrictEqual(
-        yield* sql`SELECT event_id, state FROM kin_events WHERE org_id = ${orgId} AND tag != 'resume' ORDER BY event_id`,
-        [
-          { event_id: "fresh", state: "queued" },
-          { event_id: "old", state: "expired" },
-        ],
+        yield* sql`SELECT event_id FROM kin_events WHERE org_id = ${orgId} AND state = 'queued'
+          AND tag != 'resume' ORDER BY event_id`,
+        [{ event_id: "fresh" }, { event_id: "old-direct" }],
       );
       const resumes = yield* sql<{
         json: string;
@@ -463,10 +507,14 @@ describe("KinStop", () => {
         _tag: "resume",
         pausedAt: paused.pausedAt === null ? null : DateTime.formatIso(paused.pausedAt),
       });
-      assert.deepStrictEqual(JSON.parse(resumes[0]!.json).expired, {
-        count: 1,
-        events: [{ eventId: "old", tag: "routine", receivedAt: "2026-11-08T00:00:00.000Z" }],
+      const expired = JSON.parse(resumes[0]!.json).expired;
+      assert.strictEqual(expired.count, 11);
+      assert.deepStrictEqual(expired.events[0], {
+        eventId: "old-group",
+        tag: "chat.message",
+        receivedAt: createdAt,
       });
+      assert.lengthOf(expired.events, 11);
 
       yield* TestClock.adjust("2 seconds");
       const batch = yield* Effect.scoped(

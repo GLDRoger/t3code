@@ -7,9 +7,12 @@ import {
   KinEventId,
   type KinEvent,
   KinLead,
+  KinDeferralCard,
+  type KinMemoryItemId,
   KinMessageId,
   KinOrgId,
   type KinPersonId,
+  type MemoryItemHead,
   KinWakeupId,
   MessageId,
   ModelSelection,
@@ -55,8 +58,17 @@ import * as Memory from "../memory/Memory.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { feedTurn } from "../numbers/feeds.ts";
+import { reviewStillDue } from "../pulse/reviewWake.ts";
+import { offTurnTexts } from "../pulse/senses/numbers.ts";
+import { isPrepareWake, prepareWakeText, wakeHeldUntil } from "../pulse/prepareWake.ts";
+import { draftWakeGone, isDraftWake } from "../pulse/draftWake.ts";
+import { feedOf } from "../numbers/numberRows.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
 import { dismissalGone } from "../questions/dismissed.ts";
+import { writeQueuedApproval } from "../questions/sentUpDraft.ts";
+import * as Bills from "../work/bills.ts";
+import { KinRecords } from "../work/KinRecords.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
@@ -70,6 +82,8 @@ import {
   turnChat,
 } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
+import { BILLS_THREAD_PREFIX, billsOnly } from "./billsOnly.ts";
+import { leadListsTool } from "./seatHome.ts";
 import { KinLeadPrompt, STEER_CLOSING, stillJoined } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
@@ -93,6 +107,18 @@ import { isOrgPaused } from "./orgState.ts";
 import { isEveningCheckIn, isMorningCheckIn } from "../pulse/weekly.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { textLocale } from "../work/companyProfile.ts";
+import * as Repository from "../chat/KinChatRepository.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import {
+  DeferralSnapshot,
+  deferralFingerprint,
+  deferralOpen,
+  makeDeferralRedraw,
+} from "../triggers/deferrals.ts";
+
+const decodeDeferralSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(DeferralSnapshot));
+const decodeOnDue = Schema.decodeUnknownEffect(KinDeferralCard.fields.onDue);
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { HOLD_MS, KinHostCare } from "../host/KinHostCare.ts";
@@ -212,6 +238,7 @@ const make = Effect.gen(function* () {
     status: "completed" | "failed" | "interrupted" | "timed_out",
     setup: SetupFailure | null = null,
     failure: unknown = null,
+    forced = false,
   ) {
     // Read first: finishing returns retried events to the queue, which drops their lane.
     const lane =
@@ -246,7 +273,18 @@ const make = Effect.gen(function* () {
       wakeupId: row.wakeupId,
       status,
       ...(holdUntil === undefined ? {} : { holdUntil }),
+      ...(forced ? { final: true } : {}),
     });
+    // Its bills left unanswered are told as unread once the turn is over for good.
+    if (Option.isSome(chatRepository) && Option.isSome(chatHub))
+      yield* Bills.turnEnded(row.orgId, row.wakeupId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(Repository.KinChatRepository, chatRepository.value),
+        Effect.provideService(KinChatHub, chatHub.value),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't settle a bills turn", { cause }),
+        ),
+      );
     // Quiet only when the turn really went back to wait, untouched: after something visible,
     // its unanswered events stopped instead, and that is said.
     if (quiet && (finished.stranded > 0 || finished.replied > 0)) quiet = false;
@@ -286,23 +324,25 @@ const make = Effect.gen(function* () {
     // Every message already replied to: one message, one answer, unless the reply's promise broke.
     const outcome = quiet
       ? undefined
-      : finished.stranded > 0
-        ? "partway"
-        : finished.replied > 0
-          ? "replied"
-          : (finished.heldEventIds?.length ?? 0) > 0
-            ? lane.value.owed
-              ? "held"
-              : undefined
-            : setup !== null
-              ? setup
-              : finished.failedEventIds.length > 0
-                ? "gave_up"
-                : finished.retried > 0 && lane.value.owed
-                  ? finished.retryInMs >= KinEventQueue.LAST_RETRY_MS
-                    ? "retrying_later"
-                    : "retrying"
-                  : undefined;
+      : forced && (finished.stranded > 0 || finished.failedEventIds.length > 0)
+        ? "stopped"
+        : finished.stranded > 0
+          ? "partway"
+          : finished.replied > 0
+            ? "replied"
+            : (finished.heldEventIds?.length ?? 0) > 0
+              ? lane.value.owed
+                ? "held"
+                : undefined
+              : setup !== null
+                ? setup
+                : finished.failedEventIds.length > 0
+                  ? "gave_up"
+                  : finished.retried > 0 && lane.value.owed
+                    ? finished.retryInMs >= KinEventQueue.LAST_RETRY_MS
+                      ? "retrying_later"
+                      : "retrying"
+                    : undefined;
     if (outcome !== undefined)
       yield* bridge.value.failed({
         orgId: row.orgId,
@@ -360,6 +400,23 @@ const make = Effect.gen(function* () {
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const chat = yield* Effect.serviceOption(KinChatService);
+  const records = yield* Effect.serviceOption(KinRecords);
+  const chatRepository = yield* Effect.serviceOption(Repository.KinChatRepository);
+  const chatHub = yield* Effect.serviceOption(KinChatHub);
+  /** A batch's card redrawn (`work/bills.ts`); a card that can't be is no reason to stop a turn. */
+  const onCards = <E>(
+    effect: Effect.Effect<void, E, SqlClient.SqlClient | Repository.KinChatRepository | KinChatHub>,
+  ) =>
+    Option.isNone(chatRepository) || Option.isNone(chatHub)
+      ? Effect.void
+      : effect.pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(Repository.KinChatRepository, chatRepository.value),
+          Effect.provideService(KinChatHub, chatHub.value),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't redraw a bills card", { cause }),
+          ),
+        );
   const scope = yield* Effect.scope;
   const spaceChecks = new Set<KinOrgId>();
   const spaceFolders = Option.map(yield* Effect.serviceOption(ServerConfig), (config) =>
@@ -422,6 +479,17 @@ const make = Effect.gen(function* () {
     Effect.forever,
     Effect.forkScoped,
   );
+  /** Whether a turn's files left out are named to `bills_add`: only where the turn can call it. */
+  const offersBillsAdd = Effect.fn("WakeupRunner.offersBillsAdd")(function* (
+    turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
+    shared: boolean,
+  ) {
+    if (shared || (yield* billsOnly(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql))))
+      return false;
+    return yield* leadListsTool(turn.orgId, turn.agentId, "bills_add").pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+  });
   /** Who each finished-task event's work was for (`WorkFor.workFor`), by event id. */
   const finishedFor = Effect.fn("WakeupRunner.finishedFor")(function* (
     orgId: KinOrgId,
@@ -476,28 +544,129 @@ const make = Effect.gen(function* () {
     ),
   );
   /**
+   * A queued start whose item is gone, closed or changed since its card was drawn: the work it
+   * would read is no longer what was started, so it runs no turn and its card asks again.
+   */
+  const staleStart = Effect.fn("WakeupRunner.staleStart")(function* (
+    orgId: KinOrgId,
+    itemId: KinMemoryItemId,
+  ) {
+    const [run] = yield* sql<{
+      state: string;
+      dueAt: number | null;
+      onDue: string;
+      snapshot: string;
+    }>`SELECT state, due_at AS "dueAt", on_due AS "onDue", snapshot_json AS snapshot
+      FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = ${itemId} ORDER BY item_id`;
+    if (run === undefined || run.state !== "started" || run.dueAt === null) return false;
+    const snapshot = yield* decodeDeferralSnapshot(run.snapshot);
+    if (snapshot.drawn === undefined) return false;
+    const item = yield* memory.readItemQuietly(orgId, itemId, "triggers").pipe(
+      Effect.map((found): { head: MemoryItemHead; body: string } | undefined => found),
+      Effect.catchTags({ MemoryNotFound: () => Effect.undefined }),
+    );
+    if (
+      item !== undefined &&
+      deferralOpen(item.head) &&
+      deferralFingerprint(item) === snapshot.drawn.fingerprint
+    )
+      return false;
+    if (Option.isNone(chatRepository)) return false;
+    const dueAt = run.dueAt;
+    const onDue = yield* decodeOnDue(run.onDue);
+    const now = yield* Clock.currentTimeMillis;
+    const clock = { zone: yield* ownerZone(orgId), locale: yield* textLocale(orgId) };
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const redraw = yield* makeDeferralRedraw;
+        yield* redraw({
+          orgId,
+          itemId,
+          run: { state: "started", dueAt, onDue, snapshot },
+          item,
+          why: ["it changed before the work began"],
+          clock,
+          now,
+        });
+      }).pipe(
+        Effect.provideService(Repository.KinChatRepository, chatRepository.value),
+        Option.isSome(chatHub)
+          ? Effect.provideService(KinChatHub, chatHub.value)
+          : (effect) => effect,
+      ),
+    );
+    return true;
+  });
+  /**
    * A due run of a scheduled task that no longer exists, a question with nothing left to take, or
    * a task an agent was put on and is off now or closed: no prompt shows it (`KinLeadPrompt`), so
    * it starts no turn. A failed read keeps the event for the turn.
    */
   const goneBeforeTurn = Effect.fn("WakeupRunner.goneBeforeTurn")(
-    function* (orgId: KinOrgId, event: KinEvent) {
+    function* (orgId: KinOrgId, wakeupId: KinWakeupId, event: KinEvent) {
       if (event._tag === "record.changed" && event.reason === "joined")
         return !(yield* stillJoined(orgId, event.agentId, event.recordId));
+      // A number's crossing whose episode ended, was handled or went quiet since it was queued.
+      if (
+        event._tag === "pulse" &&
+        event.factKeys.length > 0 &&
+        event.factKeys.every((key) => key.startsWith("number_off:"))
+      )
+        return (
+          (yield* offTurnTexts(orgId, event.factKeys, yield* Clock.currentTimeMillis)).length === 0
+        );
+      // A review whose messages were all read or taken back since it was queued.
+      if (event._tag === "pulse" && event.review === true)
+        return !(yield* reviewStillDue(orgId, event));
+      // A person's own task: no longer theirs and due, or this agent may no longer draft it.
+      if (event._tag === "pulse" && isDraftWake(event)) return yield* draftWakeGone(orgId, event);
+      // Bills someone added, every one answered or taken back since they were queued.
+      if (event._tag === "bills.read")
+        return !(yield* Bills.stillToRead(orgId, event.bills).pipe(provideSql));
+      // A head start Kin woke it for, on a fact handled or no longer true since it was queued.
+      if (isPrepareWake(event))
+        return (
+          (yield* prepareWakeText(orgId, event.factKeys, yield* Clock.currentTimeMillis)) ===
+          undefined
+        );
       if (event._tag !== "deferral.due") return false;
       const subject = event.subject;
+      if (subject.type === "deferral") return yield* staleStart(orgId, subject.itemId);
       if (subject.type === "scheduled_task") {
         const schedule = yield* KinSchedules.readSchedule(sql, orgId, subject.itemId);
         if (schedule !== undefined) {
           // Paused, or its setter gone, since it was queued: the run is dropped.
           const task = yield* KinSchedules.readNativeTask(sql, schedule.taskId);
-          return task === undefined || !(yield* KinSchedules.runnable(sql, schedule, task));
+          if (task === undefined || !(yield* KinSchedules.runnable(sql, schedule, task)))
+            return true;
+          // A feed with every number already recorded for the period has nothing to fetch.
+          return (
+            (yield* feedOf(orgId, schedule.scheduleId)) !== undefined &&
+            (yield* feedTurn(orgId, schedule.scheduleId, yield* Clock.currentTimeMillis)) ===
+              undefined
+          );
         }
         return yield* memory
           .readItemQuietly(orgId, subject.itemId, "triggers")
           .pipe(Effect.as(false), Effect.catchTags({ MemoryNotFound: () => Effect.succeed(true) }));
       }
-      if (subject.type !== "question" || subject.undone === true || subject.answered === true)
+      // A proposal or client terms approved before Kin wrote them itself: written now, no turn.
+      if (
+        subject.type === "question" &&
+        subject.approved === true &&
+        Option.isSome(records) &&
+        Option.isSome(chat)
+      )
+        return yield* writeQueuedApproval(
+          { orgId, agentId: event.agentId, wakeupId },
+          chat.value,
+        ).pipe(Effect.provideService(KinRecords, records.value));
+      if (
+        subject.type !== "question" ||
+        subject.undone === true ||
+        subject.answered === true ||
+        subject.lapsed === true
+      )
         return false;
       if (subject.dismissed === true) return yield* dismissalGone(orgId, subject);
       const due = yield* dueTurnText(orgId, subject.questionId, yield* Clock.currentTimeMillis);
@@ -629,9 +798,11 @@ const make = Effect.gen(function* () {
         threadId,
         threadKind: threadId.startsWith(REVIEW_THREAD_PREFIX)
           ? "review"
-          : threadId.startsWith(SHARED_THREAD_PREFIX)
-            ? "shared"
-            : "owner",
+          : threadId.startsWith(BILLS_THREAD_PREFIX)
+            ? "bills"
+            : threadId.startsWith(SHARED_THREAD_PREFIX)
+              ? "shared"
+              : "owner",
         seat:
           lead === undefined
             ? null
@@ -716,6 +887,7 @@ const make = Effect.gen(function* () {
         for (const group of (yield* admitEvents(orgId, agentId, events)).held) {
           const ids = new Set(group.events.map((event) => event.eventId));
           yield* budget.defer({ orgId, agentId, wakeupId, ...group });
+          yield* onCards(Bills.paused(orgId, group.events, group.nextReset));
           events = events.filter((event) => !ids.has(event.eventId));
         }
         if (events.length === 0) return;
@@ -751,6 +923,10 @@ const make = Effect.gen(function* () {
               first,
             }),
             attachments: yield* prompt.attachments({ orgId, events }),
+            offersBillsAdd: yield* offersBillsAdd(
+              row,
+              (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared",
+            ),
           });
           yield* holdFloor;
           if (Option.isSome(bridge))
@@ -900,6 +1076,7 @@ const make = Effect.gen(function* () {
       // Someone besides the owner joined while it worked: it says nothing more, and a fresh
       // wake-up answers its events (`KinEventQueue.finish`).
       let abandoned = yield* isAborted(row);
+      let forced = false;
       yield* Effect.gen(function* () {
         if (result.timedOut) {
           yield* threads.interruptThread({
@@ -914,12 +1091,28 @@ const make = Effect.gen(function* () {
             runId: current,
             timeoutMs: 30_000,
           });
-          if (settled.timedOut)
-            yield* Effect.logWarning("Kin timed-out run may continue after interrupt", {
-              orgId: row.orgId,
-              wakeupId: row.wakeupId,
-              runId: current,
-            });
+          // It ignored the interrupt: its tasks and its agent are ended for certain, as retiring does.
+          if (settled.timedOut) {
+            forced = true;
+            yield* threads
+              .stopDelegatedTasks({
+                threadId,
+                commandId: CommandId.make(`kin-timeout-stop:${row.wakeupId}`),
+                reason: "Its turn took too long and was stopped.",
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Kin could not stop a stuck turn's tasks", { threadId, cause }),
+                ),
+              );
+            yield* threads
+              .forceStopThread({ threadId, runId: current })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Kin could not force-stop a stuck turn", { threadId, cause }),
+                ),
+              );
+          }
         }
         // The reply lands before memory commits, while the wake-up still owns its lane. Its run
         // just ended, so the floor's grant counts from now; a rescue turn that keeps working
@@ -982,7 +1175,7 @@ const make = Effect.gen(function* () {
             countAttempt: false,
             notBefore: (yield* Clock.currentTimeMillis) + PAUSE_POLL_INTERVAL_MS,
           });
-        else yield* finishWakeup(row, status, setup, failure);
+        else yield* finishWakeup(row, status, setup, failure, forced);
       }).pipe(
         Effect.onExit((exit) =>
           result.timedOut && Exit.isFailure(exit)
@@ -1221,6 +1414,25 @@ const make = Effect.gen(function* () {
                 level: current.level,
               });
             }
+            // Kin's own wake claimed inside the quiet hours it waits out goes back until they end.
+            const heldUntil = yield* wakeHeldUntil(
+              orgId,
+              agentId,
+              events,
+              yield* Clock.currentTimeMillis,
+            ).pipe(
+              provideSql,
+              Effect.orElseSucceed(() => undefined),
+            );
+            if (heldUntil !== undefined) {
+              yield* queue.release({
+                orgId,
+                wakeupId,
+                countAttempt: false,
+                notBefore: heldUntil,
+              });
+              return;
+            }
             const admitted = yield* admitEvents(orgId, agentId, events);
             const atLimit = admitted.atLimit;
             for (const group of admitted.held) {
@@ -1261,6 +1473,7 @@ const make = Effect.gen(function* () {
                   heldBy: group.heldBy,
                   nextReset: group.nextReset,
                 });
+                yield* onCards(Bills.paused(orgId, waits, group.nextReset));
                 events = events.filter((event) => !deferred.has(event.eventId));
               }
             }
@@ -1282,12 +1495,13 @@ const make = Effect.gen(function* () {
                 : Effect.succeed(true),
             );
             events = yield* Effect.filter(events, (event) =>
-              goneBeforeTurn(orgId, event).pipe(Effect.map((gone) => !gone)),
+              goneBeforeTurn(orgId, wakeupId, event).pipe(Effect.map((gone) => !gone)),
             );
             if (events.length === 0) {
               yield* queue.finish({ orgId, wakeupId, status: "completed" });
               return;
             }
+            yield* onCards(Bills.resumed(orgId, events));
             const budgetContext = yield* budget.promptContext(orgId);
             const lane = Option.isSome(bridge)
               ? Option.getOrUndefined(yield* bridge.value.lane({ orgId, agentId, wakeupId }))
@@ -1450,15 +1664,16 @@ const make = Effect.gen(function* () {
               workFor,
               ...(lane === undefined ? {} : { lane }),
             });
+            // The prompt recorded who reads this turn; a shared one runs without file tools.
+            const shared =
+              (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
             // What the people in the chat attached to the messages this turn answers, as text and
             // pictures every provider reads alike.
             const { text, attachments } = yield* turnContent.prepare({
               text: built,
               attachments: yield* prompt.attachments({ orgId, events }),
+              offersBillsAdd: yield* offersBillsAdd(row, shared),
             });
-            // The prompt recorded who reads this turn; a shared one runs without file tools.
-            const shared =
-              (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
             // A project per lead, since its root is the provider's cwd: the lead's own checkout.
             const { project } = yield* bootstrapLeadProject(projects, {
               orgId,
@@ -1472,15 +1687,22 @@ const make = Effect.gen(function* () {
             // registered again.
             const alone = !shared && (yield* ownerAlone(row).pipe(provideSql));
             const chatId = alone ? null : ((yield* turnChat(row).pipe(provideSql))?.chatId ?? null);
-            // A stranger's pull request is reviewed on a thread that lists only its review tools.
+            // A stranger's pull request is reviewed, and bills are read, on a thread that lists
+            // only that turn's tools.
             const review = shared && (yield* outsideReview(row).pipe(provideSql)) !== undefined;
-            const prefix = review ? REVIEW_THREAD_PREFIX : shared ? SHARED_THREAD_PREFIX : "kin:";
+            const confined = review
+              ? REVIEW_THREAD_PREFIX
+              : (yield* billsOnly(row).pipe(provideSql))
+                ? BILLS_THREAD_PREFIX
+                : undefined;
+            const prefix = confined ?? (shared ? SHARED_THREAD_PREFIX : "kin:");
             const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
               FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
                 AND ended_at IS NULL AND chat_id IS ${chatId}
                 AND substr(thread_id, 1, ${prefix.length}) = ${prefix}
-                AND (${review ? 1 : 0} = 1
-                  OR substr(thread_id, 1, ${REVIEW_THREAD_PREFIX.length}) <> ${REVIEW_THREAD_PREFIX})
+                AND (${confined === undefined ? 0 : 1} = 1
+                  OR (substr(thread_id, 1, ${REVIEW_THREAD_PREFIX.length}) <> ${REVIEW_THREAD_PREFIX}
+                    AND substr(thread_id, 1, ${BILLS_THREAD_PREFIX.length}) <> ${BILLS_THREAD_PREFIX}))
               ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
             let existingThreadId = !alone && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {

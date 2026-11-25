@@ -2,7 +2,6 @@ import {
   type KinAgentId,
   KinChatError,
   type KinChatId,
-  KinChoiceCardState,
   KinChoiceOption,
   KinMessageId,
   type KinOrgId,
@@ -44,8 +43,11 @@ import { signedIn } from "../people/signedIn.ts";
 import { heldUntil } from "../triggers/quietHold.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { laneFor } from "../reply/replyLane.ts";
-import { choiceCardState } from "../widgets/choiceCard.ts";
+import { choiceCardState, DETAIL_MAX } from "../widgets/choiceCard.ts";
+import { DOC_BODY_MAX } from "../work/docBody.ts";
+import { DRAFT_TEXT_MAX, draftOpening, OPENING_MAX } from "../work/draftOpening.ts";
 import { personSees, unreadableBy, viewVisible } from "../work/teamView.ts";
+import { declinedAsked } from "../work/unconfirmedFacts.ts";
 import {
   DRAFT_KINDS,
   answeredEventId,
@@ -55,9 +57,12 @@ import {
   DRAFT_OPTIONS,
   DRAFT_WORDS,
   draftDetail,
+  destinationRefusal,
+  draftDocOf,
   draftLine,
   encodeStoredDraft,
   type StoredDraft,
+  wholeDraft,
 } from "./approval.ts";
 import {
   askedBy,
@@ -72,6 +77,7 @@ import {
   waitingRedrafts,
 } from "./openQuestions.ts";
 import { defaultDue, namedDue, normaliseAbout, normaliseIntent, raiseAt } from "./rules.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 /** What an agent asks someone outside the chat: `kin_ask`'s card, with no default or actions. */
 export const AskPersonInput = Schema.Struct({
@@ -82,10 +88,11 @@ export const AskPersonInput = Schema.Struct({
       Schema.Struct({ label: KinChoiceOption.fields.label, kind: KinChoiceOption.fields.kind }),
     ).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
   ),
-  detail: Schema.optional(KinText.check(Schema.isMaxLength(1800))),
+  // Longer than its card holds is refused in words with the way on (`tooLongForCard`).
+  detail: Schema.optional(KinText.check(Schema.isMaxLength(DOC_BODY_MAX))),
   by: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(10))),
   about: Schema.optional(
-    Schema.Array(KinTrimmedText.check(Schema.isMaxLength(20))).check(Schema.isMaxLength(8)),
+    Schema.Array(KinTrimmedText.check(Schema.isMaxLength(200))).check(Schema.isMaxLength(8)),
   ),
   intent: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
   draft: Schema.optional(
@@ -115,9 +122,9 @@ export const AskPersonResult = Schema.Struct({
   note: KinTrimmedText,
 });
 
-/** What the agent is told when the person has never signed in: it waits, and nobody was alerted. */
+/** What the agent is told when the person has never signed in: it waits, then lapses. */
 const notSignedIn = (name: string) =>
-  `${name} hasn't signed in to Kin yet: it waits in their chat with you and reaches them when they do. Nobody was alerted. Their answer comes back here.`;
+  `${name} hasn't signed in to Kin yet: it waits in their chat with you, and if they haven't signed in by its day, it lapses and this chat is told. Their answer comes back here.`;
 
 /** At most this many questions asked for others wait on one person, from every agent together. */
 const ASKED_FOR_PER_PERSON = 3;
@@ -128,7 +135,18 @@ const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).dige
 /** Draft kinds a teammate files as her own card, which she sends up herself. */
 const CARD_KINDS: ReadonlyArray<StoredDraft["kind"]> = ["mail", "post"];
 const flat = (text: string) => text.replace(/\s+/g, " ").trim();
-const cardHolds = Schema.is(KinChoiceCardState.fields.detail);
+const count = (n: number) => n.toLocaleString("en-US");
+/**
+ * Why a card can't carry the agent's words whole beside `header` characters of Kin's own, and the
+ * way on, or `undefined` when it can: they are never cut. A draft's `owner` is who it goes up to.
+ */
+export const tooLongForCard = (length: number, header: number, owner: string | undefined) => {
+  const room = Math.min(DRAFT_TEXT_MAX, DETAIL_MAX - header);
+  if (length <= room) return undefined;
+  return owner === undefined
+    ? `detail is ${count(length)} characters, and this card holds at most ${count(room)} of it: shorten detail and ask again.`
+    : `This draft is ${count(length)} characters, and its card holds at most ${count(room)} of it: file it with doc_create and draft instead, which keeps it whole and puts it to ${owner} from there.`;
+};
 
 /** The same thing asked of the same person: one intent, and a record in common unless one names none. */
 const askedAgain = (
@@ -247,10 +265,22 @@ type Press = {
   readonly on?: string;
   /** The turn that wrote the card: what she wrote it from is hers here too (`draftSource`). */
   readonly madeIn?: KinWakeupId | undefined;
+  /** A long draft's doc at its latest version, and that version's whole text. */
+  readonly doc?: DraftDoc | undefined;
   /** Checks the press as a message of theirs in that chat would be checked (`send`). */
   readonly mayPost: ReturnType<KinChatService["Service"]["mayPost"]>;
 };
 type TurnLead = AgentIdentity & { readonly wakeupId: KinWakeupId };
+/**
+ * The doc version a long draft is, with its whole text: it goes up as its opening, bound to this
+ * version (`StoredDraft.doc`).
+ */
+export type DraftDoc = {
+  readonly recordId: string;
+  readonly key: string;
+  readonly version: number;
+  readonly text: string;
+};
 /** A draft still waiting on the owner's Changes first, as `redoOf` found it. */
 export type Redraft = {
   readonly questionId: string;
@@ -265,7 +295,12 @@ type AskFrom =
   | { readonly _tag: "turn"; readonly lead: TurnLead }
   | Press
   /** The owner's turn redrafting one that waits on her Changes first: asked for its chat again. */
-  | { readonly _tag: "redo"; readonly lead: TurnLead; readonly of: Redraft };
+  | {
+      readonly _tag: "redo";
+      readonly lead: TurnLead;
+      readonly of: Redraft;
+      readonly doc?: DraftDoc | undefined;
+    };
 
 /**
  * The owner's redraft of a teammate's draft she answered Changes first on goes to her again as
@@ -276,9 +311,10 @@ export const redo = Effect.fn("KinQuestions.redo")(function* (
   of: Redraft,
   text: string,
   deps: AskDeps,
+  doc?: DraftDoc,
 ) {
   return yield* ask(
-    { _tag: "redo", lead, of },
+    { _tag: "redo", lead, of, doc },
     {
       to: lead.ownerPersonId,
       question: of.question,
@@ -295,18 +331,12 @@ export const redo = Effect.fn("KinQuestions.redo")(function* (
   );
 });
 
-/**
- * In the owner's turn on her words, the one teammate's draft waiting on her redraft that this is
- * (same kind and client, any client if none given, or an edit of its doc); else the one whose card
- * still waits on her, closed as her Changes first in words. `seen`: records the teammate must see.
- */
-export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
-  turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: KinWakeupId },
-  redraft:
-    | { readonly kind: StoredDraft["kind"]; readonly partyId?: string | null }
-    | { readonly docKey: string },
-  seen: ReadonlyArray<string> = [],
-) {
+/** The owner's own chat when this turn answers her words there, where her redrafts go up. */
+const redoChat = Effect.fn("KinQuestions.redoChat")(function* (turn: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly wakeupId: KinWakeupId;
+}) {
   const sql = yield* SqlClient.SqlClient;
   if ((yield* effectiveAudience(turn)) !== "owner_only") return undefined;
   if ((yield* approvalOf(turn))._tag !== "none") return undefined;
@@ -320,17 +350,49 @@ export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
     (yield* ownMessages(turn, lane.value.chatId, agent.owner)).length === 0
   )
     return undefined;
-  const chatId = lane.value.chatId;
+  return lane.value.chatId;
+});
+
+/** Whether a teammate's draft in this turn's chat still waits on the owner's redraft or tap. */
+export const redraftWaits = Effect.fn("KinQuestions.redraftWaits")(function* (turn: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly wakeupId: KinWakeupId;
+}) {
+  const chatId = yield* redoChat(turn);
+  if (chatId === undefined) return false;
+  return (yield* waitingRedrafts(turn, chatId)).length > 0;
+});
+
+/**
+ * In the owner's turn on her words, the one teammate's draft waiting on her redraft that this is
+ * (same kind and client, or either names none, or an edit of its doc); else the one whose card
+ * still waits on her, closed as her Changes first in words. `seen`: records the teammate must see.
+ */
+export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
+  turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: KinWakeupId },
+  redraft:
+    | { readonly kind: StoredDraft["kind"]; readonly partyId?: string | null }
+    | { readonly docKey: string },
+  seen: ReadonlyArray<string> = [],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const chatId = yield* redoChat(turn);
+  if (chatId === undefined) return undefined;
   type Row = {
     readonly about: ReadonlyArray<string>;
     readonly forPersonId: KinPersonId;
     readonly draft: StoredDraft;
   };
-  const isIt = (row: Row) =>
-    "docKey" in redraft
-      ? row.about.includes(redraft.docKey)
-      : row.draft.kind === redraft.kind &&
-        (redraft.partyId === undefined || (row.draft.for?.partyId ?? null) === redraft.partyId);
+  // A draft or a redraft naming no client is either client's; two naming two are two drafts.
+  const isIt = (row: Row) => {
+    if ("docKey" in redraft) return row.about.includes(redraft.docKey);
+    const its = row.draft.for?.partyId ?? null;
+    return (
+      row.draft.kind === redraft.kind &&
+      (redraft.partyId == null || its === null || its === redraft.partyId)
+    );
+  };
   const matching = <A extends Row>(rows: ReadonlyArray<A>) =>
     Effect.filter(rows.filter(isIt), (row) =>
       Effect.forEach(seen, (id) => viewVisible(turn.orgId, [row.forPersonId], id)).pipe(
@@ -452,6 +514,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           : ((yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
               WHERE org_id = ${orgId} AND person_id = ${asker}`)[0]?.name ?? null);
       // A sent-up draft is a teammate's, to the agent's owner only: his Approve has it made.
+      const bound = press?.doc ?? (from._tag === "redo" ? from.doc : undefined);
       let draft: string | null = null;
       let sentUp: StoredDraft | undefined;
       let hers: ReadonlyArray<string> | undefined;
@@ -533,9 +596,26 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           },
         };
         draft = yield* encodeStoredDraft(sentUp);
+        const tooLong = destinationRefusal(sentUp.kind, bound?.text ?? input.detail, on);
+        if (tooLong !== undefined) return yield* refuse(tooLong);
       }
       if (sentUp === undefined && input.options === undefined)
         return yield* refuse("Give it 2 to 4 options.");
+      const by = askedBy(askerName, self.name);
+      // Asked after an outside read: the card says so, as much as its reader may see of it.
+      const read = turn === null ? undefined : yield* outsideStamp(turn);
+      const afterLine =
+        read === undefined ? "" : `\n\nAsked after reading: ${renderSource(read, targetOwnerSide)}`;
+      const plainDetail = `${by}${afterLine}${
+        input.detail === undefined || input.detail.trim() === "" ? "" : `\n\n${input.detail}`
+      }`;
+      // A long draft's opening is sized to its card below; anything else is the agent's whole words.
+      if (bound === undefined) {
+        const whole = sentUp === undefined ? plainDetail : `${draftDetail(by, sentUp)}${afterLine}`;
+        const own = (sentUp?.text ?? input.detail ?? "").length;
+        const why = tooLongForCard(own, whole.length - own, sentUp?.names.owner);
+        if (why !== undefined) return yield* refuse(why);
+      }
       // Their own direct chat with this agent: opening it is their own reach check (`Reach`).
       const unreached = new KinChatError({
         reason: "not_allowed",
@@ -566,6 +646,15 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         return yield* refuse(
           "Say what it is for (intent) or which records it is about (about), so Kin can tell it from any other question.",
         );
+      const no =
+        turn === null || sentUp !== undefined
+          ? undefined
+          : yield* declinedAsked(turn, target.id, about, [
+              input.question,
+              input.detail,
+              ...(input.options ?? []).map((one) => one.label),
+            ]);
+      if (no !== undefined) return yield* refuse(no);
       const questionId =
         redone !== null
           ? redoId(redone.questionId, redone.wakeupId)
@@ -587,7 +676,12 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
             reason: "not_allowed",
             message: "Chat operation not allowed.",
           });
-        if (redone !== null && seen.draft?.text !== input.detail)
+        if (
+          redone !== null &&
+          (seen.draft?.doc === undefined
+            ? seen.draft?.text !== input.detail
+            : seen.draft.doc.version !== bound?.version)
+        )
           return yield* refuse(
             `This turn already put a redraft of it to ${target.name}, which waits on them.`,
           );
@@ -664,31 +758,31 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         input.by === undefined ? undefined : namedDue(input.by, now, clock.zone, clock.work);
       if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
       const dueAt = named?.at ?? defaultDue(now, clock.zone, clock.work);
-      const by = askedBy(askerName, self.name);
-      // Asked after an outside read: the card says so, as much as its reader may see of it.
-      const read = turn === null ? undefined : yield* outsideStamp(turn);
-      const afterLine =
-        read === undefined ? "" : `\n\nAsked after reading: ${renderSource(read, targetOwnerSide)}`;
-      if (
-        redone !== null &&
-        sentUp !== undefined &&
-        !cardHolds(`${draftDetail(by, sentUp)}${afterLine}`)
-      )
-        return yield* refuse(
-          "With who asks and who it is for, this draft is too long for its card.",
-        );
+      // A long draft goes up as its opening, bound to its version (`isLongDraft`, by the caller);
+      // how much of it the card has room for sets only the opening's length.
+      if (sentUp !== undefined && bound !== undefined) {
+        const doc = {
+          recordId: bound.recordId,
+          key: bound.key,
+          version: bound.version,
+          chars: bound.text.trim().length,
+        };
+        const room =
+          DETAIL_MAX - `${draftDetail(by, { ...sentUp, text: "", doc })}${afterLine}`.length;
+        sentUp = {
+          ...sentUp,
+          text: draftOpening(bound.text, Math.max(1, Math.min(OPENING_MAX, room))),
+          doc,
+        };
+        draft = yield* encodeStoredDraft(sentUp);
+      }
       // A sent-up draft's card is Kin's from its stored payload: its line and its two buttons.
-      const detail =
-        sentUp !== undefined
-          ? `${draftDetail(by, sentUp)}${afterLine}`
-          : `${by}${afterLine}${
-              input.detail === undefined || input.detail.trim() === "" ? "" : `\n\n${input.detail}`
-            }`;
+      const detail = sentUp !== undefined ? `${draftDetail(by, sentUp)}${afterLine}` : plainDetail;
       const card = {
         question: flat(input.question),
         detail,
         askedBy: by,
-        ...(sentUp === undefined ? {} : { draft: sentUp.text }),
+        ...(sentUp === undefined ? {} : { draft: sentUp.text, ...draftDocOf(sentUp) }),
         options:
           sentUp !== undefined
             ? DRAFT_OPTIONS.map((one) => ({ ...one }))
@@ -739,7 +833,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           },
         });
       // Kin shows her the draft she sent up, unless her own card already holds that text, as the
-      // agent's own bubble, which draws its markdown; of a redraft, only Kin's line that it changed.
+      // agent's own bubble, which draws its markdown; of a redraft, only Kin's line that it is back.
       if (
         turn !== null &&
         sentUp !== undefined &&
@@ -758,7 +852,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
                   silent: true,
                 }
               : {
-                  body: `${target.name} changed the ${DRAFT_WORDS[sentUp.kind]}; the new one is with ${target.name} to approve.`,
+                  body: `${target.name} asked for changes; the new ${DRAFT_WORDS[sentUp.kind]} is with ${target.name} to approve.`,
                 }),
           })
           .pipe(
@@ -867,16 +961,17 @@ const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
     (one) => one.eventId === answeredEventId(turn.orgId, one.questionId),
   );
   if (own.length === 0 && earlier.length === 0) return undefined;
-  // The owner's redraft was never held to her, so none of it is hers.
-  return own.length > 0
-    ? own
-    : earlier.flatMap((one) =>
-        Option.toArray(decodeStoredDraft(one.draft)).flatMap((d) => (d.redo ? [] : [d.text])),
-      );
+  if (own.length > 0) return own;
+  // The owner's redraft was never held to her, so none of it is hers; a long one's whole is.
+  const theirs = earlier.flatMap((one) =>
+    Option.toArray(decodeStoredDraft(one.draft)).filter((d) => d.redo !== true),
+  );
+  const whole = yield* Effect.forEach(theirs, (d) => wholeDraft(turn.orgId, d));
+  return whole.flatMap((d) => (d === undefined ? [] : [d.text]));
 });
 
 /** What this person wrote themselves in that chat, in the messages this turn answers. */
-const ownMessages = Effect.fn("KinQuestions.ownMessages")(function* (
+export const ownMessages = Effect.fn("KinQuestions.ownMessages")(function* (
   turn: { readonly orgId: string; readonly agentId: string; readonly wakeupId: string },
   chatId: string,
   personId: KinPersonId,
@@ -889,6 +984,7 @@ const ownMessages = Effect.fn("KinQuestions.ownMessages")(function* (
       AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message'
       AND json_extract(e.json, '$.origin') IS NULL AND m.chat_id = ${chatId}
       AND m.author_kind = 'human' AND m.author_person_id = ${personId} AND m.origin_json IS NULL
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     ORDER BY e.event_id`;
   return rows.map((one) => one.body);
 });

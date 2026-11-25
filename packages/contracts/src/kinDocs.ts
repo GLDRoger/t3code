@@ -221,6 +221,22 @@ export const KinDocDetail = Schema.Struct({
   embeds: Schema.optional(Schema.Array(KinDocEmbed)),
   /** This reader may change a section by hand (`kin.docs.editSection`); the host decides again. */
   editable: Schema.optional(Schema.Literal(true)),
+  /**
+   * Private by its kind alone, no person's label. `reader`: the teammate whose priced draft it is,
+   * while they still read it; `you` when that is this reader. Absent from older hosts.
+   */
+  kindLabel: Schema.optional(
+    Schema.Struct({
+      reader: Schema.optional(
+        Schema.Struct({ name: Schema.String, you: Schema.optional(Schema.Literal(true)) }),
+      ),
+    }),
+  ),
+  /**
+   * To owner-level readers: the teammate it was drafted for, who reads it again once it is not
+   * private and loses it once an owner labels it, unless the label is their own. Absent from older hosts.
+   */
+  draftOf: Schema.optional(Schema.Struct({ name: Schema.String })),
 });
 export type KinDocDetail = typeof KinDocDetail.Type;
 
@@ -265,7 +281,16 @@ export const KinDocsListResult = Schema.Struct({
 export type KinDocsListResult = typeof KinDocsListResult.Type;
 
 export const KinDocGetInput = Schema.Union([
-  Schema.Struct({ orgId: KinOrgId, key: KinRecordKey, version: Schema.optional(PositiveInt) }),
+  Schema.Struct({
+    orgId: KinOrgId,
+    key: KinRecordKey,
+    version: Schema.optional(PositiveInt),
+    /**
+     * A long draft's chat card this read comes from: its viewer reads the version it holds
+     * without the Docs place, if they still see the doc.
+     */
+    card: Schema.optional(KinWidgetId),
+  }),
   Schema.Struct({
     orgId: KinOrgId,
     recordId: KinRecordId,
@@ -353,8 +378,14 @@ export const KinDocDeleteInput = Schema.Struct({
 });
 export type KinDocDeleteInput = typeof KinDocDeleteInput.Type;
 
+/** The longest answer to "What does your company sell, and to whom?". */
+export const KIN_SELLS_MAX = 300;
 /** The owner level starts What we sell: Kin writes its outline once, or brings an archived one back. */
-export const KinDocStartWhatWeSellInput = Schema.Struct({ orgId: KinOrgId });
+export const KinDocStartWhatWeSellInput = Schema.Struct({
+  orgId: KinOrgId,
+  /** A new company's answer to what it sells and to whom, written first; older hosts ignore it. */
+  sells: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(KIN_SELLS_MAX))),
+});
 export type KinDocStartWhatWeSellInput = typeof KinDocStartWhatWeSellInput.Type;
 
 /** One input a recipe asks for, as its RECIPE.md declares it. */
@@ -617,8 +648,28 @@ export const KinDocCardDraft = Schema.Struct({
   changesFirst: Schema.optional(Schema.Struct({ name: KinTrimmedText, at: IsoDateTime })),
   /** Kin can't post it: no account on this service is connected, and who can connect one. */
   noAccount: Schema.optional(Schema.Struct({ service: KinTrimmedText, by: KinNamedPerson })),
+  /**
+   * Set when `text` is only the draft's opening (and `kinDraftOpeningLine`): the whole is this
+   * version of the doc, this many characters long. Copy text fetches that version.
+   */
+  whole: Schema.optional(Schema.Struct({ version: PositiveInt, chars: PositiveInt })),
+  /** What went up changed before its owner approved it, so nothing was: it may go up again. */
+  changed: Schema.optional(Schema.Struct({ at: IsoDateTime })),
 });
 export type KinDocCardDraft = typeof KinDocCardDraft.Type;
+
+/**
+ * The line a long draft's card `text` ends with after its opening, for clients that read `text`
+ * as the whole draft; one that reads `whole` leaves it out (`kinDraftOpeningOf`).
+ */
+export const kinDraftOpeningLine = (key: string) =>
+  `This is only the opening. Open ${key} to read the whole draft.`;
+
+/** A long draft card's opening without the line `kinDraftOpeningLine` adds for older clients. */
+export const kinDraftOpeningOf = (text: string, key: string) => {
+  const line = `\n\n${kinDraftOpeningLine(key)}`;
+  return text.endsWith(line) ? text.slice(0, -line.length) : text;
+};
 
 export const KIN_DOC_CARD = "doc";
 /** The chat card an agent shows a doc with. Filled by the server from stored rows. */

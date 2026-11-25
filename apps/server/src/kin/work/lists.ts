@@ -1,5 +1,6 @@
 import {
   KIN_DOC_KINDS,
+  KIN_LISTS_NEVER_TEAM,
   KIN_SENSITIVE_FIELDS,
   KinChatError,
   KinFieldValue,
@@ -52,7 +53,7 @@ export const LISTS: Record<ListName, List> = {
     // The project spine: a milestone's key, S/M/L, why its holder was picked, the doc section it
     // came from with that section's hash then, a meeting's people and place, the holder not
     // told yet that it is theirs, who is on it besides its holder (`person:<id>`, `agent:<id>`),
-    // and where a promise was made (`promises.ts`).
+    // where a promise was made (`promises.ts`), and the person it was promised to (`person:<id>`).
     fields: [
       "milestone",
       "size",
@@ -65,6 +66,7 @@ export const LISTS: Record<ListName, List> = {
       "where",
       "from",
       "alsoOn",
+      "promisedTo",
     ],
   },
   clients: {
@@ -146,6 +148,7 @@ export const LISTS: Record<ListName, List> = {
     fields: ["home"],
   },
 };
+export const TEAM_LIST_RESERVED = [...Object.keys(LISTS), ...KIN_LISTS_NEVER_TEAM];
 
 export const listOf = (registerId: string): ListName =>
   registerId in LISTS ? (registerId as ListName) : "work";

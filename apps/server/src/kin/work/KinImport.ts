@@ -19,17 +19,19 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
 
-import { IMPORTED_SERIES, ruleProblem, seriesOf } from "../gendocs/numbering.ts";
+import { IMPORTED_SERIES, ruleProblem, seriesOf, voidEntry } from "../gendocs/numbering.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { sectionOnFor as sectionOn } from "../shell/KinShell.ts";
 import { DEALS_OFF } from "../shell/sections.ts";
 import { contactAll, contactFields } from "./contactDetails.ts";
 import { createAs } from "./deals.ts";
 import {
+  entryMatchWithExtraKeys,
   ImportHeader,
   type ImportContact,
   type ImportDeal,
   type ImportEntry,
+  type ImportEntryMatch,
   type ImportList,
   type ImportPayment,
   ImportRow,
@@ -37,7 +39,14 @@ import {
   type ImportProject,
 } from "./importFormat.ts";
 import { type CreateInput, KinRecords, type PlainImportInput, type Writer } from "./KinRecords.ts";
-import { type FieldValue, fieldList, fieldText, parseFields } from "./lists.ts";
+import {
+  type FieldValue,
+  fieldList,
+  fieldText,
+  isMoney,
+  parseFields,
+  shownField,
+} from "./lists.ts";
 import { dayIn, farAbove, issuedAfterDue, largestIn, parseAmount } from "./money.ts";
 import { companyMoneyState } from "./companyProfile.ts";
 import {
@@ -50,7 +59,9 @@ import {
 } from "./recordRows.ts";
 import { regionOf } from "./region.ts";
 import {
+  checkFields,
   defineList,
+  describe,
   keyFor,
   type ListDef,
   listDef,
@@ -59,9 +70,16 @@ import {
   proposalFor,
   startState,
   storedCategoryLabels,
+  typedText,
 } from "./registers.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { IMPORT_BUSY, notImporting, undoBatch, type UndoReport } from "./importUndo.ts";
+import {
+  IMPORT_BUSY,
+  notImporting,
+  undoBatch,
+  type ImportFill,
+  type UndoReport,
+} from "./importUndo.ts";
 
 // Everything an import makes is keyed `import:<batch>:<kind>:<source>`, so a rerun makes nothing
 // twice and leaves alone what someone changed since. Rows go a hundred to a transaction: a crash
@@ -90,13 +108,19 @@ const withMoney = (spec: ImportEntry, def: ListDef) =>
       def.fields.some((one) => one.key === key && one.type === "money"),
   );
 const decodeHeader = Schema.decodeUnknownEffect(Schema.fromJsonString(ImportHeader));
-const decodeRow = Schema.decodeUnknownEffect(Schema.fromJsonString(ImportRow));
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeRow = Schema.decodeUnknownEffect(ImportRow);
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 class Rollback extends Schema.TaggedError<Rollback>()("KinImportRollback", {}) {}
 type Failure = KinChatError | SqlError.SqlError | Schema.SchemaError;
 type Decoded =
   | { readonly line: number; readonly row: ImportRow }
-  | { readonly line: number; readonly row: undefined; readonly failure: string };
+  | { readonly line: number; readonly row: undefined; readonly failure: string }
+  | {
+      readonly line: number;
+      readonly row: undefined;
+      readonly extraMatchKeys: { readonly source: string | null };
+    };
 type Named = { readonly recordId: string; readonly key: string; readonly gstin: unknown };
 
 type Counts = {
@@ -108,13 +132,6 @@ type Counts = {
 };
 const zero = (): Counts => ({ create: 0, unchanged: 0, matched: 0, changed: 0, problems: 0 });
 type Kind = "client" | "project" | "entry" | "payment" | "contact" | "deal";
-/** A field an import filled on a record Kin had, empty before; undo empties it again at `rev`. */
-export type ImportFill = {
-  readonly recordId: string;
-  readonly key: string;
-  readonly rev: number;
-  readonly fields: ReadonlyArray<string>;
-};
 const NO_DEALS_HERE =
   "Deals come in through Clients, Add, Import a file, where Kin knows who imports them.";
 export type ImportProblem = {
@@ -143,8 +160,10 @@ export type ImportReport = {
   readonly contacts: Counts;
   readonly deals: Counts;
   readonly fileProblems: number;
-  /** Fields filled on clients and contacts Kin had, which had none. */
+  /** Writes that filled empty fields or notes on records Kin already had. */
   readonly filled: number;
+  /** Entries Kin already had that the file voids. */
+  readonly voided: number;
   /** Of the clients made, how many as prospects. */
   readonly prospects: number;
   /** Imported before and changed in Kin since: left as they are, with their payments. */
@@ -161,6 +180,12 @@ export type ImportReport = {
     readonly key: string;
     readonly made: string | null;
   }>;
+  readonly entryMatches: ReadonlyArray<{
+    readonly key: string;
+    readonly fields: ReadonlyArray<string>;
+    /** The row voids it, or it was void already. */
+    readonly void?: "voids" | "already";
+  }>;
   /** What the file holds by list and currency, to check against the old system. */
   readonly money: ReadonlyArray<{
     readonly list: string;
@@ -175,7 +200,7 @@ export type ImportReport = {
     readonly oldest: string | null;
   }>;
   readonly problems: ReadonlyArray<ImportProblem>;
-  /** Problems and changed entries past the ones listed. */
+  /** Problems, changed entries and matches past the ones listed. */
   readonly more: number;
 };
 /** The file's lines; `fromFile` reads one from this host's disk. */
@@ -445,6 +470,7 @@ const make = Effect.gen(function* () {
       memo.found.set(originKey, { recordId: row.recordId, key: row.key });
     };
     const changed: Array<{ source: string; key: string }> = [];
+    const entryMatches: Array<ImportReport["entryMatches"][number]> = [];
     const clientMatches: Array<ImportReport["clientMatches"][number]> = [];
     const matchedClient = (match: ImportReport["clientMatches"][number]) => {
       if (clientMatches.length < MAX_LISTED) clientMatches.push(match);
@@ -575,19 +601,28 @@ const make = Effect.gen(function* () {
     const fills: Array<ImportFill> = [];
     let prospects = 0;
     let fillsWritten = 0;
-    /** A person on the team by id, else whoever imports. */
-    const lookerAfter = Effect.fn("KinImport.lookerAfter")(function* (
-      personId: string | undefined,
-    ) {
-      if (personId === undefined || personId === owner) return me;
+    const teamPerson = Effect.fn("KinImport.teamPerson")(function* (personId: string) {
       if (!memo.people.has(personId)) {
         const [person] = yield* sql<{ id: string }>`SELECT person_id AS id FROM kin_people
           WHERE org_id = ${orgId} AND person_id = ${personId} AND removed_at IS NULL`;
         memo.people.set(personId, person?.id);
       }
-      const id = memo.people.get(personId);
+      return memo.people.get(personId);
+    });
+    /** A person on the team by id, else whoever imports. */
+    const lookerAfter = Effect.fn("KinImport.lookerAfter")(function* (
+      personId: string | undefined,
+    ) {
+      if (personId === undefined || personId === owner) return me;
+      const id = yield* teamPerson(personId);
       return id === undefined ? me : { _tag: "person" as const, personId: KinPersonId.make(id) };
     });
+    const hasValue = (stored: ReturnType<typeof parseFields>, field: string) => {
+      const value = stored[field];
+      return typeof value === "object" && isMoney(value)
+        ? true
+        : fieldText(stored, field) !== null || fieldList(stored, field).length > 0;
+    };
     /** Fills on `key` only what it lacks; a field it has stays as someone typed it. */
     const fill = Effect.fn("KinImport.fill")(function* (
       key: string,
@@ -610,10 +645,7 @@ const make = Effect.gen(function* () {
           named.push(kind);
           continue;
         }
-        const stays = Array.isArray(value)
-          ? fieldList(stored, field).length > 0
-          : fieldText(stored, field) !== null;
-        if (stays) continue;
+        if (hasValue(stored, field)) continue;
         fields[field] = value;
         named.push(field);
       }
@@ -787,6 +819,17 @@ const make = Effect.gen(function* () {
       value: string | { readonly amount: string; readonly currency: string },
     ) {
       const spec = def.fields.find((one) => one.key === key);
+      if (spec?.type === "person") {
+        if (value === "owner") return `person:${owner}`;
+        const id = typeof value === "string" ? yield* teamPerson(value) : undefined;
+        if (id === undefined) {
+          const given = typeof value === "string" ? value : encodeJson(value);
+          return yield* invalid(
+            `${spec.label}: no one on the team has the id ${given.slice(0, 40)}.`,
+          );
+        }
+        return `person:${id}`;
+      }
       if (typeof value !== "string") {
         if (spec !== undefined && spec.type !== "money")
           return yield* invalid(`${spec.label} isn't an amount.`);
@@ -796,10 +839,10 @@ const make = Effect.gen(function* () {
       }
       if (spec?.type === "file")
         return yield* invalid(`${spec.label} holds files; Kin doesn't import files.`);
-      if (spec?.type === "person") {
-        if (value !== "owner") return yield* invalid(`${spec.label} takes "owner".`);
-        return `person:${owner}`;
-      }
+      if (spec?.type === "number" || spec?.type === "yesno")
+        return (
+          typedText(spec.type, value) ?? (yield* invalid(`${spec.label} takes ${describe(spec)}.`))
+        );
       if (spec?.type === "link") {
         const projectLink = spec.link === "projects";
         const id = projectLink
@@ -812,6 +855,122 @@ const make = Effect.gen(function* () {
         return id;
       }
       return value;
+    });
+
+    const plannedEntries = new Map<string, Pick<RecordRow, "recordId" | "fieldsJson" | "notes">>();
+    const projectedEntries = new Set<string>();
+    /** A plan's voids, which its rolled-back chunks forget. */
+    const plannedVoids = new Set<string>();
+    const matchEntry = Effect.fn("KinImport.matchEntry")(function* (
+      line: number,
+      spec: ImportEntryMatch,
+    ) {
+      if (seen.entry.has(spec.source))
+        return problem(line, "entry", spec.source, "Another entry has this source id.");
+      seen.entry.add(spec.source);
+      const matched = yield* row(
+        line,
+        "entry",
+        spec.source,
+        Effect.gen(function* () {
+          if (failedLists.has(spec.list))
+            return yield* invalid(`Its list ${spec.list} couldn't be made.`);
+          const def = yield* listOf(spec.list);
+          if (def === undefined)
+            return yield* invalid(`There is no list ${spec.list}; name it in the header.`);
+          const had = yield* byKey(orgId, spec.match);
+          if (
+            had === undefined ||
+            had.registerId !== spec.list ||
+            NOT_ENTRIES.includes(spec.list) ||
+            spec.list === "contacts" ||
+            had.originKey.startsWith(originOf("entry", ""))
+          )
+            return yield* invalid(`There is no entry ${spec.match} on ${spec.list}.`);
+          const projected = projectedEntries.has(had.key) ? undefined : plannedEntries.get(had.key);
+          if (projected?.recordId === had.recordId) {
+            // Only in a plan's rollback: restore the earlier chunks' already validated values.
+            yield* sql`UPDATE kin_records SET fields_json = ${projected.fieldsJson}, notes = ${projected.notes}
+            WHERE org_id = ${orgId} AND record_id = ${had.recordId}`;
+          }
+          const before = projected?.recordId === had.recordId ? projected : had;
+          const stored = parseFields(before.fieldsJson);
+          const fields: Record<string, FieldValue> = {};
+          for (const [key, value] of Object.entries(spec.fields ?? {})) {
+            const unknown = checkFields(def, { [key]: null });
+            if (unknown !== undefined) return yield* unknown;
+            if (hasValue(stored, key)) continue;
+            if (
+              company.pending &&
+              def.fields.some((field) => field.key === key && field.type === "money")
+            )
+              return yield* invalid(COUNTRY_FIRST);
+            fields[key] = yield* fieldValue(line, def, key, value);
+          }
+          const notes = before.notes.trim() === "" && spec.notes?.trim() ? spec.notes : undefined;
+          let labels: Array<string> = [];
+          if (Object.keys(fields).length > 0 || notes !== undefined) {
+            const after = yield* records.update(
+              orgId,
+              writer,
+              had.key,
+              {
+                ...(Object.keys(fields).length === 0 ? {} : { fields }),
+                ...(notes === undefined ? {} : { notes }),
+              },
+              had.rev,
+            );
+            // The writer can fill an additional field, such as defaulting reimbursement to owed.
+            const saved = parseFields(after.fieldsJson);
+            const filled = def.fields.filter(
+              ({ key }) => shownField(saved[key]) !== shownField(stored[key]),
+            );
+            const filledNotes = after.notes !== before.notes;
+            if (filled.length > 0 || filledNotes) {
+              fills.push({
+                recordId: after.recordId,
+                key: after.key,
+                rev: after.rev,
+                fields: filled.map(({ key }) => key),
+                entry: { notes: filledNotes },
+              });
+            }
+            if (!keep) {
+              const { recordId, fieldsJson, notes } = after;
+              plannedEntries.set(had.key, { recordId, fieldsJson, notes });
+            }
+            labels = [...filled.map(({ label }) => label), ...(filledNotes ? ["Notes"] : [])];
+          }
+          if (spec.void !== true) return { key: had.key, fields: labels };
+          const from = (yield* records.get(orgId, had.key))?.state ?? had.state;
+          // A numbered list's Void tap, else the state picker's own write: their rules are the row's.
+          const numbered = numberingOf(def) !== undefined;
+          if (numbered)
+            yield* voidEntry(orgId, writer, had.key).pipe(
+              Effect.provideService(KinRecords, records),
+            );
+          else if (from !== "dropped")
+            yield* records.update(orgId, writer, had.key, { state: "dropped" });
+          if (from === "dropped" || (!keep && plannedVoids.has(had.key)))
+            return { key: had.key, fields: labels, void: "already" as const };
+          const now = yield* records.get(orgId, had.key);
+          if (now === undefined) return yield* invalid(`There is no entry ${spec.match}.`);
+          fills.push({
+            recordId: now.recordId,
+            key: now.key,
+            rev: now.rev,
+            fields: [],
+            entry: { notes: false, voided: true, ...(numbered ? {} : { from }) },
+          });
+          if (!keep) plannedVoids.add(had.key);
+          return { key: had.key, fields: labels, void: "voids" as const };
+        }),
+      );
+      if (matched === undefined) return;
+      if (!keep) projectedEntries.add(matched.key);
+      counts.entries.matched += 1;
+      if (entryMatches.length < MAX_LISTED) entryMatches.push(matched);
+      else more += 1;
     });
 
     /** Payments by this import's keys; one recorded before is passed over. */
@@ -1212,6 +1371,13 @@ const make = Effect.gen(function* () {
 
     const rowStep = Effect.fn("KinImport.row")(function* (decoded: Decoded, dealsOn: boolean) {
       const { line } = decoded;
+      if ("extraMatchKeys" in decoded)
+        return problem(
+          line,
+          "entry",
+          decoded.extraMatchKeys.source,
+          "A row with match fills fields and notes, and may void its entry.",
+        );
       if (decoded.row === undefined)
         return problem(
           line,
@@ -1242,7 +1408,9 @@ const make = Effect.gen(function* () {
         return dealsOn
           ? yield* deal(line, one.deal)
           : problem(line, "deal", one.deal.source, DEALS_OFF);
-      return yield* entry(line, one.entry);
+      return one.entry.match === undefined
+        ? yield* entry(line, one.entry)
+        : yield* matchEntry(line, one.entry);
     });
 
     /**
@@ -1260,6 +1428,7 @@ const make = Effect.gen(function* () {
           if (one.client.match === undefined) named.push(one.client);
           continue;
         }
+        if ("entry" in one && one.entry.match !== undefined) continue;
         const [kind, spec] =
           "project" in one
             ? (["project", one.project] as const)
@@ -1269,7 +1438,8 @@ const make = Effect.gen(function* () {
                 ? (["deal", one.deal] as const)
                 : (["entry", one.entry] as const);
         origins.add(originOf(kind, spec.source));
-        if (spec.client !== undefined) origins.add(originOf("client", spec.client));
+        if ("client" in spec && spec.client !== undefined)
+          origins.add(originOf("client", spec.client));
         if ("project" in spec && spec.project !== undefined)
           origins.add(originOf("project", spec.project));
       }
@@ -1333,6 +1503,7 @@ const make = Effect.gen(function* () {
         if (row === undefined || !("entry" in row)) return false;
         const spec = row.entry;
         if (
+          spec.match !== undefined ||
           spec.list !== list ||
           spec.client !== undefined ||
           spec.project !== undefined ||
@@ -1424,7 +1595,17 @@ const make = Effect.gen(function* () {
           const decoded: Array<Decoded> = [];
           for (const [text, index] of chunk)
             if (index + 1 > scan.headerAt && text.trim() !== "") {
-              const one = yield* decodeRow(text).pipe(Effect.result);
+              const parsed = yield* decodeJson(text).pipe(Effect.result);
+              if (parsed._tag === "Failure") {
+                decoded.push({ line: index + 1, row: undefined, failure: parsed.failure.message });
+                continue;
+              }
+              const extraMatchKeys = entryMatchWithExtraKeys(parsed.success);
+              if (extraMatchKeys !== undefined) {
+                decoded.push({ line: index + 1, row: undefined, extraMatchKeys });
+                continue;
+              }
+              const one = yield* decodeRow(parsed.success).pipe(Effect.result);
               decoded.push(
                 one._tag === "Success"
                   ? { line: index + 1, row: one.success }
@@ -1472,6 +1653,7 @@ const make = Effect.gen(function* () {
                 '$.beat', ${yield* Clock.currentTimeMillis})
               WHERE seq = ${checkSeq}`;
           forget();
+          projectedEntries.clear();
           done += decoded.length;
           watched.done = done;
           yield* refreshes.touch(orgId, "imports");
@@ -1497,6 +1679,7 @@ const make = Effect.gen(function* () {
       changed,
       taxIdLabel: regionOf(company.country)?.taxIdLabel ?? "tax id",
       clientMatches,
+      entryMatches,
       money: byName(money).map(([, one]) => ({
         list: one.list,
         entries: one.entries,
@@ -1504,7 +1687,8 @@ const make = Effect.gen(function* () {
         paid: asMoney(one.paid, one.currency),
       })),
       stale: byName(stale).map(([list, one]) => ({ list, ...one })),
-      filled: fills.length,
+      filled: fills.filter((one) => one.entry?.voided !== true).length,
+      voided: fills.filter((one) => one.entry?.voided === true).length,
       prospects,
       problems,
       more,

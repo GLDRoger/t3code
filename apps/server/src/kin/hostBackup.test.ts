@@ -6,11 +6,14 @@ import {
   KinEventId,
   KinHostTroubleCard,
   KinOrgId,
+  KinPersonId,
   KinWakeupId,
   type KinTroubleCause,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -28,11 +31,15 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Hub from "./chat/KinChatHub.ts";
 import * as Repository from "./chat/KinChatRepository.ts";
 import * as Chat from "./chat/KinChatService.ts";
 import * as HostBackupCheck from "./host/backupCheck.ts";
 import * as KinHostCare from "./host/KinHostCare.ts";
+import * as OfflineCatchUp from "./host/offlineCatchUp.ts";
+import { recordSkips } from "./host/offlineSkips.ts";
+import { offlineCatchUpWords } from "./host/offlineWords.ts";
 import { troubleCause, troubleDetail } from "./host/troubleCauses.ts";
 import * as HostBackup from "./hostBackup.ts";
 import * as KinEventQueue from "./lead/KinEventQueue.ts";
@@ -158,6 +165,158 @@ const notices = Effect.gen(function* () {
     WHERE org_id = ${orgId} AND chat_id = 'rhea-chief' AND author_kind = 'system' ORDER BY seq`;
   return rows.map((row) => row.body);
 });
+
+it.effect.each(["retired", "none", "paused", "stopped"] as const)(
+  "tells the owner once while every lead is %s, clears the notice on recovery, and tells a new episode again",
+  (scenario) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const down = Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const at = DateTime.formatIso(DateTime.makeUnsafe(now));
+        if (scenario === "paused")
+          yield* sql`UPDATE kin_agents SET paused_at = ${at} WHERE org_id = ${orgId}`;
+        else if (scenario === "stopped")
+          yield* sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by)
+            VALUES (${orgId}, 1, ${now}, 'rhea')
+            ON CONFLICT (org_id) DO UPDATE SET paused = 1, paused_at = ${now}, paused_by = 'rhea'`;
+        else yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId}`;
+      });
+      yield* down;
+      if (scenario === "none") {
+        const retiredAt = DateTime.formatIso(DateTime.makeUnsafe(DAY_START));
+        yield* sql`UPDATE kin_people SET access = 'owner' WHERE org_id = ${orgId} AND person_id = 'rhea'`;
+        yield* sql`UPDATE kin_chats SET archived_at = ${retiredAt} WHERE org_id = ${orgId}`;
+        yield* sql`DELETE FROM kin_leads WHERE org_id = ${orgId}`;
+      }
+      const messages = sql<{ body: string; resolvedAt: string | null }>`SELECT m.body,
+        w.resolved_at AS "resolvedAt" FROM kin_messages m
+        JOIN kin_waiting w ON w.org_id = m.org_id AND w.message_id = m.message_id
+        WHERE m.org_id = ${orgId} AND m.message_id LIKE 'kin-no-lead:%'
+        ORDER BY m.created_at, m.message_id`;
+      const body =
+        "No agent is running\n\nNobody is watching for you right now: Kin is stopped or every agent is paused or retired. Resume one, or add one, in Settings, Agents.";
+      yield* HostBackupCheck.check();
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* messages, [{ body, resolvedAt: null }]);
+      // The same episode a day on: still the one notice.
+      yield* TestClock.adjust("1 day");
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* messages, [{ body, resolvedAt: null }]);
+      if (scenario === "none")
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES ('chief', ${orgId}, 'Chief of staff', 0, '{}', '[]', 'rhea-chief')`;
+      if (scenario === "paused")
+        yield* sql`UPDATE kin_agents SET paused_at = NULL WHERE org_id = ${orgId} AND agent_id = 'chief'`;
+      else if (scenario === "stopped")
+        yield* sql`UPDATE kin_org_state SET paused = 0, paused_at = NULL, paused_by = NULL WHERE org_id = ${orgId}`;
+      else
+        yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE org_id = ${orgId} AND agent_id = 'chief'`;
+      const rhea = { _tag: "person" as const, orgId, personId: KinPersonId.make("rhea") };
+      const list = yield* Stream.toQueue((yield* Chat.KinChatService).subscribeChats([rhea], {}), {
+        capacity: "unbounded",
+      });
+      const first = yield* Queue.take(list);
+      const unreadIn = (chats: ReadonlyArray<{ chatId: string; unread: number }>) =>
+        chats.find((chat) => chat.chatId === "rhea-chief")?.unread;
+      if (scenario === "retired")
+        assert.strictEqual(first._tag === "snapshot" ? unreadIn(first.chats) : null, 1);
+      yield* TestClock.adjust("1 day");
+      // A good backup, so the check posts nothing new and the row changes only by the notice.
+      yield* (yield* FileSystem.FileSystem).writeFileString(
+        (yield* Path.Path).join(
+          (yield* ServerConfig.ServerConfig).stateDir,
+          HostBackup.BACKUP_STATUS_FILE,
+        ),
+        status({ ok: true, lastGoodAt: DAY_START + 2 * 24 * HOUR }),
+      );
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(
+        (yield* messages).map((message) => [message.body, message.resolvedAt !== null]),
+        [[body, true]],
+      );
+      // Settled, the notice leaves the row's unread count (and the badge) while the list is open.
+      if (scenario === "retired") {
+        let unread: number | undefined;
+        while (unread !== 0) {
+          const event = yield* Queue.take(list);
+          if (event._tag === "chat" && event.chat.chatId === "rhea-chief")
+            unread = event.chat.unread;
+        }
+      }
+      // Down again the same day: a new episode, told again.
+      yield* TestClock.adjust("1 hour");
+      yield* down;
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(
+        (yield* messages).map((message) => message.resolvedAt === null),
+        [false, true],
+      );
+    }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("one lead awake, with the others paused, is no notice", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const at = DateTime.formatIso(DateTime.makeUnsafe(DAY_START));
+    yield* sql`UPDATE kin_agents SET paused_at = ${at} WHERE org_id = ${orgId} AND agent_id = 'chief'`;
+    yield* HostBackupCheck.check();
+    const told = yield* sql`SELECT 1 FROM kin_messages
+      WHERE org_id = ${orgId} AND message_id LIKE 'kin-no-lead:%' ORDER BY message_id`;
+    assert.lengthOf(told, 0);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "tells the owner once the nightly dream has failed three nights in a row, outside quiet hours, and closes it when a night succeeds",
+  () =>
+    Effect.gen(function* () {
+      // 23:00 in Kolkata: inside the owner's quiet hours.
+      yield* TestClock.setTime(DAY_START + 13 * HOUR);
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const night = (day: number, status: "failed" | "succeeded", failure: string | null) =>
+        sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, head,
+            material_from, material_until, failure, started_at, ended_at)
+          VALUES (${orgId}, ${`2026-11-${day}`}, ${`dream_${day}`}, 0, ${status}, ${`dream/${day}`},
+            ${status === "succeeded" ? "abc" : null}, 0, ${NOW}, ${failure}, ${NOW}, ${NOW})`;
+      const told = sql<{ body: string; resolvedAt: string | null }>`SELECT m.body,
+          w.resolved_at AS "resolvedAt" FROM kin_messages m
+        JOIN kin_waiting w ON w.org_id = m.org_id AND w.message_id = m.message_id
+        WHERE m.org_id = ${orgId} AND m.message_id LIKE 'kin-dream-failed:%'
+        ORDER BY m.created_at, m.message_id`;
+      const failure =
+        "relationships/kestrel.md claims agent from kin-dream; the source was owner from rhea\nrelationships/kestrel.md quote: invented";
+      yield* night(10, "succeeded", null);
+      yield* night(11, "failed", failure);
+      yield* night(12, "failed", failure);
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* told, []);
+      yield* night(13, "failed", failure);
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* told, []);
+      // 10:00 the next morning.
+      yield* TestClock.adjust(11 * HOUR);
+      yield* HostBackupCheck.check();
+      yield* HostBackupCheck.check();
+      const body =
+        "Kin's nightly memory update has failed three nights in a row\n\nEach night Kin reads the day and writes down what is worth remembering. That has not finished for three nights, so nothing new was remembered from them. Nothing Kin already remembered was lost, and tonight it will read those days again.\n\nFor whoever looks after Kin, the last night stopped on: A memory note claims agent from kin-dream; the source was owner from rhea.";
+      assert.deepStrictEqual(yield* told, [{ body, resolvedAt: null }]);
+      yield* night(14, "failed", "The dream session failed");
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* told, [{ body, resolvedAt: null }]);
+      yield* night(15, "succeeded", null);
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(
+        (yield* told).map((row) => row.resolvedAt !== null),
+        [true],
+      );
+    }).pipe(Effect.provide(services)),
+);
 
 const decodeCard = Schema.decodeUnknownSync(Schema.fromJsonString(KinHostTroubleCard));
 const cards = Effect.gen(function* () {
@@ -904,4 +1063,220 @@ it.effect(
       yield* HostBackup.warnIfLowOnSpace(orgId, [missing]);
       assert.lengthOf(yield* notices, 1);
     }).pipe(Effect.provide(services)),
+);
+
+it.effect("posts once after more than three hours, then once for a separate downtime", () =>
+  Effect.gen(function* () {
+    const minute = 60_000;
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    yield* OfflineCatchUp.markStarted();
+    yield* TestClock.adjust(3 * HOUR - minute);
+    yield* OfflineCatchUp.markStarted();
+    yield* OfflineCatchUp.deliverPending();
+    assert.deepStrictEqual(yield* notices, []);
+
+    const sql = yield* SqlClient.SqlClient;
+    const from = DAY_START + 3 * HOUR - minute;
+    yield* recordSkips(orgId, "message", [
+      { ref: "a-month-ago", reason: "older_than_a_day", at: from - 31 * 24 * HOUR },
+      { ref: "at-the-last-heartbeat", reason: "older_than_a_day", at: from },
+    ]);
+    yield* TestClock.adjust(3 * HOUR + minute);
+    yield* OfflineCatchUp.markStarted();
+    const start = DAY_START + 6 * HOUR;
+    // Skipped while it was off: counted. At the last heartbeat or after the restart: recorded only.
+    const older = [1, 2, 3].map((n) => ({
+      ref: `old-${n}`,
+      reason: "older_than_a_day" as const,
+      at: from + n * minute,
+    }));
+    yield* recordSkips(orgId, "message", [...older, ...older]);
+    yield* recordSkips(orgId, "scheduled", [
+      { ref: "routine:1", reason: "time_passed", at: from + HOUR },
+      { ref: "routine:2", reason: "time_passed", at: start },
+      { ref: "routine:3", reason: "time_passed", at: start + 1 },
+    ]);
+    yield* recordSkips(orgId, "check_in", [
+      { ref: "ns:evening:1", reason: "outside_hours", at: from + 2 * HOUR },
+    ]);
+    assert.deepStrictEqual(
+      yield* sql`SELECT ref FROM kin_offline_skips WHERE ref = 'a-month-ago'`,
+      [],
+      "a skip older than the keep goes at start",
+    );
+    yield* sql`INSERT INTO kin_events (org_id, event_id, agent_id, tag, priority, json, received_at, queued_at)
+      VALUES
+        (${orgId}, 'caught-chief', 'chief', 'chat.message', 'P2', '{"messageId":"same"}', ${start - HOUR}, ${start}),
+        (${orgId}, 'caught-finance', 'finance', 'chat.message', 'P2', '{"messageId":"same"}', ${start - HOUR}, ${start}),
+        (${orgId}, 'already-handled', 'chief', 'chat.message', 'P2', '{"messageId":"before"}', ${start - HOUR}, ${start - 1}),
+        (${orgId}, 'live', 'chief', 'chat.message', 'P2', '{"messageId":"live"}', ${start + 1}, ${start + 1})`;
+    yield* sql`INSERT INTO kin_connections
+      (org_id, connection_id, label, kind, url_host, auth, reach, state, created_at, updated_at)
+      VALUES (${orgId}, 'mail', 'Inbox', 'builtin', 'mail.invalid', 'oauth', 'closed', 'active', ${start}, ${start})`;
+    yield* sql`INSERT INTO kin_arrivals
+      (org_id, arrival_id, connection_id, message_id, received_at, noticed_at, class, state, reason)
+      VALUES
+        (${orgId}, 'classified', 'mail', 'm1', ${start - HOUR}, ${start}, 'other', 'settled', 'classified'),
+        (${orgId}, 'parked', 'mail', 'm2', ${start - HOUR}, ${start}, NULL, 'parked', NULL),
+        (${orgId}, 'gap', 'mail', 'gap', ${start - HOUR}, ${start}, 'gap', 'settled', 'gap'),
+        (${orgId}, 'duplicate', 'mail', 'm4', ${start - HOUR}, ${start}, 'other', 'settled',
+          'also recorded in another connected mailbox')`;
+    yield* sql`INSERT INTO kin_discussions
+      (org_id, discussion_id, chat_id, topic, question, decider_agent_id, opened_by_agent_id,
+        origin, state, created_at, last_at, open_key)
+      VALUES (${orgId}, 'TD-1', 'rhea-finance', 'Topic', 'Question', 'chief', 'chief',
+        'owner', 'open', ${start}, ${start}, 'message:team-open')`;
+    yield* sql`INSERT INTO kin_messages
+      (org_id, chat_id, message_id, seq, author_kind, author_member_id, author_person_id,
+        author_role, kind, body, mentions_json, status, created_at, discussion_id)
+      VALUES (${orgId}, 'rhea-finance', 'team-open', 1, 'human', 'm-rhea-finance', 'rhea',
+        'owner', 'text', 'Question', '[]', 'posted',
+        ${DateTime.formatIso(DateTime.makeUnsafe(start - HOUR))}, 'TD-1')`;
+    yield* OfflineCatchUp.deliverPending();
+    const first =
+      "Kin was offline from 12:59 pm to 4:00 pm. Caught up 3 messages; 3 older messages, 2 scheduled runs and 1 check-in were skipped.";
+    assert.deepStrictEqual(yield* notices, [first]);
+
+    yield* TestClock.adjust(minute / 2);
+    yield* OfflineCatchUp.markStarted();
+    yield* OfflineCatchUp.deliverPending();
+    assert.deepStrictEqual(yield* notices, [first]);
+
+    yield* TestClock.adjust(4 * HOUR);
+    yield* OfflineCatchUp.markStarted();
+    yield* OfflineCatchUp.deliverPending();
+    assert.deepStrictEqual(yield* notices, [
+      first,
+      "Kin was offline from 4:00 pm to 8:00 pm. Nothing arrived while it was off.",
+    ]);
+    assert.deepStrictEqual(yield* cards, []);
+    assert.lengthOf(yield* sql`SELECT event_id FROM kin_events`, 4);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("holds the offline notice during the same quiet hours as the backup notice", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW - 4 * HOUR);
+    yield* seed;
+    yield* OfflineCatchUp.markStarted();
+    yield* TestClock.setTime(NOW);
+    yield* OfflineCatchUp.markStarted();
+    yield* OfflineCatchUp.deliverPending();
+    assert.lengthOf(yield* notices, 0);
+    // Counted once: a skip recorded after that does not change what the held notice says.
+    yield* recordSkips(orgId, "check_in", [
+      { ref: "ns:late", reason: "time_passed", at: NOW - HOUR },
+    ]);
+    // Held from before skips were recorded: its skips stay unknown.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_org_state SET offline_notices_json = json_insert(offline_notices_json,
+      '$[#]', json_object('from', ${NOW - 8 * HOUR}, 'to', ${NOW - 7 * HOUR}, 'caughtUp', 2))
+      WHERE org_id = ${orgId}`;
+    yield* TestClock.setTime(DAY_START);
+    yield* OfflineCatchUp.deliverPending();
+    yield* OfflineCatchUp.deliverPending();
+    assert.deepStrictEqual(
+      (yield* notices).map((body) => body.replace(/^Kin was offline from .+? to .+?\./, "")),
+      [" Nothing arrived while it was off.", " Caught up 2 messages."],
+    );
+    assert.lengthOf(yield* cards, 0);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("writes the offline line with known counts, omitted counts and singular nouns", () =>
+  Effect.sync(() => {
+    const cases = [
+      [
+        { caughtUp: 4, older: 3, scheduled: 2, checkIns: 2 },
+        " Caught up 4 messages; 3 older messages, 2 scheduled runs and 2 check-ins were skipped.",
+      ],
+      [
+        { caughtUp: 4, older: 0, scheduled: 2, checkIns: 2 },
+        " Caught up 4 messages; 2 scheduled runs and 2 check-ins were skipped.",
+      ],
+      [
+        { caughtUp: 4, older: 3, scheduled: 0, checkIns: 2 },
+        " Caught up 4 messages; 3 older messages and 2 check-ins were skipped.",
+      ],
+      [
+        { caughtUp: 4, older: 3, scheduled: 2, checkIns: 0 },
+        " Caught up 4 messages; 3 older messages and 2 scheduled runs were skipped.",
+      ],
+      [
+        { caughtUp: 0, older: 3, scheduled: 2, checkIns: 2 },
+        " 3 older messages, 2 scheduled runs and 2 check-ins were skipped.",
+      ],
+      [
+        { caughtUp: 4, older: 0, scheduled: 2, checkIns: 0 },
+        " Caught up 4 messages; 2 scheduled runs were skipped.",
+      ],
+      [
+        { caughtUp: 1, older: 1, scheduled: 1, checkIns: 1 },
+        " Caught up 1 message; 1 older message, 1 scheduled run and 1 check-in were skipped.",
+      ],
+      [
+        { caughtUp: 1, older: 0, scheduled: 1, checkIns: 0 },
+        " Caught up 1 message; 1 scheduled run was skipped.",
+      ],
+      [
+        { caughtUp: 1, older: 0, scheduled: 0, checkIns: 0 },
+        " Caught up 1 message; nothing was skipped.",
+      ],
+      [{ caughtUp: 0, older: 0, scheduled: 0, checkIns: 0 }, " Nothing arrived while it was off."],
+      [{ caughtUp: 2 }, " Caught up 2 messages."],
+      [{ caughtUp: 0 }, ""],
+    ] as const;
+    for (const [counts, tail] of cases)
+      assert.strictEqual(
+        offlineCatchUpWords("Monday", "Tuesday", counts),
+        `Kin was offline from Monday to Tuesday.${tail}`,
+      );
+  }),
+);
+
+it.effect("publishes the bare system line after the chat and scheduled startup passes", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START - 4 * HOUR);
+    yield* seed;
+    yield* OfflineCatchUp.markStarted();
+    yield* TestClock.setTime(DAY_START);
+    const hub = yield* Hub.KinChatHub;
+    const events = yield* Stream.toQueue(yield* hub.subscribeAll, { capacity: "unbounded" });
+    const initialPass = Context.get(
+      yield* Layer.build(OfflineCatchUp.layer),
+      OfflineCatchUp.InitialPass,
+    );
+    assert.isDefined(initialPass);
+    if (initialPass === undefined) return;
+    yield* initialPass.started;
+    // Recorded by a first pass: the line is read only after a pass begun once they all ended.
+    yield* recordSkips(orgId, "message", [
+      { ref: "older", reason: "older_than_a_day", at: DAY_START - HOUR },
+    ]);
+
+    const scheduler = yield* Layer.build(Scheduler.layer);
+    const sql = yield* SqlClient.SqlClient;
+    yield* initialPass.observe(Context.get(scheduler, Scheduler.Scheduler)).register(
+      "kin-arrivals",
+      sql`INSERT INTO kin_events (org_id, event_id, agent_id, tag, priority, json, received_at, queued_at)
+        VALUES (${orgId}, 'on-start', 'chief', 'chat.message', 'P2', '{"messageId":"on-start"}',
+          ${DAY_START - HOUR}, ${DAY_START})`.pipe(Effect.asVoid),
+    );
+    yield* initialPass.sourcesRegistered(true);
+    assert.lengthOf(yield* notices, 0);
+    yield* initialPass.chatDone;
+    // Two ticks of the five-second scheduler: the second begins after every first pass ended.
+    yield* TestClock.adjust("10 seconds");
+    const posted = yield* Queue.take(events);
+    assert.strictEqual(posted.type, "message.posted");
+    if (posted.type === "message.posted") {
+      assert.strictEqual(posted.message.author._tag, "system");
+      assert.strictEqual(posted.message.widgetId, null);
+      assert.strictEqual(
+        posted.message.body,
+        "Kin was offline from 6:00 am to 10:00 am. Caught up 1 message; 1 older message was skipped.",
+      );
+    }
+  }).pipe(Effect.scoped, Effect.provide(services)),
 );

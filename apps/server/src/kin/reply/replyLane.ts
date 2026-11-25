@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { owedNotice } from "../floor/KinFloor.ts";
 import { CHAT_ANSWER_TAGS } from "../lead/Audience.ts";
+import { billsOnly } from "../lead/billsOnly.ts";
 import { outsideReview } from "../lead/outsideReview.ts";
 
 /**
@@ -24,8 +25,13 @@ export type Lane = {
   readonly leadName: string;
   /** A Team-room turn: it speaks only through `team_say`, and passing says nothing. */
   readonly team?: true;
-  /** An outsider's pull request's review: Kin tells the owner from the post (`askedFor.ts`). */
+  /**
+   * An outsider's pull request's review (Kin tells the owner from the post, `askedFor.ts`), or
+   * bills read in the background: nothing the model writes reaches a chat.
+   */
   readonly quiet?: true;
+  /** Bills read in the background: their card tells what wasn't read, so a failure says nothing. */
+  readonly bills?: true;
 };
 
 /** The same turn-level reply/notice split, for a live reply or a recorded wake-up. */
@@ -65,6 +71,16 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
         owed: false,
         leadName: lead?.name ?? "Agent",
         quiet: true,
+      });
+    // Bills read in the background (`work/bills.ts`): their batch's card tells what came of them.
+    if (yield* billsOnly(input))
+      return Option.some<Lane>({
+        chatId: KinChatId.make(chatId),
+        mode: "notice",
+        owed: false,
+        leadName: lead?.name ?? "Agent",
+        quiet: true,
+        bills: true,
       });
     // Only discussion turns Kin handed on in the Team room (`team:` keys), nothing else there.
     const [team] = yield* sql<{ others: number }>`SELECT COUNT(e.event_id) FILTER (

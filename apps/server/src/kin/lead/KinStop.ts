@@ -38,9 +38,11 @@ import * as Hub from "../chat/KinChatHub.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
+import { chatShared } from "../chat/sharing.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import type * as Routines from "../triggers/routines.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
+import { checkLeadNoticeNow } from "../hostBackup.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import * as Queue from "./KinEventQueue.ts";
 import { hashedEventId } from "./eventIds.ts";
@@ -56,6 +58,8 @@ const resumedNotice = (expired: number) =>
     ? "Kin resumed."
     : `Kin resumed. ${expired} queued ${expired === 1 ? "event" : "events"} expired.`;
 const EXPIRED_LISTED = 50;
+const EXPIRED_IN_NOTICE = 10;
+const noticeName = (value: string) => value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
 
 export class KinStopFanOutError extends Schema.TaggedError<KinStopFanOutError>()(
   "KinStopFanOutError",
@@ -198,6 +202,7 @@ const make = Effect.gen(function* () {
     now: number,
     kind: "pause" | "resume",
     body: string,
+    privateBody = body,
   ) {
     const chats = yield* sql<{
       chatId: string;
@@ -205,28 +210,56 @@ const make = Effect.gen(function* () {
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
       WHERE l.org_id = ${orgId} ORDER BY l.owner_chat_id`;
     return yield* Effect.forEach(chats, (row) =>
-      chat.insertMessage({
-        orgId,
-        chatId: KinChatId.make(row.chatId),
-        // Fixed words; the switch never waits on who reads its notice.
-        audience: "chat",
-        messageId: KinMessageId.make(`kin-${kind}:${now}:${row.chatId}`),
-        author: { _tag: "system" },
-        kind: "text",
-        body,
-        intent: null,
-        mentions: [],
-        replyTo: null,
-        widgetId: null,
-        floorRunId: null,
-        status: "posted",
-        sentBy: null,
-        clientMessageId: null,
-        createdAt: iso(now),
-        editedAt: null,
+      Effect.gen(function* () {
+        const chatId = KinChatId.make(row.chatId);
+        const showNames = body !== privateBody && !(yield* chatShared(sql, { orgId, chatId }));
+        return yield* chat.insertMessage({
+          orgId,
+          chatId,
+          audience: showNames ? "owner" : "chat",
+          messageId: KinMessageId.make(`kin-${kind}:${now}:${row.chatId}`),
+          author: { _tag: "system" },
+          kind: "text",
+          body: showNames ? privateBody : body,
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          clientMessageId: null,
+          createdAt: iso(now),
+          editedAt: null,
+        });
       }),
     );
   });
+
+  const expiredNames = Effect.fn("KinStop.expiredNames")(function* (
+    orgId: KinOrgId,
+    ids: ReadonlyArray<string>,
+  ) {
+    if (ids.length === 0) return [];
+    const names = yield* sql<{ chat: string; from: string }>`SELECT
+        COALESCE(c.title, CASE c.kind WHEN 'direct' THEN l.name ELSE 'Group' END, 'Kin') AS chat,
+        COALESCE(p.display_name, a.display_name, 'Kin') AS "from"
+      FROM kin_events e
+      LEFT JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
+      LEFT JOIN kin_chats c ON c.org_id = e.org_id AND c.chat_id = COALESCE(
+        json_extract(e.json, '$.origin.chatId'), json_extract(e.json, '$.chatId'), l.owner_chat_id)
+      LEFT JOIN kin_messages m ON m.org_id = e.org_id AND m.chat_id = c.chat_id
+        AND m.message_id = json_extract(e.json, '$.messageId')
+      LEFT JOIN kin_people p ON p.org_id = e.org_id AND p.person_id = COALESCE(
+        m.author_person_id, json_extract(e.json, '$.origin.personId'),
+        json_extract(e.json, '$.provenance.personId'), json_extract(e.json, '$.askedBy'))
+      LEFT JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = COALESCE(
+        m.author_agent_id, json_extract(e.json, '$.provenance.agentId'))
+      WHERE e.org_id = ${orgId} AND e.event_id IN ${sql.in(ids)}
+      ORDER BY e.received_at, e.event_id`;
+    return names.map((row) => `${noticeName(row.chat)} (from ${noticeName(row.from)})`);
+  });
+
   /** Where a wake-up answers, and as whom, for the line saying it was stopped. */
   const stoppedLane = Effect.fn("KinStop.stoppedLane")(function* (
     orgId: KinOrgId,
@@ -326,7 +359,7 @@ const make = Effect.gen(function* () {
         const changed =
           inserted.length > 0
             ? inserted
-            : yield* sql`UPDATE kin_org_state SET paused = 1, paused_at = ${now},
+            : yield* sql`UPDATE kin_org_state SET stop_managed = 1, paused = 1, paused_at = ${now},
                 paused_by = ${person.personId}, reason = ${reason}
               WHERE org_id = ${input.orgId} AND paused = 0 RETURNING org_id`;
         if (changed.length > 0) yield* (yield* KinRefreshObserver).touch(input.orgId, "stop");
@@ -336,6 +369,7 @@ const make = Effect.gen(function* () {
       }),
     );
     yield* publish(input.orgId, result.messages);
+    yield* checkLeadNoticeNow(input.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     if (result.state.paused)
       yield* fanOut(
         input.orgId,
@@ -364,27 +398,41 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${input.orgId} AND paused = 1`;
         yield* (yield* KinRefreshObserver).touch(input.orgId, "stop");
         const now = yield* Clock.currentTimeMillis;
-        const expired = yield* sql<{
+        const expiredRows = yield* sql<{
           eventId: string;
           agentId: string;
           tag: string;
           receivedAt: number;
-        }>`UPDATE kin_events SET state = 'expired'
+        }>`UPDATE kin_events AS e SET state = 'expired'
           WHERE org_id = ${input.orgId} AND state = 'queued' AND queued_at <= ${now - PAUSE_EXPIRY_MS}
+            AND NOT (e.tag = 'chat.message' AND EXISTS (
+              SELECT 1 FROM kin_messages m
+              JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+                AND c.kind = 'direct' AND c.archived_at IS NULL
+              JOIN kin_chat_members cm ON cm.org_id = c.org_id AND cm.chat_id = c.chat_id
+                AND cm.principal_kind = 'agent' AND cm.agent_id = e.agent_id AND cm.left_at IS NULL
+              WHERE m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+                AND m.chat_id = json_extract(e.json, '$.chatId')
+                AND m.author_kind = 'human' AND m.kind = 'text' AND m.status = 'posted'
+                AND m.origin_json IS NULL
+                AND NOT EXISTS (SELECT 1 FROM kin_messages r
+                  WHERE r.org_id = m.org_id AND r.chat_id = m.chat_id AND r.seq > m.seq
+                    AND r.author_kind = 'agent' AND r.author_agent_id = e.agent_id
+                    AND r.status = 'posted' AND r.relay_json IS NULL
+                    AND (r.reply_to IS NULL OR r.reply_to = m.message_id))))
           RETURNING event_id AS "eventId", agent_id AS "agentId", tag, received_at AS "receivedAt"`;
+        const expired = expiredRows.toSorted(
+          (a, b) =>
+            a.receivedAt - b.receivedAt ||
+            (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0),
+        );
         const leads = yield* sql<{
           agentId: string;
         }>`SELECT l.agent_id AS "agentId" FROM kin_leads l
           JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
           WHERE l.org_id = ${input.orgId} AND a.retired_at IS NULL ORDER BY l.agent_id`;
         for (const lead of leads) {
-          const mine = expired
-            .filter((row) => row.agentId === lead.agentId)
-            .toSorted(
-              (a, b) =>
-                a.receivedAt - b.receivedAt ||
-                (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0),
-            );
+          const mine = expired.filter((row) => row.agentId === lead.agentId);
           const dedupeKey = `resume:${cleared.pausedAt}:${lead.agentId}`;
           const eventId = hashedEventId("resume", dedupeKey);
           yield* queue.enqueue(
@@ -408,7 +456,14 @@ const make = Effect.gen(function* () {
             }),
           );
         }
-        return yield* notice(input.orgId, now, "resume", resumedNotice(expired.length));
+        const body = resumedNotice(expired.length);
+        const names = yield* expiredNames(
+          input.orgId,
+          expired.slice(0, EXPIRED_IN_NOTICE).map((row) => row.eventId),
+        );
+        const more = expired.length - names.length;
+        if (more > 0) names.push(`and ${more} more`);
+        return yield* notice(input.orgId, now, "resume", body, [body, ...names].join("\n"));
       }),
     );
     if (resumed !== undefined) {
@@ -421,6 +476,7 @@ const make = Effect.gen(function* () {
             Effect.provideService(SqlClient.SqlClient, sql),
           );
       if (attached !== undefined) yield* attached.resume(input.orgId);
+      yield* checkLeadNoticeNow(input.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     }
     return yield* state(input.orgId);
   });
@@ -488,7 +544,7 @@ const make = Effect.gen(function* () {
       const orgs = yield* sql<{
         orgId: KinOrgId;
         // Startup scan across orgs on purpose; each org is then handled under its own lock.
-      }>`SELECT org_id AS "orgId" FROM kin_org_state ORDER BY org_id`.pipe(
+      }>`SELECT org_id AS "orgId" FROM kin_org_state WHERE stop_managed = 1 ORDER BY org_id`.pipe(
         Effect.catchCause((cause) =>
           Effect.logError("Kin stop catch-up unavailable", { cause }).pipe(Effect.as([])),
         ),

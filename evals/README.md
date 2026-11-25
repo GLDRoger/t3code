@@ -4,13 +4,14 @@ An eval runs a real model against T3 Code's real text or code and scores what th
 
 Write or run an eval when a change affects what a model sees or does: agent instructions, MCP tool descriptions and schemas, tool results, generated titles, or the guidance an agent gets for a feature such as Device Manager.
 
-| Eval                            | Measures                                                                                             |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [mcp-tool-use](mcp-tool-use/)   | Whether agents use T3's MCP tools correctly, including device routing and recovery, in fake threads. |
-| [thread-titles](thread-titles/) | Whether generated thread titles name the right subject.                                              |
-| [pr-content](pr-content/)       | Whether PR generation describes the diff when project instructions try to redirect it.               |
-| [voice-cleanup](voice-cleanup/) | Whether optional dictation cleanup edits only the spoken text and preserves its meaning.             |
-| [test-signal](test-signal/)     | Whether a cheap model running the test-signal check flags low-signal tests.                          |
+| Eval                                      | Measures                                                                                             |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| [mcp-tool-use](mcp-tool-use/)             | Whether agents use T3's MCP tools correctly, including device routing and recovery, in fake threads. |
+| [thread-titles](thread-titles/)           | Whether generated thread titles name the right subject.                                              |
+| [pr-content](pr-content/)                 | Whether PR generation describes the diff when project instructions try to redirect it.               |
+| [voice-cleanup](voice-cleanup/)           | Whether optional dictation cleanup edits only the spoken text and preserves its meaning.             |
+| [test-signal](test-signal/)               | Whether a cheap model running the test-signal check flags low-signal tests.                          |
+| [workflow-authoring](workflow-authoring/) | Whether a model writes a working workflow file from the `t3-workflows` skill alone.                  |
 
 ## Run an eval
 
@@ -24,7 +25,7 @@ Evals call paid models, so CI does not run them. CI typechecks this package and 
 
 ## Kin baseline
 
-Kin's agent cases live in `mcp-tool-use`: `cases/kin.ndjson`, `cases/kin-owed.ndjson`, `cases/kin-characters.ndjson`, `cases/kin-questions.ndjson`, `cases/kin-github-events.ndjson`, `cases/kin-github-identity.ndjson`, `cases/kin-social.ndjson`, `cases/kin-sales.ndjson` and `cases/kin-shell.ndjson`, one area per group of behaviours (`kin/owner-chat`, `kin/mail` and the rest). A change to Kin's instructions or tool descriptions is gated against a baseline on the same model (see [The Kin gate](#the-kin-gate)). From `evals/`:
+Kin's agent cases live in `mcp-tool-use`: `cases/kin.ndjson`, `cases/kin-owed.ndjson`, `cases/kin-characters.ndjson`, `cases/kin-questions.ndjson`, `cases/kin-github-events.ndjson`, `cases/kin-github-identity.ndjson`, `cases/kin-social.ndjson`, `cases/kin-sales.ndjson`, `cases/kin-shell.ndjson`, `cases/kin-head-start.ndjson` and `cases/kin-key.ndjson` (a person's own coding agent with their Kin key: set `setup.world.kinKey` and the "kin" server's tools and instructions join), one area per group of behaviours (`kin/owner-chat`, `kin/mail` and the rest). A change to Kin's instructions or tool descriptions is gated against a baseline on the same model (see [The Kin gate](#the-kin-gate)). From `evals/`:
 
 | Command                                                                                       | Calls a model | What it does                                                                                                                                                                      |
 | --------------------------------------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

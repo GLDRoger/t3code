@@ -19,6 +19,7 @@ import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as ProjectsProjectKeyRouteImport } from './routes/projects.$projectKey'
 import { Route as KinInviteRouteImport } from './routes/kin.invite'
+import { Route as ChatWorkflowsRouteImport } from './routes/_chat.workflows'
 import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
 import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
@@ -63,6 +64,7 @@ import { Route as ChatSettingsAccessRouteImport } from './routes/_chat.settings.
 import { Route as ChatSettingsAboutRouteImport } from './routes/_chat.settings.about'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
+import { Route as ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRouteImport } from './routes/_chat.linked.$viaEnvironmentId.$linkedEnvironmentId.$linkedThreadId'
 import { Route as ChatKinEnvironmentIdOrgIdWorkRouteImport } from './routes/_chat.kin.$environmentId.$orgId.work'
 import { Route as ChatKinEnvironmentIdOrgIdTeamRouteImport } from './routes/_chat.kin.$environmentId.$orgId.team'
 import { Route as ChatKinEnvironmentIdOrgIdSettingsRouteImport } from './routes/_chat.kin.$environmentId.$orgId.settings'
@@ -72,6 +74,7 @@ import { Route as ChatKinEnvironmentIdOrgIdPlacesRouteImport } from './routes/_c
 import { Route as ChatKinEnvironmentIdOrgIdChatIdRouteImport } from './routes/_chat.kin.$environmentId.$orgId.$chatId'
 import { Route as ChatKinEnvironmentIdOrgIdSettingsIndexRouteImport } from './routes/_chat.kin.$environmentId.$orgId.settings.index'
 import { Route as ChatKinEnvironmentIdOrgIdSettingsPageRouteImport } from './routes/_chat.kin.$environmentId.$orgId.settings.$page'
+import { Route as ChatKinEnvironmentIdOrgIdListListRouteImport } from './routes/_chat.kin.$environmentId.$orgId.list.$list'
 import { Route as ChatKinEnvironmentIdOrgIdPlacesTasksRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places.tasks'
 import { Route as ChatKinEnvironmentIdOrgIdPlacesMoneyRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places.money'
 import { Route as ChatKinEnvironmentIdOrgIdPlacesDocsRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places.docs'
@@ -125,6 +128,11 @@ const KinInviteRoute = KinInviteRouteImport.update({
   id: '/kin/invite',
   path: '/kin/invite',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ChatWorkflowsRoute = ChatWorkflowsRouteImport.update({
+  id: '/workflows',
+  path: '/workflows',
+  getParentRoute: () => ChatRoute,
 } as any)
 const ChatUsageRoute = ChatUsageRouteImport.update({
   id: '/usage',
@@ -353,6 +361,14 @@ const ChatEnvironmentIdThreadIdRoute =
     path: '/$environmentId/$threadId',
     getParentRoute: () => ChatRoute,
   } as any)
+const ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRoute =
+  ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRouteImport.update(
+    {
+      id: '/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId',
+      path: '/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId',
+      getParentRoute: () => ChatRoute,
+    } as any,
+  )
 const ChatKinEnvironmentIdOrgIdWorkRoute =
   ChatKinEnvironmentIdOrgIdWorkRouteImport.update({
     id: '/$environmentId/$orgId/work',
@@ -407,6 +423,12 @@ const ChatKinEnvironmentIdOrgIdSettingsPageRoute =
     path: '/$page',
     getParentRoute: () => ChatKinEnvironmentIdOrgIdSettingsRoute,
   } as any)
+const ChatKinEnvironmentIdOrgIdListListRoute =
+  ChatKinEnvironmentIdOrgIdListListRouteImport.update({
+    id: '/$environmentId/$orgId/list/$list',
+    path: '/$environmentId/$orgId/list/$list',
+    getParentRoute: () => ChatKinRoute,
+  } as any)
 const ChatKinEnvironmentIdOrgIdPlacesTasksRoute =
   ChatKinEnvironmentIdOrgIdPlacesTasksRouteImport.update({
     id: '/tasks',
@@ -446,6 +468,7 @@ export interface FileRoutesByFullPath {
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRouteWithChildren
   '/usage': typeof ChatUsageRoute
+  '/workflows': typeof ChatWorkflowsRoute
   '/kin/invite': typeof KinInviteRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
@@ -493,10 +516,12 @@ export interface FileRoutesByFullPath {
   '/kin/$environmentId/$orgId/settings': typeof ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren
   '/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
+  '/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId': typeof ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRoute
   '/kin/$environmentId/$orgId/clients': typeof ChatKinEnvironmentIdOrgIdPlacesClientsRoute
   '/kin/$environmentId/$orgId/docs': typeof ChatKinEnvironmentIdOrgIdPlacesDocsRoute
   '/kin/$environmentId/$orgId/money': typeof ChatKinEnvironmentIdOrgIdPlacesMoneyRoute
   '/kin/$environmentId/$orgId/tasks': typeof ChatKinEnvironmentIdOrgIdPlacesTasksRoute
+  '/kin/$environmentId/$orgId/list/$list': typeof ChatKinEnvironmentIdOrgIdListListRoute
   '/kin/$environmentId/$orgId/settings/$page': typeof ChatKinEnvironmentIdOrgIdSettingsPageRoute
   '/kin/$environmentId/$orgId/settings/': typeof ChatKinEnvironmentIdOrgIdSettingsIndexRoute
 }
@@ -512,6 +537,7 @@ export interface FileRoutesByTo {
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRouteWithChildren
   '/usage': typeof ChatUsageRoute
+  '/workflows': typeof ChatWorkflowsRoute
   '/kin/invite': typeof KinInviteRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/': typeof ChatIndexRoute
@@ -559,10 +585,12 @@ export interface FileRoutesByTo {
   '/kin/$environmentId/$orgId/numbers': typeof ChatKinEnvironmentIdOrgIdNumbersRoute
   '/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
+  '/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId': typeof ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRoute
   '/kin/$environmentId/$orgId/clients': typeof ChatKinEnvironmentIdOrgIdPlacesClientsRoute
   '/kin/$environmentId/$orgId/docs': typeof ChatKinEnvironmentIdOrgIdPlacesDocsRoute
   '/kin/$environmentId/$orgId/money': typeof ChatKinEnvironmentIdOrgIdPlacesMoneyRoute
   '/kin/$environmentId/$orgId/tasks': typeof ChatKinEnvironmentIdOrgIdPlacesTasksRoute
+  '/kin/$environmentId/$orgId/list/$list': typeof ChatKinEnvironmentIdOrgIdListListRoute
   '/kin/$environmentId/$orgId/settings/$page': typeof ChatKinEnvironmentIdOrgIdSettingsPageRoute
   '/kin/$environmentId/$orgId/settings': typeof ChatKinEnvironmentIdOrgIdSettingsIndexRoute
 }
@@ -581,6 +609,7 @@ export interface FileRoutesById {
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/_chat/settings': typeof ChatSettingsRouteWithChildren
   '/_chat/usage': typeof ChatUsageRoute
+  '/_chat/workflows': typeof ChatWorkflowsRoute
   '/kin/invite': typeof KinInviteRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/_chat/': typeof ChatIndexRoute
@@ -629,10 +658,12 @@ export interface FileRoutesById {
   '/_chat/kin/$environmentId/$orgId/settings': typeof ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren
   '/_chat/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/_chat/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
+  '/_chat/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId': typeof ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRoute
   '/_chat/kin/$environmentId/$orgId/_places/clients': typeof ChatKinEnvironmentIdOrgIdPlacesClientsRoute
   '/_chat/kin/$environmentId/$orgId/_places/docs': typeof ChatKinEnvironmentIdOrgIdPlacesDocsRoute
   '/_chat/kin/$environmentId/$orgId/_places/money': typeof ChatKinEnvironmentIdOrgIdPlacesMoneyRoute
   '/_chat/kin/$environmentId/$orgId/_places/tasks': typeof ChatKinEnvironmentIdOrgIdPlacesTasksRoute
+  '/_chat/kin/$environmentId/$orgId/list/$list': typeof ChatKinEnvironmentIdOrgIdListListRoute
   '/_chat/kin/$environmentId/$orgId/settings/$page': typeof ChatKinEnvironmentIdOrgIdSettingsPageRoute
   '/_chat/kin/$environmentId/$orgId/settings/': typeof ChatKinEnvironmentIdOrgIdSettingsIndexRoute
 }
@@ -652,6 +683,7 @@ export interface FileRouteTypes {
     | '/pull-requests'
     | '/settings'
     | '/usage'
+    | '/workflows'
     | '/kin/invite'
     | '/projects/$projectKey'
     | '/$environmentId/$threadId'
@@ -699,10 +731,12 @@ export interface FileRouteTypes {
     | '/kin/$environmentId/$orgId/settings'
     | '/kin/$environmentId/$orgId/team'
     | '/kin/$environmentId/$orgId/work'
+    | '/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId'
     | '/kin/$environmentId/$orgId/clients'
     | '/kin/$environmentId/$orgId/docs'
     | '/kin/$environmentId/$orgId/money'
     | '/kin/$environmentId/$orgId/tasks'
+    | '/kin/$environmentId/$orgId/list/$list'
     | '/kin/$environmentId/$orgId/settings/$page'
     | '/kin/$environmentId/$orgId/settings/'
   fileRoutesByTo: FileRoutesByTo
@@ -718,6 +752,7 @@ export interface FileRouteTypes {
     | '/pull-requests'
     | '/settings'
     | '/usage'
+    | '/workflows'
     | '/kin/invite'
     | '/projects/$projectKey'
     | '/'
@@ -765,10 +800,12 @@ export interface FileRouteTypes {
     | '/kin/$environmentId/$orgId/numbers'
     | '/kin/$environmentId/$orgId/team'
     | '/kin/$environmentId/$orgId/work'
+    | '/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId'
     | '/kin/$environmentId/$orgId/clients'
     | '/kin/$environmentId/$orgId/docs'
     | '/kin/$environmentId/$orgId/money'
     | '/kin/$environmentId/$orgId/tasks'
+    | '/kin/$environmentId/$orgId/list/$list'
     | '/kin/$environmentId/$orgId/settings/$page'
     | '/kin/$environmentId/$orgId/settings'
   id:
@@ -786,6 +823,7 @@ export interface FileRouteTypes {
     | '/_chat/pull-requests'
     | '/_chat/settings'
     | '/_chat/usage'
+    | '/_chat/workflows'
     | '/kin/invite'
     | '/projects/$projectKey'
     | '/_chat/'
@@ -834,10 +872,12 @@ export interface FileRouteTypes {
     | '/_chat/kin/$environmentId/$orgId/settings'
     | '/_chat/kin/$environmentId/$orgId/team'
     | '/_chat/kin/$environmentId/$orgId/work'
+    | '/_chat/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId'
     | '/_chat/kin/$environmentId/$orgId/_places/clients'
     | '/_chat/kin/$environmentId/$orgId/_places/docs'
     | '/_chat/kin/$environmentId/$orgId/_places/money'
     | '/_chat/kin/$environmentId/$orgId/_places/tasks'
+    | '/_chat/kin/$environmentId/$orgId/list/$list'
     | '/_chat/kin/$environmentId/$orgId/settings/$page'
     | '/_chat/kin/$environmentId/$orgId/settings/'
   fileRoutesById: FileRoutesById
@@ -926,6 +966,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/kin/invite'
       preLoaderRoute: typeof KinInviteRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_chat/workflows': {
+      id: '/_chat/workflows'
+      path: '/workflows'
+      fullPath: '/workflows'
+      preLoaderRoute: typeof ChatWorkflowsRouteImport
+      parentRoute: typeof ChatRoute
     }
     '/_chat/usage': {
       id: '/_chat/usage'
@@ -1235,6 +1282,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatEnvironmentIdThreadIdRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/_chat/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId': {
+      id: '/_chat/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId'
+      path: '/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId'
+      fullPath: '/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId'
+      preLoaderRoute: typeof ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRouteImport
+      parentRoute: typeof ChatRoute
+    }
     '/_chat/kin/$environmentId/$orgId/work': {
       id: '/_chat/kin/$environmentId/$orgId/work'
       path: '/$environmentId/$orgId/work'
@@ -1297,6 +1351,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/kin/$environmentId/$orgId/settings/$page'
       preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdSettingsPageRouteImport
       parentRoute: typeof ChatKinEnvironmentIdOrgIdSettingsRoute
+    }
+    '/_chat/kin/$environmentId/$orgId/list/$list': {
+      id: '/_chat/kin/$environmentId/$orgId/list/$list'
+      path: '/$environmentId/$orgId/list/$list'
+      fullPath: '/kin/$environmentId/$orgId/list/$list'
+      preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdListListRouteImport
+      parentRoute: typeof ChatKinRoute
     }
     '/_chat/kin/$environmentId/$orgId/_places/tasks': {
       id: '/_chat/kin/$environmentId/$orgId/_places/tasks'
@@ -1380,6 +1441,7 @@ interface ChatKinRouteChildren {
   ChatKinEnvironmentIdOrgIdSettingsRoute: typeof ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren
   ChatKinEnvironmentIdOrgIdTeamRoute: typeof ChatKinEnvironmentIdOrgIdTeamRoute
   ChatKinEnvironmentIdOrgIdWorkRoute: typeof ChatKinEnvironmentIdOrgIdWorkRoute
+  ChatKinEnvironmentIdOrgIdListListRoute: typeof ChatKinEnvironmentIdOrgIdListListRoute
 }
 
 const ChatKinRouteChildren: ChatKinRouteChildren = {
@@ -1393,6 +1455,8 @@ const ChatKinRouteChildren: ChatKinRouteChildren = {
     ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren,
   ChatKinEnvironmentIdOrgIdTeamRoute: ChatKinEnvironmentIdOrgIdTeamRoute,
   ChatKinEnvironmentIdOrgIdWorkRoute: ChatKinEnvironmentIdOrgIdWorkRoute,
+  ChatKinEnvironmentIdOrgIdListListRoute:
+    ChatKinEnvironmentIdOrgIdListListRoute,
 }
 
 const ChatKinRouteWithChildren =
@@ -1483,9 +1547,11 @@ interface ChatRouteChildren {
   ChatPullRequestsRoute: typeof ChatPullRequestsRoute
   ChatSettingsRoute: typeof ChatSettingsRouteWithChildren
   ChatUsageRoute: typeof ChatUsageRoute
+  ChatWorkflowsRoute: typeof ChatWorkflowsRoute
   ChatIndexRoute: typeof ChatIndexRoute
   ChatEnvironmentIdThreadIdRoute: typeof ChatEnvironmentIdThreadIdRoute
   ChatDraftDraftIdRoute: typeof ChatDraftDraftIdRoute
+  ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRoute: typeof ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRoute
 }
 
 const ChatRouteChildren: ChatRouteChildren = {
@@ -1495,9 +1561,12 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatPullRequestsRoute: ChatPullRequestsRoute,
   ChatSettingsRoute: ChatSettingsRouteWithChildren,
   ChatUsageRoute: ChatUsageRoute,
+  ChatWorkflowsRoute: ChatWorkflowsRoute,
   ChatIndexRoute: ChatIndexRoute,
   ChatEnvironmentIdThreadIdRoute: ChatEnvironmentIdThreadIdRoute,
   ChatDraftDraftIdRoute: ChatDraftDraftIdRoute,
+  ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRoute:
+    ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRoute,
 }
 
 const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)

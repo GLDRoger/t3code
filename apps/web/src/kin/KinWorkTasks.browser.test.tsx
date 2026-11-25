@@ -33,6 +33,7 @@ const host = vi.hoisted(() => ({
 }));
 
 vi.mock(import("./kinClient"), async (importOriginal) => {
+  const { commandRun } = await import("../../test/commandRun");
   const real = await importOriginal();
   const { AsyncResult, Atom } = await import("effect/reactivity");
   const Cause = await import("effect/Cause");
@@ -41,7 +42,9 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
   const command = (answer: (input: unknown) => unknown) => ({
     label: "test",
     permissionAtom: () => allowed,
-    run: async (_registry: unknown, { input }: { readonly input: unknown }) => answer(input),
+    run: commandRun(async (_registry: unknown, { input }: { readonly input: unknown }) =>
+      answer(input),
+    ),
   });
   return {
     ...real,
@@ -400,7 +403,7 @@ describe("Tasks on the web, by whose move", () => {
     await expect.element(page.getByText("Corran rollout", { exact: true })).toBeVisible();
     await expect.element(page.getByText(bakeryForm.title)).toBeVisible();
     expect(page.getByText("Harbourline pilot", { exact: true }).elements()).toHaveLength(0);
-    expect(page.getByText("Nothing needs you right now").elements()).toHaveLength(0);
+    expect(page.getByText("No tasks need you right now").elements()).toHaveLength(0);
     await expect.element(page.getByRole("button", { name: "Not now" })).toBeVisible();
     await userEvent.click(page.getByRole("button", { name: "What's next?" }));
     expect(onOpen).toHaveBeenCalledWith("DL-1");

@@ -1258,7 +1258,7 @@ export const KIN_DOC_COMPANY = {
 const CATEGORY_LABEL = {
   task: null,
   issue: "Issue",
-  obligation: "Commitment",
+  obligation: "Promise",
   meeting: "Meeting",
 } as const;
 
@@ -1618,6 +1618,62 @@ export function kinWorkClientStays(
     : KIN_WORK_NEW_COPY.clientStays(party.title);
 }
 
+/**
+ * How a task reached its holder: handed back, or given by someone (an agent that gave it on its
+ * own over the authority it gave it with), through the agent a person asked. Null when nobody gave it.
+ */
+export function kinWorkGiven(
+  item: Pick<
+    KinRecordDetail,
+    | "assignedBy"
+    | "assignedByAgent"
+    | "assignedAt"
+    | "changes"
+    | "handedBack"
+    | "state"
+    | "owner"
+    | "createdBy"
+  >,
+):
+  | { readonly kind: "handedBack"; readonly by: KinWorkPrincipal; readonly at: string }
+  | { readonly kind: "handedBackChange"; readonly by: KinWorkActor; readonly at: string }
+  | {
+      readonly kind: "gave";
+      readonly giver: KinWorkPrincipal;
+      readonly via: KinWorkActor | null;
+      readonly at: string | null;
+    }
+  | null {
+  const giver: KinWorkPrincipal | null =
+    item.assignedByAgent === undefined
+      ? item.assignedBy
+      : { _tag: "agent", agentId: item.assignedByAgent };
+  const lastMove = item.changes.find((change) => change.fields.some((f) => f.field === "owner"));
+  if (item.handedBack !== undefined && !kinWorkClosed(item.state))
+    return { kind: "handedBack", by: item.handedBack.by, at: item.handedBack.at };
+  if (lastMove !== undefined && lastMove.fields.some((f) => f.field === "handedBack"))
+    return { kind: "handedBackChange", by: lastMove.by, at: lastMove.at };
+  if (
+    giver === null ||
+    kinWorkSamePrincipal(giver, item.owner) ||
+    // An agent that made the task for itself was given it by no one.
+    (item.assignedByAgent === undefined &&
+      lastMove?.kind === "created" &&
+      item.createdBy._tag !== "system" &&
+      kinWorkSamePrincipal(item.createdBy, item.owner))
+  )
+    return null;
+  return {
+    kind: "gave",
+    giver,
+    via:
+      giver._tag === "person" && lastMove !== undefined && lastMove.by._tag === "agent"
+        ? lastMove.by
+        : null,
+    at: item.assignedAt,
+  };
+}
+
 export function kinWorkItemView(
   item: KinRecordDetail,
   names: KinWorkNames,
@@ -1628,35 +1684,23 @@ export function kinWorkItemView(
   const row = kinWorkRow(item, names, now);
   const category = item.category === null ? null : CATEGORY_LABEL[item.category];
   const ownerName = kinWorkName(item.owner, names);
-  // The agent that gave it on its own says more than the authority it gave it with; one a person
-  // asked is named after them: "Zoya gave this to you, via Chief of staff".
+  const move = kinWorkGiven(item);
   const giver: KinWorkPrincipal | null =
     item.assignedByAgent === undefined
       ? item.assignedBy
       : { _tag: "agent", agentId: item.assignedByAgent };
-  // Handed back, it is with whoever gave it, and the holder's words say why.
   const lastMove = item.changes.find((change) => change.fields.some((f) => f.field === "owner"));
   const handBack = lastMove?.fields.find((f) => f.field === "handedBack");
-  const via =
-    giver?._tag === "person" && lastMove !== undefined && lastMove.by._tag === "agent"
-      ? `, via ${kinWorkActorName(lastMove.by, names)}`
-      : "";
   const given =
-    item.handedBack !== undefined && !kinWorkClosed(item.state)
-      ? `Handed back by ${kinWorkName(item.handedBack.by, names, "you")} · ${formatKinTime(new Date(item.handedBack.at), now)}`
-      : lastMove !== undefined && handBack !== undefined
-        ? `${kinWorkActorName(lastMove.by, names)} handed this back · ${formatKinTime(new Date(lastMove.at), now)}`
-        : giver === null ||
-            kinWorkSamePrincipal(giver, item.owner) ||
-            // An agent that made the task for itself was given it by no one.
-            (item.assignedByAgent === undefined &&
-              lastMove?.kind === "created" &&
-              item.createdBy._tag !== "system" &&
-              kinWorkSamePrincipal(item.createdBy, item.owner))
-          ? null
+    move === null
+      ? null
+      : move.kind === "handedBack"
+        ? `Handed back by ${kinWorkName(move.by, names, "you")} · ${formatKinTime(new Date(move.at), now)}`
+        : move.kind === "handedBackChange"
+          ? `${kinWorkActorName(move.by, names)} handed this back · ${formatKinTime(new Date(move.at), now)}`
           : [
-              `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}${via}`,
-              item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
+              `${kinWorkName(move.giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}${move.via === null ? "" : `, via ${kinWorkActorName(move.via, names)}`}`,
+              move.at === null ? null : formatKinTime(new Date(move.at), now),
             ]
               .filter((part) => part !== null)
               .join(" · ");

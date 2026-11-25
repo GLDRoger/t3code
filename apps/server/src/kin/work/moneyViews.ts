@@ -41,11 +41,18 @@ import {
   selectRecords,
   toRecord,
 } from "./recordRows.ts";
-import { LISTS, parseFields } from "./lists.ts";
+import { LISTS, parseFields, TEAM_LIST_RESERVED } from "./lists.ts";
 import { companyCashOut, partnerRepaidDay, repaidDay } from "./reimbursement.ts";
 import { findBankList } from "./statements/bankList.ts";
-import { allLists, isBuiltIn, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
-import { seenBy, type KinViewer } from "./teamView.ts";
+import {
+  allLists,
+  isBuiltIn,
+  isFieldDate,
+  type ListDef,
+  listEntryFor,
+  stateLabel,
+} from "./registers.ts";
+import { listMoneySeenBy, seenBy, type KinViewer } from "./teamView.ts";
 import { DAY_MS } from "../durations.ts";
 import type { SetAsideInvoice } from "../pulse/invoiceAsides.ts";
 
@@ -112,8 +119,12 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
     if (asked !== undefined && !asked.includes(def.id)) continue;
     const fields = def.fields.filter((one) => one.type === "date" && one.retired !== true);
     if (fields.length === 0) continue;
-    const rows = yield* sql<{ id: string; key: string; fieldsJson: string }>`SELECT
-        r.record_id AS id, r.key, r.fields_json AS "fieldsJson" FROM kin_records r
+    const access =
+      input.viewer._tag === "ownerLevel" || TEAM_LIST_RESERVED.includes(def.id)
+        ? sql`1`
+        : listMoneySeenBy(sql, input.viewer);
+    const rows = yield* sql<{ id: string; key: string; fieldsJson: string; full: number }>`SELECT
+        r.record_id AS id, r.key, r.fields_json AS "fieldsJson", ${access} AS full FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = ${def.id}
         ${input.open === true ? sql`AND r.state NOT IN ('done', 'dropped')` : sql``}
         ${input.kept === true ? sql`AND ${keptEntry(sql)}` : sql``}
@@ -130,6 +141,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
     for (const row of rows) {
       const values = parseFields(row.fieldsJson);
       for (const one of fields) {
+        if (one.sensitive && row.full !== 1) continue;
         const value = values[one.key];
         if (typeof value !== "string" || !isFieldDate(value)) continue;
         const { at, allDay } = fieldDateAt(value, zone);
@@ -218,7 +230,12 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   const rows =
     ids.length === 0
       ? []
-      : yield* sql<RecordRow>`${selectRecords(sql)}
+      : yield* sql<RecordRow>`${selectRecords(
+          sql,
+          input.viewer._tag === "ownerLevel"
+            ? sql``
+            : sql`, ${listMoneySeenBy(sql, input.viewer)} AS "listMoneyVisible"`,
+        )}
           WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(ids)} ORDER BY r.record_id`;
   const byId = new Map(rows.map((row) => [row.recordId, row]));
   return {
@@ -240,7 +257,7 @@ const dayLabel = (def: ListDef, row: RecordRow) =>
     : def.dateLabel;
 
 const dateRow = (row: RecordRow, def: ListDef, hit: DateHit, now: number): KinDateRow => ({
-  record: toRecord(row, now),
+  record: listEntryFor(toRecord(row, now), row.registerId, def, row.listMoneyVisible !== 0),
   listName: def.name,
   stateLabel: stateLabel(def, row.state),
   kind: hit.kind,
@@ -434,8 +451,10 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       (named !== undefined && !named.has(partyId))
         ? null
         : { recordId: KinRecordId.make(partyId), key: first.partyKey, title: first.partyTitle };
+    const names = [...new Set(members.flatMap((one) => one.billTo ?? []))];
     return {
       party,
+      ...(names.length === 0 ? {} : { billTo: names.join(", ") }),
       owed: addUp(
         members.map((one) => one.balance),
         home,
@@ -702,7 +721,10 @@ export const moneySection = (
   summary: KinMoneySummary,
   zone: string,
   setAside: ReadonlyArray<SetAsideInvoice> = [],
+  clientsOn = true,
 ) => {
+  const clientLabel = (party: { readonly title: string; readonly key: string }) =>
+    clientsOn ? `${party.title} (${party.key})` : party.title;
   const nothing =
     summary.owed.invoices === 0 &&
     summary.received.thisMonth.length === 0 &&
@@ -724,7 +746,7 @@ export const moneySection = (
       ? {}
       : { overdueSetAside: setAside.map((one) => ({ ...one, owed: shown([one.owed]) })) }),
     byClient: summary.owed.byClient.slice(0, SECTION_CLIENTS).map((client) => ({
-      client: client.party === null ? "no client" : `${client.party.title} (${client.party.key})`,
+      client: client.party === null ? (client.billTo ?? "no client") : clientLabel(client.party),
       owed: shown(client.owed),
       ...(client.oldestOverdueDays === null
         ? {}
@@ -777,9 +799,7 @@ export const moneySection = (
               title: record.title,
               list: listName,
               ...(record.amount === undefined ? {} : { amount: formatMoney(record.amount) }),
-              ...(record.party === undefined
-                ? {}
-                : { client: `${record.party.title} (${record.party.key})` }),
+              ...(record.party === undefined ? {} : { client: clientLabel(record.party) }),
             })),
           },
         }),

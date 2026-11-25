@@ -1251,6 +1251,20 @@ describe("KinLeadProvision", () => {
         assert.isDefined((yield* pause(true)).paused);
         assert.strictEqual(yield* refusal(pause(false, teammate)), "not_found");
         assert.isUndefined((yield* pause(false)).paused);
+
+        // The last lead paused tells the owner at once, not at the next hourly check; a resume closes it.
+        const noAgent = sql<{ open: number }>`SELECT CASE WHEN resolved_at IS NULL THEN 1 ELSE 0 END
+            AS open FROM kin_waiting WHERE org_id = ${tech.orgId} AND message_id LIKE 'kin-no-lead:%'
+          ORDER BY waiting_id`;
+        const live = yield* sql<{
+          agentId: KinAgentId;
+        }>`SELECT agent_id AS "agentId" FROM kin_agents
+          WHERE org_id = ${tech.orgId} AND role = 'lead' AND retired_at IS NULL ORDER BY agent_id`;
+        for (const { agentId } of live)
+          yield* Provision.setPaused({ by: owner, orgId: tech.orgId, agentId, paused: true });
+        assert.deepStrictEqual(yield* noAgent, [{ open: 1 }]);
+        yield* pause(false);
+        assert.deepStrictEqual(yield* noAgent, [{ open: 0 }]);
       }).pipe(Effect.provide(paired)),
   );
   it.effect("shows an agent's page and keeps an edited character's old version", () =>

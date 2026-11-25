@@ -1,3 +1,4 @@
+import { kinIsChiefOfStaff } from "./kinSetUp.ts";
 import {
   KIN_TEAM_ROOM_TEAM_ID,
   type KinChatId,
@@ -22,6 +23,8 @@ import {
   mergeKinFeed,
   type KinFeedRow,
   type KinFeedViewer,
+  kinNewLineSeq,
+  type KinNewLineHold,
 } from "./kinChatFeed.ts";
 import { kinFeedDisplay } from "./kinFeedDisplay.ts";
 import { kinFollowsEnd, type KinFeedFollow } from "./kinFeedFollow.ts";
@@ -54,6 +57,9 @@ function kinIntroCharter(charter: string): string | null {
  * What a chat's screen reads besides the chat and the inbox: a direct chat's leads (the owner's
  * list, retired ones too, where they may restore), and a group's members. `orgId` is the chat's.
  */
+/** How long the message a Waiting on you row opened stays tinted. */
+export const KIN_LAND_MARK_MS = 1_600;
+
 export function kinChatReads(input: {
   readonly chatId: KinChatId | null;
   readonly chats: ReadonlyArray<KinChatSummary> | null;
@@ -128,6 +134,8 @@ export function kinChatScreen(input: {
     contact,
     /** The lead's charter, which the empty chat's intro opens with. */
     charter: lead === null ? null : kinIntroCharter(lead.charter),
+    /** The viewer's own Chief of staff: its intro says what it does with What we sell's answer. */
+    setsUp: lead !== null && kinIsChiefOfStaff(lead.domain),
     /** What the owner of someone else's lead wrote for the people it talks to. */
     about: contact === null || contact.intro.trim() === "" ? null : contact.intro,
     activeAgents: leads === null ? 0 : kinAgentGroups(leads.leads).active.length,
@@ -209,7 +217,45 @@ type KinChatFeedInput = {
   readonly agentName: string | null;
   readonly retired: boolean;
   readonly readOnly: boolean;
+  /** Where the "New" line was placed; absent or null draws none. */
+  readonly newLine?: KinNewLineHold | null;
 };
+
+const NEW_LINE_LABEL = "New";
+
+/** The highest seq a chat row shows; 0 for rows that show none. */
+function kinChatRowSeq(row: KinChatRow): number {
+  switch (row.type) {
+    case "message":
+    case "system":
+    case "relay":
+      return row.message.seq;
+    case "fold":
+      return row.lastSeq;
+    case "cards":
+      return Math.max(
+        row.first.message.seq,
+        row.question?.message.seq ?? 0,
+        ...row.tasks.map((task) => task.message.seq),
+      );
+    case "day":
+    case "draft":
+    case "pending":
+      return 0;
+  }
+}
+
+/** The "New" line, drawn as a divider before the row that holds `seq`. */
+function withNewLine(rows: ReadonlyArray<KinChatRow>, seq: number | null) {
+  if (seq === null) return rows;
+  const index = rows.findIndex((row) => kinChatRowSeq(row) >= seq);
+  if (index < 0) return rows;
+  return [
+    ...rows.slice(0, index),
+    { type: "day" as const, key: "new-line", label: NEW_LINE_LABEL },
+    ...rows.slice(index),
+  ];
+}
 
 /**
  * What a chat's feed shows and in what order, and whether the person may write; scrolling does
@@ -249,11 +295,13 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
       ),
     ),
   );
+  const newLineSeq = kinNewLineSeq(messages, input.newLine ?? null, input.viewer.personId);
+  const linedRows = withNewLine(groupedRows, newLineSeq);
   const rows: ReadonlyArray<KinChatRow> =
     pending.length === 0
-      ? groupedRows
+      ? linedRows
       : [
-          ...groupedRows,
+          ...linedRows,
           ...pending.map((entry, index) => ({
             type: "pending" as const,
             key: `pending:${entry.clientMessageId}`,

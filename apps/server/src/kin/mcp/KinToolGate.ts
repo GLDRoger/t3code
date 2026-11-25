@@ -1,4 +1,5 @@
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
+import { BILL_TO_FIELDS } from "../work/billTo.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -14,12 +15,15 @@ import * as McpToolPolicy from "./toolPolicy.ts";
 import { McpInvocationContext, type McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { KinServer, type Services } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { OWN_MESSAGE_REFUSALS } from "../chat/ownMessages.ts";
 import { effectiveAudience, SHARED_REFUSAL, turnPeople } from "../lead/Audience.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
+import { readCallArguments } from "../connections/callArguments.ts";
 import { PRIVATE_WRITE, privateRefusal } from "../connections/privateTurn.ts";
 import { REVIEW_REFUSAL, reviewToolAllowed } from "../lead/outsideReview.ts";
-import { APPROVED_REFUSAL, approvedToolAllowed } from "../lead/approvedDraft.ts";
+import { BILLS_REFUSAL, billToolAllowed } from "../lead/billsOnly.ts";
+import { APPROVED_REFUSAL, approvedRefusal, approvedToolAllowed } from "../lead/approvedDraft.ts";
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
@@ -232,17 +236,26 @@ const turnEvents = McpToolPolicy.toolCallPrepare(
 /** An outside review's turn refuses what it may not call with the review's own refusal. */
 const reviewOnly: Check = (turn, tool, args) =>
   reviewToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
+/** A bills turn refuses all but `bill_read` with its own refusal. */
+const billsOnlyCheck: Check = (turn, tool, args) =>
+  billToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
 /** An approved draft's turn refuses what it may not call with its own refusal. */
 const approvedOnly: Check = (turn, tool, args) =>
   approvedToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
-/** A confined turn (an outside review, an approved draft) is decided by its own gate alone. */
+/** A confined turn (an outside review, bills, an approved draft) is decided by its own gate alone. */
 const confinedDecides = (turn: Parameters<Check>[0], tool: string, args: unknown) =>
   reviewToolAllowed(turn, tool, args).pipe(
     Effect.flatMap((review) =>
       review !== undefined
         ? Effect.succeed(true)
-        : approvedToolAllowed(turn, tool, args).pipe(
-            Effect.map((approved) => approved !== undefined),
+        : billToolAllowed(turn, tool, args).pipe(
+            Effect.flatMap((bills) =>
+              bills !== undefined
+                ? Effect.succeed(true)
+                : approvedToolAllowed(turn, tool, args).pipe(
+                    Effect.map((approved) => approved !== undefined),
+                  ),
+            ),
           ),
     ),
   );
@@ -262,6 +275,7 @@ const sectionsOfArguments = (
   while (pending.length > 0) {
     const { value, field } = pending.pop()!;
     if (typeof value === "string") {
+      if (Object.hasOwn(BILL_TO_FIELDS, field)) continue;
       const section =
         sectionOfReference(value.trim(), field) ??
         (field === "list" || field === "lists" ? sectionOfList(value) : null) ??
@@ -297,14 +311,25 @@ const sectionRefusal = (
   return `Row ${index + 1}${named}: ${message} Nothing was saved.`;
 };
 
+/** A connection call as `KinConnections.call` reads it, a reason swallowed into text included. */
+const asCalled = (args: unknown) => {
+  if (!Predicate.isReadonlyObject(args)) return args;
+  const read = readCallArguments(
+    args.arguments,
+    typeof args.reason === "string" ? args.reason : undefined,
+  );
+  return read === undefined ? args : { ...args, ...read };
+};
+
 const referenceFields = new Set(["key", "keys", "entry", "against", "record", "attachments"]);
 const forwardedTools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
 const sectionAdmitted = McpToolPolicy.toolCallRefusal(
-  Effect.succeed((name: string, args: unknown) => {
+  Effect.succeed((name: string, given: unknown) => {
     if (!Object.hasOwn(SECTIONS.tools, name) || forwardedTools.has(name)) return Effect.undefined;
-    // Its name and noun are labels a company chose, never record references.
-    if (name === "company_sections") return Effect.undefined;
+    // Names, nouns and sources are words a company chose, never record references.
+    if (name === "company_sections" || name === "numbers_watch") return Effect.undefined;
     const foreign = name === "kin_connection_call";
+    const args = foreign ? asCalled(given) : given;
     const references = new Set<string>();
     const sections = sectionsOfArguments(
       args,
@@ -330,7 +355,7 @@ const sectionAdmitted = McpToolPolicy.toolCallRefusal(
       (turn) =>
         Effect.gen(function* () {
           const shell = yield* KinShell.get(turn.orgId);
-          if (shell.sections.every(({ on }) => on)) return undefined;
+          if (KinShell.builtInsOn(shell)) return undefined;
           const viewer =
             references.size === 0 || (yield* effectiveAudience(turn)) === "owner_only"
               ? KIN_OWNER_LEVEL
@@ -392,6 +417,7 @@ const outside = besideReview(outsideToolAllowed);
 
 const kinChecks = [
   [reviewOnly, REVIEW_REFUSAL],
+  [billsOnlyCheck, BILLS_REFUSAL],
   [approvedOnly, APPROVED_REFUSAL],
   [toolAdmitted, SHARED_REFUSAL],
   [outsideToolAllowed, OUTSIDE_REFUSAL],
@@ -479,7 +505,7 @@ export const callCounts = Layer.unwrap(
 /**
  * Every Kin MCP call passes here first, whatever registered it: nothing to another machine, where
  * none of these checks follow; only the review in a stranger's pull request's turn
- * (`outsideReview`), only the one approved make in an approved draft's (`approvedDraft`); nothing reaches the owner's context in a turn others read (`SharedTools`); no
+ * (`outsideReview`), only `bill_read` in a bills turn (`billsOnly`), only the one approved make in an approved draft's (`approvedDraft`); nothing reaches the owner's context in a turn others read (`SharedTools`); no
  * run outside text could steer (`OutsideContent`); no task past the limit (or off `helperModels`).
  */
 export const layer = ReadTools.layer.pipe(
@@ -493,9 +519,16 @@ export const layer = ReadTools.layer.pipe(
         REMOTE_REFUSAL,
       ),
       McpToolPolicy.toolCallGate(gate("KinToolGate.review", reviewOnly), REVIEW_REFUSAL),
-      McpToolPolicy.toolCallGate(gate("KinToolGate.approved", approvedOnly), APPROVED_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.bills", billsOnlyCheck), BILLS_REFUSAL),
+      McpToolPolicy.toolCallRefusal(
+        Effect.succeed(inRunningTurn("KinToolGate.approved", approvedRefusal, APPROVED_REFUSAL)),
+      ),
       McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", admitted), SHARED_REFUSAL),
-      McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outside), OUTSIDE_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outside), (_args, tool) =>
+        tool === "message_withdraw" || tool === "message_replace"
+          ? OWN_MESSAGE_REFUSALS.outside
+          : OUTSIDE_REFUSAL,
+      ),
       McpToolPolicy.toolCallRefusal(Effect.succeed(privateGate)),
       McpToolPolicy.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
       helperModels,

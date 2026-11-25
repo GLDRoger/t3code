@@ -36,6 +36,7 @@ import * as CardActions from "../widgets/cardActions.ts";
 import { sealPlans } from "../widgets/cardPlans.ts";
 import { budgetsAnswer, budgetsView, setBudget } from "./budgets.ts";
 import {
+  agentProfile,
   attachChangeCard,
   changeLines,
   countryFirst,
@@ -55,6 +56,7 @@ import {
   sourceOf,
   viewOf,
   writerFor,
+  countryWorded,
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { partnersAnswer, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
@@ -84,7 +86,10 @@ import {
 import {
   attachCard,
   carryOut,
+  checkText,
   type FieldDef,
+  OWN_DATE,
+  remindTarget,
   isUnissuedDraft,
   listDef,
   PRESET_IDS,
@@ -158,7 +163,7 @@ export const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
 const Label = KinToolText(60);
 const FieldInput = Schema.Struct({
   label: Label,
-  type: KinWritableListFieldType,
+  type: Schema.Literals([...KinWritableListFieldType.literals, "number", "yesno"]),
   choices: Schema.optional(Schema.Array(Label).check(Schema.isMaxLength(30))),
   link: Schema.optional(Schema.Literals(["clients", "projects"])),
   sensitive: Schema.optional(Schema.Boolean),
@@ -194,8 +199,34 @@ export const DefineInput = Schema.Struct({
   }),
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
   sensitive: Schema.optional(Schema.Boolean),
+  team: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "True when the whole team works on this list: every teammate sees and adds its entries.",
+  }),
   dueLabel: Schema.optional(Label),
   dateLabel: Schema.optional(Label),
+  section: Schema.optional(Schema.Boolean).annotate({
+    description: "Also show the list as a section of its own.",
+  }),
+  dock: Schema.optional(Schema.Boolean).annotate({
+    description: "With section: in the phone's dock too.",
+  }),
+  remindOn: Schema.optional(Schema.NullOr(Label)).annotate({
+    description:
+      "The date Kin reminds an entry's holder on, as on a task's due day: a date field or the list's own date; null stops.",
+  }),
+  check: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        field: Label,
+        below: Schema.optional(Schema.Union([Label, Schema.Finite])),
+        above: Schema.optional(Schema.Union([Label, Schema.Finite])),
+      }),
+    ),
+  ).annotate({
+    description:
+      "Warn once per entry when a number field is below or above a number or field; null stops.",
+  }),
 });
 const ShownField = Schema.Struct({
   key: Schema.String,
@@ -224,6 +255,21 @@ const shownFields = (fields: ReadonlyArray<FieldDef>) =>
       type: one.type,
       ...(one.choices === undefined ? {} : { choices: [...one.choices] }),
     }));
+
+function fieldLine(field: (typeof ShownField)["Type"]) {
+  const type =
+    field.choices !== undefined
+      ? `one of: ${field.choices.join(", ")}`
+      : field.type === "money"
+        ? "amount"
+        : field.type === "yesno"
+          ? "yes or no"
+          : field.type
+              .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+              .replace(/_/g, " ")
+              .toLowerCase();
+  return `${field.label} (${type})`;
+}
 
 const describeDefined = Effect.fn("KinWorkTools.describeDefined")(function* (
   lead: Lead,
@@ -321,6 +367,28 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
           Effect.catchTags({ KinChatError: () => Effect.undefined }),
         )
       : undefined;
+  const teamChange = proposal._tag === "new" ? proposal.definition.team : proposal.team;
+  const had = proposal._tag === "new" ? undefined : yield* listDef(lead.orgId, proposal.id);
+  const watched =
+    proposal._tag === "new"
+      ? proposal.definition
+      : { ...proposal, fields: [...(had?.fields ?? []), ...proposal.fields] };
+  const labels: {
+    readonly dateLabel?: string | undefined;
+    readonly dueLabel?: string | undefined;
+  } = proposal._tag === "new" ? proposal.definition : (had ?? {});
+  const label = (key: string) => watched.fields.find((one) => one.key === key)?.label ?? key;
+  const onDue =
+    typeof input.remindOn === "string" &&
+    remindTarget(watched.fields, labels, input.remindOn) === "due";
+  const reminder =
+    watched.remindOn === OWN_DATE
+      ? (labels.dateLabel ?? "date")
+      : watched.remindOn !== undefined
+        ? label(watched.remindOn)
+        : onDue
+          ? (labels.dueLabel ?? "due")
+          : undefined;
   // The card is how a tap answers this proposal and no other; a typed yes still works without it.
   const card = yield* askOwner(
     lead,
@@ -329,11 +397,30 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
       clientMessageId: `kin-list:${proposalId}`,
       question: `${proposal._tag === "new" ? "Create the list" : "Add to"} ${shown.name}?`,
       detail: [
-        ...shown.fields.map(
-          (one) =>
-            `${one.label} (${one.type}${one.choices === undefined ? "" : `: ${one.choices.join(", ")}`})`,
-        ),
+        ...shown.fields.map(fieldLine),
         ...(shown.categories.length === 0 ? [] : [`Categories: ${shown.categories.join(", ")}`]),
+        ...(teamChange === true
+          ? ["The whole team will see and add entries."]
+          : teamChange === false && proposal._tag === "extend"
+            ? ["The team will no longer see this list."]
+            : []),
+        ...(proposal.section === true
+          ? [
+              `${shown.name} will show as a section of its own${proposal.dock === true ? ", and in the phone's dock" : ""}.`,
+            ]
+          : []),
+        ...(watched.check === undefined
+          ? []
+          : [`Kin will warn about each entry whose ${checkText(watched.fields, watched.check)}.`]),
+        ...(reminder === undefined
+          ? []
+          : [`Kin will remind whoever holds an entry on its ${reminder} day.`]),
+        ...(proposal._tag === "extend" && proposal.unwatch?.includes("check") === true
+          ? ["Kin will stop warning about its entries."]
+          : []),
+        ...(proposal._tag === "extend" && proposal.unwatch?.includes("remindOn") === true && !onDue
+          ? ["Kin will stop reminding on its entries' date."]
+          : []),
       ].join("\n"),
       yes: proposal._tag === "new" ? "Create it" : "Add them",
       no: "Not now",
@@ -514,11 +601,13 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
   const shell = yield* KinShell.get(lead.orgId);
   const invoices = KinShell.sectionOn(shell, "invoices");
+  const clientsOn = KinShell.sectionOn(shell, "clients");
   const summary = yield* moneySummaryForAgent(lead.orgId, now, viewer);
   const section = moneySection(
     summary,
     summary.timeZone,
-    invoices ? yield* setAsideOverdue({ orgId: lead.orgId, now, viewer }) : [],
+    invoices ? yield* setAsideOverdue({ orgId: lead.orgId, now, viewer, clientsOn }) : [],
+    clientsOn,
   );
   const toInvoice =
     team === undefined && invoices ? yield* ownerLevelStillToInvoice(lead.orgId) : [];
@@ -610,7 +699,7 @@ const runBudget = Effect.fnUntraced(function* (lead: Lead, input: typeof BudgetI
     });
   if (input.category === undefined && input.project === undefined)
     return yield* invalid("A budget is for a category, a project, or a category in a project.");
-  if (input.limit !== null) yield* countryFirst(lead.orgId, { saved: true });
+  if (input.limit !== null) yield* countryWorded(lead, true, countryFirst(lead.orgId));
   const expenses = yield* listDef(lead.orgId, "expenses");
   if (expenses === undefined)
     return yield* invalid("There is no expenses list yet: track expenses first.");
@@ -730,7 +819,7 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
         state:
           record.confirmed || record.state === "dropped"
             ? row.stateLabel
-            : suggestedStateLabel(record.list ?? "work", record.state, row.stateLabel),
+            : suggestedStateLabel(record.list ?? "work", record.state),
         ...(isInvoice(entry)
           ? invoiceDays(entry, day)
           : {
@@ -796,12 +885,14 @@ export const ProfileResult = Schema.Struct({
   next: Schema.optional(Schema.String),
   /** The company said it is not registered for its tax. */
   taxNote: Schema.optional(Schema.String),
+  /** A new company's country isn't chosen: Kin knows no currency or tax for it yet. */
+  countryNeeded: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
 const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof ProfileInput.Type) {
   yield* admitted(lead, "company_profile", input);
-  const current = yield* readProfile(lead.orgId);
-  const { rev, updatedAt: _updatedAt, bank, ...rest } = current;
+  const { profile: current, shown, countryNeeded } = yield* agentProfile(lead.orgId);
+  const { rev, updatedAt: _updatedAt, bank, ...rest } = shown;
   let proposed: ReadonlyArray<string> | undefined;
   if (input.set !== undefined) {
     if (input.sourceEventId === undefined)
@@ -879,6 +970,7 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
           next: "Nothing has changed yet. Kin showed this change on a card in this chat; it applies when they tap Confirm. Say so in one line.",
         }),
     ...(taxNote === undefined ? {} : { taxNote }),
+    ...(countryNeeded === undefined ? {} : { countryNeeded }),
     sensitive: true as const,
   };
 });

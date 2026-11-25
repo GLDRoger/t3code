@@ -366,6 +366,11 @@ export class FakeGitHub {
     item.merged = true;
     this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
   }
+  /** Closed without a merge. */
+  close(input: { repo: string; number: number; actor: string }) {
+    this.item(input.repo, input.number).state = "closed";
+    this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
+  }
   /** New commits on a PR's branch: GitHub sends no notification, but the PR's `updated_at` moves. */
   push(input: { repo: string; number: number; diff?: string; force?: boolean }) {
     const item = this.item(input.repo, input.number);

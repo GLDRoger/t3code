@@ -73,6 +73,10 @@ desktop app it alerts you while Kin is open in a window you aren't looking at; o
 the phone's own notification settings. On Android those list Kin's kinds apart (Messages, Questions
 and approvals, Briefs, Devices and security), so you can silence one and keep the rest.
 
+Opening a chat clears its unread dot and takes its notifications away. A **New** line marks where
+the messages you hadn't seen begin, and stays there while the chat is open. An agent may still
+correct or take back what it said until you reply, react to it or answer its card.
+
 ### Adding a teammate (owner and co-owners)
 
 Choose **New**, then **Add teammate**, and give their name. Kin makes a link for you to send; it
@@ -296,12 +300,21 @@ the figures in the quote or the invoice.
 
 ### Your tasks in your own coding agent
 
-A coding agent key lets your own coding agent, such as Claude Code, Codex or Cursor, work from what
-you see in Kin. It reads the tasks you hold, adds comments to them, and sets them to to-do, in
-progress or done; those comments and states are the only things it can change. It can also read,
-never change, the projects, clients and docs you can see, your Money figures if you have Money, and,
-for the owner and co-owners only, what Kin remembers that the team may know. It can't reach anyone
-else's tasks, your chats, or anything your own screens don't show you.
+A coding agent key lets your own coding agent, such as Claude Code, Codex or Cursor, work in Kin as
+you. It sees what you can see in Kin and does what you can do there, under the same rules: it makes
+tasks and gives them to people or agents, changes them, comments on them and sets them going or
+done; adds and changes clients, contacts, deals, promises and entries on the team's lists; logs
+contact with a client; writes a new version of a doc; records a watched number; reads what waits on
+you; and sends your agents messages in your own chats with them, whose answers you read in Kin.
+It can also tick task steps, hand tasks back or over, nudge holders, add links to entries and restart
+watches. Owners and co-owners can also make projects, pin project notes, restore document versions,
+undo changes to team-readable memory they manage, save goals, read budgets and draft invoices with
+Money. Everything it changes,
+and every message it sends, shows as from your coding agent. Some things stay a tap in Kin itself
+and have no way in through a key: answering cards (Confirm, choices, approvals), sending money or
+mail out of the company, recording or changing money (an invoice draft aside), people and their
+access, connections, sign-ins and keys, updates, backups and company settings, and deleting or
+archiving anything.
 
 Clients, projects, tasks, deals, docs and money entries marked private, and everything under a
 private client or project, stay in Kin: no key reads them, whoever holds it, the owner's included.
@@ -410,7 +423,8 @@ each month. **Needs attention** at the top lists overdue invoices and renewals c
 
 A new company chooses its country first: the owner or a co-owner sets it in **Settings → Company
 details**, and its currency follows, with its financial year and tax name where Kin knows them.
-Until then Kin records no money, and agents say so.
+Until then Kin records no money, and agents say so; once it is chosen, an agent that was asked
+for something it couldn't record picks it up again without being asked twice.
 
 Most of the bookkeeping happens by telling an agent: "Acme paid ₹48,250 today", "we spent $120 on
 hosting", "the GST filing is due on the 20th". It records the entry and answers in a line.
@@ -426,6 +440,17 @@ hosting", "the GST filing is due on the 20th". It records the entry and answers 
   **Add → New receipt**, then **Set against** an invoice of the same client when it's issued.
 - **Statements.** Send your bank or card statement in a chat to match its rows to invoices and
   expenses. See [Bank and card statements](./kin-statements.md).
+- **Bills in bulk.** For a pile of bills or receipts to enter, choose **Add → Bills (photos or
+  PDFs)** and pick them all at once; on the phone, from the photo library, Files or the camera. Kin
+  reads each one in the background, and a card in your chat with the agent reading them (Finance,
+  where the company has one) counts as it goes. A bill read cleanly becomes a _suggested_ expense
+  with the photo or PDF as its receipt: it counts in no Money figure until you keep it. One that
+  looks like an expense already recorded, that Kin couldn't read, or whose amount or date needs a
+  check, is not added; it waits for you on the batch's list, from the card's **Review** or **Bills
+  added** on Expenses. There you keep, edit or drop each one, or keep all that read cleanly at
+  once; add a look-alike anyway; and type one Kin couldn't read by hand, with its file already
+  attached. A field Kin couldn't read stays empty rather than guessed. A bill you dismissed is read
+  again if you add it again.
 - **Paid by a partner.** When a partner pays a company expense from their own money, set **Funded
   by** on the expense to that partner, in **Add → Expense** or on the expense itself. Leave it as
   **The company** when the company paid. Its **Reimbursement** reads **owed** until the company
@@ -491,6 +516,16 @@ Owners and co-owners connect services under **Settings → Connections**: Google
 GitHub, and others. Each mail account reads, and sends only on your Confirm. Tell an agent what an
 account is for ("accounts@ is for invoices") and it sends from the right one. A reply always goes
 from the account and thread the email is in.
+
+Anyone can also connect their own mail under **Settings → Connections → Your mailboxes**, one
+account or several (**Connect another mailbox**). Agents read them only when working for that person
+alone: in their own direct chats, and for the owner also when Kin prepares something for him. Never
+in a shared or group chat, and Kin never watches them for the company. Only they confirm what goes
+from them. The owner can make an account connected as the company's his own without a new sign-in:
+open it on the computer and choose **Make this my own mailbox**; a co-owner whose own account sits
+there disconnects it and connects it under Your mailboxes. **Make this the company's mailbox** on one
+of Your mailboxes gives it to the company (owner or co-owner). From then on Kin watches it, or stops
+watching it, for the company; notes, tasks and drafts it already made from that mail stay.
 
 Google and Microsoft each need a sign-in client set up once; Settings shows the steps. If your
 company already has one for a mail app (a Google client, or a Microsoft app with a Web redirect and
@@ -610,8 +645,8 @@ until the hour is up.
 Kin watches every repo yours or your organizations' unless you say "leave acme/site alone" in chat.
 **Settings → Connections → GitHub** shows how many repos it watches, when it last checked and how
 much it handled today; **Show repos** lists them with a switch each, and **Watch every repo** undoes
-the switches. Forks of other people's repos start off. If a check fails, the row says why and how to
-fix it.
+the switches. Forks are watched too, for their own pull requests and issues. If a check fails, the
+row says why and how to fix it.
 
 To try pull requests in a browser on Ubuntu 23.10 or later, run `t3 browser setup` once as root.
 

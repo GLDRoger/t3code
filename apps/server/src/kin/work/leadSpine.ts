@@ -63,7 +63,8 @@ export const SpineInputs = {
   reason: Schema.optional(Schema.NullOr(Reason)),
   from: Schema.optional(From),
   at: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(40)))).annotate({
-    description: "A meeting's start: a time with its offset (2026-11-20T15:00+05:30).",
+    description:
+      "A meeting's start: a time with its offset (2026-11-20T15:00+05:30). On any other task it is its due.",
   }),
   attendees: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(30))).annotate({
     description: "A meeting's people: each as owner is named.",
@@ -90,6 +91,10 @@ export const SpineInputs = {
   ).annotate({
     description:
       "A task's people and agents besides its owner, each as owner is named; replaces the list. They help; its owner answers for it.",
+  }),
+  promisedTo: Schema.optional(Schema.NullOr(Who)).annotate({
+    description:
+      "The one person here a task was promised to, named as owner is; never its owner. null clears.",
   }),
 };
 type SpineRow = {
@@ -201,6 +206,9 @@ export const spineFields = Effect.fn("KinLeadSpine.fields")(function* <E, R>(
   if (row.attendees !== undefined) fields.attendees = yield* people(row.attendees);
   if (row.members !== undefined) fields.members = yield* people(row.members);
   if (row.alsoOn !== undefined) fields.alsoOn = yield* people(row.alsoOn);
+  if (row.promisedTo !== undefined)
+    fields.promisedTo =
+      row.promisedTo === null ? null : principalText(yield* resolve.who(row.promisedTo));
   for (const key of ["size", "reason", "where", "billing", "startsOn", "renewsOn"] as const)
     if (row[key] !== undefined) fields[key] = row[key] ?? null;
   if (row.value !== undefined) {
@@ -244,6 +252,10 @@ export const spineShown = (row: RecordRow, name: ToolNamer) => {
     renewsOn: text("renewsOn"),
     members: names("members"),
     alsoOn: names("alsoOn"),
+    promisedTo: ((who) =>
+      who === undefined ? undefined : (name(principalOfText(who)) ?? "someone"))(
+      text("promisedTo"),
+    ),
   };
   return Object.fromEntries(Object.entries(shown).filter((entry) => entry[1] !== undefined)) as {
     readonly [K in keyof typeof shown]?: string;
@@ -264,6 +276,7 @@ export const SpineShown = {
   renewsOn: Schema.optional(Schema.String),
   members: Schema.optional(Schema.String),
   alsoOn: Schema.optional(Schema.String),
+  promisedTo: Schema.optional(Schema.String),
 };
 
 const Line = Schema.Struct({

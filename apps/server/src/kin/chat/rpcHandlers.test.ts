@@ -367,12 +367,15 @@ it.effect(
       const backlog = yield* Queue.take(events);
       assert.strictEqual(backlog._tag, "backlog");
       if (backlog._tag === "backlog") assert.deepStrictEqual(backlog.messages, [concurrent]);
+      // A person's own send moves their read mark to it.
+      assert.include(yield* Queue.take(events), { _tag: "read", seq: concurrent.seq });
       const live = yield* chat.send(person, {
         chatId: direct.chatId,
         body: "After read",
         clientMessageId: "live",
       });
       assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message: live });
+      assert.include(yield* Queue.take(events), { _tag: "read", seq: live.seq });
       const delayed = yield* repo.insertMessage({
         audience: "chat",
         ...live,
@@ -440,6 +443,7 @@ it.effect(
             clientMessageId: body,
           });
           assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message });
+          assert.include(yield* Queue.take(events), { _tag: "read", seq: message.seq });
         }
       }
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),

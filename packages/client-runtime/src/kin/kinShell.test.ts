@@ -12,6 +12,11 @@ import {
   kinSectionOf,
   kinSectionOffLine,
   kinSectionOn,
+  kinDockRoom,
+  kinDockWithLists,
+  kinListCanBeSection,
+  kinListSections,
+  kinListSectionDocked,
   kinShellChanged,
   kinShellSwitched,
 } from "./kinShell.ts";
@@ -64,12 +69,8 @@ describe("kinSectionOn follows what each section needs, as the host's sectionOn"
   it.each([
     // shell, clients, deals, money, invoices
     ["all on", defaults, [true, true, true, true]],
-    [
-      "Clients off: Deals and Invoices go with it",
-      off("clients", "invoices"),
-      [false, false, true, false],
-    ],
-    ["Clients off, Deals still stored on", off("clients"), [false, false, true, false]],
+    ["Clients off: Deals goes with it, Invoices stays", off("clients"), [false, false, true, true]],
+    ["Clients and Invoices off", off("clients", "invoices"), [false, false, true, false]],
     [
       "Money off: Invoices goes with it, though stored on",
       off("money"),
@@ -86,8 +87,9 @@ describe("kinSectionOn follows what each section needs, as the host's sectionOn"
   it("says why a section whose own switch is on reads as off", () => {
     expect(kinSectionHeldOffLine(off("money"), "invoices")).toBe("Off because Money is off.");
     expect(kinSectionHeldOffLine(off("clients", "money"), "invoices")).toBe(
-      "Off because Clients and Money are off.",
+      "Off because Money is off.",
     );
+    expect(kinSectionHeldOffLine(off("clients"), "invoices")).toBeNull();
     expect(kinSectionHeldOffLine(off("clients"), "deals")).toBe("Off because Clients is off.");
     expect(kinSectionHeldOffLine(defaults, "deals")).toBeNull();
     // Its own switch is off too: turning Money on would not bring it back.
@@ -152,7 +154,50 @@ describe("kinSectionNamed", () => {
     };
     expect(kinSectionNamed(ngos, "Search clients")).toBe("Search NGOs");
     expect(kinSectionNamed(ngos, "New client")).toBe("New NGO");
+    // A singular stored as typed ("Patient") still reads lower case inside a sentence.
+    const typed: KinShell = {
+      rev: 2,
+      sections: [{ id: "clients", on: true, name: "Patients", noun: "Patient" }],
+    };
+    expect(kinSectionNamed(typed, "Pick a client")).toBe("Pick a patient");
+    expect(kinSectionNamed(typed, "Client")).toBe("Patient");
   });
+
+  it.each([
+    ["Client", "Patient", "From Patients", "Client"],
+    ["Pick a client", "Pick a patient", "Pick who it is for", "Pick a client"],
+    [
+      "Bill a client instead",
+      "Bill a patient instead",
+      "Pick from Patients instead",
+      "Bill a client instead",
+    ],
+    [
+      "Use a client instead",
+      "Use a patient instead",
+      "Pick from Patients instead",
+      "Use a client instead",
+    ],
+    ["No client", "No patient", "None", "No client"],
+    ["Any client", "Any patient", "Any", "Any client"],
+    [
+      "Add the client in Clients first.",
+      "Add the patient in Patients first.",
+      "Add them in Patients first.",
+      "Add the client in Clients first.",
+    ],
+  ])(
+    "says %j with the company's singular, reworded without one, and as Kin's",
+    (text, one, none, kins) => {
+      const noSingular: KinShell = {
+        rev: 3,
+        sections: [{ id: "clients", on: true, name: "Patients" }],
+      };
+      expect(kinSectionNamed(patients, text)).toBe(one);
+      expect(kinSectionNamed(noSingular, text)).toBe(none);
+      expect(kinSectionNamed(defaults, text)).toBe(kins);
+    },
+  );
 
   it("changes nothing with Kin's name, or from a host older than sections", () => {
     expect(kinSectionNamed(defaults, "Search clients")).toBe("Search clients");
@@ -282,5 +327,117 @@ describe("kinSectionOffLine", () => {
     expect(kinSectionOffLine(dealsOff, "deals", false)).toBe(
       "Deals is turned off for this company. An owner can turn it on in Settings › Deals.",
     );
+  });
+});
+
+describe("a company's own lists as sections", () => {
+  const withLists = (...lists: ReadonlyArray<KinShell["sections"][number]>): KinShell => ({
+    rev: 7,
+    sections: [...defaults.sections, ...lists],
+  });
+
+  it("reads list sections in the shell's order, once each, and ignores ids it can't read", () => {
+    const shell = withLists(
+      { id: "list:bookings", on: true, dock: true },
+      { id: "list:stock", on: false },
+      { id: "list:bookings", on: false },
+      { id: "studio", on: true },
+    );
+    expect(kinListSections(shell)).toEqual([
+      { id: "list:bookings", list: "bookings", on: true, dock: true },
+      { id: "list:stock", list: "stock", on: false, dock: false },
+    ]);
+    expect(kinListSections(undefined)).toEqual([]);
+  });
+
+  it.each([
+    [
+      "an owner with every place: a docked list waits in Lists",
+      ["chats", "tasks", "money", "clients", "docs"],
+      ["list:bookings", "list:stock"],
+      ["chats", "tasks", "money", "clients", "docs"],
+    ],
+    [
+      "Clients off: the first docked list takes its place",
+      ["chats", "tasks", "money", "docs"],
+      ["list:bookings", "list:stock"],
+      ["chats", "tasks", "money", "docs", "list:bookings"],
+    ],
+    [
+      "a member who reaches Docs alone: both fit",
+      ["chats", "tasks", "docs"],
+      ["list:bookings", "list:stock"],
+      ["chats", "tasks", "docs", "list:bookings", "list:stock"],
+    ],
+    [
+      "a list section that is off or not docked never takes a place",
+      ["chats", "tasks", "docs"],
+      [],
+      ["chats", "tasks", "docs"],
+    ],
+  ] as const)("the dock for %s", (_, tabs, docked, shown) => {
+    const shell = withLists(
+      ...docked.map((id) => ({ id, on: true, dock: true })),
+      { id: "list:off", on: false, dock: true },
+      { id: "list:rooms", on: true },
+    );
+    expect(kinDockWithLists(tabs, shell)).toEqual(shown);
+    expect(kinDockWithLists(tabs, shell).length).toBeLessThanOrEqual(5);
+  });
+
+  it("offers the dock while Money or Clients leaves a place, and says when it is full", () => {
+    expect(kinDockRoom(withLists({ id: "list:stock", on: true }))).toEqual({
+      room: 0,
+      used: 0,
+      full: true,
+    });
+    const clientsOff = (...lists: ReadonlyArray<KinShell["sections"][number]>): KinShell => ({
+      rev: 8,
+      sections: [...off("clients").sections, ...lists],
+    });
+    expect(kinDockRoom(clientsOff({ id: "list:stock", on: true }))).toEqual({
+      room: 1,
+      used: 0,
+      full: false,
+    });
+    expect(kinDockRoom(clientsOff({ id: "list:stock", on: true, dock: true })).full).toBe(true);
+    // Marked for the dock but past its room: not in the dock, as the phone draws it.
+    const two = clientsOff(
+      { id: "list:stock", on: true, dock: true },
+      { id: "list:bookings", on: true, dock: true },
+    );
+    expect(kinListSectionDocked(two, "list:stock")).toBe(true);
+    expect(kinListSectionDocked(two, "list:bookings")).toBe(false);
+    expect(
+      kinListSectionDocked(withLists({ id: "list:stock", on: true, dock: true }), "list:stock"),
+    ).toBe(false);
+  });
+
+  it("switches, docks, adds and removes a list section with every other section as held", () => {
+    const shell = withLists({ id: "list:stock", on: true, dock: true });
+    const sections = (change: Parameters<typeof kinShellChanged>[1]) =>
+      kinShellChanged(shell, change).shell.sections.slice(5);
+    expect(sections({ id: "list:stock", on: false })).toEqual([
+      { id: "list:stock", on: false, dock: true },
+    ]);
+    expect(sections({ id: "list:stock", dock: false })).toEqual([{ id: "list:stock", on: true }]);
+    expect(sections({ id: "list:bookings", on: true })).toEqual([
+      { id: "list:stock", on: true, dock: true },
+      { id: "list:bookings", on: true },
+    ]);
+    expect(kinShellChanged(shell, { id: "list:stock", remove: true })).toEqual({
+      rev: 7,
+      shell: { sections: defaults.sections },
+    });
+  });
+
+  it("offers only a company's own live lists, as the host takes them", () => {
+    const def = { list: "stock", name: "Stock", builtIn: false, archivedAt: null };
+    expect(kinListCanBeSection(def)).toBe(true);
+    expect(kinListCanBeSection({ ...def, archivedAt: "2026-11-20T00:00:00.000Z" })).toBe(false);
+    expect(kinListCanBeSection({ ...def, payments: true })).toBe(false);
+    expect(kinListCanBeSection({ ...def, list: "expenses", name: "Expenses" })).toBe(false);
+    expect(kinListCanBeSection({ ...def, list: "subscriptions" })).toBe(false);
+    expect(kinListCanBeSection({ ...def, list: "work", builtIn: true })).toBe(false);
   });
 });

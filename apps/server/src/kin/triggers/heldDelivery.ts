@@ -18,6 +18,9 @@ import type { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as Reach from "../lead/Reach.ts";
 import type { KinPushSender } from "../push/KinPushSender.ts";
+import { aboutOf, noteAbout } from "../push/pushAbout.ts";
+import { factsStand } from "../pulse/factState.ts";
+import { reservedByCheckIn } from "../pulse/leftForCheckIn.ts";
 import { heldGivenBody, isGivenHeld, TASK_NEWS } from "../work/assignNotices.ts";
 import { ANSWERS_WITHIN_MS, personQuietUntil, relayWakeup, sameAsk } from "./quietHold.ts";
 
@@ -64,6 +67,7 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
     WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
       AND substr(kind, 1, ${TASK_NEWS.length}) != ${TASK_NEWS}
       AND substr(kind, 1, ${DM_NEWS.length}) != ${DM_NEWS}
+      AND NOT ${reservedByCheckIn(sql)}
     ORDER BY held_at, rowid`;
   const groups = new Map<string, Array<(typeof rows)[number]>>();
   for (const row of rows) {
@@ -90,6 +94,12 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
         )
       : [...new Set(group.map((row) => row.body))].join("\n\n");
     if (body === undefined) {
+      yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+      continue;
+    }
+    // Kin's notice of facts that all settled while it waited says nothing true any more.
+    const facts = yield* aboutOf(orgId, first.kind, "fact:");
+    if (facts.length > 0 && !(yield* factsStand(orgId, first.personId, facts, now))) {
       yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
       continue;
     }
@@ -123,6 +133,12 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
           });
           yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
           WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+          // Its push is about what the held line was: the same facts.
+          yield* noteAbout(
+            orgId,
+            `${HELD_ID}${first.holdId}`,
+            facts.map((key) => `fact:${key}`),
+          );
         }),
       )
       .pipe(

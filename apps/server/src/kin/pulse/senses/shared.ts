@@ -10,8 +10,11 @@ import {
   KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { billingClientFromProject } from "../../work/billTo.ts";
 import type * as SqlClient from "effect/sql/SqlClient";
 
+import type { Overflow } from "./capped.ts";
+import type { SectionId } from "../../shell/sections.ts";
 import { dayIn } from "../../work/money.ts";
 import { issuedNumber, labelledNow } from "../../work/recordRows.ts";
 import { DAY_MS, HOUR_MS, type Threshold } from "../thresholds.ts";
@@ -38,6 +41,10 @@ export interface SenseContext {
 export type SensedFact = Omit<KinPulseFact, "handled"> & {
   readonly yours?: (personId: string) => string | undefined;
   readonly quietForMs?: number;
+  /** The section whose switch silences it, when its sense alone doesn't say: a list's own too. */
+  readonly section?: SectionId | `list:${string}`;
+  readonly overflow?: Overflow;
+  readonly extraSection?: SectionId;
 };
 
 /** An entry with its project and client, as every record sense selects it (`r`, `p`, `c`). */
@@ -71,7 +78,7 @@ export const entryColumns = (sql: SqlClient.SqlClient) => sql`r.record_id AS "re
 
 export const entryJoins = (sql: SqlClient.SqlClient) => sql`kin_records r
   LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
-  LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = COALESCE(r.party_id, p.party_id)`;
+  LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = ${billingClientFromProject(sql, sql`p.party_id`)}`;
 
 export const entrySubject = (row: EntryRow) => ({
   kind: "record" as const,

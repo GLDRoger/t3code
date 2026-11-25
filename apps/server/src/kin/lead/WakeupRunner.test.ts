@@ -19,6 +19,7 @@ import {
   KinChatId,
   KinMessageId,
   KinPersonId,
+  MemoryItemHead,
   ThreadId,
   ProviderTurnId,
   ProjectId,
@@ -65,6 +66,7 @@ import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
+import { BILLS_THREAD_PREFIX } from "./billsOnly.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import * as HostCare from "../host/KinHostCare.ts";
@@ -107,6 +109,27 @@ import { ProviderAdapterSteerRunError } from "@t3tools/provider-core/server/Prov
 import { ProviderDriverKind, ProviderThreadId } from "@t3tools/contracts";
 
 const decodeEvent = Schema.decodeSync(KinEvent);
+const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
+const fixtureHead = (orgId: string, id: string, title: string) =>
+  decodeHead({
+    orgId,
+    id,
+    path: `deferrals/${id}.md`,
+    kind: "deferral",
+    title,
+    status: "open",
+    due: "2026-11-13T09:00+05:30",
+    on_due: "start",
+    recorded_at: "2026-11-08",
+    valid_from: "2026-11-08",
+    invalid_at: null,
+    superseded_by: null,
+    review_by: null,
+    source: "owner-chat",
+    said_by: "owner",
+    trust: "owner",
+    links: [],
+  });
 const decodeUsage = Schema.decodeEffect(
   Schema.fromJsonString(
     Schema.Array(
@@ -473,6 +496,31 @@ describe("WakeupRunner", () => {
         assert.strictEqual(reviewed?.audience, "shared");
         assert.isTrue(reviewed!.threadId.startsWith(REVIEW_THREAD_PREFIX));
         assert.deepStrictEqual(kept(reviewed!.wakeupId), []);
+        // Bills to read run on a confined thread of their own too, which no other turn takes.
+        yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
+            name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
+            widget_id, added_by_person_id, added_at, state, event_id, reads)
+          VALUES ('org', ${"a".repeat(64)}, 'kin-chat-00000000-0000-4000-8000-000000000001', 'owner-chat',
+            'bills:b-1', 'IMG_0001.png', 'image', 'image/png', 68, 'b-1', 0, ${agentId},
+            'owner-chat', 'bills:b-1', 'owner', 0, 'reading', 'bills-1', 1)`;
+        yield* (yield* KinEventQueue.KinEventQueue).enqueue(
+          decodeEvent({
+            _tag: "bills.read",
+            orgId,
+            agentId,
+            eventId: "bills-1",
+            receivedAt: at,
+            dedupeKey: null,
+            provenance: { _tag: "system" },
+            chatId: "owner-chat",
+            batchId: "b-1",
+            bills: ["a".repeat(64)],
+          }),
+        );
+        yield* Fiber.join(yield* run());
+        const [billsTurn] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId"
+          FROM kin_wakeups WHERE event_ids LIKE '%bills-1%'`;
+        assert.isTrue(billsTurn!.threadId.startsWith(BILLS_THREAD_PREFIX));
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'teammate-member'`;
         assert.strictEqual((yield* turn("after-review")).threadId, shared.threadId);
       }).pipe(Effect.provide(harness({ writer })), provideDeterministicTestRuntime);
@@ -674,6 +722,8 @@ describe("WakeupRunner", () => {
     ["a room's routine whose setter left since its run was queued", "left", 0],
     ["a question answered or withdrawn before its day", "question", 0],
     ["a scheduled task whose memory read failed, in a turn", "unread", 1],
+    ["a started deferral whose item is gone since its card was drawn", "start-gone", 0],
+    ["a started deferral whose item was edited since its card was drawn", "start-edited", 0],
   ] as const)(
     "answers %s without the model when only NO_REPLY could answer it",
     ([, kind, turns]) =>
@@ -707,6 +757,18 @@ describe("WakeupRunner", () => {
                 'invented-setter', ${kind === "left" ? "shared" : "owner_only"}, 'sha', 'inbox', 0,
                 0, ${kind === "paused" ? 0 : null})`;
           }
+          const startKind = kind === "start-gone" || kind === "start-edited";
+          if (startKind)
+            yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due,
+                snapshot_json, updated_at)
+              VALUES (${orgId}, 'def-started', 'started', 0, 'start',
+                ${JSON.stringify({
+                  recordedAt: "2026-11-08T00:00:00.000Z",
+                  supersededBy: null,
+                  links: [],
+                  github: null,
+                  drawn: { fingerprint: "as-drawn" },
+                })}, 0)`;
           yield* queue.enqueue(
             decodeEvent({
               _tag: "deferral.due",
@@ -719,7 +781,9 @@ describe("WakeupRunner", () => {
               subject:
                 kind === "question"
                   ? { type: "question", questionId: "question-1" }
-                  : { type: "scheduled_task", itemId: "schedule-item", runId: "fire-1" },
+                  : startKind
+                    ? { type: "deferral", itemId: "def-started", phase: "due" }
+                    : { type: "scheduled_task", itemId: "schedule-item", runId: "fire-1" },
               lateByMs: 0,
             }),
           );
@@ -736,10 +800,26 @@ describe("WakeupRunner", () => {
             ]),
             [[turns > 0, "completed"]],
           );
+          // An edited item's dropped start asks again, and a new tap takes a new start key.
+          if (kind === "start-edited")
+            assert.deepEqual(
+              yield* sql`SELECT state, json_extract(snapshot_json, '$.restarts') AS restarts
+                FROM kin_deferral_runs WHERE item_id = 'def-started'`,
+              [{ state: "asked", restarts: 1 }],
+            );
         }).pipe(
           Effect.provide(
             harness({
               prompts,
+              ...(kind === "start-edited"
+                ? {
+                    readItem: (orgId, id) =>
+                      Effect.succeed({
+                        head: fixtureHead(orgId, id, "Invented work, edited since"),
+                        body: "Body\n",
+                      }),
+                  }
+                : {}),
               ...(kind === "unread"
                 ? {
                     readItem: (orgId) =>
@@ -824,6 +904,44 @@ describe("WakeupRunner", () => {
         assert.strictEqual(commits, 2);
       }).pipe(Effect.provide(harness({ writer })));
     }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect(
+    "a head start claimed in the owner's quiet hours waits for the morning; urgent runs",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const headStart = (id: string, key: string) =>
+          decodeEvent({
+            ...event(id),
+            receivedAt: "1970-01-01T00:00:00.000Z",
+            _tag: "pulse",
+            dedupeKey: `${key}:0`,
+            factKeys: [key],
+          });
+        // Midnight in the company's zone, inside the owner's quiet hours (22:00 to 07:00).
+        yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+          evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+          quiet_hours_json)
+        VALUES (${orgId}, 'UTC', '08:30', '18:00', '02:00', 0, 1, '09:00',
+          '{"from":"22:00","to":"07:00"}')`;
+        yield* queue.enqueue(headStart("quote", "quote_unanswered:QT-1:last=0"));
+        yield* Fiber.join(yield* run());
+        assert.deepStrictEqual(
+          yield* sql`SELECT state, attempts, not_before FROM kin_events WHERE event_id = 'quote'`,
+          [{ state: "queued", attempts: 0, not_before: 7 * 60 * 60_000 }],
+        );
+        yield* queue.enqueue(headStart("waiting", "client_waiting_on_us:CL-1:since=0"));
+        yield* Fiber.join(yield* run());
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, state = 'queued' AS queued FROM kin_events ORDER BY event_id`,
+          [
+            { event_id: "quote", queued: 1 },
+            { event_id: "waiting", queued: 0 },
+          ],
+        );
+      }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
   it.effect("runs every kind of turn on the agent's one model, so its thread never switches", () =>
     Effect.gen(function* () {
@@ -1361,6 +1479,7 @@ describe("WakeupRunner", () => {
             causeFor: () => Effect.undefined,
             refresh: () => Effect.void,
             checkBackup: () => Effect.void,
+            postOfflineNotice: () => Effect.die("no startup pass here"),
             status: () => Effect.die("not read here"),
             freeSpace: () => Effect.die("not tapped here"),
             backUpNow: () => Effect.die("not tapped here"),
@@ -1428,6 +1547,7 @@ describe("WakeupRunner", () => {
             causeFor: () => Effect.undefined,
             refresh: () => Effect.void,
             checkBackup: () => Effect.void,
+            postOfflineNotice: () => Effect.die("no startup pass here"),
             status: () => Effect.die("not read here"),
             freeSpace: () => Effect.die("not tapped here"),
             backUpNow: () => Effect.die("not tapped here"),
@@ -1815,11 +1935,26 @@ describe("WakeupRunner", () => {
   );
 
   it.effect(
-    "ends a run silent from the start 15 minutes after it began, without leaving the organization busy",
+    "ends a run silent from the start 15 minutes after it began, for certain when it ignores Stop, without leaving the organization busy",
     () =>
       Effect.gen(function* () {
         const entered = yield* Deferred.make<void>();
         const hold = yield* Deferred.make<void>();
+        const outcomes: Array<string> = [];
+        const bridge = Layer.mock(KinReplyBridge)({
+          lane: () =>
+            Effect.succeedSome({
+              chatId: KinChatId.make("owner-chat"),
+              mode: "reply" as const,
+              owed: true,
+              leadName: "Lead",
+            }),
+          preparing: () => Effect.void,
+          begin: () => Effect.void,
+          complete: () => Effect.void,
+          end: () => Effect.void,
+          failed: (input) => Effect.sync(() => void outcomes.push(input.outcome)),
+        });
         yield* Effect.gen(function* () {
           yield* seed;
           const queue = yield* KinEventQueue.KinEventQueue;
@@ -1839,8 +1974,23 @@ describe("WakeupRunner", () => {
             ),
           );
           const launch = yield* ThreadLaunch.ThreadLaunchService;
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const stops: Array<string> = [];
           const runner = yield* WakeupRunner.WakeupRunner.pipe(
             Effect.provide(Layer.fresh(WakeupRunner.layer)),
+            Effect.provideService(ThreadManagement.ThreadManagementService, {
+              ...threads,
+              // A provider that ignores Stop: the run stays on after Kin's interrupt.
+              interruptThread: () => Effect.succeed({ type: "no_active_run" as const }),
+              stopDelegatedTasks: (input) =>
+                Effect.sync(() => void stops.push("tasks")).pipe(
+                  Effect.andThen(threads.stopDelegatedTasks(input)),
+                ),
+              forceStopThread: (input) =>
+                Effect.sync(() => void stops.push("agent")).pipe(
+                  Effect.andThen(threads.forceStopThread(input)),
+                ),
+            }),
             Effect.provideService(ThreadLaunch.ThreadLaunchService, {
               ...launch,
               launch: (input) =>
@@ -1890,13 +2040,16 @@ describe("WakeupRunner", () => {
           assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [
             { status: "timed_out" },
           ]);
-          // Nothing showed, so its event is retried as any failed wake-up's is.
+          // It ignored the interrupt: its tasks and agent are stopped for certain, and what it was
+          // asked ends there, told once as stopped, never run again on its own.
+          assert.deepStrictEqual(stops, ["tasks", "agent"]);
           assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
-            { state: "queued", attempts: 1 },
+            { state: "failed", attempts: 1 },
           ]);
+          assert.deepStrictEqual(outcomes, ["stopped"]);
           yield* Deferred.succeed(hold, undefined);
           yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
-        }).pipe(Effect.provide(harness({ entered, hold })));
+        }).pipe(Effect.provide(harness({ entered, hold }).pipe(Layer.provideMerge(bridge))));
       }).pipe(provideDeterministicTestRuntime),
   );
 
@@ -3021,6 +3174,7 @@ describe("WakeupRunner", () => {
             causeFor: () => Effect.undefined,
             refresh: () => Effect.void,
             checkBackup: () => Effect.void,
+            postOfflineNotice: () => Effect.die("no startup pass here"),
             status: () => Effect.die("not read here"),
             freeSpace: () => Effect.die("not tapped here"),
             backUpNow: () => Effect.die("not tapped here"),

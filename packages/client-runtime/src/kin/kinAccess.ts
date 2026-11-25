@@ -100,16 +100,7 @@ function makeKinAccess<R, ER>(
       const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
       const environmentId = supervisor.target.environmentId;
       // A failed read would leave a co-owner on a member's dock until the next refresh.
-      return yield* Effect.suspend(() =>
-        Effect.promise(() => read.run(registry, { environmentId, input })),
-      ).pipe(
-        Effect.flatMap((result) =>
-          result._tag === "Success"
-            ? Effect.succeed(result.value)
-            : result._tag === "Failure"
-              ? Effect.failCause(result.cause)
-              : Effect.never,
-        ),
+      return yield* Effect.suspend(() => read.run(registry, { environmentId, input })).pipe(
         Effect.retry({ times: 4, schedule: Schedule.exponential("1 second") }),
       );
     }),

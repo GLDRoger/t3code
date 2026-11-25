@@ -2,6 +2,7 @@
 import {
   EnvironmentId,
   KinAgentId,
+  KinListId,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -24,8 +25,11 @@ import {
   kinRecordAskedBy,
   kinRecordChip,
   kinTaskActivity,
+  kinTaskBrief,
   kinTaskControls,
-  kinTaskPeopleFolded,
+  kinTaskOrigin,
+  kinRecordHeld,
+  kinTaskPeopleRows,
   kinTaskWith,
   kinTaskWithChoices,
 } from "./kinTaskRecord.ts";
@@ -345,29 +349,22 @@ describe("kinNextStep", () => {
   it("shows the holder the brief on top, and why it came only while there is no brief", () => {
     const why = task({ owner: rhea, reason: "Owner's ask; Dev leads the booking app" });
     expect(stepOf(why).words).toBe("Owner's ask; Dev leads the booking app");
-    expect(stepOf({ ...why, notes: "Book two pilot clinics for the beta." }).words).toBe(
-      "Book two pilot clinics for the beta.",
-    );
-  });
-
-  it("folds Details' Asked by and Held by when the card already names that person", () => {
-    // Your own: "You have this", asked by you.
-    const own = task({ owner: rhea, createdBy: rhea, assignedBy: null });
-    expect(kinTaskPeopleFolded(own, stepOf(own))).toEqual({
-      asked: true,
-      held: true,
-      label: "Who asked and who has it",
-    });
-    // Meera holds it and Rhea asked: the card names Meera, so only Held by folds.
-    const hers = task();
-    expect(kinTaskPeopleFolded(hers, stepOf(hers))).toMatchObject({ asked: false, held: true });
-    // An agent's suggestion names the agent, who neither asked nor holds it here.
-    const suggested = task({ owner: meera, createdBy: finance, confirmed: false });
-    expect(kinTaskPeopleFolded(suggested, stepOf(suggested))).toBeNull();
-    // Rhea is on Meera's own task: the folded row says who's on it, for her only.
-    const on = task({ owner: meera, createdBy: meera, alsoOn: [rhea] });
-    expect(kinTaskPeopleFolded(on, stepOf(on), names)?.label).toBe("Who asked and who's on it");
-    expect(kinTaskPeopleFolded(on, stepOf(on), asZoya)?.label).toBe("Who asked and who has it");
+    const briefed = { ...why, notes: "Book two pilot clinics for the beta." };
+    expect(stepOf(briefed).words).toBe("Book two pilot clinics for the beta.");
+    // Said once: the Brief section keeps only what the card can't (its Edit, earlier versions).
+    const brief = (item: typeof why, edit: boolean, versions = 0) =>
+      kinTaskBrief({
+        view: kinWorkItemView(item, names, now, 50, place),
+        step: stepOf(item),
+        edit,
+        versions,
+      });
+    expect(brief(briefed, true)).toEqual({ words: false });
+    expect(brief(briefed, false, 2)).toEqual({ words: false });
+    expect(brief(briefed, false)).toBeNull();
+    // Anyone the card doesn't quote it to reads it in the Brief section, as before.
+    expect(brief({ ...briefed, owner: meera }, false)).toEqual({ words: true });
+    expect(brief(why, false)).toEqual({ words: true });
   });
 
   it("quotes the words a task came back with", () => {
@@ -434,6 +431,98 @@ describe("kinTaskWith", () => {
       { owner: meera, alsoOn: [rhea] },
     );
     expect([...choices.leads, ...choices.people].map((one) => one.principal)).toEqual([chief]);
+  });
+});
+
+describe("kinTaskPeopleRows", () => {
+  const rows = (item: KinRecordDetail, who = names, give = true) => {
+    const view = kinWorkItemView(item, who, now, 50, place);
+    const shown = kinTaskWith({ item, names: who, edit: view.can.edit, change: true });
+    return kinTaskPeopleRows({ item, view, names: who, give, with: shown });
+  };
+  it("opens the hand-over from Held by only for a reader who may give it", () => {
+    expect(rows(task()).held).toMatchObject({ name: "Meera", opens: true });
+    expect(rows(task({ owner: rhea })).held).toMatchObject({ name: "Rhea (you)", opens: true });
+    expect(rows(task({ owner: chief })).held).toMatchObject({ name: "Chief of staff" });
+    // A member who is not on it reads who has it, with nothing to press.
+    expect(rows(task({ can: readOnly }), asZoya).held.opens).toBe(false);
+    expect(rows(task(), names, false).held.opens).toBe(false);
+    const retired = { ...names, retired: new Set([chief.agentId]) };
+    expect(rows(task({ owner: chief }), retired).held.name).toBe("Chief of staff (retired)");
+    // A company list's entry is given by the same rule: its holder or owner level, never a member.
+    const entry = task({ key: "BK-3", list: KinListId.make("bookings"), owner: zoya });
+    const held = (item: KinRecordDetail, who: KinWorkNames) =>
+      kinRecordHeld({
+        item,
+        view: kinWorkItemView(item, who, now, 50, place),
+        names: who,
+        give: true,
+      });
+    expect(held(entry, asZoya)).toMatchObject({ name: "Zoya (you)", opens: true });
+    expect(held({ ...entry, can: readOnly }, asZoya).opens).toBe(false);
+  });
+
+  it("says who else is on it, Add someone when nobody, and opens only what the reader may do", () => {
+    expect(rows(task()).with).toEqual({ value: "Add someone", opens: "add" });
+    expect(rows(task({ alsoOn: [zoya] })).with).toEqual({ value: "Zoya", opens: "menu" });
+    expect(rows(task({ alsoOn: [zoya, chief] })).with?.value).toBe("Zoya and Chief of staff");
+    expect(rows(task({ alsoOn: [zoya, chief, finance] })).with?.value).toBe("Zoya and 2 more");
+    // A reader who may not change it: nobody on it says nothing; someone on it is plain text.
+    expect(rows(task({ can: readOnly }), asZoya).with).toBeNull();
+    expect(rows(task({ can: readOnly, alsoOn: [meera] }), asZoya).with).toEqual({
+      value: "Meera",
+      opens: null,
+    });
+    // On it themselves, they may still leave.
+    expect(rows(task({ can: readOnly, alsoOn: [zoya] }), asZoya).with).toEqual({
+      value: "You",
+      opens: "menu",
+    });
+  });
+});
+
+describe("kinTaskOrigin", () => {
+  it("says who asked and how it reached its holder, in one line", () => {
+    // Rhea asked her chief of staff, who gave it to Meera.
+    const throughAgent = task({
+      changes: [
+        change({
+          seq: 2,
+          by: chief,
+          via: "lead",
+          fields: [{ field: "owner", from: "agent:ambermill-chief", to: "person:ambermill-meera" }],
+        }),
+      ],
+      assignedAt: "2026-11-17T09:00:00.000Z",
+    });
+    expect(kinTaskOrigin(throughAgent, names, now)).toBe(
+      "Asked by you · given to Meera through Chief of staff · Nov 17",
+    );
+    expect(kinTaskOrigin(throughAgent, asZoya, now)).toBe(
+      "Asked by Rhea · given to Meera through Chief of staff · Nov 17",
+    );
+    // An agent that gave it on its own is named as the giver.
+    expect(kinTaskOrigin(task({ owner: zoya, assignedByAgent: chief.agentId }), names, now)).toBe(
+      "Asked by you · Chief of staff gave it to Zoya · Nov 9",
+    );
+    // Someone else gave what another person asked for.
+    expect(
+      kinTaskOrigin(task({ owner: zoya, assignedBy: meera, askedBy: rhea.personId }), asZoya, now),
+    ).toBe("Asked by Rhea · Meera gave it to you · Nov 9");
+    // Your own task, made for yourself: only who asked.
+    expect(kinTaskOrigin(task({ owner: rhea, assignedBy: null }), names, now)).toBe("Asked by you");
+    // Handed back, it says so.
+    expect(
+      kinTaskOrigin(
+        task({ owner: rhea, handedBack: { by: meera, at: "2026-11-17T09:00:00.000Z" } }),
+        names,
+        now,
+      ),
+    ).toBe("Asked by you · handed back by Meera · Nov 17");
+    // An agent's own suggestion names no person.
+    expect(
+      kinTaskOrigin(task({ owner: chief, createdBy: chief, assignedBy: null }), names, now),
+    ).toBeNull();
   });
 });
 
@@ -610,6 +699,7 @@ describe("kinTaskActivity", () => {
       }),
       names,
       now,
+      "Zoya wrote the last campaign.",
     );
     expect(line).toMatchObject({
       icon: "gave",
@@ -618,6 +708,7 @@ describe("kinTaskActivity", () => {
       before: null,
       after: null,
       via: null,
+      quote: "Zoya wrote the last campaign.",
     });
   });
 

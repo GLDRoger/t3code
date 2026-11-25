@@ -8,8 +8,8 @@ import { sectionsOf } from "./docBody.ts";
 import { latestOf } from "./docs.ts";
 import { listOf } from "./lists.ts";
 import { inheritedSensitive, sensitiveNow } from "./recordRows.ts";
-import { docKindWords, searchIndexed, stepText } from "./searchIndex.ts";
-import { seenBy, type KinViewer } from "./teamView.ts";
+import { docKindWords, searchIndexed, stepText, teamListSearchText } from "./searchIndex.ts";
+import { ownMoneyDraft, seenBy, teamLists, type KinViewer } from "./teamView.ts";
 
 /**
  * One search over entries and docs. `team` is what a teammate may find (design 9.1): nothing of
@@ -80,6 +80,11 @@ const around = (text: string, words: ReadonlyArray<string>) => {
   return `${start > 0 ? "…" : ""}${shown}${start + 160 < text.length ? "…" : ""}`;
 };
 
+const ownDraftOf = (sql: SqlClient.SqlClient, scope: KinViewer) =>
+  scope._tag === "people" && scope.people.length === 1
+    ? ownMoneyDraft(sql, scope.people[0]!)
+    : sql`0`;
+
 export const search = Effect.fn("KinSearch.search")(function* (
   orgId: KinOrgId,
   input: {
@@ -103,18 +108,25 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const kinds = input.kinds === undefined || input.kinds.length === 0 ? KINDS : input.kinds;
   const shell = yield* KinShell.get(orgId);
   const deals = input.deals === true && KinShell.sectionOn(shell, "deals");
+  const shared = kinds.includes("work") ? [...(yield* teamLists(orgId))] : [];
   const registers = (deals ? [...kinds, "deals"] : kinds).filter((kind) => {
     const section = sectionOfList(kind);
     return section === null || KinShell.sectionOn(shell, section);
   });
-  if (registers.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
+  if (registers.length === 0 && shared.length === 0)
+    return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
+  const onTeamList = shared.length === 0 ? sql`0 = 1` : sql`r.register_id IN ${sql.in(shared)}`;
   const where = [
     sql`r.org_id = ${orgId}`,
-    sql`r.register_id IN ${sql.in(registers)}`,
+    sql`r.register_id IN ${sql.in([...registers, ...shared])}`,
     ...(input.closed === true ? [] : [sql`r.state NOT IN ('done', 'dropped')`]),
-    // A money list labels every entry private, so a teammate finds what Money shows them.
+    // A money list labels every entry private, so a teammate finds what Money shows them, and
+    // their own priced draft as they read it.
     ...(input.viewer === "team"
-      ? [sql`(r.register_id IN ${sql.in([...MONEY])} OR NOT ${sensitiveNow(sql)})`]
+      ? [
+          sql`(r.register_id IN ${sql.in([...MONEY])} OR NOT ${sensitiveNow(sql)}
+            OR ${ownDraftOf(sql, input.scope)})`,
+        ]
       : []),
     seenBy(sql, input.scope),
   ];
@@ -125,17 +137,34 @@ export const search = Effect.fn("KinSearch.search")(function* (
           WHERE r.org_id = p.org_id AND r.record_id = p.record_id
             AND ${seenBy(sql, input.scope)})) END AS "clientKey", CASE WHEN r.register_id IN ${sql.in([...MONEY])}
       THEN ${inheritedSensitive(sql)} ELSE ${sensitiveNow(sql)} END AS sensitive`;
-  const find = (any: boolean) =>
-    indexed
-      ? sql<Row>`SELECT ${columns}, m.part,
-          snippet(kin_search, 1, '', '', '…', ${SNIPPET_WORDS}) AS snippet
-        FROM kin_search s JOIN kin_search_rows m ON m.id = s.rowid
-        JOIN kin_records r ON r.org_id = m.org_id AND r.record_id = m.record_id
-        WHERE kin_search MATCH ${ftsQuery(words, any)} AND m.org_id = ${orgId}
-          AND ${sql.and([...where, ...(input.viewer === "team" ? [sql`m.part = 'public'`] : [])])}
-        ORDER BY bm25(kin_search, 4.0, 1.0, 2.0), r.updated_at DESC, r.record_id
-        LIMIT ${input.limit * 2}`
-      : scan(sql, words, any, where, columns, input.viewer, input.limit * 2);
+  const find = (any: boolean) => {
+    const regular = [...where, sql`NOT (${onTeamList})`];
+    return Effect.gen(function* () {
+      const found = indexed
+        ? yield* sql<Row>`SELECT ${columns}, m.part,
+            snippet(kin_search, 1, '', '', '…', ${SNIPPET_WORDS}) AS snippet
+          FROM kin_search s JOIN kin_search_rows m ON m.id = s.rowid
+          JOIN kin_records r ON r.org_id = m.org_id AND r.record_id = m.record_id
+          WHERE kin_search MATCH ${ftsQuery(words, any)} AND m.org_id = ${orgId}
+            AND ${sql.and([...regular, ...(input.viewer === "team" ? [sql`m.part = 'public'`] : [])])}
+          ORDER BY bm25(kin_search, 4.0, 1.0, 2.0), r.updated_at DESC, r.record_id
+          LIMIT ${input.limit * 2}`
+        : yield* scan(sql, words, any, regular, columns, input.viewer, input.limit * 2);
+      if (shared.length === 0) return found;
+      // Match and show the same allowed text even if the FTS row predates the list's definition.
+      const opened = yield* scan(
+        sql,
+        words,
+        any,
+        [...where, onTeamList],
+        columns,
+        input.viewer,
+        input.limit * 2,
+        teamListSearchText(sql),
+      );
+      return [...opened, ...found];
+    });
+  };
   // No index holds a key; a deal's, typed whole, finds that deal first.
   const typed = input.text.trim().toUpperCase();
   const keyed =
@@ -207,12 +236,17 @@ const scan = Effect.fnUntraced(function* (
   columns: ReturnType<SqlClient.SqlClient["and"]>,
   viewer: Viewer,
   limit: number,
+  safeListText?: ReturnType<SqlClient.SqlClient["and"]>,
 ) {
   const body = sql`COALESCE((SELECT v.body FROM kin_doc_versions v WHERE v.org_id = r.org_id
     AND v.record_id = r.record_id ORDER BY v.version DESC LIMIT 1), '')`;
   // The scan reads fields only for the owner: which are sensitive is the index's job.
-  const fields = viewer === "owner" ? sql`r.fields_json || ' ' ||` : sql``;
-  const shown = sql`r.title || ' ' || r.notes || ' ' || ${body} || ' ' || ${stepText(sql)}`;
+  const fields =
+    viewer === "owner" && safeListText === undefined ? sql`r.fields_json || ' ' ||` : sql``;
+  const shown =
+    safeListText === undefined
+      ? sql`r.title || ' ' || r.notes || ' ' || ${body} || ' ' || ${stepText(sql)}`
+      : sql`r.title || ' ' || ${safeListText}`;
   const text = sql`lower(${shown} || ' ' || ${fields} ${docKindWords(sql)})`;
   const rows = yield* sql<Omit<Row, "part" | "snippet"> & { readonly text: string }>`
     SELECT ${columns}, ${shown} AS text

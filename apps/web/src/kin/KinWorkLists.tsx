@@ -1,9 +1,12 @@
 import { KIN_MORE_FAILED, KIN_RETRY, kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_LISTS,
   KIN_LIST_LABEL_MAX,
+  KIN_LIST_WATCHES_CHANGE,
   kinCategoryLabel,
+  kinListCanOpenToTeam,
   kinListCanTogglePayments,
   kinListChips,
   kinListColumns,
@@ -16,6 +19,7 @@ import {
   kinListNothing,
   kinListRow,
   kinListStateLabel,
+  kinListWatches,
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
@@ -70,6 +74,7 @@ import {
   KinWorkStaleLine,
 } from "./KinWorkParts";
 import { KinNewExpenseDialog, KinNewInvoiceDialog } from "./KinMoneyForms";
+import { KinBillsAddedLink } from "./KinBills";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { KinPlaceCombobox } from "./KinPlaceCombobox";
@@ -80,6 +85,8 @@ import {
   useKinLists,
 } from "./useKinMoney";
 import { useKinWorkChoices, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import { useKinAttention } from "./useKinAttention";
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
 
 const ANY = "any";
@@ -98,6 +105,10 @@ export function KinWorkListPage(
     readonly openKey: KinRecordKey | null;
     readonly onOpenKey: (key: KinRecordKey) => void;
     readonly onGone: () => void;
+    /** The page around it already says the list's name, so the list doesn't say it again. */
+    readonly titled?: boolean;
+    /** Opens bills added in bulk, where Expenses links to them. */
+    readonly onBills?: (batchId: string | null) => void;
   },
 ) {
   // A list that was put away is still a page: that is where it is brought back.
@@ -146,6 +157,8 @@ function KinListEntries(
     readonly initial: KinListFilter;
     readonly openKey: KinRecordKey | null;
     readonly onOpenKey: (key: KinRecordKey) => void;
+    readonly titled?: boolean;
+    readonly onBills?: (batchId: string | null) => void;
   },
 ) {
   const { def } = props;
@@ -186,6 +199,10 @@ function KinListEntries(
   const nothing = kinListNothing(def, filter);
   const footer = kinListFooter(rows.length, state.total, state.more);
   const searchId = useId();
+  const watches = kinListWatches(def);
+  const ownerLevel = useKinOwnerLevel(props.environmentId);
+  // Late, due today or off its check, in the host's own words: the pulse read Tasks shares.
+  const facts = kinEntryFacts(useKinAttention(props));
   return (
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
       <div
@@ -196,11 +213,21 @@ function KinListEntries(
       >
         <div className="flex items-start gap-3">
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <h2 className="truncate text-base font-medium text-foreground">{def.name}</h2>
+            {props.titled === true ? null : (
+              <h2 className="truncate text-base font-medium text-foreground">{def.name}</h2>
+            )}
             {def.archivedAt === null ? null : (
               <p className="text-xs text-muted-foreground">
                 {KIN_LISTS.archived}. {KIN_LISTS.edit.archiveDetail}
               </p>
+            )}
+            {watches.length === 0 ? null : (
+              <div className="flex flex-col text-xs text-muted-foreground">
+                {watches.map((line) => (
+                  <p key={line}>{line}</p>
+                ))}
+                {ownerLevel ? <p>{KIN_LIST_WATCHES_CHANGE}</p> : null}
+              </div>
             )}
           </div>
           {adds === null ? null : (
@@ -218,6 +245,9 @@ function KinListEntries(
         </div>
         {props.stale || state.stale ? (
           <KinWorkStaleLine environmentId={props.environmentId} onRetry={entries.refresh} />
+        ) : null}
+        {def.list === "expenses" && props.onBills !== undefined ? (
+          <KinBillsAddedLink {...props} onOpen={props.onBills} />
         ) : null}
         <div className="-mx-1 overflow-x-auto px-1 py-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <ToggleGroup
@@ -479,6 +509,10 @@ function KinListEntries(
                               <span className="truncate text-foreground">{row.title}</span>
                               <span className="shrink-0 text-muted-foreground">{row.key}</span>
                             </button>
+                          ) : column.id === "state" && facts.has(row.key) ? (
+                            <span className="text-destructive-foreground">
+                              {facts.get(row.key)?.join(" ")}
+                            </span>
                           ) : column.id === "due" && row.late ? (
                             <span className="text-destructive-foreground">
                               {row.cells[column.id]}
@@ -497,7 +531,11 @@ function KinListEntries(
             <ul className="flex flex-col">
               {rows.map((row) => (
                 <li key={row.key} className="border-b border-border/60 last:border-b-0">
-                  <KinListRow row={row} onOpen={() => props.onOpenKey(row.key)} />
+                  <KinListRow
+                    row={row}
+                    facts={facts.get(row.key)}
+                    onOpen={() => props.onOpenKey(row.key)}
+                  />
                 </li>
               ))}
             </ul>
@@ -550,7 +588,12 @@ function KinListEntries(
 }
 
 /** An entry of any list as a row: what it is, where it stands, and its amount when it has one. */
-export function KinListRow(props: { readonly row: KinListRowView; readonly onOpen: () => void }) {
+export function KinListRow(props: {
+  readonly row: KinListRowView;
+  /** What the host says of it being late, due today or off its check. */
+  readonly facts?: ReadonlyArray<string> | undefined;
+  readonly onOpen: () => void;
+}) {
   const { row } = props;
   return (
     <button
@@ -572,6 +615,9 @@ export function KinListRow(props: { readonly row: KinListRowView; readonly onOpe
           {row.title}
         </span>
         <span className="truncate text-xs text-muted-foreground">{row.line}</span>
+        {props.facts === undefined ? null : (
+          <span className="text-xs text-destructive-foreground">{props.facts.join(" ")}</span>
+        )}
       </span>
       {row.late ? (
         <Badge size="sm" variant="error">
@@ -597,7 +643,13 @@ function KinListSettings(
   const { def, orgId } = props;
   const changes = useKinListChanges(props);
   const [draft, setDraft] = useState(() => kinListEditDraftOf(def));
-  const ids = { name: useId(), states: useId(), categories: useId(), payments: useId() };
+  const ids = {
+    name: useId(),
+    states: useId(),
+    categories: useId(),
+    payments: useId(),
+    team: useId(),
+  };
   const locked = def.builtIn;
   const save = async () => {
     const checked = kinListEditInput(orgId, def, draft);
@@ -705,6 +757,20 @@ function KinListSettings(
                     checked={draft.payments}
                     disabled={changes.busy}
                     onCheckedChange={(payments) => setDraft({ ...draft, payments })}
+                  />
+                </div>
+              ) : null}
+              {kinListCanOpenToTeam(def) ? (
+                <div className="flex items-start gap-3">
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <Label htmlFor={ids.team}>{KIN_LISTS.edit.team}</Label>
+                    <p className="text-xs text-muted-foreground">{KIN_LISTS.edit.teamDetail}</p>
+                  </div>
+                  <Switch
+                    id={ids.team}
+                    checked={draft.team}
+                    disabled={changes.busy}
+                    onCheckedChange={(team) => setDraft({ ...draft, team })}
                   />
                 </div>
               ) : null}

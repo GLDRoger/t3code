@@ -24,6 +24,9 @@ import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { IssuesToolkit } from "../../mcp/toolkits/issues/tools.ts";
 import { MessageToolkit } from "../../mcp/toolkits/message/tools.ts";
 import { ThemeToolkit } from "../../mcp/toolkits/theme/tools.ts";
+import { FeedbackToolkit } from "../../mcp/toolkits/feedback/tools.ts";
+import { ToolSearchToolkit } from "../../mcp/toolkits/toolSearch/tools.ts";
+import { WorkflowToolkit } from "../../mcp/toolkits/workflow/tools.ts";
 import { ServerConfig } from "../../config.ts";
 import { toolDirectories } from "../gendocs/toolchain.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
@@ -34,12 +37,14 @@ import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } fro
 import { markOutside, outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
+import { BILLS_THREAD_PREFIX, BILLS_TOOLS } from "./billsOnly.ts";
 import { REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "./outsideReview.ts";
 import { CODING_T3_TOOLS, isEngineeringDomain, LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { wakeupOfRuns } from "../chat/wakeupRuns.ts";
 import { isSocialTool } from "../social/mcp.ts";
 import { socialSeatThread } from "../social/seat.ts";
 import { seatOf } from "./characterDefaults.ts";
+import { leftToHome, seatHomeOf } from "./seatHome.ts";
 
 const leadT3Tools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
 const codingT3Tools: ReadonlySet<string> = new Set(CODING_T3_TOOLS);
@@ -59,12 +64,18 @@ const T3_TOOLKITS = [
   IssuesToolkit,
   MessageToolkit,
   ThemeToolkit,
+  FeedbackToolkit,
+  WorkflowToolkit,
+  ToolSearchToolkit,
 ];
 const t3Tools: ReadonlySet<string> = new Set(
   T3_TOOLKITS.flatMap((toolkit) => Object.keys(toolkit.tools)),
 );
-/** Every tool T3's own endpoint serves; the Kin endpoint serves them too, mostly hidden. */
-const isT3Tool = (name: string) => t3Tools.has(name);
+/**
+ * Every tool T3's own endpoint serves; the Kin endpoint serves them too, mostly hidden. A toolkit
+ * missing from the list above would be shown to every agent: `AgentSession.test.ts` reads the folder.
+ */
+export const isT3Tool = (name: string) => t3Tools.has(name);
 
 type Turn = { orgId: KinOrgId; agentId: KinAgentId; wakeupId: string };
 
@@ -217,23 +228,6 @@ const threadSeat = Effect.fn("KinAgentSession.threadSeat")(
   ),
 );
 
-/**
- * Money and pipeline tools an engineering or social lead leaves to the seat they belong to, once
- * the company has a lead in it; with none, every lead keeps them.
- */
-const SEAT_HOME: Readonly<Record<string, string>> = {
-  statement_read: "finance",
-  statement_rows: "finance",
-  money_query: "finance",
-  money_summary: "finance",
-  payment_record: "finance",
-  budget_set: "finance",
-  kin_receipt: "finance",
-  pipeline_read: "growth",
-  deal_stages: "growth",
-};
-const LEAVES_TO_HOME: ReadonlySet<string> = new Set(["engineering", "social"]);
-
 /** The name of the lead whose thread this is, or whose turn delegated this task. */
 export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
   function* (threadId: ThreadId) {
@@ -267,14 +261,16 @@ const loginConnected = Effect.gen(function* () {
 
 /**
  * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
- * Shared threads list only what shared turns may run, an outside review's only `REVIEW_TOOLS`; T3
- * tools only an owner-only thread, its coding ones only an engineering lead's (`SEAT_HOME`'s).
- * `KinToolGate` checks each call.
+ * Shared threads list what shared turns may run, an outside review's `REVIEW_TOOLS`, a bills
+ * turn's `BILLS_TOOLS`; T3 tools only an owner-only thread, its coding ones only an engineering
+ * lead's (`SEAT_HOME`'s). `KinToolGate` checks each call.
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(function* (
   name: string,
   threadId: ThreadId,
 ) {
+  // A bills turn's reader may be any lead: it lists `bill_read` whatever its seat.
+  if (threadId.startsWith(BILLS_THREAD_PREFIX)) return BILLS_TOOLS.has(name);
   const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
   if (
     threadId.startsWith(REVIEW_THREAD_PREFIX)
@@ -284,10 +280,9 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
     return false;
   if (isKinGitHubTool(name)) return LOGIN_GITHUB_TOOLS.has(name) && (yield* loginConnected);
   if (isSocialTool(name)) return yield* onSocialSeat(threadId);
-  const home = Object.hasOwn(SEAT_HOME, name) ? SEAT_HOME[name] : undefined;
-  if (home !== undefined) {
+  if (seatHomeOf(name) !== undefined) {
     const lead = yield* threadSeat(threadId);
-    return lead === undefined || !LEAVES_TO_HOME.has(lead.seat) || !lead.others.includes(home);
+    return lead === undefined || !leftToHome(name, lead);
   }
   if (!isT3Tool(name)) return true;
   if (!leadT3Tools.has(name) || shared) return false;

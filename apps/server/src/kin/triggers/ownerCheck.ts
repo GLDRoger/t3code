@@ -29,6 +29,7 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { DAY_MS } from "../durations.ts";
+import { withRuns } from "./deferralRuns.ts";
 
 // "misleading" came from worker reports; it stays decodable for cards already posted.
 const reasons = ["past_review", "misleading", "old_low_trust", "no_evidence"] as const;
@@ -95,7 +96,7 @@ export function pickOwnerCheckItems(
 }
 
 /** Verifies a claimed widget tap as the org owner's own action on an open card of `type`. */
-export const verifyOwnerTap = Effect.fn("OwnerCheck.verifyOwnerTap")(function* (
+const verifyOwnerTap = Effect.fn("OwnerCheck.verifyOwnerTap")(function* (
   orgId: KinOrgId,
   wakeupId: string,
   eventId: KinEventId,
@@ -196,7 +197,10 @@ const make = Effect.gen(function* () {
       orgId,
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
-        const items = yield* memory.query(orgId, { excludeInvalid: true });
+        const items = yield* withRuns(
+          orgId,
+          yield* memory.query(orgId, { excludeInvalid: true }),
+        ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
         return pickOwnerCheckItems(orgId, items, now);
       }),
     ),

@@ -40,6 +40,8 @@ function row(
     readonly teamId?: string;
     readonly unread?: number;
     readonly working?: boolean;
+    /** The Team room's quiet "new" dot. */
+    readonly fresh?: boolean;
     /** The viewer's own member row: a pin or a mute. */
     readonly mine?: object;
   } = {},
@@ -69,6 +71,7 @@ function row(
             },
       unread: extra.unread ?? 0,
       ...(extra.working === undefined ? {} : { working: extra.working }),
+      ...(extra.fresh === undefined ? {} : { fresh: extra.fresh }),
     },
     waitingCount: extra.fold === "needsYou" ? 1 : 0,
     fold: extra.fold ?? "rest",
@@ -197,6 +200,16 @@ describe("kinChatListRows", () => {
     ["a chart posted without a body", { body: "", widgetId: "chart:1" }, null, "Sent a chart"],
     ["a visual posted without a body", { body: "", widgetId: "visual:1" }, null, "Sent a visual"],
     ["an unknown card without a body", { body: "", widgetId: "later:1" }, null, "Sent a card"],
+    [
+      "a message its agent withdrew",
+      {
+        body: "",
+        status: "deleted",
+        withdrawn: { why: "Lumen Grove paid", at: "2026-11-23T08:40:00.000Z" },
+      },
+      null,
+      "Withdrew a message",
+    ],
   ])("previews %s", (_name, lastMessage, author, preview) => {
     expect(list([row("chat", lastMessage)])[0]).toMatchObject({ author, preview });
   });
@@ -339,6 +352,15 @@ describe("kinChatListFold", () => {
       name: "a muted chat with unread words still comes up",
       rows: [chief, row("books", said, { agentId: "books", unread: 1, mine: muted })],
       up: ["chief", "books"],
+      settled: [],
+    },
+    {
+      name: "the muted Team room with new words comes up, though it has no count",
+      rows: [
+        chief,
+        row("team", said, { kind: "team_group", teamId: "team-room", fresh: true, mine: muted }),
+      ],
+      up: ["chief", "team"],
       settled: [],
     },
     {

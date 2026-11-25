@@ -62,7 +62,7 @@ export const DocumentInput = Schema.Struct({
   }),
   from: Schema.optional(KinRecordKey).annotate({
     description:
-      "A quote, such as QT-3, to invoice: with the invoice recipe and no entry, Kin makes a draft invoice for its client with exactly the quote's lines, then its document. Give no lines or billing details beside it.",
+      "A quote, such as QT-3, to invoice: with the invoice recipe and no entry, Kin makes a draft invoice for the same client or bill-to name with exactly the quote's lines, then its document. Give no lines or billing details beside it.",
   }),
   doc: Schema.optional(KinRecordKey).annotate({
     description:
@@ -154,7 +154,7 @@ export const onRecord = Effect.fn("KinDocuments.onRecord")(function* (
   return {
     key: row.key,
     state: isSuggestion(row)
-      ? suggestedStateLabel(row.registerId, row.state, label)
+      ? suggestedStateLabel(row.registerId, row.state)
       : isInvoiceDraft(row.registerId, row.state)
         ? UNISSUED_INVOICE
         : label,
@@ -331,7 +331,7 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
 );
 
 const filedLine = (documents: ReadonlyArray<{ readonly title: string }>) =>
-  `Filed, with its card in the chat. Call it ${documents.map((doc) => JSON.stringify(doc.title)).join(" and ")} in your reply, never by its key.`;
+  `Filed, with its card in the chat, which shows what is in it. Say in one line that ${documents.map((doc) => JSON.stringify(doc.title)).join(" and ")} ${documents.length > 1 ? "are" : "is"} ready, never its key, and nothing the card shows.`;
 
 /**
  * An invoice draft from a quote, with the quote's own inputs the invoice recipe takes: its lines and

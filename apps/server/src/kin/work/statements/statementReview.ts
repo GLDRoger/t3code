@@ -25,6 +25,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlStatement from "effect/sql/Statement";
 
 import { resolveAttachmentPathById } from "../../../attachmentStore.ts";
+import { billedParty } from "../billTo.ts";
 import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../../config.ts";
 import { KinChatHub } from "../../chat/KinChatHub.ts";
@@ -41,7 +42,14 @@ import { partnerPayees, partnersOwed } from "../partnersOwed.ts";
 import { listDef } from "../registers.ts";
 import { fundingOf } from "../reimbursement.ts";
 import { type AlertCheck, alertCheck } from "./bankAlerts.ts";
-import { bankStates, directionOf, findBankList, type KnownRow, knownRows } from "./bankList.ts";
+import {
+  BANK_CREDIT_ORIGIN,
+  bankStates,
+  directionOf,
+  findBankList,
+  type KnownRow,
+  knownRows,
+} from "./bankList.ts";
 import type { FileOutcome } from "./statementFiles.ts";
 import { readIsolated } from "./statementReader.ts";
 import { matchRows, type RowMatch, SALARIES, seenOf } from "./statementMatch.ts";
@@ -198,21 +206,23 @@ export const invoiceSeen = Effect.fn("KinStatements.invoiceSeen")(function* (
   );
 });
 
-/** Open invoices and expenses the rows may be, with the owner's own accounts and vendors. */
-const candidates = Effect.fn("KinStatements.candidates")(function* (
+const clientName = ({ client, fieldsJson }: { client: string | null; fieldsJson: string }) =>
+  client ?? billedParty({ registerId: "invoices", fieldsJson }, undefined)?.name ?? null;
+
+/**
+ * Issued invoices still owed, as the matcher reads them, but those `statementId` matched; `only`
+ * picks one invoice.
+ */
+export const invoiceCandidates = Effect.fn("KinStatements.invoiceCandidates")(function* (
   orgId: KinOrgId,
-  statement: Statement,
   statementId: string | undefined,
+  only?: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const { homeCurrency: home, country } = yield* companyMoney(orgId);
+  const home = yield* homeCurrency(orgId);
   const zone = yield* ownerZone(orgId);
   const day = (ms: number | null) => (ms === null ? null : dayIn(ms, zone));
-  // Banks list newest first as often as oldest first; the window starts before either end.
-  const earliest = statement.rows.reduce(
-    (first, row) => (row.date < first ? row.date : first),
-    statement.rows[0]?.date ?? "2000-01-01",
-  );
+  const picked = only === undefined ? sql`1 = 1` : sql`r.record_id = ${only}`;
   const invoiceRows = yield* sql<{
     recordId: string;
     key: string;
@@ -228,7 +238,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
     FROM kin_records r LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
-    WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND r.state = 'waiting'
+    WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND r.state = 'waiting' AND ${picked}
       AND r.amount_minor IS NOT NULL AND ${keptEntry(sql)} AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
         WHERE e.org_id = r.org_id AND e.statement_id = ${statementId ?? ""}
           AND e.target_record_id = r.record_id)
@@ -237,10 +247,111 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
   for (const one of yield* livePayments(
     orgId,
     statementId,
-    sql`r.register_id = 'invoices'
-      AND r.state = 'waiting'`,
+    sql`r.register_id = 'invoices' AND r.state = 'waiting' AND ${picked}`,
   ))
     received.set(one.recordId, [...(received.get(one.recordId) ?? []), one.paymentId]);
+  return invoiceRows.map((row) => {
+    const fields = parseFields(row.fieldsJson);
+    const tax = fields.tax;
+    return {
+      recordId: row.recordId,
+      key: row.key,
+      title: row.title,
+      currency: row.currency ?? home,
+      amountMinor: row.amountMinor ?? 0,
+      paidMinor: row.paid,
+      seen: seenOf(row.amountMinor ?? 0, received.get(row.recordId) ?? []),
+      taxMinor:
+        typeof tax === "object" && tax !== null && !Array.isArray(tax) && "minor" in tax
+          ? tax.minor
+          : null,
+      issued: day(row.dateAt),
+      client: clientName(row),
+      number: fieldText(fields, "number"),
+    };
+  });
+});
+
+/**
+ * Money recorded on an invoice since `sinceDay` with no bank row yet: a bank credit may be that
+ * money arriving. A payment a card recorded from a Bank transactions credit already has its row.
+ */
+export const recordedPayments = Effect.fn("KinStatements.recordedPayments")(function* (
+  orgId: KinOrgId,
+  sinceDay: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    paymentId: string;
+    recordId: string;
+    key: string;
+    title: string;
+    currency: string;
+    amountMinor: number;
+    paidOn: string;
+    note: string;
+    client: string | null;
+    fieldsJson: string;
+  }>`SELECT p.payment_id AS "paymentId", r.record_id AS "recordId", r.key, r.title, p.currency,
+      p.amount_minor AS "amountMinor", p.paid_on AS "paidOn", p.note, c.title AS client, r.fields_json AS "fieldsJson"
+    FROM kin_record_payments p
+    JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+    WHERE p.org_id = ${orgId} AND r.register_id = 'invoices' AND p.voided_at IS NULL
+      AND ${keptEntry(sql)} AND p.withheld = 0 AND p.paid_on >= ${sinceDay}
+      AND p.origin_key NOT LIKE ${`${BANK_CREDIT_ORIGIN}%`}
+      AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
+        WHERE e.org_id = p.org_id AND e.payment_id = p.payment_id)
+    ORDER BY p.paid_on, p.payment_id`;
+  return rows.map(({ fieldsJson, ...row }) => ({
+    ...row,
+    client: clientName({ ...row, fieldsJson }),
+  }));
+});
+
+/** Each partner owed back, once per currency they are owed in, as the matcher reads them. */
+export const partnerCandidates = Effect.fn("KinStatements.partnerCandidates")(function* (
+  orgId: KinOrgId,
+  home: string,
+  zone: string,
+) {
+  // A debit must name its partner; the expenses of one Kin can't name can't be told apart.
+  return (yield* partnersOwed(orgId, home))
+    .filter((partner) => partner.personId !== null || partner.address !== null)
+    .flatMap((partner) =>
+      [...new Set(partner.entries.map((one) => one.money.currency))].map((currency) => ({
+        name: partner.name,
+        id: partner.personId ?? `address:${partner.address}`,
+        ids: partner.address === null ? [] : [partner.address],
+        currency,
+        owed: partner.entries
+          .filter((one) => one.money.currency === currency)
+          .map((one) => ({
+            recordId: one.recordId,
+            key: one.key,
+            amountMinor: one.money.minor,
+            day: dayIn(one.at, zone),
+            rev: one.rev,
+          })),
+      })),
+    );
+});
+
+/** Open invoices and expenses the rows may be, with the owner's own accounts and vendors. */
+const candidates = Effect.fn("KinStatements.candidates")(function* (
+  orgId: KinOrgId,
+  statement: Statement,
+  statementId: string | undefined,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { homeCurrency: home, country } = yield* companyMoney(orgId);
+  const zone = yield* ownerZone(orgId);
+  const day = (ms: number | null) => (ms === null ? null : dayIn(ms, zone));
+  // Banks list newest first as often as oldest first; the window starts before either end.
+  const earliest = statement.rows.reduce(
+    (first, row) => (row.date < first ? row.date : first),
+    statement.rows[0]?.date ?? "2000-01-01",
+  );
   const expenseRows = yield* sql<{
     recordId: string;
     key: string;
@@ -264,52 +375,16 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
       AND r.amount_minor IS NOT NULL AND ${keptEntry(sql)}
       AND COALESCE(r.date_at, r.due_at, r.created_at) >= ${Date.parse(`${earliest}T00:00:00Z`) - 60 * 86_400_000}
     ORDER BY r.key`;
-  // Recorded on an invoice and not yet any statement's row: a bank row may be that money arriving.
-  const payments = yield* sql<{
-    paymentId: string;
-    recordId: string;
-    key: string;
-    title: string;
-    currency: string;
-    amountMinor: number;
-    paidOn: string;
-    note: string;
-    client: string | null;
-  }>`SELECT p.payment_id AS "paymentId", r.record_id AS "recordId", r.key, r.title, p.currency,
-      p.amount_minor AS "amountMinor", p.paid_on AS "paidOn", p.note, c.title AS client
-    FROM kin_record_payments p
-    JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
-    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
-    WHERE p.org_id = ${orgId} AND r.register_id = 'invoices' AND p.voided_at IS NULL
-      AND ${keptEntry(sql)} AND p.withheld = 0 AND p.paid_on >= ${dayIn(Date.parse(`${earliest}T00:00:00Z`) - 15 * 86_400_000, "UTC")}
-      AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
-        WHERE e.org_id = p.org_id AND e.payment_id = p.payment_id)
-    ORDER BY p.paid_on, p.payment_id`;
+  const payments = yield* recordedPayments(
+    orgId,
+    dayIn(Date.parse(`${earliest}T00:00:00Z`) - 15 * 86_400_000, "UTC"),
+  );
   const vendors = yield* sql<{ vendor: string | null; category: string | null }>`
     SELECT json_extract(fields_json, '$.vendor') AS vendor, category FROM kin_records
     WHERE org_id = ${orgId} AND register_id = 'expenses' AND state = 'done'
       AND json_extract(fields_json, '$.vendor') IS NOT NULL
     ORDER BY updated_at DESC LIMIT 500`;
-  // A debit must name its partner; the expenses of one Kin can't name can't be told apart.
-  const partners = (yield* partnersOwed(orgId, home))
-    .filter((partner) => partner.personId !== null || partner.address !== null)
-    .flatMap((partner) =>
-      [...new Set(partner.entries.map((one) => one.money.currency))].map((currency) => ({
-        name: partner.name,
-        id: partner.personId ?? `address:${partner.address}`,
-        ids: partner.address === null ? [] : [partner.address],
-        currency,
-        owed: partner.entries
-          .filter((one) => one.money.currency === currency)
-          .map((one) => ({
-            recordId: one.recordId,
-            key: one.key,
-            amountMinor: one.money.minor,
-            day: dayIn(one.at, zone),
-            rev: one.rev,
-          })),
-      })),
-    );
+  const partners = yield* partnerCandidates(orgId, home, zone);
   const payees = yield* partnerPayees(orgId);
   const accounts = yield* sql<{ account: string }>`SELECT DISTINCT account FROM kin_bank_statements
     WHERE org_id = ${orgId} AND account IS NOT NULL ORDER BY account`;
@@ -317,26 +392,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     currency: statement.currency,
     withholdsAtSource: regionOf(country)?.withholdsAtSource === true,
     bank: statement.bank,
-    invoices: invoiceRows.map((row) => {
-      const fields = parseFields(row.fieldsJson);
-      const tax = fields.tax;
-      return {
-        recordId: row.recordId,
-        key: row.key,
-        title: row.title,
-        currency: row.currency ?? home,
-        amountMinor: row.amountMinor ?? 0,
-        paidMinor: row.paid,
-        seen: seenOf(row.amountMinor ?? 0, received.get(row.recordId) ?? []),
-        taxMinor:
-          typeof tax === "object" && tax !== null && !Array.isArray(tax) && "minor" in tax
-            ? tax.minor
-            : null,
-        issued: day(row.dateAt),
-        client: row.client,
-        number: fieldText(fields, "number"),
-      };
-    }),
+    invoices: yield* invoiceCandidates(orgId, statementId),
     payments,
     partners,
     payees,

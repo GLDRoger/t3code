@@ -34,7 +34,6 @@ import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -60,6 +59,7 @@ import { recordAudience, turnAudience } from "./Audience.ts";
 import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as TaskFolders from "../../workspace/TaskFolders.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -272,7 +272,8 @@ function parts(options: HarnessOptions) {
     openSession: (session) =>
       Effect.gen(function* () {
         const now = yield* DateTime.now;
-        const events = yield* PubSub.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+        // Buffered as a real adapter's are, so a turn's events wait for T3's session pump to read them.
+        const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const open = new Map<
           string,
           Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0]
@@ -290,7 +291,7 @@ function parts(options: HarnessOptions) {
               if (!live()) return;
               const time = yield* DateTime.now;
               const n = ++toolCalls;
-              yield* PubSub.publish(events, {
+              yield* Queue.offer(events, {
                 type: "turn_item.updated",
                 driver,
                 turnItem: {
@@ -332,7 +333,7 @@ function parts(options: HarnessOptions) {
             updatedAt: now,
             lastError: null,
           },
-          events: Stream.fromPubSub(events),
+          events: Stream.fromQueue(events),
           ensureThread: (input) =>
             Effect.sync(() => ({
               id: ProviderThreadId.make(`native-${++nativeOrdinal}`),
@@ -364,7 +365,7 @@ function parts(options: HarnessOptions) {
             // Turn ids are unique across threads, as a real provider's are.
             const id = ProviderTurnId.make(`turn-${input.threadId}-${input.runOrdinal}`);
             if (!options.piUsage)
-              yield* PubSub.publish(events, {
+              yield* Queue.offer(events, {
                 type: "provider_turn.updated",
                 driver,
                 providerTurn: {
@@ -401,7 +402,7 @@ function parts(options: HarnessOptions) {
               return;
             }
             if (options.approval !== undefined)
-              yield* PubSub.publish(events, {
+              yield* Queue.offer(events, {
                 type: "runtime_request.updated",
                 driver,
                 threadId: input.threadId,
@@ -422,7 +423,7 @@ function parts(options: HarnessOptions) {
               });
             const finish = Effect.gen(function* () {
               if (options.replyText !== undefined)
-                yield* PubSub.publish(events, {
+                yield* Queue.offer(events, {
                   type: "turn_item.updated",
                   driver,
                   turnItem: {
@@ -446,7 +447,7 @@ function parts(options: HarnessOptions) {
                     streaming: false,
                   },
                 });
-              yield* PubSub.publish(events, {
+              yield* Queue.offer(events, {
                 type: "provider_turn.updated",
                 driver,
                 providerTurn: {
@@ -480,7 +481,7 @@ function parts(options: HarnessOptions) {
                   },
                 },
               });
-              yield* PubSub.publish(events, {
+              yield* Queue.offer(events, {
                 type: "turn.terminal",
                 driver,
                 providerThreadId: input.providerThread.id,
@@ -530,7 +531,7 @@ function parts(options: HarnessOptions) {
             if (turn === undefined) return;
             open.delete(providerTurnId);
             const time = yield* DateTime.now;
-            yield* PubSub.publish(events, {
+            yield* Queue.offer(events, {
               type: "provider_turn.updated",
               driver,
               providerTurn: {
@@ -545,7 +546,7 @@ function parts(options: HarnessOptions) {
                 completedAt: time,
               },
             });
-            yield* PubSub.publish(events, {
+            yield* Queue.offer(events, {
               type: "turn.terminal",
               driver,
               providerThreadId: turn.providerThread.id,
@@ -655,6 +656,8 @@ function parts(options: HarnessOptions) {
       isScratchProject: () => Effect.succeed(false),
       folderForThread: () => Effect.succeedNone,
     }),
+    // A lead's thread is never a multi-repository task folder.
+    Layer.mock(TaskFolders.TaskFolders)({ plan: () => Effect.succeed(null) }),
     ProviderRegistryMock.layer(),
     settings,
   );
@@ -676,6 +679,8 @@ function parts(options: HarnessOptions) {
         ).pipe(Layer.provide(KinEventQueue.layer));
   const kin = Layer.mergeAll(
     queueLayer,
+    // As in production, the runner reads chats and cards (`WakeupRunner.staleStart`).
+    KinChatRepository.layer,
     KinStop.layer.pipe(
       Layer.provide(
         Layer.mergeAll(

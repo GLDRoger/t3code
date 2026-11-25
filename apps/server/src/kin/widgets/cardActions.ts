@@ -1,5 +1,5 @@
 import * as KinShell from "../shell/KinShell.ts";
-import { sectionOfList } from "../shell/sections.ts";
+import { listSectionRefused, sectionOfList } from "../shell/sections.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -45,8 +45,21 @@ import {
 import { isHelperRefusal, type KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
 import { repeatOf } from "../work/recordRows.ts";
-import { defineProposed, listPlace, proposalToCreate, proposedList } from "../work/registers.ts";
+import {
+  defineProposed,
+  listDef,
+  listPlace,
+  proposalToCreate,
+  proposedList,
+} from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
+import {
+  drawPayment,
+  paymentLabel,
+  paymentLine,
+  recordPayment,
+} from "../work/statements/creditPayment.ts";
+import { drawRepaid, markRepaid, repaidLabel, repaidLine } from "../work/statements/repaidCard.ts";
 import {
   type CardActionInput,
   type CardDraw,
@@ -93,6 +106,10 @@ const labelOf = (plan: CardPlan): string => {
       return "Start it now";
     case "create_list":
       return "Create the list";
+    case "record_payment":
+      return paymentLabel(plan);
+    case "mark_repaid":
+      return repaidLabel(plan);
     case "take_default": {
       const label = `Take the default: ${plan.label}`;
       return label.length <= LABEL_MAX ? label : `${label.slice(0, LABEL_MAX - 1)}…`;
@@ -124,6 +141,10 @@ const lineOf = (plan: CardPlan): string => {
       return `Start ${quoted(plan.title)} now`;
     case "create_list":
       return `Create the list ${quoted(plan.name, 60)}`;
+    case "record_payment":
+      return paymentLine(plan);
+    case "mark_repaid":
+      return repaidLine(plan);
     case "take_default": {
       const went = `Go with ${quoted(plan.label, 40)} on ${quoted(plan.question, 60)}`;
       return plan.final === null ? went : `${went}: ${lineOf(plan.final)}`;
@@ -257,10 +278,23 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
           (teammates.length > 0 && !(yield* viewVisible(orgId, teammates, row.recordId)))
         )
           return yield* notFound(`entry ${input.target.slice(0, 40)}`);
-        if (row.registerId !== "work") return yield* refuse(`${row.key} is not a task.`);
+        const state = input.kind === "done" ? "done" : "dropped";
+        // A task, or an entry of one of the company's own lists, as record_update closes it.
+        if (row.registerId !== "work") {
+          const def = yield* listDef(orgId, row.registerId);
+          if (
+            def === undefined ||
+            def.builtIn !== null ||
+            listSectionRefused({ ...def, payments: def.payments === true ? 1 : null })
+          )
+            return yield* refuse(
+              `${row.key} is not a task or an entry of the company's own lists.`,
+            );
+          if (!def.states.includes(state))
+            return yield* refuse(`${def.name} has no ${state} state for ${row.key}.`);
+        }
         if (row.state === "done" || row.state === "dropped")
           return yield* refuse(`${row.key} is ${row.state} already.`);
-        const state = input.kind === "done" ? "done" : "dropped";
         if (!(yield* teamMay(orgId, drawn, row, state)))
           return yield* notAllowed(`The people you are acting for can't change ${row.key}.`);
         return {
@@ -321,6 +355,14 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
           name: proposal.name,
           draw: drawn,
         } as const;
+      }
+      case "record_payment": {
+        yield* ownerTier("payment_record");
+        return yield* drawPayment(orgId, input.target, drawn);
+      }
+      case "mark_repaid": {
+        yield* ownerTier("record_update");
+        return yield* drawRepaid(orgId, input.target, drawn);
       }
     }
   });
@@ -391,7 +433,13 @@ export const draw = Effect.fn("KinCardActions.draw")(function* (
 const actionOf = (plan: RunPlan): RunInput => ({
   kind: plan.kind,
   target:
-    plan.kind === "start" ? plan.itemId : plan.kind === "create_list" ? plan.proposalId : plan.key,
+    plan.kind === "start"
+      ? plan.itemId
+      : plan.kind === "create_list"
+        ? plan.proposalId
+        : plan.kind === "record_payment"
+          ? `${plan.bankKey} ${plan.key}`
+          : plan.key,
 });
 /** The same action on the same thing at the same revision, whoever drew it. */
 const sameAction = (a: CardPlan, b: CardPlan) =>
@@ -548,7 +596,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
     readonly records: KinRecords["Service"];
     readonly chat: Pick<
       KinChatService["Service"],
-      "closeReplaced" | "reopenClosed" | "notice" | "setDocCardChangesFirst"
+      "closeReplaced" | "reopenClosed" | "notice" | "setDocCardChangesFirst" | "setDocCardChanged"
     >;
   },
 ) {
@@ -821,11 +869,58 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
           proposalId: plan.proposalId,
           definition: plan.definition,
           now: tap.now,
+          by: personId,
         }));
       if (why !== undefined) return nothingDone(why);
       if (made === undefined) return { title: "List created", text: "Created." };
       const { words, ...open } = yield* listPlace(orgId, made);
       return { title: "List created", text: `Created. It's in ${words}.`, open };
+    }
+    case "record_payment": {
+      if (!owner) return yield* notAllowed("Only the owner or a co-owner confirms money received.");
+      yield* refuseOff("invoices");
+      yield* refuseOff("bank_transactions");
+      const why = yield* drawsHold(orgId, draws);
+      if (why !== undefined) return nothingDone(why);
+      const done = yield* recordPayment(
+        orgId,
+        plan,
+        {
+          actor: { _tag: "person", personId },
+          via: "owner",
+          askedBy: personId,
+          chatId: tap.widget.chatId,
+          answering: [tap.widget.widgetId, ...alsoAnswering],
+        },
+        tap.widget.widgetId,
+        records,
+      );
+      return done ?? nothingDone(`${plan.bankKey} or ${plan.key} changed since this was offered`);
+    }
+    case "mark_repaid": {
+      if (!owner)
+        return yield* notAllowed(
+          "Only the owner or a co-owner marks what a partner is owed as repaid.",
+        );
+      yield* refuseOff("expenses");
+      yield* refuseOff("bank_transactions");
+      const why = yield* drawsHold(orgId, draws);
+      if (why !== undefined) return nothingDone(why);
+      const done = yield* markRepaid(
+        orgId,
+        plan,
+        {
+          actor: { _tag: "person", personId },
+          via: "owner",
+          askedBy: personId,
+          chatId: tap.widget.chatId,
+          answering: [tap.widget.widgetId, ...alsoAnswering],
+        },
+        records,
+      );
+      return (
+        done ?? nothingDone(`${plan.key} or an expense it repays changed since this was offered`)
+      );
     }
   }
 });

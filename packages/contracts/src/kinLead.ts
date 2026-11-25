@@ -27,6 +27,8 @@ import {
   KinWakeupId,
   KinWidgetId,
 } from "./kinChat.ts";
+import { KinCountryCode } from "./kinFinance.ts";
+import { KinCurrency } from "./kinMoney.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
 import { KinRecordId, KinRecordKey, KinRecordState, KinWorkPrincipal } from "./kinWork.ts";
 import { ModelSelection } from "./modelSelection.ts";
@@ -539,6 +541,9 @@ export const KinCardAsker = Schema.Struct({
   left: Schema.optional(Schema.Literal(true)),
 });
 export type KinCardAsker = typeof KinCardAsker.Type;
+/** What a deferral card's [Start now] is refused with while the agent it asks is paused. */
+export const KIN_AGENT_PAUSED_REFUSAL_END = " is paused. Resume it, then start this.";
+export const kinAgentPausedRefusal = (agent: string) => `${agent}${KIN_AGENT_PAUSED_REFUSAL_END}`;
 /** What a tap on a shared chat's reminder or routine by anyone else is refused with. */
 export const KIN_ASKER_ONLY_REFUSAL =
   "Only the person who asked for it, the owner or a co-owner can change this.";
@@ -549,11 +554,17 @@ export const KinDeferralCard = Schema.Struct({
   dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
   text: Schema.String,
-  // Absent on the confirm card ([Undo] [Change] [Just remind me]); heads_up and asked offer
-  // [Start now] [Monday] [Cancel]; started offers nothing.
+  // Absent on the confirm card; heads_up and asked are decisions; started is done.
   phase: Schema.optional(Schema.Literals(["heads_up", "asked", "started"])),
   graceEndsAt: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
   askedBy: Schema.optional(KinCardAsker),
+  /**
+   * The taps the host takes on this card now (`KIN_DEFERRAL_CARD_ACTIONS` ids), for whoever may
+   * act on it. Plain strings, so a later action never fails an older client's decode.
+   */
+  actions: Schema.optional(Schema.Array(Schema.String)),
+  /** The agent a decision card's [Start now] asks to start it, by name. */
+  agent: Schema.optional(Schema.String),
 });
 export type KinDeferralCard = typeof KinDeferralCard.Type;
 
@@ -723,6 +734,8 @@ export const KinPulseOutsideLine = Schema.Struct({
   to: Schema.optional(Schema.String.check(Schema.isMaxLength(320))),
   /** The service's id: a mail thread, a calendar event, a webhook delivery. */
   id: Schema.String.check(Schema.isMaxLength(200)),
+  /** A mail's thread id, as `mail_read_thread` takes it; mail lines only. */
+  thread: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
   at: OutsideText(60),
   who: OutsideText(300),
   subject: OutsideText(300),
@@ -852,12 +865,21 @@ export const KinEvent = Schema.Union([
         dismissed: Schema.optional(Schema.Literal(true)),
         reopened: Schema.optional(Schema.Literal(true)),
         at: Schema.optional(NonNegativeInt),
+        // Asked for another chat, it lapsed unanswered: the turn there carries on without it.
+        lapsed: Schema.optional(Schema.Literal(true)),
       }),
       // One run of a scheduled task; `runId` names the fire or Run now tap that started it.
       Schema.Struct({
         type: Schema.Literal("scheduled_task"),
         itemId: KinMemoryItemId,
         runId: TrimmedNonEmptyString,
+      }),
+      // A new company's country was chosen after a write of this agent's was refused for want of
+      // it (`companyProfile.ts`): the turn answers in the chat that write was asked in.
+      Schema.Struct({
+        type: Schema.Literal("country"),
+        country: KinCountryCode,
+        currency: KinCurrency,
       }),
     ]),
     lateByMs: NonNegativeInt,
@@ -920,12 +942,17 @@ export const KinEvent = Schema.Union([
     ),
     // Metadata the server read from connections the owner marked Read: still outside text.
     outside: Schema.optional(Schema.Array(KinPulseOutsideLine).check(Schema.isMaxLength(200))),
+    // How many more outside items a check-in read than `outside` lists: the cap cut them.
+    outsideNotListed: Schema.optional(PositiveInt),
     // The one mail that woke it, as `kin_arrivals` keeps it (`arrivals/ArrivalStore.ts`).
     arrivalId: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
     // A wake for one person's own follow-up (`pulse/draftWake.ts`): it answers in their direct
     // chat with this agent, `origin` naming them, so the turn is theirs alone. From stored rows.
     chatId: Schema.optional(KinChatId),
     origin: Schema.optional(KinEventOrigin),
+    // Kin's wake to look again at the agent's messages no one in `chatId` has read yet, once what
+    // they are about changed (`chat/ownMessages.ts`); `factKeys` is empty.
+    review: Schema.optional(Schema.Literal(true)),
   }),
   // An entry given to this lead (`assigned`), closed or taken back (`withdrawn`), come back
   // (`handed_back`), commented on (`commented`, `note` their words), or someone else's it is put on
@@ -957,6 +984,17 @@ export const KinEvent = Schema.Union([
     ...EventBase,
     pendingActionId: TrimmedNonEmptyString,
     outcome: Schema.Literals(["executed", "rejected", "expired", "failed"]),
+  }),
+  // A few of the bills a person added at once (`kinBills.ts`), for the reading agent to read in a
+  // quiet turn that answers each with `bill_read` and posts nothing. `chatId` holds the batch's card.
+  Schema.TaggedStruct("bills.read", {
+    ...EventBase,
+    chatId: KinChatId,
+    batchId: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+    bills: Schema.Array(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(10),
+    ),
   }),
   Schema.TaggedStruct("resume", {
     ...EventBase,

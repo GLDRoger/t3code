@@ -1,14 +1,31 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
-import { EnvironmentId, KinWidgetId } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  EnvironmentAuthorizationError,
+  EnvironmentId,
+  KIN_CHOICE_CARD_ACTION,
+  KinChatError,
+  KinOrgId,
+  KinWidgetId,
+  type KinPushTopic,
+} from "@t3tools/contracts";
 
+import { KIN_NOTIFICATION_CATEGORIES } from "./kinCategories";
 import {
   KIN_DEFAULT_ACTION_IDENTIFIER,
   kinActionDelivery,
   kinNotificationRoute,
   kinClearedChat,
+  kinRefusedActionAlert,
+  kinDeliveredTopics,
+  kinIsSilentPush,
+  kinIncomingSettled,
+  kinReconcileRemovals,
   kinSettledNotificationIds,
+  kinWithdrawal,
+  kinWithdrawnIds,
 } from "./kinPushPayload";
 
 const chatLink = "/kin/env-1/kin-default/chats/chat-1";
@@ -309,8 +326,30 @@ describe("kinNotificationRoute", () => {
     );
   });
 
+  it("shows a deferral's buttons only where its card takes them, on iOS and Android alike", () => {
+    const ids = (category: keyof typeof KIN_NOTIFICATION_CATEGORIES) =>
+      KIN_NOTIFICATION_CATEGORIES[category].map((action) => action.identifier);
+    expect(ids("kin.deferral.confirmed")).toEqual([]);
+    expect(ids("kin.deferral.heads_up")).toEqual(["start_now", "monday", "cancel"]);
+    // Android's banner comes from FCM's data under FCM's id: the same button, the same tap.
+    for (const identifier of ["note-1", "0:1794096000%fcm"])
+      expect(
+        kinNotificationRoute(
+          response({
+            data: deferral,
+            action: "start_now",
+            category: "kin.deferral.heads_up",
+            identifier,
+          }),
+        )?.act?.actionId,
+      ).toBe("start_now");
+  });
+
   it.each([
     ["a button the category doesn't show", "monday", "kin.deferral.confirmed", deferral],
+    // An older build registered these; the card no longer takes them, so the card just opens.
+    ["an older build's Change", "change", "kin.deferral.confirmed", deferral],
+    ["an older build's Just remind me", "remind", "kin.deferral.confirmed", deferral],
     ["Review, which only opens", "review", "kin.approval", deferral],
     [
       "a widget that isn't a deferral",
@@ -340,6 +379,43 @@ describe("kinNotificationRoute", () => {
     const route = kinNotificationRoute(response({ data, action, category }));
     expect(route?.paths).toEqual([chatLink]);
     expect(route?.act).toBeNull();
+  });
+});
+
+describe("kinRefusedActionAlert", () => {
+  it.each([
+    [
+      "a card that changed",
+      "start_now",
+      new KinChatError({ reason: "widget_changed", message: "Stale." }),
+      { title: "That wasn't done", message: "This card changed. Check it again." },
+    ],
+    [
+      "a tap the person may not make",
+      "cancel",
+      new KinChatError({ reason: "not_allowed", message: "No." }),
+      {
+        title: "That wasn't done",
+        message: "Kin didn't take that answer. Tell your agent in the chat instead.",
+      },
+    ],
+    [
+      "an answer on a question that changed",
+      KIN_CHOICE_CARD_ACTION,
+      new KinChatError({ reason: "widget_changed", message: "Stale." }),
+      { title: "Your answer wasn't recorded" },
+    ],
+    [
+      "a session that lost access",
+      "monday",
+      new EnvironmentAuthorizationError({
+        message: "Sign in again.",
+        requiredScope: AuthOrchestrationOperateScope,
+      }),
+      { title: "That wasn't done", message: "Sign in again." },
+    ],
+  ])("says what happened to %s", (_name, actionId, failure, expected) => {
+    expect(kinRefusedActionAlert(actionId, failure)).toMatchObject(expected);
   });
 });
 
@@ -421,9 +497,233 @@ describe("kinSettledNotificationIds", () => {
       }),
       // A remote push's data arrives as a JSON string.
       note("read-json", JSON.stringify(message("chat-1"))),
+      // One that names its topic is the host's to settle: a question in a read chat still waits.
+      note("question-open", { ...message("chat-1"), topic: "q:q-7", version: 1 }),
+      note("chat-topic", { ...message("chat-1"), topic: "c:chat-1", version: 2 }),
     ];
     expect(
       kinSettledNotificationIds(presented, EnvironmentId.make("env-1"), (id) => id === "chat-1"),
     ).toEqual(["read", "read-card", "read-json"]);
+  });
+});
+
+describe("kinWithdrawal", () => {
+  const silent = {
+    kin: 1,
+    orgId: "kin-default",
+    deepLink: "/kin/env-1/kin-default/work",
+    withdraw: [
+      { topic: "c:chat-1", version: 3 },
+      { topic: "w:card-7", version: 1 },
+    ],
+    badge: 4,
+  } as { [key: string]: unknown; badge?: number };
+  it.each([
+    ["a host's withdrawal", silent, silent.withdraw],
+    [
+      "a read's badge, from a host before topics",
+      { ...silent, withdraw: undefined, badge: undefined },
+      null,
+    ],
+    ["only the badge moved", { ...silent, withdraw: undefined, badge: 2 }, []],
+    ["nothing to withdraw", { ...silent, withdraw: [], badge: undefined }, null],
+    ["a topic that isn't one", { ...silent, withdraw: [{ topic: "chat 1", version: 1 }] }, null],
+    ["a topic with no version", { ...silent, withdraw: ["c:chat-1"] }, null],
+    ["a link that is no Kin path", { ...silent, deepLink: "/threads/1" }, null],
+  ] as const)("%s", (_name, body, withdraw) => {
+    const ios = kinWithdrawal({ data: { dataString: JSON.stringify(body) }, aps: {} });
+    expect(ios?.withdraw ?? null).toEqual(withdraw);
+    expect(ios?.badge).toBe(withdraw === null ? undefined : body.badge);
+    if (withdraw !== null) expect(ios?.environmentId).toBe("env-1");
+    const android = kinWithdrawal({
+      messageId: "0:1794096000%fcm",
+      data: { body: JSON.stringify(body), dataString: JSON.stringify(body) },
+      notification: null,
+    });
+    expect(android).toEqual(ios);
+  });
+});
+
+describe("kinWithdrawnIds", () => {
+  it("removes this host's notifications the host settled, and keeps the rest", () => {
+    const note = (identifier: string, data: unknown) => ({
+      request: { identifier, content: { data } },
+    });
+    const about = (
+      topic: string | undefined,
+      environmentId = "env-1",
+      orgId = "kin-default",
+      version = 1,
+    ) => ({
+      kin: 1,
+      orgId,
+      chatId: "chat-1",
+      deepLink: `/kin/${environmentId}/${orgId}/chats/chat-1`,
+      ...(topic === undefined ? {} : { topic, version }),
+    });
+    const presented = [
+      note("chat", about("c:chat-1")),
+      note("card", JSON.stringify(about("w:card-7", "env-1", "kin-default", 2))),
+      note("question", about("q:q-1")),
+      // Shown after the withdrawal below was sent: a newer push about the same thing.
+      note("approval-v4", about("a:act-1", "env-1", "kin-default", 4)),
+      // Sent before this build matched by topic, from another host, and upstream's own.
+      note("older", about(undefined)),
+      note("other-host", about("c:chat-1", "env-2")),
+      note("other-org", about("c:chat-1", "env-1", "other-org")),
+      note("t3", { deepLink: "/threads/1" }),
+    ];
+    const env = EnvironmentId.make("env-1");
+    const here = { environmentId: env, orgId: KinOrgId.make("kin-default") };
+    // What the phone asks about: only this host's topics.
+    expect(kinDeliveredTopics(presented, env).map((one) => [one.topic, one.version])).toEqual([
+      ["c:chat-1", 1],
+      ["w:card-7", 2],
+      ["q:q-1", 1],
+      ["a:act-1", 4],
+      ["c:chat-1", 1],
+    ]);
+    // The host's answer: the chat was read and the card answered, at or after what is shown; the
+    // question still waits; the approval was withdrawn at version 3, before version 4 was sent.
+    // The same chat id in another company on this host is not touched.
+    const withdrawn = (topic: string, version: number) => ({
+      topic: topic as KinPushTopic,
+      version,
+    });
+    expect(
+      kinWithdrawnIds(presented, here, [
+        withdrawn("c:chat-1", 1),
+        withdrawn("w:card-7", 5),
+        withdrawn("a:act-1", 3),
+        withdrawn("a:never-shown", 1),
+      ]),
+    ).toEqual(["chat", "card"]);
+    // Withdrawn at an older version than the one shown: kept.
+    expect(kinWithdrawnIds(presented, here, [withdrawn("w:card-7", 1)])).toEqual([]);
+    expect(kinWithdrawnIds(presented, here, [])).toEqual([]);
+  });
+});
+
+describe("kinIsSilentPush", () => {
+  const delivered = (content: object) => ({ request: { identifier: "n", content } });
+  const data = { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/work" };
+  it.each([
+    [
+      "a withdrawal, drawn by nothing",
+      { title: null, body: null, data: { ...data, withdraw: [{ topic: "c:chat-1", version: 1 }] } },
+      true,
+    ],
+    [
+      "a read's badge as Android gets it",
+      { title: "", body: "", data: JSON.stringify(data) },
+      true,
+    ],
+    ["a message", { title: "Finance · 2 new", body: "Invoice 15 is late", data }, false],
+    [
+      "upstream's own silent push",
+      { title: null, body: null, data: { deepLink: "/threads/1" } },
+      false,
+    ],
+  ] as const)("%s", (_name, content, silent) => {
+    expect(kinIsSilentPush(delivered(content))).toBe(silent);
+  });
+});
+
+describe("kinReconcileRemovals", () => {
+  it("removes what the host settled, and what it forgot once older than a week", () => {
+    const now = Date.parse("2026-11-23T12:00:00Z");
+    const day = 24 * 60 * 60 * 1000;
+    const note = (identifier: string, topic: string, daysOld: number) => ({
+      date: now - daysOld * day,
+      request: {
+        identifier,
+        content: {
+          data: {
+            kin: 1,
+            orgId: "kin-default",
+            deepLink: "/kin/env-1/kin-default/work",
+            topic,
+            version: 1,
+          },
+        },
+      },
+    });
+    const presented = [
+      note("settled", "w:card-1", 1),
+      note("forgotten-old", "a:act-1", 8),
+      // The host may simply not be the one that sent it: younger than a week, it stays.
+      note("forgotten-young", "a:act-2", 3),
+      note("standing", "q:q-1", 9),
+    ];
+    const here = {
+      environmentId: EnvironmentId.make("env-1"),
+      orgId: KinOrgId.make("kin-default"),
+    };
+    expect(
+      kinReconcileRemovals(
+        presented,
+        here,
+        {
+          remove: [{ topic: "w:card-1" as KinPushTopic, version: 1 }],
+          unknown: ["a:act-1", "a:act-2"] as Array<KinPushTopic>,
+        },
+        now,
+      ),
+    ).toEqual(["settled", "forgotten-old"]);
+  });
+});
+
+describe("kinIncomingSettled", () => {
+  const arriving = (topic: string | undefined, version = 2) => ({
+    date: Date.parse("2026-11-23T12:00:00Z"),
+    request: {
+      identifier: "kin:t:abc",
+      content: {
+        data: {
+          kin: 1,
+          orgId: "kin-default",
+          deepLink: "/kin/env-1/kin-default/work",
+          ...(topic === undefined ? {} : { topic, version }),
+        },
+      },
+    },
+  });
+  const env = EnvironmentId.make("env-1");
+  it("asks the host about the push that just arrived, and hides it only if it is settled", async () => {
+    const asked: Array<unknown> = [];
+    const answer =
+      (remove: Array<{ topic: KinPushTopic; version: number }>) => (input: unknown) => {
+        asked.push(input);
+        return Promise.resolve({ remove, unknown: [] });
+      };
+    // Settled while it was on its way: not shown.
+    expect(
+      await kinIncomingSettled(
+        arriving("q:q-1"),
+        env,
+        answer([{ topic: "q:q-1" as KinPushTopic, version: 2 }]),
+      ),
+    ).toBe(true);
+    expect(asked).toEqual([{ orgId: "kin-default", topics: ["q:q-1"] }]);
+    // An older version settled; this newer one still stands.
+    expect(
+      await kinIncomingSettled(
+        arriving("q:q-1", 3),
+        env,
+        answer([{ topic: "q:q-1" as KinPushTopic, version: 2 }]),
+      ),
+    ).toBe(false);
+    expect(await kinIncomingSettled(arriving("q:q-1"), env, answer([]))).toBe(false);
+    // No answer in time: shown.
+    expect(await kinIncomingSettled(arriving("q:q-1"), env, () => Promise.resolve(null))).toBe(
+      false,
+    );
+    // Nothing to ask about another host's, or a push with no topic.
+    asked.length = 0;
+    expect(await kinIncomingSettled(arriving(undefined), env, answer([]))).toBe(false);
+    expect(
+      await kinIncomingSettled(arriving("q:q-1"), EnvironmentId.make("env-2"), answer([])),
+    ).toBe(false);
+    expect(asked).toEqual([]);
   });
 });

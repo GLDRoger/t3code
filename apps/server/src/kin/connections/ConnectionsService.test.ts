@@ -52,6 +52,8 @@ import {
   renderSource,
   stampKey,
   stampReads,
+  codingAgentSource,
+  followsCodingAgent,
 } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { readProfile } from "../work/companyProfile.ts";
@@ -129,6 +131,7 @@ type Spec = {
   readonly callError?: {
     readonly code?: number;
     readonly status?: number;
+    readonly retryAfter?: string;
     readonly before?: () => Promise<unknown>;
   };
 };
@@ -248,7 +251,12 @@ const makeFake = Effect.fnUntraced(function* (initial: Spec) {
         if (held !== undefined && method === held.method) await held.until();
         if (failing !== undefined && method === "tools/call") {
           await failing.before?.();
-          if (failing.status !== undefined) return new Response(null, { status: failing.status });
+          if (failing.status !== undefined)
+            return new Response(null, {
+              status: failing.status,
+              headers:
+                failing.retryAfter === undefined ? {} : { "retry-after": failing.retryAfter },
+            });
           return new Response(
             JSON.stringify({
               jsonrpc: "2.0",
@@ -1294,42 +1302,66 @@ describe("KinConnections", () => {
         assert.strictEqual(stampKey(handed), id);
         assert.strictEqual(renderSource(handed, true), "PostHog (query)");
         assert.strictEqual(renderSource(handed, false), "a connected service");
+        // A coding agent's words woken beside a check-in's outside text: the mark holds, and
+        // travels with a hand-off made in that turn.
+        yield* stampEvent(orgId, "from-key", codingAgentSource("Invented laptop"));
+        yield* inheritOutside({
+          orgId,
+          wakeupId: "mixed",
+          eventIds: ["from-key"],
+          shows: "check-in",
+        });
+        assert.isTrue(yield* followsCodingAgent({ orgId, wakeupId: "mixed" }));
+        yield* stampEvent(orgId, "passed-on", yield* outsideStamp({ orgId, wakeupId: "mixed" }));
+        yield* inheritOutside({ orgId, wakeupId: "after", eventIds: ["passed-on"] });
+        assert.isTrue(yield* followsCodingAgent({ orgId, wakeupId: "after" }));
+        assert.isFalse(yield* followsCodingAgent({ orgId, wakeupId: "handed" }));
       }),
     ),
   );
 
-  it.effect("stops a turn at its call and character bounds, also for calls made at once", () =>
-    withFake(BASE, () =>
+  it.effect("never stops a turn by its count of calls; one huge answer is cut and says so", () =>
+    withFake(BASE, (fake) =>
       Effect.gen(function* () {
         const id = (yield* addPosthog).connection.connectionId;
         yield* markRead(id, ["query"]);
-        const sql = yield* SqlClient.SqlClient;
-        const spent = (calls: number, chars: number) =>
-          sql`INSERT INTO kin_connection_turn_spend (org_id, wakeup_id, calls, chars, last_reserved,
-              updated_at) VALUES (${orgId}, 'wake', ${calls}, ${chars}, 0, 0)
-            ON CONFLICT (org_id, wakeup_id) DO UPDATE SET calls = excluded.calls,
-              chars = excluded.chars`;
-        yield* spent(1, CONNECTION_LIMITS.turnChars);
-        assert.include((yield* call(id, "query").pipe(Effect.flip)).message, "400,000 characters");
-        yield* spent(CONNECTION_LIMITS.turnCalls, 0);
-        const stopped = yield* call(id, "query").pipe(Effect.flip);
-        assert.include(stopped.message, "already made 200 calls to connected services");
-        assert.include(stopped.message, "Answer with what you have");
-        // Sixteen at once with one call left: one runs, the rest are refused.
-        yield* spent(CONNECTION_LIMITS.turnCalls - 1, 0);
-        const results = yield* Effect.all(
-          Array.from({ length: 16 }, () => call(id, "query").pipe(Effect.result)),
-          { concurrency: "unbounded" },
+        const answers = yield* Effect.forEach(
+          Array.from({ length: 201 }),
+          () => call(id, "query"),
+          { concurrency: 8 },
         );
-        assert.strictEqual(results.filter((result) => result._tag === "Success").length, 1);
-        // Only what was read stays spent, and a result past what is left is cut with the marker.
-        const [after] = yield* sql<{ calls: number; chars: number }>`SELECT calls, chars
-          FROM kin_connection_turn_spend WHERE wakeup_id = 'wake'`;
-        assert.deepStrictEqual(after, { calls: 200, chars: "pageviews: 42".length });
-        yield* spent(1, CONNECTION_LIMITS.turnChars - 5);
+        assert.include(answers.at(-1)?.quoted ?? "", "pageviews: 42");
+        const huge = "x".repeat(CONNECTION_LIMITS.resultChars + 1_234);
+        yield* fake.set({
+          ...BASE,
+          tools: [{ ...QUERY, result: () => text(huge) }, DELETE, SEARCH],
+        });
         const cut = yield* call(id, "query");
-        assert.include(cut.quoted ?? "", "pagev");
-        assert.include(cut.quoted ?? "", "[cut: 8 more characters;");
+        assert.include(
+          cut.quoted ?? "",
+          "[cut: 1,234 more characters; call again with narrower arguments for the rest]",
+        );
+        // A service that says "too often" reaches the agent as a line saying when to try again.
+        yield* fake.set({ ...BASE, callError: { status: 429 } });
+        const throttled = yield* call(id, "query").pipe(Effect.flip);
+        assert.strictEqual(throttled.reason, "unavailable");
+        assert.strictEqual(
+          throttled.message,
+          "mcp.posthog.com says Kin is asking too often (HTTP 429); try again in a minute or so.",
+        );
+        yield* fake.set({ ...BASE, callError: { status: 429, retryAfter: "120" } });
+        assert.include(
+          (yield* call(id, "query").pipe(Effect.flip)).message,
+          "(HTTP 429); try again in 2 minutes.",
+        );
+        yield* fake.set({
+          ...BASE,
+          callError: { status: 429, retryAfter: "Wed, 25 Nov 2026 10:00:00 GMT" },
+        });
+        assert.include(
+          (yield* call(id, "query").pipe(Effect.flip)).message,
+          "(HTTP 429); try again after 2026-11-25T10:00:00.000Z.",
+        );
       }),
     ),
   );
@@ -1698,6 +1730,30 @@ describe("KinConnections", () => {
         );
         const unknown = yield* connections.offer(scope, { service: "myspace" }).pipe(Effect.flip);
         assert.instanceOf(unknown, KinChatError);
+        // The owner's own mailbox is connected in his own turn: never offered. A co-owner's own is
+        // theirs alone: neither counted nor named here.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${mateId}`;
+        for (const [person, preset] of [
+          [ownerId, "google"],
+          [mateId, "microsoft"],
+        ] as const)
+          yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+              url_host, auth, reach, state, created_at, updated_at, person_id)
+            VALUES (${orgId}, ${`own-${preset}`}, ${preset}, ${preset}, 'builtin',
+              'https://invented.example', 'invented.example', 'oauth', 'open', 'active', 0, 0,
+              ${person})`;
+        const canConnect = (yield* connections.tools(scope, {})).canConnect ?? [];
+        assert.notInclude(canConnect, "google");
+        assert.include(canConnect, "microsoft");
+        assert.strictEqual(
+          (yield* connections.offer(scope, { service: "google" })).note,
+          "Google is already connected, as Owner's own mailbox: it is read in a turn that is theirs alone, in their own chat with an agent. Nothing to connect.",
+        );
+        assert.strictEqual(
+          (yield* connections.offer(scope, { service: "microsoft" })).note,
+          OFFERED,
+        );
       }),
     ),
   );
@@ -3400,6 +3456,10 @@ describe("KinConnections accounts", () => {
         );
         assert.include(listing.note ?? "", "several mail accounts");
         const line = yield* promptLine(orgId);
+        assert.match(
+          line ?? "",
+          /^The company's connected services \(each is the company's, whatever name or address it carries\), reached with kin_connection_tools and kin_connection_call: /,
+        );
         assert.include(line ?? "", `"${WORK_MAIL}" sends as "billing@work.example"`);
         assert.include(line ?? "", `owner's note "billing and invoices"`);
 
@@ -3597,6 +3657,40 @@ describe("KinConnections accounts", () => {
         const sentEmail = vendor.vendor.sent.at(-1)!;
         assert.strictEqual(sentEmail.account, OWNER_MAIL);
         assert.strictEqual(header(sentBody(sentEmail.json).message, "From"), OWNER_MAIL);
+
+        // A read across a provider's accounts says which it read and which mail it left.
+        yield* connections.setSignInClient(owner, {
+          orgId,
+          service: "microsoft",
+          client: { clientId: MICROSOFT_APP },
+        });
+        vendor.vendor.scope = "openid offline_access User.Read Mail.Read Mail.Send";
+        const outlook = yield* connections.signInStart(owner, {
+          orgId,
+          service: "microsoft",
+          returnTo: "web",
+        });
+        const ms = yield* connections.signInFinish(owner, {
+          orgId,
+          response: vendor.approve(outlook.authorizationUrl, null),
+        });
+        yield* markRead(ms.connection.connectionId, ["mail_search"]);
+        const search = (connection: string) =>
+          connections
+            .call(scope, { connection, tool: "mail_search", arguments: { query: "invoice" } })
+            .pipe(Effect.map((answer) => (answer.quoted ?? "").split("\n")[0]));
+        assert.strictEqual(
+          yield* search("google"),
+          `Read: ${WORK_MAIL}, ${OWNER_MAIL} (Google). Not read: owner@outlook.example (Microsoft): name it, or connection mail, to read it too.`,
+        );
+        assert.strictEqual(
+          yield* search("mail"),
+          `Read: ${WORK_MAIL}, ${OWNER_MAIL} (Google), owner@outlook.example (Microsoft).`,
+        );
+        // Another person's own mailbox is not the turn's to read, so it is never named.
+        yield* (yield* SqlClient.SqlClient)`UPDATE kin_connections SET person_id = ${mateId}
+          WHERE connection_id = ${ms.connection.connectionId}`;
+        assert.strictEqual(yield* search("google"), `Read: ${WORK_MAIL}, ${OWNER_MAIL} (Google).`);
       }),
     ),
   );

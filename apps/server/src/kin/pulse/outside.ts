@@ -26,6 +26,8 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 /** What is new at an org's connections since its last check-in, and the cursors that marks. */
 export interface OutsideRead {
   readonly lines: ReadonlyArray<KinPulseOutsideLine>;
+  /** Lines the arrival feed owns, so a header-only notice can't wake as an unknown person. */
+  readonly automatedNotices?: ReadonlySet<KinPulseOutsideLine>;
   readonly seen: ReadonlyArray<{
     readonly connectionId: string;
     readonly until: number;
@@ -45,30 +47,49 @@ export const noOutside: OutsideSource = {
   seen: () => Effect.void,
 };
 
-const cut = (text: string | null | undefined, max: number) =>
-  text === null || text === undefined ? null : Array.from(text).slice(0, max).join("");
+const cut = (text: string | null | undefined, max: number) => {
+  if (text == null) return null;
+  if (text.length <= max) return text;
+  const last = text.charCodeAt(max - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
+};
 const isoOf = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+
+export const mailLine = (
+  label: string,
+  account: string | null,
+  mail: Pick<
+    Extract<KinConnectionActivity, { readonly _tag: "mail" }>["mail"][number],
+    "receivedBy" | "threadId" | "date" | "from" | "subject"
+  >,
+): KinPulseOutsideLine => ({
+  source: "mail",
+  connection: cut(label, 120)!,
+  ...(account === null ? {} : { account: cut(account, 320)! }),
+  ...(mail.receivedBy === null ? {} : { to: cut(mail.receivedBy, 320)! }),
+  id: cut(`${mail.threadId}:${mail.date ?? ""}`, 200)!,
+  thread: cut(mail.threadId, 200)!,
+  at: cut(mail.date, 60),
+  who: cut(mail.from, 300),
+  subject: cut(mail.subject, 300),
+  where: null,
+});
 
 /** One connection's answer as lines: who, what, when, where. */
 const linesOf = (
   label: string,
   activity: KinConnectionActivity,
+  automatedNotices: Set<KinPulseOutsideLine>,
 ): ReadonlyArray<KinPulseOutsideLine> => {
   const connection = cut(label, 120)!;
   switch (activity._tag) {
     case "mail":
       return [
-        ...activity.mail.map((mail): KinPulseOutsideLine => ({
-          source: "mail",
-          connection,
-          ...(activity.account === null ? {} : { account: cut(activity.account, 320)! }),
-          ...(mail.receivedBy === null ? {} : { to: cut(mail.receivedBy, 320)! }),
-          id: cut(`${mail.threadId}:${mail.date ?? ""}`, 200)!,
-          at: cut(mail.date, 60),
-          who: cut(mail.from, 300),
-          subject: cut(mail.subject, 300),
-          where: null,
-        })),
+        ...activity.mail.map((mail) => {
+          const line = mailLine(label, activity.account, mail);
+          if (mail.automatedNotice) automatedNotices.add(line);
+          return line;
+        }),
         ...activity.calendar.map((event): KinPulseOutsideLine => ({
           source: "calendar",
           connection,
@@ -112,6 +133,7 @@ export const fromConnections = (
         "money",
       );
       const lines: Array<KinPulseOutsideLine> = [];
+      const automatedNotices = new Set<KinPulseOutsideLine>();
       const seen: Array<{ connectionId: string; until: number; cursor: string | null }> = [];
       for (const row of rows) {
         const activity = yield* connections.activity(orgId, row.connectionId).pipe(
@@ -137,6 +159,7 @@ export const fromConnections = (
                     (mail) => !isBankAlertSender(addressesIn(mail.from)[0]),
                   ),
                 },
+            automatedNotices,
           ),
         );
         seen.push({
@@ -145,7 +168,7 @@ export const fromConnections = (
           cursor: activity._tag === "mail" ? activity.cursor : null,
         });
       }
-      return { lines, seen } satisfies OutsideRead;
+      return { lines, seen, automatedNotices } satisfies OutsideRead;
     },
     Effect.catch((cause) =>
       Effect.logWarning("Kin pulse outside read failed", { cause }).pipe(
@@ -190,7 +213,7 @@ const personToUs = (line: KinPulseOutsideLine, from: string | undefined) => {
   return domainOf(from) !== domainOf(line.to.toLowerCase());
 };
 /** First mail from someone Kin doesn't know wakes the Chief of staff, a few a poll at most. */
-const NEW_SENDERS_PER_POLL = 3;
+export const NEW_SENDERS_PER_POLL = 3;
 
 /** Letters, digits and the joins numbers are written with: "INV/26-27/004" is not "004". */
 const numberIn = (number: string, subject: string) =>
@@ -217,6 +240,7 @@ export interface Matched {
   readonly domain: "finance" | "chief";
   /** The client whose contact wrote it: mail from a client is contact with that client. */
   readonly clientId?: string;
+  readonly arrivalId?: string;
 }
 
 /**
@@ -227,6 +251,7 @@ export interface Matched {
 export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
   orgId: KinOrgId,
   lines: ReadonlyArray<KinPulseOutsideLine>,
+  automatedNotices?: ReadonlySet<KinPulseOutsideLine>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (lines.length === 0) return [];
@@ -293,7 +318,11 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
           domain: "chief",
           ...client,
         });
-      else if (newSenders < NEW_SENDERS_PER_POLL && personToUs(line, addressOf(line.who))) {
+      else if (
+        newSenders < NEW_SENDERS_PER_POLL &&
+        personToUs(line, addressOf(line.who)) &&
+        !automatedNotices?.has(line)
+      ) {
         newSenders += 1;
         matched.push({
           line: { ...line, matched: "a sender Kin doesn't know yet: maybe a new enquiry" },
@@ -330,19 +359,30 @@ const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const shortHash = (text: string) =>
   NodeCrypto.createHash("sha256").update(text).digest("hex").slice(0, 32);
 
+export const outsideKey = (line: KinPulseOutsideLine) =>
+  `outside:${shortHash(`${line.connection}\0${line.source}\0${line.id}`)}`;
+
 /**
  * Between check-ins: reads what is new, and wakes an agent once per item a watch matched. The
- * cursors stay where the last check-in left them, so the next check-in still lists everything.
+ * cursors stay where the last check-in left them, so unsettled mail can reach the next one.
  */
 export const poll = Effect.fn("KinPulseOutside.poll")(function* (
   orgId: KinOrgId,
   at: number,
   source: OutsideSource,
 ) {
+  const { lines, automatedNotices } = yield* source.read(orgId);
+  const matched = yield* matchLines(orgId, lines, automatedNotices);
+  return yield* wakeMatches(orgId, at, matched);
+});
+
+export const wakeMatches = Effect.fn("KinPulseOutside.wakeMatches")(function* (
+  orgId: KinOrgId,
+  at: number,
+  matched: ReadonlyArray<Matched>,
+) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
-  const { lines } = yield* source.read(orgId);
-  const matched = yield* matchLines(orgId, lines);
   if (matched.length === 0) return [];
   const chief = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
   const [finance] = yield* sql<{ agentId: KinAgentId }>`SELECT l.agent_id AS "agentId"
@@ -350,10 +390,10 @@ export const poll = Effect.fn("KinPulseOutside.poll")(function* (
       AND a.role = 'lead' AND a.retired_at IS NULL
     WHERE l.org_id = ${orgId} AND l.domain = 'finance' ORDER BY a.created_at, l.agent_id LIMIT 1`;
   const woke: Array<string> = [];
-  for (const { line, domain, clientId } of matched) {
+  for (const { line, domain, clientId, arrivalId } of matched) {
     const agentId = domain === "finance" ? (finance?.agentId ?? chief?.agentId) : chief?.agentId;
     if (agentId === undefined) continue;
-    const key = `outside:${shortHash(`${line.connection}\0${line.source}\0${line.id}`)}`;
+    const key = outsideKey(line);
     if (clientId !== undefined) {
       const sent = line.at === null ? Number.NaN : Date.parse(line.at);
       yield* logTouch(orgId, {
@@ -381,6 +421,7 @@ export const poll = Effect.fn("KinPulseOutside.poll")(function* (
           provenance: { _tag: "system" },
           factKeys: [],
           outside: [line],
+          ...(arrivalId === undefined ? {} : { arrivalId }),
         }),
         yield* heldUntil(orgId, agentId, at),
       )

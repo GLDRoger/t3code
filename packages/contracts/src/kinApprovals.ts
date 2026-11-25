@@ -382,6 +382,7 @@ export const KinAuditEvent = Schema.Literals([
   "key_confirmed",
   "key_revoked",
   "credential_check_failed",
+  "watch_restarted",
 ]);
 export type KinAuditEvent = typeof KinAuditEvent.Type;
 

@@ -393,6 +393,9 @@ const messageRowKey = (message: KinMessage) =>
 
 // A card tap shows as the button's label, never its JSON, and never repeats the card it answered.
 const shownMessage = (message: KinMessage): KinMessage => {
+  // Bills added from Money ride on their card's message; they show in its review list.
+  if (isSystem(message) && message.widgetId?.startsWith("bills:") === true)
+    return { ...message, body: "", attachments: [] };
   // A host card's body is its inbox summary; the card says the same, so it isn't repeated.
   if (isSystem(message) && message.widgetId !== null)
     return message.body === "" ? message : { ...message, body: "" };
@@ -794,6 +797,8 @@ export const kinImageText = (image: { readonly alt: string | null }) =>
 export function kinMessageLabel(row: MessageRow, time: string): string {
   const { message } = row;
   const deleted = message.status === "deleted";
+  const withdrawn = kinWithdrawnLine(row);
+  if (withdrawn !== null) return kinSentences([withdrawn, time]);
   const parts = [row.own ? "You" : `${row.authorLabel}, ${row.authorKind}`];
   if (deleted) parts.push("Message deleted");
   else {
@@ -802,8 +807,22 @@ export function kinMessageLabel(row: MessageRow, time: string): string {
   }
   parts.push(time);
   if (message.status === "suggested") parts.push("Suggestion, not sent yet");
-  else if (message.editedAt !== null && !deleted) parts.push("Edited");
+  else if (message.editedAt !== null && !deleted)
+    parts.push(message.author._tag === "agent" ? "Updated" : "Edited");
   return kinSentences(parts);
+}
+
+/** A message its agent took back, as the one line everyone sees; null for any other message. */
+export function kinWithdrawnLine(row: MessageRow): string | null {
+  const { withdrawn } = row.message;
+  if (withdrawn === undefined) return null;
+  return `${row.own ? "You" : row.authorLabel} withdrew a message: ${withdrawn.why}`;
+}
+
+/** The mark under a changed message: an agent puts the current version in place, a person edits. */
+export function kinChangedMark(message: KinMessage, time: (iso: string) => string): string | null {
+  if (message.editedAt === null || message.status !== "posted") return null;
+  return message.author._tag === "agent" ? `Updated ${time(message.editedAt)}` : "Edited";
 }
 
 // Follow-the-end
@@ -840,6 +859,57 @@ export function kinUnseenCount(
     if (!own && message.status !== "dismissed" && !isSystem(message)) count += 1;
   }
   return count;
+}
+
+/** The viewer's own seen mark: the stream's opening one, moved by their member's read events. */
+export function kinOwnReadSeq(
+  state: Pick<KinChatState, "readSeq" | "reads">,
+  viewerMemberId: string | null,
+): number | null {
+  if (state.readSeq === null) return null;
+  const moved = viewerMemberId === null ? 0 : (state.reads[viewerMemberId] ?? 0);
+  return Math.max(state.readSeq, moved);
+}
+
+/** The mark the "New" line was placed from, and the latest seq held then: later arrivals fall below it. */
+export type KinNewLineHold = {
+  readonly chatId: string;
+  readonly mark: number;
+  readonly upTo: number;
+};
+
+/**
+ * The line is placed once, from the viewer's seen mark as the chat opens, and stays there while it
+ * is open: opening moves that mark at once, and a later move never places it again.
+ */
+export function kinNextNewLineHold(
+  held: KinNewLineHold | null,
+  chatId: string,
+  mark: number | null,
+  latestSeq: number,
+): KinNewLineHold | null {
+  if (held !== null && held.chatId === chatId) return held;
+  if (mark === null) return null;
+  return { chatId, mark, upTo: Math.max(latestSeq, mark) };
+}
+
+/**
+ * The message the "New" line goes above: the first after the mark, up to `upTo`, that the viewer
+ * did not write. Null when there is none, or when what has loaded starts after the mark.
+ */
+export function kinNewLineSeq(
+  messages: ReadonlyArray<KinMessage>,
+  hold: KinNewLineHold | null,
+  viewerPersonId: KinPersonId | null,
+): number | null {
+  if (hold === null || messages.length === 0 || messages[0]!.seq > hold.mark + 1) return null;
+  for (const message of messages) {
+    if (message.seq <= hold.mark) continue;
+    if (message.seq > hold.upTo) return null;
+    const own = message.author._tag === "human" && message.author.personId === viewerPersonId;
+    if (!own && message.status === "posted") return message.seq;
+  }
+  return null;
 }
 
 export const latestKinSeq = (messages: ReadonlyArray<KinMessage>) =>
@@ -906,6 +976,8 @@ export function kinFeedViewer(orgs: KinOrgsListResult | null, orgId: string | nu
 /** Words in an open chat and its rows. */
 export const KIN_CHAT_COPY = {
   back: "Back to chats",
+  showWithdrawn: "Show what it said",
+  hideWithdrawn: "Hide what it said",
   loadingEarlier: "Loading earlier messages…",
   none: "No messages yet",
   sayHello: (agentName: string) => `Say hello to ${agentName}`,

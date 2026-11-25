@@ -2,7 +2,7 @@ import type { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import { seenBy, type KinViewer } from "../work/teamView.ts";
+import { listNumberSeenBy, seenBy, type KinViewer } from "../work/teamView.ts";
 
 import type { KinPulseSense } from "@t3tools/contracts";
 
@@ -22,6 +22,8 @@ export const SECTIONS = {
     kin_ask_close: null,
     kin_ask_person: null,
     kin_react: null,
+    message_withdraw: null,
+    message_replace: null,
     kin_chart: null,
     kin_visual: null,
     kin_chat_read: null,
@@ -82,8 +84,11 @@ export const SECTIONS = {
     dates_query: null,
     company_profile: null,
     company_sections: null,
+    numbers_watch: null,
     statement_read: "money",
     statement_rows: "money",
+    bills_add: "money",
+    bill_read: "money",
     kin_document: null,
     kin_picture: null,
     kin_recipes: null,
@@ -227,13 +232,18 @@ export const SECTIONS = {
     meeting_soon: null,
     holder_removed: null,
     statement_missing: "money",
+    bank_alerts_unreadable: "money",
+    payment_seen: "invoices",
+    repaid_seen: "money",
     deal_no_next_step: "deals",
     deal_quiet: "deals",
     deal_date_passed: "deals",
     number_off: null,
     number_stale: null,
+    // A list section's own facts: each carries its `list:<id>` section, whose switch silences it.
     entry_late: null,
     entry_check: null,
+    sense_overflow: null,
     // A project's contract renewal, which needs no deal (`KIN_PROMISE_SENSES`).
     notice_due: null,
   } satisfies Record<KinPulseSense, SectionId | null>,
@@ -268,6 +278,10 @@ export const sectionOfRegister = ({ id, name, payments }: SectionRegister): Sect
   return sectionOfList(id);
 };
 
+/** Kin's own lists, and any paid over time, have their place already: none is a section. */
+export const listSectionRefused = (row: SectionRegister) =>
+  Object.hasOwn(SECTIONS.lists, row.id) || sectionOfRegister(row) !== null;
+
 export const registerSectionColumns = (sql: SqlClient.SqlClient) =>
   sql`r.register_id AS id, g.name, json_extract(g.definition_json, '$.payments') AS payments`;
 
@@ -297,7 +311,8 @@ export const resolveSections = Effect.fn("KinShell.resolveSections")(function* (
       ? []
       : yield* sql<Row>`
     WITH wanted AS (SELECT value FROM json_each(${yield* encodeReferences([...references])}))
-    SELECT r.key, json_extract(r.fields_json, '$.number') AS number, ${registerSectionColumns(sql)},
+    SELECT r.key, CASE WHEN ${listNumberSeenBy(sql, viewer)}
+        THEN json_extract(r.fields_json, '$.number') END AS number, ${registerSectionColumns(sql)},
       ${seenBy(sql, viewer)} AS visible
     FROM kin_records r
     LEFT JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id

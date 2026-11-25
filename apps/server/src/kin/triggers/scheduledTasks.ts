@@ -34,11 +34,11 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
+import * as RoutineContent from "../lead/RoutineContent.ts";
 import { bootstrapLeadProject, leadProjectId } from "../lead/leadProject.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import * as Memory from "../memory/Memory.ts";
-import * as RoutineContent from "../lead/RoutineContent.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import {
   nextRun,
@@ -64,8 +64,10 @@ import {
 import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinSchedules from "./kinSchedules.ts";
+import { makeFeeds } from "../numbers/feeds.ts";
 import { pauseTriggers } from "./KinTriggerStore.ts";
 import { MINUTE_MS } from "../durations.ts";
+import { recordSkips } from "../host/offlineSkips.ts";
 
 /** A run more than this late (the host was off) is skipped; the next slot runs as usual. */
 const SCHEDULED_RUN_LATE_MS = 2 * 60 * 60_000;
@@ -442,17 +444,15 @@ const make = Effect.gen(function* () {
       schedule.checkIn === 1 && confirmed && admitted && !paused
         ? yield* outsideSource.read(orgId)
         : undefined;
-    // The evening summary comes only on a day with something to sum up, as it always did.
-    const nothingToSum =
+    const sumUp =
       outside !== undefined &&
       !manual &&
       schedule.scheduleId === "checkin-evening" &&
       lead !== undefined &&
-      Option.isSome(routineContent)
-        ? (yield* routineContent.value
-            .eveningFacts(orgId, lead.agentId)
-            .pipe(Effect.orElseSucceed(() => ""))) === null
-        : false;
+      (Option.isNone(routineContent) ||
+        (yield* routineContent.value
+          .eveningFacts(orgId, lead.agentId)
+          .pipe(Effect.orElseSucceed(() => ""))) !== null);
     let checkedIn = false;
     yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -507,10 +507,6 @@ const make = Effect.gen(function* () {
         if (paused) return yield* skip("Kin is paused.");
         if (lead === undefined) return yield* skip("there is no agent to run it.");
         if (!admitted) return yield* skip("today's budget is used up.");
-        if (row.checkIn === 1 && confirmed && outside !== undefined && nothingToSum) {
-          yield* settleCard({ at, status: "skipped", note: "Nothing to sum up today." });
-          return yield* consume;
-        }
         if (row.checkIn === 1 && confirmed && outside !== undefined) {
           const result = yield* withQueue(
             queueCheckIn({
@@ -526,6 +522,7 @@ const make = Effect.gen(function* () {
               zone: KinSchedules.hostTimeZone(),
               at: now,
               outside,
+              sumUp,
             }),
           );
           checkedIn = true;
@@ -860,8 +857,12 @@ const make = Effect.gen(function* () {
         if (paused) return yield* skip("Kin is paused.");
         if (lead === undefined) return yield* skip("there is no agent to run it.");
         if (!admitted) return yield* skip("today's budget is used up.");
-        if (source.kind === "fire" && now - dueAt > SCHEDULED_RUN_LATE_MS)
+        if (source.kind === "fire" && now - dueAt > SCHEDULED_RUN_LATE_MS) {
+          yield* recordSkips(orgId, "scheduled", [
+            { ref: source.fire.fireId, reason: "time_passed", at: dueAt },
+          ]).pipe(Effect.provideService(SqlClient.SqlClient, sql));
           return yield* skip("it was due too long ago to run now.");
+        }
         const dedupeKey = `scheduled:${runId}`;
         const eventId = KinEventId.make(`scheduled_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`);
         const event = yield* decodeEvent({
@@ -903,6 +904,11 @@ const make = Effect.gen(function* () {
 
   const drain = Effect.fn("KinScheduledTasks.drain")(
     function* (orgId: KinOrgId) {
+      // A feed the owner confirmed on a numbers card gets its schedule here, once.
+      yield* makeFeeds(orgId, schedules).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.catch((cause) => Effect.logWarning("Kin numbers feeds not made", { orgId, cause })),
+      );
       // Card taps reach the native tasks first, so a Run now fires in this same pass.
       yield* schedules
         .applyTaps(orgId)

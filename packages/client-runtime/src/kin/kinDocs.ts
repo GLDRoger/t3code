@@ -30,16 +30,12 @@ import {
   type KinWidget,
   type KinWorkActor,
   type KinWorkPrincipal,
-  kinPlainBody,
+  kinDraftOpeningOf,
   kinSalesLead,
-  kinThreadLinksAsWords,
   kinWhenFormat,
 } from "@t3tools/contracts";
 import { kinDocBlockIndex, kinDocBlocks, kinDocParts } from "@t3tools/shared/kinDocBlocks";
-import type { PhrasingContent, RootContent } from "mdast";
-import remarkGfm from "remark-gfm";
-import remarkParse from "remark-parse";
-import { unified } from "unified";
+import { kinDocCopyText } from "@t3tools/shared/kinDocCopyText";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -48,10 +44,12 @@ import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runti
 import {
   isKinChatError,
   kinMidSentence,
+  kinWorkFailuresOf,
   kinWorkName,
   kinWorkRefused,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinWorkReadState, type KinWorkReadState } from "./kinWorkForms.ts";
 import { kinCount } from "./kinCount.ts";
 import { kinIsMine, type KinMineCount, type KinMineHeld } from "./kinWorkClients.ts";
 import { kinSectionNamed, kinSectionOn } from "./kinShell.ts";
@@ -119,8 +117,10 @@ export const KIN_DOCS = {
   restore: "Restore this version",
   restoring: "Restoring…",
   compare: "Compare with the latest",
-  private: "Private. Only you can see this.",
-  privateInherited: "Private, because its client or project is. Only you can see this.",
+  private: "Private. Only owners see this.",
+  privateYours: "Private. Only you and the owners see this.",
+  privateDraft: (name: string) => `Private. Only owners and ${name}, whose draft it is, see this.`,
+  privateInherited: "Private, because its client or project is. Only owners see this.",
   top: "Introduction",
   empty: {
     title: "No docs yet",
@@ -150,6 +150,11 @@ export const KIN_DOCS = {
     title: "This doc isn't here any more",
     detail: "Open Docs to see what there is now.",
   },
+  // A draft filed for this reader that an owner has since kept to owners only.
+  privateNow: (by: string) => ({
+    title: "This doc is private now",
+    detail: `${by} kept it to owners only.`,
+  }),
   failed: {
     title: "Couldn't load this doc",
     detail: KIN_CHECK_CONNECTION,
@@ -179,6 +184,10 @@ export const KIN_DOCS = {
   sentTo: (name: string) => `Sent to ${name} to approve.`,
   sentHeld: (name: string) => `Sent. ${name} gets it to approve when they're back.`,
   changesFirst: (name: string) => `${name} asked for changes first.`,
+  changedSinceSent: "It changed after it was sent, so it wasn't approved. Send it again.",
+  longDraft: "A long draft. Open it to read all of it.",
+  copying: "Copying…",
+  copyFailed: "Couldn't copy the text.",
   sendFailed: "Couldn't send it.",
   sendOffline: "You're offline. Send it when the connection is back.",
   noAccount: (service: string, by: string | null) =>
@@ -751,86 +760,7 @@ export function kinDocFileInput(
   };
 }
 
-// Copy text
-
-const copyParser = unified().use(remarkParse).use(remarkGfm);
-
-const inlineText = (nodes: ReadonlyArray<PhrasingContent>): string =>
-  nodes
-    .map((node): string => {
-      switch (node.type) {
-        case "text":
-        case "inlineCode":
-          return node.value;
-        case "break":
-          return "\n";
-        case "image":
-          return node.alt ?? "";
-        case "html":
-          return node.value.replace(/<[^>]*>/g, "");
-        case "link": {
-          const words = inlineText(node.children);
-          return /^https?:/i.test(node.url) && words !== node.url && words !== ""
-            ? `${words} (${node.url})`
-            : words === ""
-              ? node.url
-              : words;
-        }
-        case "emphasis":
-        case "strong":
-        case "delete":
-          return inlineText(node.children);
-        default:
-          return "";
-      }
-    })
-    .join("");
-
-const blockText = (node: RootContent): ReadonlyArray<string> => {
-  switch (node.type) {
-    case "paragraph":
-    case "heading":
-      return [inlineText(node.children)];
-    case "code":
-      return [node.value];
-    case "html":
-      return [node.value.replace(/<[^>]*>/g, "")];
-    case "blockquote":
-      return node.children.flatMap(blockText);
-    case "list":
-      return [
-        node.children
-          .map((item, index) => {
-            const lines = item.children.flatMap(blockText).filter((line) => line !== "");
-            const number = node.ordered === true ? `${(node.start ?? 1) + index}. ` : "";
-            return `${number}${lines.join("\n")}`;
-          })
-          .join("\n"),
-      ];
-    case "table":
-      return [
-        node.children
-          .map((row) =>
-            row.children.map((cell) => inlineText(cell.children).replace(/\s+/g, " ")).join("\t"),
-          )
-          .join("\n"),
-      ];
-    default:
-      return [];
-  }
-};
-
-/**
- * A doc's markdown as text to paste anywhere: no marks, a list's items one per line, a table's
- * rows as tab-separated cells, and its charts and visuals left out.
- */
-export function kinDocCopyText(markdown: string): string {
-  const tree = copyParser.parse(kinThreadLinksAsWords(kinPlainBody(markdown)));
-  return tree.children
-    .flatMap(blockText)
-    .filter((block) => block.trim() !== "")
-    .join("\n\n");
-}
+export { kinDocCopyText };
 
 // The reader
 
@@ -920,15 +850,16 @@ export function kinDocOutline(
 export const kinDocHasContents = (outline: ReadonlyArray<KinDocSection>) =>
   outline.filter((section) => section.id !== "top").length > 1;
 
-/** Why a doc is marked private, in words; null when the whole team may read it. */
+/** Why a doc is marked private, and who reads it, in words; null when the whole team may read it. */
 export const kinDocPrivacy = (
-  doc: Pick<KinDocListRow, "sensitive" | "sensitiveInherited">,
-): string | null =>
-  doc.sensitive
-    ? KIN_DOCS.private
-    : doc.sensitiveInherited === true
-      ? KIN_DOCS.privateInherited
-      : null;
+  doc: Pick<KinDocListRow, "sensitive" | "sensitiveInherited"> &
+    Partial<Pick<KinDocDetail, "kindLabel">>,
+): string | null => {
+  const reader = doc.kindLabel?.reader;
+  if (!doc.sensitive) return doc.sensitiveInherited === true ? KIN_DOCS.privateInherited : null;
+  if (reader === undefined) return KIN_DOCS.private;
+  return reader.you === true ? KIN_DOCS.privateYours : KIN_DOCS.privateDraft(reader.name);
+};
 
 export type KinDocReadState =
   | { readonly _tag: "loading" }
@@ -936,6 +867,20 @@ export type KinDocReadState =
   | { readonly _tag: "refused" }
   | { readonly _tag: "failed" }
   | { readonly _tag: "ready"; readonly doc: KinDocDetail; readonly stale: boolean };
+
+/** A doc's read: the reader's own draft an owner kept to owners only is private now, not gone. */
+export type KinDocState =
+  | KinWorkReadState<KinDocDetail>
+  | { readonly _tag: "private"; readonly by: string };
+
+export function kinDocState(result: AsyncResult.AsyncResult<KinDocDetail, unknown>): KinDocState {
+  const kept = (AsyncResult.isFailure(result) ? kinWorkFailuresOf(result.cause) : []).find(
+    (error) => isKinChatError(error) && error.privateNow !== undefined,
+  );
+  if (isKinChatError(kept) && kept.privateNow !== undefined)
+    return { _tag: "private", by: kept.privateNow.by };
+  return kinWorkReadState(result);
+}
 
 export function kinDocExport(doc: Pick<KinDocDetail, "title" | "body" | "key">): {
   readonly filename: string;
@@ -1263,6 +1208,11 @@ export function kinDocCardView(widget: KinWidget): KinDocCardView | null {
 export interface KinDocCardDraftView {
   /** The draft as clean text, without the markdown marks (Copy text). */
   readonly copyText: string;
+  /**
+   * Set when the card holds only a long draft's opening: the line saying so, and the doc version
+   * whose whole text Copy text fetches instead of `copyText`.
+   */
+  readonly long?: { readonly line: string; readonly version: number };
   /** The "Send to" button's label, or null when this reader has nothing to send up. */
   readonly sendTo: string | null;
   /** That it went up, and to whom, once sent; or that its owner asked for changes first. */
@@ -1277,23 +1227,33 @@ export interface KinDocCardDraftView {
  * have nothing to send up, so Copy text only.
  */
 export function kinDocCardDraft(
-  card: Pick<KinDocCardView, "draft">,
+  card: Pick<KinDocCardView, "draft" | "key">,
   ownerLevel: boolean,
   readOnly: boolean,
 ): KinDocCardDraftView | null {
   const { draft } = card;
   if (draft === null) return null;
+  const changed =
+    draft.changed !== undefined &&
+    (draft.changesFirst === undefined || draft.changed.at > draft.changesFirst.at);
   return {
-    copyText: kinDocCopyText(draft.text),
+    copyText: kinDocCopyText(
+      draft.whole === undefined ? draft.text : kinDraftOpeningOf(draft.text, card.key),
+    ),
+    ...(draft.whole === undefined
+      ? {}
+      : { long: { line: KIN_DOCS.longDraft, version: draft.whole.version } }),
     sendTo:
       draft.sendTo === undefined || draft.sent !== undefined || ownerLevel || readOnly
         ? null
         : KIN_DOCS.sendTo(draft.sendTo.name),
     sent:
       draft.sent === undefined
-        ? draft.changesFirst === undefined
-          ? null
-          : KIN_DOCS.changesFirst(draft.changesFirst.name)
+        ? changed
+          ? KIN_DOCS.changedSinceSent
+          : draft.changesFirst === undefined
+            ? null
+            : KIN_DOCS.changesFirst(draft.changesFirst.name)
         : draft.sent.held === true
           ? KIN_DOCS.sentHeld(draft.sent.name)
           : KIN_DOCS.sentTo(draft.sent.name),
@@ -1302,6 +1262,15 @@ export function kinDocCardDraft(
         ? null
         : KIN_DOCS.noAccount(draft.noAccount.service, ownerLevel ? null : draft.noAccount.by.name),
   };
+}
+
+/** What a long draft's Copy text came to: the whole version's text to copy, or why not. */
+export function kinDocWholeCopy(
+  result: AtomCommandResult<Pick<KinDocDetail, "body">, unknown>,
+): { readonly text: string } | { readonly problem: string } {
+  return AsyncResult.isSuccess(result)
+    ? { text: kinDocCopyText(result.value.body) }
+    : { problem: KIN_DOCS.copyFailed };
 }
 
 /** What a "Send to" tap came to: nothing to say once sent (the card says it), else why not. */

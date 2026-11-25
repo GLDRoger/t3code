@@ -11,10 +11,13 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Scheduler from "../../scheduling/Scheduler.ts";
+import { connectionById } from "../connections/ConnectionRows.ts";
 import { KinConnections, MAIL_FEED_WINDOW } from "../connections/ConnectionsService.ts";
-import type { MailArrival } from "../connections/MailProvider.ts";
+import { type MailArrival, receivedAmong } from "../connections/MailProvider.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { DAY_MS, MINUTE_MS } from "../durations.ts";
+import { KinEventQueue } from "../lead/KinEventQueue.ts";
+import { type Matched, mailLine, NEW_SENDERS_PER_POLL, wakeMatches } from "../pulse/outside.ts";
 import * as ArrivalStore from "./ArrivalStore.ts";
 import { type ArrivalRows, classify } from "./classify.ts";
 
@@ -48,7 +51,7 @@ export class KinArrivalFeed extends Context.Service<
   {
     /**
      * One read of one mailbox's change record. What it names that is new mail becomes one
-     * arrival, classified by code. The outside watch still owns every mail wake.
+     * arrival, classified by code. Automated notices go through the outside watch's wake path.
      */
     readonly read: (
       orgId: KinOrgId,
@@ -61,6 +64,7 @@ const isoOf = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 const make = Effect.gen(function* () {
   const connections = yield* KinConnections;
+  const queue = yield* KinEventQueue;
   const sql = yield* SqlClient.SqlClient;
 
   // Per-message work shares the mailbox read's span.
@@ -102,7 +106,11 @@ const make = Effect.gen(function* () {
       now,
       parked !== undefined,
     );
-    return made ? arrivalId : undefined;
+    if (!made) return undefined;
+    return {
+      arrivalId,
+      look: !elsewhere && classified.class === "automated_notice" ? classified.look : undefined,
+    };
   });
 
   const read = Effect.fn("KinArrivalFeed.read")(
@@ -125,7 +133,9 @@ const make = Effect.gen(function* () {
       const recorded = yield* sql.withTransaction(
         Effect.gen(function* () {
           let rows: ArrivalRows | undefined;
+          let connection: Effect.Success<ReturnType<typeof connectionById>>;
           const recorded: Array<string> = [];
+          const notices: Array<Matched> = [];
           for (const [index, result] of reads.entries()) {
             const retried = index >= fresh.length ? parked[index - fresh.length] : undefined;
             const change = fresh[index];
@@ -146,8 +156,11 @@ const make = Effect.gen(function* () {
               continue;
             }
             // Received well before the feed's last read: an update or a move back, not new mail.
-            const floor =
-              retried === undefined ? found.floor : retried.noticedAt - MAIL_FEED_WINDOW.marginMs;
+            // Nor is anything received while the mailbox was someone's own, put back or parked.
+            const floor = Math.max(
+              retried === undefined ? found.floor : retried.noticedAt - MAIL_FEED_WINDOW.marginMs,
+              found.ownUntil === null ? Number.NEGATIVE_INFINITY : found.ownUntil + 1,
+            );
             if (result.arrival.receivedAt < floor) {
               if (retried !== undefined)
                 yield* ArrivalStore.settleNothing(
@@ -159,7 +172,7 @@ const make = Effect.gen(function* () {
               continue;
             }
             rows ??= yield* ArrivalStore.rowsFor(orgId, connectionId, found.addresses);
-            const arrivalId = yield* arrive({
+            const arrived = yield* arrive({
               orgId,
               connectionId,
               rows,
@@ -167,8 +180,32 @@ const make = Effect.gen(function* () {
               parked: retried,
               now,
             });
-            if (arrivalId !== undefined) recorded.push(arrivalId);
+            if (arrived === undefined) continue;
+            recorded.push(arrived.arrivalId);
+            const { look } = arrived;
+            if (
+              look === undefined ||
+              typeof look.by !== "string" ||
+              notices.length >= NEW_SENDERS_PER_POLL
+            )
+              continue;
+            connection ??= yield* connectionById(orgId, connectionId);
+            if (connection === undefined) continue;
+            const mailbox = { account: connection.accountLabel, addresses: found.addresses };
+            const line = mailLine(connection.label, mailbox.account, {
+              ...result.arrival,
+              receivedBy: receivedAmong(mailbox, result.arrival.deliveredTo),
+            });
+            notices.push({
+              line: { ...line, matched: look.matched },
+              domain: look.by,
+              arrivalId: arrived.arrivalId,
+            });
           }
+          if (notices.length > 0)
+            yield* wakeMatches(orgId, now, notices).pipe(
+              Effect.provideService(KinEventQueue, queue),
+            );
           if (found.gap !== null)
             yield* ArrivalStore.gap(
               orgId,

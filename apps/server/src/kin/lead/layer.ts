@@ -7,6 +7,8 @@ import * as ScheduledTasks from "../triggers/scheduledTasks.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import * as Watchdogs from "../triggers/watchdogs.ts";
 import * as HostBackupCheck from "../host/backupCheck.ts";
+import * as RunningSpend from "../host/runningSpend.ts";
+import * as OfflineCatchUp from "../host/offlineCatchUp.ts";
 import * as GithubReaders from "../triggers/githubReaders.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
@@ -17,8 +19,10 @@ import * as OwnerTimeZone from "../triggers/ownerTimeZone.ts";
 import { forkParked } from "../../serverActivation.ts";
 import * as OwnerNotices from "./OwnerNotices.ts";
 import * as Option from "effect/Option";
+import { KinChatService } from "../chat/KinChatService.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -54,6 +58,9 @@ import * as Toolchain from "../gendocs/toolchain.ts";
 import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
+import * as Bills from "../work/bills.ts";
+import { handlers as billHandlers } from "../work/mcp/billHandlers.ts";
+import { KinBillToolkit } from "../work/mcp/billTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
@@ -112,6 +119,7 @@ const routineRuntime = Layer.mergeAll(
   GitHubWatch.liveLayer,
   Watchdogs.layer,
   HostBackupCheck.layer,
+  RunningSpend.layer,
   KinPulse.layer,
   ArrivalFeed.liveLayer,
   KinWatchRounds.layer,
@@ -121,7 +129,16 @@ const routineRuntime = Layer.mergeAll(
   Layer.provideMerge(TriggerScheduler.layer),
   Layer.provideMerge(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
   // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.
-  Layer.provideMerge(Scheduler.layer),
+  Layer.provideMerge(
+    Layer.effect(
+      Scheduler.Scheduler,
+      Effect.gen(function* () {
+        const scheduler = yield* Scheduler.Scheduler;
+        const initialPass = yield* OfflineCatchUp.InitialPass;
+        return initialPass?.observe(scheduler) ?? scheduler;
+      }),
+    ).pipe(Layer.provide(Scheduler.layer)),
+  ),
 );
 const dreamRuntime = DreamRunner.layer.pipe(
   Layer.provide(DreamSession.layer),
@@ -209,6 +226,17 @@ const memorySync = Effect.fn("KinMemory.syncDue")(function* (
   });
 });
 
+/** At start, then every five minutes: bills a stopped host left mid-read are queued again. */
+const billsSweep = () => {
+  let due = 0;
+  return Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (now < due) return;
+    due = now + 5 * 60_000;
+    yield* Bills.sweep();
+  });
+};
+
 const runner = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
@@ -228,6 +256,18 @@ const runner = Layer.effectDiscard(
         Stream.runForEach((event) => stripQuotes(writer.value, event.orgId)),
         Effect.forkScoped,
       );
+    // A deferral card's decision tap reads its committed item through this runtime's memory.
+    const chat = yield* Effect.serviceOption(KinChatService);
+    if (Option.isSome(chat))
+      yield* chat.value.attachDeferralItems((orgId, itemId) =>
+        memory.readItemQuietly(orgId, itemId, "triggers").pipe(
+          Effect.asSome,
+          Effect.catchTags({
+            MemoryNotFound: () => Effect.succeedNone,
+            MemoryDuplicateId: () => Effect.succeedNone,
+          }),
+        ),
+      );
     if (Option.isSome(writer) && Option.isSome(memoryChanges))
       yield* memoryChanges.value.attachWriter({
         undo: writer.value.undoChange,
@@ -238,8 +278,13 @@ const runner = Layer.effectDiscard(
         items: (orgId) => memory.items(orgId),
         snapshot: (orgId) => memory.snapshotItems(orgId),
       });
+    const initialPass = yield* OfflineCatchUp.InitialPass;
     yield* Effect.gen(function* () {
-      const context = yield* Layer.build(routineRuntime);
+      const context = yield* Layer.build(routineRuntime).pipe(
+        Effect.onExit(
+          (exit) => initialPass?.sourcesRegistered(Exit.isSuccess(exit)) ?? Effect.void,
+        ),
+      );
       yield* Context.get(context, Scheduler.Scheduler).register(
         "kin-memory-sync",
         yield* memorySync(memory, writer),
@@ -254,6 +299,7 @@ const runner = Layer.effectDiscard(
           "kin-team-sweep",
           team.value.sweep(),
         );
+      yield* Context.get(context, Scheduler.Scheduler).register("kin-bills", billsSweep());
       yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(
         Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
       );
@@ -304,6 +350,7 @@ const registration = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinWorkToolkit), workHandlers),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers),
   McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),
+  McpHttpServer.toolkitRegistration(KinBillToolkit, billHandlers),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPictureToolkit), pictureHandlers),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPulseToolkit), pulseHandlers),
@@ -446,6 +493,7 @@ const production = withServices(
     Layer.provideMerge(Team.layer),
     Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),
+    Layer.provide(OfflineCatchUp.layer),
   ),
 );
 

@@ -81,6 +81,23 @@ lines above it:
 - `asOf` is the last day the old system was kept up. Entries still open from before it get a note
   saying so, so nobody takes an old to-do for current.
 
+## Filling in entries you already have
+
+To add missing details to an entry, use its list and key. Give a `match` row its own source id
+and only the fields or notes you want to fill. Leave out the title, amount and other entry
+details. Anything already filled stays as it is.
+
+```jsonl
+{"entry":{"list":"expenses","source":"funding-12","match":"EXP-12","fields":{"fundedBy":"person-27","reimbursement":"owed"}}}
+```
+
+In a person field, use a current teammate's person id or `"owner"` for yourself. The plan shows
+which entries matched and which fields it would fill. Applying the file again leaves
+those fills as they are.
+
+Add `"void":true` to a `match` row to void that entry after any fills, with the same rules as in
+Kin: Void on a numbered entry such as an invoice, or the list's Void state, as on an expense.
+
 ## Plan first, then apply
 
 On the host, run a plan. It changes nothing. It reports what it would make, what was imported
@@ -119,6 +136,11 @@ Kin or given a Kin number always stays, with or without `--include-changed`. Inv
 doesn't go back, so no number is ever issued twice. You can apply the same file again afterwards.
 Entry keys such as `C-4` don't go back either, so what an agent remembers about a removed entry
 never passes to a new one; only a list the undo removed starts its keys again if it is made again.
+
+A matched entry is not removed. Undo empties only the fields and notes the batch filled, and takes
+back a void it made. If the entry changed since, Kin leaves it as it is and lists it; add
+`--include-changed` to empty those same fields, and take back the void, even if someone has edited
+it.
 
 ## What an import doesn't do
 

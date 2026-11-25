@@ -8,7 +8,6 @@ import {
   KinEventId,
   KinMemberId,
   KinMemoryItemId,
-  KinMessageId,
   KinPersonId,
   KinWakeupId,
   KinWidgetId,
@@ -19,6 +18,7 @@ import {
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -41,13 +41,13 @@ import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
-import * as MemoryWriter from "../memory/MemoryWriter.ts";
 import * as DeferralFlow from "./deferralFlow.ts";
 import { KinDeferralGithubReader, type GithubLinkState } from "./deferralGithub.ts";
 import * as Deferrals from "./deferrals.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
 import * as TriggerService from "./KinTriggerService.ts";
-import { fixture, item, orgId, otherOrg, seed } from "./routines.testkit.ts";
+import * as OwnerCheck from "./ownerCheck.ts";
+import { addLead, fixture, item, orgId, otherOrg, seed } from "./routines.testkit.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeEvent = Schema.decodeSync(KinEvent);
@@ -69,12 +69,23 @@ const widgetId = widgetFor("def-1");
 const dueAt = Date.parse("2026-11-13T03:30:00.000Z");
 const headsUpAt = dueAt - 30 * 60_000;
 
+// As the lead runtime does: a card's decision tap reads its committed item through memory.
+const attachItems = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const memory = yield* Memory.Memory;
+    yield* (yield* Chat.KinChatService).attachDeferralItems((orgId, itemId) =>
+      memory
+        .readItemQuietly(orgId, itemId, "triggers")
+        .pipe(Effect.asSome, Effect.catchTags({ MemoryNotFound: () => Effect.succeedNone })),
+    );
+  }),
+);
+
 const layerFor = <E = never>(
   items: ReadonlyArray<MemoryItemHead>,
   options: Parameters<typeof fixture<E>>[1] = {},
 ) =>
-  DeferralFlow.layer.pipe(
-    Layer.provideMerge(Deferrals.layer),
+  Layer.merge(DeferralFlow.layer, attachItems).pipe(
     Layer.provideMerge(TriggerService.layer),
     Layer.provideMerge(LeadDelivery.layer),
     Layer.provideMerge(Budget.layer.pipe(Layer.provide(MemoryCache.layer))),
@@ -152,144 +163,73 @@ const pendingFires = Effect.fn("test.deferralPending")(function* () {
     WHERE org_id = ${orgId} AND consumed_at IS NULL ORDER BY fire_id`;
 });
 
-const tapOnce = Effect.fn("test.deferralTap")(function* (
+/** A person's tap on the item's card, through the chat's own act. */
+const tap = Effect.fn("test.deferralTap")(function* (
   actionId: string,
-  label: string,
-  staged: Array<MemoryWriter.MemoryChange>,
-  target: KinWidgetId = widgetId,
-  value = "def-1",
+  personId = `owner-${orgId}`,
+  itemId = "def-1",
+  target: KinWidgetId = widgetFor(itemId),
 ) {
-  const sql = yield* SqlClient.SqlClient;
   const repo = yield* Repository.KinChatRepository;
-  const queue = yield* Queue.KinEventQueue;
-  const deferrals = yield* Deferrals.Deferrals;
-  const writer = Layer.mock(MemoryWriter.MemoryWriter)({
-    stage: (_org, _wakeup, change) => Effect.sync(() => void staged.push(change)),
-  });
-  const memberId = "owner-member-a";
+  const chat = yield* Chat.KinChatService;
   const revision = Option.match(yield* repo.getWidget({ orgId, widgetId: target }), {
     onNone: () => 1,
     onSome: (widget) => widget.revision,
   });
-  const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
-  // Stands in for the gated dispatcher: chat act refuses deferral taps today.
-  const message = yield* repo.insertMessage({
-    audience: "chat",
-    orgId,
-    chatId: KinChatId.make("chat-a"),
-    messageId: KinMessageId.make(`tap-${actionId}-${label}`),
-    author: {
-      _tag: "human",
-      personId: KinPersonId.make("owner-a"),
-      memberId: KinMemberId.make(memberId),
-    },
-    kind: "widget_action",
-    body: encodeJson({ widgetId: target, revision, actionId, value }),
-    intent: null,
-    mentions: [],
-    replyTo: KinMessageId.make(target),
-    widgetId: target,
-    floorRunId: null,
-    status: "posted",
-    sentBy: KinPersonId.make("owner-a"),
-    clientMessageId: { kind: "act", id: `${actionId}-${label}` },
-    createdAt: at,
-    editedAt: null,
-  });
-  const eventId = `${actionId}-${label}`;
-  yield* queue.enqueue(
-    decodeEvent({
-      _tag: "widget.action",
-      orgId,
-      eventId,
-      agentId: "lead-a",
-      receivedAt: at,
-      dedupeKey: eventId,
-      provenance: { _tag: "human", personId: "owner-a", memberId },
-      chatId: "chat-a",
-      messageId: message.messageId,
-      actionId,
-    }),
-  );
-  yield* TestClock.adjust("20 seconds");
-  const wakeupId = KinWakeupId.make(`wake-${eventId}`);
-  yield* queue.claim({ orgId, agentId: KinAgentId.make("lead-a"), wakeupId, model: "fixture" });
-  if (label === "demoted")
-    yield* sql`UPDATE kin_chat_members SET role = 'member' WHERE org_id = ${orgId} AND member_id = ${memberId}`;
-  const result = yield* deferrals
-    .act(orgId, wakeupId, KinEventId.make(eventId))
-    .pipe(Effect.provide(writer), Effect.result);
-  const forged = yield* deferrals
-    .act(otherOrg, wakeupId, KinEventId.make(eventId))
-    .pipe(Effect.provide(writer), Effect.flip);
-  assert.equal(forged._tag, "DeferralError");
-  yield* queue.finish({ orgId, wakeupId, status: "completed" });
-  return result;
+  return yield* chat
+    .act(
+      { _tag: "person", orgId, personId: KinPersonId.make(personId) },
+      {
+        widgetId: target,
+        revision,
+        actionId,
+        value: itemId,
+        clientActionId: `${actionId}-${personId}-${target}-${revision}`,
+      },
+    )
+    .pipe(Effect.result);
 });
-const tap = (...args: Parameters<typeof tapOnce>) => Effect.scoped(tapOnce(...args));
+const outcome = (result: Effect.Success<ReturnType<typeof tap>>) =>
+  result._tag === "Success"
+    ? "ok"
+    : result.failure._tag === "KinChatError"
+      ? result.failure.reason
+      : result.failure._tag;
 
-it.effect("applies verified owner taps on the confirm card and ignores forged ones", () =>
+/** Another person in the company, in the owner's chat with the lead. */
+const joinChat = Effect.fn("test.deferralJoin")(function* (
+  personId: string,
+  access: "co_owner" | "member",
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+    VALUES (${personId}, ${orgId}, ${personId}, ${personId}, ${access}, 0)`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+      role, joined_at)
+    VALUES (${`member-${personId}`}, ${orgId}, 'chat-a', 'person', ${personId}, 'member',
+      '2026-11-07T00:00:00.000Z')`;
+});
+
+const nextMonday = Date.parse("2026-11-16T03:30:00.000Z");
+const triggersOf = Effect.fn("test.deferralTriggers")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ id: string; enabled: number; nextRunAt: number | null }>`SELECT
+      trigger_id AS id, enabled, next_run_at AS "nextRunAt" FROM kin_triggers
+    WHERE org_id = ${orgId} ORDER BY trigger_id`;
+});
+
+it.effect("the confirm card offers Undo alone, and says Kin will ask before it starts", () =>
   Effect.gen(function* () {
     yield* setup();
-    const repo = yield* Repository.KinChatRepository;
     yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
-    const staged: Array<MemoryWriter.MemoryChange> = [];
-
-    const remind = yield* tap("remind", "owner", staged);
-    assert.equal(remind._tag === "Success" && remind.success.action, "remind");
-    assert.lengthOf(staged, 1);
-    assert.equal(staged[0]?.sourceEventId, "remind-owner");
-    assert.include(staged[0]!.content, "on_due: remind");
-
-    const change = yield* tap("change", "owner", staged);
-    assert.equal(change._tag === "Success" && change.success.action, "change");
-    assert.lengthOf(staged, 1);
-    // Heads-up actions don't apply to the confirm card.
-    assert.equal((yield* tap("start_now", "confirm", staged))._tag, "Failure");
-
-    const real = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId }));
-    const forgedId = KinWidgetId.make("model-card");
-    const anchor = yield* repo.insertMessage({
-      audience: "chat",
-      orgId,
-      chatId: real.chatId,
-      messageId: KinMessageId.make(forgedId),
-      author: { _tag: "system" },
-      kind: "system",
-      body: "",
-      intent: null,
-      mentions: [],
-      replyTo: null,
-      widgetId: null,
-      floorRunId: null,
-      status: "posted",
-      sentBy: null,
-      clientMessageId: null,
-      createdAt: "2026-11-09T09:00:00.000Z",
-      editedAt: null,
-    });
-    yield* repo.insertWidget({
-      audience: "chat",
-      orgId,
-      chatId: real.chatId,
-      messageId: anchor.messageId,
-      widgetId: forgedId,
-      widgetClass: "native",
-      type: "deferral",
-      state: real.state,
-      source: null,
-      feed: null,
-      awaiting: [],
-      pinnedAt: null,
-      closedAt: null,
-      updatedAt: "2026-11-09T09:00:00.000Z",
-    });
-    assert.equal((yield* tap("remind", "forged", staged, forgedId))._tag, "Failure");
-    assert.lengthOf(staged, 1);
-
-    const member = yield* tap("remind", "demoted", staged);
-    assert.equal(member._tag, "Failure");
-    assert.lengthOf(staged, 1);
+    const card = yield* cardOf("def-1");
+    assert.deepStrictEqual(card.actions, ["undo"]);
+    assert.equal(card.text, "Deferred to Fri, 13 Nov, 9:00 am. I'll ask you to start it then.");
+    // What the card no longer offers reads as a card that changed, and changes nothing.
+    for (const action of ["change", "remind", "start_now", "monday", "cancel"])
+      assert.equal(outcome(yield* tap(action)), "widget_changed");
+    assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt });
+    assert.equal((yield* cardOf("def-1")).revision, card.revision);
   }).pipe(Effect.provide(layerFor([deferral]))),
 );
 
@@ -382,7 +322,7 @@ it.effect("asks when the stop switch is on, and production defaults never start"
     yield* tick(headsUpAt);
     yield* tick(dueAt);
     assert.equal((yield* runOf("def-1"))?.state, "asked");
-    assert.include((yield* cardOf("def-1")).text, "the stop switch is on");
+    assert.include((yield* cardOf("def-1")).text, "Kin asks before every start for now");
 
     // No stop switch, GitHub reader or L2 yet: every gate asks.
     yield* service
@@ -394,7 +334,7 @@ it.effect("asks when the stop switch is on, and production defaults never start"
     const text = (yield* cardOf("def-2")).text;
     for (const reason of [
       "couldn't verify GitHub",
-      "the stop switch is on",
+      "Kin asks before every start for now",
       "starting work isn't open to me here",
     ])
       assert.include(text, reason);
@@ -439,8 +379,7 @@ it.effect(
       yield* tick(headsUpAt);
       assert.equal((yield* runOf("def-1"))?.state, "asked");
       assert.include((yield* cardOf("def-1")).text, "starting work isn't open to me here");
-      const start = yield* tap("start_now", "owner", []);
-      assert.equal(start._tag === "Success" && start.success.action, "start_now");
+      assert.equal(outcome(yield* tap("start_now")), "ok");
       yield* tick(dueAt);
       const [started, ...more] = yield* starts();
       assert.lengthOf(more, 0);
@@ -450,67 +389,524 @@ it.effect(
   },
 );
 
+// Each action on the asked card, for each person in the owner's chat with the lead.
+it.effect.each([
+  ["owner", "start_now", "ok", "started"],
+  ["owner", "monday", "ok", "armed"],
+  ["owner", "cancel", "ok", "undone"],
+  ["co-owner", "start_now", "ok", "started"],
+  ["co-owner", "monday", "ok", "armed"],
+  ["co-owner", "cancel", "ok", "undone"],
+  ["member", "start_now", "not_allowed", "asked"],
+  ["member", "monday", "not_allowed", "asked"],
+  ["member", "cancel", "not_allowed", "asked"],
+] as const)("the asked card's %s taps %s: %s", ([role, action, expected, state]) =>
+  Effect.gen(function* () {
+    yield* setup();
+    yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
+    // Production's stop switch: every due start asks.
+    yield* tick(headsUpAt);
+    const asked = yield* cardOf("def-1");
+    assert.equal(asked.phase, "asked");
+    assert.deepStrictEqual(asked.actions, ["start_now", "monday", "cancel"]);
+    assert.equal(
+      asked.text,
+      "Due at 9:00 am. Tap Start now to start it, Monday to move it, or Cancel. I won't start it on my own: Kin asks before every start for now.",
+    );
+    if (role !== "owner") yield* joinChat(role, role === "co-owner" ? "co_owner" : "member");
+    const person = role === "owner" ? `owner-${orgId}` : role;
+    assert.equal(outcome(yield* tap(action, person)), expected);
+    assert.equal((yield* runOf("def-1"))?.state, state);
+    const [started, ...more] = yield* starts();
+    assert.lengthOf(more, 0);
+    if (state === "started") {
+      assert.deepInclude(JSON.parse(started!.json).provenance, { _tag: "human", personId: person });
+      assert.deepInclude(yield* cardOf("def-1"), { phase: "started", actions: [] });
+    } else assert.isUndefined(started);
+    // A tap Kin finished itself wakes no one.
+    const sql = yield* SqlClient.SqlClient;
+    const woke = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
+      AND tag = 'widget.action'`;
+    assert.lengthOf(woke, 0);
+  }).pipe(Effect.provide(layerFor([deferral]))),
+);
+
+// A lost answer's retry: the same tap again gets the first answer; a second tap is refused.
+it.effect.each(["start_now", "monday", "cancel"] as const)(
+  "an exact repeat of a committed %s answers as the first did; a double tap is refused",
+  (action) =>
+    Effect.gen(function* () {
+      yield* setup();
+      yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
+      yield* tick(headsUpAt);
+      const chat = yield* Chat.KinChatService;
+      const drawn = yield* cardOf("def-1");
+      const send = (clientActionId: string) =>
+        chat
+          .act(
+            { _tag: "person", orgId, personId: KinPersonId.make(`owner-${orgId}`) },
+            {
+              widgetId,
+              revision: drawn.revision,
+              actionId: action,
+              value: "def-1",
+              clientActionId,
+            },
+          )
+          .pipe(Effect.result);
+      const first = yield* send("tap-1");
+      assert.equal(outcome(first), "ok");
+      const after = { run: yield* runOf("def-1"), card: yield* cardOf("def-1") };
+      const again = yield* send("tap-1");
+      assert.equal(
+        again._tag === "Success" && again.success.messageId,
+        first._tag === "Success" && first.success.messageId,
+      );
+      assert.equal(outcome(yield* send("tap-2")), "widget_changed");
+      assert.deepStrictEqual({ run: yield* runOf("def-1"), card: yield* cardOf("def-1") }, after);
+      assert.lengthOf(yield* starts(), action === "start_now" ? 1 : 0);
+    }).pipe(Effect.provide(layerFor([deferral]))),
+);
+
 it.effect(
-  "heads-up taps: [Monday] re-arms next Monday 09:00, [Cancel] cancels, [Start now] starts",
+  "[Monday] moves the run until memory moves it and asks again then; [Cancel] holds the same way",
+  () => {
+    const cancelled = makeDeferral("def-2");
+    const items = [deferral, cancelled];
+    return Effect.gen(function* () {
+      yield* setup();
+      const service = yield* TriggerService.KinTriggerService;
+      for (const entry of items) yield* service.syncItem(entry);
+      yield* tick(headsUpAt);
+
+      assert.equal(outcome(yield* tap("monday")), "ok");
+      assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt: nextMonday });
+      const moved = yield* cardOf("def-1");
+      assert.isUndefined(moved.phase);
+      assert.deepInclude(moved, {
+        dueAt: DateTime.formatIso(DateTime.makeUnsafe(nextMonday)),
+        actions: ["undo"],
+        text: "Deferred to Mon, 16 Nov, 9:00 am. I'll ask you to start it then.",
+      });
+      assert.equal(outcome(yield* tap("cancel", `owner-${orgId}`, "def-2")), "ok");
+      assert.isNotNull(
+        Option.getOrThrow(
+          yield* (yield* Repository.KinChatRepository).getWidget({
+            orgId,
+            widgetId: widgetFor("def-2"),
+          }),
+        ).closedAt,
+      );
+      assert.deepStrictEqual(yield* triggersOf(), [
+        { id: "deferral:def-1:due", enabled: 1, nextRunAt: nextMonday },
+        { id: "deferral:def-1:heads_up", enabled: 1, nextRunAt: nextMonday - 30 * 60_000 },
+        { id: "deferral:def-2:due", enabled: 0, nextRunAt: null },
+        { id: "deferral:def-2:heads_up", enabled: 0, nextRunAt: null },
+      ]);
+      // Memory still holds Friday: the next syncs keep the move and the cancel.
+      for (const entry of items) assert.equal(yield* service.syncItem(entry), "unchanged");
+      yield* tick(dueAt);
+      assert.lengthOf(yield* starts(), 0);
+      assert.equal((yield* runOf("def-2"))?.state, "undone");
+
+      // Monday's heads-up asks again, for Monday.
+      yield* tick(nextMonday - 30 * 60_000);
+      const again = yield* cardOf("def-1");
+      assert.equal(again.phase, "asked");
+      assert.equal(again.dueAt, DateTime.formatIso(DateTime.makeUnsafe(nextMonday)));
+      assert.equal(outcome(yield* tap("start_now")), "ok");
+      const [started] = yield* starts();
+      assert.equal(started?.dedupeKey, `deferral:def-1:due:${nextMonday}`);
+
+      // Once memory moves it, memory's time arms again.
+      const later = makeDeferral("def-1", { due: "2026-11-20T09:00+05:30" });
+      assert.equal(yield* service.syncItem(later), "armed");
+      assert.deepStrictEqual(yield* runOf("def-1"), {
+        state: "armed",
+        dueAt: Date.parse("2026-11-20T03:30:00.000Z"),
+      });
+    }).pipe(Effect.provide(layerFor(items)));
+  },
+);
+
+const DECIDE = ["start_now", "monday", "cancel"];
+const refusalOf = (result: Effect.Success<ReturnType<typeof tap>>) =>
+  result._tag === "Failure" && result.failure._tag === "KinChatError"
+    ? result.failure.message
+    : undefined;
+/** Turns a section off in the company's shell. */
+const sectionOff = Effect.fn("test.deferralSectionOff")(function* (section: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+    VALUES (${orgId}, ${JSON.stringify([{ id: section, on: false }])}, 1, ${`owner-${orgId}`}, 0)`;
+});
+
+it.effect(
+  "a tap on a card drawn before its work changed is refused, and the card is drawn again",
   () => {
     const items = [deferral];
     return Effect.gen(function* () {
       yield* setup();
+      yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
+      yield* tick(headsUpAt);
+      const drawn = yield* cardOf("def-1");
+      // Edited in memory with the same due and mode: different work.
+      items[0] = makeDeferral("def-1", { title: "Rewrite the importer", what: "Something else" });
+      assert.equal(outcome(yield* tap("start_now")), "widget_changed");
+      const redrawn = yield* cardOf("def-1");
+      assert.isAbove(redrawn.revision, drawn.revision);
+      assert.deepInclude(redrawn, {
+        phase: "asked",
+        title: "Rewrite the importer",
+        actions: DECIDE,
+      });
+      assert.include(redrawn.text, "it changed since you were asked");
+      assert.lengthOf(yield* starts(), 0);
+      assert.equal((yield* runOf("def-1"))?.state, "asked");
+      // The card as drawn now starts the work as it is now.
+      assert.equal(outcome(yield* tap("start_now")), "ok");
+      assert.lengthOf(yield* starts(), 1);
+    }).pipe(Effect.provide(layerFor(items)));
+  },
+);
+
+it.effect("a tap on an item cancelled in memory is refused and closes its card", () => {
+  const items = [deferral];
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
+    yield* tick(headsUpAt);
+    items[0] = makeDeferral("def-1", { status: "cancelled" });
+    assert.equal(outcome(yield* tap("monday")), "widget_changed");
+    const repo = yield* Repository.KinChatRepository;
+    assert.isNotNull(Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId })).closedAt);
+    assert.deepStrictEqual(yield* runOf("def-1"), { state: "asked", dueAt });
+    assert.lengthOf(yield* starts(), 0);
+  }).pipe(Effect.provide(layerFor(items)));
+});
+
+it.effect(
+  "a link into a section that is off, added after the draw or turned off since, starts nothing",
+  () => {
+    const items = [makeDeferral("def-1", { links: ["C-1"] }), makeDeferral("def-2")];
+    return Effect.gen(function* () {
+      yield* setup();
+      const service = yield* TriggerService.KinTriggerService;
+      for (const entry of items) yield* service.syncItem(entry);
+      yield* tick(headsUpAt);
+      yield* sectionOff("clients");
+      // def-1 was drawn linked to a client; Clients is off now.
+      assert.equal(outcome(yield* tap("start_now")), "invalid_state");
+      // def-2 is linked to a client after its card was drawn.
+      items[1] = makeDeferral("def-2", { links: ["C-1"] });
+      assert.equal(outcome(yield* tap("start_now", `owner-${orgId}`, "def-2")), "widget_changed");
+      assert.equal(outcome(yield* tap("start_now", `owner-${orgId}`, "def-2")), "invalid_state");
+      assert.lengthOf(yield* starts(), 0);
+      assert.deepStrictEqual(
+        [(yield* runOf("def-1"))?.state, (yield* runOf("def-2"))?.state],
+        ["asked", "asked"],
+      );
+    }).pipe(Effect.provide(layerFor(items)));
+  },
+);
+
+it.effect("a paused agent is not started: refused at the tap, and held at the claim", () =>
+  Effect.gen(function* () {
+    yield* setup();
+    yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
+    yield* tick(headsUpAt);
+    assert.equal((yield* cardOf("def-1")).agent, "Lead");
+    const sql = yield* SqlClient.SqlClient;
+    const pause = (at: number | null) =>
+      sql`UPDATE kin_agents SET paused_at = ${at} WHERE org_id = ${orgId} AND agent_id = ${`lead-${orgId}`}`;
+    yield* pause(1);
+    const paused = yield* tap("start_now");
+    assert.equal(outcome(paused), "invalid_state");
+    assert.equal(refusalOf(paused), "Lead is paused. Resume it, then start this.");
+    assert.equal((yield* runOf("def-1"))?.state, "asked");
+    assert.lengthOf(yield* starts(), 0);
+
+    yield* pause(null);
+    assert.equal(outcome(yield* tap("start_now")), "ok");
+    assert.deepInclude(yield* cardOf("def-1"), { text: "Asked Lead to start it.", agent: "Lead" });
+    // Paused between the tap and its turn: nothing is claimed until it is resumed.
+    yield* pause(2);
+    const queue = yield* Queue.KinEventQueue;
+    const claim = yield* Effect.scoped(
+      queue.claim({
+        orgId,
+        agentId: KinAgentId.make(`lead-${orgId}`),
+        wakeupId: KinWakeupId.make("wake-paused"),
+        model: "fixture",
+      }),
+    ).pipe(Effect.forkChild);
+    yield* TestClock.adjust("10 minutes");
+    assert.isUndefined(claim.pollUnsafe());
+    const [queued] = yield* sql<{ state: string }>`SELECT state FROM kin_events
+      WHERE org_id = ${orgId} AND tag = 'deferral.due' ORDER BY event_id`;
+    assert.equal(queued?.state, "queued");
+    yield* Fiber.interrupt(claim);
+  }).pipe(Effect.provide(layerFor([deferral]))),
+);
+
+// A card the earlier build drew: no taps listed, no source kept with its run.
+it.effect.each(["start_now", "monday", "cancel"] as const)(
+  "an asked card from before taps were bound is drawn again at start-up, then takes %s",
+  (action) =>
+    Effect.gen(function* () {
+      yield* setup();
+      yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
+      yield* tick(headsUpAt);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_deferral_runs SET snapshot_json =
+          json_remove(snapshot_json, '$.drawn', '$.source')
+        WHERE org_id = ${orgId} AND item_id = 'def-1'`;
+      yield* sql`UPDATE kin_widgets SET state_json =
+          json_remove(state_json, '$.actions', '$.agent'), revision = revision + 1
+        WHERE org_id = ${orgId} AND widget_id = ${widgetId}`;
+      const old = yield* cardOf("def-1");
+      assert.isUndefined(old.actions);
+      assert.equal(outcome(yield* tap(action)), "widget_changed");
+      // The deferral tick draws it again from its committed item.
+      yield* tick(headsUpAt + 60_000);
+      const redrawn = yield* cardOf("def-1");
+      assert.isAbove(redrawn.revision, old.revision);
+      assert.deepInclude(redrawn, { phase: "asked", actions: DECIDE, agent: "Lead" });
+      // The old revision gains nothing.
+      const chat = yield* Chat.KinChatService;
+      const stale = yield* chat
+        .act(
+          { _tag: "person", orgId, personId: KinPersonId.make(`owner-${orgId}`) },
+          {
+            widgetId,
+            revision: old.revision,
+            actionId: action,
+            value: "def-1",
+            clientActionId: "old",
+          },
+        )
+        .pipe(Effect.result);
+      assert.equal(outcome(stale), "widget_changed");
+      assert.equal(outcome(yield* tap(action)), "ok");
+      assert.equal(
+        (yield* runOf("def-1"))?.state,
+        action === "start_now" ? "started" : action === "monday" ? "armed" : "undone",
+      );
+    }).pipe(Effect.provide(layerFor([deferral]))),
+);
+
+it.effect("a card with no agent to start it lists Monday and Cancel, and says so", () =>
+  Effect.gen(function* () {
+    yield* setup();
+    yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_agents SET retired_at = 1 WHERE org_id = ${orgId}`;
+    yield* tick(headsUpAt);
+    const asked = yield* cardOf("def-1");
+    assert.deepStrictEqual(asked.actions, ["monday", "cancel"]);
+    assert.include(asked.text, "Tap Monday to move it, or Cancel. I can't start it now:");
+    assert.include(asked.text, "there is no active agent");
+    assert.equal(outcome(yield* tap("start_now")), "widget_changed");
+  }).pipe(Effect.provide(layerFor([deferral]))),
+);
+
+it.effect("a retired agent's card starts with a live fallback, and refuses without one", () =>
+  Effect.gen(function* () {
+    yield* setup();
+    yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
+    yield* tick(headsUpAt);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_agents SET retired_at = 1 WHERE org_id = ${orgId}
+      AND agent_id = ${`lead-${orgId}`}`;
+    assert.equal(outcome(yield* tap("start_now")), "invalid_state");
+    assert.equal((yield* runOf("def-1"))?.state, "asked");
+    yield* addLead(orgId, "lead-fallback", "engineering", "2026-11-07T00:00:00.000Z");
+    assert.equal(outcome(yield* tap("start_now")), "ok");
+    const [started] = yield* starts();
+    assert.equal(JSON.parse(started!.json).agentId, "lead-fallback");
+  }).pipe(Effect.provide(layerFor([deferral]))),
+);
+
+it.effect("taps that aren't this card's are refused and change nothing", () => {
+  const foreign = makeDeferral("def-b", { orgId: otherOrg, chat: KinChatId.make("chat-b") });
+  return Effect.gen(function* () {
+    yield* setup();
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(deferral);
+    yield* service.syncItem(foreign);
+    yield* tick(headsUpAt);
+    const sql = yield* SqlClient.SqlClient;
+    const before = { run: yield* runOf("def-1"), card: yield* cardOf("def-1") };
+    // Another item's id on this card.
+    assert.equal(
+      outcome(yield* tap("monday", `owner-${orgId}`, "def-2", widgetId)),
+      "invalid_state",
+    );
+    // Another company's card.
+    assert.equal(
+      outcome(
+        yield* tap(
+          "monday",
+          `owner-${orgId}`,
+          "def-b",
+          KinWidgetId.make(`deferral:${otherOrg}:def-b`),
+        ),
+      ),
+      "not_found",
+    );
+    // A co-owner who isn't in the card's chat.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+      VALUES ('elsewhere-a', ${orgId}, 'elsewhere-a', 'Elsewhere', 'co_owner', 0)`;
+    assert.equal(outcome(yield* tap("cancel", "elsewhere-a")), "not_found");
+    // A guest co-owner, and a co-owner who left the chat.
+    yield* joinChat("guest-a", "co_owner");
+    yield* sql`UPDATE kin_chat_members SET role = 'guest' WHERE member_id = 'member-guest-a'`;
+    yield* joinChat("gone-a", "co_owner");
+    yield* sql`UPDATE kin_chat_members SET left_at = '2026-11-08T00:00:00.000Z'
+      WHERE member_id = 'member-gone-a'`;
+    for (const person of ["guest-a", "gone-a"])
+      assert.notEqual(outcome(yield* tap("cancel", person)), "ok", person);
+    assert.deepStrictEqual({ run: yield* runOf("def-1"), card: yield* cardOf("def-1") }, before);
+    assert.lengthOf(yield* starts(), 0);
+  }).pipe(Effect.provide(layerFor([deferral, foreign])));
+});
+
+it.effect("once only: the due fire starts first, and the card drawn before it refuses", () =>
+  Effect.gen(function* () {
+    yield* setup();
+    yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
+    yield* tick(headsUpAt);
+    const headsUp = yield* cardOf("def-1");
+    assert.equal(headsUp.phase, "heads_up");
+    yield* tick(dueAt);
+    assert.equal((yield* runOf("def-1"))?.state, "started");
+    const chat = yield* Chat.KinChatService;
+    const stale = yield* chat
+      .act(
+        { _tag: "person", orgId, personId: KinPersonId.make(`owner-${orgId}`) },
+        {
+          widgetId,
+          revision: headsUp.revision,
+          actionId: "start_now",
+          value: "def-1",
+          clientActionId: "late",
+        },
+      )
+      .pipe(Effect.result);
+    assert.equal(outcome(stale), "widget_changed");
+    assert.lengthOf(yield* starts(), 1);
+  }).pipe(openGates(new Map()), Effect.provide(layerFor([deferral]))),
+);
+
+it.effect("the owner check leaves out a deferral a tap cancelled", () => {
+  const reviewed = makeDeferral("def-1", { review_by: "2026-11-01" });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* (yield* TriggerService.KinTriggerService).syncItem(reviewed);
+    yield* tick(headsUpAt);
+    const check = yield* OwnerCheck.OwnerCheck;
+    assert.deepStrictEqual(
+      (yield* check.select(orgId)).map((selection) => selection.itemId),
+      ["def-1"],
+    );
+    assert.equal(outcome(yield* tap("cancel")), "ok");
+    assert.deepStrictEqual(yield* check.select(orgId), []);
+  }).pipe(Effect.provide(layerFor([reviewed])));
+});
+
+it.effect("Monday twice moves once; Cancel then Start now starts nothing", () => {
+  const items = [deferral, makeDeferral("def-2")];
+  return Effect.gen(function* () {
+    yield* setup();
+    const service = yield* TriggerService.KinTriggerService;
+    for (const entry of items) yield* service.syncItem(entry);
+    yield* tick(headsUpAt);
+    assert.equal(outcome(yield* tap("monday")), "ok");
+    assert.equal(outcome(yield* tap("monday")), "widget_changed");
+    assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt: nextMonday });
+    assert.equal(outcome(yield* tap("cancel", `owner-${orgId}`, "def-2")), "ok");
+    assert.notEqual(outcome(yield* tap("start_now", `owner-${orgId}`, "def-2")), "ok");
+    assert.equal((yield* runOf("def-2"))?.state, "undone");
+    assert.lengthOf(yield* starts(), 0);
+  }).pipe(Effect.provide(layerFor(items)));
+});
+
+it.effect(
+  "after [Monday], memory's change of mode at the old time is a full replan that fires",
+  () =>
+    Effect.gen(function* () {
+      yield* setup();
       const service = yield* TriggerService.KinTriggerService;
       yield* service.syncItem(deferral);
       yield* tick(headsUpAt);
-      assert.equal((yield* cardOf("def-1")).phase, "heads_up");
-      const staged: Array<MemoryWriter.MemoryChange> = [];
-
-      const monday = yield* tap("monday", "owner", staged);
-      assert.equal(
-        monday._tag === "Success" && monday.success.due,
-        "2026-11-16T09:00:00.000+05:30",
-      );
-      assert.include(staged[0]!.content, "due: 2026-11-16T09:00:00.000+05:30");
-      const cancel = yield* tap("cancel", "owner", staged);
-      assert.equal(cancel._tag, "Success");
-      assert.include(staged[1]!.content, "status: cancelled");
-
-      // The stop switch holds even the owner's [Start now].
-      const sql = yield* SqlClient.SqlClient;
-      const before = { run: yield* runOf("def-1"), card: yield* cardOf("def-1") };
-      const stopped = yield* tap("start_now", "stopped", staged).pipe(
-        Effect.provideService(Deferrals.KinDeferralStopSwitch, {
-          isStopped: () => Effect.succeed(true),
-        }),
-      );
-      assert.equal(stopped._tag === "Failure" && stopped.failure.cause, "stopped");
-      assert.deepStrictEqual({ run: yield* runOf("def-1"), card: yield* cardOf("def-1") }, before);
-      assert.lengthOf(yield* starts(), 0);
-
-      const start = yield* tap("start_now", "owner", staged);
-      assert.equal(start._tag === "Success" && start.success.action, "start_now");
-      assert.equal((yield* runOf("def-1"))?.state, "started");
-      const [started] = yield* starts();
-      assert.equal(started?.dedupeKey, `deferral:def-1:due:${dueAt}`);
-      assert.include(started!.json, '"_tag":"human"');
-      assert.equal((yield* tap("start_now", "again", staged))._tag, "Failure");
-      // The due fire finds the run started and starts nothing more.
-      yield* tick(dueAt);
-      assert.lengthOf(yield* starts(), 1);
-
-      // The [Monday] commit reaches the cache hook and re-arms the triggers.
-      items[0] = makeDeferral("def-1", { due: "2026-11-16T09:00:00.000+05:30" });
-      assert.equal(yield* service.syncItem(items[0]), "armed");
-      const nextDue = Date.parse("2026-11-16T03:30:00.000Z");
-      const triggers = yield* sql<{ id: string; nextRunAt: number | null }>`SELECT trigger_id AS id,
-      next_run_at AS "nextRunAt" FROM kin_triggers WHERE org_id = ${orgId} ORDER BY trigger_id`;
-      assert.deepStrictEqual(triggers, [
-        { id: "deferral:def-1:due", nextRunAt: nextDue },
-        { id: "deferral:def-1:heads_up", nextRunAt: nextDue - 30 * 60_000 },
+      assert.equal(outcome(yield* tap("monday")), "ok");
+      assert.equal(yield* service.syncItem(deferral), "unchanged");
+      // Memory now asks instead of starting, at the same Friday time.
+      const asking = makeDeferral("def-1", { on_due: "ask" });
+      assert.equal(yield* service.syncItem(asking), "armed");
+      assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt });
+      assert.deepStrictEqual(yield* triggersOf(), [
+        { id: "deferral:def-1:due", enabled: 1, nextRunAt: dueAt },
+        { id: "deferral:def-1:heads_up", enabled: 0, nextRunAt: null },
       ]);
-      assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt: nextDue });
-      const card = yield* cardOf("def-1");
-      assert.equal(card.phase, undefined);
-      assert.equal(card.text, "Deferred to Mon, 16 Nov, 9:00 am. I'll start then.");
-    }).pipe(openGates(new Map()), Effect.provide(layerFor(items)));
-  },
+      yield* tick(dueAt);
+      assert.equal((yield* runOf("def-1"))?.state, "asked");
+      // Nothing is left pointing at Monday.
+      yield* tick(nextMonday);
+      assert.deepStrictEqual(yield* runOf("def-1"), { state: "asked", dueAt });
+    }).pipe(Effect.provide(layerFor([deferral]))),
+);
+
+it.effect("a cancelled run stays cancelled while its item is away and when it comes back", () => {
+  const items = [deferral];
+  return Effect.gen(function* () {
+    yield* setup();
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(deferral);
+    yield* tick(headsUpAt);
+    assert.equal(outcome(yield* tap("cancel")), "ok");
+    yield* service.syncOrg(orgId, []);
+    assert.equal((yield* runOf("def-1"))?.state, "undone");
+    yield* service.syncOrg(orgId, items);
+    assert.equal((yield* runOf("def-1"))?.state, "undone");
+    yield* tick(dueAt);
+    assert.lengthOf(yield* starts(), 0);
+    assert.equal((yield* runOf("def-1"))?.state, "undone");
+    // Only a new due arms it again.
+    yield* service.syncOrg(orgId, [makeDeferral("def-1", { due: "2026-11-20T09:00+05:30" })]);
+    assert.equal((yield* runOf("def-1"))?.state, "armed");
+  }).pipe(Effect.provide(layerFor(items)));
+});
+
+it.effect("an Undo after [Monday] holds; a tap on a card drawn before a change is refused", () =>
+  Effect.gen(function* () {
+    yield* setup();
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(deferral);
+    yield* tick(headsUpAt);
+    const asked = yield* cardOf("def-1");
+    assert.equal(outcome(yield* tap("monday")), "ok");
+    // The screen still shows the asked card: its taps say the card changed.
+    const chat = yield* Chat.KinChatService;
+    const stale = yield* chat
+      .act(
+        { _tag: "person", orgId, personId: KinPersonId.make(`owner-${orgId}`) },
+        {
+          widgetId,
+          revision: asked.revision,
+          actionId: "start_now",
+          value: "def-1",
+          clientActionId: "stale-start",
+        },
+      )
+      .pipe(Effect.result);
+    assert.equal(outcome(stale), "widget_changed");
+    assert.equal(outcome(yield* tap("undo")), "ok");
+    assert.equal((yield* runOf("def-1"))?.state, "undone");
+    assert.equal(yield* service.syncItem(deferral), "unchanged");
+    yield* tick(nextMonday);
+    assert.lengthOf(yield* starts(), 0);
+  }).pipe(Effect.provide(layerFor([deferral]))),
 );
 
 it.effect("the owner's Start now starts at L1", () =>
@@ -519,16 +915,15 @@ it.effect("the owner's Start now starts at L1", () =>
     yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
     yield* tick(headsUpAt);
     assert.equal((yield* runOf("def-1"))?.state, "asked");
-    const start = yield* tap("start_now", "owner", []);
-    assert.equal(start._tag === "Success" && start.success.action, "start_now");
+    assert.equal(outcome(yield* tap("start_now")), "ok");
     assert.equal((yield* runOf("def-1"))?.state, "started");
     const [started] = yield* starts();
     assert.include(started!.json, '"_tag":"human"');
   }).pipe(openGates(new Map()), Effect.provide(layerFor([deferral]))),
 );
 
-// The agent's owner in its chat, but a teammate in the company: their tap is no level grant.
-it.effect("a teammate's Start now at L1 is still refused", () =>
+// The agent's owner in its chat, but a teammate in the company: owning the chat grants nothing.
+it.effect("a teammate who owns the chat can't Start now, Monday or Cancel", () =>
   Effect.gen(function* () {
     yield* setup("L1");
     const sql = yield* SqlClient.SqlClient;
@@ -536,11 +931,26 @@ it.effect("a teammate's Start now at L1 is still refused", () =>
       AND person_id = ${`owner-${orgId}`}`;
     yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
     yield* tick(headsUpAt);
-    const refused = yield* tap("start_now", "teammate", []);
-    assert.equal(refused._tag === "Failure" && refused.failure.cause, "below_l2");
-    assert.equal((yield* runOf("def-1"))?.state, "asked");
+    const before = { run: yield* runOf("def-1"), triggers: yield* triggersOf() };
+    for (const action of ["start_now", "monday", "cancel"])
+      assert.equal(outcome(yield* tap(action)), "not_allowed", action);
+    assert.deepStrictEqual({ run: yield* runOf("def-1"), triggers: yield* triggersOf() }, before);
+    assert.equal(before.run?.state, "asked");
     assert.lengthOf(yield* starts(), 0);
   }).pipe(openGates(new Map()), Effect.provide(layerFor([deferral]))),
+);
+
+it.effect("a co-owner demoted to member can't Undo the card they set", () =>
+  Effect.gen(function* () {
+    yield* setup();
+    yield* joinChat("co-a", "co_owner");
+    yield* (yield* TriggerService.KinTriggerService).syncItem(deferral);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_people SET access = 'member' WHERE org_id = ${orgId}
+      AND person_id = 'co-a'`;
+    assert.equal(outcome(yield* tap("undo", "co-a")), "not_allowed");
+    assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt });
+  }).pipe(Effect.provide(layerFor([deferral]))),
 );
 
 it.effect(
@@ -1027,6 +1437,72 @@ it.effect("a reminder set privately in a group later shared fires into the owner
   }).pipe(Effect.provide(layerFor([remind])));
 });
 
+it.effect("a due reminder wakes the agent that promised it, else the chief of staff", () => {
+  const made = (id: string, by: string) =>
+    makeDeferral(id, {
+      on_due: "remind",
+      chat: KinChatId.make("group-a"),
+      source_event: KinEventId.make(`set-${by}`),
+    });
+  const promised = made("def-p", "finance");
+  const orphaned = made("def-q", "gone");
+  const started = makeDeferral("def-c", {
+    due: "2026-11-20T09:00+05:30",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-finance"),
+  });
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    for (const [agent, domain] of [
+      ["finance", "finance"],
+      ["chief", "chief-of-staff"],
+      ["gone", "growth"],
+    ] as const)
+      yield* addLead(orgId, agent, domain, "2026-11-07T00:00:00.000Z");
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+      VALUES ('group-a', ${orgId}, 'team_group', 'Plans', 0, '1970-01-01T00:00:00.000Z')`;
+    // The first lead joined the group first: the floor's pick, never the promise's maker here.
+    for (const [index, agent] of [`lead-${orgId}`, "finance", "gone"].entries())
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id,
+          role, joined_at)
+        VALUES (${`group-${agent}`}, ${orgId}, 'group-a', 'agent', ${agent}, 'member',
+          ${`1970-01-0${index + 1}T00:00:00.000Z`})`;
+    for (const agent of ["finance", "gone"])
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state)
+        VALUES (${`set-${agent}`}, ${orgId}, ${agent}, 'chat.message', 'P0', ${JSON.stringify({
+          _tag: "chat.message",
+          orgId,
+          agentId: agent,
+          eventId: `set-${agent}`,
+          receivedAt: "1970-01-01T00:00:00.000Z",
+          dedupeKey: null,
+          provenance: { _tag: "human", personId: `owner-${orgId}`, memberId: "group-owner" },
+          chatId: "group-a",
+          messageId: `said-${agent}`,
+        })}, 0, 0, 'done')`;
+    yield* sql`UPDATE kin_agents SET retired_at = 1 WHERE agent_id = 'gone'`;
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(promised);
+    yield* service.syncItem(orphaned);
+    yield* tick(dueAt);
+    const woke = yield* sql<{ itemId: string; agentId: string }>`SELECT
+        json_extract(json, '$.subject.itemId') AS "itemId", agent_id AS "agentId"
+      FROM kin_events WHERE org_id = ${orgId} AND tag = 'deferral.due' ORDER BY "itemId"`;
+    assert.deepStrictEqual(woke, [
+      { itemId: "def-p", agentId: "finance" },
+      { itemId: "def-q", agentId: "chief" },
+    ]);
+    // Armed once its chat was shared, a start's card goes to its maker's owner chat.
+    yield* sql`UPDATE kin_chats SET shared_at = 1 WHERE chat_id = 'group-a'`;
+    yield* service.syncItem(started);
+    const card = yield* sql<{ chatId: string }>`SELECT chat_id AS "chatId" FROM kin_messages
+      WHERE message_id = ${widgetFor("def-c")}`;
+    assert.deepStrictEqual(card, [{ chatId: "chat-finance" }]);
+  }).pipe(Effect.provide(layerFor([promised, orphaned, started])));
+});
+
 it.effect("a group's own reminder fires into the group as its agent, else to whoever asked", () => {
   const here = makeDeferral("def-s", {
     on_due: "remind",
@@ -1038,6 +1514,15 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
   const partners = makeDeferral("def-c", {
     on_due: "remind",
     due: "2026-11-13T11:00+05:30",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-event"),
+    said_by: "teammate",
+    for_chat: true,
+  });
+  // Its asker undoes this one themselves.
+  const theirs = makeDeferral("def-t", {
+    on_due: "remind",
+    due: "2026-11-13T11:30+05:30",
     chat: KinChatId.make("group-a"),
     source_event: KinEventId.make("set-event"),
     said_by: "teammate",
@@ -1137,6 +1622,7 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     yield* triggers.syncItem(here);
     yield* triggers.syncItem(gone);
     yield* triggers.syncItem(partners);
+    yield* triggers.syncItem(theirs);
     yield* triggers.syncItem(late);
     yield* triggers.syncItem(unreached);
 
@@ -1163,6 +1649,23 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     assert.deepInclude(refused, { reason: "not_allowed", message: KIN_ASKER_ONLY_REFUSAL });
     yield* undo("partner", "def-c");
     assert.strictEqual((yield* runOf("def-c"))?.state, "undone");
+    // The asker may Undo their own; any other tap from them is the company's, so refused.
+    const forged = yield* chat
+      .act(
+        { _tag: "person", orgId, personId: KinPersonId.make("teammate") },
+        {
+          widgetId: widgetFor("def-t"),
+          revision: 1,
+          actionId: "monday",
+          value: "def-t",
+          clientActionId: "forged-monday",
+        },
+      )
+      .pipe(Effect.flip);
+    assert.deepInclude(forged, { reason: "not_allowed" });
+    assert.strictEqual((yield* runOf("def-t"))?.state, "armed");
+    yield* undo("teammate", "def-t");
+    assert.strictEqual((yield* runOf("def-t"))?.state, "undone");
 
     yield* tick(dueAt);
     const eventId = yield* reminderEvent();
@@ -1226,7 +1729,7 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
       unreachedLines[0]!.body,
       /^A reminder Bystander set on .* for Plans is due, but it couldn't reach them or that chat\.$/,
     );
-  }).pipe(Effect.provide(layerFor([here, gone, partners, late, unreached])));
+  }).pipe(Effect.provide(layerFor([here, gone, partners, theirs, late, unreached])));
 });
 
 it.effect("a teammate's own reminder comes to them in their chat, never the owner's", () => {

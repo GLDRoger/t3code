@@ -1,5 +1,5 @@
 import { kinGuardedRead, makeKinClient } from "@t3tools/client-runtime/kin/kinClient";
-import type { KinDockTab } from "@t3tools/client-runtime/kin/kinJoin";
+import type { KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
 import { makeKinScreenReads } from "@t3tools/client-runtime/kin/kinScreenReads";
 import { createKinRpcCommand } from "@t3tools/client-runtime/kin/kinAccess";
 import { watchKinChatForPush } from "@t3tools/client-runtime/kin-push";
@@ -65,7 +65,10 @@ export const kinCachedDockAtom = Atom.family((environmentId: EnvironmentId) =>
 );
 
 export const saveKinDockAtom = connectionAtomRuntime.fn(
-  (input: { readonly environmentId: EnvironmentId; readonly tabs: ReadonlyArray<KinDockTab> }) =>
+  (input: {
+    readonly environmentId: EnvironmentId;
+    readonly tabs: ReadonlyArray<KinDestination>;
+  }) =>
     withKinCache(dockCache.save(input.environmentId, DOCK_CACHE_KEY, input.tabs)).pipe(
       Effect.andThen(
         Effect.sync(() => appAtomRegistry.refresh(kinCachedDockAtom(input.environmentId))),
@@ -169,6 +172,11 @@ export const kinClient = {
   unregisterPush: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:unregister-push",
     tag: KIN_PUSH_WS_METHODS.unregisterDevice,
+  }),
+  /** Which of this host's delivered notifications are settled, and the badge. */
+  reconcilePush: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:reconcile-push",
+    tag: KIN_PUSH_WS_METHODS.reconcile,
   }),
   /** Mounted while a chat is on screen: the host skips this device's pushes for it. */
   pushWatch: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {

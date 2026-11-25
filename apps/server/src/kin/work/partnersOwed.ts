@@ -6,7 +6,7 @@ import { KinRecords, type Writer } from "./KinRecords.ts";
 import { fieldText, parseFields } from "./lists.ts";
 import { listDef } from "./registers.ts";
 import { addUp, dayIn, formatMoney } from "./money.ts";
-import { countedEntry, moneyDay } from "./recordRows.ts";
+import { countedEntry, moneyDay, ownerZone } from "./recordRows.ts";
 import {
   FUNDED_BY,
   fundingOf,
@@ -106,14 +106,26 @@ export type PartnersOwed = Effect.Success<ReturnType<typeof partnersOwed>>;
 
 /**
  * Everyone who has funded a Paid expense, owed or not, with what was marked repaid by hand (no bank
- * row) as one total per currency and day: a statement line naming one is never a new expense.
+ * row) as one total per currency and day: a statement line naming one is never a new expense. A
+ * mark with no Repaid on day counts on the day it was written, in the owner's zone.
  */
 export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ minor: number; currency: string; fieldsJson: string; linked: number }>`
+  const zone = yield* ownerZone(orgId);
+  const rows = yield* sql<{
+    minor: number;
+    currency: string;
+    fieldsJson: string;
+    linked: number;
+    markedAt: number;
+  }>`
     SELECT r.amount_minor AS minor, r.currency, r.fields_json AS "fieldsJson",
       EXISTS (SELECT 1 FROM kin_bank_statement_entries e WHERE e.org_id = r.org_id
-        AND e.target_record_id = r.record_id) AS linked
+        AND e.target_record_id = r.record_id) AS linked,
+      COALESCE((SELECT c.at FROM kin_record_changes c, json_each(c.fields_json) f
+        WHERE c.org_id = r.org_id AND c.record_id = r.record_id
+          AND json_extract(f.value, '$.field') = ${REIMBURSEMENT}
+        ORDER BY c.seq DESC LIMIT 1), r.created_at) AS "markedAt"
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
       AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${partnerFunded(sql)}
@@ -140,8 +152,8 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
       ids: funding.personId === null ? [funding.unmatched!] : [],
       repaid: new Map(),
     };
-    if (funding.state === "repaid" && funding.repaidOn !== null && row.linked === 0) {
-      const at = `${row.currency} ${funding.repaidOn}`;
+    if (funding.state === "repaid" && row.linked === 0) {
+      const at = `${row.currency} ${funding.repaidOn ?? dayIn(row.markedAt, zone)}`;
       payee.repaid.set(at, (payee.repaid.get(at) ?? 0n) + BigInt(row.minor));
     }
     payees.set(id, payee);

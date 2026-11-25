@@ -32,6 +32,7 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { settleReviews } from "../github/askedFor.ts";
+import { PREPARE_EVENT_SQL, PREPARES_PER_TURN } from "../pulse/prepareSenses.ts";
 import * as Reach from "./Reach.ts";
 
 const EventJson = Schema.fromJsonString(KinEvent);
@@ -76,6 +77,8 @@ const FinishInput = Schema.Struct({
    * nothing goes back to the queue until then without spending an attempt, so nothing is lost.
    */
   holdUntil: Schema.optional(NonNegativeInt),
+  /** Stopped for certain after it ignored a stop: what it held fails here, never tried again. */
+  final: Schema.optional(Schema.Boolean),
 });
 
 const SteerInput = Schema.Struct({
@@ -85,12 +88,13 @@ const SteerInput = Schema.Struct({
 });
 
 /**
- * An event's lane, the chat a wake-up answers: a message's, tap's or task's asking chat, else the
- * lead's owner chat. A due deferral from another chat, each GitHub trigger, each approved draft
- * and each follow-up woken for one person (`draftWake.ts`) get their own lane, so a level, a
- * stranger's text or one approval never mixes with anything else. From stored rows, not model text.
+ * An event's lane, the chat a wake-up answers (asking chat, else the owner chat). Other chats'
+ * deferrals, GitHub triggers, approved drafts, follow-ups (`draftWake.ts`), reviews
+ * (`reviewWake.ts`), Kin's head starts and each group of bills to read get their own lanes:
+ * nothing else mixes in.
  */
-const LANE_OF = `CASE WHEN e.tag = 'github' AND json_extract(e.json, '$.trigger.key') IS NOT NULL
+const LANE_OF = `CASE WHEN e.tag = 'bills.read' THEN 'bills:' || e.event_id
+  WHEN e.tag = 'github' AND json_extract(e.json, '$.trigger.key') IS NOT NULL
   THEN 'github:' || json_extract(e.json, '$.trigger.key')
   WHEN e.tag = 'deferral.due' AND json_extract(e.json, '$.subject.approved') IS NOT NULL
   THEN 'approved:' || json_extract(e.json, '$.subject.questionId')
@@ -99,8 +103,11 @@ const LANE_OF = `CASE WHEN e.tag = 'github' AND json_extract(e.json, '$.trigger.
   WHEN e.tag IN ('record.changed', 'task.finished')
     AND json_extract(e.json, '$.chatId') IS NOT NULL
   THEN json_extract(e.json, '$.chatId')
+  WHEN e.tag = 'pulse' AND json_extract(e.json, '$.review') IS NOT NULL
+  THEN 'review:' || json_extract(e.json, '$.chatId')
   WHEN e.tag = 'pulse' AND json_extract(e.json, '$.chatId') IS NOT NULL
   THEN 'draft:' || json_extract(e.json, '$.chatId') || ':' || json_extract(e.json, '$.factKeys[0]')
+  WHEN ${PREPARE_EVENT_SQL} THEN 'prepare:' || l.owner_chat_id
   WHEN e.tag = 'deferral.due' AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
   THEN 'origin:' || json_extract(e.json, '$.origin.agentId') || ':' || json_extract(e.json, '$.origin.chatId')
     || ':' || COALESCE(json_extract(e.json, '$.origin.personId'), '')
@@ -295,6 +302,74 @@ export class KinEventQueue extends Context.Service<
   }
 >()("t3/kin/lead/KinEventQueue") {}
 
+// Whether running wake-up `w` posted, carded or wrote anything; every subquery stays in its org.
+const DID_VISIBLE_WORK = `(
+  EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = w.org_id AND m.author_kind = 'agent'
+    AND m.author_agent_id = w.agent_id AND m.author_thread_id = w.thread_id
+    AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch'))
+  OR EXISTS (SELECT 1 FROM kin_lead_tool_calls c WHERE c.org_id = w.org_id
+    AND c.wakeup_id = w.wakeup_id AND c.call_key != 'end')
+  OR EXISTS (SELECT 1 FROM kin_pending_actions p WHERE p.org_id = w.org_id
+    AND p.requested_by_agent_id = w.agent_id AND p.requested_by_thread_id = w.thread_id
+    AND p.created_at >= w.started_at))`;
+
+export const didVisibleWork = Effect.fn("KinEventQueue.didVisibleWork")(function* (wake: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: KinWakeupId;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_wakeups w
+    WHERE w.org_id = ${wake.orgId} AND w.wakeup_id = ${wake.wakeupId}
+      AND ${sql.literal(DID_VISIBLE_WORK)}
+    ORDER BY w.wakeup_id LIMIT 1`;
+  return rows.length > 0;
+});
+
+/**
+ * A reply refused because someone joined (`AUDIENCE_MOVED`): when the wake-up did nothing visible
+ * and its events were not moved this way before, marks it aborted, so `finish` hands them to a
+ * fresh wake-up for the chat as it now stands. False when the caller must tell the chat instead.
+ */
+export const requeueForAudience = Effect.fn("KinEventQueue.requeueForAudience")(function* (wake: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: KinWakeupId;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const marked = yield* sql`UPDATE kin_wakeups AS w SET aborted_at = ${now}
+        WHERE w.org_id = ${wake.orgId} AND w.wakeup_id = ${wake.wakeupId} AND w.status = 'running'
+          AND w.aborted_at IS NULL AND NOT ${sql.literal(DID_VISIBLE_WORK)}
+          AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
+            AND e.wakeup_id = w.wakeup_id AND e.state = 'claimed')
+          AND NOT EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
+            AND e.wakeup_id = w.wakeup_id AND e.state = 'claimed'
+            AND json_extract(e.json, '$._audienceMoved') IS 1)
+        RETURNING wakeup_id`;
+      if (marked.length === 0) return false;
+      yield* sql`UPDATE kin_events SET json = json_set(json, '$._audienceMoved', 1)
+        WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId} AND state = 'claimed'`;
+      return true;
+    }),
+  );
+});
+
+/**
+ * In the step that tells the chat a join lost this wake-up's reply: its unreplied asks there are
+ * over, so neither a failed run, its retry nor a restart answers or tells them again.
+ */
+export const endLostToJoin = Effect.fn("KinEventQueue.endLostToJoin")(function* (wake: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: KinWakeupId;
+  readonly chatId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_events SET state = 'done'
+    WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId} AND state = 'claimed'
+      AND replied_at IS NULL AND json_extract(json, '$.chatId') = ${wake.chatId}`;
+});
+
 /**
  * A failed start that showed nothing retries soon, so the owner's "trying again" is true, and
  * once more a quarter of an hour on, so a provider down for minutes doesn't lose the request.
@@ -481,6 +556,8 @@ const make = Effect.gen(function* () {
             case "routine":
               if (event.routine === "owner_check") priority = "P3";
               break;
+            // Bills read in the background wait for anyone's message to that agent.
+            case "bills.read":
             case "watchdog":
               priority = "P3";
               break;
@@ -604,7 +681,7 @@ const make = Effect.gen(function* () {
       FROM kin_events
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND state = 'queued'
         AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = kin_events.org_id
-          AND a.agent_id = kin_events.agent_id AND a.retired_at IS NULL)
+          AND a.agent_id = kin_events.agent_id AND a.retired_at IS NULL AND a.paused_at IS NULL)
     `;
     const readyAt =
       window?.first_at != null && window.last_at !== null
@@ -721,9 +798,9 @@ const make = Effect.gen(function* () {
                     e.tag IN ('chat.message', 'widget.action', 'chat.reaction') AS asked,
                     MAX(e.queued_at, COALESCE(e.not_before, 0)) AS due
                   FROM kin_events e JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
-                  -- Queued before a retirement, it never runs after it.
+                  -- Queued before a retirement, it never runs after it; nor while the agent is paused.
                   JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
-                    AND a.retired_at IS NULL
+                    AND a.retired_at IS NULL AND a.paused_at IS NULL
                   WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId} AND e.state = 'queued'
                     AND (e.not_before IS NULL OR e.not_before <= ${now})
                 ), first AS (
@@ -742,7 +819,9 @@ const make = Effect.gen(function* () {
                 WHERE org_id = ${input.orgId} AND event_id IN (
                   SELECT event_id FROM selected o
                   WHERE CASE WHEN (SELECT alone FROM brief) THEN o.asked = 0 ELSE o.page IS NOT 1 END
-                  ORDER BY priority, received_at, event_id LIMIT 50
+                  ORDER BY priority, received_at, event_id
+                  LIMIT (SELECT CASE WHEN lane LIKE 'prepare:%' THEN ${PREPARES_PER_TURN} ELSE 50 END
+                    FROM first)
                 ) RETURNING json, priority, received_at, queued_at, event_id`;
                       if (rows.length === 0) return yield* new NoClaimableEvents({});
                       const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -928,15 +1007,8 @@ const make = Effect.gen(function* () {
             input.status === "completed" || input.status === "interrupted"
               ? [undefined]
               : yield* sql`SELECT 1 FROM kin_wakeups w
-            WHERE w.org_id = ${input.orgId} AND w.wakeup_id = ${input.wakeupId} AND w.status = 'running' AND (
-              EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = w.org_id AND m.author_kind = 'agent'
-                AND m.author_agent_id = w.agent_id AND m.author_thread_id = w.thread_id
-                AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch'))
-              OR EXISTS (SELECT 1 FROM kin_lead_tool_calls c WHERE c.org_id = w.org_id
-                AND c.wakeup_id = w.wakeup_id AND c.call_key != 'end')
-              OR EXISTS (SELECT 1 FROM kin_pending_actions p WHERE p.org_id = w.org_id
-                AND p.requested_by_agent_id = w.agent_id AND p.requested_by_thread_id = w.thread_id
-                AND p.created_at >= w.started_at))
+            WHERE w.org_id = ${input.orgId} AND w.wakeup_id = ${input.wakeupId} AND w.status = 'running'
+              AND ${sql.literal(DID_VISIBLE_WORK)}
             ORDER BY w.wakeup_id LIMIT 1`;
           const closed =
             yield* sql`UPDATE kin_wakeups SET status = ${input.status}, ended_at = ${now}
@@ -997,13 +1069,15 @@ const make = Effect.gen(function* () {
             SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
               AND wakeup_id = ${input.wakeupId} AND state = 'claimed' LIMIT 1 OFFSET 1
           ) AS split`;
-          const split = batch?.split === 1;
+          const split = batch?.split === 1 && input.final !== true;
+          const ends = input.final === true;
           const rows = yield* sql<{
             event_id: string;
             state: string;
             not_before: number;
           }>`UPDATE kin_events SET attempts = attempts + ${split ? 0 : 1},
-            state = CASE WHEN NOT ${split} AND attempts + 1 >= ${RUN_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
+            state = CASE WHEN ${ends} OR (NOT ${split} AND attempts + 1 >= ${RUN_ATTEMPTS}) THEN 'failed'
+              ELSE 'queued' END,
             json = CASE WHEN ${split} THEN json_set(json, '$._retryAlone', 1) ELSE json END,
             wakeup_id = NULL,
             not_before = ${now} + CASE WHEN ${split} OR attempts = 0 THEN ${FIRST_RETRY_MS}

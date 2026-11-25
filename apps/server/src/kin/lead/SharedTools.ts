@@ -7,6 +7,7 @@ import type { SqlError } from "effect/sql/SqlError";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { SALES_SHARED_TOOLS } from "../sales/policies.ts";
 import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from "./Audience.ts";
+import { billToolAllowed } from "./billsOnly.ts";
 import { reviewToolAllowed } from "./outsideReview.ts";
 import { mailboxPerson } from "../connections/turnMailbox.ts";
 
@@ -34,6 +35,18 @@ const field = (args: unknown, name: string) =>
 const inTurnChat: Condition = Effect.fnUntraced(function* (turn, args) {
   const chatId = field(args, "chatId");
   return typeof chatId === "string" && (yield* turnChat(turn))?.chatId === chatId;
+});
+
+/** A message in the chat the turn answers; `ownMessages.ts` checks the rest inside the change. */
+const messageInTurnChat: Condition = Effect.fnUntraced(function* (turn, args) {
+  const messageId = field(args, "messageId");
+  if (typeof messageId !== "string") return false;
+  const sql = yield* SqlClient.SqlClient;
+  const chatId = (yield* turnChat(turn))?.chatId;
+  if (chatId === undefined) return false;
+  const rows = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${turn.orgId}
+    AND message_id = ${messageId} AND chat_id = ${chatId} LIMIT 1`;
+  return rows.length > 0;
 });
 
 const inAskedChat: Condition = Effect.fnUntraced(function* (turn, args) {
@@ -115,6 +128,9 @@ export const SHARED_TOOLS = {
   // Checked against everyone behind the turn, in its own transaction (`askPerson`).
   kin_ask_person: "allowed",
   kin_react: "allowed",
+  // Its own unread message, only in the chat this turn answers.
+  message_withdraw: messageInTurnChat,
+  message_replace: messageInTurnChat,
   // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
   kin_chart: "allowed",
   // Like a chart, in the sealed frame; its figures are checked against everyone behind the
@@ -208,9 +224,13 @@ export const SHARED_TOOLS = {
   company_profile: "refused",
   // How Kin is set up for the company is the owner level's to change.
   company_sections: "refused",
+  numbers_watch: "refused",
   // A statement is the owner's bank account; reading one marks the turn as a sensitive read.
   statement_read: "refused",
   statement_rows: "refused",
+  // Bills become the owner's expenses.
+  bills_add: "refused",
+  bill_read: "refused",
   // Generated files, recipes and issued numbers read and make the owner's records and money.
   kin_document: "refused",
   kin_recipes: "refused",
@@ -262,14 +282,17 @@ export const sharedToolAllowed = Effect.fn("KinSharedTools.allowed")(
 
 /**
  * The one check for a tool call: nothing in a turn aborted for its audience, only `REVIEW_TOOLS`
- * in an outside review, everything in an owner-only turn, else what `SHARED_TOOLS` allows. The
- * gate runs it before every call; services whose writes outlive the call run it again inside them.
+ * in an outside review and `BILLS_TOOLS` in a bills turn, everything in an owner-only turn, else
+ * what `SHARED_TOOLS` allows. The gate runs it before every call; services whose writes outlive
+ * the call run it again inside them.
  */
 export const toolAdmitted = Effect.fn("KinSharedTools.admitted")(
   function* (turn: Turn, name: string, args: unknown) {
     if (yield* aborted(turn)) return false;
     const review = yield* reviewToolAllowed(turn, name, args);
     if (review !== undefined) return review;
+    const bills = yield* billToolAllowed(turn, name, args);
+    if (bills !== undefined) return bills;
     if ((yield* effectiveAudience(turn)) === "owner_only") return true;
     return yield* sharedToolAllowed(turn, name, args);
   },

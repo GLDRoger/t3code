@@ -15,15 +15,23 @@ import {
   kinExpenseTyped,
   kinInvoiceAmountAbout,
   kinInvoiceBeforeTax,
+  kinInvoiceBillsByName,
   kinInvoiceDraft,
   kinInvoiceDueChoices,
   kinInvoiceInput,
   kinInvoiceTax,
   kinInvoiceTaxText,
   kinInvoiceTyped,
+  type KinBillToDraft,
   type KinExpenseDraft,
   type KinInvoiceDraft,
 } from "@t3tools/client-runtime/kin/kinMoneyForms";
+import { KIN_BILL_TO, kinBillToOffered } from "@t3tools/client-runtime/kin/kinBillTo";
+import {
+  KIN_GST_STATE_NAMES,
+  KIN_WORK_FORM_COPY,
+  kinIndiaFields,
+} from "@t3tools/client-runtime/kin/kinWorkForms";
 import { kinWorkDayOf, kinWorkDueLabel } from "@t3tools/client-runtime/kin/kinWork";
 import {
   EnvironmentId,
@@ -51,13 +59,16 @@ import { KinWorkFrame, KinWorkTextField } from "./components/KinWorkPieces";
 import { KinLinesFields } from "./KinMoneyAnswers";
 import {
   kinListsOf,
+  useKinCompanyCountry,
   useKinCompanyProfile,
   useKinHomeCurrency,
   useKinLists,
   useKinWorkFiles,
 } from "./state/useKinMoney";
+import { kinExpenseStartOf, type KinExpenseNewParams } from "./state/kinBillsPick";
 import { useKinNewExpense, useKinNewInvoice } from "./state/useKinMoneyAnswers";
 import { kinWorkChoicesAtom, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -148,6 +159,95 @@ function PickRow(props: {
   );
 }
 
+const NO_PLACE = "none";
+
+/** Who an invoice bills when it isn't a client: a name, and its details behind More details. */
+function BillToFields(props: {
+  readonly value: KinBillToDraft;
+  readonly disabled: boolean;
+  /** India's tax number and state, as the client form asks them. */
+  readonly india: boolean;
+  /** The way back to the client picker, beside the name. */
+  readonly choice: React.ReactNode;
+  readonly onChange: (patch: Partial<KinBillToDraft>) => void;
+}) {
+  const [more, setMore] = useState(false);
+  const { value, disabled } = props;
+  const party = KIN_WORK_FORM_COPY.party;
+  return (
+    <>
+      <KinWorkTextField
+        label={KIN_BILL_TO.name}
+        value={value.name}
+        placeholder={KIN_BILL_TO.namePlaceholder}
+        maxLength={200}
+        disabled={disabled}
+        onChangeText={(name) => props.onChange({ name })}
+      />
+      {props.choice}
+      {more ? (
+        <>
+          <KinWorkTextField
+            label={KIN_BILL_TO.address}
+            value={value.address}
+            placeholder={party.addressPlaceholder}
+            maxLength={500}
+            multiline
+            disabled={disabled}
+            onChangeText={(address) => props.onChange({ address })}
+          />
+          <KinWorkTextField
+            label={props.india ? party.gstin : KIN_BILL_TO.taxNumber}
+            value={value.taxNumber}
+            maxLength={100}
+            disabled={disabled}
+            onChangeText={(taxNumber) => props.onChange({ taxNumber })}
+          />
+          {props.india ? (
+            <ListSection>
+              <PickRow
+                label={party.place}
+                value={value.place || NO_PLACE}
+                shown={value.place || party.placeNone}
+                options={[
+                  { id: NO_PLACE, title: party.placeNone },
+                  ...KIN_GST_STATE_NAMES.map((name) => ({ id: name, title: name })),
+                ]}
+                disabled={disabled}
+                onPick={(place) => props.onChange({ place: place === NO_PLACE ? "" : place })}
+              />
+            </ListSection>
+          ) : (
+            <KinWorkTextField
+              label={KIN_BILL_TO.place}
+              value={value.place}
+              maxLength={100}
+              disabled={disabled}
+              onChangeText={(place) => props.onChange({ place })}
+            />
+          )}
+          <KinWorkTextField
+            label={KIN_BILL_TO.email}
+            value={value.email}
+            keyboard="email"
+            maxLength={100}
+            disabled={disabled}
+            onChangeText={(email) => props.onChange({ email })}
+          />
+        </>
+      ) : (
+        <Button
+          tone="secondary"
+          fullWidth
+          icon="chevron.down"
+          label={KIN_BILL_TO.more}
+          onPress={() => setMore(true)}
+        />
+      )}
+    </>
+  );
+}
+
 export type KinInvoiceNewParams = {
   readonly environmentId: string;
   readonly orgId: string;
@@ -190,9 +290,19 @@ function InvoiceForm(
     readonly problems: ReadonlyArray<string>;
   } | null>(null);
   const saving = useKinNewInvoice(props);
-  const choices = Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))));
+  const clientsOn = useKinSectionOn(props.environmentId, "clients");
+  const named = useKinSectionNamed(props.environmentId);
+  const held = Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))));
+  // Clients off: no client or project to pick, so the form asks for a name.
+  const choices = clientsOn ? held : null;
   const clients = (choices?.clients ?? []).filter((one) => one.kind !== "vendor");
   const projects = choices?.projects ?? [];
+  const listsRead = useKinLists(props, { enabled: true }).state;
+  const offered = listsRead._tag === "ready" && kinBillToOffered(listsRead.value);
+  const india = kinIndiaFields(useKinCompanyCountry(props));
+  const project = projects.find((one) => one.key === draft.project) ?? null;
+  const projectClient = project?.party?.key ?? null;
+  const byName = kinInvoiceBillsByName(draft, { clientsOn, offered, projectClient });
   const profile = useKinCompanyProfile(props, true);
   const currency = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
   const tax = profile.state._tag === "ready" ? kinInvoiceTax(profile.state.value) : null;
@@ -222,6 +332,9 @@ function InvoiceForm(
       currency,
       gst: gst && tax.registered,
       clientRequestId: requestId,
+      byName,
+      india,
+      projectClient,
     });
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);
@@ -231,6 +344,19 @@ function InvoiceForm(
       return setMade({ key: result.invoice, problems: result.problems });
     guard.leave(props, result.invoice);
   };
+  const choice = !clientsOn ? null : project?.party != null ? (
+    <Text textRole="footnote" className="px-2 text-foreground-muted">
+      {KIN_BILL_TO.projectBills(project.party.title)}
+    </Text>
+  ) : offered ? (
+    <Button
+      tone="secondary"
+      fullWidth
+      label={draft.byName ? named(KIN_BILL_TO.pickClient) : KIN_BILL_TO.byName}
+      disabled={locked}
+      onPress={() => set({ byName: !draft.byName })}
+    />
+  ) : null;
   const shown = problem ?? saving.problem;
   return (
     <KinWorkFrame
@@ -264,23 +390,34 @@ function InvoiceForm(
           }}
         />
       )}
-      <ListSection>
-        {clients.length === 0 && client === null ? (
-          <ListRowLayout
-            label={KIN_MONEY_FORMS.invoice.noClients}
-            detail={KIN_MONEY_FORMS.invoice.party}
-          />
-        ) : (
-          <PickRow
-            label={KIN_MONEY_FORMS.invoice.party}
-            value={draft.party ?? ""}
-            shown={client?.name ?? KIN_MONEY_FORMS.invoice.pickClient}
-            options={clients.map((one) => ({ id: one.key, title: one.name }))}
-            disabled={locked}
-            onPick={(key) => set({ party: clients.find((one) => one.key === key)?.key ?? null })}
-          />
-        )}
-      </ListSection>
+      {byName ? (
+        <BillToFields
+          value={draft.billTo}
+          disabled={locked}
+          india={india}
+          choice={choice}
+          onChange={(patch) => set({ billTo: { ...draft.billTo, ...patch } })}
+        />
+      ) : (
+        <ListSection>
+          {clients.length === 0 && client === null ? (
+            <ListRowLayout
+              label={named(KIN_MONEY_FORMS.invoice.noClients)}
+              detail={named(KIN_MONEY_FORMS.invoice.party)}
+            />
+          ) : (
+            <PickRow
+              label={named(KIN_MONEY_FORMS.invoice.party)}
+              value={draft.party ?? ""}
+              shown={client?.name ?? named(KIN_MONEY_FORMS.invoice.pickClient)}
+              options={clients.map((one) => ({ id: one.key, title: one.name }))}
+              disabled={locked}
+              onPick={(key) => set({ party: clients.find((one) => one.key === key)?.key ?? null })}
+            />
+          )}
+        </ListSection>
+      )}
+      {byName ? null : choice}
       <KinWorkTextField
         label={KIN_MONEY_FORMS.invoice.what}
         value={draft.title}
@@ -307,7 +444,7 @@ function InvoiceForm(
         <KinWorkTextField
           label={KIN_MONEY_FORMS.invoice.gstRate}
           value={draft.gstRate}
-          keyboard="numbers"
+          keyboard="decimal"
           hint={KIN_MONEY_FORMS.invoice.gstHint}
           disabled={locked}
           onChangeText={(gstRate) => set({ gstRate })}
@@ -378,8 +515,6 @@ function InvoiceForm(
   );
 }
 
-export type KinExpenseNewParams = { readonly environmentId: string; readonly orgId: string };
-
 /** A new expense typed by hand; the first one starts the company's Expenses list. */
 export function KinExpenseNewScreen({ route }: StaticScreenProps<KinExpenseNewParams>) {
   const navigation = useNavigation();
@@ -390,13 +525,15 @@ export function KinExpenseNewScreen({ route }: StaticScreenProps<KinExpenseNewPa
         <EmptyState variant="plain" {...KIN_LISTS.entry.gone} />
       </KinWorkFrame>
     );
-  return <ExpenseForm {...target} />;
+  return <ExpenseForm {...target} start={kinExpenseStartOf(route.params)} />;
 }
 
-function ExpenseForm(props: KinWorkTarget) {
+function ExpenseForm(
+  props: KinWorkTarget & { readonly start: ReturnType<typeof kinExpenseStartOf> },
+) {
   const now = new Date(useNowMinuteMs());
   const today = kinWorkDayOf(now);
-  const [opened] = useState(() => kinExpenseDraft(today));
+  const [opened] = useState(() => ({ ...kinExpenseDraft(today), ...props.start.draft }));
   const [draft, setDraft] = useState<KinExpenseDraft>(opened);
   const [problem, setProblem] = useState<string | null>(null);
   const [requestId] = useState(uuidv4);
@@ -411,7 +548,13 @@ function ExpenseForm(props: KinWorkTarget) {
     directory.names.people,
   );
   const files = useKinWorkFiles(props, "");
-  const held = files.state._tag === "ready" ? files.state.files.slice(0, 20) : [];
+  const chatFiles = files.state._tag === "ready" ? files.state.files.slice(0, 20) : [];
+  // A bill's file may be in a chat this person isn't in; it is offered all the same.
+  const start = props.start.receipt;
+  const held =
+    start === null || chatFiles.some((file) => file.attachmentId === start.attachmentId)
+      ? chatFiles
+      : [start, ...chatFiles];
   const guard = useFormGuard(
     kinExpenseTyped(draft, opened),
     saving.busy,

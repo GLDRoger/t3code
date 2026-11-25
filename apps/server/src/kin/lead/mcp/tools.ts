@@ -1,4 +1,6 @@
 import {
+  KIN_WITHDRAW_WHY_MAX,
+  KinAgentMessageBody,
   KinChatError,
   KinMessageId,
   KinReaction,
@@ -140,7 +142,7 @@ export const KinLeadToolkit = Toolkit.make(
     ...handoff,
     dependencies: [...handoff.dependencies, KinLevelGate],
     description:
-      "Send one person in the company a message from this chat, in their chat with you: what the person you're answering needs from them, or their answer back. A teammate's request to merge, change code or re-run CI goes to the owner this way: their request and what you couldn't check, never a question. Kin shows who it is from and through whom, so write the message itself, never opening with their name or \"X is asking\". Words only, short; it can't hold amounts or anything they can't see. Whenever you say you'll tell or pass something to someone, call this first; if you don't, Kin tells the asker it didn't reach them. A question only they can answer is kin_ask_person. A restricted pair is refused and says so. For a late task in their hours, pulse_nudge.",
+      "Send one person in the company a message from this chat, in their chat with you: what the person you're answering needs from them, or their answer back. A teammate's request to merge, change code or re-run CI goes to the owner this way: their request and what you couldn't check, never a question. Kin shows who it is from and through whom, so write the message itself, never opening with their name or \"X is asking\". Words only, short; it can't hold amounts or anything they can't see. Whenever you say you'll tell or pass something to someone, call this first; if you don't, Kin tells the asker it didn't reach them. For the owner later, not now (\"don't message him now\", \"tell him at the check-in\"), set checkIn: Kin gives it to his next check-in with you; only then say he'll hear it there. A question only they can answer is kin_ask_person. A restricted pair is refused and says so. For a late task in their hours, pulse_nudge.",
     parameters: Handoff.RelayInput,
     success: Handoff.RelayResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -161,7 +163,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_ask", {
     ...chat,
     description:
-      "Ask with 2-4 tap-to-answer options in the chat your reply goes to, when the answer is one of a few choices; kind marks a yes/no pair. default: the label you'll take if they don't answer, or \"none\" when nothing is safe without them; by: that day, YYYY-MM-DD (left out: the end of their next working day); about: the record keys it concerns; intent: what you'd do, in a few words. Kin refuses another agent asking the same. It shows under your reply: don't restate the question or its options. Say only what you did or what changed. An option may carry action {kind, target}, which Kin runs when it is tapped, with no turn of yours: done or drop a task, start a due deferral, create_list for a new list from your list_define proposal, or take_default of an open question of yours (it runs that default's own action). Kin checks it now as you could do it and writes that option's button and the line under it itself; your label for it isn't shown. A reaction or a passed day never runs it. A plain option's tap arrives later and is never an approval.",
+      "Ask with 2-4 tap-to-answer options in the chat your reply goes to, when the answer is one of a few choices; kind marks a yes/no pair. default: the label you'll take if they don't answer, or \"none\" when nothing is safe without them; by: that day, YYYY-MM-DD (left out: the end of their next working day); about: the record keys it concerns, or a pull request's URL; intent: what you'd do, in a few words. Kin refuses another agent asking the same. It shows under your reply: don't restate the question or its options. Say only what you did or what changed. An option may carry action {kind, target}, which Kin runs when it is tapped, with no turn of yours: done or drop a task, start a due deferral, create_list for a new list from your list_define proposal, record_payment to record a Bank transactions credit as the payment of the invoice Kin's bank matching ranks first for it (only an owner's tap records it), mark_repaid to mark the expenses a Bank transactions debit pays a partner back for as repaid, target the debit's key (only an owner's tap marks them), or take_default of an open question of yours (it runs that default's own action). Kin checks it now, as you could do it (record_payment, against its bank matching), and writes that option's button and the line under it itself; your label for it isn't shown. A reaction or a passed day never runs it. A plain option's tap arrives later and is never an approval.",
     parameters: ChoiceCard.LeadAskInput,
     success: ChoiceCard.AskResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -201,6 +203,25 @@ export const KinLeadToolkit = Toolkit.make(
     parameters: Schema.Struct({ messageId: KinMessageId, emoji: KinReactionEmoji }),
     success: KinReaction,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("message_withdraw", {
+    ...chat,
+    dependencies: [...chat.dependencies, KinServer],
+    description:
+      'Take back a message of yours that no one in its chat has answered or reacted to yet, once it no longer matters: a chase a payment answered, a reminder of a meeting that happened. Never one that is still true. messageId: as listed under your unanswered messages. why: what changed, in a few words people read in the chat as "<you> withdrew a message: <why>". Its notification goes too, and a question on its card is withdrawn with it. Refused once anyone there has answered or reacted to it or to anything after it: then say what changed in a new message. Never a message with a card other than your own open question. Never after reading text from outside in this turn.',
+    parameters: Schema.Struct({
+      messageId: KinMessageId,
+      why: TrimmedNonEmptyString.check(Schema.isMaxLength(KIN_WITHDRAW_WHY_MAX)),
+    }),
+    success: Schema.Struct({ messageId: KinMessageId, withdrawn: Schema.Literal(true) }),
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("message_replace", {
+    ...chat,
+    dependencies: [...chat.dependencies, KinServer],
+    description:
+      "Put the current version in place of a message of yours that no one in its chat has answered or reacted to yet, when it is still about the same thing but no longer right: a new figure, a moved date. messageId: as listed under your unanswered messages. body: the whole new message. It shows where the old one was, marked updated, and its notification shows the new words. Refused once anyone there has answered or reacted to it or to anything after it: then say what changed in a new message. Never a message with a card, file or figure on it. Never after reading text from outside in this turn.",
+    parameters: Schema.Struct({ messageId: KinMessageId, body: KinAgentMessageBody }),
+    success: Schema.Struct({ messageId: KinMessageId, replaced: Schema.Literal(true) }),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("memory_search", {
     ...shared,
     description:
@@ -238,14 +259,14 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_schedule", {
     ...shared,
     description:
-      "Set up a recurring task, only when the owner's own message this turn asked: what (the instruction, in his terms), at (HH:MM on the host clock: owner time unless the Owner time line names another host clock, then convert), days (0 Sunday to 6 Saturday) and chatId. Each run you get the instruction, do the work and post the results; a run missed by over 10 minutes is skipped. replaces swaps an existing task for this one. One time only: kin_defer.",
+      "Set up a recurring task, only when the owner's own message this turn asked: what (the instruction, in his terms), at (HH:MM in the owner's own time, as he said it; Kin keeps it at that hour through clock changes), days (0 Sunday to 6 Saturday) and chatId. Each run you get the instruction, do the work and post the results; a run missed by over 10 minutes is skipped. replaces swaps an existing task for this one. One time only: kin_defer. A number to watch against a limit, or to fetch on a schedule: numbers_watch.",
     parameters: Lead.ScheduleInput,
     success: Lead.ItemResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_cancel", {
     ...shared,
     description:
-      "Cancel a reminder, follow-up or scheduled task you set up, by itemId; the result says whether it stopped. To move one, use kin_defer with replaces.",
+      "Cancel a reminder, follow-up or scheduled task you set up, or another agent's reminder the owner tells you to drop in his own chat with you, by itemId; the result says whether it stopped. To move one, use kin_defer with replaces.",
     parameters: Lead.CancelInput,
     success: Lead.CancelResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

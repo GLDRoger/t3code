@@ -33,15 +33,28 @@ import {
 } from "../../apps/server/src/kin/lead/instructions.ts";
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
-import { alreadyOnIt } from "../../apps/server/src/kin/lead/Handoff.ts";
+import { alreadyOnIt, leftNote } from "../../apps/server/src/kin/lead/Handoff.ts";
+import { dueShows, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
-import { UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
+import {
+  endOfDay,
+  suggestedStateLabel,
+  UNISSUED_INVOICE,
+} from "../../apps/server/src/kin/work/recordRows.ts";
 import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
-import { ASKED } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
+import { tooLongForCard } from "../../apps/server/src/kin/questions/askPerson.ts";
+import {
+  ASKED,
+  CALL_ARGUMENTS_REFUSAL,
+  SEVERAL_ACCOUNTS,
+} from "../../apps/server/src/kin/connections/ConnectionsService.ts";
+import { readCallArguments } from "../../apps/server/src/kin/connections/callArguments.ts";
 import { microsoftMail } from "../../apps/server/src/kin/connections/Microsoft.ts";
+import { readLine } from "../../apps/server/src/kin/connections/ConnectionRows.ts";
 import { resultText } from "../../apps/server/src/kin/connections/ResultText.ts";
 import { outlineOf, sectionsOf, WHOLE_DOC } from "../../apps/server/src/kin/work/docBody.ts";
+import { privateNowLine } from "../../apps/server/src/kin/work/docs.ts";
 import { parseRecipe } from "../../apps/server/src/kin/gendocs/recipe.ts";
 import { STARTER_FILES } from "../../apps/server/src/kin/gendocs/starter.ts";
 import { quote } from "../../apps/server/src/kin/lead/quote.ts";
@@ -50,29 +63,55 @@ import { afterSay, opened, sayRefusal, type Said } from "../../apps/server/src/k
 import { concernsLine, mineLine, totalsLine } from "../../apps/server/src/kin/sales/text.ts";
 import { whenLabel } from "../../apps/server/src/kin/social/rows.ts";
 import { moneySection } from "../../apps/server/src/kin/work/moneyViews.ts";
-import { notRegisteredFact } from "../../apps/server/src/kin/work/companyProfile.ts";
+import {
+  COUNTRY_NEEDED,
+  countryChosenLine,
+  countryFirstMessage,
+  notRegisteredFact,
+} from "../../apps/server/src/kin/work/companyProfile.ts";
 import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
+import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
-import { formatKinPicturesDay, KIN_TEXT_LOCALE, KinMoneySummary } from "@t3tools/contracts";
+import {
+  formatKinPicturesDay,
+  KIN_TEXT_LOCALE,
+  KinDocCardDraft,
+  KinMoneySummary,
+} from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
+import { BILLS_TOOLS } from "../../apps/server/src/kin/lead/billsOnly.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
 import { KinStatementToolkit } from "../../apps/server/src/kin/work/mcp/statementTools.ts";
+import { KinBillToolkit } from "../../apps/server/src/kin/work/mcp/billTools.ts";
+import { readAnswer } from "../../apps/server/src/kin/work/bills.ts";
+import { billTurnText } from "../../apps/server/src/kin/work/billTurn.ts";
+import { addAnswer } from "../../apps/server/src/kin/work/leadBills.ts";
+import { PRESETS } from "../../apps/server/src/kin/work/registers.ts";
 import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
 import { KinPictureToolkit } from "../../apps/server/src/kin/pictures/mcp.ts";
 import { GENERATE_SENTENCES } from "../../apps/server/src/kin/pictures/KinPictures.ts";
-import { pictureNote } from "../../apps/server/src/kin/work/leadDocs.ts";
+import { draftNote, pictureNote } from "../../apps/server/src/kin/work/leadDocs.ts";
+import { APPROVED_TURN_TEXT } from "../../apps/server/src/kin/questions/sentUpDraft.ts";
+import {
+  APPROVED_REFUSAL,
+  approvedWords,
+  ONE_ENTRY,
+} from "../../apps/server/src/kin/lead/approvedDraft.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
 import { salesRulesFor } from "../../apps/server/src/kin/sales/seat.ts";
 import { KinPulseToolkit } from "../../apps/server/src/kin/pulse/mcp.ts";
+import { TASKS_KEY_INSTRUCTIONS, TasksKeyToolkit } from "../../apps/server/src/kin/tasksKey/mcp.ts";
+import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
+import { Tool } from "effect/ai";
 import {
   MONEY_RULE,
   WITHDRAWN_WORK,
@@ -80,18 +119,56 @@ import {
 } from "../../apps/server/src/kin/work/workPrompt.ts";
 import {
   githubTriggerEvent,
+  ASSIGNED_NOT_IN_PERSON,
   HANDED_BACK_WORK,
+  UNREAD_RULE,
+  REMINDER_DUE,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
   joinedWork,
+  ownMailboxLine,
   workForText,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
-import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
+import {
+  CHECK_IN_PULSE_RULE,
+  LEFT_RULE,
+  OUTSIDE_NOT_LISTED_LINE,
+  OUTSIDE_THREAD_LINE,
+  PULSE_RULE,
+} from "../../apps/server/src/kin/pulse/prompt.ts";
+import { HEAD_START_WAKE } from "../../apps/server/src/kin/pulse/prepareWake.ts";
+import {
+  DRAFT_CHASE,
+  DRAFT_DEAL,
+  DRAFT_DOCUMENT,
+  DRAFT_MEETING_PREP,
+} from "../../apps/server/src/kin/pulse/draftWake.ts";
+import { KIN_OWN_REFUSAL } from "../../apps/server/src/kin/people/KinAccess.ts";
+import { HEAD_START_ONE_DOC } from "../../apps/server/src/kin/work/teamView.ts";
+import {
+  feedTurnText,
+  offTurnText,
+  proposedAnswer,
+} from "../../apps/server/src/kin/numbers/words.ts";
+import { thisCompanyLines } from "../../apps/server/src/kin/shell/words.ts";
+import {
+  applied,
+  shellChangeLines,
+  type AskedSection,
+} from "../../apps/server/src/kin/shell/changes.ts";
+import { defaultShell, shellRefusal } from "../../apps/server/src/kin/shell/KinShell.ts";
+import { SECTIONS_PROPOSED_NEXT } from "../../apps/server/src/kin/shell/mcp.ts";
+import { REVIEW_WAKE_TEXT } from "../../apps/server/src/kin/pulse/reviewWake.ts";
+import { OWN_MESSAGE_REFUSALS } from "../../apps/server/src/kin/chat/ownMessages.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
 import { DECLINED_RULE } from "../../apps/server/src/kin/lead/declinedSection.ts";
 import { UNDO_RULE } from "../../apps/server/src/kin/lead/undoSection.ts";
-import { defaultCharacterFor } from "../../apps/server/src/kin/lead/characterDefaults.ts";
+import {
+  CHIEF_OF_STAFF_SET_UP,
+  defaultCharacterFor,
+} from "../../apps/server/src/kin/lead/characterDefaults.ts";
+import { offeringsWithAnswer } from "../../apps/server/src/kin/work/offerings.ts";
 import { characterForTurn, colleagueLine } from "../../apps/server/src/kin/lead/characters.ts";
 import {
   CAPTION_PROMPT,
@@ -123,11 +200,14 @@ const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
 const text = (value: string): Block => ({ type: "text", text: value });
 
 /** Kin's toolkits, in the order T3's tool list carries them. */
+/** The tools a person's key reaches, by bare name, for mock checks. */
+export const KIN_KEY_TOOLKIT = TasksKeyToolkit;
 export const KIN_TOOLKITS = [
   KinChatToolkit,
   KinLeadToolkit,
   KinWorkToolkit,
   KinStatementToolkit,
+  KinBillToolkit,
   KinDocsToolkit,
   KinDocumentToolkit,
   KinPictureToolkit,
@@ -145,6 +225,8 @@ export type KinSeatOptions = {
   readonly kinShared?: boolean;
   /** The lead's remit is social media, so Social's tools join (AgentSession). */
   readonly kinSocial?: boolean;
+  /** Bills read in the background: a confined thread that lists `bill_read` alone (`billsOnly`). */
+  readonly kinBills?: boolean;
 };
 
 const names = (...toolkits: ReadonlyArray<{ readonly tools: object }>) =>
@@ -155,6 +237,7 @@ const LEAD = names(
   KinLeadToolkit,
   KinWorkToolkit,
   KinStatementToolkit,
+  KinBillToolkit,
   KinDocsToolkit,
   KinDocumentToolkit,
   KinPictureToolkit,
@@ -178,6 +261,7 @@ const ANY_KIN = names(
 
 /** Whether a T3 tool, by bare name, is listed to this turn as far as Kin decides (AgentSession). */
 export const kinToolVisible = (name: string, options: KinSeatOptions) => {
+  if (options.kinBills === true) return BILLS_TOOLS.has(name);
   // A turn others read runs on a shared thread, which lists only what it may run.
   if (options.kinShared === true && !listedOnSharedThread(name)) return false;
   if (options.kinAgent !== true && options.kinLead !== true) return !ANY_KIN.has(name);
@@ -191,6 +275,9 @@ export const kinToolVisible = (name: string, options: KinSeatOptions) => {
 };
 
 export const KIN_SHARED_PROMPT = /\{\{(SHARED_TURN|GROUP_RULES)\}\}/;
+/** A bills turn's section (`work/billTurn.ts`): the turn runs on the confined bills thread. */
+export const KIN_BILLS_PROMPT = /\{\{BILLS_TURN:/;
+export const kinBillsOf = ({ prompt }: McpToolUseCase) => KIN_BILLS_PROMPT.test(prompt);
 /**
  * A Kin lead's turn on a thread nobody else reads has the owner's seat, as `lead/turn/session.ts`
  * plans it; a case says `kinSession: false` only to model a turn without it on purpose.
@@ -199,7 +286,9 @@ export const kinSessionOf = ({ setup, prompt }: McpToolUseCase) => {
   const stated = setup.world?.kinSession;
   return typeof stated === "boolean"
     ? stated
-    : setup.world?.kinLead === true && !KIN_SHARED_PROMPT.test(prompt);
+    : setup.world?.kinLead === true &&
+        !KIN_SHARED_PROMPT.test(prompt) &&
+        !KIN_BILLS_PROMPT.test(prompt);
 };
 
 /**
@@ -221,7 +310,8 @@ export const kinLeadBase = <M, E>(input: {
   readonly isT3Name: (name: string) => boolean;
 }) => {
   const { options, t3 } = input;
-  const ownerSeat = options.kinSession === true && options.kinShared !== true;
+  const ownerSeat =
+    options.kinSession === true && options.kinShared !== true && options.kinBills !== true;
   const deferredKin = t3.filter(
     (tool) => !KIN_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
   );
@@ -233,7 +323,13 @@ export const kinLeadBase = <M, E>(input: {
   const deferred = [...deferredNative, ...deferredKin];
   return {
     model: input.model,
-    system: [text(kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"))],
+    system: [
+      text(
+        options.kinBills === true
+          ? kinInstructions("confined", "claudeAgent", false)
+          : kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"),
+      ),
+    ],
     reminders:
       deferred.length > 0 && input.deferredHeader !== undefined
         ? [text(`${input.deferredHeader}${deferred.map((tool) => tool.name).join("\n")}\n`)]
@@ -245,8 +341,11 @@ export const kinLeadBase = <M, E>(input: {
         ? input.templateTools.filter(
             (tool) => !input.isT3Name(tool.name) && !tool.name.endsWith("ToolSearch"),
           )
-        : // A confined Claude session keeps the provider's own web search (`claude.ts`).
-          [{ name: "WebSearch", ...input.nativeSchema("WebSearch") }]),
+        : // A confined Claude session keeps the provider's own web search (`claude.ts`), but
+          // for bills.
+          options.kinBills === true
+          ? []
+          : [{ name: "WebSearch", ...input.nativeSchema("WebSearch") }]),
       ...(deferred.length > 0 ? toolSearch : []),
       ...t3.filter((tool) => !deferredKin.includes(tool)),
     ],
@@ -276,11 +375,15 @@ export const kinDated = <
     readonly reminders: ReadonlyArray<Block>;
     readonly environment: { readonly date: string | undefined };
     readonly codex?: unknown;
+    readonly system: ReadonlyArray<Block>;
+    readonly deferred: ReadonlyArray<ApiTool>;
   },
 >(
   testCase: McpToolUseCase,
-  base: B,
+  given: B,
 ): B => {
+  // A person's own coding agent with their key: the "kin" server's tools and instructions.
+  const base = testCase.setup.world?.kinKey === true ? kinKeyed(given) : given;
   const day = isKinCase(testCase) ? kinOwnerDay(testCase) : undefined;
   if (day === undefined) return base;
   const line = `Today's date is ${day}`;
@@ -298,6 +401,44 @@ export const kinDated = <
       : base.codex === undefined
         ? [...base.reminders, text(`${line}.`)]
         : base.reminders,
+  };
+};
+
+/**
+ * A person's own coding agent with their Kin key: Kin's `/kin/you/mcp` server, named "kin" as its
+ * setup lines name it, lists these tools and gives its instructions on connect, which Claude Code
+ * adds to the system prompt. Its tools wait behind ToolSearch as any MCP server's do.
+ */
+export const KIN_KEY_PREFIX = "mcp__kin__";
+const KIN_KEY_TOOLS: ReadonlyArray<ApiTool> = Object.values(TasksKeyToolkit.tools).map(
+  (tool: Tool.Any) => ({
+    name: `${KIN_KEY_PREFIX}${tool.name}`,
+    description: Tool.getDescription(tool) ?? "",
+    input_schema: advertisedJsonSchema(tool),
+  }),
+);
+const KIN_KEY_INSTRUCTIONS = `# MCP Server Instructions
+
+The following MCP servers have provided instructions for how to use their tools and resources:
+
+## kin
+${TASKS_KEY_INSTRUCTIONS}`;
+const DEFERRED_HEADER = /(The following deferred tools are now available via ToolSearch\.[^\n]*\n)/;
+const kinKeyed = <
+  B extends { readonly system: ReadonlyArray<Block>; readonly deferred: ReadonlyArray<ApiTool> },
+>(
+  base: B,
+): B => {
+  const names = KIN_KEY_TOOLS.map((tool) => tool.name).join("\n");
+  const system = base.system.map((block) =>
+    typeof block.text === "string" && DEFERRED_HEADER.test(block.text)
+      ? { ...block, text: block.text.replace(DEFERRED_HEADER, (header) => `${header}${names}\n`) }
+      : block,
+  );
+  return {
+    ...base,
+    system: [...system, text(KIN_KEY_INSTRUCTIONS)],
+    deferred: [...base.deferred, ...KIN_KEY_TOOLS],
   };
 };
 
@@ -407,6 +548,31 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
+    .replaceAll("{{LEFT_RULE}}", LEFT_RULE)
+    .replaceAll("{{OUTSIDE_THREAD_LINE}}", OUTSIDE_THREAD_LINE)
+    .replaceAll("{{OUTSIDE_NOT_LISTED_LINE}}", OUTSIDE_NOT_LISTED_LINE)
+    .replaceAll("{{HEAD_START_WAKE}}", HEAD_START_WAKE)
+    // A quiet bills turn's section for files named as the bill ids Kin gives them (`billTurn.ts`).
+    .replace(/\{\{BILLS_TURN:([^}]+)\}\}/g, (_, names: string) =>
+      billTurnText(
+        names.split(",").map((name) => ({
+          id: name.split(".")[0]!,
+          image: !name.endsWith(".pdf"),
+          name,
+        })),
+        PRESETS.expenses.categories,
+      ),
+    )
+    .replace(/\{\{DRAFT_DOCUMENT:([^}]+)\}\}/g, (_, name: string) => DRAFT_DOCUMENT(name))
+    .replace(/\{\{DRAFT_MEETING_PREP:([^}]+)\}\}/g, (_, name: string) => DRAFT_MEETING_PREP(name))
+    // A draft wake's own line, for a person and their mailboxes (`draftWake.ts`).
+    .replace(/\{\{DRAFT_CHASE:([^:}]+):([^}]+)\}\}/g, (_, name: string, from: string) =>
+      DRAFT_CHASE(name, from.split(",")),
+    )
+    .replace(
+      /\{\{DRAFT_DEAL:([^|}]+)\|([^|}]+)\|([^}]+)\}\}/g,
+      (_, name: string, from: string, reason: string) => DRAFT_DEAL(name, from.split(","), reason),
+    )
     .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
     .replaceAll("{{TEAM_RULES}}", kinTeamRules)
@@ -416,21 +582,65 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
       salesRulesFor(domain).join("\n\n"),
     )
     .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
+    .replaceAll("{{SET_UP}}", CHIEF_OF_STAFF_SET_UP)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
+    .replaceAll("{{ASSIGNED_NOT_IN_PERSON}}", ASSIGNED_NOT_IN_PERSON)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
     .replaceAll("{{DECLINED_RULE}}", DECLINED_RULE)
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
     .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK)
     .replaceAll("{{PEOPLE_LABEL}}", PEOPLE_LABEL)
     .replaceAll("{{UNISSUED_INVOICE}}", UNISSUED_INVOICE)
+    .replaceAll("{{APPROVED_TURN_TEXT}}", APPROVED_TURN_TEXT)
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
+    .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
+    .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
+    .replaceAll("{{REMINDER_DUE}}", REMINDER_DUE)
+    // The wake's line once a new company's country is chosen (`{{COUNTRY_CHOSEN:GB|GBP}}`).
+    .replace(
+      /\{\{COUNTRY_CHOSEN:([A-Z]{2})\|([A-Z]{3})\}\}/g,
+      (_, country: string, currency: string) => countryChosenLine(country, currency),
+    )
+    .replace(/\{\{REVIEW_WAKE:([^|}]+)\|(\d+)\}\}/g, (_, who: string, count: string) =>
+      REVIEW_WAKE_TEXT({ who: who.split(", "), count: Number(count) }),
+    )
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names))
+    // The turn person's own mailboxes as the prompt names them (`{{OWN_MAILBOXES:owner|a, b}}`).
+    .replace(/\{\{OWN_MAILBOXES:(owner|member)\|([^}]+)\}\}/g, (_, who: string, list: string) =>
+      ownMailboxLine(
+        list.split(", ").map((address) => JSON.stringify(address)),
+        who === "owner",
+      ),
+    )
     .replace(/\{\{JOINED_WORK:([^|}]+)\|([^}]+)\}\}/g, (_, adder: string, holder: string) =>
       joinedWork(adder, holder),
-    );
+    )
+    // Watched numbers' and list sections' lines and turn texts as Kin writes them, each
+    // placeholder on its own line.
+    .replace(/^\{\{NUMBERS_LINES:(.+)\}\}$/gm, (_, json: string) => {
+      const given = JSON.parse(json) as { lists?: never };
+      return thisCompanyLines({ rev: 0, sections: [] }, given as never, given.lists).join("\n");
+    })
+    .replace(/^\{\{NUMBER_OFF:(.+)\}\}$/gm, (_, json: string) =>
+      offTurnText(JSON.parse(json) as never),
+    )
+    .replace(/^\{\{NUMBER_FEED:(.+)\}\}$/gm, (_, json: string) => {
+      const feed = JSON.parse(json) as {
+        numbers: ReadonlyArray<{ key: string; name: string }>;
+        source: string;
+        period: string;
+      };
+      return feedTurnText(feed.numbers, feed.source, feed.period);
+    });
 
 const decodeMoneySummary = Schema.decodeUnknownSync(KinMoneySummary);
+const decodeDraftTo = Schema.decodeUnknownSync(
+  Schema.Struct({
+    sendTo: KinDocCardDraft.fields.sendTo,
+    noAccount: KinDocCardDraft.fields.noAccount,
+  }),
+);
 /**
  * Kin's pure answer builders a mock answer calls as `{{RENDER:<name>:<json input>}}`, the whole
  * string, so its words and figures are the checkout's. The inputs are what each builder reads.
@@ -440,7 +650,58 @@ const STARTER_RECIPES = Object.entries(STARTER_FILES).flatMap(([file, text]) => 
   const recipe = parseRecipe(text);
   return "_tag" in recipe ? [] : [recipe];
 });
+// doc_read's answer from the doc's body, as runRead builds it: outline, whole body or sections.
+const docReadAnswer = (input: {
+  key: string;
+  title: string;
+  version: number;
+  latestVersion?: number;
+  updated: { at: string; by: string; summary: string };
+  body: string;
+  owner: string;
+  client?: string;
+  project?: string;
+  sections?: ReadonlyArray<string>;
+}) => {
+  const { body, sections, client, project, owner, latestVersion, ...head } = input;
+  const whole = sections === undefined && body.length <= WHOLE_DOC;
+  const all = sectionsOf(body);
+  return {
+    ...head,
+    latestVersion: latestVersion ?? input.version,
+    chars: body.length,
+    outline: [...outlineOf(body)],
+    ...(whole ? { body } : {}),
+    ...(sections === undefined
+      ? {}
+      : {
+          sections: sections.map((id) => {
+            const found = all.find((one) => one.id === id);
+            return found === undefined
+              ? { id, title: "", hash: "", text: "(no such section)" }
+              : { id: found.id, title: found.title, hash: found.hash, text: found.text };
+          }),
+        }),
+    ...(whole || sections !== undefined
+      ? {}
+      : { note: "A long doc: read the sections you need by id." }),
+    owner,
+    ...(client === undefined ? {} : { client }),
+    ...(project === undefined ? {} : { project }),
+  };
+};
+
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
+  billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
+  billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>
+    readAnswer(input.bill, input.outcome),
+  // numbers_watch's answer for numbers not watched yet: the owner's card lines, as Kin draws them.
+  numbersWatch: (input: { numbers: unknown; feed: unknown }) =>
+    proposedAnswer(
+      Array.isArray(input.numbers) ? input.numbers : [],
+      isRecord(input.feed) ? (input.feed as never) : undefined,
+    ),
   moneySection: (input: { summary: unknown; zone: string }) =>
     moneySection(decodeMoneySummary(input.summary), input.zone),
   // social_pack's answer for the call's at, as KinSocial.pack writes it; an at it refuses is its error.
@@ -467,6 +728,9 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     GENERATE_SENTENCES.limit(input.limit, formatKinPicturesDay(input.resetsOn)),
   // doc_read's note on a picture's doc: changed from its page when drawn, else its prompt.
   pictureNote: (input: { key: string; drawn: boolean }) => pictureNote(input.key, input.drawn),
+  // doc_create's note on a draft it filed: who Send to puts it to, and a post with no account.
+  draftNote: (input: { key: string; placed?: boolean; sendTo?: unknown; noAccount?: unknown }) =>
+    draftNote(decodeDraftTo(input), input.key, input.placed ?? true),
   // The taxNote line for a company its owner said is not registered for its country's tax.
   notRegisteredFact: (input: { country: string }) =>
     notRegisteredFact({ taxRegistered: false, country: input.country, tax: null }),
@@ -478,15 +742,123 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       message: helperRefusal(input.holder, input.key),
     },
   }),
+  // doc_read of a draft filed for the reader that an owner since kept to owners only (`docRow`).
+  docPrivateNow: (input: { key: string; owner: string }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_found",
+      message: privateNowLine(input.key, input.owner),
+      privateNow: { by: input.owner },
+    },
+  }),
+  // An approved draft's one make that changed the approved words, refused at Kin's gate.
+  approvedWords: (input: { tool: string }) => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: approvedWords(input.tool) },
+  }),
+  // An approved quote or invoice made as more than one entry, refused at Kin's gate.
+  approvedOneEntry: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: ONE_ENTRY },
+  }),
+  // Anything but the approved make or a read, refused in an approved draft's turn.
+  // kin_ask_person's answer: words its card can't carry whole beside `header` characters of Kin's
+  // are refused with the way on (`askPerson.ts` tooLongForCard), else `posted`.
+  askTooLong: (input: { detail: unknown; header: number; owner?: string; posted: unknown }) => {
+    const detail = typeof input.detail === "string" ? input.detail : "";
+    const why = tooLongForCard(detail.length, input.header, input.owner);
+    return why === undefined
+      ? input.posted
+      : {
+          $error: {
+            _tag: "KinChatError",
+            reason: "not_allowed",
+            message: `${why} Nothing was asked.`,
+          },
+        };
+  },
+  // A suggestion's stateLabel, as record_get, records_query and record_create show it.
+  suggestedState: (input: { list: string; state: string }) =>
+    suggestedStateLabel(input.list, input.state),
+  // record_create's refusal of a task or promise already open (`leadWork.ts` repeatsOf).
+  repeatRefusal: (input: {
+    key: string;
+    title: string;
+    client: boolean;
+    holder: string;
+    due: string | null;
+    zone: string;
+  }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "conflict",
+      message: repeatedPromise({
+        ...input,
+        also: "",
+        dueAt: input.due === null ? null : endOfDay(input.due, input.zone),
+        besides: `besides: ["${input.key}"]`,
+      }),
+    },
+  }),
+  // kin_relay's answer for a line left for the owner's next check-in (`KinHandoff.relay`).
+  relayLeft: (input: { to: string; title: string; when: string; asker: string }) => ({
+    to: input.to,
+    sent: true,
+    note: leftNote(input.to, input, input.asker),
+  }),
+  // record_update's answer for a task given a due or a time (`leadWork.ts` dueOf, shownDue).
+  taskUpdate: (input: { key: string; rev: number; state: string; due: unknown; zone: string }) => {
+    const due = typeof input.due === "string" ? input.due : "";
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(due);
+    const at = day ? endOfDay(due, input.zone) : Date.parse(due);
+    if (!Number.isFinite(at))
+      return {
+        $error: {
+          _tag: "KinChatError",
+          reason: "invalid_state",
+          message: `due ${due.slice(0, 40)} is not a day or a time.`,
+        },
+      };
+    const { due: _due, zone, ...head } = input;
+    return { ...head, changed: ["due"], shows: dueShows(at, day, zone) };
+  },
+  approvedRefusal: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: APPROVED_REFUSAL },
+  }),
+  // message_withdraw or message_replace refused, as `chat/ownMessages.ts` says it.
+  ownMessageRefusal: (input: {
+    readonly why: "read" | "otherAuthor" | "outside" | "moreThanWords";
+    readonly name?: string;
+  }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_allowed",
+      message:
+        input.why === "read"
+          ? OWN_MESSAGE_REFUSALS.read(input.name ?? "")
+          : OWN_MESSAGE_REFUSALS[input.why],
+    },
+  }),
   // An agent with no person asking in its turn, refused a change to who is on a task.
   alsoOnUnasked: () => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: ALSO_ON_UNASKED },
   }),
-  // kin_hand_off to an agent this turn put on a task: nothing more is passed on.
-  alreadyOnIt: (input: { keys: ReadonlyArray<string> }) => ({
+  // kin_hand_off to an agent this turn gave a task or put on one: nothing more is passed on.
+  alreadyOnIt: (input: { agent: string; titles: ReadonlyArray<string> }) => ({
     passed: false,
-    note: alreadyOnIt(input.keys),
+    note: alreadyOnIt(input.agent, input.titles),
   }),
+  // company_profile's line for a new company whose country isn't chosen yet.
+  countryNeeded: () => COUNTRY_NEEDED,
+  // A money write refused while the company's country isn't chosen, as the turn's caller words it.
+  countryFirst: (input: { owner: string; saved?: boolean; answeringChooser?: boolean }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "invalid_state",
+      message: countryFirstMessage(input.owner, input),
+    },
+  }),
+  // record_create or record_update's line for a client's printed detail kept unconfirmed.
+  unconfirmed: (input: { client: string; what: string; name: string; carded: boolean }) =>
+    waitingLine(input.client, input.what, input.name, input.carded),
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),
   cashUnknown: (input: { timeZone: string }) =>
@@ -496,46 +868,43 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       alertAccounts: [],
       timeZone: input.timeZone,
     } as never),
-  // doc_read's answer from the doc's body, as runRead builds it: outline, whole body or sections.
-  docRead: (input: {
-    key: string;
-    title: string;
-    version: number;
-    latestVersion?: number;
-    updated: { at: string; by: string; summary: string };
-    body: string;
-    owner: string;
-    client?: string;
-    project?: string;
-    sections?: ReadonlyArray<string>;
-  }) => {
-    const { body, sections, client, project, owner, latestVersion, ...head } = input;
-    const whole = sections === undefined && body.length <= WHOLE_DOC;
-    const all = sectionsOf(body);
+  docRead: docReadAnswer,
+  // company_sections' answer from a company set up as Kin's default, as runPropose words its card,
+  // or its refusal.
+  shellProposed: (input: { sections: unknown }) => {
+    const shell = defaultShell();
+    const asked = Array.isArray(input.sections) ? (input.sections as Array<AskedSection>) : [];
+    const next = applied(shell, asked);
+    const refusal = shellRefusal(next);
+    if (refusal !== undefined)
+      return { $error: { _tag: "KinChatError", reason: "invalid_state", message: refusal } };
     return {
-      ...head,
-      latestVersion: latestVersion ?? input.version,
-      chars: body.length,
-      outline: [...outlineOf(body)],
-      ...(whole ? { body } : {}),
-      ...(sections === undefined
-        ? {}
-        : {
-            sections: sections.map((id) => {
-              const found = all.find((one) => one.id === id);
-              return found === undefined
-                ? { id, title: "", hash: "", text: "(no such section)" }
-                : { id: found.id, title: found.title, hash: found.hash, text: found.text };
-            }),
-          }),
-      ...(whole || sections !== undefined
-        ? {}
-        : { note: "A long doc: read the sections you need by id." }),
-      owner,
-      ...(client === undefined ? {} : { client }),
-      ...(project === undefined ? {} : { project }),
+      proposed: shellChangeLines(shell.sections, next),
+      next: SECTIONS_PROPOSED_NEXT,
     };
   },
+  // A turn no person started, refused a number, a payment or a review (`refuseKinOwn`).
+  kinOwnRefusal: (input: { sink: keyof typeof KIN_OWN_REFUSAL }) => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: KIN_OWN_REFUSAL[input.sink] },
+  }),
+  // A teammate's doc head start, refused a second doc in the same turn.
+  headStartOneDoc: () => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: HEAD_START_ONE_DOC.reason,
+      message: HEAD_START_ONE_DOC.message,
+    },
+  }),
+  // doc_read's answer for a What we sell a new company started from its answer, as Kin writes it.
+  whatWeSellDoc: (input: { key: string; at: string; by: string; owner: string; sells: string }) =>
+    docReadAnswer({
+      key: input.key,
+      title: "What we sell",
+      version: 1,
+      updated: { at: input.at, by: input.by, summary: "Started from the set-up question" },
+      body: offeringsWithAnswer(input.sells),
+      owner: input.owner,
+    }),
   // doc_create's and doc_edit's answer from the body written, as writeResult builds it.
   docWritten: (input: {
     key: string;
@@ -691,6 +1060,25 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       tool: { name: input.tool, inputSchema: { type: "object" } },
       result: { content: [{ type: "text", text: input.text }] },
     } as never).quoted,
+  // A read across mail accounts: what it read and did not (`readLine`), then each account's answer.
+  acrossAccounts: (input: {
+    read: ReadonlyArray<{ account: string; service: string }>;
+    left: ReadonlyArray<{ account: string; service: string }>;
+    results: ReadonlyArray<{ label: string; tool: string; text: string }>;
+  }) =>
+    [
+      readLine(input.read, input.left),
+      ...input.results.map(
+        (one) =>
+          resultText({
+            label: one.label,
+            tool: { name: one.tool, inputSchema: { type: "object" } },
+            result: { content: [{ type: "text", text: one.text }] },
+          } as never).quoted,
+      ),
+    ]
+      .filter((part) => part !== "")
+      .join("\n\n"),
   cash: (input: {
     today: string;
     timeZone: string;
@@ -823,6 +1211,30 @@ export const fillKinMock = (
       Object.entries(value).map(([key, one]) => [key, fillKinMock(one, input, world)]),
     );
   return value;
+};
+
+/** Kin's refusal of a kin_connection_call whose text arguments hold no object, as the server encodes it. */
+export const KIN_CALL_REFUSAL = JSON.stringify({
+  _tag: "KinChatError",
+  reason: "invalid_state",
+  message: CALL_ARGUMENTS_REFUSAL,
+});
+/**
+ * A tool call's input as Kin reads it: a kin_connection_call's text arguments, a swallowed reason
+ * included, become the object they hold (`readCallArguments`); text holding none is refused.
+ */
+export const kinCallRead = <I>(
+  name: string,
+  input: I,
+): { readonly input: I | Record<string, unknown>; readonly refused?: string } => {
+  if (name !== "kin_connection_call" || !isRecord(input)) return { input };
+  const read = readCallArguments(
+    input.arguments,
+    typeof input.reason === "string" ? input.reason : undefined,
+  );
+  if (read === undefined) return { input, refused: KIN_CALL_REFUSAL };
+  const { arguments: _arguments, reason: _reason, ...rest } = input;
+  return { input: { ...rest, ...read } };
 };
 
 // Tools whose card or reaction answers the person in the chat, as Kin's own message would.
@@ -1034,6 +1446,8 @@ export const kinTurnFiles = Effect.fn("evaluateMcpToolUse.kinTurnFiles")(functio
     const prepared = yield* (yield* KinTurnContent).prepare({
       text: PROMPT_MARK,
       attachments: stored,
+      // As the runner decides it (`WakeupRunner` `offersBillsAdd`): a lead's owner-only turn.
+      offersBillsAdd: testCase.setup.world?.kinLead === true && kinSessionOf(testCase),
     });
     const text = yield* providerMessageTextWithAttachmentPaths({
       text: prepared.text,
@@ -1085,7 +1499,7 @@ export const kinTurnBlocks = (files: KinTurnFiles | undefined, prompt: string, c
       ];
 
 /** Kin's tools, by bare name. */
-const KIN_TOOLS = names(...KIN_TOOLKITS);
+const KIN_TOOLS = names(...KIN_TOOLKITS, TasksKeyToolkit);
 export const isKinTool = (tool: string) => KIN_TOOLS.has(tool);
 /** A mock's answer to a call as the agent reads it: a Kin tool's is filled in by Kin's code. */
 export const kinAnswer = (
@@ -1144,4 +1558,4 @@ export const kinJudgedCall = (call: { readonly tool: string; readonly input: unk
   return `${kept} [cut: this call is ${bytes.byteLength} bytes; only its first ${JUDGED_CALL_BYTES} are shown]`;
 };
 export const isKinCase = ({ setup }: McpToolUseCase) =>
-  setup.world?.kinAgent === true || setup.world?.kinLead === true;
+  setup.world?.kinAgent === true || setup.world?.kinLead === true || setup.world?.kinKey === true;

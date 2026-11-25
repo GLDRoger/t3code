@@ -417,6 +417,7 @@ export const KinProjectNote = Schema.Struct({
   body: KinText,
   at: IsoDateTime,
   by: KinWorkPrincipal,
+  codingAgent: Schema.optional(Schema.String),
   project: KinRecordRef,
 });
 export type KinProjectNote = typeof KinProjectNote.Type;
@@ -641,8 +642,10 @@ export const KinWorkRowMove = Schema.Struct({
   nudgedAt: Schema.optional(IsoDateTime),
   /** A task handed back to the reader: its holder's words on why, when they left any. */
   handedBackNote: Schema.optional(KinText),
+  handedBackByCodingAgent: Schema.optional(Schema.Boolean),
   /** A task the reader holds: who last asked them today where it stands. */
   askedBy: Schema.optional(KinPersonId),
+  askedByCodingAgent: Schema.optional(Schema.Boolean),
   /** A Needs you task nothing asks of yet: undated, or dated past the coming week. */
   under: Schema.optional(KinWorkMoveUnder),
 });
@@ -824,8 +827,11 @@ export type KinWorkEvent = typeof KinWorkEvent.Type;
 /** The owner's "New": a short form. Long text belongs in chat. */
 export const KinWorkCreateInput = Schema.Struct({
   orgId: KinOrgId,
-  /** `milestones` adds a milestone to `project`; default a Work entry. */
-  list: Schema.optional(Schema.Literal("milestones")),
+  /** A milestone in its project or a team list entry. Default is a Work entry. */
+  list: Schema.optional(KinListId),
+  fields: Schema.optional(
+    Schema.Record(KinListFieldKey, Schema.NullOr(KinFieldValue)).check(Schema.isMaxProperties(20)),
+  ),
   title: KinTrimmedText.check(Schema.isMaxLength(280)),
   /** Defaults to the owner. A lead given work this way is woken to do it. */
   owner: Schema.optional(KinWorkPrincipal),

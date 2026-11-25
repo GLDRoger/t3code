@@ -24,6 +24,7 @@ import {
   type KinConnectionToolMode,
   type KinMyMailbox,
   type KinOrgId,
+  type KinPersonAccess,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
@@ -1012,13 +1013,15 @@ export function kinUseRow(
  * mailbox is connected and which address, never what is in it.
  */
 export const KIN_MY_MAILBOX_COPY = {
-  title: "Your mailbox",
+  title: "Your mailboxes",
   none: "Connect your own Google or Microsoft mail, and Kin drafts your follow-ups from it. Nothing goes until you tap Confirm, and only you see what is in it.",
   connected: (address: string) =>
     `Connected as ${address}. Kin drafts your follow-ups from it; only you confirm what goes.`,
   needsSignIn: (address: string) =>
     `${address} needs signing in again before Kin can draft or send from it.`,
+  several: "Kin drafts your follow-ups from these; only you confirm what goes from each.",
   connect: (label: string) => `Connect ${label}`,
+  connectAnother: "Connect another mailbox",
   notReady: (label: string) =>
     `${label} isn't set up for this company yet. The owner sets it up once in Connections.`,
   signInAgain: "Sign in again",
@@ -1028,12 +1031,47 @@ export const KIN_MY_MAILBOX_COPY = {
   teammatesFooter:
     "Which address each person connected. Kin never shows you what is in it or sends from it for you.",
   teammateNeedsSignIn: "Needs signing in again",
+  /** Whose a connected mailbox is, said beside it. */
+  companys: "The company's",
+  yours: "Yours",
+  makeMine: "Make this my own mailbox",
+  /** Said to a co-owner where the owner has the move (`kinTakesMailbox`). */
+  takeAsCoOwner:
+    "Only the owner can make a company mailbox their own. If this is your personal account, remove it here and connect it again under Your mailboxes.",
+  makeMineRow: "Kin stops watching it for the company. Your sign-in stays.",
+  makeMineTitle: (address: string) => `Make ${address} your own mailbox?`,
+  makeMineDetail:
+    "Kin will stop watching this mailbox for the company, and no bank alert is read from it. From now on your agents read it only when working for you alone: in your own chats with them, and when Kin prepares something for you. Never in anyone else's turn or in a shared or group chat. Only you confirm what goes from it. Cards waiting to send from it close unsent. Notes, tasks and drafts Kin already made from its mail stay the company's.",
+  makeMineAction: "Make it mine",
+  makeCompanys: "Make this the company's mailbox",
+  makeCompanysTitle: (address: string) => `Make ${address} the company's mailbox?`,
+  makeCompanysDetail:
+    "Kin starts watching it for the company now. Mail that came while it was yours won't be flagged, but the company's agents can still read that mail, and everything else in it, when asked. What goes from it needs an owner's or co-owner's Confirm. Cards waiting to send from it close unsent. What you sent from it stays yours.",
+  makeCompanysAction: "Make it the company's",
+  moving: "move this mailbox",
 } as const;
 
-/** What Your mailbox shows: none yet, connected, or connected and needing a sign-in. */
+/** Who reads a person's own mailboxes, said under them: the owner's agents also prepare for him. */
+export const kinOwnMailboxReads = (kind: KinPersonAccess | null | undefined, count: number) => {
+  const [these, them] = count === 1 ? ["it", "it"] : ["these", "them"];
+  return kind === "owner"
+    ? `Your agents read ${these} only when working for you alone: in your own chats with them, and when Kin prepares something for you. Never in anyone else's turn or a shared or group chat, and Kin never watches ${them} for the company.`
+    : `Agents read ${these} only in your own direct chat with them. Never in anyone else's turn or a shared or group chat, and Kin never watches ${them} for the company.`;
+};
+
+/** Kin keeps no record of who signed a company mailbox in, so only the owner takes one. */
+export const kinTakesMailbox = (kind: KinPersonAccess | null | undefined) => kind === "owner";
+
+/** Every own mailbox, oldest first, from a host before several too. */
+export const kinMyMailboxes = (view: KinMyMailbox) =>
+  view.mailboxes ?? (view.mailbox === null ? [] : [view.mailbox]);
+
+/** What Your mailboxes says: none yet, several, or the one, connected or needing a sign-in. */
 export const kinMyMailboxLine = (view: KinMyMailbox) => {
-  const mailbox = view.mailbox;
-  if (mailbox === null) return { _tag: "none" as const, text: KIN_MY_MAILBOX_COPY.none };
+  const all = kinMyMailboxes(view);
+  const mailbox = all[0];
+  if (mailbox === undefined) return { _tag: "none" as const, text: KIN_MY_MAILBOX_COPY.none };
+  if (all.length > 1) return { _tag: "several" as const, text: KIN_MY_MAILBOX_COPY.several };
   const address = mailbox.account ?? mailbox.preset ?? KIN_MY_MAILBOX_COPY.title;
   return mailbox.state === "needs_sign_in"
     ? { _tag: "signIn" as const, text: KIN_MY_MAILBOX_COPY.needsSignIn(address) }

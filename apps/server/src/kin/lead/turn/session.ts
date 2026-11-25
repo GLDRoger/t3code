@@ -13,6 +13,7 @@ import { agentShellScripts, GH_APP_FOLDER } from "../../github/ghSign.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../../KinEnabled.ts";
 import { KinServer } from "../../KinServer.ts";
 import { SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "../Audience.ts";
+import { BILLS_REFUSAL, BILLS_THREAD_PREFIX } from "../billsOnly.ts";
 import { REVIEW_THREAD_PREFIX } from "../outsideReview.ts";
 import { instructions } from "../instructions.ts";
 import { KinAgentSessionPolicy } from "../sessionPolicy.ts";
@@ -53,7 +54,7 @@ export interface KinSessionPlan {
    * may not run. Other seats decide web search through `refusal`.
    */
   readonly webSearch: Effect.Effect<string | undefined>;
-  /** False where the provider's own web search isn't offered at all: an outside review. */
+  /** False where the provider's own web search isn't offered at all: an outside review, bills. */
   readonly nativeSearch: boolean;
   /**
    * An owner or delegated seat's own web search or page fetch, once `refusal` admitted it: marks
@@ -85,10 +86,10 @@ const OWNER_NOTE =
 const sessionNote = (
   seat: "owner" | "confined",
   lacks: ReadonlyArray<KinCapability>,
-  driver: string,
+  search: boolean,
 ) => {
   if (seat === "confined")
-    return `${CONFINED_WEB_SEARCH.has(driver) ? CONFINED_SEARCH_NOTE : CONFINED_NOTE}\n${ALL_MODELS_NOTE}`;
+    return `${search ? CONFINED_SEARCH_NOTE : CONFINED_NOTE}\n${ALL_MODELS_NOTE}`;
   const shell = !lacks.includes("shell");
   const owner = [
     shell ? OWNER_NOTE : "",
@@ -98,15 +99,23 @@ const sessionNote = (
   return `${owner.join(" ")}\n${ALL_MODELS_NOTE}`;
 };
 
-/** Kin's instructions are the whole system prompt on every provider, then what this seat has. */
-export const kinInstructions = (seat: "owner" | "confined", driver: string) =>
-  `${instructions}\n\n${sessionNote(seat, kinProviderFacts(driver)?.lacks ?? [], driver)}`;
+/**
+ * Kin's instructions are the whole system prompt on every provider, then what this seat has; a
+ * confined seat searches the web only where its provider's own search runs and isn't turned off.
+ */
+export const kinInstructions = (
+  seat: "owner" | "confined",
+  driver: string,
+  search = CONFINED_WEB_SEARCH.has(driver),
+) => `${instructions}\n\n${sessionNote(seat, kinProviderFacts(driver)?.lacks ?? [], search)}`;
 
 /** What a lead's own thread is told, as `plan` decides it for that thread. */
 export const leadThreadInstructions = (threadId: ThreadId, driver: string) =>
   threadId.startsWith(REVIEW_THREAD_PREFIX)
     ? REVIEW_SEAT_INSTRUCTIONS
-    : kinInstructions(threadId.startsWith(SHARED_THREAD_PREFIX) ? "confined" : "owner", driver);
+    : threadId.startsWith(BILLS_THREAD_PREFIX)
+      ? kinInstructions("confined", driver, false)
+      : kinInstructions(threadId.startsWith(SHARED_THREAD_PREFIX) ? "confined" : "owner", driver);
 
 /**
  * Decides, once and for every provider, what a Kin session is: which turn it serves, what it may
@@ -239,6 +248,18 @@ export class KinSessions extends Context.Service<
             refusal: policy.value.refusal(thread),
             webSearch: policy.value.refusal(thread),
             webRead: (host) => policy.value.webSearch(thread, host),
+          } satisfies KinSessionPlan;
+        // Bills are outside text: Kin's tools only, and of those only `bill_read` (`billsOnly`).
+        if (thread.startsWith(BILLS_THREAD_PREFIX))
+          return {
+            ...base,
+            seat: "confined",
+            instructions: kinInstructions("confined", input.driver, false),
+            shell: undefined,
+            nativeSearch: false,
+            refusal: Effect.succeed(BILLS_REFUSAL),
+            webSearch: Effect.succeed(BILLS_REFUSAL),
+            webRead: () => Effect.succeed(BILLS_REFUSAL),
           } satisfies KinSessionPlan;
         if (thread.startsWith(REVIEW_THREAD_PREFIX))
           return {

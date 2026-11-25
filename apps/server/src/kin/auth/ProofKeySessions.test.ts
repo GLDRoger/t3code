@@ -37,6 +37,14 @@ const makeLayer = (enabled: boolean) =>
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-keys-" })),
   );
 const layer = makeLayer(true);
+const kinOffCli = <A, E, R>(runtime: Layer.Layer<A, E, R>) =>
+  runtime.pipe(
+    Layer.provide(
+      Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
+    ),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-cli-off-" })),
+    Layer.orDie,
+  );
 const metadata = { deviceType: "mobile" } as const;
 
 const recordRepair = (thumbprint: string, linkId: string) =>
@@ -96,7 +104,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
     }),
   );
 
-  it.effect.each(["server", "cli"] as const)(
+  // `cli` is Kin's host CLI runtime; `t3` is T3's, which `t3 thread` and `t3 feedback` take.
+  it.effect.each(["server", "cli", "t3"] as const)(
     "Kin disabled %s neither migrates nor blocks revoked keys",
     (runtime) =>
       Effect.gen(function* () {
@@ -123,63 +132,59 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
         yield* sessions.revoke((yield* sessions.verify(first.access_token)).sessionId);
         yield* exchange();
         expect(yield* sql`SELECT name FROM sqlite_master WHERE name GLOB 'kin_*'`).toEqual([]);
-      }).pipe(
-        Effect.provide(
-          runtime === "server"
-            ? makeLayer(false)
-            : CliAuth.layerRuntime.pipe(
-                Layer.provide(
-                  Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
-                ),
-                Layer.provide(
-                  ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-cli-off-" }),
-                ),
-              ),
-        ),
+      }).pipe((test) =>
+        runtime === "server"
+          ? Effect.provide(test, makeLayer(false))
+          : runtime === "cli"
+            ? Effect.provide(test, kinOffCli(CliAuth.layerRuntime))
+            : Effect.provide(test, kinOffCli(EnvironmentAuth.layerRuntime)),
       ),
   );
 
-  it.effect("Kin-off CLI revoke blocks exchanges on a Kin-on server sharing its database", () =>
-    Effect.gen(function* () {
-      const server = yield* Layer.build(
-        layerAuth.pipe(
-          Layer.provide(ManagedPolicy.layerTest()),
-          Layer.provide(
-            Layer.succeed(
-              ConfigProvider.ConfigProvider,
-              ConfigProvider.fromEnv({ env: { KIN_ENABLED: "true" } }),
+  // `t3 thread` and `t3 feedback` take T3's runtime; Kin's other host CLIs take Kin's.
+  it.effect.each(["kin", "t3"] as const)(
+    "Kin-off CLI revoke through the %s runtime blocks exchanges on a Kin-on server sharing its database",
+    (runtime) =>
+      Effect.gen(function* () {
+        const server = yield* Layer.build(
+          layerAuth.pipe(
+            Layer.provide(ManagedPolicy.layerTest()),
+            Layer.provide(
+              Layer.succeed(
+                ConfigProvider.ConfigProvider,
+                ConfigProvider.fromEnv({ env: { KIN_ENABLED: "true" } }),
+              ),
             ),
           ),
-        ),
-      );
-      const auth = Context.get(server, EnvironmentAuth.EnvironmentAuth);
-      const sessions = Context.get(server, SessionStore.SessionStore);
-      const first = yield* sessions.issue({ proofKeyThumbprint: "device" });
-      const sql = Context.get(server, SqlClient.SqlClient);
-      yield* sql`DROP TABLE kin_sql_migrations`;
-      const cli = yield* Layer.build(
-        CliAuth.layerRuntime.pipe(
-          Layer.provide(
-            Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
+        );
+        const auth = Context.get(server, EnvironmentAuth.EnvironmentAuth);
+        const sessions = Context.get(server, SessionStore.SessionStore);
+        const first = yield* sessions.issue({ proofKeyThumbprint: "device" });
+        const sql = Context.get(server, SqlClient.SqlClient);
+        yield* sql`DROP TABLE kin_sql_migrations`;
+        const cli = yield* Layer.build(
+          (runtime === "kin" ? CliAuth.layerRuntime : EnvironmentAuth.layerRuntime).pipe(
+            Layer.provide(
+              Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
+            ),
           ),
-        ),
-      );
-      yield* Context.get(cli, EnvironmentAuth.EnvironmentAuth).revokeSession(first.sessionId);
-      expect(yield* sql`SELECT name FROM sqlite_master WHERE name = 'kin_sql_migrations'`).toEqual(
-        [],
-      );
-      const link = yield* auth.createPairingLink({ proofKeyThumbprint: "device" });
-      expect(
-        (yield* auth
-          .exchangeBootstrapCredentialForAccessToken(link.credential, undefined, metadata, {
-            proofKeyThumbprint: "device",
-          })
-          .pipe(Effect.flip))._tag,
-      ).toBe("ServerAuthInvalidCredentialError");
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-cli-" })),
-    ),
+        );
+        yield* Context.get(cli, EnvironmentAuth.EnvironmentAuth).revokeSession(first.sessionId);
+        expect(
+          yield* sql`SELECT name FROM sqlite_master WHERE name = 'kin_sql_migrations'`,
+        ).toEqual([]);
+        const link = yield* auth.createPairingLink({ proofKeyThumbprint: "device" });
+        expect(
+          (yield* auth
+            .exchangeBootstrapCredentialForAccessToken(link.credential, undefined, metadata, {
+              proofKeyThumbprint: "device",
+            })
+            .pipe(Effect.flip))._tag,
+        ).toBe("ServerAuthInvalidCredentialError");
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-cli-" })),
+      ),
   );
 
   it.effect.each([

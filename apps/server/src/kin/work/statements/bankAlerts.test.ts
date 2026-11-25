@@ -7,6 +7,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../../config.ts";
 import * as Sqlite from "../../../persistence/Sqlite.ts";
@@ -23,7 +24,7 @@ import { KinLevelGate } from "../../lead/LevelGate.ts";
 import * as KinPersistence from "../../persistence/KinPersistence.ts";
 import { parseFields } from "../lists.ts";
 import * as KinRecords from "../KinRecords.ts";
-import type { MailMessage } from "../../connections/MailProvider.ts";
+import { MAIL_TOOL, type MailMessage } from "../../connections/MailProvider.ts";
 import { takeAlertMail } from "./alertMail.ts";
 import {
   alertBalances,
@@ -34,6 +35,7 @@ import {
   threadSeen,
 } from "./bankAlerts.ts";
 import { ensureBankList, findBankList, knownRows } from "./bankList.ts";
+import { creditMatches } from "./invoiceCredits.ts";
 import type { Statement, StatementRow } from "./statementTable.ts";
 
 // Invented: Lakeview Studio's owner Rhea gets HDFC alerts in two connected mailboxes.
@@ -325,6 +327,109 @@ it.layer(layer)((it) => {
     }),
   );
 
+  it.effect("revisits recent unresolved alerts once without needing new mail", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const sql = yield* SqlClient.SqlClient;
+      const connectionId = KinConnectionId.make("recovery-mail");
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+        url_host, auth, reach, state, created_at, updated_at)
+        VALUES (${orgId}, ${connectionId}, 'google', 'Accounts', 'builtin', 'example.test',
+          'oauth', 'closed', 'active', ${NOW}, ${NOW})`;
+      for (const tool of [MAIL_TOOL.list, MAIL_TOOL.read]) {
+        yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
+          definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at)
+          VALUES (${orgId}, ${connectionId}, ${tool}, '{}', 'digest', 'off', 'read', 0, ${NOW})`;
+      }
+
+      const legacy = (threadId: string, date?: string) =>
+        alert(`<${threadId}@invented>`, "Unreadable.", date);
+      for (const [mailbox, threadId, message] of [
+        [connectionId, "fixed", legacy("fixed")],
+        [connectionId, "unknown", legacy("unknown")],
+        [connectionId, "old", legacy("old", "Mon, 02 Nov 2026 10:00:00 +0530")],
+        ["other-mail", "elsewhere", legacy("elsewhere")],
+      ] as const) {
+        yield* takeAlerts(orgId, {
+          connectionId: mailbox,
+          threadId,
+          messages: [message],
+          now: NOW,
+        });
+      }
+      yield* sql`UPDATE kin_bank_alerts SET reference = NULL WHERE org_id = ${orgId}
+        AND outcome = 'unparsed' AND connection_id IN (${connectionId}, 'other-mail')`;
+
+      yield* takeAlerts(orgId, {
+        connectionId,
+        threadId: "current",
+        messages: [legacy("current")],
+        now: NOW,
+      });
+
+      const mail = (threadId: string, stub: ReturnType<typeof legacy>): MailMessage => ({
+        ...stub,
+        threadId,
+        from: "HDFC Bank <alerts@hdfcbank.net>",
+        to: [],
+        replyTo: [],
+        toLine: null,
+        ccLine: null,
+        deliveredTo: [],
+        unread: false,
+        preview: "",
+        references: null,
+        body: { text: stub.text, attachments: [] },
+      });
+      const reads: string[] = [];
+      const connections = {
+        readThread: (_orgId: KinOrgId, _connectionId: string, threadId: string) =>
+          Effect.sync(() => {
+            reads.push(threadId);
+            const message = legacy(threadId);
+            return threadId === "fixed"
+              ? [
+                  mail(threadId, {
+                    ...message,
+                    text: debit("632211119876").replace("**4821", "**7061"),
+                  }),
+                  mail(threadId, { ...legacy("not-listed"), text: debit("632211119877") }),
+                ]
+              : [mail(threadId, message)];
+          }),
+      };
+      const pass = takeAlertMail(connections, orgId, {
+        _tag: "mail",
+        connectionId,
+        since: NOW - 1,
+        until: NOW,
+        account: "accounts@lakeview.example",
+        cursor: null,
+        calendar: [],
+        mail: [],
+      });
+
+      yield* sql`UPDATE kin_connection_tools SET mode = 'read' WHERE org_id = ${orgId}
+        AND connection_id = ${connectionId} AND tool_name = ${MAIL_TOOL.read}`;
+      assert.deepStrictEqual(yield* pass, { threads: 0, recorded: 0, duplicate: 0, rejected: 0 });
+      assert.deepStrictEqual(reads, []);
+      yield* sql`UPDATE kin_connection_tools SET mode = 'read' WHERE org_id = ${orgId}
+        AND connection_id = ${connectionId} AND tool_name = ${MAIL_TOOL.list}`;
+      assert.deepStrictEqual(yield* pass, { threads: 2, recorded: 1, duplicate: 0, rejected: 1 });
+      assert.deepStrictEqual(reads, ["fixed", "unknown"]);
+      assert.deepStrictEqual(yield* pass, { threads: 0, recorded: 0, duplicate: 0, rejected: 0 });
+      assert.deepStrictEqual(reads, ["fixed", "unknown"]);
+      const rows = yield* sql`SELECT thread_id AS thread, outcome FROM kin_bank_alerts
+        WHERE org_id = ${orgId} AND connection_id = ${connectionId} ORDER BY thread_id`;
+      assert.deepStrictEqual(rows, [
+        { thread: "current", outcome: "unparsed" },
+        { thread: "fixed", outcome: "recorded" },
+        { thread: "old", outcome: "unparsed" },
+        { thread: "unknown", outcome: "unparsed" },
+      ]);
+    }),
+  );
+
   it.effect("a statement's row is an alert's entry by reference, else by day and amount", () =>
     Effect.gen(function* () {
       const def = yield* findBankList(orgId);
@@ -405,6 +510,45 @@ it.layer(layer)((it) => {
       // Another bank's statement isn't checked against HDFC alerts.
       assert.isUndefined(
         yield* alertCheck(orgId, def?.id, { ...hdfc, bank: "Invented Bank" }, found.known),
+      );
+    }),
+  );
+
+  it.effect("a credit alert seen twice is one credit that looks like its invoice's payment", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      // Ambermill (invented) bills Harbourline Logistics; its own org, apart from Lakeview's.
+      const org = KinOrgId.make("ambermill-alerts");
+      yield* sql`INSERT INTO kin_orgs VALUES (${org}, 'Ambermill Studio', '2026-11-01')`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('ambermill-rhea', ${org}, 'rhea', 'Rhea', '2026-11-01', 'owner')`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${org}, 'clients', 'clients', 'C', 1, 0), (${org}, 'invoices', 'invoices', 'INV', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, party_id, date_at, amount_minor, currency, confirmed,
+          created_by_kind, created_by_id, origin_key, created_at, updated_at, fields_json)
+        VALUES (${org}, 'r-amb-c1', 'clients', 'C-1', 'Ambermill Design LLP', 'open', 'person',
+            'ambermill-rhea', NULL, NULL, NULL, NULL, 1, 'person', 'ambermill-rhea', 'c-1', 0, 0,
+            '{}'),
+          (${org}, 'r-amb-inv4', 'invoices', 'INV-4', 'October retainer', 'waiting', 'person',
+            'ambermill-rhea', 'r-amb-c1', ${Date.parse("2026-11-02T12:00:00Z")}, 9_500_000, 'INR', 1,
+            'person', 'ambermill-rhea', 'inv-4', 0, 0, '{"number":"26-27/004"}')`;
+      const credit = alert(
+        "<neft-1@hdfc>",
+        "Dear Customer, INR 95,000.00 was credited to your A/c No. XX4821 on 17-11-2026 for NEFT Cr-INVT0000001-AMBERMILL DESIGN LLP-Invoice 26-27/004. UTR No: INVTN52026111700042. Available balance: INR 5,05,250.50.",
+      );
+      const take = (connectionId: string, threadId: string) =>
+        takeAlerts(org, { connectionId, threadId, messages: [credit], now: NOW });
+      assert.deepInclude(yield* take("work-mail", "c1"), { recorded: 1 });
+      assert.deepInclude(yield* take("home-mail", "c9"), { recorded: 0, duplicate: 1 });
+      const groups = yield* creditMatches(org);
+      assert.deepStrictEqual(
+        groups.map((group) => ({
+          credit: group.credit.key,
+          first: group.first.map((pair) => [pair.invoice.key, pair.reason]),
+          recorded: group.recorded,
+        })),
+        [{ credit: "BNK-1", first: [["INV-4", "cites 26-27/004"]], recorded: undefined }],
       );
     }),
   );

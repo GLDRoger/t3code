@@ -59,7 +59,12 @@ import {
   ownerDateTime,
   ownerTime,
   snapshotChanges,
+  askText,
+  decisionActions,
+  deferralFingerprint,
   deferralLead,
+  promiserLead,
+  makeDeferralRedraw,
   deferredSectionOff,
   startsAtLevel,
   makeDeferralCards,
@@ -160,6 +165,7 @@ const make = Effect.gen(function* () {
   const ticks = yield* Scheduler.Scheduler;
   const cards = yield* makeDeferralCards;
   const start = yield* makeDeferralStarter;
+  const redraw = yield* makeDeferralRedraw;
   const budget = yield* KinBudget.KinBudget;
   const deliveries = yield* LeadDelivery.KinLeadDelivery;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -360,6 +366,15 @@ const make = Effect.gen(function* () {
       FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = ${itemId} ORDER BY item_id`.pipe(
       Effect.map((rows) => rows[0]),
     );
+  /** The committed item with its body, which a decision card's fingerprint covers. */
+  const readCommitted = (orgId: KinOrgId, itemId: KinMemoryItemId) =>
+    memory.readItemQuietly(orgId, itemId, "triggers").pipe(
+      Effect.map((item): { head: MemoryItemHead; body: string } | undefined => item),
+      Effect.catchTags({
+        MemoryNotFound: () => Effect.undefined,
+        MemoryDuplicateId: () => Effect.undefined,
+      }),
+    );
   const readItem = (orgId: KinOrgId, itemId: KinMemoryItemId) =>
     memory.readItemQuietly(orgId, itemId, "triggers").pipe(
       Effect.map((item): MemoryItemHead | undefined => item.head),
@@ -375,10 +390,7 @@ const make = Effect.gen(function* () {
     item: MemoryItemHead | undefined,
   ) {
     if (item?.chat !== undefined) {
-      const lead = yield* liveLead(sql, orgId, {
-        chatId: item.chat,
-        prefer: CHIEF_OF_STAFF_DOMAIN,
-      });
+      const lead = yield* promiserLead(sql, orgId, item);
       const chatId = yield* cardChatFor(sql, orgId, item.chat, lead?.ownerChatId ?? null);
       if (chatId !== null) return chatId;
     }
@@ -474,7 +486,7 @@ const make = Effect.gen(function* () {
     const handle = item.owner ?? item.said_by;
     const [person] = yield* sql<{ personId: string }>`SELECT person_id AS "personId"
       FROM kin_people WHERE org_id = ${orgId} AND handle = ${handle} ORDER BY person_id`;
-    const owner = yield* liveLead(sql, orgId, { chatId: item.chat, prefer: CHIEF_OF_STAFF_DOMAIN });
+    const owner = yield* promiserLead(sql, orgId, item);
     if (person === undefined || owner === undefined || item.chat === undefined)
       return `I couldn't chase ${handle}`;
     const put = yield* pings
@@ -521,7 +533,8 @@ const make = Effect.gen(function* () {
       return yield* inbox.markConsumed(orgId, [fire.fireId]).pipe(Effect.as(false));
 
     // Read-only or idempotent I/O; a replay repeats it.
-    const item = yield* readItem(orgId, itemId);
+    const committed = yield* readCommitted(orgId, itemId);
+    const item = committed?.head;
     const onDue = run.onDue;
     const decodedOnDue = yield* decodeOnDue(onDue);
     const gates: Array<string> = [];
@@ -529,7 +542,7 @@ const make = Effect.gen(function* () {
       const github = yield* readGithubLinks(orgId, item?.links ?? snapshot.links);
       gates.push(...snapshotChanges(snapshot, item, github));
       if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
-        gates.push("the stop switch is on");
+        gates.push("Kin asks before every start for now");
     }
     // A reminder is the lead's to write when a wake-up can run; budget is read outside the writer.
     const chatOwn = onDue === "remind" ? yield* sharedChatOf(sql, orgId, item) : undefined;
@@ -581,6 +594,26 @@ const make = Effect.gen(function* () {
         ) {
           return "section_off" as const;
         }
+        // A reminder never asks, so it needs no lead here.
+        const lead = onDue === "remind" ? undefined : yield* deferralLead(sql, orgId, item);
+        // A tap's start needs the item's chat and source event, which the run keeps from here on.
+        const startable = item !== undefined && lead !== undefined;
+        // What the card is drawn from: the links just checked and the committed work, which a
+        // tap must still find (`deferralFingerprint`).
+        const kept: DeferralSnapshot =
+          committed === undefined
+            ? snapshot
+            : {
+                ...snapshot,
+                links: committed.head.links,
+                source: {
+                  ...(committed.head.chat === undefined ? {} : { chat: committed.head.chat }),
+                  ...(committed.head.source_event === undefined
+                    ? {}
+                    : { sourceEvent: committed.head.source_event }),
+                },
+                drawn: { fingerprint: deferralFingerprint(committed) },
+              };
         const card = (phase: KinDeferralCard["phase"], text: string, graceEndsAt?: number) => ({
           itemId,
           title,
@@ -589,28 +622,29 @@ const make = Effect.gen(function* () {
           text,
           phase,
           ...(graceEndsAt === undefined ? {} : { graceEndsAt: iso(graceEndsAt) }),
+          actions: phase === "started" ? [] : decisionActions(startable),
+          ...(lead === undefined ? {} : { agent: lead.name }),
         });
-        const setState = (state: string) =>
-          sql`UPDATE kin_deferral_runs SET state = ${state}, updated_at = ${now}
+        const setState = Effect.fn("KinDeferralFlow.setState")(function* (
+          state: string,
+          next: DeferralSnapshot = kept,
+        ) {
+          const json = yield* encodeSnapshot(next);
+          yield* sql`UPDATE kin_deferral_runs SET state = ${state}, snapshot_json = ${json},
+              updated_at = ${now}
             WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
               AND state = ${run.state}`;
+        });
         const post = Effect.fn("KinDeferralFlow.post")(function* (state: KinDeferralCard) {
           const chatId = yield* cardChat(orgId, item);
           yield* cards.write({ orgId, itemId, state, chatId, now });
         });
         const ask = Effect.fn("KinDeferralFlow.ask")(function* (why: ReadonlyArray<string>) {
-          const reason = why.length === 0 ? "" : ` I won't start it on my own: ${why.join("; ")}.`;
-          yield* post(
-            card(
-              "asked",
-              `${title} is due at ${ownerTime(dueAt, now, clock)}. Start it, move it to Monday, or cancel it?${reason}${lateNote(dueAt, now, clock)}`,
-            ),
-          );
+          yield* post(card("asked", askText({ dueAt, now, clock, startable, why })));
           yield* setState("asked");
         });
 
         if (onDue === "start") {
-          const lead = yield* deferralLead(sql, orgId, item);
           if (lead === undefined) reasons.push("there is no active agent");
           else if (!startsAtLevel(lead.level)) reasons.push("starting work isn't open to me here");
         }
@@ -640,11 +674,7 @@ const make = Effect.gen(function* () {
               updated_at = max(updated_at, ${now})
               WHERE org_id = ${orgId} AND trigger_id = ${deferralTriggerId(itemId, "due")}
                 AND enabled = 1`;
-            const graced = yield* encodeSnapshot({ ...snapshot, graceEndsAt: graceEnd });
-            yield* sql`UPDATE kin_deferral_runs SET snapshot_json = ${graced}
-              WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
-                AND state = ${run.state}`;
-            yield* setState("grace");
+            yield* setState("grace", { ...kept, graceEndsAt: graceEnd });
           } else {
             const started = yield* start({
               orgId,
@@ -733,6 +763,47 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Decision cards drawn before taps bound to their item (no fingerprint): drawn again from the
+   * committed item with a new revision, so their taps work and an old revision gains none.
+   */
+  const redrawUnbound = Effect.fn("KinDeferralFlow.redrawUnbound")(function* (
+    orgId: KinOrgId,
+    now: number,
+    clock: TextClock,
+  ) {
+    const rows = yield* sql<{ itemId: string }>`SELECT item_id AS "itemId" FROM kin_deferral_runs
+      WHERE org_id = ${orgId} AND state IN ('asked', 'heads_up', 'grace')
+        AND json_extract(snapshot_json, '$.drawn') IS NULL ORDER BY item_id`;
+    for (const row of rows) {
+      const itemId = KinMemoryItemId.make(row.itemId);
+      const committed = yield* readCommitted(orgId, itemId);
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const run = yield* readRun(orgId, itemId);
+          if (run === undefined || run.dueAt === null) return;
+          const snapshot = yield* decodeSnapshot(run.snapshot);
+          if (snapshot.drawn !== undefined || !["asked", "heads_up", "grace"].includes(run.state))
+            return;
+          yield* redraw({
+            orgId,
+            itemId,
+            run: {
+              state: run.state,
+              dueAt: run.dueAt,
+              onDue: yield* decodeOnDue(run.onDue),
+              snapshot,
+            },
+            item: committed,
+            why: [],
+            clock,
+            now,
+          });
+        }),
+      );
+    }
+  });
+
   const drain = Effect.fn("KinDeferralFlow.drain")(
     function* (orgId: KinOrgId) {
       const now = yield* Clock.currentTimeMillis;
@@ -769,6 +840,11 @@ const make = Effect.gen(function* () {
           zone: yield* cache.ownerTimeZone(orgId),
           locale: yield* textLocale(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
         };
+        yield* redrawUnbound(orgId, now, clock).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin couldn't redraw an older deferral card", { orgId, cause }),
+          ),
+        );
         const orgRetries = retries.get(orgId) ?? new Map();
         retries.set(orgId, orgRetries);
         const unseenRetries = new Set(orgRetries.keys());

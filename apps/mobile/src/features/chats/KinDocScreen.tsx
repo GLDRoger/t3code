@@ -46,7 +46,13 @@ import {
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
-import { EnvironmentId, KinOrgId, KinRecordKey, type KinDocDetail } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  KinOrgId,
+  KinRecordKey,
+  KinWidgetId,
+  type KinDocDetail,
+} from "@t3tools/contracts";
 import * as Linking from "expo-linking";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -110,6 +116,8 @@ export type KinDocParams = {
   readonly section?: string;
   /** An earlier version to read; the latest otherwise. */
   readonly v?: string;
+  /** The long draft card it was opened from: its reader may read that version without Docs. */
+  readonly card?: string;
   /** The version that was latest before a restore, which restoring again undoes. */
   readonly undo?: string;
 };
@@ -189,6 +197,7 @@ export function KinDocScreen({ route }: StaticScreenProps<KinDocParams>) {
       orgId={orgId}
       docKey={key}
       version={kinDocVersionParam(route.params.v)}
+      card={route.params.card === undefined ? null : KinWidgetId.make(route.params.card)}
       section={route.params.section ?? null}
       undo={kinDocVersionParam(route.params.undo)}
     />
@@ -198,13 +207,14 @@ export function KinDocScreen({ route }: StaticScreenProps<KinDocParams>) {
 type DocTarget = KinWorkTarget & {
   readonly docKey: KinRecordKey;
   readonly version: number | null;
+  readonly card?: KinWidgetId | null;
   readonly section: string | null;
   readonly undo: number | null;
 };
 
 function KinDocStates(props: DocTarget) {
   const navigation = useNavigation();
-  const { state, refresh } = useKinDoc(props, props.docKey, props.version);
+  const { state, refresh } = useKinDoc(props, props.docKey, props.version, props.card ?? null);
   if (state._tag === "ready")
     return <KinDocBody {...props} doc={state.value} stale={state.stale} onRefresh={refresh} />;
   return (
@@ -213,6 +223,8 @@ function KinDocStates(props: DocTarget) {
         <KinWorkLoading label="Loading doc" />
       ) : state._tag === "gone" ? (
         <EmptyState variant="plain" {...KIN_DOCS.gone} />
+      ) : state._tag === "private" ? (
+        <EmptyState variant="plain" {...KIN_DOCS.privateNow(state.by)} />
       ) : state._tag === "refused" ? (
         <EmptyState variant="plain" {...KIN_DOCS.unavailable} />
       ) : (

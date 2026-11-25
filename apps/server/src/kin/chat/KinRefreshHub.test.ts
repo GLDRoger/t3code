@@ -12,6 +12,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -28,6 +29,8 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import * as KinRecords from "../work/KinRecords.ts";
+import * as Money from "../work/ownerMoney.ts";
+import { defineList, proposalFor } from "../work/registers.ts";
 import * as WorkStream from "../work/workStream.ts";
 import { newCompanyProfileJson, setProfile } from "../work/companyProfile.ts";
 import { KinIdentity } from "./KinIdentity.ts";
@@ -308,6 +311,37 @@ describe("KinRefreshHub", () => {
       }).pipe(Effect.withTracer(tracer), Effect.scoped, Effect.provide(paired)),
   );
 
+  it.effect("moves a member's list refresh when team sharing opens or closes a list", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { owner: rhea } = yield* KinIdentity;
+      const { orgId } = rhea;
+      const arjun = { ...rhea, personId: KinPersonId.make("arjun") };
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${arjun.personId}, ${orgId}, 'arjun', 'Arjun', '2026-11-09T00:00:00.000Z')`;
+      const refreshes = subscribeRefreshes([arjun], { orgId });
+      const queue = yield* Stream.toQueue(refreshes, { capacity: "unbounded" });
+      const first = yield* Queue.take(queue);
+      yield* defineList(orgId, yield* proposalFor(orgId, { name: "Bookings" }), 0);
+      assert.deepStrictEqual(yield* Stream.runHead(refreshes), Option.some(first));
+      assert.strictEqual(yield* Queue.size(queue), 0);
+      const change = (team: boolean, rev: number) => {
+        const input = { orgId, list: "bookings", rev, team };
+        return Money.updateList([rhea], input);
+      };
+      yield* change(true, 1);
+      assert.deepStrictEqual(
+        yield* Stream.runHead(refreshes),
+        Option.some({ ...first, workLists: 1 }),
+      );
+      yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+      assert.deepInclude(yield* Queue.take(queue), { workLists: 1 });
+      yield* change(false, 2);
+      yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+      assert.deepInclude(yield* Queue.take(queue), { workLists: 2 });
+    }).pipe(Effect.scoped, Effect.provide(paired)),
+  );
+
   it.effect("moves the lists a new company made while waiting when its country is saved", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -455,8 +489,8 @@ describe("KinRefreshHub", () => {
         "github/appRepos.ts",
       ],
       kin_budget_limits: ["lead/KinBudget.ts"],
-      // Pause and resume touch `stop` (KinStop.test.ts counts them).
-      kin_org_state: ["lead/KinStop.ts"],
+      // Pause and resume touch `stop`. The heartbeat and pending offline notices have no stop state.
+      kin_org_state: ["lead/KinStop.ts", "host/offlineCatchUp.ts"],
       // A zone change renames due-keyed facts; KinRoutines.configure touches pulse (pinned below).
       kin_pulse_facts: ["pulse/KinPulse.ts", "work/allDayZone.ts"],
       // Lists read only rows a company defined (`built_in = 0`). The deals files write the built-in
@@ -523,6 +557,7 @@ describe("KinRefreshHub", () => {
     assert.deepStrictEqual(watchWriters.toSorted(), [
       "lead/Retirement.ts",
       "persistence/KinRetention.ts",
+      "tasksKey/acts.ts",
       "watches/KinWatchRounds.ts",
       "watches/rpcHandlers.ts",
       "work/deals.ts",

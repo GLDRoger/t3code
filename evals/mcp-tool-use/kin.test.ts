@@ -380,6 +380,90 @@ it("passes a new company's refused invoice on what the reply tells the owner, no
     assert.isFalse(passes(wrong), wrong);
 });
 
+// Replies a case's textMustNot once failed though they were right, beside the wrong ones it must
+// still fail.
+it.each([
+  [
+    "kin-sales.ndjson",
+    [
+      "kin-sales-member-client-mail-drafted-and-sent-up",
+      "kin-sales-member-client-mail-own-price-is-a-card",
+    ],
+    [
+      "Filed as a card in your chat. Press Send to Rhea; add Kabir's address when it's sent.",
+      "To get it sent today, press Send to Rhea on the card; once it is sent Kabir has it.",
+      "Once the mail has been sent, Kabir has it.",
+    ],
+    [
+      "It's been sent to Kabir.",
+      "It is sent.",
+      "Mail sent to the client.",
+      "Email already sent.",
+      "The mail has been sent to Kabir.",
+    ],
+  ],
+  [
+    "kin-head-start.ndjson",
+    [
+      "kin-head-start-quote-unanswered-drafts-the-follow-up",
+      "kin-head-start-client-waiting-drafts-a-reply",
+      "kin-head-start-renewal-at-draft-day-is-prepared",
+      "kin-head-start-renewal-turn-issues-nothing",
+    ],
+    [
+      "The follow-up waits for your Confirm; the mail doesn't say it was sent before.",
+      "Nothing has been sent: it waits for your Confirm.",
+      "The quote QT-7 was sent on 18 Nov; the follow-up waits for your Confirm.",
+    ],
+    ["The follow-up was sent to the client.", "The mail has been sent to Anita."],
+  ],
+  [
+    "kin-owed.ndjson",
+    [
+      "kin-owed-evening-summary-sums-up-the-day",
+      "kin-owed-evening-summary-tells-the-records-day",
+      "kin-owed-evening-summary-marked-done-is-not-retold",
+      "kin-owed-evening-summary-tells-a-moved-due",
+    ],
+    ["Evening: one task finished, two moved.\n\n## Done today\n- W-12"],
+    ["Good evening, Rhea.\n\n## Done today", "Evening, Rhea.\n\n## Done", "Evening!\n\n## Done"],
+  ],
+  [
+    "kin-owed.ndjson",
+    ["kin-owed-morning-checkin-is-a-page", "kin-owed-quiet-morning-is-still-the-page"],
+    ["Morning: two things need you.\n\n## Needs you"],
+    ["Good morning, Rhea.\n\n## Needs you", "Morning, all.\n\n## Work", "Morning!\n\n## Work"],
+  ],
+  [
+    "kin.ndjson",
+    ["kin-evening-review-finished-is-not-ready"],
+    [
+      "The review of #12 asked for changes: #12 isn't ready to merge.",
+      "#12 needs fixes before it's ready.",
+      "#12 is not approved yet.",
+    ],
+    ["#12 is ready to merge.", "#12 is now approved."],
+  ],
+] as const)(
+  "%s: textMustNot passes the right replies and fails the wrong",
+  (file, ids, rights, wrongs) => {
+    const cases = NodeFS.readFileSync(new URL(`./cases/${file}`, import.meta.url), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => decodeCase(line));
+    for (const id of ids) {
+      const { textMustNot } = cases.find((c) => c.id === id)!.expect;
+      const passes = (text: string) =>
+        gradeSample(
+          { textMustNot },
+          { calls: [], text, finalText: text, stopReason: "end_turn" },
+        ).every((check) => check.pass);
+      for (const right of rights) assert.isTrue(passes(right), `${id}: ${right}`);
+      for (const wrong of wrongs) assert.isFalse(passes(wrong), `${id}: ${wrong}`);
+    }
+  },
+);
+
 // The runner fills no placeholder for these rules (changing the runner costs a new baseline), so
 // the cases quote them; this keeps each quote the text the server sends.
 it.each([
@@ -632,6 +716,42 @@ it.effect(
         assert.deepEqual((yield* answer(byKey, "record_get", { key })).content, `{"key":"${key}"}`);
       const other = yield* answer(byKey, "record_get", { key: "W-9" });
       assert.deepEqual([other.is_error, other.content], [true, "No entry W-9."]);
+      // A connection call's text arguments are read as Kin reads them before mocks match and calls
+      // are graded; text that holds no object is Kin's own refusal, never a mock's answer.
+      const mail = { to: ["kabir@tidewater.example"], body: 'Hi Kabir, "reason": {ours}' };
+      const swallowed = `${JSON.stringify(mail)},"reason":"Send Kabir's mail"}`;
+      const toKabir = (args: unknown) => ({
+        connection: "conn-g1",
+        tool: "mail_send",
+        arguments: args,
+      });
+      const staged = kinCase({
+        mocks: {
+          kin_connection_call: {
+            $when: [
+              { args: { "arguments.body": "~Hi Kabir", reason: "~Send Kabir" }, result: "staged" },
+            ],
+            $else: "unread",
+          },
+        },
+      });
+      assert.deepEqual(
+        normalizeToolInput("mcp__t3-code__kin_connection_call", toKabir(swallowed)),
+        {
+          ...toKabir(mail),
+          reason: "Send Kabir's mail",
+        },
+      );
+      const fromText = yield* answer(staged, "kin_connection_call", toKabir(swallowed));
+      assert.deepEqual([fromText.is_error, fromText.content], [undefined, "staged"]);
+      const refused = yield* answer(staged, "kin_connection_call", toKabir("[1]"));
+      assert.deepEqual(
+        [refused.is_error, refused.content],
+        [
+          true,
+          '{"_tag":"KinChatError","reason":"invalid_state","message":"arguments must be an object matching the tool\'s input schema."}',
+        ],
+      );
       // A T3 tool with no mock answers as before.
       const t3Base = buildBase(template, {
         model: "claude-sonnet-5-5",

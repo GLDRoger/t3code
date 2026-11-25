@@ -1,5 +1,8 @@
+import { KEY_SENT } from "../chat/keySent.ts";
 import {
+  KIN_DOC_CARD,
   KinChatError,
+  KinDocCardState,
   type KinDocDeleteInput,
   type KinDocDetail,
   type KinDocDiffInput,
@@ -36,6 +39,8 @@ import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -49,28 +54,36 @@ import { docEmbeds } from "./docFiles.ts";
 import * as Docs from "./docs.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
 import { LISTS } from "./lists.ts";
-import { OFFERINGS_ORIGIN, startOfferings, withOfferings } from "./offerings.ts";
+import {
+  OFFERINGS_ORIGIN,
+  offeringsWithAnswer,
+  startOfferings,
+  withOfferings,
+} from "./offerings.ts";
 import { inList, millis, ownerWriter, placeRefusals, theOwner, viewerOf } from "./ownerWork.ts";
 import {
   chatLinksFor,
   iso,
   principalId,
   recordSeq,
+  type RecordRow,
   selectRecords,
   unavailable,
   workFailure,
 } from "./recordRows.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import { EVERY_RECORD_KIND, search as runSearch } from "./search.ts";
 import { docKindWords, searchIndexed } from "./searchIndex.ts";
 import {
-  clientMoneySeen,
+  clientDocMoneySeen,
   KIN_OWNER_LEVEL,
   PICTURE_DOC_ORIGIN,
   seenBy,
   keyedViewer,
   teamSeq,
   linkedFromOf,
+  ownMoneyDraft,
   teamVisible,
   viewerOfPeople,
   type KinViewer,
@@ -96,6 +109,31 @@ const readerOf = Effect.fn("KinDocs.reader")(function* (
   const { personId } = viewer.person;
   if (!viewer.teammate) return { personId, team: undefined };
   if (refused.docs) return yield* noDocs;
+  return { personId, team: personId };
+});
+const decodeDocCard = Schema.decodeUnknownOption(Schema.fromJsonString(KinDocCardState));
+/**
+ * Without the Docs place, a long draft's card lets a person in its chat read the version it holds
+ * (Copy text, Open): as a teammate, so only while they still see the doc.
+ */
+const cardReader = Effect.fn("KinDocs.cardReader")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: {
+    readonly orgId: KinOrgId;
+    readonly key: string;
+    readonly version?: number | undefined;
+    readonly card: string;
+  },
+) {
+  const { viewer } = yield* placeRefusals(people, input.orgId);
+  const { personId } = viewer.person;
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ state: string }>`SELECT w.state_json AS state FROM kin_widgets w
+    JOIN kin_chat_members m ON m.org_id = w.org_id AND m.chat_id = w.chat_id
+      AND m.principal_kind = 'person' AND m.person_id = ${personId} AND m.left_at IS NULL
+    WHERE w.org_id = ${input.orgId} AND w.widget_id = ${input.card} AND w.type = ${KIN_DOC_CARD}`;
+  const card = row === undefined ? undefined : Option.getOrUndefined(decodeDocCard(row.state));
+  if (card?.key !== input.key || card.draft?.whole?.version !== input.version) return yield* noDocs;
   return { personId, team: personId };
 });
 const reader = (people: ReadonlyArray<PersonIdentity>, orgId: KinOrgId) =>
@@ -168,6 +206,46 @@ const offsetOf = (cursor: string | undefined) => {
   return found === null ? Effect.fail(badCursor) : Effect.succeed(Number.parseInt(found[1]!, 10));
 };
 
+/** A label its kind gave and no person did, and the teammate who still reads it as their draft. */
+const kindLabelOf = Effect.fn("KinDocs.kindLabel")(function* (
+  orgId: KinOrgId,
+  row: RecordRow,
+  readerId: KinPersonId,
+) {
+  if (row.sensitive !== 1 || row.markedBy !== null) return {};
+  const sql = yield* SqlClient.SqlClient;
+  const [reader] = yield* sql<{ personId: string; name: string }>`SELECT p.person_id AS "personId",
+      p.display_name AS name FROM kin_records r
+    JOIN kin_people p ON p.org_id = r.org_id AND p.removed_at IS NULL
+      AND p.person_id = json_extract(r.fields_json, '$.draftFor')
+    WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId}
+      AND ${ownMoneyDraft(sql, sql`p.person_id`)}`;
+  return {
+    kindLabel:
+      reader === undefined
+        ? {}
+        : {
+            reader: {
+              name: reader.name,
+              ...(reader.personId === readerId ? { you: true as const } : {}),
+            },
+          },
+  };
+});
+
+/** For an owner's menu: the teammate a doc was drafted for, while the label on it is not theirs. */
+const draftOfFor = Effect.fn("KinDocs.draftOf")(function* (orgId: KinOrgId, row: RecordRow) {
+  const sql = yield* SqlClient.SqlClient;
+  const [teammate] = yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_records r
+    JOIN kin_people p ON p.org_id = r.org_id AND p.removed_at IS NULL
+      AND p.person_id = json_extract(r.fields_json, '$.draftFor')
+    WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId} AND r.register_id = 'docs'
+      AND r.marked_by_person_id IS NOT p.person_id
+      AND NOT ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
+    ORDER BY p.person_id LIMIT 1`;
+  return teammate === undefined ? {} : { draftOf: { name: teammate.name } };
+});
+
 const detailOf = Effect.fn("KinDocs.detail")(function* (
   orgId: KinOrgId,
   ref: { readonly key: string } | { readonly recordId: string },
@@ -224,6 +302,8 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
     undefined
       ? { editable: true as const }
       : {}),
+    ...(yield* kindLabelOf(orgId, row, readerId)),
+    ...(viewer._tag === "ownerLevel" ? yield* draftOfFor(orgId, row) : {}),
   } satisfies KinDocDetail;
 });
 
@@ -248,10 +328,10 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
     seenBy(sql, viewer),
     input.archived === true ? sql`r.state = 'dropped'` : sql`r.state != 'dropped'`,
     ...(partyId === undefined ? [] : [sql`r.party_id = ${partyId}`]),
-    // A client's money docs reach a teammate only with the Money switch (`clientMoneySeen`).
+    // A client's money docs reach a teammate only with the Money switch, or as her own draft.
     ...(partyId === undefined || viewer._tag === "ownerLevel"
       ? []
-      : viewer.people.map((person) => clientMoneySeen(sql, person))),
+      : viewer.people.map((person) => clientDocMoneySeen(sql, person))),
     ...(projectId === undefined ? [] : [sql`r.project_id = ${projectId}`]),
     ...(input.owner === undefined
       ? []
@@ -347,7 +427,15 @@ export const get = Effect.fn("KinDocs.get")(
     input: KinDocGetInput,
     options: { readonly keyed?: boolean } = {},
   ) {
-    const { personId, team } = yield* readerOf(people, input.orgId);
+    const { personId, team } = yield* readerOf(people, input.orgId).pipe(
+      Effect.catchIf(
+        (error) => error === noDocs && "key" in input && input.card !== undefined,
+        () =>
+          "key" in input && input.card !== undefined
+            ? cardReader(people, { ...input, card: input.card })
+            : noDocs,
+      ),
+    );
     const base = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]);
     return yield* detailOf(
       input.orgId,
@@ -432,7 +520,7 @@ export const diff = Effect.fn("KinDocs.diff")(
 
 /** The owner's undo: the version comes back as a new latest one, so it can be undone too. */
 export const restore = Effect.fn("KinDocs.restore")(
-  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocRestoreInput) {
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocRestoreInput, requestId?: string) {
     const person = yield* theOwner(people, input.orgId);
     yield* Docs.restore(
       input.orgId,
@@ -442,7 +530,9 @@ export const restore = Effect.fn("KinDocs.restore")(
       {
         version: input.version,
         latest: input.latest,
-        originKey: `owner-restore:${person.personId}:${input.key}:${input.version}:${input.latest}`,
+        originKey:
+          requestId ??
+          `owner-restore:${person.personId}:${input.key}:${input.version}:${input.latest}`,
       },
     );
     return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL, person.personId);
@@ -473,7 +563,12 @@ export const editSection = Effect.fn("KinDocs.editSection")(
         section: input.section,
         hash: input.hash,
         text: input.text,
-        originKey: `person-edit:${personId}:${NodeCrypto.createHash("sha256").update(asked).digest("hex").slice(0, 32)}`,
+        // A coding agent's request keeps its key's id, so the version reads as its.
+        originKey: `person-edit:${personId}:${
+          input.clientRequestId.startsWith(KEY_SENT)
+            ? input.clientRequestId.split(":").slice(0, 2).join(":") + ":"
+            : ""
+        }${NodeCrypto.createHash("sha256").update(asked).digest("hex").slice(0, 32)}`,
       },
     );
     // The version this request wrote, a replay's included, in the view they read now.
@@ -510,7 +605,14 @@ export const remove = Effect.fn("KinDocs.remove")(
 export const startWhatWeSell = Effect.fn("KinDocs.startWhatWeSell")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinDocStartWhatWeSellInput) {
     const person = yield* theOwner(people, input.orgId);
-    const { row } = yield* startOfferings(input.orgId, ownerWriter(person), person.personId);
+    const { row } = yield* startOfferings(
+      input.orgId,
+      ownerWriter(person),
+      person.personId,
+      input.sells === undefined
+        ? {}
+        : { body: offeringsWithAnswer(input.sells), summary: "Started from the set-up question" },
+    );
     return yield* detailOf(
       input.orgId,
       { recordId: row.recordId },

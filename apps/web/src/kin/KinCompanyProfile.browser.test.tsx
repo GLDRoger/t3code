@@ -36,7 +36,8 @@ vi.mock(import("./KinTemplates"), async (importOriginal) => ({
 }));
 vi.mock(import("./kinClient"), async (importOriginal) => {
   const real = await importOriginal();
-  const { Atom: A, AsyncResult: R } = await import("effect/reactivity");
+  const { Atom: A } = await import("effect/reactivity");
+  const { sync } = await import("effect/Effect");
   const allowed = A.make(true);
   return {
     ...real,
@@ -45,20 +46,23 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
       companyProfileSet: {
         ...real.kinClient.companyProfileSet,
         permissionAtom: () => allowed,
-        run: async (_registry: unknown, request: { readonly input: unknown }) => {
-          host.saved.push(request.input);
-          return R.success(host.profile!);
-        },
+        run: (_registry: unknown, request: { readonly input: unknown }) =>
+          sync(() => {
+            host.saved.push(request.input);
+            return host.profile!;
+          }),
       },
     },
   };
 });
-vi.mock("../state/use-atom-command", () => ({
-  useAtomCommand:
-    (command: { run: (registry: unknown, input: unknown) => Promise<unknown> }) =>
-    (input: unknown) =>
-      command.run(null, input),
-}));
+vi.mock("../state/use-atom-command", async () => {
+  const { runAtomCommand } = await import("@t3tools/client-runtime/state/runtime");
+  const { appAtomRegistry } = await import("../rpc/atomRegistry");
+  return {
+    useAtomCommand: (command: Parameters<typeof runAtomCommand>[1]) => (input: unknown) =>
+      runAtomCommand(appAtomRegistry, command, input),
+  };
+});
 
 import "~/index.css";
 import { render } from "../../test/render";

@@ -4,7 +4,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 
-import { KinGatewayError } from "./McpGateway.ts";
+import { isAutomatedNotice } from "../arrivals/classify.ts";
+import { KinGatewayError, tryAgain } from "./McpGateway.ts";
 import {
   firstLines,
   MAIL_TOOL,
@@ -16,6 +17,7 @@ import {
   type MailVendor,
   ownAddress,
   quoteOf,
+  receivedAfter,
   receivedAmong,
 } from "./MailProvider.ts";
 import { looksLikeSignInMail, senderCheck, WITHHELD } from "./MailText.ts";
@@ -40,7 +42,10 @@ export const vendorAnswer = Effect.fn("KinMail.answer")(function* (
   if (response.status === 404)
     return yield* failure("protocol", `${name} has nothing with that id (404).`);
   if (response.status === 429)
-    return yield* failure("unreachable", `${name} says Kin is asking too often (429).`);
+    return yield* failure(
+      "unreachable",
+      `${name} says Kin is asking too often (429); ${tryAgain(response.headers["retry-after"])}.`,
+    );
   if (response.status === 202 || response.status === 204) return undefined;
   if (response.status !== 200 && response.status !== 201)
     return yield* failure(
@@ -434,20 +439,32 @@ const activity = Effect.fn("KinMail.activity")(function* (
   since: number,
   cursor: string | null,
   now: number,
+  floor: number | null,
 ) {
   const found = yield* vendor.activity(context, since, cursor, now);
+  const summarize = threadSummary(context.mailbox);
   return {
+    // Messages from before `floor` are left out before a thread is summed up, so none of them
+    // names it.
     mail: found.threads
+      .map((thread) => thread.filter((message) => receivedAfter(message.receivedAt, floor)))
       .filter((thread) => thread.length > 0)
-      .map(threadSummary(context.mailbox))
-      .map(({ threadId, receivedBy, subject, from, date, unread }) => ({
-        threadId,
-        receivedBy,
-        subject,
-        from,
-        date,
-        unread,
-      })),
+      .map((thread) => {
+        const { threadId, receivedBy, subject, from, date, unread } = summarize(thread);
+        const last = thread.at(-1)!;
+        const automatedNotice =
+          last.automation !== undefined &&
+          isAutomatedNotice(last.subject, last.automation, last.fromAddress);
+        return {
+          threadId,
+          receivedBy,
+          subject,
+          from,
+          date,
+          unread,
+          ...(automatedNotice ? { automatedNotice: true as const } : {}),
+        };
+      }),
     calendar: found.events.map(({ eventId, summary, start, status, updated }) => ({
       eventId,
       summary,
@@ -484,8 +501,8 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
     sendAs: vendor.sendAs,
     call: (http, token, mailbox, tool, args, now) =>
       call(vendor, { http, token, mailbox }, tool, args, now),
-    activity: (http, token, mailbox, since, cursor, now) =>
-      activity(vendor, { http, token, mailbox }, since, cursor, now),
+    activity: (http, token, mailbox, since, cursor, now, floor = null) =>
+      activity(vendor, { http, token, mailbox }, since, cursor, now, floor),
     // A thread deleted since it was listed has nothing to read; it mustn't hold a pass back.
     messages: (http, token, mailbox, threadId) =>
       vendor.thread({ http, token, mailbox }, threadId, false).pipe(

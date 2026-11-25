@@ -93,6 +93,8 @@ const MEMBER = [
   "kin.pulse.handle",
   "kin.pulse.read",
   "kin.pulse.subscribe",
+  // Only their own topics: `KinPushTopics.settledOf` reads the caller's rows and no one else's.
+  "kin.push.reconcile",
   "kin.push.registerDevice",
   "kin.push.unregisterDevice",
   "kin.push.watch",
@@ -206,6 +208,13 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           ],
         );
         assert.deepStrictEqual(table.member, MEMBER);
+        // Bills become the company's expenses: the owner level's, never a member's.
+        const bills = methods.filter((method) => method.startsWith("kin.bills."));
+        assert.lengthOf(bills, 6);
+        assert.deepStrictEqual(
+          bills.filter((method) => !table.coOwner.includes(method) || MEMBER.includes(method)),
+          [],
+        );
         // Every method is in the table, so a new one can't slip past the gate unlisted.
         assert.deepStrictEqual(
           methods.filter((method) => kinRpcAccess(method) === undefined),
@@ -219,10 +228,13 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         // Keeping them on the card unsent is for the same people.
         assert.isFalse(yield* allowed("ravi", "kin.connections.sendEdited"));
         assert.isFalse(yield* allowed("ravi", "kin.connections.saveEdited"));
+        // Moving a mailbox into or out of the company's is the owner level's, as they stand now.
+        assert.isFalse(yield* allowed("ravi", "kin.connections.moveMailbox"));
         yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = 'meera'`;
         assert.isTrue(yield* allowed("meera", "kin.work.recordPayment"));
         assert.isTrue(yield* allowed("meera", "kin.connections.sendEdited"));
         assert.isTrue(yield* allowed("meera", "kin.connections.saveEdited"));
+        assert.isTrue(yield* allowed("meera", "kin.connections.moveMailbox"));
         // The picture service's key and monthly limit spend the company's money: owner level only.
         for (const method of ["kin.pictures.get", "kin.pictures.set"]) {
           assert.isFalse(yield* allowed("ravi", method));

@@ -1,4 +1,4 @@
-import type { MailArrival } from "../connections/MailProvider.ts";
+import type { MailArrival, MailAutomation } from "../connections/MailProvider.ts";
 import { looksLikeSignInMail, senderCheck } from "../connections/MailText.ts";
 import { recordName } from "../work/recordRows.ts";
 
@@ -15,6 +15,7 @@ const ARRIVAL_CLASSES = [
   "names_money",
   "client",
   "known_biller",
+  "automated_notice",
   "automated_file",
   "automated",
   "copied",
@@ -91,6 +92,10 @@ const AUTOMATED_SENDER =
 const BULK_DOMAIN = /@(?:em|email|mail|mailer|bounce|news|newsletter|marketing|send|e)\d*\./i;
 const domainOf = (address: string) => address.slice(address.lastIndexOf("@") + 1);
 
+// A hint from the subject alone that reads no words from the body.
+const NOTICE_SUBJECT =
+  /(?<![\p{L}\p{M}\p{N}_])(?:(?<finance>declined|bounced|overdue|past due|unpaid|mandate|penalty|chargeback|payment due|tax notice|demand notice)|failed|failure|unsuccessful|disconnection|disconnected|suspended|suspension|terminated|termination|summons|action required|final notice|final reminder|legal notice|show cause)(?![\p{L}\p{M}\p{N}_])/iu;
+
 /** Letters, digits and the joins numbers are written with: "INV/26-27/004" is not "004". */
 const numberIn = (number: string, subject: string) =>
   new RegExp(
@@ -108,13 +113,16 @@ const failsSenderChecks = (results: ReadonlyArray<string>) => {
   return /\b(?:spf|dkim)=(?:fail|softfail)\b/i.test(results.join(";"));
 };
 
-const automated = (mail: ArrivalHeaders, from: string) =>
+const automated = (mail: MailAutomation, from: string) =>
   mail.listUnsubscribe ||
   /^\s*(?:bulk|list|junk)\b/i.test(mail.precedence ?? "") ||
   (mail.autoSubmitted !== null && !/^\s*no\b/i.test(mail.autoSubmitted)) ||
   mail.bulk ||
   AUTOMATED_SENDER.test(from) ||
   BULK_DOMAIN.test(from);
+
+export const isAutomatedNotice = (subject: string, headers: MailAutomation, from: string | null) =>
+  NOTICE_SUBJECT.test(subject) && automated(headers, from?.toLowerCase() ?? "");
 
 const contactLine = (contact: ArrivalContact) =>
   `contact ${contact.key} ${contact.title}${contact.clientKey === null ? "" : ` of client ${contact.clientKey} ${contact.clientTitle ?? ""}`.trimEnd()}`;
@@ -169,11 +177,18 @@ export const classify = (mail: ArrivalHeaders, rows: ArrivalRows): Classified =>
       reason: "a sender whose bill was filed before",
       look: { by: "finance", matched: "a sender whose bill Kin filed before" },
     };
-  if (automated(mail, from))
+  if (automated(mail, from)) {
+    const notice = NOTICE_SUBJECT.exec(mail.subject);
+    if (notice !== null) {
+      const reason = `automated mail whose subject says “${notice[0]}”`.slice(0, 200);
+      const by = notice.groups?.finance === undefined ? "chief" : "finance";
+      return { class: "automated_notice", reason, look: { by, matched: reason } };
+    }
     return mail.hasFile
       ? // Recorded, not woken for: an unknown sender's receipt costs a whole turn to say nothing.
         { class: "automated_file", reason: "automated mail with a file: maybe a bill or receipt" }
       : { class: "automated", reason: "newsletter or automated mail" };
+  }
   const ours = to.find((address) => rows.own.has(address));
   if (ours === undefined && cc.some((address) => rows.own.has(address)))
     return { class: "copied", reason: "you were copied" };

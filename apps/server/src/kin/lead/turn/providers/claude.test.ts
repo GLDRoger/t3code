@@ -30,6 +30,7 @@ import {
   webSearchRefusal,
 } from "../../AgentSession.ts";
 import { SESSION_REFUSAL } from "../../Audience.ts";
+import { BILLS_REFUSAL } from "../../billsOnly.ts";
 import { KinAgentSessionPolicy } from "../../sessionPolicy.ts";
 import { stampReads } from "../../OutsideContent.ts";
 import { KinServer, type Services as KinServices } from "../../../KinServer.ts";
@@ -106,6 +107,7 @@ it.effect.each([
           ["kin-dream:fixture:extract", dream],
           ["kin-shared:lead", lead],
           ["kin-shared:review:lead", lead],
+          ["kin-shared:bills:lead", lead],
         ] as const)
           yield* runner
             .open({
@@ -126,7 +128,8 @@ it.effect.each([
           ),
         ),
       );
-      const [leadOpened, otherOpened, dreamOpened, sharedOpened, reviewOpened] = opened;
+      const [leadOpened, otherOpened, dreamOpened, sharedOpened, reviewOpened, billsOpened] =
+        opened;
       assert.strictEqual(otherOpened, other);
       assert.deepStrictEqual(dreamOpened?.settingSources, []);
       if (!enabled) {
@@ -237,6 +240,18 @@ it.effect.each([
       assert.strictEqual(
         yield* Effect.promise(() => hookDenial(reviewOpened, "WebSearch", { query: "tiles" })),
         "This review has no web search.",
+      );
+      // Bills from outside: Kin's confined instructions without web search, and no built-in.
+      assert.deepStrictEqual(billsOpened?.systemPrompt, {
+        type: "custom",
+        prompt: kinInstructions("confined", "claudeAgent", false),
+        snapshot: false,
+      });
+      assert.deepStrictEqual(billsOpened?.tools, ["ToolSearch"]);
+      for (const tool of builtinTools) assert.include(billsOpened?.disallowedTools ?? [], tool);
+      assert.strictEqual(
+        yield* Effect.promise(() => hookDenial(billsOpened, "WebSearch", { query: "tiles" })),
+        BILLS_REFUSAL,
       );
     }).pipe(
       Effect.scoped,

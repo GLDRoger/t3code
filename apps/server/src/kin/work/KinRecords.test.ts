@@ -1,3 +1,4 @@
+import { CodingAgentCall } from "./keyCall.ts";
 // Loaded first: the chat and trigger modules import each other.
 import { KinChatService } from "../chat/KinChatService.ts";
 import { assert, it } from "@effect/vitest";
@@ -60,14 +61,21 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { taskNewsBanner } from "./assignNotices.ts";
 import { keepAllDayDays } from "./allDayZone.ts";
 import { importWork } from "./importWork.ts";
-import { newCompanyProfileJson } from "./companyProfile.ts";
+import { countryChosenLine, newCompanyProfileJson } from "./companyProfile.ts";
 import { inheritOutside, markOutside, renderSource } from "../lead/OutsideContent.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { dayIn } from "./money.ts";
-import { KIN_OWNER_LEVEL, type KinViewer, teamVisible, viewerOfPeople } from "./teamView.ts";
+import {
+  KIN_OWNER_LEVEL,
+  type KinViewer,
+  personSees,
+  teamVisible,
+  viewerOfPeople,
+} from "./teamView.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { sensitiveShown } from "./sensitiveReads.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Docs from "./docs.ts";
@@ -78,7 +86,7 @@ import * as OwnerWork from "./ownerWork.ts";
 import { comment } from "./workComments.ts";
 import * as WorkComments from "./workComments.ts";
 import * as WorkStream from "./workStream.ts";
-import { presetDefinition } from "./registers.ts";
+import { defineList, proposalFor, presetDefinition } from "./registers.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
 import { agentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
@@ -660,7 +668,12 @@ it.effect("record_update changes only named fields, logs each change, and both o
     yield* records.update(orgId, mateWrites, "W-2", {
       title: "Draft the invented pricing page v2",
     });
-    yield* LeadWork.update(scopeOf(lead), { key: "W-2", sourceEventId: "ask-event", due: null });
+    const cleared = yield* LeadWork.update(scopeOf(lead), {
+      key: "W-2",
+      sourceEventId: "ask-event",
+      due: null,
+    });
+    assert.strictEqual(cleared.shows, "Due: No date");
     const got = yield* LeadWork.get(scopeOf(lead), { key: "W-2" });
     assert.include(got, { title: "Draft the invented pricing page v2", state: "doing", rev: 4 });
     assert.notProperty(got, "due");
@@ -727,6 +740,22 @@ it.effect("record_update changes only named fields, logs each change, and both o
       ),
       { reason: "invalid_state" },
     );
+    // "Moved to Monday 10:00": a time given for a task lands in its due, which its page shows,
+    // and the answer says the date as the page does, in the company's zone.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:30',
+        '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
+      ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
+    const timed = yield* LeadWork.update(scopeOf(lead), {
+      key: "W-3",
+      sourceEventId: "ask-event",
+      at: "2026-11-30T10:00+05:30",
+    });
+    assert.deepInclude(timed, { changed: ["due"], shows: "Due: Mon 30 Nov, 10:00" });
+    assert.include(yield* OwnerWork.get([owner], { orgId, key: "W-3" }), {
+      dueAt: "2026-11-30T04:30:00.000Z",
+      dueAllDay: false,
+    });
   }).pipe(Effect.provide(layer)),
 );
 
@@ -1548,7 +1577,7 @@ it.effect(
         "deal_stages",
         "touch_log",
       ]);
-      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 22);
+      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 23);
       for (const tool of Object.keys(KinWorkToolkit.tools))
         assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
       // G06: tasks made for the people there, whoever holds them, are shared with the team.
@@ -1584,6 +1613,30 @@ it.effect(
           "Nothing was saved: this company's country isn't chosen yet, and Kin records no money until an owner chooses it in Settings, Company details.",
         ],
       );
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(profile_json, '$.countryWaiting') AS waiting
+          FROM kin_company_profile WHERE org_id = ${orgId}`,
+        [
+          {
+            waiting: JSON.stringify([
+              { agentId: lead, chatId: "lead-chat", personId: mateId, wakeupId: "wake" },
+            ]),
+          },
+        ],
+      );
+      // Choosing the country wakes the agent once, in the chat the teammate asked in, with a line
+      // that names no amount.
+      yield* OwnerMoney.setCompanyProfile([owner], { orgId, rev: 0, country: "GB" });
+      const woken = yield* sql<{ json: string }>`SELECT json FROM kin_events
+        WHERE tag = 'deferral.due'`;
+      assert.lengthOf(woken, 1);
+      assert.deepInclude(JSON.parse(woken[0]!.json), {
+        agentId: lead,
+        subject: { type: "country", country: "GB", currency: "GBP" },
+        askedIn: ["wake"],
+      });
+      assert.notProperty(JSON.parse(woken[0]!.json), "chatId");
+      assert.notMatch(countryChosenLine("GB", "GBP"), /\d/);
       yield* sql`DELETE FROM kin_company_profile WHERE org_id = ${orgId}`;
       // The services check again, so a turn that became shared since the gate is refused too.
       const refused = [
@@ -2726,7 +2779,58 @@ it.effect(
       );
       yield* OwnerWork.confirm([owner], { orgId, key: started.key, rev: moved.rev });
       assert.deepStrictEqual(yield* wakes, [keptWake, buildWake]);
-    }).pipe(Effect.provide(layer)),
+
+      yield* mateMayMessage;
+      yield* turn();
+      const sql = yield* SqlClient.SqlClient;
+      const person = { _tag: "person" as const, personId: mateId };
+      const {
+        records: [proposed],
+      } = yield* LeadWork.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        records: [
+          { title: "Invented: prepare a launch checklist", owner: "Mate", suggested: true },
+        ],
+      });
+      assert.include(proposed, { suggested: true });
+      const chatNotices = sql`SELECT message_id FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = 'mate-chat'`;
+      const news = sql<{ key: string; kind: string; by: string }>`SELECT
+        json_extract(body, '$.key') AS key, json_extract(body, '$.kind') AS kind,
+        json_extract(body, '$.by') AS by FROM kin_held_posts
+        WHERE org_id = ${orgId} AND person_id = ${mateId} ORDER BY rowid`;
+      assert.deepStrictEqual(yield* chatNotices, []);
+      assert.deepStrictEqual(yield* news, []);
+      const toKeep = yield* OwnerWork.get([owner], { orgId, key: proposed!.key });
+      yield* OwnerWork.confirm([owner], { orgId, key: toKeep.key, rev: toKeep.rev });
+      yield* OwnerWork.confirm([owner], { orgId, key: toKeep.key, rev: toKeep.rev });
+      const direct = yield* OwnerWork.create([owner], {
+        orgId,
+        clientRequestId: "direct-give",
+        title: "Invented: write the launch notes",
+        owner: person,
+      });
+      assert.deepStrictEqual(yield* news, [
+        { key: toKeep.key, kind: "given", by: ownerId },
+        { key: direct.key, kind: "given", by: ownerId },
+      ]);
+      assert.deepStrictEqual(yield* chatNotices, []);
+
+      const moving = (yield* suggest("moving")).row;
+      const reassigned = yield* OwnerWork.assign([owner], {
+        orgId,
+        key: moving.key,
+        to: { _tag: "agent", agentId: other },
+      });
+      assert.include(reassigned, { confirmed: false });
+      assert.deepStrictEqual(yield* wakes, [keptWake, buildWake]);
+      yield* OwnerWork.confirm([owner], { orgId, key: moving.key, rev: reassigned.rev });
+      assert.deepStrictEqual(yield* wakes, [
+        keptWake,
+        buildWake,
+        [other, "assigned", moving.key, ownerId],
+      ]);
+    }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );
 
 it.effect(
@@ -4262,13 +4366,39 @@ it.effect(
         owner: toLead,
         clientRequestId: "his",
       });
+      // Read in a wake-up of his act alone, it is his ask in person.
+      const sql = yield* SqlClient.SqlClient;
+      const event = (yield* lastGiven)!;
+      const firstGiven = decodeEvent(JSON.parse((yield* assignedEvents)[0]!.json));
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+          status, event_ids)
+        VALUES ('owner-wake', ${orgId}, ${event.agentId}, 'lead-thread', 'test', 0, 'completed', '[]'),
+          ('mixed-wake', ${orgId}, ${event.agentId}, 'lead-thread', 'test', 0, 'completed', '[]')`;
+      yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'owner-wake'
+        WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
       const his = (yield* told)!;
       assert.include(his, "as if the owner had asked you");
       assert.notInclude(his, TEAMMATE_WORDS);
       assert.notInclude(his, '"number"');
+      // Woken beside other news, it is his task but not his ask in person: what it makes waits.
+      yield* sql`UPDATE kin_events SET wakeup_id = 'mixed-wake'
+        WHERE org_id = ${orgId} AND event_id IN (${event.eventId}, ${firstGiven.eventId})`;
+      assert.isFalse(yield* ownerLevelAsked(orgId, event.agentId, "mixed-wake"));
+      const mixed = (yield* workEventText({
+        orgId,
+        event,
+        ownerOnly: true,
+        wakeupId: "mixed-wake",
+      }))!;
+      assert.match(
+        mixed,
+        /^The owner gave you this Work entry to do, but this turn is not his ask in person/,
+      );
+      assert.include(mixed, "what you make from it waits to be kept");
+      assert.notInclude(mixed, "as if the owner had asked you");
+      yield* sql`UPDATE kin_events SET wakeup_id = 'owner-wake'
+        WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
       // An entry with the number people see carries it beside its key.
-      const sql = yield* SqlClient.SqlClient;
-      const event = (yield* lastGiven)!;
       yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/004')
         WHERE org_id = ${orgId} AND record_id = ${event.recordId}`;
       assert.include(
@@ -4741,6 +4871,566 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
       [1, ["Invented app review"]],
     );
     assert.strictEqual((yield* OwnerMoney.dates([owner], window)).total, 2);
+  }).pipe(Effect.provide(layer)),
+);
+
+const bookings = { orgId, list: "bookings" };
+const bookingTime = Date.parse(at);
+const arjun = mate;
+const zoya = { ...mate, personId: KinPersonId.make("zoya") };
+const meera = { ...mate, personId: KinPersonId.make("meera") };
+
+const book = (title: string, extra: Partial<KinRecords.CreateInput> = {}) =>
+  ownerTask(title, { list: bookings.list, ...extra });
+
+const bookingList = Effect.fn("KinRecordsTest.bookingList")(function* (sensitive = false) {
+  yield* seed;
+  yield* TestClock.setTime(bookingTime);
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_people SET display_name = CASE person_id WHEN ${ownerId} THEN 'Rhea'
+    ELSE 'Arjun' END WHERE org_id = ${orgId}`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access, sees_money)
+    VALUES (${zoya.personId}, ${orgId}, 'zoya', 'Zoya', ${at}, 'member', 1),
+      (${meera.personId}, ${orgId}, 'meera', 'Meera', ${at}, 'co_owner', 0)`;
+  yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+    VALUES ('zoya-session', ${orgId}, ${zoya.personId}, 0),
+      ('meera-session', ${orgId}, ${meera.personId}, 0)`;
+  yield* defineList(
+    orgId,
+    yield* proposalFor(orgId, {
+      name: "Bookings",
+      amount: true,
+      sensitive,
+      fields: [
+        { label: "Price", type: "money" },
+        { label: "Note", type: "text" },
+        { label: "Private note", type: "text", sensitive: true },
+        { label: "Private day", type: "date", sensitive: true },
+        { label: "Number", type: "text", sensitive: true },
+      ],
+    }),
+    bookingTime,
+  );
+});
+
+const setBookingTeam = (team: boolean, rev: number, who = owner) => {
+  const input = { ...bookings, rev, team, teamSince: 0 };
+  return OwnerMoney.updateList([who], input);
+};
+
+const storedTeamList = Effect.fn("KinRecordsTest.storedTeamList")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_registers SET definition_json = json_set(definition_json,
+    '$.team', json('true'), '$.teamSince', CAST(${bookingTime} AS INTEGER)) WHERE org_id = ${orgId}
+    AND register_id = 'bookings'`;
+});
+
+const addBooking = (
+  title: string,
+  fields: KinRecords.CreateInput["fields"] = { note: "Front desk" },
+) => {
+  const input = { ...bookings, title, clientRequestId: title, fields };
+  return OwnerWork.create([arjun], input);
+};
+
+it.effect(
+  "opens a company list only from the server's current time and keeps the old entries private",
+  () =>
+    Effect.gen(function* () {
+      yield* bookingList();
+      const before = yield* Effect.forEach(["A", "B", "C"], (title) => book(title));
+      const seen = OwnerWork.list([arjun], bookings).pipe(Effect.map(keysOf));
+      assert.deepStrictEqual(yield* seen, []);
+      yield* TestClock.adjust("1 millis");
+      const opened = yield* setBookingTeam(true, 1, meera);
+      assert.include(opened, { team: true, teamSince: bookingTime + 1, rev: 2 });
+      assert.deepStrictEqual(yield* seen, []);
+      const fourth = yield* book("D");
+      assert.deepStrictEqual(yield* seen, [fourth.key]);
+      const fifth = yield* addBooking("E");
+      assert.deepStrictEqual(yield* seen, [fourth.key, fifth.key]);
+      assert.deepStrictEqual(keysOf(yield* OwnerWork.list([owner], bookings)), [
+        ...before.map((row) => row.key),
+        fourth.key,
+        fifth.key,
+      ]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "keeps a team list's own and inherited sensitive labels private in list, key and search reads",
+  () =>
+    Effect.gen(function* () {
+      yield* bookingList();
+      yield* storedTeamList();
+      const client = yield* ownerTask("Private client", { list: "clients", sensitive: true });
+      const project = yield* ownerTask("Private project", { list: "projects", sensitive: true });
+      const hidden = [
+        yield* book("Private booking", { sensitive: true }),
+        yield* book("Client booking", { partyId: client.recordId }),
+        yield* book("Project booking", { projectId: project.recordId }),
+      ];
+      const visible = yield* book("Public booking");
+      assert.deepStrictEqual(keysOf(yield* OwnerWork.list([arjun], bookings)), [visible.key]);
+      for (const row of hidden)
+        assert.include(yield* Effect.flip(OwnerWork.get([arjun], { orgId, key: row.key })), {
+          reason: "not_found",
+        });
+      assert.deepStrictEqual(
+        (yield* OwnerDocs.search([arjun], { orgId, text: "booking" })).hits.map((hit) => hit.key),
+        [visible.key],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps a project lead's legacy list fields and totals separate from the team grant", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* turn("mate", "shared");
+    const project = yield* ownerTask("Invented project", {
+      list: "projects",
+      owner: { _tag: "person", personId: arjun.personId },
+    });
+    const price = { minor: 123456, currency: "INR" };
+    const original = yield* book("Led booking", {
+      projectId: project.recordId,
+      amount: price,
+      fields: { note: "First", price },
+    });
+    const records = yield* KinRecords.KinRecords;
+    yield* records.update(orgId, ownerWrites, original.key, {
+      fields: { privateNote: "Original detail" },
+    });
+    const read = OwnerWork.get([arjun], { orgId, key: original.key });
+    const browse = (filter = {}) =>
+      OwnerWork.list([arjun], { ...bookings, totalsBy: "none", ...filter });
+    const page = yield* browse();
+    const sheet = yield* read;
+    assert.deepInclude(page.records[0], {
+      amount: price,
+      fields: { note: "First", price, privateNote: "Original detail" },
+    });
+    assert.include(JSON.stringify(sheet.changes), "Original detail");
+    assert.deepStrictEqual(page.totals?.total, [price]);
+    const scope = scopeOf(lead);
+    const legacyAgentSheet = yield* encodeGet(yield* LeadWork.get(scope, { key: original.key }));
+    assert.property(legacyAgentSheet.fields, "price");
+    const labelled = yield* ownerTask("Labelled project", {
+      list: "projects",
+      owner: { _tag: "person", personId: arjun.personId },
+      sensitive: true,
+    });
+    const kept = yield* book("Labelled project booking", { projectId: labelled.recordId });
+    assert.include(keysOf(yield* browse()), kept.key);
+
+    yield* TestClock.adjust("1 millis");
+    yield* setBookingTeam(true, 1);
+    assert.include(keysOf(yield* browse()), kept.key);
+    const opened = yield* book("Outside the project", {
+      amount: price,
+      fields: { note: "Second", price },
+    });
+    const mixed = yield* browse({ limit: 1 });
+    assert.notProperty(mixed, "totals");
+    assert.deepStrictEqual((yield* browse({ project: project.key })).totals, page.totals);
+    assert.deepStrictEqual((yield* read).fields, sheet.fields);
+    assert.deepStrictEqual((yield* read).changes, sheet.changes);
+    assert.deepStrictEqual((yield* OwnerWork.get([arjun], { orgId, key: opened.key })).fields, {
+      note: "Second",
+    });
+    const agentRows = yield* encodeQuery(yield* LeadWork.query(scope, { list: bookings.list }));
+    assert.property(agentRows.records?.find((row) => row.key === original.key)?.fields, "price");
+    assert.deepStrictEqual(agentRows.records?.find((row) => row.key === opened.key)?.fields, {
+      note: "Second",
+    });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("withholds money fields, history and totals from a teammate and their agent", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* storedTeamList();
+    yield* turn("mate", "shared");
+    const price = { minor: 987654, currency: "INR" };
+    const amount = { minor: 234567, currency: "INR" };
+    const record = yield* book("Published booking", {
+      team: true,
+      amount,
+      fields: { note: "Calendula", price, privateNote: "Concealed" },
+    });
+    const records = yield* KinRecords.KinRecords;
+    yield* records.update(orgId, ownerWrites, record.key, { fields: { price: amount } });
+    const key = { orgId, key: record.key };
+    const sheet = yield* OwnerWork.get([arjun], key);
+    const page = yield* OwnerWork.list([arjun], { ...bookings, totalsBy: "none" });
+    assert.notProperty(page, "totals");
+    assert.notProperty(sheet, "amount");
+    assert.deepStrictEqual(sheet.fields, { note: "Calendula" });
+    assert.deepStrictEqual(page.records[0]?.fields, { note: "Calendula" });
+    for (const word of ["234567", "987654", "Concealed", '"price"'])
+      assert.notInclude(JSON.stringify(sheet.changes), word);
+    const hits = yield* OwnerDocs.search([arjun], { orgId, text: "Calendula" });
+    assert.deepStrictEqual(
+      hits.hits.map((hit) => hit.key),
+      [record.key],
+    );
+    assert.include(hits.hits[0]?.snippet, "Calendula");
+    assert.lengthOf((yield* OwnerDocs.search([arjun], { orgId, text: "Concealed" })).hits, 0);
+    const scope = scopeOf(lead);
+    const agentPage = yield* encodeQuery(yield* LeadWork.query(scope, { list: bookings.list }));
+    const agentSheet = yield* encodeGet(yield* LeadWork.get(scope, { key: record.key }));
+    assert.deepStrictEqual(agentPage.records?.[0]?.fields, { note: "Calendula" });
+    assert.deepStrictEqual(agentSheet.fields, { note: "Calendula" });
+    for (const word of ["2,345", "9,876", "Concealed", '"price"'])
+      assert.notInclude(JSON.stringify(agentSheet), word);
+    const money = yield* OwnerWork.list([zoya], { ...bookings, totalsBy: "none" });
+    assert.deepInclude(money.records[0], {
+      fields: { note: "Calendula", price: amount, privateNote: "Concealed" },
+    });
+    assert.deepStrictEqual(money.totals?.total, [amount]);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "withholds a team list's sensitive values in date reads and the agent's change history",
+  () =>
+    Effect.gen(function* () {
+      yield* bookingList();
+      yield* storedTeamList();
+      yield* turn("mate", "shared");
+      const date = "2026-11-11";
+      const amount = { minor: 234567, currency: "INR" };
+      const secret = "AM/26-27/102";
+      const record = yield* book("Appointment", {
+        dueAt: bookingTime,
+        amount,
+        fields: { privateDay: date, number: secret },
+      });
+      const records = yield* KinRecords.KinRecords;
+      yield* records.update(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead" },
+        record.key,
+        { fields: { privateNote: "Concealed" } },
+      );
+      const changes = yield* agentChanges(viewerOfPeople([arjun.personId]), orgId, lead);
+      assert.notInclude(JSON.stringify(changes), "Concealed");
+      assert.include(yield* Effect.flip(LeadWork.get(scopeOf(lead), { key: secret })), {
+        reason: "not_found",
+      });
+      const dates = yield* LeadMoney.datesQuery(scopeOf(lead), {
+        from: "2026-11-10",
+        to: "2026-11-12",
+        lists: [bookings.list],
+      });
+      assert.strictEqual(dates.dates.length, 1);
+      assert.include(dates.dates[0], { key: record.key });
+      assert.notProperty(dates.dates[0], "amount");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a teammate's prompt withholds a team list entry's sensitive number", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* storedTeamList();
+    yield* turn("mate", "shared");
+    const number = "AM/26-27/102";
+    const row = yield* book("Afternoon booking", {
+      fields: { number },
+      owner: { _tag: "agent", agentId: lead },
+    });
+    const chatId = KinChatId.make("lead-chat");
+    const event = decodeEvent({
+      _tag: "record.changed",
+      orgId,
+      agentId: lead,
+      eventId: "booking-given",
+      receivedAt: at,
+      dedupeKey: null,
+      recordId: KinRecordId.make(row.recordId),
+      key: row.key,
+      seq: 1,
+      reason: "assigned",
+      chatId,
+      origin: { agentId: lead, chatId, personId: arjun.personId },
+      provenance: {
+        _tag: "human",
+        personId: arjun.personId,
+        memberId: KinMemberId.make("lead-chat-mate"),
+      },
+    });
+    if (event._tag !== "record.changed") return assert.fail(event._tag);
+    const text = (ownerOnly: boolean) =>
+      workEventText({ orgId, event, ownerOnly, wakeupId: "wake" });
+    const shared = (yield* text(false)) ?? "";
+    assert.include(shared, row.key);
+    assert.include(shared, row.title);
+    assert.notInclude(shared, number);
+    assert.include((yield* text(true)) ?? "", number);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "allows a teammate to add and edit visible team entries while guarding labels, archive and money",
+  () =>
+    Effect.gen(function* () {
+      yield* bookingList();
+      yield* storedTeamList();
+      const rhea = yield* book("Appointment");
+      const created = yield* addBooking("Follow-up");
+      assert.deepInclude(created.changes[0], {
+        by: { _tag: "person", personId: arjun.personId },
+        kind: "created",
+      });
+      const update = (patch: Partial<Parameters<typeof OwnerWork.update>[1]>) =>
+        OwnerWork.update([arjun], { orgId, key: rhea.key, ...patch });
+      const edited = yield* update({ state: "done", fields: { note: "Moved to morning" } });
+      assert.include(edited, { state: "done" });
+      assert.deepStrictEqual(edited.fields, { note: "Moved to morning" });
+      assert.deepInclude(edited.changes[0], { by: { _tag: "person", personId: arjun.personId } });
+      assert.sameMembers(
+        edited.changes[0]!.fields.map((field) => field.field),
+        ["state", "note"],
+      );
+      for (const write of [
+        update({ fields: { price: { minor: 100, currency: "INR" } } }).pipe(Effect.asVoid),
+        update({ fields: { privateNote: "Private" } }).pipe(Effect.asVoid),
+        update({ sensitive: true }).pipe(Effect.asVoid),
+        update({ sensitive: false }).pipe(Effect.asVoid),
+        update({ state: "dropped" }).pipe(Effect.asVoid),
+        addBooking("Price refused", { price: { minor: 100, currency: "INR" } }).pipe(Effect.asVoid),
+        setBookingTeam(false, 1, arjun).pipe(Effect.asVoid),
+      ])
+        assert.include(yield* Effect.flip(write), { reason: "not_allowed" });
+      assert.include(
+        yield* OwnerWork.update([arjun], { orgId, key: created.key, state: "dropped" }),
+        { state: "dropped" },
+      );
+      assert.deepInclude(
+        yield* OwnerWork.update([zoya], {
+          orgId,
+          key: rhea.key,
+          fields: { price: { minor: 100, currency: "INR" } },
+        }),
+        { fields: { note: "Moved to morning", price: { minor: 100, currency: "INR" } } },
+      );
+      yield* TestClock.adjust("1 millis");
+      yield* turn("mate", "shared");
+      const scope = scopeOf(lead);
+      const sourceEventId = "ask-event";
+      const added = yield* LeadWork.create(scope, {
+        sourceEventId,
+        records: [
+          { list: bookings.list, title: "Afternoon booking", fields: { note: "Via the agent" } },
+        ],
+      });
+      const key = added.records[0]!.key;
+      assert.include(yield* LeadWork.update(scope, { sourceEventId, key, state: "done" }), {
+        state: "done",
+      });
+      for (const input of [
+        { sourceEventId, key, fields: { price: "INR 42" } },
+        { sourceEventId, key, sensitive: true as const },
+        { sourceEventId, key, state: "dropped" as const },
+      ])
+        assert.include(yield* Effect.flip(LeadWork.update(scope, input)), {
+          reason: "not_allowed",
+        });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("Work create accepts a custom list only while it is open to the team", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    const project = yield* ownerTask("Project led by Arjun", {
+      list: "projects",
+      owner: { _tag: "person", personId: arjun.personId },
+    });
+    for (const person of [arjun, owner]) {
+      for (const list of ["docs", "clients", "expenses", bookings.list]) {
+        const refused = yield* OwnerWork.create([person], {
+          orgId,
+          list,
+          title: "Invented entry",
+          project: project.key,
+          clientRequestId: list,
+        }).pipe(Effect.result);
+        assert.strictEqual(refused._tag, "Failure", list);
+        if (refused._tag === "Failure")
+          assert.strictEqual(
+            refused.failure.message,
+            'Expected "milestones" | undefined\n  at ["list"]',
+          );
+      }
+    }
+    yield* setBookingTeam(true, 1);
+    assert.strictEqual((yield* addBooking("Team booking")).list, bookings.list);
+    yield* setBookingTeam(false, 2);
+    assert.strictEqual((yield* addBooking("Closed booking").pipe(Effect.result))._tag, "Failure");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("refuses team flags from a teammate and for built-in or sensitive lists", () =>
+  Effect.gen(function* () {
+    yield* bookingList(true);
+    assert.deepStrictEqual(yield* flipped(setBookingTeam(true, 1, arjun)), [
+      "not_allowed",
+      "Only the owner or a co-owner can do that in Work.",
+    ]);
+    for (const list of [
+      "work",
+      "goals",
+      "expenses",
+      "invoices",
+      "quotes",
+      "payments",
+      "bank_transactions",
+      "receipts",
+    ]) {
+      const input = { orgId, list, rev: 1, team: true };
+      assert.deepStrictEqual(
+        yield* flipped(OwnerMoney.updateList([owner], input)),
+        ["invalid_state", "A built-in list can't be opened to the team."],
+        list,
+      );
+    }
+    assert.deepStrictEqual(yield* flipped(setBookingTeam(true, 1)), [
+      "invalid_state",
+      "A sensitive list can't be opened to the team. Unmark it as sensitive first.",
+    ]);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "closing and reopening a team list preserves entries with a fresh cutoff and its creator exception",
+  () =>
+    Effect.gen(function* () {
+      yield* bookingList();
+      yield* setBookingTeam(true, 1);
+      yield* book("Previous opening");
+      const made = yield* addBooking("Arjun's booking");
+      const closed = yield* setBookingTeam(false, 2);
+      assert.include(closed, { team: false, teamSince: bookingTime });
+      const seen = OwnerWork.list([arjun], bookings).pipe(Effect.map(keysOf));
+      assert.deepStrictEqual(yield* seen, []);
+      yield* TestClock.adjust("1 millis");
+      yield* book("While closed");
+      yield* TestClock.adjust("1 millis");
+      assert.include(yield* setBookingTeam(true, 3), { team: true, teamSince: bookingTime + 2 });
+      const newest = yield* book("New opening");
+      assert.deepStrictEqual(yield* seen, [made.key, newest.key]);
+      assert.lengthOf((yield* OwnerWork.list([owner], bookings)).records, 4);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("on a team list whoever holds an entry may still archive it or give it away", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    const sql = yield* SqlClient.SqlClient;
+    const dev = { ...mate, personId: KinPersonId.make("dev") };
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access, sees_money)
+      VALUES (${dev.personId}, ${orgId}, 'dev', 'Dev', ${at}, 'member', 1)`;
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('dev-session', ${orgId}, ${dev.personId}, 0)`;
+    yield* setBookingTeam(true, 1);
+    const toZoya = { _tag: "person" as const, personId: zoya.personId };
+    const made = yield* addBooking("Arjun's booking for Zoya");
+    yield* OwnerWork.assign([owner], { orgId, key: made.key, to: toZoya });
+    const can = (who: typeof mate) =>
+      OwnerWork.get([who], { orgId, key: made.key }).pipe(Effect.map((one) => one.can));
+    const drop = (who: typeof mate) =>
+      OwnerWork.get([who], { orgId, key: made.key }).pipe(
+        Effect.flatMap((one) =>
+          OwnerWork.update([who], { orgId, key: made.key, rev: one.rev, state: "dropped" }),
+        ),
+      );
+    const give = (who: typeof mate, personId: KinPersonId) =>
+      OwnerWork.assign([who], { orgId, key: made.key, to: { _tag: "person", personId } });
+    // Neither made nor holds it: neither archive nor give.
+    assert.include(yield* can(dev), { give: false });
+    assert.notInclude((yield* can(dev))?.states ?? [], "dropped");
+    assert.deepStrictEqual(yield* flipped(drop(dev)), [
+      "not_allowed",
+      "Only the owner or a co-owner can do that on this list.",
+    ]);
+    assert.strictEqual((yield* flipped(give(dev, dev.personId)))[0], "not_allowed");
+    // Made it but doesn't hold it: archive as before, no give.
+    assert.include(yield* can(arjun), { give: false });
+    assert.include((yield* can(arjun))?.states ?? [], "dropped");
+    assert.strictEqual((yield* flipped(give(arjun, arjun.personId)))[0], "not_allowed");
+    // Holds it: archive it and give it away, and nothing more.
+    assert.include(yield* can(zoya), { give: true });
+    assert.include((yield* can(zoya))?.states ?? [], "dropped");
+    assert.deepInclude(yield* give(zoya, dev.personId), {
+      owner: { _tag: "person", personId: dev.personId },
+    });
+    const held = yield* OwnerWork.get([dev], { orgId, key: made.key });
+    assert.strictEqual((yield* flipped(give(zoya, zoya.personId)))[0], "not_allowed");
+    assert.include(yield* drop(dev), { state: "dropped" });
+    assert.strictEqual(held.can?.give, true);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a team list assigned to Money follows the company's Money section", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* OwnerMoney.updateList([owner], { ...bookings, rev: 1, payments: true });
+    yield* storedTeamList();
+    const visible = yield* book("Appointment", { team: true });
+    const browse = OwnerWork.list([arjun], bookings).pipe(Effect.map(keysOf));
+    const read = OwnerWork.get([arjun], { orgId, key: visible.key });
+    assert.deepStrictEqual(yield* browse, [visible.key]);
+    yield* KinShell.set(orgId, ownerId, 0, [{ id: "money", on: false }]);
+    assert.deepStrictEqual(yield* browse, []);
+    assert.deepStrictEqual(keysOf(yield* OwnerWork.list([zoya], bookings)), []);
+    assert.include(yield* Effect.flip(OwnerWork.get([zoya], { orgId, key: visible.key })), {
+      reason: "not_found",
+    });
+    assert.include(yield* Effect.flip(read), { reason: "not_found" });
+    assert.lengthOf((yield* OwnerDocs.search([arjun], { orgId, text: "Appointment" })).hits, 0);
+    assert.include(yield* Effect.flip(addBooking("Section off")), { reason: "not_allowed" });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("member list reads build team register membership once in SQLite", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    yield* book("Owner's booking");
+    const sql = yield* SqlClient.SqlClient;
+    const query = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = ${bookings.list}
+        AND ${personSees(sql, arjun.personId)}`;
+    const [text, params] = query.compile();
+    const plan = yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${text}`, params);
+    assert.match(
+      plan.map((row) => row.detail).join("\n"),
+      /LIST SUBQUERY[^\n]*\n(?:[^\n]*\n)*?SCAN g/,
+    );
+    assert.deepStrictEqual(yield* query, [{ n: 0 }]);
+    yield* storedTeamList();
+    assert.deepStrictEqual(yield* query, [{ n: 1 }]);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps a list without team sharing under the existing row and Money rules", () =>
+  Effect.gen(function* () {
+    yield* bookingList();
+    const own = yield* book("Plain private");
+    const shared = yield* book("Plain shared", { team: true });
+    for (const [person, expected] of [
+      [owner, [own.key, shared.key]],
+      [meera, [own.key, shared.key]],
+      [arjun, []],
+      [zoya, [shared.key]],
+    ] as const) {
+      assert.deepStrictEqual(keysOf(yield* OwnerWork.list([person], bookings)), [...expected]);
+      for (const row of [own, shared]) {
+        const read = OwnerWork.get([person], { orgId, key: row.key });
+        if (expected.some((key) => key === row.key)) assert.include(yield* read, { key: row.key });
+        else assert.include(yield* Effect.flip(read), { reason: "not_found" });
+      }
+      assert.lengthOf((yield* OwnerDocs.search([person], { orgId, text: "plain" })).hits, 0);
+    }
   }).pipe(Effect.provide(layer)),
 );
 
@@ -6054,7 +6744,19 @@ it.effect(
         sourceEventId: "ask-event",
         tasks: [{ key, to: "Mate", reason: "Invented: has time" }],
       });
-      yield* OwnerWork.handBack([mate], { orgId, key, note: "Invented: not my area" });
+      yield* OwnerWork.handBack([mate], { orgId, key, note: "Invented: not my area" }).pipe(
+        Effect.provideService(CodingAgentCall, "invented-key"),
+      );
+      const returnToMate = yield* Effect.flip(
+        LeadWork.assign(scope, {
+          sourceEventId: "ask-event",
+          tasks: [{ key, to: "Mate", reason: "Invented: has time" }],
+        }),
+      );
+      assert.include(
+        returnToMate.message,
+        `Mate (coding agent) handed ${key} back: "Invented: not my area".`,
+      );
       assert.include((yield* Effect.flip(give)).message, "no repo yet");
       // Model people: someone removed from the company is given nothing.
       yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${mateId}`;

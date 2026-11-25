@@ -75,6 +75,7 @@ import {
 import { claudeThinkingItemId } from "./claudeThinkingItem.ts";
 import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
+import { laneFor } from "./replyLane.ts";
 import { WEEK_FIGURES_TITLE } from "../pulse/weekly.ts";
 
 const threadId = ThreadId.make("lead-thread");
@@ -220,13 +221,14 @@ const failure = (
   ordinal: number,
   code: string,
   runId: RunId,
+  message = "Claude could not authenticate.",
 ): OrchestrationV2TurnItem => ({
   ...base(id, ordinal, runId),
   status: "failed",
   type: "error",
   failure: {
     class: "provider_error",
-    message: "Claude could not authenticate.",
+    message,
     code,
     retryable: null,
   },
@@ -676,7 +678,7 @@ it.effect.each<{
       "## Needs you\n- One card waits.\n\n## Money\n- Nothing new came in.\n\n## Coming up\n- M-1 on 5 Dec.",
     ],
     stored: [
-      "## Needs you\n- One card waits.\n\n## Money\n- Nothing new came in.\n- Corran Tiles owes €1,200 on CT/101, 14 days overdue.\n\n## Coming up\n- M-1 on 5 Dec.",
+      "## Needs you\n- One card waits.\n\n## Money\n- Nothing new came in.\n- Corran Tiles owes €1,200 on CT/101, 14 days overdue; no reminder sent through Kin yet.\n\n## Coming up\n- M-1 on 5 Dec.",
     ],
   },
   {
@@ -703,7 +705,7 @@ it.effect.each<{
     overdue: true,
     written: [],
     stored: [
-      `${ReplyBridge.QUIET_PAGE}\n\n## Money\n\n- Corran Tiles owes €1,200 on CT/101, 14 days overdue.`,
+      `${ReplyBridge.QUIET_PAGE}\n\n## Money\n\n- Corran Tiles owes €1,200 on CT/101, 14 days overdue; no reminder sent through Kin yet.`,
     ],
   },
   {
@@ -1473,24 +1475,110 @@ it.effect("a teammate joining mid-draft sees none of it, and the draft ends unse
   }).pipe(Effect.provide(layer)),
 );
 
-// G01: a co-owner's chat is owner-level, so a reply with money in it posts there.
-it.effect.each(["co_owner", "member"] as const)(
-  "an owner-only reply posts where everyone reading is owner-level, never silently held (%s)",
-  (access) =>
+// G01: a co-owner's chat is owner-level, so a reply with money in it posts there. Someone else
+// joined: a turn that did nothing visible answers again by itself, once; one partway says so.
+// After that line its message gets nothing more: a failed run, its retry or a restart.
+it.effect.each([
+  {
+    access: "co_owner",
+    before: "none",
+    then: "completed",
+    expected: ["agent:Draft INV-2 is ready: ₹40,000 + GST."],
+  },
+  { access: "member", before: "none", then: "completed", expected: [] },
+  {
+    access: "member",
+    before: "a tool call",
+    then: "completed",
+    expected: [
+      "system:Ada didn't finish its reply: someone joined while it was working. What it had already done stays; ask again for the answer.",
+    ],
+  },
+  {
+    access: "member",
+    before: "a tool call",
+    then: "failed",
+    expected: [
+      "system:Ada didn't finish its reply: someone joined while it was working. What it had already done stays; ask again for the answer.",
+    ],
+  },
+  {
+    access: "member",
+    before: "a tool call",
+    then: "restart",
+    expected: [
+      "system:Ada didn't finish its reply: someone joined while it was working. What it had already done stays; ask again for the answer.",
+    ],
+  },
+  {
+    access: "member",
+    before: "a join already",
+    then: "completed",
+    expected: ["system:Ada didn't reply: someone joined before it answered. Send it again."],
+  },
+  {
+    access: "member",
+    before: "a join already",
+    then: "failed",
+    expected: ["system:Ada didn't reply: someone joined before it answered. Send it again."],
+  },
+  // The join through Add says it, and the turn it aborted says nothing more.
+  {
+    access: "member",
+    before: "a join through Add",
+    then: "completed",
+    expected: ["system:Ada didn't reply: someone joined before it answered. Send it again."],
+  },
+] as const)(
+  "an owner-only reply posts where everyone reading is owner-level, never silently held ($access, $before, $then)",
+  ({ access, before, then, expected }) =>
     Effect.gen(function* () {
-      const { fake, runId, complete, posted, sql, wakeupId } = yield* setup({
-        lane: "shared-group",
-        ask: "Draft the December retainer invoice",
-      });
+      const { fake, runId, complete, posted, sql, wakeupId, owner, services, chatId } =
+        yield* setup({
+          lane: "shared-group",
+          ask: "Draft the December retainer invoice",
+        });
       yield* sql`UPDATE kin_people SET access = ${access} WHERE person_id = 'mate'`;
       yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = ${wakeupId}`;
+      if (before === "a tool call")
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${owner.orgId}, ${wakeupId}, 'item:task-1', 'fixture-hash')`;
+      if (before === "a join already")
+        yield* sql`UPDATE kin_events SET json = json_set(json, '$._audienceMoved', 1) WHERE wakeup_id = ${wakeupId}`;
+      if (before === "a join through Add") {
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('pat', ${owner.orgId}, 'pat', 'Pat', '1970-01-01T00:00:00.000Z')`;
+        yield* Context.get(services, KinGroups).addMember([owner], {
+          chatId,
+          principal: { _tag: "person", personId: KinPersonId.make("pat") },
+        });
+      }
       fake.items = [text("a", 1, "Draft INV-2 is ready: ₹40,000 + GST.", runId)];
       yield* complete;
       assert.deepStrictEqual(
         (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
-        access === "co_owner"
-          ? ["agent:Draft INV-2 is ready: ₹40,000 + GST."]
-          : ["system:Ada didn't reply: someone joined while it was working. Send it again."],
+        [...expected],
+      );
+      const requeued = access === "member" && before === "none";
+      const queue = Context.get(services, KinEventQueue.KinEventQueue);
+      if (then === "restart")
+        assert.strictEqual(yield* queue.requeueUnfinished(owner.orgId, wakeupId), 0);
+      else {
+        const finished = yield* queue.finish({ orgId: owner.orgId, wakeupId, status: then });
+        // Nothing stranded or retried: no "stopped partway", no fresh answer.
+        if (then === "failed") assert.deepInclude(finished, { stranded: 0, retried: 0 });
+      }
+      assert.deepStrictEqual(
+        yield* sql`SELECT state, attempts, wakeup_id AS "wakeupId", json_extract(json, '$._audienceMoved') AS moved
+          FROM kin_events WHERE org_id = ${owner.orgId} ORDER BY event_id`,
+        [
+          requeued
+            ? { state: "queued", attempts: 0, wakeupId: null, moved: 1 }
+            : {
+                state: before === "a join through Add" ? "expired" : "done",
+                attempts: 0,
+                wakeupId,
+                moved: before === "a join already" ? 1 : null,
+              },
+        ],
       );
     }).pipe(Effect.provide(layer)),
 );
@@ -1707,25 +1795,73 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
   }).pipe(Effect.provide(layer)),
 );
 
-// QA Q3: the CLI's synthetic "API Error: …" reply reached the chat as the lead's own words.
-it.effect("keeps a provider's error text out of the chat when its run failed", () =>
-  Effect.gen(function* () {
-    const { fake, runId, bridge, owner, wakeupId, posted, projectId } = yield* setup({
-      ask: "Is CI green?",
-    });
-    fake.items = [
-      text("a", 1, "API Error: 529 Overloaded", runId),
-      failure("e", 2, "api_error_529", runId),
-    ];
-    yield* bridge.complete({
-      orgId: owner.orgId,
-      wakeupId,
-      projectId,
-      rootRunId: runId,
-      rescue: false,
-    });
-    assert.deepStrictEqual(yield* posted, []);
-  }).pipe(Effect.provide(layer)),
+it.effect.each([
+  { code: "api_error_529", diagnostic: "API Error: 529 Overloaded" },
+  { code: "api_error_503", diagnostic: "503 Service Unavailable: the provider is offline." },
+  {
+    code: "authentication_failed",
+    diagnostic: "Authentication failed.\n\nThe provider rejected the account's session.",
+    live: true,
+  },
+  {
+    code: "authentication_failed",
+    diagnostic: "Not logged in · Please run /login",
+    detail: "Sign in to use this provider.",
+    reply: "The payment is ready for your review.",
+  },
+])(
+  "keeps provider errors out of the chat and settles events only for a real reply ($code, $reply)",
+  ({ code, diagnostic, detail, live, reply }) =>
+    Effect.gen(function* () {
+      const { fake, runId, bridge, owner, wakeupId, posted, projectId, services, sql } =
+        yield* setup({ event: checkInEvent("checkin-afternoon") });
+      const finalText = text("error-text", 2, diagnostic, runId);
+      fake.items = [
+        ...(reply === undefined ? [] : [text("reply", 1, reply, runId)]),
+        finalText,
+        failure("e", 3, code, runId, detail ?? diagnostic),
+      ];
+      if (live === true) {
+        const all = yield* Context.get(services, KinChatHub).subscribeAll;
+        const sawFinalText = yield* all.pipe(
+          Stream.filter(
+            (event) => event.type === "presence.updated" && event.presence?.state === "thinking",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* Queue.offer(fake.live, itemEvent(finalText));
+        yield* Queue.offer(fake.live, turnEvent("after-error-text"));
+        yield* Fiber.join(sawFinalText);
+      }
+      yield* bridge.complete({
+        orgId: owner.orgId,
+        wakeupId,
+        projectId,
+        rootRunId: runId,
+        rescue: false,
+      });
+      const finished = yield* Context.get(services, KinEventQueue.KinEventQueue).finish({
+        orgId: owner.orgId,
+        wakeupId,
+        status: "failed",
+        ...(code === "authentication_failed" ? { holdUntil: 60_000 } : {}),
+      });
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => row.body),
+        reply === undefined ? [] : [reply],
+      );
+      assert.include(finished, {
+        replied: reply === undefined ? 0 : 1,
+        retried: reply === undefined ? 1 : 0,
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT state, replied_at IS NOT NULL AS replied
+          FROM kin_events WHERE org_id = ${owner.orgId} ORDER BY event_id`,
+        [reply === undefined ? { state: "queued", replied: 0 } : { state: "done", replied: 1 }],
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each([
@@ -1754,6 +1890,25 @@ it.effect.each([
         [line],
       );
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a turn that ignored Stop tells its chat once that it was stopped, with Retry", () =>
+  Effect.gen(function* () {
+    const { bridge, owner, wakeupId, sql, chatId } = yield* setup({ ask: "Rates for Tidewater?" });
+    const lane = { chatId, mode: "reply" as const, owed: true, leadName: "Ada" };
+    yield* bridge.failed({ orgId: owner.orgId, wakeupId, lane, outcome: "stopped" });
+    yield* bridge.failed({ orgId: owner.orgId, wakeupId, lane, outcome: "stopped" });
+    assert.deepStrictEqual(
+      yield* sql`SELECT message_id AS "messageId", body FROM kin_messages
+        WHERE org_id = ${owner.orgId} AND author_kind = 'system' ORDER BY seq`,
+      [
+        {
+          messageId: `kin-failed:${wakeupId}`,
+          body: "Ada took too long and was stopped. Nothing it hadn't finished was sent. Ask again to start fresh.",
+        },
+      ],
+    );
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("posts nothing for an L0 lead's reply in a chat its owner didn't place it in", () =>
@@ -2252,6 +2407,8 @@ type WakeCase = {
   readonly reaction?: "👍";
   /** Someone waits on words: silence gets one rescue, then a plain line. */
   readonly owed: boolean;
+  /** Nothing the model writes reaches a chat. */
+  readonly quiet?: true;
 };
 const human = (owner: PersonIdentity, memberId: KinMemberId) =>
   ({ _tag: "human", personId: owner.personId, memberId }) as const;
@@ -2393,6 +2550,20 @@ const WAKE_KINDS: Record<KinEvent["_tag"] | "hand-over", WakeCase> = {
         outcome: "executed",
       })),
   },
+  // Bills read in the background: a quiet turn, owed nothing; the batch's card tells the rest.
+  "bills.read": {
+    owed: false,
+    quiet: true,
+    event: ({ direct }) =>
+      Effect.succeed((base) => ({
+        ...base,
+        _tag: "bills.read",
+        provenance: { _tag: "system" },
+        chatId: direct,
+        batchId: "b-1",
+        bills: ["a".repeat(64)],
+      })),
+  },
   resume: {
     owed: false,
     event: () =>
@@ -2515,10 +2686,28 @@ it.effect.each(
         AND message_id NOT LIKE 'kin-handoff:%' ORDER BY seq`;
       assert.deepStrictEqual(
         said.map((row) => `${row.authorKind}:${row.body}`),
-        replied ? [`agent:${reply}`] : wake.owed ? ["system:Ada didn't reply."] : [],
+        replied && wake.quiet !== true
+          ? [`agent:${reply}`]
+          : wake.owed
+            ? ["system:Ada didn't reply."]
+            : [],
       );
       assert.deepStrictEqual(fake.prompts, !replied && wake.owed ? [RESCUE_PROMPT] : []);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a bills turn that fails posts nothing: the batch's card tells what wasn't read", () =>
+  Effect.gen(function* () {
+    const { bridge, owner, wakeupId, posted } = yield* setup({
+      event: WAKE_KINDS["bills.read"].event!,
+    });
+    const lane = Option.getOrThrow(
+      yield* laneFor({ orgId: owner.orgId, agentId, wakeupId: KinWakeupId.make(wakeupId) }),
+    );
+    for (const outcome of ["partway", "gave_up", "retrying", "signin"] as const)
+      yield* bridge.failed({ orgId: owner.orgId, wakeupId, lane, outcome, cause: "unreachable" });
+    assert.deepStrictEqual(yield* posted, []);
+  }).pipe(Effect.provide(layer)),
 );
 
 // Review 48: ten notices this hour refused a hand-over or task reply, and it counted as answered.

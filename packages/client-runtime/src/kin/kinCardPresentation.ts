@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
+  KIN_BILL_BATCH_CARD,
   KIN_DOC_CARD,
   KIN_HOST_TROUBLE_CARD,
   KIN_MEMORY_CHANGES_CARD,
@@ -23,6 +24,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { kinHeldLine } from "./kinAgentRetire.ts";
+import { kinBillBatchCardView, type KinBillBatchCardView } from "./kinBills.ts";
 import { kinApprovalWidgetView, type KinApprovalWidgetView } from "./kinApprovalPresentation.ts";
 import { kinChartCardView, type KinChartView } from "./kinChart.ts";
 import { kinDocCardView, type KinDocCardView } from "./kinDocs.ts";
@@ -92,6 +94,7 @@ export type KinCardView =
   | { readonly kind: "doc"; readonly doc: KinDocCardView }
   | { readonly kind: "statement_review"; readonly review: KinStatementReviewView }
   | { readonly kind: "statement_password"; readonly password: KinStatementPasswordView }
+  | { readonly kind: "bill_batch"; readonly bills: KinBillBatchCardView }
   | { readonly kind: "social_week"; readonly week: KinSocialWeekView }
   | { readonly kind: "social_pack"; readonly pack: KinSocialPackView }
   /** Drawn with the reader's clock (`kinHostTroubleCardView`), so it carries the widget. */
@@ -328,6 +331,7 @@ export function kinReminderCardView(
     phase: open ? "reminder" : "closed",
     eyebrow: "Reminder",
     title,
+    agent: null,
     lines,
     countdown: null,
     actions: open ? reminderActions(card, ownerLevel) : [],
@@ -440,6 +444,7 @@ export function kinScheduledTaskCardView(
     phase: open ? "scheduled" : "closed",
     eyebrow: "Scheduled task",
     title,
+    agent: null,
     lines,
     countdown:
       open && card.status === "active" && nextMs !== null ? { to: nextMs, kind: "run" } : null,
@@ -574,7 +579,7 @@ function kinLiveCardView(
         : unknown(widget);
     }
     case "deferral": {
-      const deferral = kinDeferralCardView(widget);
+      const deferral = kinDeferralCardView(widget, undefined, ownerLevel);
       return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case "reminder": {
@@ -620,6 +625,10 @@ function kinLiveCardView(
     case KIN_STATEMENT_PASSWORD_CARD: {
       const password = kinStatementPasswordView(widget);
       return password === null ? unknown(widget) : { kind: "statement_password", password };
+    }
+    case KIN_BILL_BATCH_CARD: {
+      const bills = kinBillBatchCardView(widget);
+      return bills === null ? unknown(widget) : { kind: "bill_batch", bills };
     }
     case KIN_MEMORY_CHANGES_CARD: {
       const changes = kinMemoryChangesView(widget);

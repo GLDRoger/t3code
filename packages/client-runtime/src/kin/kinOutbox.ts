@@ -360,6 +360,8 @@ export function createKinOutbox(options: KinOutboxOptions) {
     readonly attachments?: ReadonlyArray<KinAttachment>;
     readonly mentions?: ReadonlyArray<KinMemberId>;
     readonly refs?: ReadonlyArray<KinMessageRef>;
+    /** Starts its `clientMessageId`, such as `KIN_SET_UP_MESSAGE_PREFIX` for the host to know it. */
+    readonly idPrefix?: string;
   }): Promise<
     | { readonly _tag: "queued"; readonly entry: KinOutboxEntry }
     | { readonly _tag: "full" }
@@ -372,7 +374,7 @@ export function createKinOutbox(options: KinOutboxOptions) {
     const entry: KinOutboxEntry = {
       environmentId: input.environmentId,
       chatId: input.chatId,
-      clientMessageId: options.makeId(),
+      clientMessageId: `${input.idPrefix ?? ""}${options.makeId()}`,
       ...(author === undefined ? {} : { author }),
       body: input.body,
       ...(input.attachments === undefined || input.attachments.length === 0

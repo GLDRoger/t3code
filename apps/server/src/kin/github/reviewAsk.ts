@@ -14,7 +14,7 @@ import * as LeadAccess from "../lead/LeadAccess.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import * as Reach from "../lead/Reach.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
-import { isOwnerHimself, mayActAsOwner } from "../people/KinAccess.ts";
+import { isOwnerHimself, KIN_OWN_REFUSAL, kinOwnTurn, mayActAsOwner } from "../people/KinAccess.ts";
 import { boundReview, headKey, POSTING, receiptOf } from "./boundReview.ts";
 import {
   agentPostsOf,
@@ -74,8 +74,8 @@ export const ASK_REFUSAL = {
   disconnected: `GitHub isn't connected to Kin. The owner or a co-owner connects it in Settings, Connections, GitHub. ${NOTHING}`,
   unreachable: `Kin couldn't reach GitHub just now. ${NOTHING}`,
   memory: (repo: string) => `${repo} is Kin's memory repo, which Kin never reviews. ${NOTHING}`,
-  unwatched: (repo: string) =>
-    `${repo} isn't a repo Kin watches. The owner adds it in Settings, Connections. ${NOTHING}`,
+  unwatched: (repo: string, ownerLevel: boolean) =>
+    `${repo} isn't a repo Kin watches, so nothing was started. ${ownerLevel ? "They add it in Settings, Connections." : "Only the owner can add it, in Settings, Connections: pass them that one step now with kin_relay, naming the repo and who asked. Nothing brings it back to you: tell the asker it is with them and to ask again once it is added."}`,
   noLogin: (name: string) =>
     `Kin has no GitHub username on file for ${name}, so it reviews only public repos for them, named by repo; they can add theirs under You → GitHub username, or an owner on their page. ${NOTHING}`,
 } as const;
@@ -200,7 +200,7 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
   });
   // One answer for a repo they may not ask about and one Kin doesn't watch.
   const notAllowed = (repo: string) =>
-    login === null ? ASK_REFUSAL.noLogin(asker.name) : ASK_REFUSAL.unwatched(repo);
+    login === null ? ASK_REFUSAL.noLogin(asker.name) : ASK_REFUSAL.unwatched(repo, exempt);
   const watched = (yield* repoList(orgId)).filter((repo) => repo.watched);
   const repos: Array<string> = [];
   if (input.repo !== undefined) {
@@ -396,7 +396,11 @@ export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
   input: Parameters<typeof sendReview>[1],
 ) {
   const bound = yield* boundReview(lead);
-  if (bound === undefined) return yield* ownerGitHubReview(lead, input);
+  if (bound === undefined) {
+    if (yield* kinOwnTurn(lead.orgId, lead.agentId, lead.wakeupId))
+      return yield* refuse(KIN_OWN_REFUSAL.review);
+    return yield* ownerGitHubReview(lead, input);
+  }
   const sql = yield* SqlClient.SqlClient;
   const ref = `${bound.repo}#${bound.number}`;
   if (input.repo.trim().toLowerCase() !== bound.repo.toLowerCase() || input.number !== bound.number)

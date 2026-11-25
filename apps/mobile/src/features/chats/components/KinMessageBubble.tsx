@@ -27,11 +27,13 @@ import {
 } from "../../../native/SelectableMarkdownText";
 import {
   kinBodyMarkdown,
+  kinChangedMark,
   kinImageSource,
   kinImageText,
   kinMessageLabel,
   kinMessageLinks,
   kinPlainText,
+  kinWithdrawnLine,
   type KinFeedRow,
   type KinNoticeOpen,
   KIN_CHAT_COPY,
@@ -175,7 +177,41 @@ function KinAuthorLine(props: {
 }
 
 /** One message: the viewer's own in the user bubble on the right, everyone else's in a bubble on the left. */
-export function KinMessageBubble(props: {
+export function KinMessageBubble(props: Parameters<typeof KinMessageBubbleRow>[0]) {
+  const withdrawn = kinWithdrawnLine(props.row);
+  if (withdrawn === null) return <KinMessageBubbleRow {...props} />;
+  return <KinWithdrawnLine line={withdrawn} said={props.row.message.withdrawn?.said ?? null} />;
+}
+
+/**
+ * A message its agent took back: one quiet line in its place. The owner side may open what it
+ * said; the server sends those words to no one else.
+ */
+function KinWithdrawnLine(props: { readonly line: string; readonly said: string | null }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View className="items-center gap-2 px-8 py-2">
+      <Text textRole="caption" className="text-center text-foreground-muted">
+        {props.line}
+      </Text>
+      {props.said === null ? null : (
+        <Chip
+          label={open ? KIN_CHAT_COPY.hideWithdrawn : KIN_CHAT_COPY.showWithdrawn}
+          size="small"
+          icon={open ? "chevron.up" : "chevron.down"}
+          onPress={() => setOpen(!open)}
+        />
+      )}
+      {open && props.said !== null ? (
+        <Text textRole="body" selectable className="text-foreground-muted">
+          {kinPlainText(props.said)}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function KinMessageBubbleRow(props: {
   readonly row: MessageRow;
   /** `useMarkdownPreviewStyles().nativeTextStyle`, read once by the screen. */
   readonly markdownStyle: NativeMarkdownTextStyle;
@@ -220,6 +256,7 @@ export function KinMessageBubble(props: {
   const { message } = row;
   const deleted = message.status === "deleted";
   const suggested = message.status === "suggested";
+  const changed = kinChangedMark(message, formatTime);
   const hasBody = !deleted && message.body.trim().length > 0;
   const window = useWindowDimensions();
   // A wide table scrolls sideways in the bubble; its bar shows only mid-swipe, so a line says so.
@@ -308,11 +345,11 @@ export function KinMessageBubble(props: {
             Swipe the table sideways to see all of it
           </Text>
         ) : null}
-        {message.editedAt !== null ? (
+        {changed === null ? null : (
           <Text textRole="caption" className="text-foreground-muted">
-            Edited
+            {changed}
           </Text>
-        ) : null}
+        )}
       </View>
     ) : null;
   const bubble =
@@ -321,7 +358,10 @@ export function KinMessageBubble(props: {
         accessible
         accessibilityLabel={kinMessageLabel(row, formatTime(message.createdAt))}
         accessibilityActions={[
-          ...inApp.map((link, index) => ({ name: `kin-${index}`, label: `Open ${link.text}` })),
+          ...inApp.map((link, index) => ({
+            name: `kin-${index}`,
+            label: `Open ${link.name === undefined ? link.text : `${link.name}, ${link.text}`}`,
+          })),
           ...links.map((link, index) => ({ name: `link-${index}`, label: `Open ${link.label}` })),
           ...sheetActions,
         ]}
@@ -375,12 +415,12 @@ export function KinMessageBubble(props: {
             Swipe the table sideways to see all of it
           </Text>
         ) : null}
-        {suggested || message.editedAt !== null ? (
+        {suggested || changed !== null ? (
           <Text
             textRole="caption"
             className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
           >
-            {suggested ? KIN_CHAT_COPY.suggestion : "Edited"}
+            {suggested ? KIN_CHAT_COPY.suggestion : changed}
           </Text>
         ) : null}
       </View>

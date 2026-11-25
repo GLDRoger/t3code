@@ -37,7 +37,8 @@ import { remakeForEntry } from "../gendocs/make.ts";
 import { issueEntry } from "../gendocs/amounts.ts";
 import * as Numbers from "../gendocs/numbering.ts";
 import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts.ts";
-import { readProfile, setProfile } from "./companyProfile.ts";
+import { readProfile, setProfile, waitingOnCountry } from "./companyProfile.ts";
+import { wakeRefused } from "./countryWake.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { dates as datesView, moneySummary } from "./moneyViews.ts";
 import { found, ownerWriter, placeRefusals, theOwner } from "./ownerWork.ts";
@@ -50,10 +51,12 @@ import {
   listDef,
   openCounts,
   storedCategoryLabels,
+  teamListChange,
+  teamListRefusal,
   toDefinition,
   unknownList,
 } from "./registers.ts";
-import { KIN_OWNER_LEVEL, keyedViewer, placesOf, viewerOfPeople } from "./teamView.ts";
+import { KIN_OWNER_LEVEL, keyedViewer, placesOf, teamLists, viewerOfPeople } from "./teamView.ts";
 
 /** What the owner's clients read and do with lists, money and the company profile. Owner only. */
 
@@ -67,7 +70,10 @@ export const lists = Effect.fn("KinMoney.lists")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinListsInput,
 ) {
-  const team = yield* moneyReader(people, input.orgId);
+  const { viewer, refused } = yield* placeRefusals(people, input.orgId);
+  const team = viewer.teammate ? viewer.person.personId : undefined;
+  const shared = team === undefined ? new Set<string>() : yield* teamLists(input.orgId);
+  if (refused.money && shared.size === 0) return yield* noMoney;
   const all = yield* allLists(input.orgId);
   const open = yield* openCounts(
     input.orgId,
@@ -82,9 +88,14 @@ export const lists = Effect.fn("KinMoney.lists")(function* (
           def.id !== "deals" &&
           (input.archived === true || def.archivedAt === null),
       )
-      // Anyone else gets the lists they see an entry of, never Work's own.
-      .filter((def) => team === undefined || (def.builtIn === null && open.has(def.id)))
+      .filter(
+        (def) =>
+          team === undefined ||
+          shared.has(def.id) ||
+          (!refused.money && def.builtIn === null && open.has(def.id)),
+      )
       .map((def) => toDefinition(def, open.get(def.id) ?? 0, input.accept)),
+    billToByName: true,
   };
 }, workFailure);
 
@@ -93,10 +104,14 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinListUpdateInput,
 ) {
-  yield* theOwner(people, input.orgId);
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
+      yield* theOwner(people, input.orgId);
+      if (input.team === true) {
+        const reserved = teamListRefusal(input.list, input.list);
+        if (reserved !== undefined) return yield* reserved;
+      }
       const def = yield* listDef(input.orgId, input.list);
       if (def === undefined) return yield* unknownList(input.list);
       if (def.builtIn !== null) return yield* invalid(`${def.name} is built in and can't change.`);
@@ -131,6 +146,11 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
             ? (def.archivedAt ?? now)
             : null;
       const name = input.name ?? def.name;
+      if ((input.team ?? def.team) === true) {
+        const refused = teamListRefusal(def.id, name, def.sensitive);
+        if (refused !== undefined) return yield* refused;
+      }
+      const team = teamListChange(def, input.team, now);
       const unused = Object.keys(input.stateLabels ?? {}).filter(
         (state) => !def.states.some((one) => one === state),
       );
@@ -166,6 +186,7 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
         Object.keys(a).length === Object.keys(b).length &&
         Object.entries(a).every(([key, label]) => b[key] === label);
       const changed =
+        team.team !== undefined ||
         name !== def.name ||
         payments !== (def.payments === true) ||
         !sameLabels(categoryLabels, def.categoryLabels ?? {}) ||
@@ -195,6 +216,7 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
         } = def;
         const next = {
           ...definition,
+          ...team,
           fields,
           stateLabels,
           ...(Object.keys(categoryLabels).length === 0 ? {} : { categoryLabels }),
@@ -536,7 +558,22 @@ export const setCompanyProfile = Effect.fn("KinMoney.setCompanyProfile")(functio
 ) {
   const person = yield* theOwner(people, input.orgId);
   const { orgId, rev, ...patch } = input;
-  return yield* setProfile(orgId, { _tag: "person", personId: person.personId }, patch, rev);
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const before = yield* waitingOnCountry(orgId);
+      const saved = yield* setProfile(
+        orgId,
+        { _tag: "person", personId: person.personId },
+        patch,
+        rev,
+      );
+      // The save that chose a new company's country cleared its list: each on it is woken once.
+      if (before.pending && saved.country !== null)
+        yield* wakeRefused(orgId, before.waiting, saved.country, saved.homeCurrency);
+      return saved;
+    }),
+  );
 }, workFailure);
 
 /** Receipts for Money: newest first, each with its number, who it was from and what for. */

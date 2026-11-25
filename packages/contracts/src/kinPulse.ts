@@ -49,6 +49,7 @@ const KIN_PULSE_SENSES = [
   "meeting_soon",
   "holder_removed",
   "statement_missing",
+  "bank_alerts_unreadable",
   "deal_no_next_step",
   "deal_quiet",
   "deal_date_passed",
@@ -56,7 +57,10 @@ const KIN_PULSE_SENSES = [
   "number_stale",
   "entry_late",
   "entry_check",
+  "sense_overflow",
   ...KIN_PROMISE_SENSES,
+  "payment_seen",
+  "repaid_seen",
 ] as const;
 /**
  * Senses newer than the first phones: a screen read sends them only to a client that lists them
@@ -65,6 +69,7 @@ const KIN_PULSE_SENSES = [
 export const KIN_PULSE_LATER_SENSES = [
   "holder_removed",
   "statement_missing",
+  "bank_alerts_unreadable",
   "deal_no_next_step",
   "deal_quiet",
   "deal_date_passed",
@@ -72,7 +77,10 @@ export const KIN_PULSE_LATER_SENSES = [
   "number_stale",
   "entry_late",
   "entry_check",
+  "sense_overflow",
   ...KIN_PROMISE_SENSES,
+  "payment_seen",
+  "repaid_seen",
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;
@@ -150,8 +158,17 @@ export const KinPulseFact = Schema.Struct({
   /** Sense, subject and episode: a moved due date is a new key, so a new fact. */
   key: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
   subject: Schema.Struct({
-    // `bank` comes only with a later sense, so an older client never meets it.
-    kind: Schema.Literals(["record", "worker", "task", "budget", "agent", "pull_request", "bank"]),
+    // Bank and overflow subjects come only with later senses.
+    kind: Schema.Literals([
+      "record",
+      "worker",
+      "task",
+      "budget",
+      "agent",
+      "pull_request",
+      "bank",
+      "overflow",
+    ]),
     /** A record's key (INV-4), a task's thread, an agent id, a budget id, or owner/name#12 (PR). */
     key: TrimmedNonEmptyString,
     title: Schema.String.check(Schema.isMaxLength(280)),
@@ -164,6 +181,7 @@ export const KinPulseFact = Schema.Struct({
     projectTitle: Schema.optional(Schema.String),
     clientKey: Schema.optional(Schema.String),
     clientTitle: Schema.optional(Schema.String),
+    billTo: Schema.optional(Schema.String),
   }),
   /** When it became true. */
   since: CanonicalUtcTimestamp,

@@ -39,6 +39,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadClients from "./leadClients.ts";
 import * as ShellMcp from "../shell/mcp.ts";
+import * as NumbersWatch from "../numbers/watch.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { handlers as workHandlers } from "./mcp/handlers.ts";
@@ -116,6 +117,7 @@ const identity = Layer.mock(KinIdentity)({
 // No chat to show a card in: a proposal stands on the owner's typed answer.
 const gate = Layer.mock(KinLevelGate)({
   ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
+  askTo: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
 });
 const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinEventQueue.layer),
@@ -126,6 +128,8 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
+const SAID =
+  "Set up the invented client: Invented retainer, monthly; then Invented fee. Invented Apex is at 1 Invented Road, Pune. Rename it Invented Acme Ltd.";
 /** The owner, a teammate, one lead with its direct chat, and a running turn the owner woke. */
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -145,10 +149,11 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
       worker_projects_json, owner_chat_id)
     VALUES (${lead}, ${orgId}, 'Lead lead', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
+  // The owner types the details a lead writes onto a client, so they go straight in.
   yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
       author_member_id, author_role, kind, body, mentions_json, status, created_at)
     VALUES ('ask', ${orgId}, 'lead-chat', 1, 'human', ${ownerId}, 'lead-chat-owner', 'owner',
-      'text', 'Set up the invented client', '[]', 'posted', ${at})`;
+      'text', ${SAID}, '[]', 'posted', ${at})`;
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status,
       event_ids, audience)
     VALUES ('wake', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '["ask-event"]', 'owner_only')`;
@@ -915,6 +920,51 @@ it.effect("an overdue invoice or a long silence with the client puts a project a
 );
 
 it.effect(
+  "a promise to a teammate keeps whom it was made to, never its holder, until given to them",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented homepage mockups", promisedTo: "Mate", due: "1970-01-05" }],
+      });
+      const key = made.records[0]!.key;
+      const stored = sql<{ to: string | null }>`SELECT json_extract(fields_json, '$.promisedTo') AS
+        "to" FROM kin_records WHERE org_id = ${orgId} AND key = ${key}`;
+      assert.deepStrictEqual(yield* stored, [{ to: `person:${mateId}` }]);
+      assert.include(yield* LeadWork.get(scope, { key }), { promisedTo: "Mate" });
+      // Its holder is never the one it is owed to, and an agent never is.
+      assert.include(
+        yield* Effect.flip(
+          LeadWork.create(scope, {
+            sourceEventId: "again-event",
+            records: [{ title: "Invented report", owner: "Mate", promisedTo: "Mate" }],
+          }),
+        ),
+        { reason: "invalid_state" },
+      );
+      assert.include(
+        yield* Effect.flip(
+          LeadWork.update(scope, { key, sourceEventId: "again-event", promisedTo: "Lead lead" }),
+        ),
+        { reason: "invalid_state" },
+      );
+      // Given to Mate, it is hers and owed to no one; null clears it too.
+      yield* LeadWork.update(scope, { key, sourceEventId: "again-event", owner: "Mate" });
+      assert.deepStrictEqual(yield* stored, [{ to: null }]);
+      yield* LeadWork.update(scope, {
+        key,
+        sourceEventId: "third-event",
+        owner: "me",
+        promisedTo: "Mate",
+      });
+      yield* LeadWork.update(scope, { key, sourceEventId: "third-event", promisedTo: null });
+      assert.deepStrictEqual(yield* stored, [{ to: null }]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "a row repeating an open entry from another turn is refused by name; a near one is made and said",
   () =>
     Effect.gen(function* () {
@@ -930,7 +980,7 @@ it.effect(
       assert.include(yield* Effect.flip(make("again-event", [report])), {
         reason: "conflict",
         message:
-          'W-1 "Invented monthly report" is open with the same title, client and due day. Use W-1, or pass besides: ["W-1"] to add another.',
+          'W-1 "Invented monthly report" is open with the same title, client and due day: it is tracked already, held by Lead lead (you), due Mon 5 Jan. Tell them so in one line, and nothing about when or how to do it; Kin tells its holder on its day. Pass besides: ["W-1"] only if this is another one.',
       });
       // Named as known, a second is made.
       assert.deepStrictEqual(shown(yield* make("again-event", [{ ...report, besides: ["W-1"] }])), [
@@ -1523,6 +1573,11 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
       // Section switches and names: nothing of an entry. No chat here, so no card either.
       company_sections: [
         Effect.flip(ShellMcp.propose(scope, { sections: [{ id: "deals", on: false }] })),
+        false,
+      ],
+      // Names, limits and a source on a card: nothing of an entry is read back.
+      numbers_watch: [
+        Effect.exit(NumbersWatch.watch(scope, { numbers: [{ name: "Invented users" }] })),
         false,
       ],
       // Its record part is record_get's; contact and memory show no entry of their own.

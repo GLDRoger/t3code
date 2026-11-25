@@ -44,6 +44,7 @@ import {
   kinWorkAskDraft,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinListSections } from "@t3tools/client-runtime/kin/kinShell";
 import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
 import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
@@ -88,6 +89,7 @@ import {
   useKinWhatWeSellStart,
 } from "./state/useKinDocs";
 import { useKinAskAgent, useKinLists } from "./state/useKinMoney";
+import { useKinShell } from "./state/useKinShell";
 import {
   kinWorkChoicesAtom,
   refreshKinWorkLive,
@@ -513,6 +515,7 @@ export function KinDocsList(
   const { environmentId, orgId } = props;
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
+  const shell = useKinShell(environmentId);
   const { refused, live } = useKinDocsLive(props);
   const { state, list } = useKinDocsList(props, props.stale ? null : (live?.seq ?? null));
   const { state: found, search } = useKinSearch(props, DOCS_ONLY);
@@ -546,6 +549,9 @@ export function KinDocsList(
   const chip = kinDocsChip(filter);
   const index = kinListsIndex(
     lists.state._tag === "ready" ? kinPlaceLists(lists.state.value.lists) : [],
+    kinListSections(shell)
+      .filter((section) => section.on)
+      .map((section) => section.list),
   );
   const words = filter.text.trim().toLowerCase();
   const listRows = (filter.archived ? index.archived : index.active).filter(

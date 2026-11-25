@@ -32,12 +32,12 @@ import {
   deferralWidgetId,
   planDeferral,
   makeDeferralCards,
+  promiserLead,
   type DeferralPhase,
   type DeferralPlan,
 } from "./deferrals.ts";
 import { type GithubLinkState, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
 import { askerOf, cardChatFor, sharedChatOf, wordsReadable } from "./deferralOrigin.ts";
-import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isScheduledTask, syncScheduledTasks } from "./scheduledTasks.ts";
 import { pauseTriggers } from "./KinTriggerStore.ts";
 
@@ -76,7 +76,12 @@ interface StoredTrigger {
   readonly nextRunAt: number | null;
 }
 interface Stored {
-  readonly run: { readonly state: string; readonly dueAt: number | null; readonly onDue: string };
+  readonly run: {
+    readonly state: string;
+    readonly dueAt: number | null;
+    readonly onDue: string;
+    readonly movedFrom: number | null;
+  };
   readonly triggers: Map<DeferralPhase, StoredTrigger>;
 }
 
@@ -86,25 +91,47 @@ const triggerCurrent = (runAt: number | undefined, row: StoredTrigger | undefine
     ? row === undefined || (!row.enabled && row.nextRunAt === null)
     : row?.enabled === true && row.runAt === runAt;
 
+// A [Monday] tap moves the run, not memory: it holds while memory keeps the due it moved from.
+const sameDue = (plan: DeferralPlan, stored: Stored) =>
+  stored.run.dueAt === plan.dueAt || stored.run.movedFrom === plan.dueAt;
+
 // An Undo or a lead's cancel holds while the item is open at that due time; once memory
 // records the cancel, the run disarms and its card closes.
 const isUndone = (plan: DeferralPlan, stored: Stored | undefined) =>
-  stored?.run.state === "undone" && plan.armed && stored.run.dueAt === plan.dueAt;
+  stored?.run.state === "undone" && plan.armed && sameDue(plan, stored);
 
-const isCurrent = (plan: DeferralPlan, stored: Stored | undefined) =>
-  isUndone(plan, stored) ||
-  (phases.every((phase) =>
-    triggerCurrent(
-      plan.phases.find((entry) => entry.phase === phase)?.runAt,
-      stored?.triggers.get(phase),
-    ),
-  ) &&
-    (plan.armed
-      ? stored !== undefined &&
-        stored.run.state !== "disarmed" &&
-        stored.run.dueAt === plan.dueAt &&
-        stored.run.onDue === plan.onDue
-      : stored === undefined || stored.run.state === "disarmed"));
+/** Memory's plan, or after a [Monday] tap the same plan moved to the run's due, fires included. */
+const effectivePlan = (plan: DeferralPlan, stored: Stored | undefined): DeferralPlan => {
+  const moved = stored?.run.dueAt;
+  if (stored === undefined || moved === null || moved === undefined || plan.dueAt === null)
+    return plan;
+  if (stored.run.movedFrom !== plan.dueAt || moved === plan.dueAt) return plan;
+  const shift = moved - plan.dueAt;
+  return {
+    ...plan,
+    dueAt: moved,
+    phases: plan.phases.map((entry) => ({ ...entry, runAt: entry.runAt + shift })),
+  };
+};
+
+const isCurrent = (memoryPlan: DeferralPlan, stored: Stored | undefined) => {
+  const plan = effectivePlan(memoryPlan, stored);
+  return (
+    isUndone(memoryPlan, stored) ||
+    (phases.every((phase) =>
+      triggerCurrent(
+        plan.phases.find((entry) => entry.phase === phase)?.runAt,
+        stored?.triggers.get(phase),
+      ),
+    ) &&
+      (plan.armed
+        ? stored !== undefined &&
+          stored.run.state !== "disarmed" &&
+          stored.run.dueAt === plan.dueAt &&
+          stored.run.onDue === plan.onDue
+        : stored === undefined || stored.run.state === "disarmed"))
+  );
+};
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -140,13 +167,14 @@ const make = Effect.gen(function* () {
       state: string;
       dueAt: number | null;
       onDue: string;
+      movedFrom: number | null;
       triggerId: string | null;
       schedule: string | null;
       enabled: number | null;
       nextRunAt: number | null;
     }>`
       SELECT r.item_id AS "itemId", r.state, r.due_at AS "dueAt", r.on_due AS "onDue",
-        t.trigger_id AS "triggerId", t.schedule_json AS schedule,
+        json_extract(r.snapshot_json, '$.movedFrom') AS "movedFrom", t.trigger_id AS "triggerId", t.schedule_json AS schedule,
         t.enabled, t.next_run_at AS "nextRunAt"
       FROM kin_deferral_runs r
       LEFT JOIN kin_triggers t ON t.org_id = r.org_id
@@ -159,7 +187,7 @@ const make = Effect.gen(function* () {
       let entry = stored.get(row.itemId);
       if (entry === undefined) {
         entry = {
-          run: { state: row.state, dueAt: row.dueAt, onDue: row.onDue },
+          run: { state: row.state, dueAt: row.dueAt, onDue: row.onDue, movedFrom: row.movedFrom },
           triggers: new Map(),
         };
         stored.set(row.itemId, entry);
@@ -248,16 +276,14 @@ const make = Effect.gen(function* () {
         zone: timeZone,
         locale: yield* textLocale(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       }),
+      actions: ["undo"],
     };
     // Only kin_defer items name a chat; other deferrals arm without a card. A remind or ask for
     // one person needs none: the lead's own reply already said when. A shared chat's has one.
     let chatId: KinChatId | null = own?.open === true ? own.chatId : null;
     if (item.chat !== undefined && (plan.onDue === "start" || plan.onDue === "chase")) {
       // Once its chat was shared, the card goes to the owner chat of the lead it fires with.
-      const lead = yield* liveLead(sql, orgId, {
-        chatId: item.chat,
-        prefer: CHIEF_OF_STAFF_DOMAIN,
-      });
+      const lead = yield* promiserLead(sql, orgId, item);
       chatId = yield* cardChatFor(sql, orgId, item.chat, lead?.ownerChatId ?? null);
       if (chatId === null)
         yield* Effect.logWarning("Deferral chat is not in its organization", { orgId, itemId });
@@ -349,7 +375,8 @@ const make = Effect.gen(function* () {
         if (!isCurrent(plan, stored.get(item.id))) pending.push([item.id, item, plan]);
       }
       for (const [itemId, entry] of stored)
-        if (!present.has(itemId) && entry.run.state !== "disarmed")
+        // A cancelled run stays cancelled while its item is away, and when it comes back unchanged.
+        if (!present.has(itemId) && entry.run.state !== "disarmed" && entry.run.state !== "undone")
           pending.push([KinMemoryItemId.make(itemId), undefined, disarmedPlan]);
       if (pending.length === 0) return;
       const timeZone = yield* cache.ownerTimeZone(orgId);

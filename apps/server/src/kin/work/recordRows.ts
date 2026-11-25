@@ -37,7 +37,9 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
-import { ownerLevelSql } from "../people/KinAccess.ts";
+import { keySentSql } from "../chat/keySent.ts";
+import { ownerLevelPeople, ownerLevelSql } from "../people/KinAccess.ts";
+import { billedParty, billingClientFromProject } from "./billTo.ts";
 import { fieldList, listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
@@ -49,6 +51,7 @@ import { entryAfterReading } from "../lead/OutsideContent.ts";
 export type Principal = KinWorkPrincipal;
 export type Actor = KinWorkActor;
 export type RecordRow = {
+  readonly listMoneyVisible?: number;
   readonly orgId: string;
   readonly recordId: string;
   readonly registerId: string;
@@ -283,12 +286,12 @@ export const isSuggestion = (row: { readonly confirmed: number }) => row.confirm
 export const keptEntry = (sql: SqlClient.SqlClient) => sql`r.confirmed = 1`;
 /**
  * A suggestion's state as an agent reads it: issued, sent or owed nowhere, so never its list's
- * word for that; a quote or invoice draft says it is one.
+ * word for that, nor "draft", which agents read as ready to issue.
  */
-export const suggestedStateLabel = (list: string, state: string, label: string) =>
+export const suggestedStateLabel = (list: string, state: string) =>
   state === "open" && (list === "quotes" || list === "invoices")
-    ? `${label}, suggested: waits for the owner or a co-owner to keep it`
-    : "Suggested: waits for the owner or a co-owner to keep it";
+    ? `Suggested ${list === "quotes" ? "quote" : "invoice"}, not kept: nobody has kept it yet, so it can't be issued, sent${list === "quotes" ? "" : ", paid or receipted"}. The owner or a co-owner keeps it with Keep on its page; call it a suggestion until then.`
+    : "Suggested, not kept: nobody has kept it yet; any money on it counts nowhere. The owner or a co-owner keeps it with Keep on its page; call it a suggestion until then.";
 /** A kept invoice nobody has issued, as an agent's tool result names it. */
 export const UNISSUED_INVOICE = "Draft: waits for the owner or a co-owner to issue it";
 /** The one refusal for anything done to a suggestion before it is kept, whoever asks. */
@@ -340,8 +343,10 @@ export const invoiceDue = (sql: SqlClient.SqlClient) => sql`COALESCE(r.due_at,
   r.date_at + ${DAY_MS} * ${termsDaysSql(
     sql,
     sql`(SELECT json_extract(c.fields_json, '$.terms') FROM kin_records c
-      WHERE c.org_id = r.org_id AND c.register_id = 'clients' AND c.record_id = COALESCE(r.party_id,
-        (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))`,
+      WHERE c.org_id = r.org_id AND c.register_id = 'clients' AND c.record_id = ${billingClientFromProject(
+        sql,
+        sql`(SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)`,
+      )})`,
   )})`;
 
 /** `owedInvoices`' overdue in SQL, for an invoice `r`: counted, issued, a balance left, past due. */
@@ -372,12 +377,14 @@ export const owedInvoices = Effect.fn("KinRecordRows.owedInvoices")(function* (i
     partyId: string | null;
     partyKey: string | null;
     partyTitle: string | null;
+    fieldsJson: string | null;
     minor: number;
     currency: string;
     paid: number;
     dueAt: number | null;
     number: unknown;
   }>`SELECT r.record_id AS "recordId", r.key, r.title, r.party_id AS "partyId",
+      CASE WHEN pa.record_id IS NULL THEN r.fields_json END AS "fieldsJson",
       pa.key AS "partyKey", pa.title AS "partyTitle", r.amount_minor AS minor, r.currency,
       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
@@ -391,10 +398,15 @@ export const owedInvoices = Effect.fn("KinRecordRows.owedInvoices")(function* (i
     ORDER BY r.due_at, r.key`;
   const zone = yield* ownerZone(input.orgId);
   return rows
-    .map((row) => {
+    .map(({ fieldsJson, ...row }) => {
+      const billTo =
+        fieldsJson === null
+          ? undefined
+          : billedParty({ registerId: "invoices", fieldsJson }, undefined)?.name;
       const overdue = row.dueAt !== null && row.dueAt < input.now;
       return {
         ...row,
+        ...(billTo === undefined ? {} : { billTo }),
         balance: { minor: row.minor - row.paid, currency: row.currency },
         overdue,
         daysOverdue: overdue ? daysOverdue(row.dueAt!, input.now, zone) : 0,
@@ -418,7 +430,7 @@ export const moneyDay = (sql: SqlClient.SqlClient) => sql`COALESCE(r.date_at, r.
  * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
  */
 /** `shell` false reads labels alone, as `labelledNow` does for the pulse. */
-export const selectRecords = (sql: SqlClient.SqlClient, shell = true) => sql`
+export const selectRecords = (sql: SqlClient.SqlClient, extra = sql``, shell = true) => sql`
   SELECT r.org_id AS "orgId", r.record_id AS "recordId", r.register_id AS "registerId", r.key,
     r.title, r.state,
     r.waiting_on_kind AS "waitingOnKind", r.waiting_on_id AS "waitingOnId",
@@ -453,7 +465,7 @@ export const selectRecords = (sql: SqlClient.SqlClient, shell = true) => sql`
         AND k.ended_at IS NULL) AS working,
     (SELECT l.target FROM kin_record_links l WHERE l.org_id = r.org_id
       AND l.record_id = r.record_id AND l.kind = 'pull_request'
-      ORDER BY l.created_at DESC, l.target LIMIT 1) AS "pullUrl"
+      ORDER BY l.created_at DESC, l.target LIMIT 1) AS "pullUrl"${extra}
   FROM kin_records r
   LEFT JOIN kin_records pa ON pa.org_id = r.org_id AND pa.record_id = r.party_id
   LEFT JOIN kin_records pj ON pj.org_id = r.org_id AND pj.record_id = r.project_id`;
@@ -788,6 +800,47 @@ const changesOf = Effect.fn("KinRecords.changesOf")(function* (
     kind: row.kind,
     fields: parseChanges(row.fieldsJson).filter((change) => change.field.trim() !== ""),
   }));
+});
+
+const HAND_OFF_FIELDS = new Set(["owner", "handedBack", "reason", "state"]);
+
+/** G13: the hand-back that blocks giving this task again until it changes or the owner asks. */
+export const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
+  orgId: KinOrgId,
+  before: RecordRow,
+  to: KinWorkPrincipal,
+  turn?: { readonly agentId: KinAgentId; readonly wakeupId: string },
+) {
+  const who = `${to._tag}:${principalId(to)}`;
+  let back: { readonly seq: number; readonly to: string | null } | undefined;
+  for (const change of yield* changesOf(orgId, before.recordId, 50).pipe(workFailure)) {
+    const returned = change.fields.find(
+      (field) => field.field === "handedBack" && field.from === who,
+    );
+    if (returned !== undefined) {
+      back = { seq: change.seq, to: returned.to };
+      break;
+    }
+    if (change.fields.some((field) => !HAND_OFF_FIELDS.has(field.field))) return;
+  }
+  if (back === undefined) return;
+  const sql = yield* SqlClient.SqlClient;
+  if (turn !== undefined) {
+    const owners = [...(yield* ownerLevelPeople(orgId))];
+    const said = yield* sql`SELECT 1 FROM kin_events e
+      JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+        AND m.chat_id = json_extract(e.json, '$.chatId')
+      WHERE e.org_id = ${orgId} AND e.agent_id = ${turn.agentId}
+        AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
+        AND m.origin_json IS NULL AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
+        AND m.author_person_id IN ${sql.in(owners.length === 0 ? [""] : owners)}
+      LIMIT 1`;
+    if (said.length > 0) return;
+  }
+  const [mark] = yield* sql<{ marked: number }>`SELECT coding_agent_key IS NOT NULL AS marked
+    FROM kin_record_changes
+    WHERE org_id = ${orgId} AND record_id = ${before.recordId} AND seq = ${back.seq}`;
+  return { to: back.to, codingAgent: mark?.marked === 1 };
 });
 
 const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, recordId: string) {
@@ -1250,6 +1303,9 @@ export const dueWhenText = (
   allDay
     ? formatKinWhen(at, "day", { zone: company, locale: clock.locale })
     : formatKinWhen(at, timed, clock);
+/** A task's due as the tasks tools write it, in the company's zone. */
+export const dueText = (dueAt: number, allDay: boolean, zone: string) =>
+  dueWhenText(dueAt, allDay, zone, { zone, locale: KIN_TEXT_LOCALE });
 /** A date field's value as an instant: a day is its last millisecond, as an all-day entry's is. */
 export const fieldDateAt = (value: string, zone: string) => {
   if (value.length === 10) return { at: endOfDay(value, zone), allDay: true };

@@ -12,8 +12,11 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import * as KinRecords from "../work/KinRecords.ts";
+import { movePage } from "../work/workMoves.ts";
 import * as KinOpen from "./KinOpen.ts";
 
 // Invented company, people, tasks and money only: Ambermill.
@@ -36,7 +39,9 @@ const identity = Layer.mock(KinIdentity)({
   isAgentThread: () => false,
   isLeadThread: () => false,
 });
-const layer = Layer.mergeAll(KinChatRepository.layer, RefreshHub.layer, identity).pipe(
+const layer = KinRecords.layer.pipe(
+  Layer.provideMerge(Layer.mergeAll(KinChatRepository.layer, RefreshHub.layer, identity)),
+  Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
 );
@@ -246,11 +251,11 @@ it.effect("each role reads what it may see, and no more", () =>
     assert.strictEqual(coOwner.rows.at(-1)?.id, "waiting:wait-approval");
     assert.strictEqual(coOwner.counts.waiting, 0);
     assert.strictEqual(coOwner.counts.needsYou, coOwner.rows.length - 1);
-    // Meera: her own late task and today's; none of Rhea's, no money fact, no money row.
+    // Meera: her own late task, today's and tomorrow's; none of Rhea's, no money fact or row.
     const member = yield* open(meera);
     assert.deepStrictEqual(
       ids(member).filter((id) => !id.startsWith("fact:")),
-      ["task:W-4"],
+      ["task:W-4", "task:W-6"],
     );
     assert.lengthOf(factsOn(member, "W-3"), 1);
     assert.lengthOf(factsOn(member, "W-1"), 0);
@@ -302,12 +307,55 @@ it.effect("waiting counts only cards still open, in chats the person is still in
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("today ends in the person's own zone, else the company's", () =>
+it.effect("its tasks are the ones Tasks counts under Needs you, in Tasks' order", () =>
   Effect.gen(function* () {
     yield* seed;
-    // Due at 05:00 UTC tomorrow: Zoya's afternoon today, the company's tomorrow.
-    assert.include(ids(yield* open(zoya)), "task:W-5");
-    assert.notInclude(ids(yield* open(meera)), "task:W-6");
+    // Due in ten days: on her list, not yet in Needs you. Undated and handed back: it is.
+    yield* task({ key: "W-7", owner: meera, dueAt: NOW + 10 * DAY });
+    yield* task({ key: "W-8", owner: meera, dueAt: NOW + 2 * DAY });
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_records SET due_at = NULL, handed_back_at = ${NOW - HOUR}
+      WHERE org_id = ${orgId} AND key = 'W-8'`;
+    for (const [personId, ownerLevel] of [
+      [rhea, true],
+      [dev, false],
+      [meera, false],
+      [zoya, false],
+    ] as const) {
+      const read = yield* open(personId, ownerLevel);
+      const tasks = yield* movePage({
+        orgId,
+        personId,
+        ownerLevel,
+        filter: { at: NOW, ...(ownerLevel ? {} : { team: personId }) },
+        offset: 0,
+        limit: 100,
+        at: NOW,
+      });
+      const counted = tasks.moves.filter((move) => move.group === "needsYou" && !move.under);
+      const late = (key: string) => (tasks.rows.find((row) => row.key === key)?.dueAt ?? NOW) < NOW;
+      assert.strictEqual(read.counts.tasks, tasks.counts.needsYou);
+      // Each is a row of its own unless its fact stands for it.
+      const covered = new Set(
+        read.rows.flatMap((row) =>
+          row.item._tag === "fact" && row.item.fact.subject.kind === "record"
+            ? [row.item.fact.subject.key]
+            : [],
+        ),
+      );
+      assert.deepStrictEqual(
+        ids(read).filter((id) => id.startsWith("task:")),
+        counted
+          .filter((move) => !covered.has(move.key))
+          // Late ones lead the list, each part in Tasks' order.
+          .toSorted((a, b) => Number(late(b.key)) - Number(late(a.key)))
+          .map((move) => `task:${move.key}`),
+      );
+    }
+    const member = yield* open(meera);
+    assert.notInclude(ids(member), "task:W-7");
+    const undated = member.rows.find((row) => row.id === "task:W-8")?.item;
+    assert.isTrue(undated?._tag === "task" && undated.dueAt === undefined);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -382,6 +430,7 @@ it.effect("counts stay whole past the 200 rows sent, in the same number of queri
     const many = yield* counted();
     assert.lengthOf(many.read.rows, 200);
     assert.strictEqual(many.read.counts.needsYou, small.read.counts.needsYou + 300);
-    assert.strictEqual(many.queries, small.queries);
+    assert.strictEqual(many.read.counts.tasks, small.read.counts.tasks! + 300);
+    assert.strictEqual(many.queries, some.queries);
   }).pipe(Effect.provide(layer)),
 );

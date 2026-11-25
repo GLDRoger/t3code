@@ -1,5 +1,6 @@
 import type { KinCardGroupRow } from "@t3tools/client-runtime/kin/kinCardGroups";
 import {
+  KIN_LAND_MARK_MS,
   kinChatFeedFollow,
   kinChatFeedRows,
   kinChatReads,
@@ -129,6 +130,8 @@ import {
   kinFeedViewer,
   kinLinkToOpen,
   kinMarkReadRearms,
+  kinNextNewLineHold,
+  kinOwnReadSeq,
   kinRowSeq,
   kinSeqToMarkRead,
   kinUnreadToMark,
@@ -136,6 +139,7 @@ import {
   type KinChatScreenState,
   type KinFeedRow,
   type KinFeedViewer,
+  type KinNewLineHold,
   type KinPaging,
   KIN_CHAT_COPY,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
@@ -190,6 +194,7 @@ import { KinChatPushWatch } from "./notifications/KinChatPushWatch";
 import {
   KIN_WORKING_COPY,
   kinChatWorkingItems,
+  kinWorkingPillItems,
   kinWorkingPillLabel,
   kinWorkingPillStop,
   kinWorkingRereadKey,
@@ -201,6 +206,7 @@ import {
 } from "../threads/floating-working-control";
 import { KinWorkingSheet, useKinWorkingStop } from "./components/KinWorkingSheet";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 type KinChatParams = {
   readonly environmentId: string;
@@ -401,20 +407,19 @@ function KinLiveChat(props: {
           environmentId === null || summary === undefined || ownedAgentId === null || !canInterrupt
             ? null
             : (wakeupId) =>
-                kinClient.leadInterrupt
-                  .run(appAtomRegistry, {
-                    environmentId,
-                    input: { orgId: summary.orgId, wakeupId: wakeupId as KinWakeupId },
-                  })
-                  .then((result) => result._tag === "Success")
+                runKinCommand(appAtomRegistry, kinClient.leadInterrupt, {
+                  environmentId,
+                  input: { orgId: summary.orgId, wakeupId: wakeupId as KinWakeupId },
+                }).then((result) => result._tag === "Success")
         }
         markRead={
           environmentId === null || chatId === null
             ? null
             : (seq) =>
-                kinClient.markRead
-                  .run(appAtomRegistry, { environmentId, input: { chatId, seq } })
-                  .then((result) => result._tag === "Success")
+                runKinCommand(appAtomRegistry, kinClient.markRead, {
+                  environmentId,
+                  input: { chatId, seq },
+                }).then((result) => result._tag === "Success")
         }
         state={state}
         viewer={group ? { ...viewer, memberNames: kinMemberNames(groupMembers) } : viewer}
@@ -454,6 +459,7 @@ function KinLiveChat(props: {
               ? {
                   // Uncut: the phone's intro cuts a long charter itself.
                   charter: screen.lead?.charter ?? null,
+                  setsUp: screen.setsUp,
                   open: () =>
                     navigation.navigate("KinLead", {
                       environmentId,
@@ -464,6 +470,7 @@ function KinLiveChat(props: {
               : contact !== null
                 ? {
                     charter: null,
+                    setsUp: false,
                     open: () =>
                       navigation.navigate("KinLead", {
                         environmentId,
@@ -685,7 +692,12 @@ function KinChatPage(props: {
   /** The viewer owns this direct chat's lead, so a first run shows the intro. */
   readonly ownsLead?: boolean;
   /** This direct chat's lead, for its details and the owner's intro; null otherwise. */
-  readonly lead?: { readonly charter: string | null; readonly open: () => void } | null;
+  readonly lead?: {
+    readonly charter: string | null;
+    /** The viewer's own Chief of staff, whose intro may name the company's answer. */
+    readonly setsUp: boolean;
+    readonly open: () => void;
+  } | null;
   /** What the owner of someone else's lead wrote for the people let message it. */
   readonly about?: string | null;
   /** The viewer may read this chat and no longer write in it: the line saying so. */
@@ -752,6 +764,7 @@ function KinChatPage(props: {
             chatId={props.chatId}
             agentName={props.agentName}
             charter={lead?.charter ?? null}
+            setsUp={lead?.setsUp === true}
             chat={state.chat}
             connected={state.connected}
             offline={state.offline}
@@ -925,6 +938,7 @@ function KinChatFeed(props: {
   readonly agentName: string | null;
   /** What the viewer made their lead for, shown on the first-run intro. */
   readonly charter: string | null;
+  readonly setsUp: boolean;
   readonly chat: KinSynced<KinChatState>;
   readonly connected: boolean;
   /** Known unreachable, not just still on its first connection attempt. */
@@ -1035,6 +1049,15 @@ function KinChatFeed(props: {
     typeof params === "object" && params !== null && "message" in params
       ? String(params.message)
       : null;
+  const viewerMemberId = kinViewerMemberId(props.members, props.viewer.personId);
+  const [heldLine, setHeldLine] = useState<KinNewLineHold | null>(null);
+  const newLine = kinNextNewLineHold(
+    heldLine,
+    props.chatId,
+    kinOwnReadSeq(live, viewerMemberId),
+    latestKinSeq(live.messages),
+  );
+  if (newLine !== heldLine) setHeldLine(newLine);
   // Apart from `follow`, so a scroll recomputes only where the feed stands, not its rows.
   const feed = kinChatFeedRows({
     chatId: props.chatId,
@@ -1053,6 +1076,7 @@ function KinChatFeed(props: {
     agentName: props.agentName,
     retired: props.retired !== null,
     readOnly: props.readOnly !== null,
+    newLine,
   });
   const { streamed, messages, widgets, pending, feedRows, rows, landIndex, earlierPage } = feed;
   const { followsEnd, unseen } = kinChatFeedFollow(messages, follow, props.viewer.personId);
@@ -1063,7 +1087,6 @@ function KinChatFeed(props: {
   }, [echoedKey]);
   const canReactHere = useAtomValue(kinClient.react.permissionAtom(props.environmentId));
   const react = useAtomCommand(kinClient.react, "react");
-  const viewerMemberId = kinViewerMemberId(props.members, props.viewer.personId);
   const canReact =
     canReactHere &&
     viewerMemberId !== null &&
@@ -1097,6 +1120,8 @@ function KinChatFeed(props: {
           );
         };
   const landed = useRef<string | null>(null);
+  // The message a row opened, tinted a moment once it has loaded so the eye lands on it.
+  const [markDone, setMarkDone] = useState<string | null>(null);
   // LegendList grows an empty list to its frame, under both insets, which hid the intro under the
   // composer; the visible height ends it above the composer instead.
   const emptyMinHeight =
@@ -1207,6 +1232,13 @@ function KinChatFeed(props: {
     void listRef.current?.scrollToIndex({ index: landIndex, animated: false, viewPosition: 0.3 });
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition reads only refs and the stable setFollow.
   }, [landIndex, landOn, followsEnd, listRef, landed]);
+  const marked = landOn !== null && landIndex >= 0 && markDone !== landOn;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a timer: the mark on the message a row opened lasts a moment, then goes
+  useEffect(() => {
+    if (!marked || landOn === null) return;
+    const timer = setTimeout(() => setMarkDone(landOn), KIN_LAND_MARK_MS);
+    return () => clearTimeout(timer);
+  }, [marked, landOn]);
 
   const pinToEnd = (animated: boolean) => {
     // The list's own end, as maintainScrollAtEnd pins it: scrollToEnd counts the presence footer
@@ -1297,8 +1329,8 @@ function KinChatFeed(props: {
   const workingStop = useKinWorkingStop(props.environmentId, props.orgId);
   const pillStop = kinWorkingPillStop(workingItems, props.canInterrupt);
   const [workingOpen, setWorkingOpen] = useState(false);
-  // The sheet closes when the last thing in it finishes.
-  if (workingOpen && workingItems.length === 0) setWorkingOpen(false);
+  // The sheet opens from the pill and closes with it.
+  if (workingOpen && workingLabel === null) setWorkingOpen(false);
   const { themeAppearance } = useAppearancePreferences();
   const openWorking = () => {
     appAtomRegistry.refresh(workingAtom);
@@ -1331,7 +1363,7 @@ function KinChatFeed(props: {
       : {
           kind: "stop" as const,
           label: workingLabel,
-          unresponsive: workingItems.every((item) => item.held),
+          unresponsive: kinWorkingPillItems(workingItems).every((item) => item.held),
           onPress: openWorking,
           action:
             pillStop === null
@@ -1598,6 +1630,7 @@ function KinChatFeed(props: {
         orgId={KinOrgId.make(props.orgId)}
         agentName={props.agentName}
         charter={props.charter}
+        setsUp={props.setsUp}
         onSend={sendSample}
         onStart={startSample}
       />
@@ -1738,9 +1771,16 @@ function KinChatFeed(props: {
               ? "other"
               : row.type
         }
-        renderItem={renderItem}
+        renderItem={({ item, index }: { readonly item: KinChatRow; readonly index: number }) =>
+          marked && index === landIndex ? (
+            <View className="bg-primary/10">{renderItem({ item })}</View>
+          ) : (
+            renderItem({ item })
+          )
+        }
         // Both reach rows only through renderItem, which the list doesn't watch.
         extraData={[
+          marked,
           streamed.widgets,
           streamed.reactions,
           canReact,
@@ -1788,14 +1828,20 @@ function KinChatFeed(props: {
         ListHeaderComponent={header}
         ListEmptyComponent={empty}
         ListFooterComponent={
-          <KinPresenceLine
-            presence={props.presence}
-            avatar={presenceAvatar}
-            visible={focused && followsEnd}
-            stop={stopState}
-            onStop={onStop}
-            quiet={workingStatus !== null}
-          />
+          // The pill floats over the feed's end: the line keeps clear of it while it shows.
+          <View
+            style={{
+              paddingBottom: workingStatus === null ? 0 : FLOATING_WORKING_CONTROL_COVERAGE,
+            }}
+          >
+            <KinPresenceLine
+              presence={props.presence}
+              avatar={presenceAvatar}
+              visible={focused && followsEnd}
+              stop={stopState}
+              onStop={onStop}
+            />
+          </View>
         }
       />
       <KeyboardStickyView
@@ -1848,7 +1894,7 @@ function KinChatFeed(props: {
         </View>
       </KeyboardStickyView>
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
-      {workingOpen && workingItems.length > 0 ? (
+      {workingOpen && workingLabel !== null ? (
         <KinWorkingSheet
           items={workingItems}
           canInterrupt={props.canInterrupt}

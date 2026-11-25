@@ -30,6 +30,7 @@ import { askSlip, dayIn, linesBeforeTax } from "./money.ts";
 import { cashEstimate, cashPosition, outlook as outlookOf } from "./moneyAnswers.ts";
 import type { AlertBalance } from "./statements/bankAlerts.ts";
 import { KinRecords, requestHashOf } from "./KinRecords.ts";
+import { answeredByHand } from "./bills.ts";
 import { dueMillis, ownFiles, ownerWriter, theOwner } from "./ownerWork.ts";
 import { iso, notFound, type RecordRow, workFailure } from "./recordRows.ts";
 import { matchPartner as matchPartnerOf } from "./partnersOwed.ts";
@@ -204,8 +205,11 @@ export const outlook = Effect.fn("KinMoneyAnswers.rpc.outlook")(function* (
   };
 }, workFailure);
 
-const budgetsOf = Effect.fn("KinMoneyAnswers.budgetsOf")(function* (orgId: KinOrgId) {
-  const view = yield* budgetsView(orgId, yield* Clock.currentTimeMillis);
+const budgetsOf = Effect.fn("KinMoneyAnswers.budgetsOf")(function* (
+  orgId: KinOrgId,
+  keyed = false,
+) {
+  const view = yield* budgetsView(orgId, yield* Clock.currentTimeMillis, undefined, keyed);
   return {
     month: view.month,
     budgets: view.budgets.map((one) => ({
@@ -228,9 +232,10 @@ const budgetsOf = Effect.fn("KinMoneyAnswers.budgetsOf")(function* (orgId: KinOr
 export const budgets = Effect.fn("KinMoneyAnswers.rpc.budgets")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinMoneyBudgetsInput,
+  options: { readonly keyed?: boolean } = {},
 ) {
   yield* theOwner(people, input.orgId);
-  return yield* budgetsOf(input.orgId);
+  return yield* budgetsOf(input.orgId, options.keyed);
 }, workFailure);
 
 /** The owner's own set, change or removal of a budget; a retry of one request repeats it. */
@@ -383,13 +388,28 @@ export const newInvoice = Effect.fn("KinMoneyAnswers.rpc.newInvoice")(function* 
   input: KinNewInvoiceInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
+  if ((input.client === undefined) === (input.billTo === undefined))
+    return yield* invalid(
+      "Say who the invoice is for: a client, or a name to bill. Nothing was saved.",
+    );
   yield* countryFirst(input.orgId);
   const recipe = yield* invoiceTemplate(input.orgId);
   if (recipe === undefined)
     return yield* invalid(
       "There is no invoice template yet, so Kin can't keep the lines. Nothing was saved. Ask an agent to set one up.",
     );
-  const partyId = yield* recordOf(input.orgId, input.client, "clients");
+  const partyId =
+    input.client === undefined ? undefined : yield* recordOf(input.orgId, input.client, "clients");
+  const fields =
+    input.billTo === undefined
+      ? undefined
+      : {
+          billToName: input.billTo.name,
+          billToAddress: input.billTo.address ?? null,
+          billToTaxNumber: input.billTo.taxNumber ?? null,
+          billToPlace: input.billTo.place ?? null,
+          billToEmail: input.billTo.email ?? null,
+        };
   const projectId =
     input.project === undefined
       ? undefined
@@ -408,7 +428,8 @@ export const newInvoice = Effect.fn("KinMoneyAnswers.rpc.newInvoice")(function* 
     title: input.title,
     owner: { _tag: "person", personId: person.personId },
     state: "open",
-    partyId,
+    ...(partyId === undefined ? {} : { partyId }),
+    ...(fields === undefined ? {} : { fields }),
     ...(projectId === undefined ? {} : { projectId }),
     dueAt,
     dueAllDay: dueAt !== null,
@@ -468,9 +489,13 @@ export const newExpense = Effect.fn("KinMoneyAnswers.rpc.newExpense")(function* 
     ...(category === undefined ? {} : { category }),
     ...(Object.keys(fields).length === 0 ? {} : { fields }),
   });
-  // The files are checked and kept in one transaction, so none slips in between the two.
+  // The files are checked and kept in one transaction, so none slips in between the two. A
+  // bill's file answers that bill (`bills.ts`).
   const { row } = yield* sql.withTransaction(
-    ownFiles(person, "{}", fields).pipe(Effect.andThen(create)),
+    ownFiles(person, "{}", fields).pipe(
+      Effect.andThen(create),
+      Effect.tap(({ row }) => answeredByHand(input.orgId, row.recordId, input.receipt ?? [])),
+    ),
   );
   return { expense: row.key };
 }, workFailure);

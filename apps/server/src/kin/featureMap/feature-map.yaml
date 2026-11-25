@@ -40,6 +40,17 @@ features:
       - apps/server/src/kin/chat/KinChatService.test.ts
       - apps/server/src/kin/lead/ChatWake.test.ts
 
+  - id: chat-kept-true
+    name: An agent takes back or puts right its plain message nobody has read yet; the owner side can show what it said, the last version only
+    tab: chats
+    web: [home, chat, button:Show what it said]
+    phone: [tab:chats, KinChat, button:Show what it said]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [message_withdraw, message_replace]
+    proof:
+      - apps/server/src/kin/chat/ownMessages.test.ts
+      - packages/client-runtime/src/kin/kinChatFeed.test.ts
+
   - id: chat-attachments
     name: Attach pictures, PDFs and documents in a chat
     tab: chats
@@ -312,6 +323,18 @@ features:
     proof:
       - apps/server/src/kin/work/statements/statements.test.ts
       - apps/server/src/kin/work/statements/statementMatch.test.ts
+
+  - id: bills
+    name: Read many bills at once into suggested expenses
+    tab: chats
+    web: [chat, card:Bills added]
+    phone: [tab:chats, KinChat, card:Bills added]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [bills_add, bill_read]
+    note: The batch's card counts while Kin reads, says when the reader's daily limit pauses it, and its Review opens the batch's list.
+    proof:
+      - apps/server/src/kin/work/bills.test.ts
+      - packages/client-runtime/src/kin/kinBills.test.ts
 
   - id: groups
     name: Start a group chat
@@ -642,6 +665,31 @@ features:
     proof:
       - apps/server/src/kin/work/money.test.ts
       - packages/client-runtime/src/kin/kinMoneyForms.test.ts
+
+  - id: bills-add
+    name: Add many bills at once, as photos or PDFs
+    tab: money
+    web: [money, menu:Add, dialog:Add bills]
+    phone: [tab:money, menu:Add, KinBillsAdd]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: On the phone from the photo library, Files or the camera. Each bill Kin reads becomes a suggested expense with its file. A file added before says so, with a link to its expense when that was dropped; a dismissed one is read again.
+    proof:
+      - packages/client-runtime/src/kin/kinBills.test.ts
+      - apps/web/src/kin/KinBills.browser.test.tsx
+      - apps/server/src/kin/work/bills.test.ts
+
+  - id: bills-review
+    name: Review bills added at once, keeping each or every one read cleanly
+    tab: money
+    web: [money, "?bills"]
+    phone: [tab:money, KinList, KinBills]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: Reached from Expenses' Bills added, the batch's card in chat, and the add itself. Enter by hand opens New expense with the bill's file.
+    proof:
+      - packages/client-runtime/src/kin/kinBills.test.ts
+      - apps/web/src/kin/KinBills.browser.test.tsx
+      - apps/mobile/src/features/chats/state/kinBillsPick.test.ts
 
   - id: receipt-apply
     name: Set a receipt against an invoice
@@ -1645,12 +1693,38 @@ features:
       - apps/server/src/kin/people/KinPeople.test.ts
 
   - id: coding-agent-keys
-    name: Coding agent keys for the tasks you hold
+    name: Coding agent keys that act as you
     tab: settings
     web: [home, sheet:Profile, section:Coding agent keys]
     roles: { owner: web, co_owner: web, lead: web, member: web }
     tools:
       [
+        list_people,
+        list_tasks,
+        create_task,
+        update_task,
+        create_project,
+        update_project,
+        create_client,
+        update_client,
+        log_contact,
+        list_deals,
+        create_deal,
+        update_deal,
+        add_promise,
+        close_promise,
+        write_doc,
+        list_invoices,
+        open_invoice,
+        draft_invoice,
+        list_lists,
+        list_entries,
+        add_entry,
+        update_entry,
+        read_numbers,
+        record_number,
+        list_waiting,
+        ask_agent,
         list_my_tasks,
         get_task,
         comment_on_task,
@@ -1661,16 +1735,34 @@ features:
         read_doc,
         money_summary,
         search_memory,
+        tick_task_step,
+        hand_task_back,
+        nudge_task,
+        hand_over_tasks,
+        add_link,
+        set_project_note,
+        restore_doc_version,
+        undo_memory_change,
+        budgets,
+        restart_watch,
+        save_goal,
       ]
     note: >-
-      A person makes a key for their own coding agent (Claude Code, Codex, Cursor) to read the
-      tasks they hold, comment and set state through `/kin/you/mcp`. It also reads, never writes,
-      the projects, clients, docs, Money and team memory that person's own screens show them,
-      through the same reads, minus anything a person marked private and everything under a
-      private client or project, which stay in Kin for every key.
-      Money and memory are listed only for those whose screens open them. The key shows once; the
-      address and the setup lines, with the key left to fill, stay on their own section. At most
-      three live keys, 30 days each. Settings → Profile on the web shows the same section.
+      A person makes a key for their own coding agent (Claude Code, Codex, Cursor), which acts as
+      them through `/kin/you/mcp`: it reads what their own screens show them and does what those
+      screens let them do, through the same service methods, and every write is marked as from their
+      coding agent. It can tick and hand back tasks, nudge holders, hand over open tasks, add entry
+      links, pin a project note, restore document versions, undo a shareable memory change, read
+      budgets, restart watches and save goals using the app's permissions. It sends the person's words to their agents in their own direct chats (marked as
+      from their coding agent, never counted as their own word, answering nothing), and no agent's
+      reply comes back through the key. Anything a person marked private, and everything under a
+      private client or project, stays in Kin for every key. A tool whose section is off or whose
+      switch the person lacks is not listed. Answering cards, money or mail leaving the company,
+      people and access, connections and keys, the host and settings, and deleting or archiving have
+      no tool, and the repository refuses any key-marked write that drops anything or touches a
+      money list but making an invoice draft: the server's MCP instructions say so. The key shows
+      once; the address and the setup lines, with the key left to fill, stay on their own section.
+      At most three live keys, 30 days each. Settings → Profile on the web shows the same section.
     proof:
       - packages/client-runtime/src/kin/kinTasksKeys.test.ts
       - apps/web/src/kin/KinTasksKeys.browser.test.tsx
@@ -1705,7 +1797,7 @@ features:
     name: Read and record watched numbers with an agent
     tab: chats
     roles: { owner: none, co_owner: none, lead: none, member: none }
-    tools: [number_record, numbers_read]
+    tools: [number_record, numbers_read, numbers_watch]
     proof:
       - apps/server/src/kin/numbers/KinNumbers.test.ts
 
@@ -1720,6 +1812,7 @@ unlisted:
   "web:settings/sections": The app's settings address for Sections; opens Kin's Settings → Sections.
   "web:settings/kin-profile": Where app Settings search lands for quiet hours, working hours, away and GitHub username; opens Kin's Settings → Profile.
   "web:?v": Picks the version of the open doc; not a screen.
+  "web:?card": The draft card a doc was opened from, so its reader reads that version without the Docs place; not a screen.
   "web:?tab": Switches the Clients place between its Clients, Deals and Projects lists; not a screen.
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
@@ -1738,5 +1831,4 @@ unlisted:
   "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
-  "rpc:kin.open.read": Served; no client reads the open list (Needs you and Tasks use their own reads).
-  "rpc:kin.open.subscribe": Served; no host lists "open" in its streams, so no client follows it.
+  "rpc:kin.open.read": Served; clients follow kin.open.subscribe instead, and an agent's list_waiting reads the same list on the host.

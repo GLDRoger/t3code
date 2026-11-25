@@ -17,6 +17,7 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
 
+import { runKinCommand } from "../kinRunCommand.ts";
 import { kinAccessMeAtom } from "../kinAccess.ts";
 import { kinSectionOn } from "../kinShell.ts";
 import { kinHostLink, type KinRouteHost } from "../kinHost.ts";
@@ -359,7 +360,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
           schedule: kinSchedule,
           read: async (filter, page) =>
             mapPage(
-              await kinClient.workClients.run(registry, {
+              await runKinCommand(registry, kinClient.workClients, {
                 environmentId,
                 input: { ...kinClientsQuery(orgId, filter), ...page },
               }),
@@ -394,7 +395,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
           schedule: kinSchedule,
           read: async (filter, page) =>
             mapPage(
-              await kinClient.workProjects.run(registry, {
+              await runKinCommand(registry, kinClient.workProjects, {
                 environmentId,
                 input: { ...kinProjectsQuery(orgId, filter), ...page },
               }),
@@ -428,7 +429,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
           schedule: kinSchedule,
           read: async (_filter, page) =>
             mapPage(
-              await kinClient.workHistory.run(registry, {
+              await runKinCommand(registry, kinClient.workHistory, {
                 environmentId,
                 input: { orgId, key, ...page },
               }),
@@ -454,7 +455,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
         own,
         reread,
         newest: async () => {
-          const result = await kinClient.workHistory.run(registry, {
+          const result = await runKinCommand(registry, kinClient.workHistory, {
             environmentId,
             input: { orgId, key: own, limit: 1 },
           });
@@ -549,12 +550,12 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
         const search: KinPickerSearch = createKinPickerSearch({
           ...target,
           readClients: (input) =>
-            kinClient.workClients.run(registry, {
+            runKinCommand(registry, kinClient.workClients, {
               environmentId: target.environmentId,
               input,
             }),
           readProjects: (input) =>
-            kinClient.workProjects.run(registry, {
+            runKinCommand(registry, kinClient.workProjects, {
               environmentId: target.environmentId,
               input,
             }),

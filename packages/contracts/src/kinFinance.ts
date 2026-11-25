@@ -101,14 +101,21 @@ export const KinListDefinition = Schema.Struct({
   categoryLabels: Schema.optional(Schema.Record(Schema.String, Label)),
   fields: Schema.Array(KinListField),
   remindOn: Schema.optional(KinListFieldKey),
+  /**
+   * One check on every entry: a number field below or above another number field or a fixed
+   * number. Sent only to a caller that accepts `check`, which reads one of `below` and `above`.
+   */
   check: Schema.optional(
     Schema.Struct({
       field: KinListFieldKey,
-      below: Schema.Union([KinListFieldKey, Schema.Finite]),
+      below: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
+      above: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
     }),
   ),
   /** New entries are labelled sensitive. */
   sensitive: Schema.Boolean,
+  team: Schema.optional(Schema.Boolean),
+  teamSince: Schema.optional(Schema.NullOr(NonNegativeInt)),
   /** Its entries carry an amount, in `currency` unless they say otherwise. */
   amount: Schema.Boolean,
   currency: KinCurrency,
@@ -134,8 +141,22 @@ export const KinListsInput = Schema.Struct({
   accept: Schema.optional(Schema.Array(Schema.String)),
 });
 export type KinListsInput = typeof KinListsInput.Type;
-export const KinListsResult = Schema.Struct({ lists: Schema.Array(KinListDefinition) });
+export const KinListsResult = Schema.Struct({
+  lists: Schema.Array(KinListDefinition),
+  /** This host takes a name to bill on an invoice or quote; an older host sends nothing. */
+  billToByName: Schema.optional(Schema.Boolean),
+});
 export type KinListsResult = typeof KinListsResult.Type;
+
+/** Company-made lists that keep money or bank rows and are never opened to the team. */
+export const KIN_LISTS_NEVER_TEAM = [
+  "expenses",
+  "invoices",
+  "receipts",
+  "quotes",
+  "payments",
+  "bank_transactions",
+] as const;
 
 /**
  * The owner's changes to a defined list, which never delete: archiving hides it and refuses new
@@ -158,6 +179,7 @@ export const KinListUpdateInput = Schema.Struct({
    */
   payments: Schema.optional(Schema.Boolean),
   archived: Schema.optional(Schema.Boolean),
+  team: Schema.optional(Schema.Boolean),
   retireFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
   restoreFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
   /** Sets how it numbers what it issues from now on; numbers already issued stay. */
@@ -235,10 +257,11 @@ export const KinMoneySummary = Schema.Struct({
     overdue: KinMoneyTotals,
     invoices: NonNegativeInt,
     overdueInvoices: NonNegativeInt,
-    /** Longest overdue first, then most owed; `party` null for invoices with no client. */
+    /** Longest overdue first, then most owed; invoices without a client share one null group. */
     byClient: Schema.Array(
       Schema.Struct({
         party: Schema.NullOr(KinRecordRef),
+        billTo: Schema.optional(Schema.String),
         owed: KinMoneyTotals,
         overdue: KinMoneyTotals,
         invoices: NonNegativeInt,

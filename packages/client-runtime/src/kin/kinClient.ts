@@ -5,6 +5,7 @@ import {
   KIN_PEOPLE_WS_METHODS,
   type EnvironmentId,
   type KinApprovalsOrgInput,
+  type KinBillsListInput,
   type KinChatHistoryInput,
   type KinChatId,
   type KinChatMembersInput,
@@ -30,6 +31,7 @@ import {
   type KinBriefsInput,
   type KinCheckInsInput,
   type KinPulseListInput,
+  type KinOpenSubscribeInput,
   type KinPulseSubscribeInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
@@ -67,7 +69,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
-import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
+import { Atom, AtomRegistry } from "effect/reactivity";
 
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
@@ -82,9 +84,11 @@ import {
   retryKinAccess,
 } from "./kinAccess.ts";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "./kinDocsStream.ts";
+import { KIN_LIST_ACCEPT } from "./kinLists.ts";
 import { kinReachPairKey } from "./kinReach.ts";
 import type { KinChatState } from "./kinInboxModel.ts";
 import { KIN_MONEY_LIVE_LABEL, kinMoneyLiveStream } from "./kinMoneyStream.ts";
+import { KIN_OPEN_LIVE_LABEL, KIN_OPEN_SENSES, kinOpenLiveStream } from "./kinOpenStream.ts";
 import { KIN_PULSE_LIVE_LABEL, kinPulseLiveStream } from "./kinPulseStream.ts";
 import {
   createKinDirectoryTrigger,
@@ -126,19 +130,13 @@ export function kinGuardedRead<Input, A, E>(command: {
   readonly run: (
     registry: AtomRegistry.AtomRegistry,
     target: { readonly environmentId: EnvironmentId; readonly input: Input },
-  ) => Promise<AsyncResult.AsyncResult<A, E>>;
+  ) => Effect.Effect<A, E>;
 }) {
   return (input: Input) =>
     Effect.gen(function* () {
       const registry = yield* AtomRegistry.AtomRegistry;
       const environmentId = yield* currentEnvironmentId;
-      // A caller's timeout abandons this promise without cancelling the request; the session bounds it.
-      const result = yield* Effect.promise(() => command.run(registry, { environmentId, input }));
-      return yield* result._tag === "Success"
-        ? Effect.succeed(result.value)
-        : result._tag === "Failure"
-          ? Effect.failCause(result.cause)
-          : Effect.never;
+      return yield* command.run(registry, { environmentId, input });
     });
 }
 
@@ -427,6 +425,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.work.money",
   });
   const readWorkMoney = kinGuardedRead(workMoneyRead);
+  const billsRead = createKinRpcCommand(runtime, {
+    label: "kin:bills:read",
+    tag: "kin.bills.list",
+  });
+  const readBills = kinGuardedRead(billsRead);
   const workCashRead = createKinRpcCommand(runtime, {
     label: "kin:work:cash:read",
     tag: "kin.work.cash",
@@ -499,6 +502,13 @@ export function makeKinClient<R, ER>(
       ),
   });
   const kinWorkRefreshOn = createKinWorkRefreshTriggers(runtime, workLive);
+  // Counts this app's adds of bills per company: a bill that came back leaves the batch an earlier
+  // read listed it in, and no expense moves to say so.
+  const billsAddedFamily = Atom.family((_key: string) => Atom.make(0).pipe(Atom.keepAlive));
+  const billsAdded = (target: {
+    readonly environmentId: EnvironmentId;
+    readonly input: { readonly orgId: KinOrgId };
+  }) => billsAddedFamily(`${target.environmentId}:${target.input.orgId}`);
 
   const workFilesRead = createKinRpcCommand(runtime, {
     label: "kin:work:files:read",
@@ -937,6 +947,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.connections.mineRemove",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
     }),
+    /** The owner level moves a mailbox between the company's and their own, on its sign-in. */
+    mailboxMove: createKinRpcCommand(runtime, {
+      label: "kin:mailbox:move",
+      tag: "kin.connections.moveMailbox",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
+    }),
     connectionSetSignInClient: createKinRpcCommand(runtime, {
       label: "kin:connection:setSignInClient",
       tag: "kin.connections.setSignInClient",
@@ -1195,14 +1211,9 @@ export function makeKinClient<R, ER>(
     /** One "Load earlier" page, read fresh every time so a retry after a failure refetches. */
     readHistoryPage: (environmentId: EnvironmentId, input: KinChatHistoryInput) =>
       Effect.runPromiseExit(
-        Effect.promise(() => historyRead.run(registry, { environmentId, input })).pipe(
-          Effect.flatMap((result) =>
-            result._tag === "Success"
-              ? Effect.succeed(result.value)
-              : Effect.failCause(result.cause),
-          ),
-          Effect.timeout(KIN_HISTORY_PAGE_TIMEOUT),
-        ),
+        historyRead
+          .run(registry, { environmentId, input })
+          .pipe(Effect.timeout(KIN_HISTORY_PAGE_TIMEOUT)),
       ),
     send: createKinRpcCommand(runtime, {
       label: "kin:send",
@@ -1340,6 +1351,14 @@ export function makeKinClient<R, ER>(
     }),
     /** Whether the host streams Money; null until its refreshes say. */
     moneyStreamed: kinRefreshOn.serves("money"),
+    /** What is open for the viewer, one list every Needs you, Waiting on you and badge reads. */
+    openLive: createEnvironmentSubscriptionAtomFamily(runtime, {
+      label: KIN_OPEN_LIVE_LABEL,
+      subscribe: (input: Omit<KinOpenSubscribeInput, "held">) =>
+        kinOpenLiveStream({ ...input, acceptSenses: KIN_OPEN_SENSES }),
+    }),
+    /** Whether the host streams the open list; null until its refreshes say. */
+    openStreamed: kinRefreshOn.serves("open"),
     attentionHandle: createKinRpcCommand(runtime, {
       label: "kin:pulse:handle",
       tag: "kin.pulse.handle",
@@ -1862,6 +1881,8 @@ export function makeKinClient<R, ER>(
       tag: "kin.docs.delete",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    /** One version of a doc, read once: a long draft's Copy text takes its whole text. */
+    docVersion: docRead,
     /** A teammate's own draft goes up to the agent's owner to approve; a second tap finds the first. */
     docSendUp: createKinRpcCommand(runtime, {
       label: "kin:docs:sendUp",
@@ -1978,7 +1999,7 @@ export function makeKinClient<R, ER>(
     workLists: createKinQueryAtomFamily(runtime, {
       label: "kin:work:lists",
       execute: Effect.fn("KinClient.workLists")(function* (input: KinListsInput) {
-        return yield* readWorkLists(input);
+        return yield* readWorkLists({ ...input, accept: KIN_LIST_ACCEPT });
       }),
       staleTimeMs: 30_000,
       refreshTrigger: kinWorkRefreshOn(KIN_WORK_NOT_TASKS, kinRefreshOn("workLists")),
@@ -2050,6 +2071,48 @@ export function makeKinClient<R, ER>(
       label: "kin:work:new-expense",
       tag: "kin.work.newExpense",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    /** Its `permissionAtom` says whether this session may see bills added in bulk at all. */
+    billsRead,
+    /** Bumped after an add: every list of the company's bills reads again. */
+    billsAdded,
+    /** Bills added in bulk: the batches, newest first, or one batch's bills in the order added. */
+    bills: createKinQueryAtomFamily(runtime, {
+      label: "kin:bills",
+      execute: Effect.fn("KinClient.bills")(function* (input: KinBillsListInput) {
+        return yield* readBills(input);
+      }),
+      staleTimeMs: 30_000,
+      // Expenses move as bills are read and kept; the screen follows the batch's card for the rest.
+      refreshTrigger: kinWorkRefreshOn(["expenses"], billsAdded),
+    }),
+    billsAdd: createKinRpcCommand(runtime, {
+      label: "kin:bills:add",
+      tag: "kin.bills.add",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    billsKeepRead: createKinRpcCommand(runtime, {
+      label: "kin:bills:keep-read",
+      tag: "kin.bills.keepRead",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    billsAddAnyway: createKinRpcCommand(runtime, {
+      label: "kin:bills:add-anyway",
+      tag: "kin.bills.addAnyway",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    billsDismiss: createKinRpcCommand(runtime, {
+      label: "kin:bills:dismiss",
+      tag: "kin.bills.dismiss",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.sha256 },
+    }),
+    billsReadAgain: createKinRpcCommand(runtime, {
+      label: "kin:bills:read-again",
+      tag: "kin.bills.readAgain",
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ input }) => input.sha256 ?? input.batchId ?? "",
+      },
     }),
     /** In order per address: a second pick runs after the first and says if nothing is left. */
     workMatchPartner: createKinRpcCommand(runtime, {

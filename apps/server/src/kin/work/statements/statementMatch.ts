@@ -192,8 +192,33 @@ const personIn = (name: string, narration: string) => {
   return found.length / wanted.length;
 };
 
-const hasNumber = (text: string, number: string) =>
-  squashed(number).length >= 4 && squashed(text).includes(squashed(number));
+const runsIn = (text: string) =>
+  Array.from(text.toLowerCase().matchAll(/[\p{L}\p{M}]+|\p{N}+/gu), (found) => ({
+    run: found[0],
+    start: found.index,
+    end: found.index + found[0].length,
+  }));
+
+/**
+ * The whole number is in the text: its runs of letters and of digits in order, apart or touching,
+ * with no letter or digit touching either end. "INV2" names INV-2; "INV26", "INV-2A" do not.
+ */
+const hasNumber = (text: string, number: string) => {
+  const wanted = runsIn(number).map(({ run }) => run);
+  if (wanted.join("").length < 4) return false;
+  const runs = runsIn(text);
+  return runs.some((first, at) => {
+    const last = runs[at + wanted.length - 1];
+    const before = runs[at - 1];
+    const after = runs[at + wanted.length];
+    return (
+      last !== undefined &&
+      wanted.every((run, step) => runs[at + step]!.run === run) &&
+      (before === undefined || before.end < first.start) &&
+      (after === undefined || last.end < after.start)
+    );
+  });
+};
 
 const dayNumber = (day: string) =>
   Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10))) / DAY_MS;
@@ -274,6 +299,59 @@ const invoiceCandidate = (
     score,
     why,
   };
+};
+
+/**
+ * The candidates a statement's review keeps level with the best: within the margin that decides
+ * whether one is the answer on its own. Scores best first.
+ */
+export const levelWithBest = <A>(ranked: ReadonlyArray<A>, score: (one: A) => number) =>
+  ranked.filter((one) => score(ranked[0]!) - score(one) < MARGIN);
+
+/** Whether the matcher takes a credit for money already recorded on an invoice, as a review does. */
+export const paymentOffer = (row: StatementRow, payment: PaymentCandidate, currency: string) => {
+  const offered = paymentCandidate(row, payment, currency);
+  return offered === undefined || offered.score < PROPOSED ? undefined : offered;
+};
+
+/**
+ * Whether the matcher would offer `invoice` for one bank row, as it does on a statement's review:
+ * the candidate with its score, and why in one plain phrase: "cites INV/26-27/001", "same amount
+ * from Harbourline Logistics".
+ */
+export const invoiceOffer = (
+  row: StatementRow,
+  invoice: InvoiceCandidate,
+  currency: string,
+  withholdsAtSource: boolean,
+) => {
+  const offered = invoiceCandidate(row, invoice, currency, withholdsAtSource);
+  if (offered === undefined || offered.score < PROPOSED) return undefined;
+  return { candidate: offered, reason: offerReason(row, invoice, currency, offered) };
+};
+
+const offerReason = (
+  row: StatementRow,
+  invoice: InvoiceCandidate,
+  currency: string,
+  offered: Candidate,
+) => {
+  const cited = [invoice.number, invoice.key].find(
+    (one) =>
+      one !== null &&
+      (hasNumber(row.description, one) ||
+        (row.reference !== null && hasNumber(row.reference, one))),
+  );
+  if (cited !== undefined && cited !== null) return `cites ${cited}`;
+  const amount =
+    offered.fit === "exact"
+      ? "same amount"
+      : offered.fit === "foreign"
+        ? `same ${invoice.currency} amount`
+        : offered.fit === "tds"
+          ? `the amount less ${formatMinor(BigInt(offered.tdsMinor ?? 0), currency)} TDS`
+          : "part of what is owed";
+  return offered.why.includes("client named") ? `${amount} from ${invoice.client}` : amount;
 };
 
 const paymentCandidate = (
@@ -375,7 +453,7 @@ const expenseCandidate = (
 };
 
 /** The narration carries a partner's whole name, or something stored that only they are. */
-const identifies = (partner: Pick<PartnerCandidate, "name" | "ids">, narration: string) =>
+export const identifies = (partner: Pick<PartnerCandidate, "name" | "ids">, narration: string) =>
   personIn(partner.name, narration) === 1 ||
   (partner.ids ?? []).some(
     (id) => squashed(id).length >= 6 && squashed(narration).includes(squashed(id)),
@@ -390,7 +468,12 @@ const REPAYS_AT_MOST = 50;
  * pays them back; a credit is theirs paying back a run that nets below zero. An amount alone may
  * be anyone's.
  */
-const repayment = (row: StatementRow, partner: PartnerCandidate, from: number, sure: boolean) => {
+export const repayment = (
+  row: StatementRow,
+  partner: PartnerCandidate,
+  from: number,
+  sure: boolean,
+) => {
   const named = identifies(partner, row.description) ? 1 : personIn(partner.name, row.description);
   if (named < 0.5) return undefined;
   // Minor units past 2^53 add up wrong as numbers; exact sums decide what a line settles.
@@ -690,6 +773,20 @@ const openInvoices = (
     .slice(0, 5);
 };
 
+/**
+ * A repayment marked by hand with no bank row that this line is likely to be: the same money in
+ * the same currency, marked within ten days either side of the line's day.
+ */
+export const markedByHand = (
+  row: StatementRow,
+  currency: string,
+  marked: { readonly currency: string; readonly day: string; readonly amountMinor: number },
+) =>
+  marked.currency === currency &&
+  BigInt(marked.amountMinor) ===
+    BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor) &&
+  Math.abs(daysBetween(marked.day, row.date)) <= 10;
+
 /** Each row's candidates, best first, and whether one is clear enough to propose on its own. */
 export const matchRows = (
   rows: ReadonlyArray<StatementRow>,
@@ -735,14 +832,8 @@ export const matchRows = (
     identifies(one, row.description) || personIn(one.name, row.description) >= 0.5;
   /** A repayment to someone this line names, marked by hand with no bank row: likely this one. */
   const markedFor = (row: StatementRow) => {
-    const signed = BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor);
     for (const payee of (input.payees ?? []).filter(named(row))) {
-      const marked = payee.repaid.find(
-        (one) =>
-          one.currency === input.currency &&
-          BigInt(one.amountMinor) === signed &&
-          Math.abs(daysBetween(one.day, row.date)) <= 10,
-      );
+      const marked = payee.repaid.find((one) => markedByHand(row, input.currency, one));
       if (marked !== undefined) return { name: payee.name, day: marked.day };
     }
     return undefined;

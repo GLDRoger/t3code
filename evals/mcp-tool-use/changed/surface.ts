@@ -23,7 +23,14 @@ import { PreviewControlsToolkit } from "../../../apps/server/src/mcp/toolkits/pr
 import { PreviewToolkit } from "../../../apps/server/src/mcp/toolkits/preview/tools.ts";
 import { TURN_EVENT_TOOLS } from "../../../apps/server/src/kin/lead/eventIds.ts";
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../../apps/server/src/kin/reply/classify.ts";
-import { fillKinRules, kinDated, kinSessionOf, kinTurnFiles } from "../kin.ts";
+import {
+  fillKinRules,
+  KIN_CALL_REFUSAL,
+  kinBillsOf,
+  kinDated,
+  kinSessionOf,
+  kinTurnFiles,
+} from "../kin.ts";
 import { filledKinMocks } from "../kin-checks.ts";
 import { rubricRequest } from "../rubric.ts";
 import {
@@ -61,7 +68,7 @@ export const runnerHash = () =>
   );
 
 /** The runner this file's part list was checked against. */
-export const REVIEWED_RUNNER = "72af199b27eb2428";
+export const REVIEWED_RUNNER = "b0ae19226113c620";
 
 export const CaseSurface = Schema.Struct({
   /** The case as run.json hashes it, and its first request as run.json hashes it. */
@@ -142,6 +149,7 @@ const previewUnavailable = new Contracts.PreviewAutomationUnavailableError({
 }).message;
 const decodePreviewError = Schema.decodeUnknownOption(Contracts.PreviewAutomationError);
 const CLASSIFY_SOURCE = sources(["apps/server/src/kin/reply/classify.ts"]);
+const CALL_ARGUMENTS_SOURCE = sources(["apps/server/src/kin/connections/callArguments.ts"]);
 const QUOTED_MESSAGE = /BEGIN QUOTE: (?:owner|co-owner|member human|guest human) message/;
 
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
@@ -177,6 +185,9 @@ export const laterParts = (testCase: McpToolUseCase, tools: ReadonlySet<string>)
     later.RESCUE_PROMPT = hash(RESCUE_PROMPT);
     later.CAPTION_PROMPT = hash(CAPTION_PROMPT);
   }
+  // A connection call's text arguments are read as Kin reads them; text with no object is refused.
+  if (tools.has("kin_connection_call"))
+    later["kin/connections/callArguments.ts"] = hash(CALL_ARGUMENTS_SOURCE + KIN_CALL_REFUSAL);
   if (tools.has("t3_theme_read")) later.THEME_GUIDE = hash(THEME_GUIDE);
   if (tools.has("request_secret")) later.SECRET_REQUEST_UNSAVED_NOTE = hashJson(unsavedSecretNote);
   if (tools.has("delegate_task") || tools.has("task_status"))
@@ -292,6 +303,7 @@ export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
       kinSession: kinSessionOf(testCase),
       kinShared: prompt.includes("{{SHARED_TURN}}"),
       kinSocial: setup.world?.kinSocial === true,
+      kinBills: kinBillsOf(testCase),
     };
   };
   const bases = new Map<string, Base>();

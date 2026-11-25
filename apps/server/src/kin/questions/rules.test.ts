@@ -47,11 +47,42 @@ it("a question's day ends with the next working day, on the person's clock and h
   assert.deepStrictEqual(namedDue("2026-11-18", at("2026-11-16T06:00:00Z"), IST, early), {
     at: at("2026-11-18T11:30:00Z"),
   });
-  // A night shift's hours cross midnight: the default day stands.
+  // A night shift, Monday to Friday 22:00 to 06:00: its day ends when the shift does, the next
+  // morning, and a raise comes when one starts.
   const night = { days: [1, 2, 3, 4, 5], start: "22:00", end: "06:00" };
+  for (const [asked, due] of [
+    // Monday 11:30 and 23:00, on Monday's shift: Tuesday 06:00.
+    ["2026-11-16T06:00:00Z", "2026-11-17T00:30:00.000Z"],
+    ["2026-11-16T17:30:00Z", "2026-11-17T00:30:00.000Z"],
+    // Tuesday 02:00, mid-shift: today ends at 06:00, so its day is Wednesday's 06:00.
+    ["2026-11-16T20:30:00Z", "2026-11-18T00:30:00.000Z"],
+    // Friday 23:00: Saturday 06:00. Saturday 23:00, no shift that night: Tuesday 06:00.
+    ["2026-11-20T17:30:00Z", "2026-11-21T00:30:00.000Z"],
+    ["2026-11-21T17:30:00Z", "2026-11-24T00:30:00.000Z"],
+  ] as const)
+    assert.strictEqual(iso(defaultDue(at(asked), IST, night)), due, asked);
+  // Raised at the next shift's start: Tuesday 22:00, and after Friday's shift, Monday 22:00.
   assert.strictEqual(
-    iso(defaultDue(at("2026-11-16T06:00:00Z"), IST, night)),
-    "2026-11-17T14:00:00.000Z",
+    iso(raiseAt(at("2026-11-17T00:30:00Z"), IST, night)),
+    "2026-11-17T16:30:00.000Z",
+  );
+  assert.strictEqual(
+    iso(raiseAt(at("2026-11-21T00:30:00Z"), IST, night)),
+    "2026-11-23T16:30:00.000Z",
+  );
+  // A named Monday ends with Monday's shift, Tuesday 06:00.
+  assert.deepStrictEqual(namedDue("2026-11-23", at("2026-11-16T06:00:00Z"), IST, night), {
+    at: at("2026-11-24T00:30:00Z"),
+  });
+  // Across Berlin's clocks going back on 25 Oct: Saturday's 22:00 to 06:00 is nine hours.
+  const saturdayNight = { days: [6], start: "22:00", end: "06:00" };
+  assert.strictEqual(
+    iso(defaultDue(at("2026-10-24T10:00:00Z"), "Europe/Berlin", saturdayNight)),
+    "2026-10-25T05:00:00.000Z",
+  );
+  assert.strictEqual(
+    iso(raiseAt(at("2026-10-25T05:00:00Z"), "Europe/Berlin", saturdayNight)),
+    "2026-10-31T21:00:00.000Z",
   );
 });
 
@@ -70,6 +101,16 @@ it("the same intent about a shared record repeats; anything Kin can't tell is le
   };
   assert.strictEqual(finance.intent, "draft payment reminder");
   assert.deepStrictEqual(finance.about, ["INV-8", "INV-9"]);
+  // A pull request by its URL, in one spelling; an issue's or a bare page's is not one.
+  assert.deepStrictEqual(
+    normaliseAbout([
+      " https://github.com/Invented-Co/App/pull/12/ ",
+      "https://github.com/invented-co/app/pull/12",
+      "https://github.com/invented-co/app/issues/3",
+      "https://example.com/pull/4",
+    ]),
+    ["https://github.com/invented-co/app/pull/12"],
+  );
   const chief = { intent: normaliseIntent("should I draft a payment reminder"), about: ["INV-8"] };
   assert.isTrue(repeats(chief, finance));
   // Another intent, no shared record, or nothing to compare: allowed.

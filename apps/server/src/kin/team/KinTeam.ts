@@ -52,6 +52,7 @@ import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { stakeholders } from "./stakes.ts";
 import { TEAM_ROOM_MUTED, TEAM_ROOM_TITLE, namedAgents, teamRoomOf } from "./teamRoom.ts";
 import * as Turns from "./turns.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 const Name = TrimmedNonEmptyString.check(Schema.isMaxLength(80));
 const Intent = Schema.Literals(["answer", "evidence", "objection", "decision", "question"]);
@@ -637,9 +638,7 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => []),
     );
     return [
-      ...new Set(
-        owed.flatMap((invoice) => (invoice.partyTitle === null ? [] : [invoice.partyTitle])),
-      ),
+      ...new Set(owed.flatMap((invoice) => invoice.partyTitle ?? invoice.billTo ?? [])),
     ].filter((name) => name.trim().length >= 3);
   });
 
@@ -707,6 +706,7 @@ const make = Effect.gen(function* () {
     const rows = yield* sql<{ personId: KinPersonId }>`SELECT m.author_person_id AS "personId"
       FROM kin_events e JOIN kin_messages m ON m.org_id = e.org_id
         AND m.message_id = json_extract(e.json, '$.messageId') AND m.author_kind = 'human'
+        AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId} AND e.wakeup_id = ${ctx.wakeupId}
         AND e.tag = 'chat.message' AND json_extract(e.json, '$.origin') IS NULL`;
     for (const row of rows)
