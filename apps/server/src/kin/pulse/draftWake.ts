@@ -3,12 +3,14 @@ import * as NodeCrypto from "node:crypto";
 import {
   formatKinWhen,
   isKinSalesDomain,
+  KIN_CHOICE_CARD_ACTION,
   KIN_TEXT_LOCALE,
   KinAgentId,
   KinChatId,
   KinEvent,
   KinEventId,
   KinPersonId,
+  type KinMessage,
   type KinOrgId,
   type KinPulseFact,
 } from "@t3tools/contracts";
@@ -35,6 +37,7 @@ import { dayIn, formatMoneyPlain } from "../work/money.ts";
 import { principalOfText } from "../work/projectSpine.ts";
 import { labelledNow, owedInvoices, ownerZone, startOfDay } from "../work/recordRows.ts";
 import { crmSeenBy, placesOf, seenBy, viewerOfPeople } from "../work/teamView.ts";
+import { isFactCard, plansOf } from "../widgets/cardPlans.ts";
 import { HEAD_STARTS_PER_DAY } from "./prepareSenses.ts";
 import { daysText, iso, type SenseContext } from "./senses/shared.ts";
 import { DAY_MS, HOUR_MS } from "./thresholds.ts";
@@ -858,6 +861,103 @@ export const PROPOSE_PLAN = (name: string) =>
 /** The wake's own line when there is no mailbox of theirs, or no contact they may see. */
 export const DRAFT_CALL_NOTES = (name: string, mailbox: boolean) =>
   `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. ${mailbox ? "There is no contact address for it that they may see" : "No mailbox of theirs is connected"}, so draft no mail: give them call notes here in this chat (what to say, what was promised, the last contact).`;
+const mailboxOf = (name: string, addresses: ReadonlyArray<string>) =>
+  addresses.length === 1
+    ? `${name}'s own mailbox (${addresses[0]})`
+    : `one of ${name}'s own mailboxes (${addresses.join(", ")})`;
+/**
+ * What a person's Give notice on Kin's notice-day card tells the agent it wakes: the notice mail
+ * to draft (`to` and the mailboxes `from`), or what is missing for one; `owner` when a teammate
+ * tapped, who is told in one line and asked nothing.
+ */
+export const NOTICE_GIVEN = (input: {
+  readonly name: string;
+  readonly client: string;
+  readonly key: string;
+  readonly renewsOn: string;
+  readonly noticeBy: string;
+  readonly mail:
+    | { readonly to: string; readonly from: ReadonlyArray<string> }
+    | { readonly missing: "contact" | "mailbox" };
+  readonly owner?: string;
+}) => {
+  const { name, client, key, mail } = input;
+  const drafts = "to" in mail;
+  const what = drafts
+    ? `Draft the notice mail now to ${mail.to} from ${mailboxOf(name, mail.from)} with kin_connection_call mail_send: ${key} will not renew after its current term. Promise nothing else. It waits on ${name}'s Confirm card and nothing is sent before it: never say it was sent.`
+    : `${mail.missing === "contact" ? `There is no contact address at ${client} that ${name} may see` : `No mailbox of ${name}'s is connected`}, so draft no mail.`;
+  const relay =
+    input.owner === undefined
+      ? ""
+      : ` Tell ${input.owner} in one line with kin_relay that ${name} chose to give notice on ${client}'s contract ${key} and ${drafts ? `the mail waits on ${name}'s Confirm` : "no notice mail is drafted yet"}; ask ${input.owner} nothing.`;
+  return `Kin's own card asked ${name} about ${client}'s contract ${key} (renews ${input.renewsOn}, notice due by ${input.noticeBy}), and ${name} chose Give notice. That is ${name}'s answer to Kin's question: ask nobody first. ${what} Record nothing on the project and file no task.${relay} Then tell ${name} in one short line ${drafts ? "that the notice mail waits on the Confirm" : "what is missing"}.`;
+};
+
+const decodeChoiceTap = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      widgetId: Schema.String,
+      actionId: Schema.String,
+      value: Schema.optional(Schema.Unknown),
+    }),
+  ),
+);
+/**
+ * The line a tap on the plain answer of Kin's own card about a fact adds to the turn reading it,
+ * read as the turn starts: what the tapper may see, their mailboxes now. Undefined for other taps.
+ */
+export const cardTapText = Effect.fn("KinPulse.cardTapText")(function* (
+  orgId: KinOrgId,
+  message: KinMessage,
+) {
+  if (message.kind !== "widget_action" || message.author._tag !== "human") return undefined;
+  const personId = message.author.personId;
+  const tap = Option.getOrUndefined(decodeChoiceTap(message.body));
+  if (tap?.actionId !== KIN_CHOICE_CARD_ACTION || typeof tap.value !== "string") return undefined;
+  const plans = yield* plansOf(orgId, tap.widgetId);
+  if (plans.has(tap.value)) return undefined;
+  const plan = [...plans.values()].find(isFactCard);
+  if (plan === undefined || plan.personId !== personId) return undefined;
+  if (plan.kind !== "notice_renew") return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const own = yield* ownerLevel(orgId, personId);
+  const viewer = own ? ({ _tag: "ownerLevel" } as const) : viewerOfPeople([personId]);
+  const [client] = yield* sql<{ title: string; partyId: string }>`SELECT c.title,
+      c.record_id AS "partyId"
+    FROM kin_records p JOIN kin_records c ON c.org_id = p.org_id AND c.record_id = p.party_id
+      AND c.record_id IN (SELECT r.record_id FROM kin_records r
+        WHERE r.org_id = ${orgId} AND r.register_id = 'clients' AND ${crmSeenBy(sql, viewer)})
+    WHERE p.org_id = ${orgId} AND p.record_id = ${plan.recordId}`;
+  const contact = yield* contactOf(orgId, client?.partyId ?? null, crmSeenBy(sql, viewer));
+  const addresses = (yield* personConnections(orgId, personId))
+    .filter((row) => row.state === "active" && row.pausedAt === null)
+    .map((row) => row.accountLabel ?? row.label);
+  const chief = own
+    ? undefined
+    : (yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN }))?.agentId;
+  const [owner] =
+    chief === undefined
+      ? []
+      : yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_agents a
+          JOIN kin_people p ON p.org_id = a.org_id AND p.person_id = a.owner_person_id
+            AND p.removed_at IS NULL
+          WHERE a.org_id = ${orgId} AND a.agent_id = ${chief}`;
+  return NOTICE_GIVEN({
+    name: plan.personName,
+    client: client?.title ?? plan.title,
+    key: plan.key,
+    renewsOn: plan.renewsOn,
+    noticeBy: plan.noticeBy,
+    mail:
+      addresses.length === 0
+        ? { missing: "mailbox" }
+        : contact === undefined
+          ? { missing: "contact" }
+          : { to: `${contact.name} (${contact.email})`, from: addresses },
+    ...(own ? {} : { owner: owner?.name ?? "the owner" }),
+  });
+});
+
 /** The wake's own line for a task with no client: its first piece is a doc linked to it. */
 export const DRAFT_DOCUMENT = (name: string) =>
   `Kin woke you for ${name}: this task of theirs is due and nothing is prepared for it yet. Make its first piece now, whichever its own words call for: a first draft, an outline, a filled form or working notes, as a new doc with doc_create, linked to the task. Never change a doc someone else wrote. Then tell them in at most three short sentences: what you made, with its card, and what was left open in it. Never retell what the doc says. If nothing can be prepared, say in one line what is missing and make nothing.`;

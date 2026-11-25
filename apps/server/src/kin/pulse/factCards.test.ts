@@ -30,6 +30,7 @@ import * as Kin from "../layer.ts";
 import * as Reach from "../lead/Reach.ts";
 import type { Services } from "../KinServer.ts";
 import { KinRecords } from "../work/KinRecords.ts";
+import { cardTapText } from "./draftWake.ts";
 import { factCards } from "./factCards.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { untold } from "./told.ts";
@@ -1051,18 +1052,33 @@ it.effect(
     ),
 );
 
-it.effect("Give notice wakes the card's agent and has nothing in hand", () =>
-  run((ctx) =>
-    Effect.gen(function* () {
-      yield* contract(ctx, { _tag: "person", personId: zoyaId });
-      yield* TestClock.setTime(NOW);
-      yield* tickAt(ctx, NOW);
-      const [card] = yield* noticeCards(ctx);
-      assert.isTrue(wakesAgent(yield* tap(ctx, zoyaId, card!, "Give notice")));
-      assert.isTrue(yield* noticeOpen(ctx, zoyaView, NOW + HOUR));
-      assert.isTrue(yield* noticeOpen(ctx, { _tag: "owner" }, NOW + HOUR));
-    }),
-  ),
+/** `personId`'s own connected mailbox. */
+const mailbox = (ctx: Ctx, personId: KinPersonId, address: string) =>
+  ctx.sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+      url_host, auth, reach, state, account_label, created_at, updated_at, person_id)
+    VALUES (${ctx.orgId}, ${`conn_${personId}`}, 'google', ${address}, 'builtin', NULL,
+      'gmail.googleapis.com', 'oauth', 'closed', 'active', ${address}, 0, 0, ${personId})`;
+
+it.effect(
+  "a teammate's Give notice wakes the card's agent to draft the mail from their own mailbox and tell the owner, with nothing in hand",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const { project } = yield* contract(ctx, { _tag: "person", personId: zoyaId });
+        yield* mailbox(ctx, zoyaId, "zoya@ambermill.example");
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        const [card] = yield* noticeCards(ctx);
+        const tapped = yield* tap(ctx, zoyaId, card!, "Give notice");
+        assert.isTrue(wakesAgent(tapped));
+        assert.strictEqual(
+          yield* cardTapText(ctx.orgId, tapped),
+          `Kin's own card asked Zoya about Tidewater Freight's contract ${project} (renews Mon 25 Jan, notice due by Thu 26 Nov), and Zoya chose Give notice. That is Zoya's answer to Kin's question: ask nobody first. Draft the notice mail now to Sam (sam@tidewater.example) from Zoya's own mailbox (zoya@ambermill.example) with kin_connection_call mail_send: ${project} will not renew after its current term. Promise nothing else. It waits on Zoya's Confirm card and nothing is sent before it: never say it was sent. Record nothing on the project and file no task. Tell Rhea in one line with kin_relay that Zoya chose to give notice on Tidewater Freight's contract ${project} and the mail waits on Zoya's Confirm; ask Rhea nothing. Then tell Zoya in one short line that the notice mail waits on the Confirm.`,
+        );
+        assert.isTrue(yield* noticeOpen(ctx, zoyaView, NOW + HOUR));
+        assert.isTrue(yield* noticeOpen(ctx, { _tag: "owner" }, NOW + HOUR));
+      }),
+    ),
 );
 
 it.effect(
@@ -1100,18 +1116,31 @@ it.effect(
     ),
 );
 
-it.effect("a project the teammate who looks after the client isn't on goes to the owner", () =>
-  run((ctx) =>
-    Effect.gen(function* () {
-      yield* contract(ctx, { _tag: "person", personId: zoyaId }, undefined, ctx.byOwner.actor);
-      yield* TestClock.setTime(NOW);
-      yield* tickAt(ctx, NOW);
-      assert.deepStrictEqual(
-        (yield* noticeCards(ctx)).map((card) => card.who),
-        [ctx.owner.personId],
-      );
-    }),
-  ),
+it.effect(
+  "a project the teammate who looks after the client isn't on goes to the owner, whose Give notice tells nobody else and, with no mailbox, says what is missing",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const { project } = yield* contract(
+          ctx,
+          { _tag: "person", personId: zoyaId },
+          undefined,
+          ctx.byOwner.actor,
+        );
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        const shown = yield* noticeCards(ctx);
+        assert.deepStrictEqual(
+          shown.map((card) => card.who),
+          [ctx.owner.personId],
+        );
+        const tapped = yield* tap(ctx, ctx.owner.personId, shown[0]!, "Give notice");
+        assert.strictEqual(
+          yield* cardTapText(ctx.orgId, tapped),
+          `Kin's own card asked Rhea about Tidewater Freight's contract ${project} (renews Mon 25 Jan, notice due by Thu 26 Nov), and Rhea chose Give notice. That is Rhea's answer to Kin's question: ask nobody first. No mailbox of Rhea's is connected, so draft no mail. Record nothing on the project and file no task. Then tell Rhea in one short line what is missing.`,
+        );
+      }),
+    ),
 );
 
 it.effect("a teammate who can no longer see the project changes nothing with Let it renew", () =>

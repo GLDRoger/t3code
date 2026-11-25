@@ -82,7 +82,7 @@ import {
 import { leftGiven } from "../pulse/leftForCheckIn.ts";
 import { setAsideOverdue } from "../pulse/invoiceAsides.ts";
 import { toldBy } from "../pulse/told.ts";
-import { DRAFT_NOTHING_NOW, draftWakeText } from "../pulse/draftWake.ts";
+import { cardTapText, DRAFT_NOTHING_NOW, draftWakeText } from "../pulse/draftWake.ts";
 import { REVIEW_NOTHING_NOW, reviewWakeText } from "../pulse/reviewWake.ts";
 import { inheritPrivacy, privateTo } from "../connections/privateTurn.ts";
 import {
@@ -1132,8 +1132,17 @@ export class KinLeadPrompt extends Context.Service<
               Effect.orElseSucceed(() => false),
             ));
           fromOwner &&= owner || coOwner;
+          const sealed =
+            message.kind === "widget_action"
+              ? yield* cardTapText(orgId, message).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                  Effect.catch((cause) =>
+                    Effect.logWarning("Kin card tap unreadable", cause).pipe(Effect.as(undefined)),
+                  ),
+                )
+              : undefined;
           events.push(
-            quote(
+            `${quote(
               owner
                 ? QUOTE_LABELS.ownerMessage
                 : coOwner
@@ -1171,7 +1180,7 @@ export class KinLeadPrompt extends Context.Service<
                 ...attachedNames(message),
               },
               true,
-            ),
+            )}${sealed === undefined ? "" : `\n\n${sealed}`}`,
           );
           // Kin's outcome notice names its discussion too, but it is no turn.
           if (message.discussionId !== undefined && message.author._tag !== "system") {
