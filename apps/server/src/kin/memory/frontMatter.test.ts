@@ -134,3 +134,20 @@ it.effect("a reader keeps an item whose quote is not text, without the quote", (
     ).toBe("Invented words");
   }),
 );
+
+it.effect.each([
+  { written: "50", quote: "50" },
+  { written: "50.00", quote: "50.00" },
+  { written: "1e3", quote: "1e3" },
+  { written: "true", quote: "true" },
+  { written: "2026-01-01", quote: "2026-01-01" },
+])("a quote written bare as $written reads as the text $quote", ({ written, quote }) =>
+  Effect.gen(function* () {
+    const orgId = KinOrgId.make("fixture-org");
+    const text = fixtureItem({ quote: "placeholder" }).replace('quote: "placeholder"', `quote: ${written}`);
+    for (const lenient of [false, true])
+      expect(
+        (yield* parseFrontMatter(orgId, "deferrals/x.md", text, false, lenient)).frontMatter.quote,
+      ).toBe(quote);
+  }),
+);
