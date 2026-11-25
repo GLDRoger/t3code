@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { QUOTE_MISSING } from "../memory/keeping.ts";
 import { checkDream } from "./checkDream.ts";
+import { changedParts } from "./edits.ts";
 import type { MaterialEntry } from "./material.ts";
 
 const orgId = KinOrgId.make("fixture-org");
@@ -436,21 +437,23 @@ it.effect.each([
 );
 
 const editRef = "kin:send:ask-rate";
-/** Rhea's change to Finance's quote mail: the rate, and a start date she added. */
-const rateEdit: MaterialEntry = {
+/** A person's change to Finance's mail, its `changed` as the material lists it. */
+const editOf = (before: string, text: string): MaterialEntry => ({
   ref: editRef,
   kind: "edit",
   saidBy: "rhea",
   trust: "owner",
   at: "2026-11-07T13:00:00.000Z",
   about: "Mail to sam@tidewater.invalid",
-  before: "Subject: Rates\n\nHi Sam, our rate is 45 an hour. Invoices are due within 30 days.",
-  text: "Subject: Rates\n\nHi Sam, our rate is 50 an hour, from 1 January. Invoices are due within 30 days.",
-  changed: [
-    { was: "45", now: "50" },
-    { was: "", now: ", from 1 January" },
-  ],
-};
+  before,
+  text,
+  changed: changedParts(before, text),
+});
+/** Rhea's change to Finance's quote mail: the rate, and a start date she added. */
+const rateEdit = editOf(
+  "Subject: Rates\n\nHi Sam, our rate is 45 an hour. Invoices are due within 30 days.",
+  "Subject: Rates\n\nHi Sam, our rate is 50 an hour, from 1 January. Invoices are due within 30 days.",
+);
 const fromEdit = (overrides: Record<string, unknown> = {}) =>
   fixtureItem({
     id: "clm-rate",
@@ -516,6 +519,16 @@ it.effect.each([
     ],
   },
   {
+    name: "refuses the agent's sentence the person only moved",
+    path: "claims/rate.md",
+    item: fromEdit({ quote: "Our rate is 45 an hour." }),
+    edit: editOf(
+      "Hi Sam,\n\nInvoices are due within 30 days.\n\nOur rate is 45 an hour.",
+      "Hi Sam,\n\nOur rate is 45 an hour.\n\nInvoices are due within 30 days.",
+    ),
+    failures: [typedOnly("claims/rate.md")],
+  },
+  {
     name: "refuses another person's name on typed words",
     path: "claims/rate.md",
     item: fromEdit({ said_by: "meera", quote: "from 1 January" }),
@@ -530,7 +543,7 @@ it.effect.each([
       tree: new Map([...base, [row.path, row.item]]),
       special: [],
       dreamJson: json({ ...goodDream, changes: [{ path: row.path, sources: [editRef] }] }),
-      material: [...material, rateEdit],
+      material: [...material, "edit" in row ? row.edit : rateEdit],
       requireResolutions: true,
     });
     assert.deepStrictEqual(result.failures, [...row.failures]);

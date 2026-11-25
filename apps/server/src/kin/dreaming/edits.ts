@@ -41,7 +41,8 @@ export const editSide = (text: string) =>
 const CHANGED_PER_EDIT = 12;
 /** A longer middle is not compared, so no part of it counts as typed. */
 const COMPARED_MAX = 4_000_000;
-const words = new Intl.Segmenter(undefined, { granularity: "word" });
+// Pinned, so which words an edit lists does not depend on the server's locale.
+const words = new Intl.Segmenter("en", { granularity: "word" });
 const wordsOf = (text: string) =>
   [...words.segment(text)].flatMap(({ segment, index, isWordLike }) =>
     segment.trim() === ""
