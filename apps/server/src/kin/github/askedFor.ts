@@ -16,7 +16,7 @@ import * as KinLevels from "../lead/KinLevels.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
-import { headKey, receiptOf } from "./boundReview.ts";
+import { blocksKey, headKey, receiptOf } from "./boundReview.ts";
 
 /** A trigger's key as handled for an ask whose turn didn't finish: asking again retries it. */
 export const UNFINISHED = "unfinished";
@@ -63,8 +63,11 @@ const notice = Effect.fn("KinGitHubReviewAsk.notice")(function* (
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const posted = yield* deps.repo
-    .insertMessage({
+  // Posted already, by an earlier settlement of the same event: any other failure is a failure.
+  const [there] = yield* sql`SELECT 1 AS present FROM kin_messages
+    WHERE org_id = ${input.orgId} AND message_id = ${input.id}`;
+  if (there !== undefined) return;
+  const posted = yield* deps.repo.insertMessage({
       orgId: input.orgId,
       chatId: input.chatId,
       // Fixed words from Kin's own records.
@@ -83,11 +86,10 @@ const notice = Effect.fn("KinGitHubReviewAsk.notice")(function* (
       clientMessageId: null,
       createdAt: input.now,
       editedAt: null,
-    })
-    .pipe(Effect.option);
-  if (Option.isSome(posted) && Option.isSome(deps.hub))
+    });
+  if (Option.isSome(deps.hub))
     yield* sql.afterCommit(
-      deps.hub.value.publish({ type: "message.posted", orgId: input.orgId, message: posted.value }),
+      deps.hub.value.publish({ type: "message.posted", orgId: input.orgId, message: posted }),
     );
 });
 
@@ -123,7 +125,6 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
     title: string | null;
     author: string | null;
     askerName: string | null;
-    event: string | null;
   }>`SELECT e.event_id AS "eventId", e.agent_id AS "agentId",
       json_extract(e.json, '$.askedBy') AS "personId",
       json_extract(e.json, '$.trigger.key') AS key, json_extract(e.json, '$.repo') AS repo,
@@ -135,15 +136,13 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
       l.owner_chat_id AS "ownerChatId", a.owner_person_id AS "ownerPersonId",
       l.name AS "agentName", json_extract(e.json, '$.trigger.title') AS title,
       COALESCE(ap.display_name, json_extract(e.json, '$.trigger.author')) AS author,
-      p.display_name AS "askerName", c.request_hash AS event
+      p.display_name AS "askerName"
     FROM kin_events e
     LEFT JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
     LEFT JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
     LEFT JOIN kin_people p ON p.org_id = e.org_id AND p.person_id = json_extract(e.json, '$.askedBy')
     LEFT JOIN kin_people ap ON ap.org_id = e.org_id AND ap.removed_at IS NULL
       AND lower(ap.github_login) = lower(json_extract(e.json, '$.trigger.author'))
-    LEFT JOIN kin_lead_tool_calls c ON c.org_id = e.org_id AND c.wakeup_id = e.wakeup_id
-      AND c.call_key = 'github-review:' || e.event_id
     WHERE e.org_id = ${orgId} AND e.event_id IN ${sql.in(eventIds)} AND e.tag = 'github'
       AND (json_extract(e.json, '$.askedBy') IS NOT NULL
         OR (json_extract(e.json, '$.trigger.inside') = 0
@@ -156,6 +155,8 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
     const [row] = yield* sql<{ url: string | null }>`SELECT review_url AS url
       FROM kin_github_handled WHERE org_id = ${orgId} AND trigger_key = ${key}`;
     const receipt = receiptOf(row?.url ?? null);
+    const [blocks] = yield* sql`SELECT 1 AS present FROM kin_github_handled
+      WHERE org_id = ${orgId} AND trigger_key = ${blocksKey(key)}`;
     if (event.personId !== null && receipt._tag === "none")
       yield* sql`UPDATE kin_github_handled SET outcome = ${UNFINISHED}
         WHERE org_id = ${orgId} AND trigger_key = ${event.key} AND outcome = 'woke'
@@ -178,7 +179,7 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
     // A block is the owner's to hear when nobody at his level asked: he holds the merge.
     if (
       receipt._tag === "posted" &&
-      event.event === "REQUEST_CHANGES" &&
+      blocks !== undefined &&
       event.outside !== 1 &&
       event.ownerChatId !== null &&
       !(yield* mayActAsOwner(orgId, personId, { personId: event.ownerPersonId ?? "" }))

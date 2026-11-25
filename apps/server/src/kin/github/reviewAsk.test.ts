@@ -4,6 +4,7 @@ import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
+  CommandId,
   EnvironmentId,
   KinAgentId,
   type KinOrgId,
@@ -11,7 +12,9 @@ import {
   KinEvent,
   KinEventId,
   KinPersonId,
+  type KinWakeupId,
   ProviderInstanceId,
+  type RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -30,6 +33,7 @@ import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvo
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import { turnAudience } from "../lead/Audience.ts";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -960,6 +964,60 @@ it.effect(
     }).pipe(Effect.provide(layer));
   },
 );
+
+// The server stopped after the review posted and before the turn replied: its event ran again.
+it.effect("a block's line reaches the owner once though the turn that posted it never finished", () => {
+  const { github, layer } = harness();
+  return Effect.gen(function* () {
+    github.openItem({
+      repo: APP,
+      pull: true,
+      author: "dev-gh",
+      association: "MEMBER",
+      title: "Close the quarter",
+    });
+    const { review, ask, end, runReview, told, directOf, githubEvents, owner, queue, sql, orgId } =
+      yield* ambermill(github);
+    const devChat = yield* directOf("dev");
+    const ownerChat = yield* directOf(owner.personId);
+    yield* ask("dev", devChat, "Review my PR");
+    assert.isTrue((yield* review({ repo: APP, number: 1 })).ok);
+    yield* end("completed");
+    const [event] = yield* githubEvents;
+    yield* runReview(event!.eventId);
+    const went = yield* callAs("tech", "kin_github_review", {
+      repo: APP,
+      number: 1,
+      body: "The quarter closes a day early.",
+      event: "REQUEST_CHANGES",
+    });
+    assert.isTrue(went.ok);
+    const [row] = yield* sql<{ wakeupId: KinWakeupId; runId: RunId }>`SELECT w.wakeup_id AS
+        "wakeupId", w.run_id AS "runId"
+      FROM kin_events e JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+      WHERE e.org_id = ${orgId} AND e.event_id = ${event!.eventId}`;
+    yield* (yield* Orchestrator.OrchestratorV2).dispatch({
+      type: "run.interrupt",
+      commandId: CommandId.make("interrupt:restart"),
+      threadId: ThreadId.make("tech-thread"),
+      runId: row!.runId,
+    });
+    assert.strictEqual(yield* queue.requeueUnfinished(orgId, row!.wakeupId), 1);
+    assert.deepStrictEqual(yield* told(ownerChat), []);
+    yield* runReview(event!.eventId);
+    yield* end("completed");
+    assert.deepStrictEqual(yield* told(ownerChat), [
+      blocksLine({
+        agent: "Tech lead",
+        title: "Close the quarter",
+        ref: `${APP}#1`,
+        author: "Dev Malhotra",
+        asker: "Dev Malhotra",
+        url: String(went.value.url),
+      }),
+    ]);
+  }).pipe(Effect.provide(layer));
+});
 
 it.effect("a turn Kin woke by itself posts no review; the owner's own ask in his chat does", () => {
   const { github, layer } = harness();

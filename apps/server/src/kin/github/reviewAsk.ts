@@ -22,7 +22,7 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import * as Reach from "../lead/Reach.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { isOwnerHimself, KIN_OWN_REFUSAL, kinOwnTurn, mayActAsOwner } from "../people/KinAccess.ts";
-import { boundReview, headKey, POSTING, receiptOf } from "./boundReview.ts";
+import { blocksKey, boundReview, headKey, POSTING, receiptOf } from "./boundReview.ts";
 import {
   agentPostsOf,
   botLoginOf,
@@ -496,16 +496,26 @@ export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
     WHERE org_id = ${lead.orgId} AND trigger_key = ${bound.key} AND review_url IS NULL
     RETURNING trigger_key`;
   if (claimed.length === 0) return yield* refuse(POST_REFUSAL.again(ref));
-  // The queue sees the turn acted, so a failure after this isn't run again; a block is told (`askedFor.ts`).
+  // The queue sees the turn acted, so a failure after this isn't run again.
   yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
     VALUES (${lead.orgId}, ${lead.wakeupId}, ${`github-review:${bound.eventId}`},
       ${input.event ?? "COMMENT"})
     ON CONFLICT DO NOTHING`;
+  // What the agent meant, by the head, which a requeued event keeps: a block is told (`askedFor.ts`).
+  if (input.event === "REQUEST_CHANGES")
+    yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
+      VALUES (${lead.orgId}, ${blocksKey(bound.key)}, ${bound.repo.toLowerCase()}, ${bound.number},
+        ${lead.agentId}, 'blocks', ${yield* Clock.currentTimeMillis})
+      ON CONFLICT DO NOTHING`;
   const giveBack = sql`UPDATE kin_github_handled SET review_url = NULL
     WHERE org_id = ${lead.orgId} AND trigger_key = ${bound.key} AND review_url = ${POSTING}`.pipe(
     Effect.andThen(
       sql`DELETE FROM kin_lead_tool_calls WHERE org_id = ${lead.orgId}
         AND wakeup_id = ${lead.wakeupId} AND call_key = ${`github-review:${bound.eventId}`}`,
+    ),
+    Effect.andThen(
+      sql`DELETE FROM kin_github_handled WHERE org_id = ${lead.orgId}
+        AND trigger_key = ${blocksKey(bound.key)}`,
     ),
   );
   // Nothing left this server before a failure here: the head is given back.
