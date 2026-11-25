@@ -25,6 +25,8 @@ import { SHARED_REFUSAL, aborted, peopleBehind } from "../lead/Audience.ts";
 import { routeShown, runRoute } from "../lead/routeCard.ts";
 import { recommendShown, runRecommend } from "../recommend/card.ts";
 import { leaverShown, runLeaver } from "../people/leaver.ts";
+import { factCardShown } from "../pulse/factCards.ts";
+import { runFactCard } from "../pulse/factCardTaps.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import * as Memory from "../memory/Memory.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
@@ -66,6 +68,7 @@ import {
   type CardPlan,
   type RunPlan,
   isAnswered,
+  isFactCard,
   isTaken,
   plansOf,
   takesAsDefault,
@@ -120,6 +123,11 @@ const labelOf = (plan: CardPlan): string => {
       return recommendShown(plan).label;
     case "leaver":
       return leaverShown(plan).label;
+    case "waited_answer":
+    case "stall_answer":
+    case "move_due":
+    case "keep_due":
+      return factCardShown(plan).label;
     case "undo_default":
       return "Undo";
     case "keep_default":
@@ -155,6 +163,11 @@ const lineOf = (plan: CardPlan): string => {
       return recommendShown(plan).line;
     case "leaver":
       return leaverShown(plan).line;
+    case "waited_answer":
+    case "stall_answer":
+    case "move_due":
+    case "keep_due":
+      return factCardShown(plan).line;
     case "undo_default":
       return undoLine(plan);
     case "keep_default":
@@ -388,7 +401,12 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
   if (source === undefined)
     return yield* refuse("That question's card is gone or answered, so there's no default.");
   const sealed = source.final;
-  if (sealed?.kind === "let_talk" || sealed?.kind === "recommend" || sealed?.kind === "leaver")
+  if (
+    sealed?.kind === "let_talk" ||
+    sealed?.kind === "recommend" ||
+    sealed?.kind === "leaver" ||
+    (sealed !== undefined && isFactCard(sealed))
+  )
     return yield* refuse("That question has no default to take.");
   if (sealed?.kind === "take_default")
     return yield* refuse(
@@ -506,6 +524,7 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
     sealed.kind === "let_talk" ||
     sealed.kind === "recommend" ||
     sealed.kind === "leaver" ||
+    isFactCard(sealed) ||
     isTaken(sealed) ||
     isAnswered(sealed)
   )
@@ -603,6 +622,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
   if (plan.kind === "recommend") return yield* runRecommend(tap, plan);
   if (plan.kind === "leaver") return yield* runLeaver(tap, plan, deps.chat);
+  if (isFactCard(plan)) return yield* runFactCard(tap, plan, deps.records);
   if (isAnswered(plan)) return yield* runAnswered(tap, plan, deps.chat);
   if (isTaken(plan))
     return yield* runTaken(
