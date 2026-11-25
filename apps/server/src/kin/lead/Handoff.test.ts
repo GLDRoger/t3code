@@ -63,7 +63,6 @@ import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { workFor } from "./workFor.ts";
 import { closeQuestion, recordTextQuestion, settleDue } from "../questions/openQuestions.ts";
 import { askPerson } from "../questions/askPerson.ts";
-import { KinLevelGate } from "./LevelGate.ts";
 import * as Team from "../team/KinTeam.ts";
 import { DECLINED_WINDOW_MS, declinedRequests } from "./declinedSection.ts";
 import * as Reach from "./Reach.ts";
@@ -137,7 +136,7 @@ const setup = Effect.gen(function* () {
   const claim = Effect.fn("HandoffTest.claim")(function* (
     eventId: string,
     agentId: KinAgentId,
-    event: Record<string, unknown> & { readonly _tag?: "chat.message" | "widget.action" },
+    event: Record<string, unknown> & { readonly _tag?: "chat.message" | "widget.action" | "pulse" },
   ) {
     yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
       VALUES (${eventId}, ${orgId}, ${agentId}, ${event._tag ?? "chat.message"}, 'P0', ${JSON.stringify(
