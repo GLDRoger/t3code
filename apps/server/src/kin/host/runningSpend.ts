@@ -15,7 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { episodeNotice } from "../hostBackup.ts";
-import { unitsOf, USUAL_LIMITS, type Usage } from "../lead/KinBudget.ts";
+import { fromLedgers, unitsOf, USUAL_LIMITS, type Usage } from "../lead/KinBudget.ts";
 import { runsFrom } from "../lead/wakeupRuns.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 
@@ -57,6 +57,8 @@ const runningSpendNotice = (input: {
   readonly task: boolean;
   readonly ranMs: number;
   readonly units: number;
+  // A provider turn without a ledger only gave its last request's size.
+  readonly atLeast: boolean;
   readonly step: (typeof STEPS)[number];
   readonly limitSet: boolean;
 }) => {
@@ -66,7 +68,7 @@ const runningSpendNotice = (input: {
   const what = input.task
     ? `A task ${input.agent} started`
     : `${input.agent}'s turn${input.forPerson === null ? "" : ` for ${input.forPerson}`}`;
-  return `${input.task ? `A task ${input.agent} started` : input.agent} has used ${share} ${day} in one go\n\n${what} has been running ${lasted(input.ranMs)} and has used at least ${unitsText(input.units)} units so far, ${input.step.words} ${day} for ${whose}${input.limitSet ? "" : " (you have set no daily limit)"}. It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open ${input.task ? `its card in ${input.agent}'s chat` : `${input.agent}'s chat`}.`;
+  return `${input.task ? `A task ${input.agent} started` : input.agent} has used ${share} ${day} in one go\n\n${what} has been running ${lasted(input.ranMs)} and has used ${input.atLeast ? "at least " : ""}${unitsText(input.units)} units so far, ${input.step.words} ${day} for ${whose}${input.limitSet ? "" : " (you have set no daily limit)"}. It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open ${input.task ? `its card in ${input.agent}'s chat` : `${input.agent}'s chat`}.`;
 };
 
 /**
@@ -140,7 +142,8 @@ const checkOrg = Effect.fn("KinRunningSpend.checkOrg")(function* (
   for (const turn of running) {
     const limit = turn.task ? (limits?.workerUnits ?? null) : (limits?.leadUnits ?? null);
     const yardstick = limit ?? (turn.task ? USUAL_LIMITS.workerUnits : USUAL_LIMITS.leadUnits);
-    const units = unitsOf(yield* read({ threadId: turn.threadId, rootRunId: turn.rootRunId }));
+    const usage = yield* read({ threadId: turn.threadId, rootRunId: turn.rootRunId });
+    const units = unitsOf(usage);
     for (const step of STEPS) {
       const id = `${prefix}${turn.key}:${step.id}`;
       live.add(id);
@@ -153,6 +156,7 @@ const checkOrg = Effect.fn("KinRunningSpend.checkOrg")(function* (
           task: turn.task,
           ranMs: now - turn.startedAt,
           units,
+          atLeast: !fromLedgers(usage),
           step,
           limitSet: limit !== null,
         }),

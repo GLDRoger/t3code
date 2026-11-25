@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { KinOrgId, ThreadId } from "@t3tools/contracts";
+import { KinOrgId, ThreadId, type TurnTokenUsage } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -75,10 +75,18 @@ it.effect(
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
       const used = new Map<string, number>();
+      const ledgers = new Map<string, TurnTokenUsage>();
+      // A provider turn's own ledger, where it has one, beside its last request's size.
       const read: RunningSpend.ReadUsage = ({ threadId }) =>
         Effect.succeed(
           used.has(threadId)
-            ? [{ providerTurnId: `turn-${threadId}`, usedTokens: used.get(threadId)! }]
+            ? [
+                {
+                  providerTurnId: `turn-${threadId}`,
+                  usedTokens: used.get(threadId)!,
+                  ...(ledgers.has(threadId) ? { turnTokenUsage: ledgers.get(threadId)! } : {}),
+                },
+              ]
             : [],
         );
       yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, thread_id, run_id, model,
@@ -142,10 +150,19 @@ it.effect(
           revision, state_json, awaiting_json, updated_at)
         VALUES ('task-card', ${orgId}, 'rhea-finance', 'task-msg', 'native', 'task', 1,
           '{"threadId":"task-thread","status":"working"}', '[]', '2026-11-25T00:00:00.000Z')`;
-      used.set(ThreadId.make("task-thread"), 1_600_000);
+      // Its running ledger, not its last 60k request, is what it has used, so "at least" goes.
+      used.set(ThreadId.make("task-thread"), 60_000);
+      ledgers.set(ThreadId.make("task-thread"), {
+        usageStatus: "partial",
+        usageScope: "main_agent",
+        hasSubagents: false,
+        inputTokens: 1_000_000,
+        cachedInputTokens: 0,
+        outputTokens: 150_000,
+      });
       yield* RunningSpend.check(read);
       assert.deepStrictEqual((yield* notices).at(-1), {
-        body: "A task Finance started has used a quarter of a usual day's limit in one go\n\nA task Finance started has been running 30 minutes and has used at least 1.6M units so far, past a quarter of a usual day's limit for tasks your agents start (you have set no daily limit). It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open its card in Finance's chat.",
+        body: "A task Finance started has used a quarter of a usual day's limit in one go\n\nA task Finance started has been running 30 minutes and has used 1.6M units so far, past a quarter of a usual day's limit for tasks your agents start (you have set no daily limit). It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open its card in Finance's chat.",
         open: 1,
       });
     }).pipe(Effect.provide(services)),

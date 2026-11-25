@@ -234,7 +234,8 @@ describe("KinBudget", () => {
             id: "partial",
             usedTokens: 30,
             turnTokenUsage: { ...usage[0]!.turnTokenUsage, usageStatus: "partial" as const },
-            units: 30,
+            // A stopped turn costs what its partial ledger says it used, not its last request.
+            units: 55.5,
           },
           { id: "missing-fields", usedTokens: 30, turnTokenUsage: undefined, units: 30 },
           {
