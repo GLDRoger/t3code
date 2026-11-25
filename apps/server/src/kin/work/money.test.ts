@@ -6951,6 +6951,20 @@ describe("money answers", () => {
           yield* refusal(asked, byHand.key, { reimbursement: "repaid" }),
           KinRecords.FUNDING_A_PERSON_SET,
         );
+        // Paid back is never an agent's mark, even asked in person: it's the owner's tap.
+        const repaid = { reimbursement: "repaid", repaidOn: "2026-11-10" };
+        assert.strictEqual(
+          yield* refusal(asked, domain.key, repaid),
+          KinRecords.REPAID_IS_THE_OWNERS,
+        );
+        assert.strictEqual(
+          (yield* Effect.flip(spend(asked, "lunch", { ...meera, ...repaid }))).message,
+          KinRecords.REPAID_IS_THE_OWNERS,
+        );
+        assert.strictEqual(
+          KinRecords.REPAID_IS_THE_OWNERS,
+          "Nothing was changed: an agent doesn't mark an expense repaid. The owner marks it on the mark-repaid card when Kin has matched the bank debit, or on the expense in Money.",
+        );
 
         // After the turn reads a statement: nothing changes, and a new one waits to be kept.
         yield* markOutside({ orgId, wakeupId: "wake-3" }, "statement:invented");

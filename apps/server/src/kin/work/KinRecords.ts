@@ -643,6 +643,21 @@ const repaidAhead = (fields: Readonly<Record<string, unknown>>, today: string) =
 const FUNDING = [FUNDED_BY, REIMBURSEMENT, REPAID_ON] as const;
 export const FUNDING_IS_THE_OWNERS =
   "Only the owner or a co-owner says who funded an expense or that it was paid back, in their own message or tap before anything outside is read. Nothing changed. Put it to them as a card or a question.";
+export const REPAID_IS_THE_OWNERS =
+  "Nothing was changed: an agent doesn't mark an expense repaid. The owner marks it on the mark-repaid card when Kin has matched the bank debit, or on the expense in Money.";
+/** Whether these fields newly say a partner was paid back. */
+const marksRepaid = (
+  before: Parameters<typeof fundingOf>[0],
+  after: Parameters<typeof fundingOf>[0],
+) => {
+  const was = fundingOf(before);
+  const now = fundingOf(after);
+  return (
+    now.by === "partner" &&
+    now.state === "repaid" &&
+    !(was.by === "partner" && was.state === "repaid")
+  );
+};
 export const FUNDING_A_PERSON_SET =
   "A person said who funded this expense or whether it was paid back, and an agent doesn't change that. Nothing changed. Put it to the owner as a card or a question.";
 
@@ -1836,6 +1851,9 @@ const make = Effect.gen(function* () {
     // Money counts a partner's expense as owed: the entry says so too, not "None".
     if (funds(def, fields[FUNDED_BY]) && fields[REIMBURSEMENT] === undefined)
       fields[REIMBURSEMENT] = "owed";
+    // Paid back is the owner's mark: on the mark-repaid card or the expense, never an agent's.
+    if (list === "expenses" && writer.actor._tag === "agent" && marksRepaid({}, fields))
+      return yield* notAllowed(REPAID_IS_THE_OWNERS);
     const zero = zeroOwed(def, input.amount, input.category, writer);
     if (zero !== undefined) return yield* zero;
     if (input.askSlip === true && input.amount != null)
@@ -2648,6 +2666,9 @@ const make = Effect.gen(function* () {
             if (byPerson !== undefined) return yield* notAllowed(FUNDING_A_PERSON_SET);
           }
         }
+        // Paid back is the owner's mark: on the mark-repaid card or the expense, never an agent's.
+        if (writer.actor._tag === "agent" && fundingMoved.length > 0 && marksRepaid(stored, merged))
+          return yield* notAllowed(REPAID_IS_THE_OWNERS);
         // A repayment Confirm linked to a bank row binds the expenses it settled: what they cost,
         // who is paid back and when stay as the bank saw them until that repayment is undone.
         if (list === "expenses") {
