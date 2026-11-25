@@ -134,6 +134,7 @@ import * as Reactions from "./reactions.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
+import { arrivalNoteId, isDismissedArrival } from "./arrivalNotes.ts";
 import { memberReads } from "./sharing.ts";
 
 const decodeChoiceCard = Schema.decodeUnknownEffect(KinChoiceCardState);
@@ -240,6 +241,10 @@ export class KinChatService extends Context.Service<
     readonly attachDeferralItems: (
       read: DeferralItemReader,
     ) => Effect.Effect<void, never, Scope.Scope>;
+    readonly dismissArrival: (input: {
+      readonly orgId: KinOrgId;
+      readonly key: string;
+    }) => Effect.Effect<void, ServiceError>;
     readonly notice: (input: {
       readonly messageId: KinMessageId;
       readonly orgId: KinOrgId;
@@ -2116,6 +2121,7 @@ const make = Effect.gen(function* () {
         : undefined;
     return {
       ...chat,
+      lastMessageAt: history.messages.at(-1)?.createdAt ?? null,
       ...(otherName === undefined ? {} : { title: otherName }),
       // A list row never carries a group's member list, but a pair's two are who it is with.
       members: pair ?? (group ? [member] : yield* repo.listMembers(chat)),
@@ -2553,6 +2559,18 @@ const make = Effect.gen(function* () {
 
   return KinChatService.of({
     // Trusted server callers only; deliberately absent from RPC and MCP.
+    dismissArrival: Effect.fn("KinChatService.dismissArrival")(function* ({ orgId, key }) {
+      const messageId = arrivalNoteId(key);
+      const changed = yield* sql`UPDATE kin_messages SET status = 'dismissed'
+        WHERE org_id = ${orgId} AND message_id = ${messageId}
+          AND author_kind = 'system' AND status = 'posted' AND when_json IS NOT NULL
+        RETURNING message_id`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinChatService.dismissArrival")),
+      );
+      if (changed.length === 0) return;
+      const message = yield* requireRecord(repo.getMessage({ orgId, messageId }));
+      yield* hub.publish({ type: "message.changed", orgId, message });
+    }, transaction),
     notice: Effect.fn("KinChatService.notice")(function* (input) {
       yield* requireRecord(repo.getChat(input));
       if (input.waitingFor !== undefined)
@@ -3211,6 +3229,7 @@ const make = Effect.gen(function* () {
                   event.type === "draft.updated" ||
                   (event.type === "message.changed" &&
                     event.message.withdrawn === undefined &&
+                    !isDismissedArrival(event.message) &&
                     event.message.editedAt === null)
                 )
                   return yield* notFound;

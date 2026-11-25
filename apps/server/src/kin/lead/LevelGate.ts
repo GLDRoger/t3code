@@ -523,12 +523,15 @@ const make = Effect.gen(function* () {
           const replaced =
             input.urgent === undefined
               ? 0
-              : yield* urgentNow({
-                  ...where,
-                  agentId: agent.agentId,
-                  wakeupId: agent.wakeupId,
-                  reason: input.urgent,
-                });
+              : yield* urgentNow(
+                  {
+                    ...where,
+                    agentId: agent.agentId,
+                    wakeupId: agent.wakeupId,
+                    reason: input.urgent,
+                  },
+                  chat,
+                );
           const held =
             input.urgent === undefined
               ? yield* holdFor({ ...where, notBefore: input.notBefore })

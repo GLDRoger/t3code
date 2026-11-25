@@ -1,4 +1,5 @@
 import type { KinChatMember, KinMessage } from "@t3tools/contracts";
+import { isDismissedArrival } from "./arrivalNotes.ts";
 
 /** A message its agent took back: only the line that says so, never its words (`withdrawnSaid`). */
 const withdrawnLine = (message: KinMessage): KinMessage => {
@@ -17,6 +18,10 @@ export function messageForViewer(
   message: KinMessage,
   viewer: KinChatMember["principal"] | undefined,
 ): KinMessage {
+  if (viewer?._tag === "person" && isDismissedArrival(message)) {
+    const { when: _when, ...rest } = message;
+    return { ...rest, body: "" };
+  }
   if (message.withdrawn !== undefined) {
     const { clientMessageId: _, ...line } = withdrawnLine(message);
     return line;

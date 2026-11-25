@@ -1160,7 +1160,7 @@ export const closeQuestion = Effect.fn("KinQuestions.close")(function* (
   },
   chat: Pick<
     KinChatService["Service"],
-    "closeReplaced" | "ask" | "notice" | "setDocCardChangesFirst"
+    "closeReplaced" | "ask" | "notice" | "setDocCardChangesFirst" | "dismissArrival"
   >,
   queue: Pick<KinEventQueue.KinEventQueue["Service"], "enqueue">,
 ) {
@@ -1207,6 +1207,8 @@ export const closeQuestion = Effect.fn("KinQuestions.close")(function* (
   yield* sql`UPDATE kin_questions SET state = ${input.outcome}, answer = ${answer},
       closed_at = ${input.now}
     WHERE org_id = ${input.orgId} AND question_id = ${row.questionId} AND state = 'open'`;
+  if (input.outcome === "withdrawn" && row.forChatId !== null && row.widgetId === null)
+    yield* chat.dismissArrival({ orgId: input.orgId, key: row.questionId });
   if (input.outcome === "answered" && row.forChatId !== null) {
     backTo = yield* sendBack(
       input.orgId,
@@ -1374,7 +1376,7 @@ const withdraw = Effect.fn("KinQuestions.withdraw")(function* (
   reason: (row: QuestionRow) => string,
   closedAt: number,
   chat: Pick<KinChatService["Service"], "closeReplaced"> &
-    Partial<Pick<KinChatService["Service"], "notice">>,
+    Partial<Pick<KinChatService["Service"], "dismissArrival" | "notice">>,
   title = "Closed",
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -1383,6 +1385,8 @@ const withdraw = Effect.fn("KinQuestions.withdraw")(function* (
       WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
       RETURNING question_id`;
     if (moved.length === 0) continue;
+    if (row.forChatId !== null && row.widgetId === null && chat.dismissArrival !== undefined)
+      yield* chat.dismissArrival({ orgId, key: row.questionId });
     for (const widgetId of cardIds(row))
       yield* chat.closeReplaced({
         orgId,
@@ -1432,7 +1436,7 @@ export const closeHeldQuestions = Effect.fn("KinQuestions.closeHeld")(function* 
     readonly closedAt: number;
   },
   chat: Pick<KinChatService["Service"], "closeReplaced"> &
-    Partial<Pick<KinChatService["Service"], "notice">>,
+    Partial<Pick<KinChatService["Service"], "dismissArrival" | "notice">>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, holder } = input;
@@ -1463,7 +1467,7 @@ export const closeQuestionsAbout = Effect.fn("KinQuestions.closeAbout")(function
     /** The card's outcome title: a task's says it closed with its task. */
     readonly title?: string;
   },
-  chat: Pick<KinChatService["Service"], "closeReplaced"> &
+  chat: Pick<KinChatService["Service"], "closeReplaced" | "dismissArrival"> &
     Partial<Pick<KinChatService["Service"], "notice">>,
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -1514,7 +1518,10 @@ const takeEventId = (orgId: string, questionId: string) =>
   KinEventId.make(`question_${hash(`${orgId}\0${questionId}`).slice(0, 32)}`);
 
 type SettleDeps = {
-  readonly chat: Pick<KinChatService["Service"], "closeReplaced" | "ask" | "notice">;
+  readonly chat: Pick<
+    KinChatService["Service"],
+    "closeReplaced" | "ask" | "notice" | "dismissArrival"
+  >;
   readonly queue: Pick<KinEventQueue.KinEventQueue["Service"], "enqueue">;
   /** Runs a default's own action; without it such a default waits for its person. */
   readonly records?: KinRecords["Service"] | undefined;
@@ -1627,6 +1634,10 @@ const postHeldCard = Effect.fn("KinQuestions.postHeldCard")(function* (
   chat: SettleDeps["chat"],
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const [pending] = yield* sql`SELECT 1 FROM kin_questions
+    WHERE org_id = ${orgId} AND question_id = ${row.questionId}
+      AND state = 'open' AND widget_id IS NULL`;
+  if (pending === undefined) return;
   const card = Option.getOrUndefined(decodeHeldCard(stored));
   const [agent] = yield* sql<{ owner: string; threadId: string | null }>`SELECT
       a.owner_person_id AS owner, l.thread_id AS "threadId"

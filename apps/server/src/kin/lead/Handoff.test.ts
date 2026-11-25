@@ -6,6 +6,7 @@ import {
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
+  type KinChatError,
   type KinChatId,
   type KinEvent,
   KinMemoryItemId,
@@ -58,7 +59,9 @@ import { KinEventQueue } from "./KinEventQueue.ts";
 import { toolAdmitted } from "./SharedTools.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { workFor } from "./workFor.ts";
-import { recordTextQuestion } from "../questions/openQuestions.ts";
+import { closeQuestion, recordTextQuestion, settleDue } from "../questions/openQuestions.ts";
+import { askPerson } from "../questions/askPerson.ts";
+import { KinLevelGate } from "./LevelGate.ts";
 import * as Team from "../team/KinTeam.ts";
 import { DECLINED_WINDOW_MS, declinedRequests } from "./declinedSection.ts";
 import * as Reach from "./Reach.ts";
@@ -211,12 +214,12 @@ const personHistory = (ctx: Effect.Success<typeof setup>, chatId: KinChatId) =>
 const assertInputOnly = Effect.fn("HandoffTest.assertInputOnly")(function* (
   ctx: Effect.Success<typeof setup>,
   chatId: KinChatId,
-  pass: Effect.Effect<unknown, unknown>,
+  pass: Effect.Effect<unknown, KinChatError>,
 ) {
   const { chats, orgId, owner, services } = ctx;
   const summary = Effect.gen(function* () {
     const list = Option.getOrThrow(yield* Stream.runHead(chats.subscribeChats([owner], {})));
-    assert.strictEqual(list._tag, "snapshot");
+    if (list._tag !== "snapshot") return assert.fail("Expected Chats snapshot");
     return list.chats.find((row) => row.chatId === chatId)!;
   });
   const prior = yield* chats.send(owner, {
@@ -225,6 +228,7 @@ const assertInputOnly = Effect.fn("HandoffTest.assertInputOnly")(function* (
     clientMessageId: "prior",
   });
   const before = yield* summary;
+  yield* TestClock.adjust("1 minute");
   const hub = Context.get(services, KinChatHub);
   yield* Effect.scoped(
     Effect.gen(function* () {
@@ -233,7 +237,7 @@ const assertInputOnly = Effect.fn("HandoffTest.assertInputOnly")(function* (
       const after = yield* summary;
       const history = yield* personHistory(ctx, chatId);
       const backlog = Option.getOrThrow(yield* Stream.runHead(chats.subscribe(owner, { chatId })));
-      assert.strictEqual(backlog._tag, "backlog");
+      if (backlog._tag !== "backlog") return assert.fail("Expected chat backlog");
       const { message: marker } = yield* chats.notice({
         orgId,
         chatId,
@@ -249,6 +253,7 @@ const assertInputOnly = Effect.fn("HandoffTest.assertInputOnly")(function* (
           history: history.messages.map((message) => message.messageId),
           backlog: backlog.messages.map((message) => message.messageId),
           last: after.lastMessage?.messageId,
+          lastAt: after.lastMessageAt,
           unread: after.unread,
           live: event.message.messageId,
         },
@@ -256,6 +261,7 @@ const assertInputOnly = Effect.fn("HandoffTest.assertInputOnly")(function* (
           history: [prior.messageId],
           backlog: [prior.messageId],
           last: before.lastMessage?.messageId,
+          lastAt: before.lastMessageAt,
           unread: before.unread,
           live: marker.messageId,
         },
@@ -2592,6 +2598,122 @@ it.effect("a teammate's words passed on still show", () =>
           ),
         );
       }).pipe(Effect.provide(Team.layer.pipe(Layer.provide(Layer.succeedContext(services)))));
+    }),
+  ),
+);
+
+it.effect("a question withdrawn before it arrives leaves no arrival note", () =>
+  runTeammate(({ ctx, mate }) =>
+    Effect.gen(function* () {
+      const { sql, orgId, owner, chats, services } = ctx;
+      yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE org_id = ${orgId} AND person_id = ${owner.personId}`;
+      yield* sql`UPDATE kin_people SET display_name = 'Zoya'
+        WHERE org_id = ${orgId} AND person_id = ${mate.meera.personId}`;
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC',
+      '08:30', '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')`;
+      yield* TestClock.setTime(Date.UTC(1970, 0, 1, 23));
+      const gate = Context.get(services, KinLevelGate);
+      const queue = Context.get(services, KinEventQueue);
+      const lead = {
+        _tag: "agent" as const,
+        orgId,
+        agentId: chief,
+        ownerPersonId: owner.personId,
+        threadId: ThreadId.make("chief-thread"),
+        wakeupId: KinWakeupId.make("chief-wake"),
+      };
+      const history = () =>
+        chats.history(mate.meera, { chatId: mate.direct, beforeSeq: 100, limit: 50 });
+      yield* mate.ask("freight-date", "Check the Tidewater Freight dates.");
+      const ask = (question: string) =>
+        askPerson(
+          lead,
+          {
+            to: "Rhea",
+            question,
+            intent: question,
+            options: [{ label: "Friday" }, { label: "Monday" }],
+          },
+          { chat: chats, gate },
+        );
+      const withdrew = yield* ask("When should Tidewater Freight collect the sample?");
+      const delivered = yield* ask("When should Tidewater Freight collect the order?");
+      assert.equal(withdrew.state, "held");
+      assert.equal(delivered.state, "held");
+      const withdrawnNote = KinMessageId.make(`kin-arrives:${withdrew.questionId}`);
+      const deliveredNote = KinMessageId.make(`kin-arrives:${delivered.questionId}`);
+      const notes = Effect.map(history(), (page) =>
+        page.messages
+          .filter((message) => message.body.includes("it arrives at"))
+          .map((message) => message.messageId),
+      );
+      assert.deepStrictEqual(yield* notes, [withdrawnNote, deliveredNote]);
+      const backlog = Option.getOrThrow(
+        yield* Stream.runHead(chats.subscribe(mate.meera, { chatId: mate.direct })),
+      );
+      if (backlog._tag !== "backlog") return assert.fail("Expected chat backlog");
+      const hub = Context.get(services, KinChatHub);
+      const close = (questionId: string, now: number) =>
+        sql.withTransaction(
+          closeQuestion({ ...lead, questionId, now, outcome: "withdrawn" }, chats, queue),
+        );
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const feed = yield* hub.subscribeForViewer(mate.meera, mate.direct);
+          yield* close(withdrew.questionId, Date.UTC(1970, 0, 1, 23));
+          assert.deepStrictEqual(yield* notes, [deliveredNote]);
+          const page = yield* history();
+          assert.notInclude(
+            page.messages.map((message) => message.messageId),
+            withdrawnNote,
+          );
+          const resumed = Option.getOrThrow(
+            yield* Stream.runHead(
+              chats.subscribe(mate.meera, {
+                chatId: mate.direct,
+                afterSeq: backlog.lastSeq,
+                afterChangeSeq: backlog.lastChangeSeq,
+              }),
+            ),
+          );
+          if (resumed._tag !== "backlog") return assert.fail("Expected chat backlog");
+          assert.deepInclude(resumed.messages[0], {
+            messageId: withdrawnNote,
+            body: "",
+            status: "dismissed",
+          });
+          const { message: marker } = yield* chats.notice({
+            orgId,
+            chatId: mate.direct,
+            audience: "chat",
+            body: "Order dates are on file.",
+            messageId: KinMessageId.make("arrival-stream-marker"),
+          });
+          const event = Option.getOrThrow(
+            yield* Stream.runHead(
+              feed.pipe(
+                Stream.filter(
+                  (item) => item.type === "message.changed" || item.type === "message.posted",
+                ),
+              ),
+            ),
+          );
+          assert.equal(
+            event.message.messageId,
+            withdrawnNote,
+            `before the next post (${marker.messageId})`,
+          );
+          assert.equal(event.message.status, "dismissed");
+        }),
+      );
+      const now = delivered.at!;
+      yield* TestClock.setTime(now);
+      yield* settleDue(orgId, now, { chat: chats, queue });
+      const [row] = yield* sql<{ widgetId: string | null }>`SELECT widget_id AS "widgetId"
+      FROM kin_questions WHERE org_id = ${orgId} AND question_id = ${delivered.questionId}`;
+      assert.isString(row?.widgetId);
+      yield* close(delivered.questionId, now);
+      assert.deepStrictEqual(yield* notes, [deliveredNote]);
     }),
   ),
 );

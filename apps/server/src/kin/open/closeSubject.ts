@@ -27,7 +27,7 @@ export type ClosedSubject = {
  */
 export const closeSubject = Effect.fn("KinOpen.closeSubject")(function* (
   input: ClosedSubject,
-  chat: Pick<KinChatService["Service"], "closeReplaced">,
+  chat: Pick<KinChatService["Service"], "dismissArrival" | "closeReplaced">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, recordId, key, state, now } = input;

@@ -59,6 +59,7 @@ import { sensitiveNow } from "../work/recordRows.ts";
 import { viewVersionVisible } from "../work/teamView.ts";
 import { encodeNames, nameKeys, nameThreads, withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
+import { dismissedArrivalSql } from "./arrivalNotes.ts";
 import { chatShared, readableBy, readableFrom, recordJoin } from "./sharing.ts";
 import { accessSql } from "../people/KinAccess.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -1659,7 +1660,9 @@ const make = Effect.gen(function* () {
           };
         // Without a change cursor, replay only new messages; change_seq runs ahead of seq.
         const afterChangeSeq = input.afterChangeSeq ?? lastChangeSeq;
-        const visible = sql`(${member.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${member.memberId}) AND ${readableBy(sql, input.orgId, member.memberId)}`;
+        const visible = sql`(${member.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${member.memberId})`;
+        const arrival = member.principal._tag === "person" ? dismissedArrivalSql(sql) : sql`0`;
+        const readable = readableBy(sql, input.orgId, member.memberId);
         const messages = yield* SqlSchema.findAll({
           Request: Schema.Unknown,
           Result: MessageRow,
@@ -1667,11 +1670,11 @@ const make = Effect.gen(function* () {
             sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages
               WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id IN (
                 SELECT message_id FROM (SELECT message_id FROM kin_messages
-                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND seq > ${input.afterSeq} AND ${visible}
+                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND seq > ${input.afterSeq} AND ${visible} AND ${readable} AND NOT ${arrival}
                   ORDER BY seq LIMIT 201)
                 UNION
                 SELECT message_id FROM (SELECT message_id FROM kin_messages
-                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND change_seq > ${afterChangeSeq} AND ${visible}
+                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND change_seq > ${afterChangeSeq} AND (${visible} OR ${arrival}) AND ${readable}
                   ORDER BY change_seq, seq LIMIT 201)
               ) ORDER BY seq LIMIT 201`,
         })(input);
@@ -2372,6 +2375,7 @@ const make = Effect.gen(function* () {
  AND chat_id = ${input.chatId} AND seq < ${request.beforeSeq}
  AND (${viewer === null || viewer.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${viewer?.memberId ?? null})
  AND ${readableBy(sql, input.orgId, viewer?.memberId)}
+ AND NOT ${viewer?.principal._tag === "person" ? dismissedArrivalSql(sql) : sql`0`}
  ORDER BY seq DESC LIMIT ${request.limit + 1}`,
               })(input);
               const shaped = rows
