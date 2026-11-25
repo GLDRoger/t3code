@@ -29,6 +29,7 @@ import * as KinOpen from "../open/KinOpen.ts";
 import { personQuietUntil } from "../triggers/quietHold.ts";
 import { type RecommendPlan, sealPlans } from "../widgets/cardPlans.ts";
 import { dayIn } from "../work/money.ts";
+import { endOfDay } from "../work/recordRows.ts";
 import {
   DAILY_LIMIT_LABEL,
   RAN_OUT,
@@ -68,7 +69,6 @@ import {
 
 /** A company's first two weeks say nothing about its habits. */
 const NEW_COMPANY_MS = 14 * DAY_MS;
-/** More than this in Needs you and a suggestion would be one thing too many. */
 const NEEDS_YOU_BUSY = 5;
 const TICK_EVERY_MS = 60 * 60_000;
 const LIST_CAP = 100;
@@ -174,12 +174,20 @@ export const tick = Effect.fn("KinRecommend.tick")(function* (orgId: KinOrgId, a
   if (best === undefined) return skipped("nothing");
   // Retried every sweep while busy: checked before Needs you is read, and again as it posts.
   if (yield* turnRunning(orgId, lead.agentId, thread.threadId)) return skipped("turn_running");
-  const open = yield* KinOpen.compute({
-    orgId,
-    viewer: { personId: ctx.ownerId, ownerLevel: true },
-    at,
-  });
-  if (open.counts.needsYou > NEEDS_YOU_BUSY) return skipped("busy");
+  const sources = yield* sql
+    .withTransaction(
+      KinOpen.sources({ orgId, viewer: { personId: ctx.ownerId, ownerLevel: true }, at }),
+    )
+    .pipe(NodeSqliteClient.readOnly);
+  // The capped screen rows can omit tasks that still contribute to counts.needsYou.
+  const open = KinOpen.rowsOf(sources, at, Infinity);
+  const todayEnds = endOfDay(day, ctx.zone);
+  const nonPressingTasks = open.rows.filter(
+    ({ item }) =>
+      item._tag === "task" &&
+      (item.dueAt === undefined || DateTime.toEpochMillis(item.dueAt) > todayEnds),
+  ).length;
+  if (open.counts.needsYou - nonPressingTasks > NEEDS_YOU_BUSY) return skipped("busy");
   const recId = `rec-${NodeCrypto.createHash("sha256").update(`${best.rule}\0${best.subject}\0${day}`).digest("hex").slice(0, 32)}`;
   const plans = (["do", "not_now"] as const).map(
     (answer) =>

@@ -53,6 +53,7 @@ import { KinMoneyActionNotice } from "./KinInvoice";
 import { KinWorkSection, KinLoadFailed } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinSectionNamed } from "./useKinShell";
 import {
   useKinCompanyCountry,
   useKinHomeCurrency,
@@ -74,6 +75,7 @@ export function KinReceiptsSection(
   },
 ) {
   const { environmentId } = props;
+  const named = useKinSectionNamed(environmentId);
   const canRead = useAtomValue(kinClient.receiptsRead.permissionAtom(environmentId));
   const canMake = useAtomValue(kinClient.makeReceipt.permissionAtom(environmentId));
   const { state, refresh } = useKinReceipts(props, { enabled: canRead });
@@ -125,7 +127,7 @@ export function KinReceiptsSection(
           className="px-2"
         />
       ) : receipts.length === 0 ? (
-        <p className="px-2 text-sm text-muted-foreground">{KIN_RECEIPTS.empty}</p>
+        <p className="px-2 text-sm text-muted-foreground">{named(KIN_RECEIPTS.empty)}</p>
       ) : (
         <>
           <KinMoneyActionNotice actions={actions} />
@@ -240,6 +242,7 @@ function KinAdvanceDialog(
   props: KinWorkTarget & { readonly actions: Actions; readonly onClose: () => void },
 ) {
   const { actions, orgId } = props;
+  const named = useKinSectionNamed(props.environmentId);
   const today = kinWorkDayOf(new Date(useNowMinuteMs()));
   const [draft, setDraft] = useState<KinAdvanceDraft>(() => kinAdvanceDraft(today));
   const [problem, setProblem] = useState<string | null>(null);
@@ -317,10 +320,10 @@ function KinAdvanceDialog(
                   }
                 >
                   <SelectTrigger id={ids.party} className="w-full">
-                    <SelectValue>{payer?.name ?? KIN_RECEIPTS.noClient}</SelectValue>
+                    <SelectValue>{payer?.name ?? named(KIN_RECEIPTS.noClient)}</SelectValue>
                   </SelectTrigger>
                   <SelectPopup>
-                    <SelectItem value={NO_CLIENT}>{KIN_RECEIPTS.noClient}</SelectItem>
+                    <SelectItem value={NO_CLIENT}>{named(KIN_RECEIPTS.noClient)}</SelectItem>
                     {clients.map((one) => (
                       <SelectItem key={one.key} value={one.key}>
                         {one.name}
@@ -417,6 +420,7 @@ function KinSetAgainstDialog(
   },
 ) {
   const { environmentId, orgId, receipt, actions } = props;
+  const named = useKinSectionNamed(environmentId);
   const [attempt, setAttempt] = useState(0);
   const [held, setHeld] = useState<{
     readonly attempt: number;
@@ -479,7 +483,7 @@ function KinSetAgainstDialog(
               </Button>
             </div>
           ) : invoices.length === 0 || choice === null ? (
-            <p className="text-sm text-muted-foreground">{KIN_RECEIPTS.noInvoices}</p>
+            <p className="text-sm text-muted-foreground">{named(KIN_RECEIPTS.noInvoices)}</p>
           ) : (
             <Select
               value={choice.key}

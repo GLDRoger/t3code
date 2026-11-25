@@ -958,7 +958,7 @@ export const checkText = (
 };
 
 /** What a list's entries are watched by: a date field for reminders, and one number check. */
-const checkWatch = (
+export const checkWatch = (
   def: Pick<StoredDefinition, "fields" | "remindOn" | "check">,
 ): KinChatError | undefined => {
   const live = (key: string) => def.fields.find((one) => one.key === key && one.retired !== true);
@@ -1104,7 +1104,7 @@ const shownAs = (input: ListInput) => ({
 });
 
 /** Reminders and a check speak only for a list that is a section, or is asked to be one. */
-const sectionOptionsRefusal = Effect.fn("KinRegisters.sectionOptionsRefusal")(function* (
+export const sectionOptionsRefusal = Effect.fn("KinRegisters.sectionOptionsRefusal")(function* (
   orgId: KinOrgId,
   id: string,
   input: ListInput,

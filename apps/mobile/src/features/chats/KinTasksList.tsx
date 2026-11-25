@@ -351,6 +351,7 @@ export function KinTasksList(
     groups: within === undefined,
     choices: within === undefined ? props.choices : null,
     records,
+    named,
     onChange: (next) => list.setFilter(next),
   });
   return (
@@ -835,6 +836,7 @@ function kinWorkFilterMenu(props: {
   readonly choices: KinWorkChoices | null;
   /** The rows in view, whose projects the Filter offers too. */
   readonly records: ReadonlyArray<KinRecord>;
+  readonly named: (text: string) => string;
   readonly onChange: (filter: KinWorkFilter) => void;
 }) {
   const { overview, filter, choices, onChange } = props;
@@ -909,8 +911,8 @@ function kinWorkFilterMenu(props: {
             : [
                 ...pickMenu(
                   "client",
-                  KIN_WORK_HOME.byClient,
-                  KIN_WORK_HOME.allClients,
+                  props.named(KIN_WORK_HOME.byClient),
+                  props.named(KIN_WORK_HOME.allClients),
                   filter.party,
                   choices.clients,
                   (party) => ({ ...filter, party }),

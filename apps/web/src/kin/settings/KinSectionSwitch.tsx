@@ -21,10 +21,12 @@ import {
   type KinSwitchableSection,
 } from "@t3tools/client-runtime/kin/kinShell";
 import { kinFailureText, kinRetryText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinHeldFollowUps, kinHeldFollowUpsLine } from "@t3tools/client-runtime/kin/kinWatches";
 import { KIN_SET_UP, kinSetUpChief } from "@t3tools/client-runtime/kin/kinSetUp";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { KIN_SET_UP_MESSAGE_PREFIX, type EnvironmentId, type KinShell } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState, type ReactNode } from "react";
 
@@ -71,6 +73,8 @@ function useHeldShell(target: KinWorkTarget) {
       const outcome = await set(from, change);
       if (outcome.ok) {
         setSaved(outcome.value);
+        // Held follow-ups are worked out at read time, so a switch changes which ones wait.
+        if ("on" in change) appAtomRegistry.refresh(followUpsAtom(target));
         return null;
       }
       // Changed elsewhere: the host's answer is read again, so drop ours.
@@ -82,6 +86,9 @@ function useHeldShell(target: KinWorkTarget) {
 
 type Held = ReturnType<typeof useHeldShell>;
 
+const followUpsAtom = ({ environmentId, orgId }: KinWorkTarget) =>
+  kinClient.followUps({ environmentId, input: { orgId } });
+
 /** One section's switch row in its own card, with its failure said under it, in place. */
 function KinSectionRow(props: {
   readonly id: KinSwitchableSection;
@@ -89,6 +96,8 @@ function KinSectionRow(props: {
   readonly shell: KinShell;
   /** The section's own name as the title (Sections), or its switch's sentence (its own page). */
   readonly titled: "name" | "sentence";
+  /** How many follow-ups this section holds back while off (Sections only). */
+  readonly waiting?: string | null;
   readonly children?: ReactNode;
 }) {
   const words = KIN_SECTION_SWITCHES[props.id];
@@ -108,7 +117,16 @@ function KinSectionRow(props: {
       <KinSettingsRow
         title={title}
         wrap
-        detail={detail}
+        detail={
+          on || props.waiting == null ? (
+            detail
+          ) : (
+            <>
+              {detail}
+              <span className="block">{props.waiting}</span>
+            </>
+          )
+        }
         control={
           <Switch
             aria-label={title}
@@ -284,6 +302,10 @@ function KinSectionRenameDialog(props: {
 export function KinSectionsSettings(props: KinWorkTarget) {
   const may = useKinSectionCanSet(props.environmentId);
   const held = useHeldShell(props);
+  // A failed read says nothing extra; the switches still work.
+  const waiting = kinHeldFollowUps(
+    Option.getOrNull(AsyncResult.value(useAtomValue(followUpsAtom(props))))?.followUps ?? [],
+  );
   // The host sets sections for the owner level only; anyone else reaching the address sees none.
   if (!may) return null;
   if (held.held === undefined)
@@ -303,7 +325,14 @@ export function KinSectionsSettings(props: KinWorkTarget) {
       ) : (
         <>
           {KIN_SWITCHABLE_SECTIONS.map((id) => (
-            <KinSectionRow key={id} id={id} held={held} shell={shell} titled="name">
+            <KinSectionRow
+              key={id}
+              id={id}
+              held={held}
+              shell={shell}
+              titled="name"
+              waiting={kinHeldFollowUpsLine(waiting[id])}
+            >
               {id === "clients" ? <KinSectionRenameRow held={held} shell={shell} /> : null}
             </KinSectionRow>
           ))}
