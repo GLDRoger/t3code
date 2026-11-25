@@ -1400,7 +1400,11 @@ const make = Effect.gen(function* () {
         const question = yield* requireRecord(
           repo.getMessage({ orgId: identity.orgId, messageId: item.messageId }),
         );
-        if (relayPerson(question) !== undefined) continue;
+        if (
+          relayPerson(question) !== undefined &&
+          (message.kind !== "text" || (yield* ownerLevel(identity.orgId, identity.personId)))
+        )
+          continue;
         if (question.seq < message.seq) yield* resolve(item, "answered");
       }
     }

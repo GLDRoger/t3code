@@ -2206,6 +2206,75 @@ it.effect(
     ),
 );
 
+it.effect("a request passed on to a teammate is answered by that teammate's reply", () =>
+  run(({ ctx, handoff }) =>
+    Effect.gen(function* () {
+      const { sql, orgId, owner, chats, services } = ctx;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('zoya', ${orgId}, 'zoya', 'Zoya', ${at}),
+          ('arjun', ${orgId}, 'arjun', 'Arjun', ${at})`;
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, ${tech}, ${owner.personId}, 0)`;
+      yield* sql`UPDATE kin_people SET time_zone = 'UTC', quiet_hours_json = '{"from":"22:00","to":"23:00"}'
+        WHERE org_id = ${orgId} AND person_id = 'arjun'`;
+      const zoya = { _tag: "person" as const, orgId, personId: KinPersonId.make("zoya") };
+      const arjun = { _tag: "person" as const, orgId, personId: KinPersonId.make("arjun") };
+      const zoyaChat = (yield* chats.createDirect(zoya, { orgId, agentId: tech })).chatId;
+      const arjunChat = (yield* chats.createDirect(arjun, { orgId, agentId: tech })).chatId;
+      const request = yield* chats.send(zoya, {
+        chatId: zoyaChat,
+        clientMessageId: "rollout-question",
+        body: "When can the rollout start?",
+      });
+      yield* ctx.claim("rollout-request", tech, {
+        chatId: zoyaChat,
+        messageId: request.messageId,
+        provenance: request.author,
+      });
+      yield* handoff.relay(
+        scopeFor(tech),
+        { to: "Arjun", text: request.body, sourceEventId: "rollout-request" },
+        Context.get(services, KinLevelGate).postTo,
+      );
+      const waiting = sql<{ resolution: string | null }>`SELECT resolution FROM kin_waiting
+        WHERE org_id = ${orgId} AND chat_id = ${arjunChat} AND person_id = ${arjun.personId}
+          AND reason = 'question' AND widget_id IS NULL
+        ORDER BY waiting_id`;
+      assert.deepStrictEqual(yield* waiting, [{ resolution: null }]);
+      const card = yield* chats.ask(
+        {
+          _tag: "agent",
+          hostPosted: true,
+          orgId,
+          agentId: tech,
+          ownerPersonId: owner.personId,
+          threadId: ThreadId.make("tech-thread"),
+        },
+        {
+          chatId: arjunChat,
+          clientMessageId: "demo-room",
+          question: "Which room should host the demo?",
+          options: [{ label: "Cedar" }, { label: "Maple" }],
+        },
+      );
+      yield* chats.act(arjun, {
+        widgetId: card.widgetId,
+        revision: 1,
+        actionId: "choose",
+        value: "option-1",
+        clientActionId: "pick-demo-room",
+      });
+      assert.deepStrictEqual(yield* waiting, [{ resolution: null }]);
+      yield* chats.send(arjun, {
+        chatId: arjunChat,
+        clientMessageId: "rollout-reply",
+        body: "The rollout can start on Friday.",
+      });
+      assert.deepStrictEqual(yield* waiting, [{ resolution: "answered" }]);
+    }),
+  ),
+);
+
 const passedOnRequest = (holdAnswer: boolean) =>
   run(({ ctx, handoff }) =>
     Effect.gen(function* () {
