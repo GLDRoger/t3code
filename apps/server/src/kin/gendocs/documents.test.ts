@@ -617,6 +617,17 @@ describe("recipe documents", () => {
       });
       assert.deepStrictEqual([again.gstin, again.taxRegistered], ["29AAAAA1111A1Z5", undefined]);
       assert.strictEqual((yield* standing(4))[0], "27BBBBB2222B1Z5");
+      yield* setProfile(
+        orgId,
+        { _tag: "person", personId: ownerId },
+        { country: "GB", gstin: null },
+        undefined,
+      );
+      yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1, UK company" }));
+      assert.deepStrictEqual(
+        [rendered.at(-1)!.request.inputs.withheldTaxLabel, request.inputs.withheldTaxLabel],
+        ["Less tax withheld", "Less TDS deducted"],
+      );
       // Every document tool is refused in a turn someone besides the owner reads.
       const turnRef = { orgId, agentId: lead, wakeupId: "wake-3" };
       for (const tool of ["kin_document", "kin_recipes", "kin_issue", "kin_recipe_undo"])
@@ -2342,7 +2353,10 @@ describe("receipts", () => {
           originKey: "tds:1",
         });
         const withheld = yield* receipt({ payment: tds.paymentId }).pipe(Effect.flip);
-        assert.match(withheld.message, /TDS the client deducted, not money received/);
+        assert.strictEqual(
+          withheld.message,
+          "That line is tax the client withheld, not money received, so it gets no receipt. Make the receipt for the payment that came in. Nothing was made.",
+        );
         // Nor does a month's payments table list it as received; the advance it does, as Money does.
         yield* records.pay(orgId, agent, "INV-1", {
           amount: { minor: 20_000, currency: "INR" },

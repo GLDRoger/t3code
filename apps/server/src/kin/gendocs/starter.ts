@@ -122,6 +122,7 @@ inputs:
   brandSecondary: { type: text, from: company.brand.secondaryColor, required: false }
   brandFont: { type: text, from: company.brand.font, required: false }
   brandFooter: { type: text, from: company.brand.footer, required: false }
+  withheldTaxLabel: { type: text, from: company.withheldTaxLabel, required: false }
   paid:
     type: table
     from: entry.payments
@@ -182,8 +183,8 @@ and the amount in words. Each line shows its SAC or HSN code, else the company's
 made up. If the entry's amount and the
 lines don't agree, nothing is made and the reason says by how much: tell the owner, don't change
 a figure. A draft (no number yet) carries a DRAFT mark. Each payment on it shows as a line, "Less advance
-received" (received before it was issued, or set against it from an advance's receipt), "Less TDS
-deducted" or "Less received", then the balance due.
+received" (received before it was issued, or set against it from an advance's receipt), "Less tax
+withheld" (or the company's local term) or "Less received", then the balance due.
 
 It shows the company logo and brand colours, font and footer line from the company profile when
 they are set, and looks right without them. The wording the owner may change (the export
@@ -194,7 +195,12 @@ endorsements and the footer) is at the top of template.typ.
 #let lut-endorsement = "SUPPLY MEANT FOR EXPORT UNDER BOND OR LETTER OF UNDERTAKING WITHOUT PAYMENT OF INTEGRATED TAX"
 #let paid-export-endorsement = "SUPPLY MEANT FOR EXPORT ON PAYMENT OF INTEGRATED TAX"
 #let footer-text = "This is a computer-generated invoice and needs no signature."
-#let paid-labels = (advance: "Less advance received", tds: "Less TDS deducted", received: "Less received")
+#let withheld-tax-label = d.at("withheldTaxLabel", default: none)
+#let paid-labels = (
+  advance: "Less advance received",
+  tds: if withheld-tax-label == none { "Less tax withheld" } else { withheld-tax-label },
+  received: "Less received",
+)
 
 #let ink = rgb("#1f2933")
 #let soft = rgb("#6b7280")
@@ -781,7 +787,7 @@ the owner may change is at the top of template.typ.
   "recipes/accountant-pack/RECIPE.md": String.raw`---
 name: accountant-pack
 title: Accountant's monthly pack
-description: One month's sales register, receipts, TDS deducted, expenses, what partners are owed back and bank transactions as a workbook and a CSV per sheet, with exact totals per currency, for the accountant.
+description: One month's sales register, receipts, tax withheld, expenses, what partners are owed back and bank transactions as a workbook and a CSV per sheet, with exact totals per currency, for the accountant.
 kind: table
 sensitive: true
 inputs:
@@ -851,14 +857,14 @@ sheets:
       - { header: Client, field: client }
       - { header: Amount, field: amount }
       - { header: Currency, field: amount.currency }
-  - name: TDS deducted
+  - name: Tax withheld
     input: tds
     file: "tds-{month}.csv"
     columns:
       - { header: "Recorded on", field: paidOn }
       - { header: Invoice, field: invoice }
       - { header: Client, field: client }
-      - { header: "TDS deducted", field: amount }
+      - { header: "Tax withheld", field: amount }
       - { header: Currency, field: amount.currency }
   - name: Expenses
     input: expenses
@@ -924,8 +930,8 @@ their own sheet with their state and one subtotal; void ones are in neither. Ban
 direction. A bank row still Unexplained has nothing in Matched to.
 
 Tax is the invoice's tax as recorded, one figure: Kin holds no CGST, SGST or IGST split, so the
-pack has none. Taxable value is the total less that tax, blank when no tax was recorded. TDS is
-tax a client deducted: it settles the invoice but is no money received, so Receipts leave it out.
+pack has none. Taxable value is the total less that tax, blank when no tax was recorded. Tax
+withheld by a client settles the invoice but is no money received, so Receipts leave it out.
 
 When the owner wants other columns, change a sheet's columns here (each a header and a field the
 input has; add the field to the input's columns too) and nothing else.

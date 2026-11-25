@@ -222,7 +222,7 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
   const of = (group: string) => entries.filter(([, match]) => match.group === group);
   const note = (fit: string, tds: number | undefined) =>
     fit === "tds" && tds !== undefined
-      ? ` (paid with ${formatMoney({ minor: tds, currency })} TDS deducted)`
+      ? ` (paid with ${formatMoney({ minor: tds, currency })} tax withheld)`
       : fit === "part"
         ? " (part payment)"
         : "";

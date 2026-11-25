@@ -9,7 +9,7 @@ import {
   readProfile,
   recordingCurrency,
 } from "../work/companyProfile.ts";
-import { unregisteredTax } from "../work/region.ts";
+import { regionOf, unregisteredTax } from "../work/region.ts";
 import { GST_REGIME, type TaxRegime } from "./compute.ts";
 import { logoFile, logoPath } from "./brand.ts";
 import { KinRecords } from "../work/KinRecords.ts";
@@ -112,7 +112,6 @@ const AMOUNT_COLUMNS = new Set(["amount", "tax", "taxable"]);
 const BANK_LIST = "bank_transactions";
 const MATCHED_AS: Readonly<Record<string, string>> = {
   payment: "payment on",
-  tds: "TDS on",
   expense_paid: "paid",
   expense_linked: "paid",
   expense_new: "new expense",
@@ -189,6 +188,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
   const zone = yield* ownerZone(orgId);
   const now = yield* Clock.currentTimeMillis;
   const profile = yield* readProfile(orgId);
+  const withheldTax = regionOf(profile.country)?.withheldTax;
   // The client keeps its number; a company not registered for the tax never prints it.
   const clientTaxNumber = printsClientTaxNumber(profile);
   const wantsLogo = recipe.inputs.some((input) => sourceOf(input.from)?._tag === "logo");
@@ -362,6 +362,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         ? yield* matchesOf(
             orgId,
             inMonth.map((row) => row.recordId),
+            withheldTax === undefined ? "Tax withheld on" : `${withheldTax} on`,
           )
         : new Map<string, string>();
     tables.set(
@@ -450,6 +451,8 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
             return client === undefined ? undefined : cellOf(clientFields, source.key);
         }
       case "company": {
+        if (source.key === "withheldTaxLabel")
+          return withheldTax === undefined ? "Less tax withheld" : `Less ${withheldTax} deducted`;
         const [head, tail] = source.key.split(".");
         const value: unknown =
           head === "bank" && tail !== undefined
@@ -574,6 +577,7 @@ const entryPayments = Effect.fn("KinDocFacts.entryPayments")(function* (
 const matchesOf = Effect.fn("KinDocFacts.matches")(function* (
   orgId: KinOrgId,
   recordIds: ReadonlyArray<string>,
+  withheldMatch: string,
 ) {
   if (recordIds.length === 0) return new Map<string, string>();
   const sql = yield* SqlClient.SqlClient;
@@ -587,7 +591,8 @@ const matchesOf = Effect.fn("KinDocFacts.matches")(function* (
     ORDER BY e.bank_record_id, e.statement_id, e.seq`;
   const matched = new Map<string, Array<string>>();
   for (const row of rows) {
-    const said = [MATCHED_AS[row.action] ?? row.action, row.target].filter(Boolean).join(" ");
+    const label = row.action === "tds" ? withheldMatch : (MATCHED_AS[row.action] ?? row.action);
+    const said = [label, row.target].filter(Boolean).join(" ");
     matched.set(row.id, [...(matched.get(row.id) ?? []), said]);
   }
   return new Map([...matched].map(([id, said]) => [id, [...new Set(said)].join("; ")]));
