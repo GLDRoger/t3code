@@ -69,6 +69,7 @@ import {
   countryFirstMessage,
   notRegisteredFact,
 } from "../../apps/server/src/kin/work/companyProfile.ts";
+import { overpaymentConsequence } from "../../apps/server/src/kin/pulse/senses/bank.ts";
 import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
@@ -546,12 +547,25 @@ const fillGitHubTrigger = (prompt: string, world: McpToolUseCase["setup"]["world
   );
 };
 
+const overpaymentCase = () =>
+  overpaymentConsequence({
+    key: "BNK-4",
+    day: "2026-11-04",
+    currency: "USD",
+    received: 220000,
+    owed: 100000,
+    client: "Tidewater Freight",
+    reason: "it cites INV-12",
+    others: [{ key: "INV-14", owed: 80000 }],
+  });
+
 export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) =>
   fillCharacters(fillGitHubTrigger(prompt, world))
     .replaceAll("{{UNDO_RULE}}", UNDO_RULE)
     .replaceAll("{{WORK_RULE}}", WORK_RULE)
     .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
+    .replaceAll("{{OVERPAYMENT_CASE}}", overpaymentCase())
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
     .replaceAll("{{LEFT_RULE}}", LEFT_RULE)
     .replaceAll("{{OUTSIDE_THREAD_LINE}}", OUTSIDE_THREAD_LINE)
@@ -915,6 +929,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   // record_create or record_update's line for a client's printed detail kept unconfirmed.
   unconfirmed: (input: { client: string; what: string; name: string; carded: boolean }) =>
     waitingLine(input.client, input.what, input.name, input.carded),
+  overpaymentCase,
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),
   cashUnknown: (input: { timeZone: string }) =>
