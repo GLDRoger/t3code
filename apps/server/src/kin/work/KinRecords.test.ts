@@ -6775,6 +6775,115 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+const handBackNote = "Invented: Tidewater Freight needs a staging URL";
+const handBackForG13 = Effect.fn("KinRecordsTest.handBackForG13")(function* (
+  byProduct?: "promisedTo" | "alsoOn",
+) {
+  yield* seed;
+  yield* turn();
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE person_id = ${ownerId}`;
+  const scope = scopeOf(lead);
+  const sourceEventId = "ask-event";
+  const [made] = (yield* LeadWork.create(scope, {
+    sourceEventId,
+    records: [
+      {
+        title: "Invented: set up staging for Tidewater Freight",
+        ...(byProduct === "promisedTo" ? { promisedTo: "Mate" } : {}),
+      },
+    ],
+  })).records;
+  const key = made!.key;
+  if (byProduct === "alsoOn") {
+    const task = yield* OwnerWork.get([owner], { orgId, key });
+    yield* OwnerWork.update([owner], {
+      orgId,
+      key,
+      rev: task.rev,
+      alsoOn: [mate],
+    });
+  }
+  const give = (to: string) =>
+    LeadWork.assign(scope, {
+      sourceEventId,
+      tasks: [{ key, to, reason: "Invented: has time for staging" }],
+    });
+  yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+    status, event_ids, audience)
+    VALUES ('other-wake', ${orgId}, ${other}, 'other-thread', 'test', 0, 'running', '[]',
+      'owner_only')`;
+  const handBack = Effect.gen(function* () {
+    yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'other-wake'
+      WHERE tag = 'record.changed' AND agent_id = ${other}`;
+    const [event] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+      FROM kin_events WHERE wakeup_id = 'other-wake' ORDER BY event_id DESC LIMIT 1`;
+    return yield* LeadWork.handBack(scopeOf(other), {
+      key,
+      sourceEventId: event!.eventId,
+      note: handBackNote,
+    });
+  });
+  yield* give(other);
+  yield* handBack;
+  const nextLeadTurn = Effect.gen(function* () {
+    yield* TestClock.adjust(1);
+    const now = yield* Clock.currentTimeMillis;
+    yield* sql`UPDATE kin_events SET tag = 'chat.reaction', received_at = ${now}, queued_at = ${now}
+      WHERE event_id = 'ask-event'`;
+    yield* sql`UPDATE kin_wakeups SET started_at = ${now} WHERE wakeup_id = 'wake'`;
+  });
+  yield* nextLeadTurn;
+  return { key, scope, sourceEventId, give, handBack, nextLeadTurn };
+});
+
+it.effect(
+  "G13: given in between to the person it was promised to, a task still doesn't go straight back",
+  () =>
+    Effect.gen(function* () {
+      const { give } = yield* handBackForG13("promisedTo");
+      yield* give("Mate");
+      const refusal = yield* Effect.match(give(other), {
+        onFailure: (error) => error.message,
+        onSuccess: () => "",
+      });
+      assert.include(refusal, handBackNote);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "G13: given in between to someone already on it, a task still doesn't go straight back",
+  () =>
+    Effect.gen(function* () {
+      const { give } = yield* handBackForG13("alsoOn");
+      yield* give("Mate");
+      const refusal = yield* Effect.match(give(other), {
+        onFailure: (error) => error.message,
+        onSuccess: () => "",
+      });
+      assert.include(refusal, handBackNote);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("G13: a new promise made after a hand-back is a change, so the task may go back", () =>
+  Effect.gen(function* () {
+    const { key, scope, sourceEventId, give, handBack, nextLeadTurn } = yield* handBackForG13();
+    const records = yield* KinRecords.KinRecords;
+    const { writer } = yield* OwnerWork.actingAs([owner], orgId);
+    yield* records.update(orgId, writer, key, { fields: { promisedTo: `person:${mateId}` } });
+    yield* nextLeadTurn;
+    yield* give(other);
+    yield* handBack;
+    yield* LeadWork.update(scope, {
+      key,
+      sourceEventId,
+      owner: "Mate",
+      notes: "Invented: staging is at staging.example.com",
+    });
+    yield* give(other);
+  }).pipe(Effect.provide(layer)),
+);
+
 /** The reply bridge's post for `wakeupId`, as it stores one. */
 const reply = (id: string, wakeupId: string) =>
   ChatRepository.KinChatRepository.pipe(
