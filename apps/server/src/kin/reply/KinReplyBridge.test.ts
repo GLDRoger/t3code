@@ -274,7 +274,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
   readonly reaction?: "👍";
   readonly changedFrom?: "👎";
   /** Runs as the agent's reply is written onto a message it already posted, before the write. */
-  readonly beforeExtend?: Effect.Effect<void, never, SqlClient.SqlClient>;
+  readonly beforeExtend?: Effect.Effect<void>;
   /** Wakes on this event instead, given the org and the lead's direct chat. */
   readonly event?: (context: {
     readonly owner: PersonIdentity;
@@ -382,10 +382,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
       : Context.add(services, KinLevelGate, {
           ...gate,
           extend: (agent, extendInput, bind) =>
-            before.pipe(
-              Effect.provideService(SqlClient.SqlClient, sql),
-              Effect.andThen(gate.extend(agent, extendInput, bind)),
-            ),
+            before.pipe(Effect.andThen(gate.extend(agent, extendInput, bind))),
         });
   const context = yield* Layer.build(
     ReplyBridge.layer.pipe(
@@ -487,12 +484,12 @@ it.effect.each([
     let mateChat = KinChatId.make("unset");
     let cutInOnce = cutIn === true;
     let orgId = KinOrgId.make("unset");
+    let mateChats: KinChatService["Service"] | undefined;
     const { fake, runId, complete, posted, sql, services } = yield* setup({
       beforeExtend: Effect.gen(function* () {
         if (!cutInOnce) return;
         cutInOnce = false;
-        const chats = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinChatService);
-        yield* chats
+        yield* mateChats!
           .send(
             { _tag: "person", orgId, personId: KinPersonId.make("mate") },
             { chatId: mateChat, body: "Also #8?", clientMessageId: "mate-cut-in" },
@@ -507,6 +504,7 @@ it.effect.each([
             Option.getOrThrow((yield* Kin.KinServer).services),
             KinChatService,
           );
+          mateChats = chats;
           yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('mate', ${owner.orgId}, 'mate', 'Mate', '1970-01-01T00:00:00.000Z')`.pipe(
             Effect.orDie,
           );

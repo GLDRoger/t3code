@@ -333,7 +333,24 @@ interface Thread {
   activeAt?: number;
 }
 
-/** Reads one issue or PR and what is new on it since `since`. */
+/**
+ * GitHub refusing Kin's requests for now (403 or 429, its rate limits), and when it said it takes
+ * them again, from its `retry-after` or `x-ratelimit-reset`; undefined for any other answer.
+ */
+export const refusedFor = (answer: ApiAnswer, now: number) => {
+  if (answer.status !== 403 && answer.status !== 429) return undefined;
+  const after = Number(answer.headers["retry-after"]);
+  const reset = Number(answer.headers["x-ratelimit-reset"]);
+  return {
+    until: Number.isFinite(after) && after > 0
+      ? now + after * 1000
+      : Number.isFinite(reset) && reset > 0
+        ? reset * 1000
+        : undefined,
+  };
+};
+
+/** Reads one issue or PR and what is new on it since `since`; `refused` when GitHub refused it. */
 export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
   get: (path: string) => Effect.Effect<ApiAnswer>,
   thread: Thread,
@@ -341,6 +358,8 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
 ) {
   const base = `repos/${thread.repo}`;
   const issueAnswer = yield* get(`${base}/issues/${thread.number}`);
+  const refused = refusedFor(issueAnswer, yield* Clock.currentTimeMillis);
+  if (refused !== undefined) return { refused };
   const issue = issueAnswer.status === 200 ? decodeIssue(issueAnswer.body) : Option.none();
   if (Option.isNone(issue)) return undefined;
   const pull = issue.value.pull_request !== undefined;
@@ -348,6 +367,8 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
   let pullTag: string | undefined;
   if (pull) {
     const answer = yield* get(`${base}/pulls/${thread.number}`);
+    const pullRefused = refusedFor(answer, yield* Clock.currentTimeMillis);
+    if (pullRefused !== undefined) return { refused: pullRefused };
     pullFacts = answer.status === 200 ? decodePull(answer.body) : Option.none();
     pullTag = answer.headers.etag;
   }
@@ -1136,7 +1157,7 @@ export const make = Effect.gen(function* () {
     const { orgId, now, account, since, agents, bot, posts, lead } = context;
     const { held } = tally;
     const read = yield* readThread(get, thread, since);
-    if (read === undefined) return;
+    if (read === undefined || "refused" in read) return;
     let current: ThreadSnapshot = read.thread;
     const at = `${current.repo.toLowerCase()}#${current.number}`;
     if (current.item === "pull" && read.merged && Option.isSome(records))

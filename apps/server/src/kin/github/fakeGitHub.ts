@@ -163,6 +163,11 @@ export interface FakeWorld {
   failing?: string[];
   /** Paths GitHub refuses while listed (422), having done nothing. */
   refusing?: string[];
+  /**
+   * GitHub's rate limit: from the issue read after `reads` more, every call is refused (429),
+   * saying to wait `retryAfter` seconds.
+   */
+  limit?: { reads: number; retryAfter: number; hit?: boolean };
   /** The seconds GitHub asks between looks; real GitHub says 60. */
   pollInterval?: number;
   repos: FakeRepo[];
@@ -717,6 +722,19 @@ export class FakeGitHub {
       return { status: 502, headers: {}, body: { message: "Server Error" } };
     if (this.world.refusing?.includes(path) === true)
       return { status: 422, headers: {}, body: { message: "Validation Failed" } };
+    const limit = this.world.limit;
+    if (limit !== undefined) {
+      if (/^repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(path)) {
+        if (limit.reads <= 0) limit.hit = true;
+        else limit.reads -= 1;
+      }
+      if (limit.hit === true)
+        return {
+          status: 429,
+          headers: { "retry-after": String(limit.retryAfter) },
+          body: { message: "API rate limit exceeded" },
+        };
+    }
     const app = this.world.app ?? null;
     const bearer = /^bearer (.+)$/i.exec(headers.authorization ?? "")?.[1];
     const asApp = app !== null && bearer !== undefined && bearer.split(".").length === 3;

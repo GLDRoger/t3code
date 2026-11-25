@@ -504,7 +504,7 @@ it.effect(
           args: { repo: SITE, number: devSite },
           before: () => {
             github.push({ repo: SITE, number: devSite });
-            fail(`repos/${SITE}/compare/main...${head(SITE, devSite)}`)();
+            fail(`repos/${SITE}/compare/base${devSite}...${head(SITE, devSite)}`)();
           },
           expect: [[`${SITE}#${devSite}`, PULL_REFUSAL.diff]],
         },
@@ -1389,5 +1389,34 @@ it.effect("an asked review queued without its chat answers the asker's, or ends 
     assert.deepStrictEqual(ended, { state: "expired", wakeupId: null });
     assert.deepStrictEqual(yield* told(ownerChat), []);
     assert.lengthOf(yield* told(devChat), 1);
+  }).pipe(Effect.provide(layer));
+});
+
+// GitHub's rate limit mid-ask: what it refused is said as refused, never as missing.
+it.effect("GitHub refusing the third of five reads: two queue, three are told as refused for now", () => {
+  const { github, layer } = harness();
+  return Effect.gen(function* () {
+    for (let index = 0; index < 5; index++)
+      github.openItem({
+        repo: APP,
+        pull: true,
+        author: "dev-gh",
+        association: "MEMBER",
+        title: `Change ${index}`,
+      });
+    const { review, ask, directOf } = yield* ambermill(github);
+    yield* ask("dev", yield* directOf("dev"), "Review my PRs");
+    github.world.limit = { reads: 2, retryAfter: 600 };
+    const answer = (yield* review({ repo: APP })).value;
+    const told = outcomes(answer);
+    assert.deepStrictEqual(
+      told.map(([, outcome]) => outcome),
+      ["queued", "queued", ...Array<string>(3).fill(PULL_REFUSAL.refused)],
+    );
+    const refusedRefs = told.slice(2).map(([ref]) => ref);
+    assert.include(
+      String(answer.next),
+      ` GitHub refused Kin's requests for now, so ${refusedRefs.join(", ")} weren't queued; GitHub takes requests again in about 10 minutes`,
+    );
   }).pipe(Effect.provide(layer));
 });

@@ -95,6 +95,7 @@ export const PULL_REFUSAL = {
   capped: `Kin has worked on it ${PER_THREAD_HOURLY} times this past hour. Ask again later. ${NOTHING}`,
   diff: `Kin couldn't read that pull request's changes just now. ${NOTHING}`,
   underWay: "a review of this head is already under way",
+  refused: "GitHub refused for now",
   already: (sha: string) => `already reviewed at ${short(sha)}; nothing new since`,
 } as const;
 export const POST_REFUSAL = {
@@ -278,9 +279,15 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
   });
   const pulls: Array<(typeof AskResult.Type)["pulls"][number]> = [];
   let queued = 0;
+  // Once GitHub refuses Kin for now, the rest aren't asked of it: each reads as refused.
+  let refused: { readonly until: number | undefined } | undefined;
   for (const candidate of candidates) {
     const line = (outcome: string, head = candidate.head) =>
       pulls.push({ repo: candidate.repo, number: candidate.number, head: short(head), outcome });
+    if (refused !== undefined) {
+      line(PULL_REFUSAL.refused);
+      continue;
+    }
     // A head already handled reads as that with no call to GitHub.
     const known =
       candidate.head === ""
@@ -299,6 +306,11 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
       { repo: candidate.repo, number: candidate.number, reviewRequested: true },
       now,
     );
+    if (read !== undefined && "refused" in read) {
+      refused = read.refused;
+      line(PULL_REFUSAL.refused);
+      continue;
+    }
     const thread = read?.thread;
     if (thread === undefined || thread.item !== "pull" || thread.pull === undefined) {
       line(PULL_REFUSAL.missing);
@@ -370,6 +382,17 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
           : PULL_REFUSAL.capped,
     );
   }
+  const refusedNote =
+    refused === undefined
+      ? ""
+      : ` GitHub refused Kin's requests for now, so ${pulls
+          .filter((pull) => pull.outcome === PULL_REFUSAL.refused)
+          .map((pull) => `${pull.repo}#${pull.number}`)
+          .join(", ")} weren't queued${
+          refused.until === undefined
+            ? ""
+            : `; GitHub takes requests again in about ${Math.max(1, Math.ceil((refused.until - now) / 60_000))} minutes`
+        }: tell them so, and to ask again then.`;
   const cutNote =
     cut.length === 0
       ? ""
@@ -381,7 +404,9 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
         ? `${asker.name} has no open pull requests there. ${NOTHING}`
         : queued > 0
           ? "Tell them each line as it reads. You haven't read a queued one yet: Kin tells them in this chat when its review is posted, or that it didn't finish."
-          : "Tell them each line as it reads.") + cutNote,
+          : "Tell them each line as it reads.") +
+      refusedNote +
+      cutNote,
   };
 });
 
