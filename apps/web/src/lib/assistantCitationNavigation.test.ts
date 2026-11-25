@@ -1,12 +1,8 @@
 import { EnvironmentId, MessageId, ThreadId, type AssistantCitation } from "@t3tools/contracts";
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRoute,
-  createRouter,
-} from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { describe, expect, it } from "vite-plus/test";
+import { testMemoryRouterOptions } from "../../test/memoryRouter";
 
 import { selectActiveRightPanelSurface, useRightPanelStore } from "../rightPanelStore";
 import {
@@ -32,10 +28,7 @@ function createCitationRouter(initialEntry = "/environment-one/thread-one") {
   const thread = createRoute({ getParentRoute: () => root, path: "/$environmentId/$threadId" });
   return createRouter({
     routeTree: root.addChildren([thread]),
-    history: createMemoryHistory({ initialEntries: [initialEntry] }),
-    // Without a document the router runs as SSR, where navigate is a no-op.
-    isServer: false,
-    origin: "http://localhost",
+    ...testMemoryRouterOptions(initialEntry),
   });
 }
 

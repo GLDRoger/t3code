@@ -1,9 +1,4 @@
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRoute,
-  createRouter,
-} from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { describe, expect, it } from "vite-plus/test";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { EMPTY_ENVIRONMENT_THREAD_STATE } from "@t3tools/client-runtime/state/threads";
@@ -12,6 +7,7 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { linkedThreadRouteParams } from "./linkedThreadSurface";
 import { makeThreadProjectionFixture } from "./test-fixtures";
+import { testMemoryRouterOptions } from "../test/memoryRouter";
 
 import {
   isThreadRoutePathname,
@@ -56,10 +52,7 @@ describe("threadRoutes", () => {
     const newThread = createRoute({ getParentRoute: () => root, path: "new" });
     const router = createRouter({
       routeTree: root.addChildren([thread, newThread]),
-      history: createMemoryHistory({ initialEntries: ["/new"] }),
-      // Without a document the router runs as SSR, where navigate is a no-op.
-      isServer: false,
-      origin: "http://localhost",
+      ...testMemoryRouterOptions("/new"),
     });
     await router.load();
     const ref = scopeThreadRef("local" as never, ThreadId.make("mcp:example"));

@@ -1,12 +1,7 @@
 import { EnvironmentId, ProviderInstanceId, ScheduledTaskId } from "@t3tools/contracts";
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRoute,
-  createRouter,
-  redirect,
-} from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter, redirect } from "@tanstack/react-router";
 import { describe, expect, it } from "vite-plus/test";
+import { testMemoryRouterOptions } from "../../../test/memoryRouter";
 
 import { resolveSettingsScope } from "./settingsScope";
 import { retainSettingsScope, validateSettingsRouteSearch } from "./settingsScopeNavigation";
@@ -76,10 +71,7 @@ function createSettingsRouter(initialEntry = "/settings/general") {
       ]),
       legacyProject,
     ]),
-    history: createMemoryHistory({ initialEntries: [initialEntry] }),
-    // Without a document the router runs as SSR, where navigate is a no-op.
-    isServer: false,
-    origin: "http://localhost",
+    ...testMemoryRouterOptions(initialEntry),
   });
 }
 
