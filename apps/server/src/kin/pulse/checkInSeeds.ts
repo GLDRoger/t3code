@@ -38,7 +38,7 @@ const CHECK_IN_SEEDS = [
     title: "Weekly brief",
     at: "09:00",
     days: [1],
-    what: "Weekly brief: in one short message, tell the owner what slipped last week, what is due this week and what needs his decision.",
+    what: "Weekly brief: in one short message, tell the owner what slipped last week, what is due this week and what needs their decision.",
   },
   {
     seed: "check-in-evening",

@@ -1639,7 +1639,7 @@ export const refRecord = Effect.fn("KinWorkTools.refRecord")(function* (
     message:
       team === undefined
         ? `No ${LISTS[list].noun} called ${text.slice(0, 60)}.${nearest} Find it with records_query list ${list}, or create it if it's new.`
-        : `No ${LISTS[list].noun} called ${text.slice(0, 60)} that everyone in this chat may see.${nearest} Leave it off here, or ask the owner in his own chat; don't add it again.`,
+        : `No ${LISTS[list].noun} called ${text.slice(0, 60)} that everyone in this chat may see.${nearest} Leave it off here, or ask the owner in their own chat; don't add it again.`,
   });
 });
 const resolveRef = (lead: Lead, text: string, list: "clients" | "projects") =>
