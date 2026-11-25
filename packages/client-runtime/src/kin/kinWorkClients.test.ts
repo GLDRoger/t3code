@@ -480,6 +480,32 @@ describe("kinClientPageView", () => {
       log: false,
       owner: false,
     });
+    // Outside India: tax number shows as "Tax number <number>", plus the client-accounts line when on.
+    const uk = kinClientPageView(
+      page({ gstin: "GB123456789", accountsForTax: true }),
+      names,
+      now,
+      true,
+      null,
+      "GB",
+    );
+    expect([uk.tax, uk.accountsForTax]).toEqual([
+      "Tax number GB123456789",
+      "Accounts for the tax themselves: invoices carry no tax.",
+    ]);
+    expect(
+      kinClientPageView(
+        page({ gstin: "27ABCDE1234F1Z5", accountsForTax: true }),
+        names,
+        now,
+        true,
+        null,
+        "IN",
+      ),
+    ).toMatchObject({
+      tax: "GSTIN 27ABCDE1234F1Z5",
+      accountsForTax: "Accounts for the tax themselves: invoices carry no tax.",
+    });
   });
 
   it("shows usable credit rows as amount from day and watches their receipt keys", () => {

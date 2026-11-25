@@ -9,12 +9,12 @@ import {
   readProfile,
   recordingCurrency,
 } from "../work/companyProfile.ts";
-import { regionOf, unregisteredTax } from "../work/region.ts";
+import { customerAccountsLine, regionOf, unregisteredTax } from "../work/region.ts";
 import { GST_REGIME, type TaxRegime } from "./compute.ts";
 import { logoFile, logoPath } from "./brand.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { billToAddress, billedParty, billingClientId, hasBillTo } from "../work/billTo.ts";
-import { type FieldValues, parseFields } from "../work/lists.ts";
+import { accountsForTax, type FieldValues, parseFields } from "../work/lists.ts";
 import { dayIn } from "../work/money.ts";
 import {
   countedEntry,
@@ -30,7 +30,7 @@ import {
 import { type ListDef, listDef, sensitiveKeys, stateLabel } from "../work/registers.ts";
 import { fundingOf, partnerFunded } from "../work/reimbursement.ts";
 import { findBankList } from "../work/statements/bankList.ts";
-import { issuedNumber } from "./numbering.ts";
+import { issuedDetails } from "./numbering.ts";
 import {
   type Facts,
   givesMoney,
@@ -221,11 +221,22 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       ? billToAddress(fields)
       : null;
   const clientFields = client === undefined ? {} : parseFields(client.fieldsJson);
+  const issued = entry === undefined ? undefined : yield* issuedDetails(orgId, entry.recordId);
   const number =
     entry === undefined
       ? null
-      : ((yield* issuedNumber(orgId, entry.recordId)) ??
-        (recipe.numbered ? null : (cellOf(fields, "number") as string | null)));
+      : (issued?.number ?? (recipe.numbered ? null : (cellOf(fields, "number") as string | null)));
+  const tax = taxRegimeOf(profile);
+  const customerAccounts =
+    entry !== undefined &&
+    hasBillTo(entry.registerId) &&
+    (issued === undefined ? accountsForTax(clientFields) : issued.taxByCustomer === 1)
+      ? {
+          line: customerAccountsLine(profile.country),
+          taxIdLabel: regionOf(profile.country)?.taxIdLabel ?? "Tax number",
+          taxNumber: billed?.taxNumber ?? null,
+        }
+      : undefined;
   // An amount the requester gives is read in the company's currency, which waits on its country.
   const home = givesMoney(recipe, given)
     ? yield* recordingCurrency(orgId, { saved: entry !== undefined })
@@ -456,7 +467,9 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
           case "address":
             return addressOverride ?? billed.address;
           case "gstin":
-            return clientTaxNumber ? billed.taxNumber : null;
+            return clientTaxNumber && (profile.country === "IN" || customerAccounts !== undefined)
+              ? billed.taxNumber
+              : null;
           case "placeOfSupply":
             return billed.place;
           default:
@@ -522,7 +535,14 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     input.type === "money" ||
     Object.values(input.columns).includes("money") ||
     fromSource(sourceOf(input.from), input);
-  return { facts, currency, sensitive, number, logo, tax: taxRegimeOf(profile) } satisfies Gathered;
+  return {
+    facts,
+    currency,
+    sensitive,
+    number,
+    logo,
+    tax: customerAccounts === undefined ? tax : { ...tax, customerAccounts },
+  } satisfies Gathered;
 });
 
 /**

@@ -207,13 +207,22 @@ export const KIN_LINES = {
   quantity: "Qty",
   unit: "Unit",
   rate: "Rate",
+  tax: "Tax %",
+  taxDetail: (rate?: string | null) =>
+    rate === ""
+      ? "Tax %: leave empty for the invoice's usual rate, 0 for no tax."
+      : rate != null && rate.trim() !== ""
+        ? `Tax %: leave empty for ${rate.trim()}%, 0 for no tax.`
+        : "Tax %: leave empty for none, or give a line its own rate.",
   add: "Add line",
   remove: "Remove line",
   badSac: (row: number) => `Line ${row}: a SAC or HSN code is 4 to 8 digits.`,
   badQuantity: (row: number) => `Line ${row}: enter a quantity like 3 or 2.5.`,
   badRate: (row: number) => `Line ${row}: enter a rate like 25,000.`,
+  badTax: (row: number) => `Line ${row}: enter a tax rate like 20 or 0.`,
   noDescription: (row: number) => `Line ${row}: say what it is.`,
   mixed: "Every line is in the same currency as the invoice.",
+  clientAccounts: "The client accounts for the tax themselves: these lines carry none.",
 };
 
 const isSac = Schema.is(KinSacCode);
@@ -761,6 +770,7 @@ export interface KinLineDraft {
   readonly quantity: string;
   readonly unit: string;
   readonly rate: string;
+  readonly taxRate: string;
 }
 
 export const KIN_EMPTY_LINE: KinLineDraft = {
@@ -769,6 +779,7 @@ export const KIN_EMPTY_LINE: KinLineDraft = {
   quantity: "1",
   unit: "",
   rate: "",
+  taxRate: "",
 };
 
 export const kinLineDrafts = (lines: ReadonlyArray<KinDocumentLine> | null): KinLineDraft[] =>
@@ -778,9 +789,11 @@ export const kinLineDrafts = (lines: ReadonlyArray<KinDocumentLine> | null): Kin
     quantity: line.quantity,
     unit: line.unit ?? "",
     rate: line.rate,
+    taxRate: line.taxRate ?? "",
   }));
 
 const QUANTITY = /^\d{1,9}(\.\d{1,3})?$/;
+export const KIN_TAX_RATE = /^(?:100|\d{1,2}(?:\.\d{1,3})?)$/;
 
 /**
  * Lines as the template takes them, or the first problem. Rows left wholly empty are dropped; none
@@ -789,11 +802,17 @@ const QUANTITY = /^\d{1,9}(\.\d{1,3})?$/;
 export function kinLinesInput(
   drafts: ReadonlyArray<KinLineDraft>,
   currency: string,
+  options?: { readonly tax?: boolean; readonly keepStoredTax?: boolean },
 ):
   | { readonly ok: true; readonly lines: ReadonlyArray<KinDocumentLine> | null }
   | { readonly ok: false; readonly problem: string } {
+  const tax = options?.tax !== false;
   const filled = drafts.filter(
-    (one) => one.description.trim() !== "" || one.sac.trim() !== "" || one.rate.trim() !== "",
+    (one) =>
+      one.description.trim() !== "" ||
+      one.sac.trim() !== "" ||
+      one.rate.trim() !== "" ||
+      (tax && one.taxRate.trim() !== ""),
   );
   const lines: KinDocumentLine[] = [];
   for (const [index, draft] of filled.entries()) {
@@ -808,6 +827,9 @@ export function kinLinesInput(
     const rate: KinMoney | null = kinParseMoney(draft.rate, currency);
     if (rate === null) return { ok: false, problem: KIN_LINES.badRate(row) };
     if (rate.currency !== currency) return { ok: false, problem: KIN_LINES.mixed };
+    const taxRate = tax ? draft.taxRate.trim() : options?.keepStoredTax ? draft.taxRate : "";
+    if (taxRate !== "" && !KIN_TAX_RATE.test(taxRate))
+      return { ok: false, problem: KIN_LINES.badTax(row) };
     const unit = draft.unit.trim().slice(0, 20);
     lines.push({
       description: description.slice(0, 300),
@@ -815,6 +837,7 @@ export function kinLinesInput(
       quantity,
       ...(unit === "" ? {} : { unit }),
       rate: kinMoneyText(rate, true),
+      ...(taxRate === "" ? {} : { taxRate }),
     });
   }
   return { ok: true, lines: lines.length === 0 ? null : lines };

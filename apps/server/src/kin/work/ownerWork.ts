@@ -714,7 +714,12 @@ export const shownRecords = Effect.fn("KinWork.shownRecords")(function* (
 
 /** A client's terms and tax details: the owner level's, now and in its changes. */
 const CONTACT_DETAILS: ReadonlySet<string> = new Set(KIN_SENSITIVE_FIELDS.contacts);
-const OWNERS_CLIENT_FIELDS: ReadonlySet<string> = new Set(["terms", "gstin", "placeOfSupply"]);
+const OWNERS_CLIENT_FIELDS: ReadonlySet<string> = new Set([
+  "terms",
+  "gstin",
+  "placeOfSupply",
+  "accountsForTax",
+]);
 
 /** A task read whole, naming its client only while this person may see it (`taskClients`). */
 const withClient = <A extends { readonly party?: { readonly recordId: string } | undefined }>(

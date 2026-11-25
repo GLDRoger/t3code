@@ -22,6 +22,7 @@ import {
   kinInvoiceTax,
   kinInvoiceTaxText,
   kinInvoiceTyped,
+  kinLineTax,
   type KinBillToDraft,
   type KinExpenseDraft,
   type KinInvoiceDraft,
@@ -67,7 +68,12 @@ import {
 } from "./state/useKinMoney";
 import { kinExpenseStartOf, type KinExpenseNewParams } from "./state/kinBillsPick";
 import { useKinNewExpense, useKinNewInvoice } from "./state/useKinMoneyAnswers";
-import { kinWorkChoicesAtom, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import {
+  kinWorkChoicesAtom,
+  useKinClientAccountsForTax,
+  useKinWorkDirectory,
+  type KinWorkTarget,
+} from "./state/useKinWork";
 import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -308,6 +314,12 @@ function InvoiceForm(
   const tax = profile.state._tag === "ready" ? kinInvoiceTax(profile.state.value) : null;
   const gst = tax?._tag === "gst";
   const taxText = tax === null ? null : kinInvoiceTaxText(tax);
+  const billedClient = byName ? null : (draft.party ?? projectClient);
+  const clientAccountsForTax = useKinClientAccountsForTax(props, billedClient);
+  const rawLineTax = kinLineTax(tax, { gstRate: draft.gstRate, clientAccountsForTax });
+  const lineTax = rawLineTax.show
+    ? rawLineTax
+    : { show: false as const, note: rawLineTax.note === null ? null : named(rawLineTax.note) };
   const now = new Date(useNowMinuteMs());
   const today = kinWorkDayOf(now);
   const locked = saving.busy || made !== null;
@@ -330,10 +342,11 @@ function InvoiceForm(
   const save = async () => {
     const checked = kinInvoiceInput(props.orgId, draft, {
       currency,
-      gst: gst && tax.registered,
+      gst: gst && tax.registered && !clientAccountsForTax,
       clientRequestId: requestId,
       byName,
       india,
+      tax: lineTax.show,
       projectClient,
     });
     if (!checked.ok) return setProblem(checked.problem);
@@ -432,6 +445,7 @@ function InvoiceForm(
         disabled={locked}
         codes={gst}
         detail={KIN_MONEY_FORMS.invoice.linesDetail}
+        tax={lineTax}
         onChange={(lines) => set({ lines })}
       />
       {beforeTax === null ? null : (
@@ -440,7 +454,7 @@ function InvoiceForm(
         </Text>
       )}
       <Slip line={slip} />
-      {gst && tax.registered ? (
+      {!lineTax.show && lineTax.note !== null ? null : gst && tax.registered ? (
         <KinWorkTextField
           label={KIN_MONEY_FORMS.invoice.gstRate}
           value={draft.gstRate}

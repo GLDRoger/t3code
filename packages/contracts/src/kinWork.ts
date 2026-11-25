@@ -1209,6 +1209,7 @@ export const KinPartyDetail = Schema.Struct({
   address: Schema.NullOr(KinText),
   /** Its GSTIN, when it has one; its invoices are taxed by its state. */
   gstin: Schema.NullOr(KinText),
+  accountsForTax: Schema.optional(Schema.Boolean),
   /** Where it is supplied: an Indian state, or a country outside India for an export. */
   placeOfSupply: Schema.NullOr(KinText),
   /** Which fields here are sensitive whatever `sensitive` says. */
@@ -1605,6 +1606,8 @@ export const KinPartyCreateInput = Schema.Struct({
   terms: Schema.optional(Notes),
   address: Schema.optional(Address),
   gstin: Schema.optional(KinGstin),
+  accountsForTax: Schema.optional(Schema.Boolean),
+  taxNumber: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(100)))),
   /** A state from `KIN_GST_STATES`, or a country for an export. */
   placeOfSupply: Schema.optional(PlaceOfSupply),
   /** Labels everything pointing at it sensitive too. */
@@ -1637,6 +1640,8 @@ export const KinPartyUpdateInput = Schema.Struct({
   address: Schema.optional(Schema.NullOr(Address)),
   /** `null` clears these two. */
   gstin: Schema.optional(Schema.NullOr(KinGstin)),
+  accountsForTax: Schema.optional(Schema.Boolean),
+  taxNumber: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(100)))),
   placeOfSupply: Schema.optional(Schema.NullOr(PlaceOfSupply)),
   sensitive: Schema.optional(Schema.Boolean),
   active: Schema.optional(Schema.Boolean),

@@ -1944,7 +1944,7 @@ describe("Kin migrations", () => {
           (yield* runKinMigrations()).map(([id]) => id),
           [
             196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213, 214, 215, 216, 217, 218, 219, 220,
+            213, 214, 215, 216, 217, 218, 219, 220, 221,
           ],
         );
         assert.deepStrictEqual(yield* receipts, [
@@ -1996,7 +1996,7 @@ describe("Kin migrations", () => {
         (yield* runKinMigrations()).map(([id]) => id),
         [
           197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-          215, 216, 217, 218, 219, 220,
+          215, 216, 217, 218, 219, 220, 221,
         ],
       );
       const all = [
@@ -2662,6 +2662,28 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("K221 adds tax_by_customer, keeps every issued row NULL, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      const columns = yield* sql<{ name: string }>`PRAGMA table_info(kin_issued_numbers)`;
+      if (columns.some(({ name }) => name === "tax_by_customer"))
+        yield* sql`ALTER TABLE kin_issued_numbers DROP COLUMN tax_by_customer`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 221`;
+      yield* sql`PRAGMA foreign_keys = OFF`;
+      yield* sql`INSERT INTO kin_issued_numbers (org_id, register_id, series, seq, number, record_id,
+          issued_at, issued_by_kind, issued_by_id)
+        VALUES ('org', 'invoices', 'INV', 1, 'INV-1', 'rec-1', 1, 'person', 'rhea')`;
+      yield* runKinMigrations();
+      const issued = sql`SELECT number, tax_by_customer FROM kin_issued_numbers
+        WHERE org_id = 'org' ORDER BY seq`;
+      assert.deepStrictEqual(yield* issued, [{ number: "INV-1", tax_by_customer: null }]);
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 221`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(221));
+      assert.deepStrictEqual(yield* issued, [{ number: "INV-1", tax_by_customer: null }]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("K219 lets a person have several own mailboxes, keeps rows, and reruns", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -2700,7 +2722,7 @@ describe("Kin migrations", () => {
       for (const column of ["received_minor", "received_currency", "rate"])
         if (columns.some(({ name }) => name === column))
           yield* sql`ALTER TABLE kin_record_payments DROP COLUMN ${sql.literal(column)}`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 220`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 220`;
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Ambermill', 1)`;
       yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
         VALUES ('org', 'invoices', 'Invoices', 'INV', 1)`;
@@ -2711,9 +2733,9 @@ describe("Kin migrations", () => {
       yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
           currency, paid_on, origin_key, created_at, created_by_kind)
         VALUES ('org', 'pay-1', 'rec', 100000, 'USD', '2026-11-01', 'owner:2', 1, 'person')`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[220, "PaymentReceived"]]);
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 220`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[220, "PaymentReceived"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(220));
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 220`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(220));
       assert.deepStrictEqual(
         yield* sql`SELECT amount_minor, currency, received_minor, received_currency, rate
           FROM kin_record_payments WHERE org_id = 'org' ORDER BY payment_id`,

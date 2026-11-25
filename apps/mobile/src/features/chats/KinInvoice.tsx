@@ -25,6 +25,11 @@ import {
   kinLinesInput,
   type KinLineDraft,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
+import {
+  kinInvoiceTax,
+  kinKeepsLineTax,
+  kinLineTax,
+} from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { kinDefaultTemplate, KIN_TEMPLATES } from "@t3tools/client-runtime/kin/kinTemplates";
 import { kinWorkDayOf, kinWorkDueLabel } from "@t3tools/client-runtime/kin/kinWork";
 import {
@@ -32,6 +37,7 @@ import {
   KinListId,
   KinOrgId,
   KinRecordKey,
+  KinRecipe,
   type KinDocFile,
   type KinListDefinition,
   type KinRecord,
@@ -76,16 +82,21 @@ import type { KinMakeStep } from "./kinMakeStep";
 import { kinClient } from "./state/kinClient";
 import {
   useKinCompanyCountry,
+  useKinCompanyProfile,
   useKinHomeCurrency,
   useKinMoneyActions,
   useKinReceipts,
   useKinRecipes,
 } from "./state/useKinMoney";
 import { useKinEntryLines } from "./state/useKinMoneyAnswers";
-import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
+import {
+  kinWorkChoicesAtom,
+  useKinClientAccountsForTax,
+  type KinWorkTarget,
+} from "./state/useKinWork";
+import { useKinSectionNamed } from "./state/useKinShell";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate } from "./state/useKinHost";
-import { useKinSectionNamed } from "./state/useKinShell";
 import { KinGateView } from "./components/KinWorkPieces";
 import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
@@ -609,6 +620,16 @@ export function KinMakeDocumentStep(
   const navigation = useNavigation();
   const actions = useKinMoneyActions(props);
   const hasLines = props.list !== KIN_CREDIT_NOTES_LIST;
+  const named = useKinSectionNamed(props.environmentId);
+  const profile = useKinCompanyProfile(props, true);
+  const tax = profile.state._tag === "ready" ? kinInvoiceTax(profile.state.value) : null;
+  const partyKey = Option.getOrNull(decodeKey(props.party?.key));
+  const clientAccountsForTax = useKinClientAccountsForTax(props, partyKey);
+  const [gstRate, setGstRate] = useState<string | null>(null);
+  const rawLineTax = kinLineTax(tax, { clientAccountsForTax, gstRate });
+  const lineTax = rawLineTax.show
+    ? rawLineTax
+    : { show: false as const, note: rawLineTax.note === null ? null : named(rawLineTax.note) };
   const readLines = useKinEntryLines(props);
   const [lines, setLines] = useState<ReadonlyArray<KinLineDraft> | null>(hasLines ? null : []);
   const [linesProblem, setLinesProblem] = useState<string | null>(null);
@@ -617,22 +638,35 @@ export function KinMakeDocumentStep(
     if (!hasLines) return;
     let live = true;
     void readLines(props.itemKey).then((held) => {
-      if (live) setLines(kinLineDrafts(held));
+      if (live) {
+        setLines(kinLineDrafts(held?.lines ?? null));
+        setGstRate(held?.gstRate ?? null);
+      }
     });
     return () => {
       live = false;
     };
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- once per entry; the reader is remade every render
   }, [props.itemKey, hasLines]);
-  const inputsOf = () => {
+  const inputsOf = (recipe: KinRecipe) => {
     if (!hasLines) return {};
-    const checked = kinLinesInput(lines ?? [], props.currency);
+    const checked = kinLinesInput(lines ?? [], props.currency, {
+      tax: lineTax.show,
+      keepStoredTax: kinKeepsLineTax(tax),
+    });
     if (!checked.ok) {
       setLinesProblem(checked.problem);
       return null;
     }
     setLinesProblem(null);
-    return checked.lines === null ? {} : { lines: checked.lines };
+    return {
+      ...(checked.lines === null ? {} : { lines: checked.lines }),
+      ...(tax?._tag === "gst" &&
+      gstRate !== null &&
+      recipe.inputs.some((input) => input.name === "gstRate" && input.from === "agent")
+        ? { gstRate }
+        : {}),
+    };
   };
   const gate = useKinGate(
     kinClient.docRender.permissionStateAtom(props.environmentId),
@@ -663,7 +697,7 @@ export function KinMakeDocumentStep(
   const missing = kinInvoiceMissingClient(actions.problem, props.party);
   const preview = async () => {
     if (recipe === null) return;
-    const inputs = inputsOf();
+    const inputs = inputsOf(recipe);
     if (inputs === null) return;
     setFailed(null);
     const files = await actions.preview(recipe.name, props.itemKey, inputs);
@@ -682,6 +716,8 @@ export function KinMakeDocumentStep(
   return (
     <KinWorkFrame
       title={title}
+      form
+      showTop={linesProblem}
       onBack={close}
       guardBack
       confirm={
@@ -692,7 +728,7 @@ export function KinMakeDocumentStep(
               loading: actions.busy && ready,
               disabled: actions.busy || !ready,
               onPress: async () => {
-                const inputs = inputsOf();
+                const inputs = inputsOf(recipe);
                 if (inputs === null) return;
                 if ((await actions.file(recipe.name, props.itemKey, requestId, inputs)) !== null)
                   close();
@@ -749,6 +785,8 @@ export function KinMakeDocumentStep(
             <KinLinesFields
               lines={lines}
               disabled={actions.busy}
+              {...(tax === null ? {} : { codes: tax._tag === "gst" })}
+              tax={lineTax}
               onChange={(next) => {
                 setLines(next);
                 setLinesProblem(null);

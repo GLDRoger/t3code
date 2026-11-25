@@ -54,8 +54,9 @@ RECIPE.md starts with front matter between --- lines:
   percent [amount, rate] (round: half-up, half-even, down or up), sum [amounts or table.column],
   minus [a, b], first [values], each { rows, set: { column: field } } (one value per row in
   each column it sets, never a table), words amount,
-  date [day, format], gst { taxable, total, recordedTax, rate, supplierGstin, supplierPlace,
+  date [day, format], gst { taxable, total, recordedTax, rate, lines (a table with amount and taxRate: one tax line per rate), supplierGstin, supplierPlace,
   clientGstin, clientPlace, exportUnderLut } and markdown text.
+  When the entry's client accounts for the tax, gst charges none and gives customerAccounts { line, taxIdLabel, taxNumber } for the document to print.
 - amount (numbered): which figure is the amount the document asks for, its tax and its tax
   lines, such as { total: tax.total, tax: tax.tax, taxes: tax.taxes }. Issuing an entry records
   that total, and refuses when the entry already holds another. A numbered recipe without it
@@ -132,8 +133,8 @@ inputs:
   lines:
     type: table
     required: false
-    description: "What was supplied, one row each, as the owner said it: quantity times rate is the taxable value; sac is the line's SAC or HSN code when the owner gave one, else the company's prints. Leave out to bill the entry's amount as one line."
-    columns: { description: text, sac: code, quantity: decimal, unit: text, rate: money }
+    description: "What was supplied, one row each: quantity times rate is the taxable value; sac is the owner's SAC or HSN code, else the company's. taxRate is the line's tax percent only when the owner gave that line its own rate (0 for no tax), else leave it out. Leave out to bill the entry's amount as one line."
+    columns: { description: text, sac: code, quantity: decimal, unit: text, rate: money, taxRate: decimal }
   gstRate: { type: decimal, required: false, description: "GST percent; 18 unless the owner said otherwise" }
   exportUnderLut: { type: boolean, required: false, description: "For an export: false only when the owner said IGST is paid on it" }
   notes: { type: text, required: false }
@@ -152,6 +153,7 @@ computed:
       total: total
       recordedTax: taxRecorded
       rate: gstPercent
+      lines: items
       supplierGstin: supplierGstin
       supplierPlace: supplierPlace
       clientGstin: clientGstin
@@ -209,9 +211,11 @@ endorsements and the footer) is at the top of template.typ.
 #let rule = if d.brandSecondary != none { rgb(d.brandSecondary) } else { rgb("#d1d5db") }
 #let body-font = if d.brandFont != none { (d.brandFont, "Libertinus Serif") } else { "Libertinus Serif" }
 #let t = d.tax
+#let customer-accounts = t.at("customerAccounts", default: none)
+#let line-tax = customer-accounts == none and t.taxes.len() > 0 and d.items != none and d.items.any(l => l.at("taxRate", default: none) != none)
 #let draft = d.draft != false or d.number == none
 #let heading-text = if t.registered { "Tax Invoice" } else { "Invoice" }
-#let endorsement = if not t.exported or not t.registered { none } else if t.exportUnderLut { lut-endorsement } else { paid-export-endorsement }
+#let endorsement = if not t.exported or not t.registered or customer-accounts != none { none } else if t.exportUnderLut { lut-endorsement } else { paid-export-endorsement }
 #let lines = if d.items != none and d.items.len() > 0 {
   d.items.map(l => (
     str(l.n),
@@ -220,6 +224,7 @@ endorsements and the footer) is at the top of template.typ.
     if l.unit != none { l.quantity + " " + l.unit } else { l.quantity },
     l.rate.text,
     l.amount.text,
+    ..if line-tax { (str(if l.at("taxRate", default: none) == none { t.usualRate } else { l.taxRate }) + "%",) } else { () },
   ))
 } else {
   ((
@@ -281,23 +286,25 @@ endorsements and the footer) is at the top of template.typ.
     #label[Billed to] \
     #text(weight: "bold", d.client)
     #if d.billedAt != none [ \ #d.billedAt]
-    #if d.clientGstin != none [ \ GSTIN #d.clientGstin]
+    #if customer-accounts != none {
+      if customer-accounts.taxNumber != none [ \ #customer-accounts.taxIdLabel #customer-accounts.taxNumber]
+    } else if d.clientGstin != none [ \ GSTIN #d.clientGstin]
   ],
   [
     #if t.placeOfSupply != none [#field("Place of supply", t.placeOfSupply)]
     #if t.country != none [#field("Country of destination", t.country)]
-    #if t.registered [ \ #field("Tax payable on reverse charge", "No")]
+    #if t.registered [ \ #field("Tax payable on reverse charge", if customer-accounts != none { "Yes" } else { "No" })]
   ],
 )
 
 #v(6mm)
 
 #table(
-  columns: (auto, 1fr, auto, auto, auto, auto),
+  columns: (auto, 1fr, auto, auto, auto, auto) + if line-tax { (auto,) } else { () },
   stroke: (x, y) => if y == 0 { (bottom: 0.8pt + accent) } else { (bottom: 0.4pt + rule) },
   inset: (x: 5pt, y: 6pt),
   align: (x, y) => if x >= 3 { right } else { left },
-  table.header(..("#", "Description", "HSN/SAC", "Qty", "Rate", "Taxable value").map(h => text(weight: "bold", h))),
+  table.header(..("#", "Description", "HSN/SAC", "Qty", "Rate", "Taxable value", ..if line-tax { ("Tax",) } else { () }).map(h => text(weight: "bold", h))),
   ..lines.flatten(),
 )
 
@@ -310,6 +317,7 @@ endorsements and the footer) is at the top of template.typ.
   [Taxable value], [#t.taxable.text],
   ..t.taxes.map(x => ([#x.name at #x.rate%], [#x.amount.text])).flatten(),
   ..if t.at("notCharged", default: none) != none { (table.cell(colspan: 2, align: left, text(fill: soft, t.notCharged)),) } else { () },
+  ..if customer-accounts != none { (table.cell(colspan: 2, align: left, text(fill: soft, customer-accounts.line)),) } else { () },
   table.hline(stroke: 0.8pt + accent),
   text(weight: "bold")[Total], text(weight: "bold", t.total.text),
   ..if d.paidLines != none and d.paidLines.len() > 0 {
@@ -432,8 +440,8 @@ inputs:
   lines:
     type: table
     required: false
-    description: "What is offered, one row each, as the owner said it: quantity times rate is the value before tax; sac is the line's SAC or HSN code when the owner gave one. Leave out to quote the entry's amount as one line."
-    columns: { description: text, sac: code, quantity: decimal, unit: text, rate: money }
+    description: "What is offered, one row each: quantity times rate is the value before tax; sac is the owner's SAC or HSN code, else the company's. taxRate is the line's tax percent only when the owner gave that line its own rate (0 for no tax), else leave it out. Leave out to quote the entry's amount as one line."
+    columns: { description: text, sac: code, quantity: decimal, unit: text, rate: money, taxRate: decimal }
   gstRate: { type: decimal, required: false, description: "GST percent; 18 unless the owner said otherwise" }
   exportUnderLut: { type: boolean, required: false, description: "For an export: false only when the owner said IGST will be paid on it" }
   terms: { type: text, required: false, description: "Payment terms or conditions, as the owner gave them" }
@@ -453,6 +461,7 @@ computed:
       total: total
       recordedTax: taxRecorded
       rate: gstPercent
+      lines: items
       supplierGstin: supplierGstin
       supplierPlace: supplierPlace
       clientGstin: clientGstin
@@ -490,6 +499,8 @@ The wording the owner may change is at the top of template.typ.
 #let rule = if d.brandSecondary != none { rgb(d.brandSecondary) } else { rgb("#d1d5db") }
 #let body-font = if d.brandFont != none { (d.brandFont, "Libertinus Serif") } else { "Libertinus Serif" }
 #let t = d.tax
+#let customer-accounts = t.at("customerAccounts", default: none)
+#let line-tax = customer-accounts == none and t.taxes.len() > 0 and d.items != none and d.items.any(l => l.at("taxRate", default: none) != none)
 #let draft = d.draft != false or d.number == none
 #let lines = if d.items != none and d.items.len() > 0 {
   d.items.map(l => (
@@ -499,6 +510,7 @@ The wording the owner may change is at the top of template.typ.
     if l.unit != none { l.quantity + " " + l.unit } else { l.quantity },
     l.rate.text,
     l.amount.text,
+    ..if line-tax { (str(if l.at("taxRate", default: none) == none { t.usualRate } else { l.taxRate }) + "%",) } else { () },
   ))
 } else {
   ((
@@ -557,7 +569,9 @@ The wording the owner may change is at the top of template.typ.
     #label[Prepared for] \
     #text(weight: "bold", d.client)
     #if d.billedAt != none [ \ #d.billedAt]
-    #if d.clientGstin != none [ \ GSTIN #d.clientGstin]
+    #if customer-accounts != none {
+      if customer-accounts.taxNumber != none [ \ #customer-accounts.taxIdLabel #customer-accounts.taxNumber]
+    } else if d.clientGstin != none [ \ GSTIN #d.clientGstin]
   ],
   [
     #if t.placeOfSupply != none [#label[Place of supply] \ #t.placeOfSupply]
@@ -568,11 +582,11 @@ The wording the owner may change is at the top of template.typ.
 #v(6mm)
 
 #table(
-  columns: (auto, 1fr, auto, auto, auto, auto),
+  columns: (auto, 1fr, auto, auto, auto, auto) + if line-tax { (auto,) } else { () },
   stroke: (x, y) => if y == 0 { (bottom: 0.8pt + accent) } else { (bottom: 0.4pt + rule) },
   inset: (x: 5pt, y: 6pt),
   align: (x, y) => if x >= 3 { right } else { left },
-  table.header(..("#", "Description", "HSN/SAC", "Qty", "Rate", "Value").map(h => text(weight: "bold", h))),
+  table.header(..("#", "Description", "HSN/SAC", "Qty", "Rate", "Value", ..if line-tax { ("Tax",) } else { () }).map(h => text(weight: "bold", h))),
   ..lines.flatten(),
 )
 
@@ -585,6 +599,7 @@ The wording the owner may change is at the top of template.typ.
   [Value before tax], [#t.taxable.text],
   ..t.taxes.map(x => ([#x.name at #x.rate%], [#x.amount.text])).flatten(),
   ..if t.at("notCharged", default: none) != none { (table.cell(colspan: 2, align: left, text(fill: soft, t.notCharged)),) } else { () },
+  ..if customer-accounts != none { (table.cell(colspan: 2, align: left, text(fill: soft, customer-accounts.line)),) } else { () },
   table.hline(stroke: 0.8pt + accent),
   text(weight: "bold")[#if t.taxes.len() > 0 [Total with GST] else [Total]], text(weight: "bold", t.total.text),
 )))
