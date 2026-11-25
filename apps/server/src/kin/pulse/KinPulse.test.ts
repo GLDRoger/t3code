@@ -41,6 +41,8 @@ import {
   DRAFT_CHASE,
   DRAFT_DEAL,
   DRAFT_DOCUMENT,
+  DRAFT_MEETING_PREP,
+  docHeadStart,
   draftWakeGone,
   DRAFT_FROM_MAILBOX,
   draftWakeText,
@@ -55,6 +57,7 @@ import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { projectLastMoved } from "./senses/projects.ts";
 import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
 import { ensureBankList } from "../work/statements/bankList.ts";
+import { formatMoneyPlain } from "../work/money.ts";
 
 // Invented org, people, entries and money only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -1580,6 +1583,122 @@ describe("KinPulse", () => {
         personId: mate,
         key: late,
       });
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a client meeting coming up gets its holder a prep note, from what she sees", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* letMate;
+      yield* matesDocs;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET access = 'owner' WHERE person_id = ${owner}`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mate}`;
+      const at = B + 4 * DAY + 6 * HOUR;
+      const meeting = (id: string, ownerId: string, dateAt: number, partyId?: string) =>
+        insert({
+          id,
+          title: `Pilot review ${id}`,
+          category: "meeting",
+          ownerKind: "person",
+          ownerId,
+          dateAt,
+          ...(partyId === undefined ? {} : { partyId }),
+          fields: JSON.stringify({ attendees: [`person:${ownerId}`] }),
+        });
+      // Hers with Lumen tomorrow; W-14 (seeded) has no client; W-46 is in an hour; W-44 is his.
+      yield* meeting("W-40", mate, B + 5 * DAY + 3 * HOUR, "r-C-1");
+      yield* meeting("W-46", mate, at + HOUR, "r-C-2");
+      yield* meeting("W-44", owner, B + 5 * DAY + 5 * HOUR, "r-C-1");
+      yield* insert({
+        id: "W-41",
+        title: "Revised quote",
+        ownerKind: "person",
+        ownerId: owner,
+        partyId: "r-C-1",
+        dueAt: B + 6 * DAY,
+        teamShared: 1,
+      });
+      yield* insert({
+        id: "W-42",
+        title: "Signed SOW",
+        side: "theirs",
+        ownerKind: "person",
+        ownerId: mate,
+        partyId: "r-C-1",
+        dueAt: B + 2 * DAY,
+      });
+      yield* insert({
+        id: "W-43",
+        title: "Margin review",
+        ownerKind: "person",
+        ownerId: owner,
+        partyId: "r-C-1",
+        dueAt: B + 6 * DAY,
+      });
+      yield* insert({
+        id: "INV-9",
+        list: "invoices",
+        state: "waiting",
+        amount: 1_200_00,
+        dueAt: B + DAY,
+        partyId: "r-C-1",
+      });
+      yield* TestClock.setTime(at);
+      const preps = (yield* KinPulse.tick(orgId, at)).drafted.filter((one) =>
+        one.key.startsWith("meeting_soon:"),
+      );
+      assert.sameDeepMembers(preps, [
+        { personId: owner, key: `meeting_soon:W-44:at=${B + 5 * DAY + 5 * HOUR}` },
+        { personId: mate, key: `meeting_soon:W-40:at=${B + 5 * DAY + 3 * HOUR}` },
+      ]);
+      const events = yield* draftEvents;
+      const hers = events.find((one) => one.factKeys[0]!.startsWith("meeting_soon:W-40"))!;
+      const read = yield* draftWakeText(orgId, hers);
+      assert.strictEqual(read?.text, DRAFT_MEETING_PREP("Meera"));
+      // Only what she sees, and no money.
+      assert.deepStrictEqual(read?.data, {
+        meeting: "W-40",
+        title: "Pilot review W-40",
+        at: "Fri 6 Nov, 03:00",
+        attendees: ["Meera"],
+        client: "Lumen",
+        open: [
+          { key: "W-42", title: "Signed SOW", holder: "Meera", due: "2026-11-03", side: "theirs" },
+          { key: "W-41", title: "Revised quote", holder: "Arjun", due: "2026-11-07", side: "ours" },
+        ],
+        lastContacts: [],
+      });
+      // His, at owner level: the client's overdue invoices as a count and a total.
+      const his = events.find((one) => one.factKeys[0]!.startsWith("meeting_soon:W-44"))!;
+      const owners = yield* draftWakeText(orgId, his);
+      assert.deepInclude(owners?.data, {
+        // The seed's own overdue Lumen invoice and this one.
+        overdueInvoices: {
+          count: 2,
+          total: formatMoneyPlain({ minor: 21_200_00, currency: "INR" }),
+        },
+      });
+      assert.includeMembers(
+        (owners?.data as { open: ReadonlyArray<{ key: string }> }).open.map((one) => one.key),
+        ["W-42", "W-41", "W-43"],
+      );
+      // Its turn's one doc is filed for her and linked to the meeting.
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+          started_at, status, event_ids)
+        VALUES ('w-prep', ${orgId}, ${hers.agentId}, 't-prep', 'test', 0, 'running', '[]')`;
+      yield* sql`UPDATE kin_events SET wakeup_id = 'w-prep' WHERE event_id = ${hers.eventId}`;
+      assert.deepStrictEqual(yield* docHeadStart(orgId, hers.agentId, "w-prep"), {
+        personId: mate,
+        recordId: "r-W-40",
+        key: "W-40",
+      });
+      // A doc she opens, linked to it since: the note is made, and the wake writes nothing more.
+      yield* insert({ id: "D-9", list: "docs", createdAt: at, teamShared: 1 });
+      yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation,
+          created_at)
+        VALUES (${orgId}, 'r-D-9', 'record', 'r-W-40', 'relates', ${at + MINUTE})`;
+      assert.isUndefined(yield* draftWakeText(orgId, hers));
     }).pipe(Effect.provide(chatLayer)),
   );
 

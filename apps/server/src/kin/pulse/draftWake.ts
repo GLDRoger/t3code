@@ -1,7 +1,9 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous event-id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 import {
+  formatKinWhen,
   isKinSalesDomain,
+  KIN_TEXT_LOCALE,
   KinAgentId,
   KinChatId,
   KinEvent,
@@ -27,8 +29,10 @@ import { ownerLevel } from "../people/KinAccess.ts";
 import { touchesOf } from "../work/touches.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { personQuietUntil, validZone } from "../triggers/quietHold.ts";
-import { dayIn } from "../work/money.ts";
-import { ownerZone, startOfDay } from "../work/recordRows.ts";
+import { fieldList, parseFields } from "../work/lists.ts";
+import { dayIn, formatMoneyPlain } from "../work/money.ts";
+import { principalOfText } from "../work/projectSpine.ts";
+import { labelledNow, owedInvoices, ownerZone, startOfDay } from "../work/recordRows.ts";
 import { crmSeenBy, placesOf, seenBy, viewerOfPeople } from "../work/teamView.ts";
 import { HEAD_STARTS_PER_DAY } from "./prepareSenses.ts";
 import { daysText, iso, type SenseContext } from "./senses/shared.ts";
@@ -46,8 +50,13 @@ const FOLLOW_UPS = new Set<string>([
   "task_late",
   "task_due_soon",
   "theirs_late",
+  "meeting_soon",
   ...DEAL_FOLLOW_UPS,
 ]);
+/** A prep note this close to its meeting comes too late to read: none is made. */
+const PREP_BEFORE_MS = 2 * HOUR_MS;
+/** What a prep note lists of the client's open work, at most. */
+const PREP_OPEN = 8;
 /** A deal still open this long after its follow-up for a passed date was drafted gets another. */
 const DATE_PASSED_AGAIN_MS = 7 * DAY_MS;
 const senseOf = (factKey: string) => factKey.split(":")[0] ?? "";
@@ -240,6 +249,58 @@ const stillQuiet = Effect.fnUntraced(function* (
   return { zone, path: "mail" as const, of: "deal" as const };
 });
 
+/**
+ * Their zone when `meetingId` is an open, unlabelled meeting `personId` holds and sees, with a
+ * client (its own or its project's) they see, more than `PREP_BEFORE_MS` ahead, `factKey` still
+ * stands, and no doc they can open was linked to it since that fact began; they may open Docs.
+ */
+const stillAhead = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  factKey: string,
+  meetingId: string,
+  at: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const viewer = (yield* ownerLevel(orgId, personId))
+    ? ({ _tag: "ownerLevel" } as const)
+    : viewerOfPeople([personId]);
+  const [row] = yield* sql<{
+    zone: string | null;
+    client: number;
+    since: number | null;
+    linkedAt: number | null;
+  }>`SELECT p.time_zone AS zone,
+      EXISTS (SELECT 1 FROM kin_records r WHERE r.org_id = m.org_id AND r.register_id = 'clients'
+        AND r.record_id = COALESCE(m.party_id, pr.party_id) AND ${seenBy(sql, viewer)}) AS client,
+      (SELECT f.first_seen_at FROM kin_pulse_facts f WHERE f.org_id = m.org_id
+        AND f.fact_key = ${factKey} AND f.subject_record_id = m.record_id
+        AND f.cleared_at IS NULL) AS since,
+      (SELECT MAX(l.created_at) FROM kin_record_links l
+        WHERE l.org_id = m.org_id AND l.kind = 'record'
+          AND (l.record_id = m.record_id OR l.target = m.record_id)
+          AND (CASE WHEN l.record_id = m.record_id THEN l.target ELSE l.record_id END) IN (
+            SELECT r.record_id FROM kin_records r WHERE r.org_id = ${orgId}
+              AND r.register_id = 'docs' AND r.state <> 'dropped' AND ${seenBy(sql, viewer)})
+      ) AS "linkedAt"
+    FROM kin_records m
+    JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = ${personId}
+      AND p.removed_at IS NULL
+    LEFT JOIN kin_records pr ON pr.org_id = m.org_id AND pr.record_id = m.project_id
+    WHERE m.org_id = ${orgId} AND m.record_id = ${meetingId} AND m.register_id = 'work'
+      AND m.category = 'meeting' AND m.state NOT IN ('done', 'dropped')
+      AND m.date_at > ${at + PREP_BEFORE_MS}
+      AND m.owner_kind = 'person' AND m.owner_id = ${personId}
+      AND m.record_id IN (SELECT r.record_id FROM kin_records r WHERE r.org_id = ${orgId}
+        AND r.record_id = ${meetingId} AND ${seenBy(sql, viewer)} AND NOT ${labelledNow(sql)})`;
+  if (row === undefined || row.client !== 1 || row.since === null) return undefined;
+  if (row.linkedAt !== null && row.linkedAt >= row.since) return undefined;
+  if (viewer._tag !== "ownerLevel" && !(yield* placesOf(orgId, personId)).reaches.docs)
+    return undefined;
+  const zone = validZone(row.zone) ?? (yield* ownerZone(orgId));
+  return { zone, path: "doc" as const, of: "meeting" as const };
+});
+
 /** How to draft the follow-up `factKey` names on `recordId` for `personId` now, if still wanted. */
 const stillWanted = (
   orgId: KinOrgId,
@@ -250,7 +311,9 @@ const stillWanted = (
 ) =>
   DEAL_FOLLOW_UPS.has(senseOf(factKey))
     ? stillQuiet(orgId, personId, factKey, recordId, at)
-    : stillDue(orgId, personId, recordId, at);
+    : senseOf(factKey) === "meeting_soon"
+      ? stillAhead(orgId, personId, factKey, recordId, at)
+      : stillDue(orgId, personId, recordId, at);
 
 /**
  * A person's own task that is due (`stillDue`): one wake, in their own chat, of the first agent
@@ -274,19 +337,43 @@ export const draftWakes = Effect.fn("KinPulse.draftWakes")(function* (input: {
   const chats = yield* Effect.serviceOption(KinChatService);
   const woken: Array<{ readonly personId: string; readonly key: string }> = [];
   const due = input.open.filter(
-    (fact) =>
-      FOLLOW_UPS.has(fact.sense) &&
-      fact.actor._tag === "person" &&
-      fact.subject.recordId !== undefined,
+    (fact) => FOLLOW_UPS.has(fact.sense) && fact.subject.recordId !== undefined,
   );
   if (due.length === 0) return woken;
+  // A meeting's facts are the main agent's; its prep is for the person who holds it.
+  const meetings = due.flatMap((fact) =>
+    fact.sense === "meeting_soon" && !fact.sensitive ? [fact.subject.recordId!] : [],
+  );
+  const sql = yield* SqlClient.SqlClient;
+  const held = new Map(
+    meetings.length === 0
+      ? []
+      : (yield* sql<{ recordId: string; personId: string }>`SELECT record_id AS "recordId",
+            owner_id AS "personId" FROM kin_records
+          WHERE org_id = ${orgId} AND owner_kind = 'person' AND record_id IN ${sql.in(meetings)}
+          ORDER BY record_id`).map((row) => [row.recordId, row.personId]),
+  );
   const byPerson = new Map<string, Array<KinPulseFact>>();
-  for (const fact of due)
-    if (fact.actor._tag === "person")
-      byPerson.set(fact.actor.personId, [...(byPerson.get(fact.actor.personId) ?? []), fact]);
+  for (const fact of due) {
+    const holder =
+      fact.sense === "meeting_soon"
+        ? held.get(fact.subject.recordId!)
+        : fact.actor._tag === "person"
+          ? fact.actor.personId
+          : undefined;
+    if (holder !== undefined) byPerson.set(holder, [...(byPerson.get(holder) ?? []), fact]);
+  }
   for (const [person, facts] of byPerson) {
     const personId = KinPersonId.make(person);
-    const seen = new Set((yield* input.sees(personId, facts)).map((fact) => fact.key));
+    const prep = facts.filter((fact) => fact.sense === "meeting_soon");
+    const seen = new Set([
+      ...(yield* input.sees(
+        personId,
+        facts.filter((fact) => fact.sense !== "meeting_soon"),
+      )).map((fact) => fact.key),
+      // Held and unlabelled; `stillAhead` checks it against their own view.
+      ...prep.map((fact) => fact.key),
+    ]);
     const ready: Array<{ fact: KinPulseFact; recordId: string; zone: string; path: DraftPath }> =
       [];
     const tasks = new Set<string>();
@@ -494,8 +581,13 @@ export const docHeadStart = Effect.fn("KinPulse.docHeadStart")(function* (
   wakeupId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const events = yield* sql<{ dedupeKey: string | null; personId: string | null }>`SELECT
-      e.dedupe_key AS "dedupeKey", json_extract(e.json, '$.origin.personId') AS "personId"
+  const events = yield* sql<{
+    dedupeKey: string | null;
+    personId: string | null;
+    factKey: string | null;
+  }>`SELECT
+      e.dedupe_key AS "dedupeKey", json_extract(e.json, '$.origin.personId') AS "personId",
+      json_extract(e.json, '$.factKeys[0]') AS "factKey"
     FROM kin_events e
     WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
     ORDER BY e.event_id`;
@@ -510,7 +602,8 @@ export const docHeadStart = Effect.fn("KinPulse.docHeadStart")(function* (
     ? rest.slice(0, -`:YYYY-MM-DD:${agentId}`.length)
     : rest.slice(0, -":YYYY-MM-DD".length);
   const at = yield* DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
-  if ((yield* stillDue(orgId, personId, recordId, at))?.path !== "doc") return undefined;
+  if ((yield* stillWanted(orgId, personId, event.factKey ?? "", recordId, at))?.path !== "doc")
+    return undefined;
   const [task] = yield* sql<{ key: string }>`SELECT key FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${recordId}`;
   return task === undefined ? undefined : { personId, recordId, key: task.key };
@@ -574,6 +667,9 @@ const ownMailbox = (addresses: ReadonlyArray<string>) =>
 /** The wake's own line when the person has their own mailbox and a contact to write to. */
 export const DRAFT_FROM_MAILBOX = (name: string, addresses: ReadonlyArray<string>) =>
   `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. Draft the mail to the contact below from ${ownMailbox(addresses)} with kin_connection_call mail_send, naming the task's key in the mail, so it waits on a Confirm card for them. Nothing goes until they tap Confirm: never say it was sent. Then tell them in one short line that it is ready.`;
+/** The wake's own line for a client meeting coming up: a prep note as a doc linked to it. */
+export const DRAFT_MEETING_PREP = (name: string) =>
+  `Kin woke you for ${name}: their meeting below with a client is coming up and nothing is prepared for it. Make one short prep note as a new doc with doc_create, linked to the meeting: who is coming, what is open with this client from the data below (ours and theirs), the last contact, and at most three things to settle in it. Use only the data below and Kin's records; never add a figure that isn't there. Then tell them in one short line that it's ready, with its card. If there is nothing open and no contact on record, make nothing and say so in one line.`;
 /** The wake's own line for a deal gone quiet or past its day (`reason`), from their own mailbox. */
 export const DRAFT_DEAL = (name: string, addresses: ReadonlyArray<string>, reason: string) =>
   `Kin woke you for ${name}: their deal below ${reason}, and no mail for it waits on a card. Draft a short follow-up to the contact below from ${ownMailbox(addresses)} with kin_connection_call mail_send, naming the deal's key: pick up from the last contact, ask where it stands, and suggest one next step. Never offer a price, date or term the records don't hold. Nothing goes until they tap Confirm: never say it was sent. Then tell them in one short line that it is ready.`;
@@ -691,6 +787,14 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
       },
     };
   }
+  if (still.of === "meeting")
+    return yield* meetingPrep(orgId, person.name, {
+      meetingId: fact.recordId,
+      zone,
+      at,
+      viewer,
+      lastComment,
+    });
   const [task] = yield* sql<{
     key: string;
     title: string;
@@ -735,6 +839,113 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
       ...(contact === undefined ? {} : { writeTo: contact }),
       ...lastComment,
       ...from,
+    },
+  };
+});
+
+/**
+ * A prep note's wake: the meeting, who is coming, what is open with its client that they see (ours
+ * and theirs, soonest due first), the last contacts, and for owner level only the client's overdue
+ * invoices as a count and a total.
+ */
+const meetingPrep = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  name: string,
+  input: {
+    readonly meetingId: string;
+    readonly zone: string;
+    readonly at: number;
+    readonly viewer: ReturnType<typeof viewerOfPeople>;
+    readonly lastComment: { readonly lastComment?: string };
+  },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { zone, viewer } = input;
+  const [meeting] = yield* sql<{
+    key: string;
+    title: string;
+    dateAt: number;
+    fieldsJson: string;
+    client: string;
+    partyId: string;
+  }>`SELECT m.key, m.title, m.date_at AS "dateAt", m.fields_json AS "fieldsJson",
+      c.title AS client, c.record_id AS "partyId"
+    FROM kin_records m
+    LEFT JOIN kin_records pr ON pr.org_id = m.org_id AND pr.record_id = m.project_id
+    JOIN kin_records c ON c.org_id = m.org_id AND c.register_id = 'clients'
+      AND c.record_id = COALESCE(m.party_id, pr.party_id)
+    WHERE m.org_id = ${orgId} AND m.record_id = ${input.meetingId}`;
+  if (meeting === undefined) return undefined;
+  const names = new Map(
+    (yield* sql<{ id: string; name: string }>`SELECT person_id AS id, display_name AS name
+      FROM kin_people WHERE org_id = ${orgId}
+      UNION ALL SELECT agent_id AS id, display_name AS name FROM kin_agents WHERE org_id = ${orgId}
+      ORDER BY id`).map((one) => [one.id, one.name]),
+  );
+  const attendees = fieldList(parseFields(meeting.fieldsJson), "attendees").flatMap((text) => {
+    const who = principalOfText(text);
+    const found =
+      who === null ? undefined : names.get(who._tag === "person" ? who.personId : who.agentId);
+    return found === undefined ? [] : [found];
+  });
+  const open = yield* sql<{
+    key: string;
+    title: string;
+    holderId: string;
+    dueAt: number | null;
+    side: string | null;
+  }>`SELECT r.key, r.title, r.owner_id AS "holderId", r.due_at AS "dueAt", r.side
+    FROM kin_records r
+    LEFT JOIN kin_records pr ON pr.org_id = r.org_id AND pr.record_id = r.project_id
+    WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.record_id <> ${input.meetingId}
+      AND r.state NOT IN ('done', 'dropped')
+      AND COALESCE(r.party_id, pr.party_id) = ${meeting.partyId} AND ${seenBy(sql, viewer)}
+    ORDER BY r.due_at IS NULL, r.due_at, r.key LIMIT ${PREP_OPEN}`;
+  const touches = yield* touchesOf(orgId, meeting.partyId, input.at, 3, viewer);
+  const overdue =
+    viewer._tag === "ownerLevel" &&
+    (yield* KinShell.sectionOnFor(orgId, "invoices").pipe(Effect.orElseSucceed(() => false)))
+      ? (yield* owedInvoices({ orgId, now: input.at, partyId: meeting.partyId })).filter(
+          (one) => one.overdue,
+        )
+      : [];
+  const sums = new Map<string, number>();
+  for (const one of overdue)
+    sums.set(one.balance.currency, (sums.get(one.balance.currency) ?? 0) + one.balance.minor);
+  return {
+    text: DRAFT_MEETING_PREP(name),
+    data: {
+      meeting: meeting.key,
+      title: meeting.title,
+      at: formatKinWhen(meeting.dateAt, "dayTime", { zone, locale: KIN_TEXT_LOCALE }),
+      attendees,
+      client: meeting.client,
+      open: open.map((one) => ({
+        key: one.key,
+        title: one.title,
+        holder: names.get(one.holderId) ?? null,
+        ...(one.dueAt === null ? {} : { due: dayIn(one.dueAt, zone) }),
+        side: one.side === "theirs" ? "theirs" : "ours",
+      })),
+      lastContacts: touches.map((touch) => ({
+        on: dayIn(Date.parse(touch.at), zone),
+        kind: touch.kind,
+        ...(touch.who === null ? {} : { who: touch.who }),
+        ...(touch.note.trim() === ""
+          ? {}
+          : { note: Array.from(touch.note.trim()).slice(0, 200).join("") }),
+      })),
+      ...input.lastComment,
+      ...(overdue.length === 0
+        ? {}
+        : {
+            overdueInvoices: {
+              count: overdue.length,
+              total: [...sums]
+                .map(([currency, minor]) => formatMoneyPlain({ minor, currency }))
+                .join(" + "),
+            },
+          }),
     },
   };
 });
