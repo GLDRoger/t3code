@@ -276,4 +276,26 @@ it.layer(layer)((it) => {
       );
     }),
   );
+
+  // The same, with Repaid on left blank: the day the mark was written stands in, in the
+  // company's zone (21 Nov 20:00 UTC is 22 Nov in Kolkata).
+  it.effect("a hand mark with no repaid day counts from the day it was written", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("ambermill-blank-day");
+      const kin = yield* company(org);
+      yield* kin.expense("EXP-4", 5_000, "2026-10-01", { reimbursement: "repaid" });
+      yield* kin.sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind,
+          actor_id, via, kind, fields_json)
+        VALUES (${org}, ${`${org}-EXP-4`}, 2, ${Date.parse("2026-11-21T20:00:00Z")}, 'person',
+          ${`${org}-rhea`}, 'owner', 'updated',
+          '[{"field":"reimbursement","from":"owed","to":"repaid"}]')`;
+      yield* kin.expense("EXP-8", 5_000, "2026-11-01", { reimbursement: "owed" });
+      yield* kin.debit("BNK-9", 5_000, "2026-11-20");
+      assert.deepStrictEqual(yield* kin.told(), []);
+      assert.strictEqual(
+        yield* kin.draw("BNK-9"),
+        "BNK-9 may be the repayment already marked by hand for Zoya Rao on 2026-11-22, so Kin offers no card for it. Nothing was asked; tell the owner what you see instead.",
+      );
+    }),
+  );
 });
