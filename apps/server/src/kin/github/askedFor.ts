@@ -34,7 +34,7 @@ const TITLE_MAX = 120;
  * A pull request's title as any line of Kin's carries it: one line, at most 120 characters, in
  * straight quotes with its own quotes made typographic, and never read as Markdown.
  */
-export const quotedTitle = (title: string) => {
+const quotedTitle = (title: string) => {
   const chars = Array.from(
     title.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\s]+/gu, " ").trim().replace(/"/g, "\u201d").replace(/'/g, "\u2019"),
   );

@@ -337,7 +337,7 @@ interface Thread {
  * GitHub refusing Kin's requests for now (403 or 429, its rate limits), and when it said it takes
  * them again, from its `retry-after` or `x-ratelimit-reset`; undefined for any other answer.
  */
-export const refusedFor = (answer: ApiAnswer, now: number) => {
+const refusedFor = (answer: ApiAnswer, now: number) => {
   if (answer.status !== 403 && answer.status !== 429) return undefined;
   const after = Number(answer.headers["retry-after"]);
   const reset = Number(answer.headers["x-ratelimit-reset"]);
@@ -528,7 +528,7 @@ export const pieceEnd = (text: string, at: number) =>
 export const diffGoesOn = (rest: number, from: number) =>
   `…[the diff goes on for ${rest} more characters: read them with kin_github_diff, from ${from}]`;
 /** Where Kin's read of a diff stopped short of its end. */
-export const DIFF_CUT_SHORT =
+const DIFF_CUT_SHORT =
   "…[GitHub's answer stopped here, so Kin couldn't read the rest of this diff: your review is partial]";
 
 /** A PR's diff as the server reads it for a turn with no shell, its first `DIFF_CAP` characters. */
