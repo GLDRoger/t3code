@@ -2915,6 +2915,85 @@ it.effect("a receipt Confirm's own writes are the tap's, not newer than it", () 
   ),
 );
 
+// An agent's payment waits on its card; only an owner-level person's tap through the chat records
+// it, once, and a card whose figures moved records nothing.
+it.effect("a payment card records only an owner-level tap, once, on the figures it showed", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { owner, orgId, sql, records } = kin;
+      const chatId = kin.chatOf("finance");
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
+      const ownerWrites = {
+        actor: { _tag: "person" as const, personId: owner.personId },
+        via: "owner" as const,
+        askedBy: owner.personId,
+      };
+      const client = yield* records.create(orgId, ownerWrites, {
+        list: "clients",
+        title: "Tidewater Freight",
+        owner: { _tag: "person", personId: owner.personId },
+        originKey: "tidewater",
+      });
+      const invoice = yield* records.create(orgId, ownerWrites, {
+        list: "invoices",
+        title: "Invented freight audit",
+        owner: { _tag: "person", personId: owner.personId },
+        partyId: client.row.recordId,
+        amount: { minor: 2_000_00, currency: "INR" },
+        state: "waiting",
+        originKey: "audit",
+      });
+      const join = (id: string) =>
+        kin.repo.addMember({
+          orgId,
+          chatId,
+          memberId: KinMemberId.make(`${id}-in-finance`),
+          principal: { _tag: "person", personId: KinPersonId.make(id) },
+          role: "member",
+          joinedAt: at,
+          leftAt: null,
+          mutedUntil: null,
+        });
+      yield* join("meera");
+      const paid = () => records.get(orgId, invoice.row.key).pipe(Effect.map((row) => row!.paid));
+      const cardFor = Effect.fn("test.cardFor")(function* (n: number, amount: string) {
+        yield* kin.turn("finance", chatId, `Tidewater paid ${amount} (${n})`);
+        const asked = yield* callAs("finance", "payment_record", {
+          key: invoice.row.key,
+          amount,
+          paidOn: "2026-11-15",
+        });
+        assert.strictEqual(asked.value.status, "proposed", JSON.stringify(asked.value));
+        const [card] = yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId"
+          FROM kin_receipt_proposals WHERE org_id = ${orgId}
+            AND proposal_id = ${String(asked.value.proposal)}`;
+        return card!.widgetId;
+      });
+      const first = yield* cardFor(1, "500");
+      const second = yield* cardFor(2, "300");
+      // A member in the chat taps: nothing is recorded.
+      yield* join("dev");
+      yield* kin.tap(kin.person("dev"), first, "option-1", "dev-tap").pipe(Effect.exit);
+      assert.strictEqual(yield* paid(), 0);
+      // A co-owner's tap records it, as her; a second tap records nothing more.
+      yield* kin.tap(kin.person("meera"), first, "option-1", "meera-tap");
+      assert.strictEqual(yield* paid(), 500_00);
+      yield* kin.tap(owner, first, "option-1", "again-tap").pipe(Effect.exit);
+      assert.strictEqual(yield* paid(), 500_00);
+      const [by] = yield* sql<{ kind: string; id: string }>`SELECT created_by_kind AS kind,
+          created_by_id AS id FROM kin_record_payments WHERE org_id = ${orgId}`;
+      assert.deepStrictEqual({ ...by }, { kind: "person", id: "meera" });
+      // The card drawn before that money came in records nothing: its figures moved.
+      yield* kin.tap(owner, second, "option-1", "stale-tap").pipe(Effect.exit);
+      assert.strictEqual(yield* paid(), 500_00);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 // Kin's bank matching took a credit for an invoice's payment: the agent's card records it on the
 // owner's tap, in server code, from Kin's records only, and every way back and around holds.
 it.effect("a tap records a bank credit as the invoice's payment the matcher ranks first", () =>
