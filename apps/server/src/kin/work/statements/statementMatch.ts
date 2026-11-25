@@ -222,7 +222,7 @@ const hasNumber = (text: string, number: string) => {
 
 const dayNumber = (day: string) =>
   Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10))) / DAY_MS;
-const daysBetween = (from: string, to: string) => dayNumber(to) - dayNumber(from);
+export const daysBetween = (from: string, to: string) => dayNumber(to) - dayNumber(from);
 
 const invoiceCandidate = (
   row: StatementRow,
