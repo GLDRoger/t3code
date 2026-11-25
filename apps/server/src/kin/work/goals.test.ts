@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { KinOrgId } from "@t3tools/contracts";
+import { KinOrgId, KinRecordId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -12,7 +12,7 @@ import {
   readProfile,
   setProfile,
 } from "./companyProfile.ts";
-import { goalFields, goalsNow } from "./goals.ts";
+import { goalFields, goalLine, goalsNow } from "./goals.ts";
 
 const layer = KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
 const orgId = KinOrgId.make("org");
@@ -86,3 +86,37 @@ it.effect("keeps other currencies out of a revenue goal's progress", () =>
     assert.notProperty(goal, "about");
   }).pipe(Effect.provide(layer)),
 );
+
+it("says which receipts a goal leaves out and marks a recorded-rate total approximate", () => {
+  const goal = {
+    recordId: KinRecordId.make("goal"),
+    key: "G-1",
+    title: "Tidewater Freight revenue",
+    rev: 1,
+    state: "open",
+    measure: "revenue_received",
+    currency: "USD",
+    current: 10_000,
+    target: 40_000,
+    expected: 10_000,
+    startsOn: "2026-11-01",
+    dueOn: null,
+    behind: false,
+  } as const;
+  const original = "G-1 Tidewater Freight revenue: $100 of $400";
+  assert.strictEqual(goalLine(goal), original);
+  const crossCurrency = {
+    ...goal,
+    notCounted: [
+      { currency: "EUR", received: { minor: 76_800, currency: "EUR" } },
+      { currency: "GBP", received: { minor: 12_000, currency: "GBP" } },
+    ],
+    about: { total: { minor: 110_000, currency: "USD" }, rateDays: ["2026-11-03", "2026-11-12"] },
+  };
+  assert.strictEqual(
+    goalLine(crossCurrency),
+    original +
+      ", plus €768.00 and £120.00 received in other currencies that this goal doesn't count" +
+      ", about $1,100 in all (approximate, at rates the company was paid at on 2026-11-03 and 2026-11-12)",
+  );
+});

@@ -74,6 +74,7 @@ import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyA
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
 import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
+import { goalLine } from "../../apps/server/src/kin/work/goals.ts";
 import {
   formatKinPicturesDay,
   KIN_TEXT_LOCALE,
@@ -720,6 +721,7 @@ const docReadAnswer = (input: {
 };
 
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  goalLine,
   // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
   billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
   billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>

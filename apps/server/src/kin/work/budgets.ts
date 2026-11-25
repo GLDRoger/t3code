@@ -7,7 +7,15 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { homeCurrency } from "./companyProfile.ts";
 import { aboutInHome } from "./recordedRate.ts";
-import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth } from "./money.ts";
+import {
+  addUp,
+  dayIn,
+  formatMinor,
+  formatMoney,
+  formatMoneyPlain,
+  monthOf,
+  shiftMonth,
+} from "./money.ts";
 import { countedEntry, keyWithheld, moneyDay, ownerZone, startOfDay } from "./recordRows.ts";
 
 /**
@@ -208,6 +216,8 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
 });
 export type BudgetsView = Effect.Success<ReturnType<typeof budgetsView>>;
 
+const andList = new Intl.ListFormat("en");
+
 /** The budgets as an agent quotes them: every figure formatted by code. */
 export const budgetsAnswer = (view: BudgetsView) => ({
   month: view.month,
@@ -239,10 +249,15 @@ export const budgetsAnswer = (view: BudgetsView) => ({
               spent: formatMoney(money),
             })),
           }),
+      ...(one.about === undefined
+        ? {}
+        : {
+            about: `about ${formatMoneyPlain(one.about.total)} in all, approximate, at rates the company was paid at on ${andList.format(one.about.rateDays)}`,
+          }),
     };
   }),
   ...(view.budgets.length === 0 ? { none: "No budgets are set." } : {}),
-  basis: `Spent is paid expenses dated in ${view.month} in the owner's time zone. over is past the limit; near is at the limit or past ${NEAR_PERCENT}% of it. notCounted is spending on the same target in other currencies, which the budget's spent does not include.`,
+  basis: `Spent is paid expenses dated in ${view.month} in the owner's time zone. over is past the limit; near is at the limit or past ${NEAR_PERCENT}% of it. notCounted is spending on the same target in other currencies, which the budget's spent does not include. about, when present, is approximate: never quote it as an exact figure or add it to spent.`,
 });
 
 /** This month's budgets over or near their limit, for the morning brief; nothing when none are. */

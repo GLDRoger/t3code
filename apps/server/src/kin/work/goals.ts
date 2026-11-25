@@ -24,7 +24,7 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRecords, requestHashOf } from "./KinRecords.ts";
 import { fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
 import { homeCurrency, recordingCurrency } from "./companyProfile.ts";
-import { dayIn, formatMoneyPlain, parseAmount, roundToWhole } from "./money.ts";
+import { dayIn, formatMoney, formatMoneyPlain, parseAmount, roundToWhole } from "./money.ts";
 import { inList, ownerWriter, theOwner } from "./ownerWork.ts";
 import { playbookThreshold } from "./playbooks.ts";
 import { aboutInHome } from "./recordedRate.ts";
@@ -310,6 +310,8 @@ export const goalFigure = (goal: KinGoal, value: number, withUnit = true) =>
     ? `${Math.round(value)}${goal.unit === undefined || !withUnit ? "" : ` ${goal.unit}`}`
     : formatMoneyPlain({ minor: roundToWhole(value, goal.currency), currency: goal.currency });
 
+const andList = new Intl.ListFormat("en");
+
 /** One line per goal for a prompt: where it stands against its line. */
 export const goalLine = (goal: KinGoal) =>
   [
@@ -320,6 +322,12 @@ export const goalLine = (goal: KinGoal) =>
       : goal.dueOn === null
         ? null
         : `${goalFigure(goal, goal.expected)} expected by now${goal.behind ? ", behind" : ""}`,
+    goal.notCounted === undefined
+      ? null
+      : `plus ${andList.format(goal.notCounted.map((one) => formatMoney(one.received)))} received in other currencies that this goal doesn't count`,
+    goal.about === undefined
+      ? null
+      : `about ${formatMoneyPlain(goal.about.total)} in all (approximate, at rates the company was paid at on ${andList.format(goal.about.rateDays)})`,
   ]
     .filter((part) => part !== null)
     .join(", ");
