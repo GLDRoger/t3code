@@ -25,6 +25,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeCrypto from "node:crypto";
 
 import * as Scheduler from "../../scheduling/Scheduler.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
@@ -35,6 +37,7 @@ import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/org
 import * as KinShell from "../shell/KinShell.ts";
 import { sectionOfKey, sectionOfSense, type SectionId } from "../shell/sections.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
+import { postCountryAsk } from "../work/countryAsk.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone, promiseOnDeal, startOfDay, storedPrincipal } from "../work/recordRows.ts";
 import { matchName } from "../work/nameMatch.ts";
@@ -1044,6 +1047,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         sees: (personId, some) =>
           visibleTo(orgId, { _tag: "people", people: [personId] }, some, shell),
       });
+      yield* postCountryAsk(ctx);
       // A person's own task, due now: an agent makes its first piece for them (`draftWake.ts`).
       const drafted = yield* draftWakes({
         ctx,
@@ -1358,6 +1362,8 @@ export const layer = Layer.effectDiscard(
     const queue = yield* KinEventQueue.KinEventQueue;
     const refreshes = yield* KinRefreshObserver;
     const chats = yield* Effect.serviceOption(KinChatService);
+    const repo = yield* Effect.serviceOption(KinChatRepository);
+    const hub = yield* Effect.serviceOption(KinChatHub);
     // Facts that clear withdraw Kin's notices about them (`settleNotices`).
     const push = yield* Effect.serviceOption(KinPushSender);
     const last: Passes = new Map();
@@ -1393,6 +1399,8 @@ export const layer = Layer.effectDiscard(
         Effect.provideService(KinRefreshObserver, refreshes),
         Option.isSome(chats) ? Effect.provideService(KinChatService, chats.value) : (e) => e,
         Option.isSome(push) ? Effect.provideService(KinPushSender, push.value) : (e) => e,
+        Option.isSome(repo) ? Effect.provideService(KinChatRepository, repo.value) : (e) => e,
+        Option.isSome(hub) ? Effect.provideService(KinChatHub, hub.value) : (e) => e,
       ),
     );
   }),

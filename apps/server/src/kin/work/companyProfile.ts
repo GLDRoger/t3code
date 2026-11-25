@@ -37,11 +37,17 @@ const Waiting = Schema.Struct({
   personId: Schema.optional(Schema.String),
   wakeupId: Schema.String,
 });
+const CountryAskState = Schema.Struct({
+  round: Schema.Literals([1, 2]),
+  nextAt: Schema.NullOr(Schema.Number),
+  done: Schema.optional(Schema.Literal(true)),
+});
 const ProfileJson = Schema.fromJsonString(
   Schema.Struct({
     ...KinCompanyProfileData.fields,
     countryPending: Schema.optional(Schema.Literal(true)),
     countryWaiting: Schema.optional(Schema.Array(Waiting)),
+    countryAsk: Schema.optional(CountryAskState),
   }),
 );
 const decodeProfile = Schema.decodeUnknownOption(ProfileJson);
@@ -128,17 +134,61 @@ const storedProfile = Effect.fn("KinCompanyProfile.stored")(function* (orgId: Ki
     SELECT profile_json AS json, rev, updated_at AS "updatedAt" FROM kin_company_profile
     WHERE org_id = ${orgId}`;
   if (row === undefined)
-    return { data: EMPTY, pending: false, waiting: [], rev: 0, updatedAt: null };
-  const { countryPending, countryWaiting, ...data } = Option.getOrElse(
+    return {
+      data: EMPTY,
+      hasRow: false,
+      pending: false,
+      waiting: [],
+      countryAsk: undefined,
+      rev: 0,
+      updatedAt: null,
+    };
+  const { countryPending, countryWaiting, countryAsk, ...data } = Option.getOrElse(
     decodeProfile(row.json),
-    () => ({ ...EMPTY, countryPending: undefined, countryWaiting: undefined }),
+    () => ({
+      ...EMPTY,
+      countryPending: undefined,
+      countryWaiting: undefined,
+      countryAsk: undefined,
+    }),
   );
   const pending = countryPending === true;
   const waiting = pending ? (countryWaiting ?? []) : [];
   // The new company's row (updated_at 0) was never saved: its forms still offer the device's country.
-  return row.updatedAt === 0
-    ? { data, pending, waiting, rev: 0, updatedAt: null }
-    : { data, pending, waiting, rev: row.rev, updatedAt: iso(row.updatedAt) };
+  return {
+    data,
+    hasRow: true,
+    pending,
+    waiting,
+    countryAsk,
+    rev: row.updatedAt === 0 ? 0 : row.rev,
+    updatedAt: row.updatedAt === 0 ? null : iso(row.updatedAt),
+  };
+});
+
+export const countryAskProfile = Effect.fn("KinCompanyProfile.countryAskProfile")(function* (
+  orgId: KinOrgId,
+) {
+  const stored = yield* storedProfile(orgId);
+  return {
+    hasRow: stored.hasRow,
+    pending: stored.pending,
+    ask: stored.countryAsk,
+    country: moneyOf(stored.data).country,
+    company: stored.data.tradeName || stored.data.legalName,
+  };
+});
+
+const encodeCountryAsk = Schema.encodeEffect(Schema.fromJsonString(CountryAskState));
+export const writeCountryAsk = Effect.fn("KinCompanyProfile.writeCountryAsk")(function* (
+  orgId: KinOrgId,
+  ask: typeof CountryAskState.Type,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const json = yield* encodeCountryAsk(ask);
+  yield* sql`UPDATE kin_company_profile
+    SET profile_json = json_set(profile_json, '$.countryAsk', json(${json}))
+    WHERE org_id = ${orgId}`;
 });
 
 /**
@@ -418,6 +468,12 @@ const followCountry = (data: KinCompanyProfileData, patch: ProfilePatch, pending
   };
 };
 
+export const unknownCountry = (country: string) =>
+  new KinChatError({
+    reason: "invalid_state",
+    message: `Country: ${country} isn't a country Kin knows. Write its two-letter code, like GB, US or IN.`,
+  });
+
 /** Only the fields given change. A `rev` other than the stored one is refused unless nothing would change. */
 export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
   orgId: KinOrgId,
@@ -428,12 +484,9 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      const { data, pending, waiting, rev: storedRev } = yield* storedProfile(orgId);
+      const { data, pending, waiting, countryAsk, rev: storedRev } = yield* storedProfile(orgId);
       if (pending && patch.country != null && countryCurrency(patch.country) === undefined)
-        return yield* new KinChatError({
-          reason: "invalid_state",
-          message: `Country: ${patch.country} isn't a country Kin knows. Write its two-letter code, like GB, US or IN.`,
-        });
+        return yield* unknownCountry(patch.country);
       if (patch.taxRegistered === false && typeof patch.gstin === "string")
         return yield* new KinChatError({
           reason: "invalid_state",
@@ -461,13 +514,14 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
         : merged;
       // Only a saved country ends the wait; a logo, a name or "no country" keeps it.
       const stillPending = pending && (next.country ?? null) === null;
-      const kept = waiting.length === 0 ? {} : { countryWaiting: waiting };
-      const json = yield* encodeProfile(
-        stillPending ? { ...next, countryPending: true, ...kept } : next,
-      );
-      if (
-        json === (yield* encodeProfile(pending ? { ...data, countryPending: true, ...kept } : data))
-      )
+      const preserved = (profile: KinCompanyProfileData, pending: boolean) => ({
+        ...profile,
+        ...(countryAsk === undefined ? {} : { countryAsk }),
+        ...(pending ? { countryPending: true as const } : {}),
+        ...(pending && waiting.length > 0 ? { countryWaiting: waiting } : {}),
+      });
+      const json = yield* encodeProfile(preserved(next, stillPending));
+      if (json === (yield* encodeProfile(preserved(data, pending))))
         return yield* readProfile(orgId);
       if (rev !== undefined && rev !== storedRev)
         return yield* new KinChatError({

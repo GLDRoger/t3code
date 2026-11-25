@@ -6,6 +6,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ServerConfig } from "../../config.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import {
+  AuthSessionId,
+  AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
   KinListDefinition,
@@ -13,6 +15,7 @@ import {
   KinOrgId,
   KinPersonId,
   KinRecordKey,
+  KinWidgetId,
   KinWritableListFieldType,
   ProviderInstanceId,
   ThreadId,
@@ -20,6 +23,7 @@ import {
 import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -28,7 +32,14 @@ import * as TestClock from "effect/testing/TestClock";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
-import { KinIdentity } from "../chat/KinIdentity.ts";
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { environment } from "../chat/TaskCard.testkit.ts";
+import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
+import type { Services } from "../KinServer.ts";
+import { kinSecretsTest } from "../lead/layer.testkit.ts";
+import * as Kin from "../layer.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
 import { KinWorkspace } from "../gendocs/workspace.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -49,6 +60,7 @@ import {
   rememberRefused,
   setProfile,
 } from "./companyProfile.ts";
+import { answerCountryCard } from "./countryAsk.ts";
 import * as Goals from "./goals.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { KIN_OWN_REFUSAL } from "../people/KinAccess.ts";
@@ -4512,6 +4524,67 @@ describe("another org", () => {
   );
 });
 
+const seedCountryCards = Effect.fn("MoneyTest.seedCountryCards")(function* () {
+  const identity = yield* KinIdentity;
+  const chats = yield* KinChatService;
+  const sql = yield* SqlClient.SqlClient;
+  const session = {
+    sessionId: AuthSessionId.make("owner"),
+    subject: "browser",
+    method: "browser-session-cookie" as const,
+    scopes: AuthStandardClientScopes,
+  };
+  yield* pairSession(session.sessionId);
+  const [rhea] = yield* identity.resolve(session);
+  assert.isDefined(rhea);
+  const { orgId } = rhea!;
+  const meera: PersonIdentity = { _tag: "person", orgId, personId: KinPersonId.make("meera") };
+  const agentId = KinAgentId.make("chief");
+  const threadId = ThreadId.make("chief-thread");
+  yield* sql`UPDATE kin_people SET display_name = 'Rhea', time_zone = 'UTC'
+    WHERE org_id = ${orgId} AND person_id = ${rhea!.personId}`;
+  yield* sql`INSERT INTO kin_people (org_id, person_id, handle, display_name, created_at, access, time_zone)
+    VALUES (${orgId}, ${meera.personId}, 'meera', 'Meera', ${at}, 'co_owner', 'UTC'),
+      (${orgId}, 'zoya', 'zoya', 'Zoya', ${at}, 'member', 'UTC')`;
+  yield* sql`INSERT INTO kin_agents (org_id, agent_id, display_name, role, owner_person_id, created_at)
+    VALUES (${orgId}, ${agentId}, 'Chief of staff', 'lead', ${rhea!.personId}, ${at})`;
+  const chat = yield* chats.createDirect(rhea!, { orgId, agentId });
+  yield* sql`INSERT INTO kin_leads (org_id, agent_id, name, level_since, thread_id, models_json,
+      worker_projects_json, owner_chat_id, domain)
+    VALUES (${orgId}, ${agentId}, 'Chief of staff', 0, ${threadId}, '{}', '[]', ${chat.chatId}, 'chief-of-staff')`;
+  yield* identity.registerAgentThread({ orgId, agentId, threadId });
+  const cards = sql<{ widgetId: KinWidgetId; who: string; state: string; closedAt: string | null }>`
+    SELECT w.widget_id AS "widgetId", m.person_id AS who, w.state_json AS state, w.closed_at AS "closedAt"
+    FROM kin_widgets w JOIN kin_chat_members m ON m.org_id = w.org_id AND m.chat_id = w.chat_id
+      AND m.principal_kind = 'person'
+    WHERE w.org_id = ${orgId} AND w.type = 'country' ORDER BY w.updated_at, m.person_id`;
+  const tick = Clock.currentTimeMillis.pipe(Effect.flatMap((now) => KinPulse.tick(orgId, now)));
+  const waiting = sql<{ who: string }>`SELECT person_id AS who FROM kin_waiting
+    WHERE org_id = ${orgId} AND resolved_at IS NULL
+      AND widget_id IN (SELECT widget_id FROM kin_widgets WHERE org_id = ${orgId} AND type = 'country')
+    ORDER BY person_id`;
+  return { orgId, rhea: rhea!, meera, cards, tick, sql, waiting };
+});
+const runCountryCards = <A, E>(
+  run: (ctx: Effect.Success<ReturnType<typeof seedCountryCards>>) => Effect.Effect<A, E, Services>,
+) =>
+  Effect.andThen(
+    TestClock.setTime(Date.UTC(2026, 10, 25, 10)),
+    Effect.gen(function* () {
+      const services = Option.getOrThrow((yield* Kin.KinServer).services);
+      return yield* seedCountryCards().pipe(Effect.flatMap(run), Effect.provideContext(services));
+    }).pipe(
+      Effect.provide(
+        Kin.layer.pipe(
+          Layer.provide(kinSecretsTest),
+          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+          Layer.provideMerge(environment),
+          Layer.provideMerge(authorityLayer),
+        ),
+      ),
+    ),
+  );
+
 describe("the company profile", () => {
   it.effect("asks in the chat the turn came from, so a co-owner's change reaches her", () =>
     Effect.gen(function* () {
@@ -4874,6 +4947,177 @@ describe("the company profile", () => {
       yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: yield* rev(), country: null });
       assert.isFalse(yield* countryNeeded(orgId));
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("asks only the owners of an older company without a country, once", () =>
+    runCountryCards(({ orgId, rhea, meera, cards, tick, sql, waiting }) =>
+      Effect.gen(function* () {
+        const writer = { _tag: "person" as const, personId: rhea.personId };
+        yield* sql`DELETE FROM kin_company_profile WHERE org_id = ${orgId}`;
+        yield* tick;
+        assert.isEmpty(yield* cards);
+        yield* setProfile(
+          orgId,
+          writer,
+          { tradeName: "Ambermill", homeCurrency: "INR" },
+          undefined,
+        );
+        yield* tick;
+        assert.isEmpty(yield* cards);
+        yield* sql`UPDATE kin_company_profile SET profile_json = ${yield* newCompanyProfileJson}
+          WHERE org_id = ${orgId}`;
+        yield* tick;
+        assert.isEmpty(yield* cards);
+        yield* sql`DELETE FROM kin_company_profile WHERE org_id = ${orgId}`;
+        yield* setProfile(
+          orgId,
+          writer,
+          { tradeName: "Ambermill", homeCurrency: "USD" },
+          undefined,
+        );
+        yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"09:00","to":"11:00"}'
+          WHERE org_id = ${orgId} AND person_id = ${meera.personId}`;
+        yield* tick;
+        assert.deepStrictEqual(
+          (yield* cards).map((card) => card.who),
+          [rhea.personId],
+        );
+        yield* sql`UPDATE kin_people SET quiet_hours_json = NULL
+          WHERE org_id = ${orgId} AND person_id = ${meera.personId}`;
+        yield* tick;
+        const open = yield* cards;
+        assert.deepStrictEqual(
+          open.map((card) => card.who).sort(),
+          [rhea.personId, meera.personId].sort(),
+        );
+        assert.notInclude(
+          open.map((card) => card.who),
+          "zoya",
+        );
+        for (const card of open) {
+          assert.isNull(card.closedAt);
+          assert.deepStrictEqual(JSON.parse(card.state), { company: "Ambermill", round: 1 });
+        }
+        assert.deepStrictEqual(
+          yield* waiting,
+          [rhea.personId, meera.personId].sort().map((who) => ({ who })),
+        );
+        const meeraCard = open.find((card) => card.who === meera.personId)!;
+        const rheaCard = open.find((card) => card.who === rhea.personId)!;
+        const choose = (country: string) => ({
+          orgId,
+          widgetId: meeraCard.widgetId,
+          answer: { _tag: "country" as const, country },
+        });
+        const invalid = yield* answerCountryCard([meera], choose("XX")).pipe(Effect.flip);
+        assert.strictEqual(
+          invalid.message,
+          "Country: XX isn't a country Kin knows. Write its two-letter code, like GB, US or IN.",
+        );
+        assert.deepStrictEqual(yield* cards, open);
+        yield* OwnerMoney.setCompanyProfile([rhea], {
+          orgId,
+          rev: (yield* readProfile(orgId)).rev,
+          homeCurrency: "CAD",
+        });
+        const saved = yield* answerCountryCard([meera], choose("US"));
+        assert.strictEqual(saved.homeCurrency, "CAD");
+        assert.strictEqual(saved.country, "US");
+        assert.strictEqual((yield* readProfile(orgId)).country, "US");
+        const closed = yield* cards;
+        for (const card of closed) {
+          assert.isNotNull(card.closedAt);
+          assert.deepStrictEqual(JSON.parse(card.state), {
+            company: "Ambermill",
+            round: 1,
+            answered: { _tag: "chose", by: "Meera", country: "US" },
+          });
+        }
+        assert.isEmpty(yield* waiting);
+        const refusal = yield* answerCountryCard([rhea], {
+          ...choose("GB"),
+          widgetId: rheaCard.widgetId,
+        }).pipe(Effect.flip);
+        assert.strictEqual(refusal.reason, "invalid_state");
+        assert.strictEqual(
+          refusal.message,
+          "Meera already chose United States. Change it in Settings, Company details.",
+        );
+        assert.deepStrictEqual(yield* answerCountryCard([meera], choose("US")), saved);
+        assert.deepStrictEqual(yield* cards, closed);
+      }),
+    ),
+  );
+
+  it.effect("asks again after thirty days, then stops after a second Not now", () =>
+    runCountryCards(({ orgId, rhea, meera, cards, tick, sql }) =>
+      Effect.gen(function* () {
+        const roundDelay = 30 * 24 * 60 * 60 * 1000;
+        const state = sql<{
+          ask: string;
+          rev: number;
+        }>`SELECT json_extract(profile_json, '$.countryAsk')
+            AS ask, rev FROM kin_company_profile WHERE org_id = ${orgId}`;
+        const saved = yield* setProfile(orgId, rhea, { homeCurrency: "CAD" }, undefined);
+        yield* tick;
+        const first = yield* cards;
+        assert.lengthOf(first, 2);
+        assert.deepStrictEqual(yield* state, [
+          { ask: JSON.stringify({ round: 1, nextAt: null }), rev: saved.rev },
+        ]);
+        const postpone = (widgetId: KinWidgetId) =>
+          answerCountryCard([rhea], { orgId, widgetId, answer: { _tag: "not_now" } });
+        const firstId = first.find((card) => card.who === rhea.personId)!.widgetId;
+        const nextAt = (yield* Clock.currentTimeMillis) + roundDelay;
+        yield* postpone(firstId);
+        const deferred = yield* cards;
+        for (const card of deferred) {
+          assert.isNotNull(card.closedAt);
+          assert.deepInclude(JSON.parse(card.state), {
+            answered: { _tag: "not_now", by: "Rhea", round: 1 },
+          });
+        }
+        assert.deepStrictEqual(yield* state, [
+          { ask: JSON.stringify({ round: 1, nextAt }), rev: saved.rev },
+        ]);
+        const edited = yield* OwnerMoney.setCompanyProfile([meera], {
+          orgId,
+          rev: saved.rev,
+          address: "1 Mill Road",
+        });
+        assert.deepStrictEqual(yield* state, [
+          { ask: JSON.stringify({ round: 1, nextAt }), rev: edited.rev },
+        ]);
+
+        yield* TestClock.adjust(roundDelay - 1);
+        yield* tick;
+        assert.deepStrictEqual(yield* cards, deferred);
+        yield* TestClock.adjust(1);
+        yield* tick;
+        const second = (yield* cards).filter((card) => card.closedAt === null);
+        assert.lengthOf(second, 2);
+        for (const card of second) assert.strictEqual(JSON.parse(card.state).round, 2);
+        const secondId = second.find((card) => card.who === rhea.personId)!.widgetId;
+        assert.deepStrictEqual(yield* postpone(secondId), edited);
+        assert.deepStrictEqual(yield* state, [
+          { ask: JSON.stringify({ round: 2, nextAt: null, done: true }), rev: edited.rev },
+        ]);
+        const finished = yield* cards;
+        assert.lengthOf(finished, 4);
+        for (const card of finished.filter((one) =>
+          second.some((original) => one.widgetId === original.widgetId),
+        )) {
+          assert.isNotNull(card.closedAt);
+          assert.deepInclude(JSON.parse(card.state), {
+            answered: { _tag: "not_now", by: "Rhea", round: 2 },
+          });
+        }
+        yield* TestClock.adjust(roundDelay);
+        assert.deepStrictEqual(yield* postpone(secondId), edited);
+        yield* tick;
+        assert.deepStrictEqual(yield* cards, finished);
+      }),
+    ),
   );
 
   it.effect("wakes each agent refused for want of the country once, where it was refused", () =>

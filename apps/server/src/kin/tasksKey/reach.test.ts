@@ -639,6 +639,7 @@ const reach: Readonly<Record<string, ReadonlyArray<string> | string>> = {
   "kin.work.exportLink":
     "stays in the app: 2 (money or mail leaving, money paid/received) (data leaving as a download)",
   "kin.work.setCompanyProfile": "stays in the app: 5 (host, company sections and settings)",
+  "kin.work.answerCountryCard": "stays in the app: 5 (company country is an owner-level setting)",
   "kin.shell.set": "stays in the app: 5 (host, company sections and settings)",
   "kin.work.issue":
     "stays in the app: 2 (money or mail leaving, money paid/received) (numbering and issuing)",
