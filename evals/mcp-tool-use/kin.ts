@@ -43,7 +43,7 @@ import {
 } from "../../apps/server/src/kin/work/recordRows.ts";
 import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { choiceResumeText, NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
-import { noticeQuestion } from "../../apps/server/src/kin/pulse/factCards.ts";
+import { noticeQuestion, stallQuestion } from "../../apps/server/src/kin/pulse/factCards.ts";
 import { tooLongForCard } from "../../apps/server/src/kin/questions/askPerson.ts";
 import {
   ASKED,
@@ -549,6 +549,7 @@ const fillGitHubTrigger = (prompt: string, world: McpToolUseCase["setup"]["world
 /** The questions on Kin's own cards about a fact, worded by the pulse (`pulse/factCards.ts`). */
 const CARD_QUESTIONS: Record<string, (input: never) => string> = {
   notice: noticeQuestion,
+  stall: stallQuestion,
 };
 /**
  * `{{CARD_TAP:<json>}}`, on its own line, is a teammate's tap on Kin's card about a fact as the

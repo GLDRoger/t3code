@@ -509,6 +509,14 @@ const waitedCards = Effect.fn("KinFactCards.waited")(function* (input: {
   }
 });
 
+/** A stalled-task card's question. Kin's evals quote it. */
+export const stallQuestion = (input: {
+  readonly key: string;
+  readonly title: string;
+  readonly days: number;
+}) =>
+  `${input.key} ${input.title} has been in progress with no change for ${daysText(input.days)}. Where is it?`;
+
 /**
  * A task a teammate holds that has been in progress with no change: one card to them, through the
  * Chief of staff, as their nudge of the day. Still on it holds it until then, after which Kin asks
@@ -583,7 +591,11 @@ const stallCards = Effect.fn("KinFactCards.stalled")(function* (input: {
       agentId: chief,
       factKey: fact.key,
       round,
-      question: `${row.key} ${row.title} has been in progress with no change for ${daysText(Math.max(1, fact.measure?.value ?? 1))}. Where is it?`,
+      question: stallQuestion({
+        key: row.key,
+        title: row.title,
+        days: Math.max(1, fact.measure?.value ?? 1),
+      }),
       options: [
         ...plans.map((plan) => ({ label: factCardShown(plan).label, plan })),
         { label: "Stuck" },
