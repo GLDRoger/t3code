@@ -97,6 +97,7 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
   tasks: [
     "apps/server/src/kin/work/KinRecords.ts",
     "apps/server/src/kin/work/leadWork.ts",
+    "apps/server/src/kin/work/recordRows.ts",
     "apps/server/src/kin/work/ownerWork.ts",
     "apps/server/src/kin/work/assignNotices.ts",
     "apps/server/src/kin/work/teamView.ts",
