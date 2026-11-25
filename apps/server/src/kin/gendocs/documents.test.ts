@@ -2102,6 +2102,10 @@ const answerCard = (clientMessageId: string, kind: "yes" | "no") =>
  * The agent's receipt as the owner asked for it; one that records money waits for the owner's
  * Confirm on its card, tapped here, and the agent's call with its proposal reads what it made.
  */
+/** An invoice issued, so money can be set against it. */
+const issuedInvoice = (asked: string, key: string) =>
+  LeadDocuments.issue(scope, { entry: KinRecordKey.make(key), sourceEventId: asked });
+
 const agentReceipt = (asked: string, input: ReceiptAsk) =>
   Effect.gen(function* () {
     const first = yield* LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
@@ -2386,6 +2390,7 @@ describe("receipts", () => {
     () =>
       Effect.gen(function* () {
         const asked = yield* seed;
+        yield* issuedInvoice(asked, "INV-1");
         const sql = yield* SqlClient.SqlClient;
         const records = yield* KinRecords.KinRecords;
         const call = (input: ReceiptAsk) =>
@@ -2549,6 +2554,7 @@ describe("receipts", () => {
     () =>
       Effect.gen(function* () {
         const asked = yield* seed;
+        yield* issuedInvoice(asked, "INV-1");
         const sql = yield* SqlClient.SqlClient;
         const owner = {
           actor: { _tag: "person" as const, personId: ownerId },
@@ -2593,6 +2599,50 @@ describe("receipts", () => {
         assert.strictEqual(result.status, "proposed");
         assert.deepStrictEqual(yield* onInvoice, []);
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("set an advance against an issued invoice only, never a draft", () =>
+    Effect.gen(function* () {
+      const asked = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const owner = {
+        actor: { _tag: "person" as const, personId: ownerId },
+        via: "owner" as const,
+      };
+      const [client] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'clients'`;
+      const advance = yield* recordReceipt({
+        orgId,
+        writer: owner,
+        advance: {
+          client: client!.key,
+          amount: { minor: 500_00, currency: "INR" },
+          receivedOn: "2026-11-05",
+          originKey: "owner:advance:draft",
+        },
+        extras: {},
+      });
+      const onDraft = sql`SELECT 1 FROM kin_record_payments p JOIN kin_records r
+        ON r.record_id = p.record_id WHERE r.key = 'INV-1'`;
+      const draft =
+        "INV-1 is a draft, so nothing is owed on it yet. Issue it first, then set the advance against it. Nothing changed.";
+      // The agent's ask draws no card the owner couldn't confirm.
+      const asking = yield* Effect.flip(
+        LeadDocuments.receipt(scope, {
+          sourceEventId: asked,
+          entry: KinRecordKey.make(advance.key),
+          against: KinRecordKey.make("INV-1"),
+        }),
+      );
+      assert.strictEqual(asking.message, draft);
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_receipt_proposals`, 0);
+      // Nor does the writer a Confirm or the owner's screen uses post money on it.
+      const writing = yield* Effect.flip(
+        recordReceipt({ orgId, writer: owner, key: advance.key, against: "INV-1", extras: {} }),
+      );
+      assert.strictEqual(writing.message, draft);
+      assert.lengthOf(yield* onDraft, 0);
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("wait for a new company's country before reading an amount they are given", () =>
@@ -2667,6 +2717,7 @@ describe("receipts", () => {
   it.effect("never number a receipt again into money once its payment is taken back", () =>
     Effect.gen(function* () {
       const asked = yield* seed;
+      yield* issuedInvoice(asked, "INV-1");
       const sql = yield* SqlClient.SqlClient;
       const records = yield* KinRecords.KinRecords;
       const system = { actor: { _tag: "system" as const }, via: "import" as const };
@@ -2799,6 +2850,7 @@ describe("receipts", () => {
             },
           ],
         });
+        yield* issuedInvoice(asked, "INV-2");
         const against = {
           entry: KinRecordKey.make(advance.receipt),
           against: KinRecordKey.make("INV-2"),
@@ -2970,7 +3022,10 @@ describe("receipts", () => {
                 ...(client === undefined ? {} : { client }),
               },
             ],
-          }).pipe(Effect.map((made) => made.records[0]!.key));
+          }).pipe(
+            Effect.map((made) => made.records[0]!.key),
+            Effect.tap((key) => issuedInvoice(asked, key)),
+          );
         const pay = (
           writer: typeof owner | typeof system,
           key: string,

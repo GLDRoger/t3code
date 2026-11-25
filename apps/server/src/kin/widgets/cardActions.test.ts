@@ -2856,6 +2856,8 @@ it.effect("a receipt Confirm's own writes are the tap's, not newer than it", () 
         owner: { _tag: "person", personId: owner.personId },
         partyId: client.row.recordId,
         amount: { minor: 2_000_00, currency: "INR" },
+        // Issued and owed: only an issued invoice takes an advance.
+        state: "waiting",
         originKey: "redesign",
       });
       const meera = KinPersonId.make("meera");

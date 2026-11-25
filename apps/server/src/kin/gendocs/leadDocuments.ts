@@ -28,7 +28,7 @@ import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.
 import * as Numbers from "./numbering.ts";
 import { invoiceFromQuote, quotedInputs } from "./quotes.ts";
 import { proposalOutcome, type ReceiptRequest } from "./receiptProposals.ts";
-import { createsMoney, makeReceipt } from "./receipts.ts";
+import { againstRefusal, createsMoney, makeReceipt } from "./receipts.ts";
 import { defaultRecipes } from "./recipeDefaults.ts";
 import { recipeLabelled, undoRecipe as undoLabelled } from "./recipeLabels.ts";
 import { REFERENCE_CAPS } from "./references.ts";
@@ -600,6 +600,13 @@ export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof Rec
         ...(input.mode === undefined ? {} : { mode: input.mode }),
         ...(input.reference === undefined ? {} : { reference: input.reference }),
       };
+      const target =
+        request.against === undefined
+          ? undefined
+          : yield* (yield* KinRecords).get(lead.orgId, request.against);
+      const unpayable =
+        target === undefined ? undefined : yield* againstRefusal(lead.orgId, target);
+      if (unpayable !== undefined) return yield* unpayable;
       // Money received no live payment holds yet is the owner's to confirm, never the agent's.
       if (yield* createsMoney(lead.orgId, request)) {
         // Setting an advance against an invoice was refused in a turn no person started; still is.

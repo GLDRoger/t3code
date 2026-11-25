@@ -28,7 +28,7 @@ import {
 } from "../work/recordRows.ts";
 import { billedParty, billingClientId } from "../work/billTo.ts";
 import { parseFields } from "../work/lists.ts";
-import { defineList, listCurrency, listDef, PRESETS } from "../work/registers.ts";
+import { defineList, isUnissuedDraft, listCurrency, listDef, PRESETS } from "../work/registers.ts";
 import { makeDocument, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
 
@@ -461,6 +461,25 @@ const forEntry = Effect.fn("KinReceipts.forEntry")(function* (
 });
 
 /**
+ * Why nothing can be set against this entry, if so: only an issued invoice or a list paid over
+ * time is owed money, checked before a card is drawn and again in the write.
+ */
+export const againstRefusal = Effect.fn("KinReceipts.againstRefusal")(function* (
+  orgId: KinOrgId,
+  target: RecordRow,
+) {
+  if (target.takesPayments !== 1)
+    return invalid(
+      `${target.key} is not an invoice, so nothing can be set against it. Nothing changed.`,
+    );
+  if (yield* isUnissuedDraft(orgId, target))
+    return invalid(
+      `${target.key} is a draft, so nothing is owed on it yet. Issue it first, then set the advance against it. Nothing changed.`,
+    );
+  return undefined;
+});
+
+/**
  * Sets an advance receipt against an invoice of the same client: a payment on the invoice of the
  * receipt's whole amount on the day it was received, its note the receipt's number, which takes
  * the place of the advance's own. Once only, to one invoice, and never more than the invoice
@@ -480,6 +499,8 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
   const fields = parseFields(receipt.fieldsJson);
   const invoice = yield* records.get(orgId, invoiceKey);
   if (invoice === undefined) return yield* invalid(`No entry ${invoiceKey}. Nothing changed.`);
+  const unpayable = yield* againstRefusal(orgId, invoice);
+  if (unpayable !== undefined) return yield* unpayable;
   // Neither side counts as money yet: setting one against the other would make it count.
   const suggested = [receipt, invoice].find(isSuggestion);
   if (suggested !== undefined) return yield* invalid(stillSuggestion(suggested.key));
