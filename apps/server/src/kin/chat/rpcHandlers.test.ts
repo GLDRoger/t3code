@@ -35,7 +35,9 @@ import {
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -58,7 +60,7 @@ import * as Chat from "./layer.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 import * as Repository from "./KinChatRepository.ts";
-import { makeKinHandlers } from "../rpcHandlers.ts";
+import { decodeKinAfterAccess, makeKinHandlers } from "../rpcHandlers.ts";
 
 const decodeTaskState = Schema.decodeEffect(KinTaskCardState);
 
@@ -107,6 +109,114 @@ const seed = Effect.gen(function* () {
   const direct = yield* chat.createDirect(person, { ...person, agentId });
   return { identity, chat, repo, person, direct, context };
 });
+
+// A client that sends whatever it is handed, as a raw socket can.
+const rawGroup = RpcGroup.make(
+  ...Array.from(group.requests.values(), (rpc) => rpc.setPayload(Schema.Unknown)),
+);
+/** A real socket server built as `ws.ts` builds it, and a raw client on it. */
+const serveRaw = (handlers: Effect.Success<ReturnType<typeof makeKinHandlers>>) =>
+  Effect.gen(function* () {
+    const wire = decodeKinAfterAccess(group);
+    const route = Layer.effectDiscard(
+      Effect.gen(function* () {
+        const router = yield* HttpRouter.HttpRouter;
+        yield* router.add("GET", "/ws", yield* RpcServer.toHttpEffectWebsocket(wire));
+      }),
+    ).pipe(
+      Layer.provide(wire.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) })),
+      Layer.provide(RpcSerialization.layerJson),
+      Layer.provide(RpcAuthorization.layer(AuthStandardClientScopes)),
+    );
+    const server = yield* Layer.build(
+      HttpRouter.serve(route, { disableListenLog: true }).pipe(
+        Layer.provideMerge(NodeHttpServer.layerTest),
+      ),
+    );
+    const address = Context.get(server, HttpServer.HttpServer).address;
+    if (address._tag === "UnixPathAddress") return assert.fail("Expected an internet socket");
+    const transport = yield* Layer.build(
+      RpcClient.layerProtocolSocket({ retryTransientErrors: false }).pipe(
+        Layer.provide(NodeSocket.layerWebSocket(`ws://127.0.0.1:${address.port}/ws`)),
+        Layer.provide(RpcSerialization.layerJson),
+      ),
+    );
+    return yield* RpcClient.make(rawGroup).pipe(Effect.provide(transport));
+  });
+
+it.effect("refuses bad input plainly over the wire, and only after the access check", () =>
+  Effect.gen(function* () {
+    const { direct, person } = yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES ('meera', ${person.orgId}, 'meera', 'Meera', '1970-01-01T00:00:00.000Z', 'member')`;
+    const kin = yield* Kin.KinServer;
+    const services = Option.getOrThrow(kin.services);
+    const identity = Context.get(services, KinIdentity);
+    const asMember = Effect.provideService(Kin.KinServer, {
+      ...kin,
+      services: Option.some(
+        Context.add(services, KinIdentity, {
+          ...identity,
+          resolve: () =>
+            Effect.succeed([
+              { _tag: "person", orgId: person.orgId, personId: KinPersonId.make("meera") },
+            ]),
+        }),
+      ),
+    });
+    const owner = yield* serveRaw(yield* makeKinHandlers(session));
+    const member = yield* serveRaw(yield* makeKinHandlers(session).pipe(asMember));
+    // Each is a typed refusal the client decodes, never a `Die` naming the schema's keys.
+    const refusal = (exit: Exit.Exit<unknown, unknown>) => {
+      if (Exit.isSuccess(exit)) return assert.fail("Expected a refusal");
+      const failure = Cause.findErrorOption(exit.cause);
+      if (Option.isNone(failure))
+        return assert.fail(`Expected a typed error: ${Cause.pretty(exit.cause)}`);
+      return failure.value;
+    };
+    const unreadable = {
+      _tag: "EnvironmentAuthorizationError",
+      message: "Kin couldn't read that request.",
+    };
+    for (const client of [owner, member]) {
+      const exits = yield* Effect.all([
+        Effect.exit(client["kin.leads.list"]({})),
+        Effect.exit(
+          client["kin.messages.send"]({ chatId: direct.chatId, clientMessageId: "bad", body: 42 }),
+        ),
+        Effect.exit(client["kin.chat.history"]({ chatId: direct.chatId, beforeSeq: 0, limit: 10 })),
+      ]);
+      for (const exit of exits) assert.include(refusal(exit), unreadable);
+      const stream = client["kin.chat.subscribe"]({ chatId: direct.chatId, afterSeq: "x" });
+      assert.include(refusal(yield* Effect.exit(Stream.runHead(stream))), unreadable);
+    }
+    // A call the member may not make is refused for that, whatever its payload says.
+    for (const payload of [{}, { orgId: person.orgId }]) {
+      assert.include(refusal(yield* Effect.exit(member["kin.budget.get"](payload))), {
+        _tag: "EnvironmentAuthorizationError",
+        message: "Only the owner or a co-owner can do that.",
+      });
+    }
+    // Valid calls answer as they always have.
+    assert.isArray((yield* owner["kin.leads.list"]({ orgId: person.orgId })).leads);
+    const sent = yield* owner["kin.messages.send"]({
+      chatId: direct.chatId,
+      clientMessageId: "good",
+      body: "Hello",
+    });
+    assert.strictEqual(sent.body, "Hello");
+    const history = yield* owner["kin.chat.history"]({
+      chatId: direct.chatId,
+      beforeSeq: sent.seq + 1,
+      limit: 10,
+    });
+    assert.deepStrictEqual(
+      history.messages.map((message) => message.body),
+      ["Hello"],
+    );
+  }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
 
 it.effect("serves real WS sends, subscriptions and afterSeq resume with org isolation", () =>
   Effect.gen(function* () {
