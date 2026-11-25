@@ -155,6 +155,8 @@ export interface FakeWorld {
   seq: number;
   /** A failure every call answers with, such as 401, to show a signed-out login. */
   down: number | null;
+  /** Paths GitHub refuses this login with 403, as for a token without that permission. */
+  refused?: string[];
   /** Paths that answer 502 while listed, as GitHub does in a short outage. */
   failing?: string[];
   /** Paths GitHub refuses while listed (422), having done nothing. */
@@ -175,6 +177,16 @@ export interface FakeWorld {
   }[];
   reactions: { on: string; content: string; by?: string }[];
   checks: Record<string, string[]>;
+  /** Finished GitHub Actions runs, newest last. */
+  runs?: {
+    id: number;
+    repo: string;
+    workflow_id: number;
+    name: string;
+    branch: string;
+    conclusion: string;
+    created_at: number;
+  }[];
   notifications: { id: string; repo: string; number: number; reason: string; updated_at: number }[];
   events: { id: string; type: string; repo: string; number: number; created_at: number }[];
   modified: number;
@@ -366,10 +378,40 @@ export class FakeGitHub {
     item.merged = true;
     this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
   }
-  /** Closed without a merge. */
+  /** Closed: an issue, or a pull request without a merge. */
   close(input: { repo: string; number: number; actor: string }) {
-    this.item(input.repo, input.number).state = "closed";
-    this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
+    const item = this.item(input.repo, input.number);
+    item.state = "closed";
+    this.happened(
+      input.repo,
+      input.number,
+      input.actor,
+      item.pull ? "PullRequestEvent" : "IssuesEvent",
+    );
+  }
+  reopen(input: { repo: string; number: number; actor: string }) {
+    this.item(input.repo, input.number).state = "open";
+    this.happened(input.repo, input.number, input.actor, "IssuesEvent");
+  }
+  /** One finished run of a workflow, on `branch` (default main). */
+  run(input: {
+    repo: string;
+    workflow: number;
+    name: string;
+    conclusion: string;
+    branch?: string;
+  }) {
+    const id = this.next();
+    (this.world.runs ??= []).push({
+      id,
+      repo: input.repo,
+      workflow_id: input.workflow,
+      name: input.name,
+      branch: input.branch ?? "main",
+      conclusion: input.conclusion,
+      created_at: this.world.now,
+    });
+    return id;
   }
   /** New commits on a PR's branch: GitHub sends no notification, but the PR's `updated_at` moves. */
   push(input: { repo: string; number: number; diff?: string; force?: boolean }) {
@@ -699,6 +741,12 @@ export class FakeGitHub {
     const missing: FakeAnswer = { status: 404, headers: {}, body: { message: "Not Found" } };
     if (this.world.down !== null)
       return { status: this.world.down, headers: {}, body: { message: "Bad credentials" } };
+    if (this.world.refused?.some((prefix) => path.startsWith(prefix)) === true)
+      return {
+        status: 403,
+        headers: {},
+        body: { message: "Resource not accessible by personal access token" },
+      };
     if (this.world.failing?.includes(path) === true)
       return { status: 502, headers: {}, body: { message: "Server Error" } };
     if (this.world.refusing?.includes(path) === true)
@@ -965,6 +1013,12 @@ export class FakeGitHub {
       target.repos = target.repos.filter((entry) => entry.toLowerCase() !== name.toLowerCase());
       return done;
     }
+    if (method === "GET" && path === "user/orgs")
+      return ok(
+        (this.world.accounts ?? [])
+          .filter((account) => account.type === "Organization")
+          .map((account) => ({ login: account.login, id: account.id })),
+      );
     if (method === "GET" && path === "user/memberships/orgs") {
       const orgs = new Map<string, FakeAccount>();
       for (const repo of this.world.repos) {
@@ -998,6 +1052,46 @@ export class FakeGitHub {
     const guarded = this.rulesAnswer(method, repo, rest, body, actor, installation !== undefined);
     if (guarded !== undefined) return guarded;
     try {
+      if (method === "GET" && rest === "issues") {
+        const state = url.searchParams.get("state") ?? "open";
+        const page = Number(url.searchParams.get("page") ?? "1");
+        const perPage = Number(url.searchParams.get("per_page") ?? "30");
+        return ok(
+          this.world.items
+            .filter(
+              (item) =>
+                item.repo.toLowerCase() === repo.toLowerCase() &&
+                (state === "all" || item.state === state),
+            )
+            .toSorted((a, b) => b.number - a.number)
+            .slice((page - 1) * perPage, page * perPage)
+            .map((item) => this.issueJson(item)),
+        );
+      }
+      if (method === "GET" && rest === "actions/runs") {
+        const branch = url.searchParams.get("branch");
+        const runs = (this.world.runs ?? [])
+          .filter(
+            (run) =>
+              run.repo.toLowerCase() === repo.toLowerCase() &&
+              (branch === null || run.branch === branch),
+          )
+          .toReversed()
+          .slice(0, Number(url.searchParams.get("per_page") ?? "30"));
+        return ok({
+          total_count: runs.length,
+          workflow_runs: runs.map((run) => ({
+            id: run.id,
+            name: run.name,
+            workflow_id: run.workflow_id,
+            head_branch: run.branch,
+            status: "completed",
+            conclusion: run.conclusion,
+            created_at: iso(run.created_at),
+            html_url: `https://github.com/${run.repo}/actions/runs/${run.id}`,
+          })),
+        });
+      }
       if (method === "GET" && (found = /^collaborators\/([^/]+)\/permission$/.exec(rest))) {
         const login = decodeURIComponent(found[1]!);
         const role = this.permissionOf(repo, login);
