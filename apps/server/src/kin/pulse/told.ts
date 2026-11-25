@@ -34,12 +34,17 @@ export const entryDueSoon = (fact: Pick<KinPulseFact, "sense" | "key">) =>
   fact.sense === "entry_late" && fact.key.includes(":soon=");
 const comingDue = (fact: KinPulseFact) => DUE_SENSES.has(fact.sense) || entryDueSoon(fact);
 
+/** The band `hours` late falls in, in days, told again at each: 0, then 3 days, 7, then weekly. */
+export const lateBandDays = (hours: number) => {
+  const days = Math.floor(hours / 24);
+  return days < 3 ? 0 : days < 7 ? 3 : Math.floor(days / 7) * 7;
+};
+
 /** How late a late task or list entry is, in bands it is told again at: 3 days, 7, then weekly. */
 const lateBand = (fact: KinPulseFact) => {
   const late = fact.sense === "task_late" || (fact.sense === "entry_late" && !entryDueSoon(fact));
   if (!late || fact.measure?.unit !== "hours") return 0;
-  const days = Math.floor(fact.measure.value / 24);
-  return days < 3 ? 0 : days < 7 ? 3 : Math.floor(days / 7) * 7;
+  return lateBandDays(fact.measure.value);
 };
 
 /** Whether a coming-due fact falls due on `at`'s day in `zone`. */
