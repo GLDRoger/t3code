@@ -38,7 +38,8 @@ import { noticeDay } from "../work/crm.ts";
 import { daysOverdue, endOfDay, startOfDay } from "../work/recordRows.ts";
 import { crmSees, teamGuard, viewSees } from "../work/teamView.ts";
 import { draftersFor } from "./draftWake.ts";
-import { daysAgoText, daysText, type SenseContext } from "./senses/shared.ts";
+import { daysAgoText, daysText, type SenseContext, type SensedFact } from "./senses/shared.ts";
+import { handledOf, storedRows } from "./factState.ts";
 import { markTold } from "./told.ts";
 import { DAY_MS, thresholds, toMs } from "./thresholds.ts";
 
@@ -377,9 +378,12 @@ const settleFactCards = Effect.fn("KinFactCards.settle")(function* (
   posted: ReadonlyArray<CardRow>,
   standing: ReadonlySet<string>,
   actors: ReadonlyMap<string, string | undefined>,
+  inHand: ReadonlySet<string>,
 ) {
   const chats = yield* Effect.serviceOption(KinChatService);
   if (Option.isNone(chats)) return;
+  const handed = (row: CardRow) =>
+    row.kind === "notice_renew" && standing.has(row.factKey) && inHand.has(row.factKey);
   const gone = [
     ...new Set(
       posted
@@ -387,7 +391,8 @@ const settleFactCards = Effect.fn("KinFactCards.settle")(function* (
           (row) =>
             row.open === 1 &&
             (!standing.has(row.factKey) ||
-              (row.kind === "waited_answer" && actors.get(row.factKey) !== row.personId)),
+              (row.kind === "waited_answer" && actors.get(row.factKey) !== row.personId) ||
+              handed(row)),
         )
         .map((row) => row.widgetId),
     ),
@@ -395,8 +400,16 @@ const settleFactCards = Effect.fn("KinFactCards.settle")(function* (
   for (const widgetId of gone) {
     const plan = [...(yield* plansOf(orgId, widgetId)).values()].find(isFactCard);
     if (plan === undefined) continue;
+    const row = posted.find((one) => one.widgetId === widgetId);
+    const outcome =
+      row !== undefined && handed(row)
+        ? {
+            title: "No longer needed",
+            text: `${plan.key}'s notice day is already in hand, so this was closed.`,
+          }
+        : closedOutcome(plan);
     yield* chats.value
-      .closeReplaced({ orgId, widgetId: KinWidgetId.make(widgetId), outcome: closedOutcome(plan) })
+      .closeReplaced({ orgId, widgetId: KinWidgetId.make(widgetId), outcome })
       .pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("Kin couldn't close a card whose fact cleared", { orgId, cause }),
@@ -923,7 +936,9 @@ const mayChange = (
 export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
   readonly ctx: SenseContext;
   /** Every fact sensed now, handled or not: what a card stands on. */
-  readonly sensed: ReadonlyArray<Parameters<typeof standKeys>[0] & Pick<KinPulseFact, "actor">>;
+  readonly sensed: ReadonlyArray<
+    Parameters<typeof standKeys>[0] & Pick<KinPulseFact, "actor"> & Pick<SensedFact, "quietForMs">
+  >;
   /** Those open: not handled, not set aside, not quiet. */
   readonly open: ReadonlyArray<KinPulseFact>;
   readonly sees: (
@@ -931,8 +946,23 @@ export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
     facts: ReadonlyArray<KinPulseFact>,
   ) => Effect.Effect<ReadonlyArray<{ readonly key: string }>, SqlError, SqlClient.SqlClient>;
 }) {
-  const { orgId } = input.ctx;
+  const { orgId, at } = input.ctx;
   const posted = yield* factCardRows(orgId);
+  const level = yield* ownerLevelPeople(orgId);
+  // An open notice card gives way once the owner's read has its fact in hand.
+  const noticeKeys = posted
+    .filter((row) => row.open === 1 && row.kind === "notice_renew")
+    .map((row) => row.factKey);
+  const stored = noticeKeys.length === 0 ? new Map() : yield* storedRows(orgId, noticeKeys);
+  const inHand = new Set(
+    input.sensed
+      .filter(
+        (fact) =>
+          stored.has(fact.key) &&
+          handledOf(stored.get(fact.key), at, fact, { viewer: { _tag: "owner" }, level }) !== null,
+      )
+      .map((fact) => fact.key),
+  );
   yield* settleFactCards(
     orgId,
     posted,
@@ -943,8 +973,8 @@ export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
         fact.actor._tag === "person" ? fact.actor.personId : undefined,
       ]),
     ),
+    inHand,
   );
-  const level = yield* ownerLevelPeople(orgId);
   const budget = nudgeBudget(input.ctx, level);
   yield* waitedCards({ ...input, level, posted, budget });
   yield* stallCards({ ...input, level, posted, budget });

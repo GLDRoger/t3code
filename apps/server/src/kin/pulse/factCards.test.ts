@@ -698,6 +698,8 @@ it.effect(
         yield* freshDay(ctx);
         yield* tickAt(ctx, NOW + 3 * DAY + HOUR);
         const second = (yield* cards(ctx)).find((one) => !one.closed)!;
+        // Tapped when Kin asks again, after the first hold ended.
+        yield* TestClock.setTime(NOW + 3 * DAY + HOUR);
         yield* tap(ctx, zoyaId, second, "Still on it");
         assert.isFalse(
           yield* personSees(ctx, zoyaId, "task_stalled", guide, NOW + 3 * DAY + 2 * HOUR),
@@ -1209,6 +1211,77 @@ it.effect("a notice card never names a contact its teammate reader can't see", (
         yield* detailOf(ctx, rheas),
         /drafts the notice mail to Priya for your Confirm\./,
       );
+    }),
+  ),
+);
+
+/** Rhea has the notice day in hand in Needs attention, as the owner. */
+const rheaHandles = (ctx: Ctx, at: number) =>
+  Effect.gen(function* () {
+    const read = yield* KinPulse.read({
+      orgId: ctx.orgId,
+      at,
+      viewer: { _tag: "owner" },
+      limit: 200,
+    });
+    const fact = read.facts.find((one) => one.sense === "notice_due")!;
+    yield* KinPulse.handle({
+      orgId: ctx.orgId,
+      at,
+      viewer: { _tag: "owner" },
+      by: ctx.byOwner.actor,
+      factKey: fact.key,
+      action: "not_a_problem",
+      note: "Rhea: keep them",
+    });
+  });
+const handledRow = (ctx: Ctx) =>
+  ctx.sql<{ by: string | null; note: string | null }>`SELECT handled_by_id AS by,
+      handled_note AS note FROM kin_pulse_facts
+    WHERE org_id = ${ctx.orgId} AND sense = 'notice_due'`.pipe(Effect.map((rows) => rows[0]));
+
+it.effect("the owner's own answer stands: a teammate's Let it renew after it writes nothing", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { project } = yield* contract(ctx, { _tag: "person", personId: zoyaId });
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      const [card] = yield* noticeCards(ctx);
+      assert.strictEqual(card!.who, zoyaId);
+      yield* rheaHandles(ctx, NOW + HOUR);
+      yield* tap(ctx, zoyaId, card!, "Let it renew");
+      assert.deepStrictEqual(yield* handledRow(ctx), {
+        by: ctx.owner.personId,
+        note: "Rhea: keep them",
+      });
+      assert.deepStrictEqual((yield* noticeCards(ctx))[0]!.outcome, {
+        title: "Nothing was done",
+        text: `${project}'s notice day is already in hand, so nothing was done.`,
+      });
+    }),
+  ),
+);
+
+it.effect("a teammate's open notice card closes once the owner has the notice day in hand", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { project } = yield* contract(ctx, { _tag: "person", personId: zoyaId });
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      yield* rheaHandles(ctx, NOW + HOUR);
+      yield* tickAt(ctx, NOW + 2 * HOUR);
+      const [card] = yield* noticeCards(ctx);
+      assert.isTrue(card!.closed);
+      assert.deepStrictEqual(card!.outcome, {
+        title: "No longer needed",
+        text: `${project}'s notice day is already in hand, so this was closed.`,
+      });
+      // Closed, so Give notice can no longer wake anyone.
+      const refused = yield* tap(ctx, zoyaId, card!, "Give notice").pipe(
+        Effect.flip,
+        Effect.map((error) => (isChatError(error) ? error.reason : "not a refusal")),
+      );
+      assert.notStrictEqual(refused, "not a refusal");
     }),
   ),
 );
