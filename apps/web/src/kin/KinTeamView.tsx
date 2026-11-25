@@ -72,6 +72,7 @@ import { KinTalkToSection } from "./KinTeamAgent";
 import { KinPersonReach, KinReachList } from "./KinReach";
 import { KIN_REACH_COPY } from "@t3tools/client-runtime/kin/kinReach";
 import { useKinHostAt } from "./useKinHost";
+import { useKinSectionNamed, useKinShell } from "./useKinShell";
 import { useKinWork, useKinWorkDirectory } from "./useKinWork";
 import { useKinGate } from "./useKinHost";
 import { KinGateView } from "./KinWorkParts";
@@ -332,10 +333,13 @@ function KinTeammatePage(props: {
   const offered = kinTeammateActions(teammate, props.viewer);
   const [kindAsked, setKindAsked] = useState<KinPeopleSetAccessInput["access"] | null>(null);
   const kind = kinTeammateKind(teammate);
+  const shell = useKinShell(props.environmentId);
+  const named = useKinSectionNamed(props.environmentId);
+  const kindDetail = KIN_ACCESS_CHOICES.find((choice) => choice.access === kind)?.detail;
   const kindCopy =
     kindAsked === null
       ? null
-      : kinAccessChangeCopy(teammate.name, kindAsked, teammate.backAs !== null);
+      : kinAccessChangeCopy(teammate.name, kindAsked, teammate.backAs !== null, shell);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -381,7 +385,7 @@ function KinTeammatePage(props: {
       {kinTeammateKindEditable(teammate, props.viewer) ? (
         <KinSettingsSection
           title={teammate.backAs === null ? KIN_TEAM_COPY.canDo : KIN_TEAM_COPY.canDoBack}
-          description={KIN_ACCESS_CHOICES.find((choice) => choice.access === kind)?.detail}
+          description={kindDetail === undefined ? undefined : named(kindDetail)}
           problem={props.problem}
         >
           <KinSettingsRow
@@ -652,6 +656,7 @@ function KinTeammatePlaces(props: {
   readonly orgId: KinOrgId;
 }) {
   const { places, personId, environmentId, orgId } = props;
+  const named = useKinSectionNamed(environmentId);
   const setPlaces = useAtomCommand(kinClient.personSetPlaces, { reportFailure: false });
   // What the owner just switched, shown until the host's next read agrees or refuses.
   const [asked, setAsked] = useState<Partial<KinPersonPlaceSwitches>>({});
@@ -678,12 +683,12 @@ function KinTeammatePlaces(props: {
       {KIN_PLACE_SWITCHES.map((entry) => (
         <KinSettingsRow
           key={entry.place}
-          title={entry.label}
+          title={named(entry.label)}
           wrap
-          detail={entry.detail}
+          detail={named(entry.detail)}
           control={
             <Switch
-              aria-label={entry.label}
+              aria-label={named(entry.label)}
               checked={asked[entry.place] ?? places[entry.place]}
               disabled={asked[entry.place] !== undefined}
               onCheckedChange={(on) => void flip(entry.place, on)}

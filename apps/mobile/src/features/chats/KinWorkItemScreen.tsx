@@ -11,7 +11,11 @@ import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kin
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinTaskProjectsAllowed } from "@t3tools/client-runtime/kin/kinWorkClients";
-import { kinSectionOf, kinSectionOffLine } from "@t3tools/client-runtime/kin/kinShell";
+import {
+  kinSectionNamed,
+  kinSectionOf,
+  kinSectionOffLine,
+} from "@t3tools/client-runtime/kin/kinShell";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_TASK_LINK,
@@ -429,6 +433,7 @@ function KinWorkItemBody(props: ItemTarget) {
       onOpen={openLinked}
       onOpenLink={openLink}
       onOpenThread={openThread}
+      named={(text) => kinSectionNamed(shell, text)}
       {...(editsLinks ? { onAddLink: askLink, onRemoveLink: askUnlink } : {})}
     />
   );
@@ -1521,6 +1526,7 @@ function KinWorkLinked(props: {
   readonly onOpen: (to: KinNotificationDestination) => void;
   readonly onOpenLink: (link: KinWorkLinkView) => void;
   readonly onOpenThread: (thread: NonNullable<KinWorkLinkView["thread"]>) => void;
+  readonly named: (text: string) => string;
   /** Only where this viewer may change the entry's web links. */
   readonly onAddLink?: () => void;
   readonly onRemoveLink?: (link: KinWorkLinkView) => void;
@@ -1532,6 +1538,7 @@ function KinWorkLinked(props: {
       item={props.detail}
       // Both pages show the entry's client, project and milestone in their rows already.
       parentsShown
+      named={props.named}
       onOpen={props.onOpen}
     >
       {rest.length === 0 && onAddLink === undefined ? null : (
@@ -1584,6 +1591,8 @@ export function useKinOpenLinked(target: KinWorkTarget) {
 export function KinLinkedSection(props: {
   readonly item: Parameters<typeof kinLinked>[0];
   readonly parentsShown: boolean;
+  /** Kin's words about clients in the company's own name for them. */
+  readonly named?: (text: string) => string;
   readonly onOpen: (to: KinNotificationDestination) => void;
   readonly children?: ReactNode;
 }) {
@@ -1600,7 +1609,7 @@ export function KinLinkedSection(props: {
       {linked.groups.map((group) => (
         <View key={group.group}>
           <Text textRole="footnote" className="px-4 pt-3 text-foreground-muted">
-            {KIN_LINKED.group[group.group]}
+            {(props.named ?? String)(KIN_LINKED.group[group.group])}
           </Text>
           {group.items.map((item) => {
             const title = item.title ?? KIN_LINKED.message;

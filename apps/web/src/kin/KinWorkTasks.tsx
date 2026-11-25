@@ -87,7 +87,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { useKinSectionOn } from "./useKinShell";
+import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -173,6 +173,7 @@ export function KinWorkTaskList(
   const { environmentId, orgId, live, within } = props;
   const navigate = useNavigate();
   const scope = useKinViewerScope(environmentId);
+  const named = useKinSectionNamed(environmentId);
   const { names } = props.directory;
   const { state: changed, changes } = props.changes;
   const hostEdits = kinWorkHostEdits(live.summary);
@@ -359,6 +360,7 @@ export function KinWorkTaskList(
               records={records}
               everyone={within === undefined}
               grouped={grouped}
+              named={named}
               onChange={setFilter}
             />
             {notice === null || notice.undo !== null ? null : (
@@ -896,6 +898,7 @@ function KinWorkFilters(props: {
   readonly everyone: boolean;
   /** The chip saying the list is grouped some other way than Me first; null when it isn't. */
   readonly grouped: string | null;
+  readonly named: (text: string) => string;
   readonly onChange: (filter: KinWorkFilter) => void;
 }) {
   const { overview, filter, choices } = props;
@@ -993,8 +996,8 @@ function KinWorkFilters(props: {
               }),
           },
           scope(
-            KIN_WORK_HOME.byClient,
-            KIN_WORK_HOME.allClients,
+            props.named(KIN_WORK_HOME.byClient),
+            props.named(KIN_WORK_HOME.allClients),
             clients,
             filter.party,
             (party) => ({

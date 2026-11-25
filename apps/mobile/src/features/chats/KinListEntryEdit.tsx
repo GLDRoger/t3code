@@ -59,6 +59,7 @@ import {
 } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { useKinGate } from "./state/useKinHost";
+import { useKinShell } from "./state/useKinShell";
 import { KinGateView } from "./components/KinWorkPieces";
 
 const FIELD = "field:";
@@ -195,6 +196,7 @@ function TypedEdit(
 ) {
   const { item, entry, field } = props;
   const changes = useKinEntryChanges(props, props.itemKey);
+  const shell = useKinShell(props.environmentId);
   const amount = entry.amountEdit;
   const currency = amount?.currency ?? KIN_DEFAULT_HOME_CURRENCY;
   const [text, setText] = useState(field === null ? (amount?.draft ?? "") : field.draft);
@@ -221,7 +223,9 @@ function TypedEdit(
       if (saved) props.onClose();
     };
     const question =
-      field === null ? kinIssuedAmountQuestion(item, checked.value as KinMoney | null) : null;
+      field === null
+        ? kinIssuedAmountQuestion(item, checked.value as KinMoney | null, shell)
+        : null;
     if (question === null) return keep();
     Dialog.confirm({
       title: question.title,
