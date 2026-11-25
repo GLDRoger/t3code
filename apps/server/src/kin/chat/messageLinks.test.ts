@@ -1,19 +1,25 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  AuthSessionId,
+  AuthStandardClientScopes,
+  KinAgentId,
   KinChatId,
   KinMemberId,
   KinMessageId,
-  KinOrgId,
   KinPersonId,
+  ThreadId,
   type KinMessage,
 } from "@t3tools/contracts";
-import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import * as Sqlite from "../../persistence/Sqlite.ts";
-import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import * as People from "../people/KinPeople.ts";
+import * as Shell from "../shell/KinShell.ts";
+import * as Hub from "./KinChatHub.ts";
+import * as Repository from "./KinChatRepository.ts";
+import { KinIdentity, KinIdentityConfig } from "./KinIdentity.ts";
 import {
   encodeNames,
   keysIn,
@@ -25,13 +31,19 @@ import {
 } from "./messageLinks.ts";
 
 // Invented company, people and records only.
-const orgId = KinOrgId.make("org");
-const ownerId = KinPersonId.make("rhea");
 const mateId = KinPersonId.make("zoya");
 const at = "2026-11-12T00:00:00.000Z";
-const layer = KinPersistence.layer.pipe(
-  Layer.provideMerge(Sqlite.layerMemory),
-  Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+const layer = Layer.mergeAll(People.layer, Shell.layer).pipe(
+  Layer.provideMerge(Layer.mergeAll(Hub.layer, KinIdentity.layer)),
+  Layer.provideMerge(Repository.layer),
+  Layer.provide(
+    Layer.succeed(KinIdentityConfig, {
+      orgName: "Ambermill",
+      ownerHandle: "rhea",
+      ownerDisplayName: "Rhea Kapoor",
+    }),
+  ),
+  Layer.provideMerge(layerKinAuthTest("kin-message-links-")),
 );
 
 const finance: LinkName = {
@@ -102,39 +114,47 @@ describe("linkMatcher", () => {
   });
 });
 
-const message = (body: string): KinMessage => ({
-  orgId,
-  chatId: KinChatId.make("room"),
-  messageId: KinMessageId.make(`m-${body.length}`),
-  seq: 1,
-  author: {
-    _tag: "agent",
-    agentId: "chief" as never,
-    memberId: KinMemberId.make("chief-member"),
-    ownerPersonId: ownerId,
-    threadId: "thread" as never,
-  },
-  authorRole: "member",
-  kind: "text",
-  body,
-  intent: null,
-  mentions: [],
-  replyTo: null,
-  widgetId: null,
-  floorRunId: null,
-  status: "posted",
-  sentBy: null,
-  createdAt: at,
-  editedAt: null,
-});
-
-it.effect("links for each reader only what they may open; a hidden client leaves no trace", () =>
+it.effect("links visible records per reader without revealing hidden records", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${at})`;
+    const {
+      owner: { orgId, personId: ownerId },
+    } = yield* KinIdentity;
+    const repo = yield* Repository.KinChatRepository;
+    const people = yield* People.KinPeople;
+    const shell = yield* Shell.KinShell;
+    const message = (
+      body: string,
+      chatId = KinChatId.make("room"),
+      memberId = KinMemberId.make("finance-in-finance"),
+    ) =>
+      ({
+        orgId,
+        chatId,
+        messageId: KinMessageId.make(`m-${body.length}`),
+        seq: 1,
+        author: {
+          _tag: "agent",
+          agentId: KinAgentId.make("finance"),
+          memberId,
+          ownerPersonId: ownerId,
+          threadId: ThreadId.make("kin:01FIN"),
+        },
+        authorRole: "member",
+        kind: "text",
+        body,
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        createdAt: at,
+        editedAt: null,
+      }) satisfies KinMessage;
     yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
-      VALUES (${ownerId}, ${orgId}, 'rhea', 'Rhea Kapoor', ${at}, 'owner'),
-        (${mateId}, ${orgId}, 'zoya', 'Zoya Sheikh', ${at}, 'member')`;
+      VALUES (${mateId}, ${orgId}, 'zoya', 'Zoya Sheikh', ${at}, 'member')`;
     yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
       VALUES ('finance', ${orgId}, 'Finance', 'lead', ${ownerId}, ${at})`;
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
@@ -156,7 +176,8 @@ it.effect("links for each reader only what they may open; a hidden client leaves
         (${orgId}, 'i1', 'invoices', 'INV-1', 'Orbit Dental retainer', 'person', ${ownerId}, 0, 'person', 'i1', 0, 0),
         (${orgId}, 'd1', 'deals', 'DL-1', 'Pineglass window graphics', 'person', ${ownerId}, 0, 'person', 'd1', 0, 0),
         (${orgId}, 'd2', 'deals', 'DL-2', 'Orbit Dental', 'person', ${ownerId}, 0, 'person', 'd2', 0, 0)`;
-    yield* sql`UPDATE kin_records SET fields_json = '{"number":"INV/26-27/004"}' WHERE key = 'INV-1'`;
+    yield* sql`UPDATE kin_records SET fields_json = '{"number":"INV/26-27/004"}', team_shared = 1
+      WHERE org_id = ${orgId} AND key = 'INV-1'`;
     yield* sql`UPDATE kin_records SET state = 'done' WHERE key = 'W-3'`;
     const said = message(
       'Talk to Finance about INV-1 for Orbit Dental. W-1 is with Zoya Sheikh. Lumen Grove and C-3 can wait. See Settings and INV/26-27/004. Pineglass window graphics is DL-1. Next is "Set up the booking API", after Print the old menus.',
@@ -253,7 +274,9 @@ it.effect("links for each reader only what they may open; a hidden client leaves
       assert.notInclude(sent, hidden);
 
     // Agents read the words as written.
-    const agent = yield* withLinks(orgId, { _tag: "agent", agentId: "finance" as never }, [said]);
+    const agent = yield* withLinks(orgId, { _tag: "agent", agentId: KinAgentId.make("finance") }, [
+      said,
+    ]);
     assert.isUndefined(agent[0]!.links);
 
     // An agent's keys reach people as names: the printed number, else the title, linked still.
@@ -271,12 +294,14 @@ it.effect("links for each reader only what they may open; a hidden client leaves
       (yield* nameKeys(orgId, "finance-chat", "Logo files (W-1) moved.")).body,
       "Logo files moved.",
     );
-    // Where Zoya reads, the private client's key stays a key: its name would tell her more.
+    // In Zoya's chat the private client's name stays hidden.
+    const zoyaChat = KinChatId.make("zoya-chat");
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
-      VALUES ('zoya-chat', ${orgId}, 'direct', 'zoya:finance', 0, ${at})`;
+      VALUES (${zoyaChat}, ${orgId}, 'direct', 'zoya:finance', 0, ${at})`;
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
         agent_id, role, joined_at)
-      VALUES ('zoya-in-zoya', ${orgId}, 'zoya-chat', 'person', ${mateId}, NULL, 'member', ${at})`;
+      VALUES ('zoya-in-zoya', ${orgId}, ${zoyaChat}, 'person', ${mateId}, NULL, 'member', ${at}),
+        ('finance-in-zoya', ${orgId}, ${zoyaChat}, 'agent', NULL, 'finance', 'member', ${at})`;
     assert.strictEqual(
       (yield* nameKeys(orgId, "zoya-chat", "C-3 waits on W-1.")).body,
       "C-3 waits on Logo files.",
@@ -292,6 +317,58 @@ it.effect("links for each reader only what they may open; a hidden client leaves
       kind: "task",
     });
 
+    const ownerSession = {
+      sessionId: AuthSessionId.make("rhea-browser"),
+      subject: "browser",
+      method: "browser-session-cookie" as const,
+      scopes: AuthStandardClientScopes,
+    };
+    yield* pairSession(ownerSession.sessionId);
+    const sectionsOff = yield* shell.set(orgId, ownerId, 0, [
+      { id: "money", on: false },
+      { id: "invoices", on: false },
+    ]);
+    yield* sql`INSERT INTO kin_agent_threads (thread_id, org_id, agent_id, started_at)
+      VALUES ('kin:01FIN', ${orgId}, 'finance', ${at})`;
+    const oldReply = yield* repo.insertMessage({
+      ...message("Check INV-1.", zoyaChat, KinMemberId.make("finance-in-zoya")),
+      audience: "chat",
+      clientMessageId: null,
+      serverPosted: true,
+    });
+    const resume = (afterSeq: number, afterChangeSeq?: number) =>
+      repo.resume({
+        orgId,
+        chatId: zoyaChat,
+        memberId: KinMemberId.make("zoya-in-zoya"),
+        afterSeq,
+        afterChangeSeq,
+      });
+    const hiddenReply = yield* resume(0);
+    assert.strictEqual(hiddenReply.messages[0]?.body, "Check INV-1.");
+    assert.isUndefined(hiddenReply.messages[0]?.links);
+    yield* people.setPlaces(ownerSession, { orgId, personId: mateId, money: true });
+    yield* shell.set(orgId, ownerId, sectionsOff.rev, [
+      { id: "money", on: true },
+      { id: "invoices", on: true },
+    ]);
+    assert.isEmpty((yield* resume(hiddenReply.lastSeq, hiddenReply.lastChangeSeq)).messages);
+    const [replayed] = (yield* resume(oldReply.seq - 1, hiddenReply.lastChangeSeq)).messages;
+    assert.strictEqual(replayed?.messageId, oldReply.messageId);
+    assert.deepStrictEqual(replayed?.links, [
+      {
+        text: "INV-1",
+        to: invoice.to,
+        note: "Orbit Dental retainer",
+        name: "INV/26-27/004",
+      },
+    ]);
+
+    yield* people.setPlaces(ownerSession, { orgId, personId: mateId, money: false });
+    const [hiddenAgain] = (yield* resume(0)).messages;
+    assert.strictEqual(hiddenAgain?.messageId, oldReply.messageId);
+    assert.isUndefined(hiddenAgain?.links);
+
     // Kin opens no T3 thread: a helper's link or pasted id reaches people as its card's title, the
     // agent's own thread as its name; code stays as written.
     const helper = "thread:delegated-task:command%3Amcp%3Aa1%3Adelegate-task%3Ab2";
@@ -304,8 +381,6 @@ it.effect("links for each reader only what they may open; a hidden client leaves
         revision, state_json, awaiting_json, updated_at)
       VALUES ('w-card', ${orgId}, 'finance-chat', 'm-card', 'native', 'task', 1,
         ${JSON.stringify({ threadId: helper, title: "Check the  login copy" })}, '[]', ${at})`;
-    yield* sql`INSERT INTO kin_agent_threads (thread_id, org_id, agent_id, started_at)
-      VALUES ('kin:01FIN', ${orgId}, 'finance', ${at})`;
     const link = `t3-thread://v2/env-1/${helper}`;
     assert.strictEqual(
       yield* nameThreads(

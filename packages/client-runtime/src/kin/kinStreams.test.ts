@@ -19,6 +19,7 @@ import {
   type KinChatSubscribeInput,
   type KinChatSummary,
   type KinMessage,
+  type KinMessageLink,
   type KinPulseEvent,
   type KinPulseFact,
   type KinPulseSubscribeInput,
@@ -529,18 +530,25 @@ describe("Kin streams", () => {
     }),
   );
 
-  it.effect("resumes from both cursors across sessions and drops a left chat", () =>
+  it.effect("refreshes cached links, resumes edits and drops a left chat", () =>
     Effect.gen(function* () {
+      const oldReply = message(20, "Check INV-1.");
+      const invoiceLink = {
+        text: "INV-1",
+        to: { _tag: "record", key: "INV-1", kind: "entry" },
+        name: "INV/26-27/004",
+        note: "Orbit Dental retainer",
+      } satisfies KinMessageLink;
       const rows = new Map<string, string>();
       rows.set(
         chatRowKey,
         encodeCachedChat({
           chat: {
-            messages: [message(1), message(2)],
+            messages: [oldReply, message(21)],
             widgets: [],
             reactions: [],
-            contiguousSeq: 2,
-            changeSeq: 7,
+            contiguousSeq: 21,
+            changeSeq: 27,
             drafts: [],
             presence: [],
             reads: {},
@@ -597,7 +605,7 @@ describe("Kin streams", () => {
 
       const readHistory = (input: KinChatHistoryInput) =>
         Queue.offer(historyReads, input).pipe(
-          Effect.as({ messages: [message(2, "edited offline")], widgets: [], hasMore: false }),
+          Effect.as({ messages: [message(21, "edited offline")], widgets: [], hasMore: false }),
         );
       const chatFiber = yield* makeKinChatStream(readHistory)({ chatId }).pipe(
         Stream.runForEach((view) => Queue.offer(chatViews, view)),
@@ -607,27 +615,36 @@ describe("Kin streams", () => {
 
       const cachedView = yield* Queue.take(chatViews);
       expect(cachedView).toMatchObject({ live: false, savedAt: "cached-at" });
-      expect(cachedView.value.messages.map((m) => m.seq)).toEqual([1, 2]);
-      expect(yield* Queue.take(subscribed)).toEqual({ chatId, afterSeq: 2, afterChangeSeq: 7 });
+      expect(cachedView.value.messages.map((m) => m.seq)).toEqual([20, 21]);
+      expect(cachedView.value.messages[0]?.links).toBeUndefined();
+      const firstCursor = yield* Queue.take(subscribed);
 
-      // The backlog carries the offline edit itself; no history page is re-read for it.
+      // The host only recomputes links for messages past the requested cursor or with new edits.
       yield* Queue.offer(firstChat, {
         _tag: "backlog",
-        messages: [message(2, "edited offline"), message(3)],
+        messages: [
+          ...(oldReply.seq > (firstCursor.afterSeq ?? 0)
+            ? [{ ...oldReply, links: [invoiceLink] }]
+            : []),
+          message(21, "edited offline"),
+          message(22),
+        ],
         widgets: [],
-        lastSeq: 3,
-        lastChangeSeq: 11,
-      } as unknown as KinChatStreamEvent);
+        lastSeq: 22,
+        lastChangeSeq: 31,
+      });
       const resumed = (yield* Queue.take(chatViews)).value;
-      expect(resumed).toMatchObject({ contiguousSeq: 3, changeSeq: 11 });
+      expect(resumed.messages[0]?.links).toEqual([invoiceLink]);
+      expect(firstCursor).toEqual({ chatId, afterSeq: 19, afterChangeSeq: 27 });
+      expect(resumed).toMatchObject({ contiguousSeq: 22, changeSeq: 31 });
       expect(resumed.messages.map((m) => m.body)).toEqual([
-        "message 1",
+        "Check INV-1.",
         "edited offline",
-        "message 3",
+        "message 22",
       ]);
 
       yield* SubscriptionRef.set(activeSession, Option.some(session(secondChat, Stream.never)));
-      expect(yield* Queue.take(subscribed)).toEqual({ chatId, afterSeq: 3, afterChangeSeq: 11 });
+      expect(yield* Queue.take(subscribed)).toEqual({ chatId, afterSeq: 22, afterChangeSeq: 31 });
       expect(yield* Queue.size(historyReads)).toBe(0);
 
       yield* Queue.offer(secondChat, leftEvent);

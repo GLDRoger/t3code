@@ -359,7 +359,13 @@ export function makeKinChatStream<E, R>(
         let state = Option.match(cached, { onNone: () => emptyKinChat, onSome: (c) => c.chat });
         let live = false;
         let shownAt = Option.match(cached, { onNone: () => null, onSome: (c) => c.savedAt });
-        let savedMessages = Option.exists(cached, (c) => c.chat.messages.length > 0);
+        const firstCached = state.messages[0];
+        // A permission change does not edit a message, so the first backlog must replay cached rows.
+        let cachedAfterSeq =
+          firstCached === undefined
+            ? undefined
+            : Math.min(state.contiguousSeq, Math.max(0, firstCached.seq - 1));
+        let savedMessages = firstCached !== undefined;
         const saver = yield* throttledSave((value: { chat: KinChatState; savedAt: string }) =>
           chatCache.save(environmentId, key, value),
         );
@@ -405,6 +411,7 @@ export function makeKinChatStream<E, R>(
         );
 
         const onEvent = Effect.fnUntraced(function* (event: KinChatStreamEvent) {
+          if (event._tag === "backlog" || event._tag === "reset") cachedAfterSeq = undefined;
           // A cleared chat's cached messages go too, even though the feed is empty for now.
           if (event._tag === "reset" && event.cleared === true) savedMessages = false;
           const views = [...step(applyKinChatEvent(state, event))];
@@ -428,7 +435,7 @@ export function makeKinChatStream<E, R>(
               state.contiguousSeq > 0 || state.messages.length > 0
                 ? {
                     chatId: input.chatId,
-                    afterSeq: state.contiguousSeq,
+                    afterSeq: cachedAfterSeq ?? state.contiguousSeq,
                     afterChangeSeq: state.changeSeq,
                   }
                 : { chatId: input.chatId },
