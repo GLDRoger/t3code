@@ -12,7 +12,7 @@ import { parseFrontMatter } from "../memory/frontMatter.ts";
 import { SHARED_THREAD_PREFIX } from "../lead/Audience.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import { touchesBetween } from "../work/touches.ts";
-import { draftEdits, editSide } from "./edits.ts";
+import { changedParts, draftEdits, editSide } from "./edits.ts";
 
 /** One original the dream may cite. `saidBy` and `trust` come from server records, never the model. */
 export interface MaterialEntry {
@@ -26,6 +26,8 @@ export interface MaterialEntry {
   /** An edit: what was edited, and the agent's draft as it was. */
   readonly about?: string;
   readonly before?: string;
+  /** An edit: the words the person typed in place of the draft's (`changedParts`). */
+  readonly changed?: ReadonlyArray<{ readonly was: string; readonly now: string }>;
   /** An edit's side cut at `EDIT_SIDE_MAX`: that side's whole length. */
   readonly cut?: { readonly before?: number; readonly text?: number };
   /** From something marked private: what is made of it stays the owner's (`keepLabels`). */
@@ -215,6 +217,7 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
         about: edit.about,
         before: before.text,
         text: after.text,
+        changed: changedParts(edit.before, edit.after),
         ...(before.length === undefined && after.length === undefined
           ? {}
           : {

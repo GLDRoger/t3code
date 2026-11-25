@@ -24,6 +24,9 @@ import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { IssuesToolkit } from "../../mcp/toolkits/issues/tools.ts";
 import { MessageToolkit } from "../../mcp/toolkits/message/tools.ts";
 import { ThemeToolkit } from "../../mcp/toolkits/theme/tools.ts";
+import { FeedbackToolkit } from "../../mcp/toolkits/feedback/tools.ts";
+import { ToolSearchToolkit } from "../../mcp/toolkits/toolSearch/tools.ts";
+import { WorkflowToolkit } from "../../mcp/toolkits/workflow/tools.ts";
 import { ServerConfig } from "../../config.ts";
 import { toolDirectories } from "../gendocs/toolchain.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
@@ -61,12 +64,18 @@ const T3_TOOLKITS = [
   IssuesToolkit,
   MessageToolkit,
   ThemeToolkit,
+  FeedbackToolkit,
+  WorkflowToolkit,
+  ToolSearchToolkit,
 ];
 const t3Tools: ReadonlySet<string> = new Set(
   T3_TOOLKITS.flatMap((toolkit) => Object.keys(toolkit.tools)),
 );
-/** Every tool T3's own endpoint serves; the Kin endpoint serves them too, mostly hidden. */
-const isT3Tool = (name: string) => t3Tools.has(name);
+/**
+ * Every tool T3's own endpoint serves; the Kin endpoint serves them too, mostly hidden. A toolkit
+ * missing from the list above would be shown to every agent: `AgentSession.test.ts` reads the folder.
+ */
+export const isT3Tool = (name: string) => t3Tools.has(name);
 
 type Turn = { orgId: KinOrgId; agentId: KinAgentId; wakeupId: string };
 
