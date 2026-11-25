@@ -15,6 +15,7 @@ import type {
 import type { AtomCommandResult } from "../state/runtime.ts";
 import { kinEstimate, kinTotalsEstimate, type KinRates } from "./kinCurrency.ts";
 import {
+  kinCategoryLabel,
   kinFieldText,
   kinListSend,
   kinMinorDigits,
@@ -332,8 +333,7 @@ export function kinSubscriptionsView(
       fields.purpose === undefined ? undefined : record.fields?.[fields.purpose.key];
     const purpose =
       (fields.purpose === undefined ? null : kinFieldText(fields.purpose, purposeValue, context)) ??
-      record.listCategory ??
-      null;
+      (record.listCategory === undefined ? null : kinCategoryLabel(record.listCategory, def));
     const userText =
       fields.user === undefined
         ? null

@@ -652,10 +652,10 @@ describe("a list by its definition", () => {
     });
   });
 
-  it("shows a category as it was written unless the list labels it, and saves only label changes", () => {
+  it("shows a category by its label or with an initial capital, and saves only label changes", () => {
     const def = list({
       amount: true,
-      categories: ["gst" as never, "income tax" as never],
+      categories: ["gst" as never, "income tax" as never, "office" as never],
       categoryLabels: { gst: "GST" as never },
     });
     expect(kinListRow(record({ listCategory: "gst" as never }), def, context).cells.category).toBe(
@@ -663,13 +663,20 @@ describe("a list by its definition", () => {
     );
     expect(
       kinListRow(record({ listCategory: "income tax" as never }), def, context).cells.category,
-    ).toBe("income tax");
+    ).toBe("Income tax");
+    expect(
+      kinListRow(record({ listCategory: "office" as never }), def, context).cells.category,
+    ).toBe("Office");
     const draft = kinListEditDraftOf(def);
-    expect(draft.categoryLabels).toEqual({ gst: "GST", "income tax": "income tax" });
+    expect(draft.categoryLabels).toEqual({
+      gst: "GST",
+      "income tax": "Income tax",
+      office: "Office",
+    });
     expect(
       kinListEditInput(orgId, def, {
         ...draft,
-        categoryLabels: { gst: " ", "income tax": "Income tax" },
+        categoryLabels: { gst: " ", "income tax": "Direct tax", office: "Office" },
         payments: true,
       }),
     ).toEqual({
@@ -678,8 +685,27 @@ describe("a list by its definition", () => {
         orgId,
         list: "equipment",
         rev: 3,
-        categoryLabels: { gst: null, "income tax": "Income tax" },
+        categoryLabels: { gst: null, "income tax": "Direct tax" },
         payments: true,
+      },
+    });
+    const renamed = list({
+      amount: true,
+      categories: ["income tax" as never],
+      categoryLabels: { "income tax": "Direct tax" as never },
+    });
+    expect(
+      kinListEditInput(orgId, renamed, {
+        ...kinListEditDraftOf(renamed),
+        categoryLabels: { "income tax": "Income tax" },
+      }),
+    ).toEqual({
+      ok: true,
+      input: {
+        orgId,
+        list: "equipment",
+        rev: 3,
+        categoryLabels: { "income tax": null },
       },
     });
   });
@@ -706,7 +732,7 @@ describe("a list by its definition", () => {
       { id: "total", label: "Billed", lines: ["₹1,50,000"] },
     ]);
     expect(header.groups.map((group) => [group.label, group.totals, group.billed])).toEqual([
-      ["rent", ["₹60,000"], "₹1,00,000 billed"],
+      ["Rent", ["₹60,000"], "₹1,00,000 billed"],
       ["No category", ["Nothing"], "₹50,000 billed"],
     ]);
     const none = header.groups[1]!.narrowed!;
