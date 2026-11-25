@@ -137,12 +137,9 @@ const putBackSince = Effect.fn("KinDefaultTaken.putBackSince")(function* (
 });
 
 /**
- * Tells the person asked, once, in their chat with the asking agent, what Kin went with once
- * `dueAt` passed, on `zone` (their clock): a question is only ever one person's, in their direct
- * chat (`personOfChat`), so it says "you". When the
- * default changed a record, the note is a card whose Undo puts that change back; else a line, as
- * it is when that change was put back before they were told, saying so. Read in the caller's
- * transaction and marked told there, so a retried or overtaken pass posts nothing more.
+ * Tells the one person asked (`personOfChat`), once, in their chat with the asker, what Kin went
+ * with after `dueAt` on their clock `zone`: a card whose Undo puts back a change it made, else a
+ * line. Read in the caller's transaction and marked told there, so a retry posts nothing more.
  */
 export const tellTaken = Effect.fn("KinDefaultTaken.tell")(function* (
   input: {
