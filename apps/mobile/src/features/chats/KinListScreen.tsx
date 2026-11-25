@@ -1053,6 +1053,10 @@ function KinListWatchControls(props: KinWorkTarget & { readonly def: KinListDefi
   const { def, orgId } = props;
   const changes = useKinListChanges(props);
   const [draft, setDraft] = useState<KinListCheckDraft | null>(null);
+  const edit = (next: KinListCheckDraft) => {
+    changes.dismiss();
+    setDraft(next);
+  };
   const remind = kinListRemindChoices(def);
   const numbers = kinListCheckFields(def).map((field) => ({ id: field.key, label: field.label }));
   const rule = kinListCheckWords(def);
@@ -1111,7 +1115,7 @@ function KinListWatchControls(props: KinWorkTarget & { readonly def: KinListDefi
               choices={numbers}
               disabled={changes.busy}
               onPick={(field) =>
-                setDraft({ ...draft, field, other: draft.other === field ? "" : draft.other })
+                edit({ ...draft, field, other: draft.other === field ? "" : draft.other })
               }
             />
             <WatchPick
@@ -1122,9 +1126,7 @@ function KinListWatchControls(props: KinWorkTarget & { readonly def: KinListDefi
                 { id: "above", label: KIN_LIST_WATCH.above },
               ]}
               disabled={changes.busy}
-              onPick={(side) =>
-                (side === "below" || side === "above") && setDraft({ ...draft, side })
-              }
+              onPick={(side) => (side === "below" || side === "above") && edit({ ...draft, side })}
             />
             <WatchPick
               label={KIN_LIST_WATCH.compare}
@@ -1134,7 +1136,7 @@ function KinListWatchControls(props: KinWorkTarget & { readonly def: KinListDefi
                 ...numbers.filter((field) => field.id !== draft.field),
               ]}
               disabled={changes.busy}
-              onPick={(other) => setDraft({ ...draft, other: other === A_NUMBER ? "" : other })}
+              onPick={(other) => edit({ ...draft, other: other === A_NUMBER ? "" : other })}
             />
             {draft.other === "" ? (
               <KinWorkTextField
@@ -1142,7 +1144,7 @@ function KinListWatchControls(props: KinWorkTarget & { readonly def: KinListDefi
                 value={draft.number}
                 keyboard="decimal"
                 disabled={changes.busy}
-                onChangeText={(number) => setDraft({ ...draft, number })}
+                onChangeText={(number) => edit({ ...draft, number })}
               />
             ) : null}
             <ListActionRow
