@@ -28,6 +28,8 @@ import {
 } from "./money.ts";
 import {
   countedEntry,
+  endOfDay,
+  startOfDay,
   fieldDateAt,
   countedPayment,
   isSuggestion,
@@ -597,6 +599,17 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const { members: thisMonthSpent, ...spentThisMonth } = spentIn(thisMonth);
   const { members: lastMonthSpent, ...spentLastMonth } = spentIn(lastMonth);
   const spent = { thisMonth: spentThisMonth, lastMonth: spentLastMonth };
+  const bills = yield* sql<{ minor: number; currency: string; dueAt: number | null }>`SELECT
+    r.amount_minor AS minor, COALESCE(r.currency, ${home}) AS currency,
+    COALESCE(r.due_at, r.date_at) AS "dueAt"
+    FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'expenses'
+      AND r.state = 'open' AND r.amount_minor IS NOT NULL AND ${companyCashOut(sql)}
+      AND ${countedEntry(sql)} AND ${seen}
+    ORDER BY r.key`;
+  const sixth = DateTime.formatIsoDate(DateTime.add(DateTime.makeUnsafe(today), { days: 6 }));
+  const through = endOfDay(sixth, zone);
+  const todayStart = startOfDay(today, zone);
+  const soon = bills.filter((one) => one.dueAt !== null && one.dueAt <= through);
   const about = (totals: Parameters<typeof aboutTotal>[0]) => aboutTotal(totals, home, rates);
   return {
     asOf: iso(now),
@@ -616,6 +629,17 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
           (b.owed[0]?.minor ?? 0) - (a.owed[0]?.minor ?? 0),
       ),
     },
+    ...(bills.length === 0
+      ? {}
+      : {
+          toPay: {
+            total: addUp(bills, home),
+            dueSoon: addUp(soon, home),
+            bills: bills.length,
+            dueSoonBills: soon.length,
+            lateBills: soon.filter((one) => one.dueAt! < todayStart).length,
+          },
+        }),
     received,
     receivedThisFinancialYear: addUp(
       payments.filter((one) => one.paidOn >= fyStart),
