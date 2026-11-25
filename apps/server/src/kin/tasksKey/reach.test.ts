@@ -699,6 +699,7 @@ const reach: Readonly<Record<string, ReadonlyArray<string> | string>> = {
   "kin.watches.list": "not a person action (screens only: Kin keeps watch screen)",
   "kin.watches.log": "not a person action (screens only: watch log)",
   "kin.watches.look": "not a person action (screens only: watch detail)",
+  "kin.watches.stopFollowUp": "stays in the app: 6 (stopping follow-ups)",
   "kin.watches.stop": "stays in the app: 6 (deleting or archiving)",
   "kin.watches.again": ["restart_watch"],
   "kin.goals.list": "not a person action (screens only: goals screen)",

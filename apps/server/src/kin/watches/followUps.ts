@@ -1,9 +1,12 @@
 import {
   KinChatError,
   KinDeferralCard,
+  KinWidgetId,
+  kinOwnerLevel,
   type KinFollowUp,
   type KinMemoryItemId,
   type KinOrgId,
+  type KinPersonAccess,
   type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -15,16 +18,23 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as Repository from "../chat/KinChatRepository.ts";
 import { personReads } from "../chat/sharing.ts";
-import { listNumberSeenBy, seenBy } from "../work/teamView.ts";
 import { MemorySyncHooks, type MemorySyncSnapshot } from "../memory/Memory.ts";
 import { readableSources } from "../memory/quoteAccess.ts";
+import { accessSql } from "../people/KinAccess.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { looksLikeRecordReference, resolveSections } from "../shell/sections.ts";
 import { askerOf } from "../triggers/deferralOrigin.ts";
-import { deferralOpen, promiserLead } from "../triggers/deferrals.ts";
+import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
+import {
+  deferralOpen,
+  deferralWidgetId,
+  makeDeferralCards,
+  promiserLead,
+} from "../triggers/deferrals.ts";
 import { memoryDateMillis } from "../memory/frontMatter.ts";
-import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
+import { KIN_OWNER_LEVEL, listNumberSeenBy, seenBy } from "../work/teamView.ts";
 import type { WatchReader } from "./readRpcs.ts";
 
 export class KinFollowUpItems extends Context.Service<
@@ -127,8 +137,10 @@ const titleMayName = Effect.fn("KinFollowUps.titleMayName")(function* (
   return hidden === undefined;
 });
 
-const cardOf = (run: Run) =>
-  run.card === null ? undefined : Option.getOrUndefined(decodeCard(run.card));
+const cardOf = (run: Run) => {
+  const card = run.card === null ? undefined : Option.getOrUndefined(decodeCard(run.card));
+  return card?.itemId === run.itemId ? card : undefined;
+};
 
 const asker = (sql: SqlClient.SqlClient, orgId: KinOrgId, head: MemoryItemHead, run: Run) =>
   askerOf(sql, orgId, cardOf(run)?.askedBy?.personId ?? head.said_by);
@@ -145,11 +157,10 @@ export const list = Effect.fn("KinFollowUps.list")(function* (
   const sql = yield* SqlClient.SqlClient;
   const items = yield* KinFollowUpItems;
   const now = yield* Clock.currentTimeMillis;
-  const rows = yield* runs(orgId, reader);
   const followUps: Array<KinFollowUp> = [];
-  if (rows.length === 0) return { followUps };
   const snapshot = items.get(orgId);
-  if (snapshot === undefined) return yield* unavailable();
+  if (snapshot === undefined) return { followUps };
+  const rows = yield* runs(orgId, reader);
   const heads = new Map(snapshot.items.map(({ head }) => [head.id, head]));
   const shell = rows.some((row) => row.dueAt !== null && row.dueAt <= now)
     ? yield* KinShell.get(orgId)
@@ -200,4 +211,74 @@ export const list = Effect.fn("KinFollowUps.list")(function* (
     });
   }
   return { followUps };
+});
+
+const notFound = () =>
+  new KinChatError({ reason: "not_found", message: "No such follow-up here." });
+
+export const stop = Effect.fn("KinFollowUps.stop")(function* (
+  orgId: KinOrgId,
+  reader: WatchReader,
+  itemId: KinMemoryItemId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const repo = yield* Repository.KinChatRepository;
+  const items = yield* KinFollowUpItems;
+  const cards = yield* makeDeferralCards;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const [person] = yield* sql<{
+        access: string;
+      }>`SELECT ${sql.literal(accessSql("p"))} AS access
+        FROM kin_people p WHERE p.org_id = ${orgId} AND p.person_id = ${reader.personId}
+          AND p.removed_at IS NULL ORDER BY p.person_id`;
+      if (person === undefined) return yield* notFound();
+      const [run] = yield* runs(orgId, reader, itemId);
+      if (run === undefined) return yield* notFound();
+      const snapshot = items.get(orgId);
+      if (snapshot === undefined) return yield* notFound();
+      const head = snapshot.items.find(
+        ({ head }) => head.id === itemId && head.orgId === orgId,
+      )?.head;
+      if (
+        head === undefined ||
+        head.kind !== "deferral" ||
+        head.every !== undefined ||
+        snapshot.duplicateIds.has(itemId)
+      )
+        return yield* notFound();
+      const askedBy = yield* asker(sql, orgId, head, run);
+      if (!kinOwnerLevel(person.access) && askedBy?.personId !== reader.personId)
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: "Only the person who asked for this, or an owner, can stop it.",
+        });
+      if (!deferralOpen(head) || !activeStates.includes(run.state) || !matchesDue(head, run))
+        return;
+      const now = yield* Clock.currentTimeMillis;
+      // The undone run is the memory reader's cancelled overlay, just as for a card tap.
+      if (!(yield* cancelDeferralRun({ orgId, itemId, now }))) return;
+      const widget = yield* repo.getWidget({
+        orgId,
+        widgetId: KinWidgetId.make(deferralWidgetId(orgId, itemId)),
+      });
+      if (Option.isNone(widget) || widget.value.closedAt !== null) return;
+      const card = cardOf(run);
+      if (card === undefined)
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: "Invalid widget state.",
+        });
+      const at = iso(now);
+      const closed = yield* repo.updateWidget({
+        ...widget.value,
+        audience: "chat",
+        state: { ...card, actions: [] },
+        expectedRevision: widget.value.revision,
+        closedAt: at,
+        updatedAt: at,
+      });
+      yield* cards.publish({ type: "widget.updated", orgId, widget: closed });
+    }),
+  );
 });

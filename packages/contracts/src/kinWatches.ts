@@ -200,7 +200,14 @@ export type KinFollowUp = typeof KinFollowUp.Type;
 export const KinWatchesFollowUpsResult = Schema.Struct({ followUps: Schema.Array(KinFollowUp) });
 export type KinWatchesFollowUpsResult = typeof KinWatchesFollowUpsResult.Type;
 
+export const KinWatchesStopFollowUpInput = Schema.Struct({
+  orgId: KinOrgId,
+  itemId: Schema.suspend(() => KinMemoryItemId),
+});
+export type KinWatchesStopFollowUpInput = typeof KinWatchesStopFollowUpInput.Type;
+
 const KIN_WATCH_WS_METHODS = {
+  stopFollowUp: "kin.watches.stopFollowUp",
   followUps: "kin.watches.followUps",
   list: "kin.watches.list",
   log: "kin.watches.log",
@@ -212,6 +219,10 @@ const KIN_WATCH_WS_METHODS = {
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 
 export const KinWatchRpcs = [
+  Rpc.make(KIN_WATCH_WS_METHODS.stopFollowUp, {
+    payload: KinWatchesStopFollowUpInput,
+    error,
+  }),
   Rpc.make(KIN_WATCH_WS_METHODS.followUps, {
     payload: KinWatchesFollowUpsInput,
     success: KinWatchesFollowUpsResult,
@@ -245,6 +256,7 @@ export const KinWatchRpcs = [
 ] as const;
 
 export const KIN_WATCH_RPC_SCOPES = {
+  [KIN_WATCH_WS_METHODS.stopFollowUp]: AuthKinChatScope,
   [KIN_WATCH_WS_METHODS.followUps]: AuthKinChatScope,
   [KIN_WATCH_WS_METHODS.list]: AuthKinChatScope,
   [KIN_WATCH_WS_METHODS.log]: AuthKinChatScope,

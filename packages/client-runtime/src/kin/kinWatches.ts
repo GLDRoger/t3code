@@ -283,6 +283,11 @@ export function makeKinWatches<R, ER>(
       tag: "kin.watches.look",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.watchId },
     }),
+    stopFollowUp: createKinRpcCommand(runtime, {
+      label: "kin:watch:stop-follow-up",
+      tag: "kin.watches.stopFollowUp",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
+    }),
     watchStop: createKinRpcCommand(runtime, {
       label: "kin:watch:stop",
       tag: "kin.watches.stop",
