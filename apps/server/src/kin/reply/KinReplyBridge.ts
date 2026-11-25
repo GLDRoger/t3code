@@ -144,6 +144,7 @@ export type FailedOutcome =
   | "retrying"
   | "retrying_later"
   | "gave_up"
+  | "stopped"
   | "held"
   | SetupFailure;
 /** "<lead> couldn't start" and why, from the one table (`KIN_TROUBLE_WHY`); bare when unknown. */
@@ -176,6 +177,12 @@ const failedNotices: Record<
   gave_up: {
     prefix: "kin-failed",
     body: (lead, cause) => `${couldnt(lead, cause)}. It won't try again on its own.`,
+  },
+  // A run that ignored Stop, ended for certain (`WakeupRunner`); clients offer Retry by this prefix.
+  stopped: {
+    prefix: "kin-failed",
+    body: (lead) =>
+      `${lead} took too long and was stopped. Nothing it hadn't finished was sent. Ask again to start fresh.`,
   },
 };
 /**

@@ -8,12 +8,15 @@ import {
   KinRecordState,
   MemoryItemEvery,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { inOwnerTime } from "../pulse/checkInSeeds.ts";
+import { ownerZone } from "../work/recordRows.ts";
 
 const TrackedRow = Schema.Struct({
   kind: KinLeadTracking.fields.kind,
@@ -31,6 +34,9 @@ const TrackedRow = Schema.Struct({
   /** A room's own card's `askedBy` and a routine card's `every`, as stored JSON. */
   askedBy: Schema.NullOr(Schema.String),
   every: Schema.NullOr(Schema.String),
+  /** A native schedule's: its `every` is on the host's clock, and this the owner's own time. */
+  hostClock: Schema.Number,
+  ownerTime: Schema.NullOr(Schema.String),
 });
 const decodeTracked = Schema.decodeUnknownEffect(Schema.Array(TrackedRow));
 
@@ -55,14 +61,15 @@ export const tracked = Effect.fn("KinTracked.tracked")(function* (orgId: KinOrgI
       COALESCE(e.due_at, e.updated_at) AS at, e.key, e.state, e.due_all_day AS "dueAllDay",
       CASE WHEN e.state = 'waiting' THEN e.waiting_on_kind END AS "waitingOnKind",
       CASE WHEN e.state = 'waiting' THEN e.waiting_on_id END AS "waitingOnId",
-      NULL AS "anchorSeq", NULL AS "itemId", NULL AS "askedBy", NULL AS every
+      NULL AS "anchorSeq", NULL AS "itemId", NULL AS "askedBy", NULL AS every,
+      0 AS "hostClock", NULL AS "ownerTime"
     FROM kin_records e WHERE e.org_id = ${orgId} AND e.register_id = 'work'
       AND e.owner_kind = 'agent' AND e.state NOT IN ('done', 'dropped')
     UNION ALL
     SELECT CASE r.on_due WHEN 'remind' THEN 'reminder' ELSE 'follow_up' END,
       COALESCE(json_extract(w.state_json, '$.title'), ''), COALESCE(f.next_run_at, r.due_at),
       w.chat_id, ${firstLead}, 2, COALESCE(f.next_run_at, r.due_at, r.updated_at), NULL, NULL, 0,
-      NULL, NULL, (SELECT m.seq FROM kin_messages m WHERE m.org_id = w.org_id AND m.message_id = w.message_id), r.item_id, json_extract(w.state_json, '$.askedBy'), json_extract(w.state_json, '$.every')
+      NULL, NULL, (SELECT m.seq FROM kin_messages m WHERE m.org_id = w.org_id AND m.message_id = w.message_id), r.item_id, json_extract(w.state_json, '$.askedBy'), json_extract(w.state_json, '$.every'), 0, NULL
     FROM kin_deferral_runs r
     JOIN kin_widgets w ON w.org_id = r.org_id
       AND w.widget_id = 'deferral:' || r.org_id || ':' || r.item_id
@@ -72,7 +79,7 @@ export const tracked = Effect.fn("KinTracked.tracked")(function* (orgId: KinOrgI
       OR (r.state IN ('armed', 'heads_up', 'grace', 'snoozed') AND f.next_run_at IS NOT NULL))
     UNION ALL
     SELECT 'scheduled', COALESCE(json_extract(w.state_json, '$.title'), ''), NULL, w.chat_id,
-      ${firstLead}, 3, t.updated_at, NULL, NULL, 0, NULL, NULL, (SELECT m.seq FROM kin_messages m WHERE m.org_id = w.org_id AND m.message_id = w.message_id), t.item_id, json_extract(w.state_json, '$.askedBy'), json_extract(w.state_json, '$.every')
+      ${firstLead}, 3, t.updated_at, NULL, NULL, 0, NULL, NULL, (SELECT m.seq FROM kin_messages m WHERE m.org_id = w.org_id AND m.message_id = w.message_id), t.item_id, json_extract(w.state_json, '$.askedBy'), json_extract(w.state_json, '$.every'), 0, NULL
     FROM kin_scheduled_tasks t
     JOIN kin_widgets w ON w.org_id = t.org_id
       AND w.widget_id = 'scheduled:' || t.org_id || ':' || t.item_id
@@ -81,7 +88,8 @@ export const tracked = Effect.fn("KinTracked.tracked")(function* (orgId: KinOrgI
     WHERE t.org_id = ${orgId} AND t.state = 'active' AND t.paused = 0
     UNION ALL
     SELECT 'scheduled', n.title, NULL, COALESCE(w.chat_id, s.chat_id), s.agent_id, 3, s.updated_at,
-      NULL, NULL, 0, NULL, NULL, (SELECT m.seq FROM kin_messages m WHERE m.org_id = w.org_id AND m.message_id = w.message_id), s.schedule_id, json_extract(w.state_json, '$.askedBy'), json_extract(w.state_json, '$.every')
+      NULL, NULL, 0, NULL, NULL, (SELECT m.seq FROM kin_messages m WHERE m.org_id = w.org_id AND m.message_id = w.message_id), s.schedule_id, json_extract(w.state_json, '$.askedBy'), json_extract(w.state_json, '$.every'),
+      1, s.owner_time_json
     FROM kin_schedules s
     JOIN scheduled_tasks n ON n.task_id = s.task_id AND n.enabled = 1
     LEFT JOIN kin_widgets w ON w.org_id = s.org_id
@@ -115,13 +123,16 @@ type SetInChat =
 
 /**
  * A shared chat's own live reminders and routines, in due order, reminders first: the same list
- * the leads' tracking reads (`tracked`), kept to this chat. A title is the card's, which is
- * blank while someone there now couldn't read where it was set (`wordsReadable`).
+ * the leads' tracking reads (`tracked`), kept to this chat, each routine in the owner's own time.
+ * A title is the card's, which is blank while someone there now couldn't read where it was set
+ * (`wordsReadable`).
  */
 export const setInChat = Effect.fn("KinTracked.setInChat")(function* (
   orgId: KinOrgId,
   chatId: string,
 ) {
+  const zone = yield* ownerZone(orgId);
+  const now = yield* Clock.currentTimeMillis;
   return (yield* tracked(orgId)).flatMap((item): ReadonlyArray<SetInChat> => {
     if (item.chatId !== chatId || item.itemId === null || item.askedBy === null) return [];
     const asker = Option.getOrUndefined(decodeAsker(item.askedBy));
@@ -136,9 +147,11 @@ export const setInChat = Effect.fn("KinTracked.setInChat")(function* (
           asker,
         },
       ];
-    const every = item.every === null ? undefined : Option.getOrUndefined(decodeEvery(item.every));
-    if (item.kind === "scheduled" && every !== undefined)
+    const card = item.every === null ? undefined : Option.getOrUndefined(decodeEvery(item.every));
+    if (item.kind === "scheduled" && card !== undefined) {
+      const every = item.hostClock === 1 ? inOwnerTime(card, item.ownerTime, zone, now) : card;
       return [{ kind: "routine" as const, itemId: item.itemId, title: item.title, every, asker }];
+    }
     return [];
   });
 });

@@ -49,7 +49,7 @@ export const LeadAskInput = Schema.Struct({
   default: KinTrimmedText.check(Schema.isMaxLength(80)),
   by: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(10))),
   about: Schema.optional(
-    Schema.Array(KinTrimmedText.check(Schema.isMaxLength(20))).check(Schema.isMaxLength(8)),
+    Schema.Array(KinTrimmedText.check(Schema.isMaxLength(200))).check(Schema.isMaxLength(8)),
   ),
   intent: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
 });
