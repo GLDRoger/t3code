@@ -866,6 +866,7 @@ export class KinRecords extends Context.Service<
       writer: Writer,
       key: string,
       paymentId: string,
+      mode?: "unapply_credit",
     ) => Effect.Effect<RecordRow, KinChatError>;
     readonly undoCreditPayment: (
       orgId: KinOrgId,
@@ -3650,7 +3651,7 @@ const make = Effect.gen(function* () {
     writer: Writer,
     key: string,
     paymentId: string,
-    undoingSplit = false,
+    mode?: "undo_split" | "unapply_credit",
   ) {
     return yield* transaction(
       Effect.gen(function* () {
@@ -3684,7 +3685,7 @@ const make = Effect.gen(function* () {
                 row.originKey.endsWith(":left")
               ? row.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
               : undefined;
-        if (!undoingSplit && splitBankId !== undefined) {
+        if (mode !== "undo_split" && splitBankId !== undefined) {
           const bank = yield* byId(orgId, splitBankId).pipe(provideSql);
           if (bank === undefined) return yield* unavailable;
           return yield* invalid(
@@ -3694,6 +3695,18 @@ const make = Effect.gen(function* () {
         if (found.originKey.startsWith("credit_note:") && writer.creditNote !== true)
           return yield* invalid("Void the credit note to take back its reduction.");
         if (found.voidedAt !== null) return row;
+        if (mode !== "unapply_credit" && row.registerId === "invoices") {
+          const receiptId = /^receipt:([^:]+)(?::after:.+)?$/.exec(found.originKey)?.[1];
+          if (receiptId !== undefined) {
+            const [receipt] = yield* sql`SELECT 1 FROM kin_records
+              WHERE org_id = ${orgId} AND record_id = ${receiptId} AND register_id = 'receipts'
+                AND json_extract(fields_json, '$.payment') = ${paymentId}`;
+            if (receipt !== undefined)
+              return yield* invalid(
+                "This payment came from the client's credit. Un-apply it instead. Nothing changed.",
+              );
+          }
+        }
         const now = yield* Clock.currentTimeMillis;
         yield* sql`UPDATE kin_record_payments SET voided_at = ${now}
           WHERE org_id = ${orgId} AND payment_id = ${paymentId}`;
@@ -3719,7 +3732,7 @@ const make = Effect.gen(function* () {
           ],
           now,
         );
-        if (!undoingSplit && bankId !== undefined) yield* reopenCredit(orgId, bankId, now);
+        if (mode !== "undo_split" && bankId !== undefined) yield* reopenCredit(orgId, bankId, now);
         const updated = yield* byId(orgId, row.recordId).pipe(provideSql);
         if (updated === undefined) return yield* unavailable;
         return updated;
@@ -3802,13 +3815,14 @@ const make = Effect.gen(function* () {
           if (left.invoice !== null && left.payment !== null)
             return yield* invalid(`Un-apply the credit from ${left.invoice} first.`);
           if (left.payment !== null)
-            yield* voidPayment(orgId, writer, left.key, left.payment, true);
+            yield* voidPayment(orgId, writer, left.key, left.payment, "undo_split");
           if (left.state !== "dropped")
             yield* update(orgId, { ...writer, undoingBankCredit: true }, left.key, {
               state: "dropped",
             });
         }
-        for (const part of split) yield* voidPayment(orgId, writer, part.key, part.paymentId, true);
+        for (const part of split)
+          yield* voidPayment(orgId, writer, part.key, part.paymentId, "undo_split");
         if (split.length > 0)
           yield* reopenCredit(orgId, bank.recordId, yield* Clock.currentTimeMillis);
         return { key: bank.key };

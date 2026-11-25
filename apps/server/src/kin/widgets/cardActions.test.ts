@@ -3398,13 +3398,54 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
         default: "none",
       });
       assert.isTrue(apply.ok, JSON.stringify(apply.value));
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('zoya', ${orgId}, 'zoya', 'Zoya Rao', ${at}, 'member')`;
+      const applyWidget = yield* kin.widget(apply.value.widgetId);
+      const applyPlan = (yield* plansOf(orgId, applyWidget.widgetId)).get("option-1")!;
+      assert.include(
+        yield* CardActions.run(
+          {
+            orgId,
+            widget: applyWidget,
+            personId: kin.person("zoya").personId,
+            memberId: KinMemberId.make("zoya-member"),
+            now: MON,
+          },
+          applyPlan,
+          { records, chat: kin.chats },
+        ).pipe(Effect.flip),
+        { reason: "not_allowed", message: "Only the owner or a co-owner applies credit." },
+      );
+      const unappliedInvoice = (yield* records.get(orgId, next.key))!;
+      assert.strictEqual(unappliedInvoice.paid, 0);
+      assert.isUndefined((yield* records.detail(unappliedInvoice)).payments?.[0]);
+      assert.nestedInclude((yield* callAs("finance", "record_get", { key: next.key })).value, {
+        "creditOffer.receipt": left!.key,
+      });
       yield* kin.tap(owner, apply.value.widgetId, "option-1", "apply-credit");
+      const appliedInvoice = (yield* records.get(orgId, next.key))!;
+      assert.strictEqual(appliedInvoice.paid, 1_000_000);
+      const [appliedPayment] = (yield* records.detail(appliedInvoice)).payments!;
+      const appliedBank = yield* kin.stateOf(over.key);
+      const received = (yield* summary()).received;
+      const takeBack = yield* records
+        .voidPayment(orgId, ownerWrites, next.key, appliedPayment!.paymentId)
+        .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => null }));
+      assert.include(takeBack, {
+        reason: "invalid_state",
+        message:
+          "This payment came from the client's credit. Un-apply it instead. Nothing changed.",
+      });
       assert.strictEqual((yield* records.get(orgId, next.key))!.paid, 1_000_000);
+      assert.deepStrictEqual(yield* kin.stateOf(over.key), appliedBank);
+      assert.deepStrictEqual((yield* summary()).received, received);
       assert.include(yield* undo(orgId, ownerWrites, over.key).pipe(Effect.flip), {
         reason: "invalid_state",
         message: `Un-apply the credit from ${next.key} first.`,
       });
       yield* unsetAgainst(orgId, ownerWrites, left!.key);
+      assert.strictEqual((yield* records.get(orgId, next.key))!.paid, 0);
+      assert.deepStrictEqual((yield* summary()).received, received);
       assert.deepStrictEqual(yield* undo(orgId, ownerWrites, over.key), { key: over.key });
       assert.deepStrictEqual(yield* undo(orgId, ownerWrites, over.key), { key: over.key });
       assert.strictEqual((yield* records.get(orgId, over.key))!.state, "open");

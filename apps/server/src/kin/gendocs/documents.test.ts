@@ -2848,7 +2848,14 @@ describe("receipts", () => {
         const held = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
           (one) => one.key === advance.receipt,
         )!.paymentId!;
-        yield* records.voidPayment(orgId, system, "INV-2", held);
+        assert.include(yield* records.voidPayment(orgId, system, "INV-2", held).pipe(Effect.flip), {
+          reason: "invalid_state",
+        });
+        yield* OwnerMoney.unapplyCredit(people, { orgId, key: against.entry });
+        const restored = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+          (one) => one.key === advance.receipt,
+        )!.paymentId!;
+        yield* records.voidPayment(orgId, system, advance.receipt, restored);
         const refused = yield* Effect.flip(receipt(against));
         assert.match(refused.message, /taken back, so it is void/);
         assert.strictEqual(

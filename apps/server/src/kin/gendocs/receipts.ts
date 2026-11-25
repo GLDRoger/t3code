@@ -587,7 +587,13 @@ export const unsetAgainst = Effect.fn("KinReceipts.unsetAgainst")(function* (
         return { key: receipt.key };
       if (receipt.state === "dropped" || payment.voidedAt !== null)
         return yield* invalid(`${receipt.key} is void; it can't be un-applied.`);
-      yield* records.voidPayment(orgId, writer, payment.key, String(fields.payment));
+      yield* records.voidPayment(
+        orgId,
+        writer,
+        payment.key,
+        String(fields.payment),
+        "unapply_credit",
+      );
       yield* sql`UPDATE kin_records SET fields_json = json_remove(fields_json, '$.invoice', '$.payment')
       WHERE org_id = ${orgId} AND record_id = ${receipt.recordId}`;
       yield* records.update(orgId, writer, receipt.key, {}, undefined, [
