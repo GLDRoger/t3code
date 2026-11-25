@@ -73,17 +73,18 @@ const holdFact = Effect.fn("KinFactCards.holdFact")(function* (
   );
 });
 
-/** Tells the task's holder what the person it waited on answered, once per card. */
+/**
+ * Tells the task's holder what the person it waited on answered, once per card. False when no
+ * chat could carry it (`noticeHolder`).
+ */
 const tellHolder = (tap: FactTap, plan: WaitedPlan, body: string) =>
-  plan.holder.personId === tap.personId
-    ? Effect.void
-    : noticeHolder({
-        orgId: tap.orgId,
-        personId: KinPersonId.make(plan.holder.personId),
-        agentId: KinAgentId.make(plan.agentId),
-        body,
-        key: `fact-card-${tap.widget.widgetId.replace(/[^A-Za-z0-9-]/g, "-")}`,
-      }).pipe(Effect.asVoid);
+  noticeHolder({
+    orgId: tap.orgId,
+    personId: KinPersonId.make(plan.holder.personId),
+    agentId: KinAgentId.make(plan.agentId),
+    body,
+    key: `fact-card-${tap.widget.widgetId.replace(/[^A-Za-z0-9-]/g, "-")}`,
+  }).pipe(Effect.map((noticeId) => noticeId !== undefined));
 
 const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
   tap: FactTap,
@@ -110,6 +111,10 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
   const named = `${plan.key} ${plan.title}`;
   const holder = plan.holder.name;
   const told = `Told ${holder}`;
+  const unreached = {
+    title: `Couldn't reach ${holder}`,
+    text: `Kin couldn't reach ${holder} to pass this on.`,
+  };
   switch (plan.answer) {
     case "done": {
       // The one change the person it waited on may make to someone else's task: waiting to open.
@@ -126,33 +131,40 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
         plan.rev,
         [{ field: KIN_WAITED_DONE_FIELD, from: null, to: tap.widget.widgetId }],
       );
-      yield* tellHolder(
+      const reached = yield* tellHolder(
         tap,
         plan,
         `${plan.personName} says what ${named} waited on is done, so it is back with you.`,
       );
-      return { title: told, text: `${plan.key} is back with ${holder}.` };
+      return reached
+        ? { title: told, text: `${plan.key} is back with ${holder}.` }
+        : {
+            title: unreached.title,
+            text: `${plan.key} is back with ${holder}, but Kin couldn't reach ${holder} to say so.`,
+          };
     }
     case "by": {
-      if (plan.until === null || plan.day === null || plan.until <= tap.now)
-        return nothingDone(`${plan.day ?? "that day"} has passed`);
-      const held = yield* holdFact(tap, plan, {
-        factKey: plan.factKey,
-        action: "got_it",
-        until: plan.until,
-        note: `${plan.personName}: by ${plan.day}`,
-        view: "company",
-      });
-      if (!held) return notWaiting;
-      yield* tellHolder(
+      const { until, day } = plan;
+      if (until === null || day === null || until <= tap.now)
+        return nothingDone(`${day ?? "that day"} has passed`);
+      const hold = (view: "theirs" | "company") =>
+        holdFact(tap, plan, {
+          factKey: plan.factKey,
+          action: "got_it",
+          until,
+          note: `${plan.personName}: by ${day}`,
+          view,
+        });
+      // Theirs first, so a fact gone tells nobody; the owner is quiet only once the holder knows.
+      if (!(yield* hold("theirs"))) return notWaiting;
+      const reached = yield* tellHolder(
         tap,
         plan,
-        `${plan.personName} says ${named} will have what it waits on by ${plan.day}.`,
+        `${plan.personName} says ${named} will have what it waits on by ${day}.`,
       );
-      return {
-        title: told,
-        text: `${plan.key} comes back after ${plan.day} if it still waits on you.`,
-      };
+      if (!reached) return unreached;
+      yield* hold("company");
+      return { title: told, text: `${plan.key} comes back after ${day} if it still waits on you.` };
     }
     case "not_mine": {
       const held = yield* holdFact(tap, plan, {
@@ -176,12 +188,14 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
         now: tap.now,
         sees: () => Effect.succeed(true),
       });
-      yield* tellHolder(
+      const reached = yield* tellHolder(
         tap,
         plan,
         `${plan.personName} says ${named} doesn't wait on ${plan.personName}. Change who it waits on, or pick it up.`,
       );
-      return { title: told, text: `${holder} will change who ${plan.key} waits on.` };
+      return reached
+        ? { title: told, text: `${holder} will change who ${plan.key} waits on.` }
+        : unreached;
     }
   }
 });

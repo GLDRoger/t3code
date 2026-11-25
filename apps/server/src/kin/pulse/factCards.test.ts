@@ -27,6 +27,7 @@ import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
+import * as Reach from "../lead/Reach.ts";
 import type { Services } from "../KinServer.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as KinPulse from "./KinPulse.ts";
@@ -737,6 +738,35 @@ it.effect(
         assert.deepStrictEqual(comments, [
           { kind: "agent", body: "Arjun answered Kin's card: W-1 doesn't wait on Arjun." },
         ]);
+      }),
+    ),
+);
+
+it.effect(
+  "when Kin can't reach the holder, the card says so and the owner's check-in still tells the wait",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        const [card] = yield* cards(ctx);
+        // Rhea limits Zoya and the Chief of staff, and no team agent carries it.
+        const limited = yield* Reach.setLimit({
+          orgId: ctx.orgId,
+          by: ctx.owner.personId,
+          a: Reach.person(zoyaId),
+          b: Reach.agent(chief),
+          restricted: true,
+        });
+        assert.strictEqual(limited._tag, "changed");
+        yield* tap(ctx, arjunId, card!, "By Thu 26 Nov");
+        assert.deepStrictEqual((yield* cards(ctx))[0]!.outcome, {
+          title: "Couldn't reach Zoya",
+          text: "Kin couldn't reach Zoya to pass this on.",
+        });
+        assert.deepStrictEqual(yield* noticesTo(ctx, zoyaId), []);
+        assert.isTrue(yield* ownerSees(ctx, "waiting_long", "W-1", NOW + HOUR));
+        assert.isFalse(yield* personSees(ctx, arjunId, "waiting_long", "W-1", NOW + HOUR));
       }),
     ),
 );
