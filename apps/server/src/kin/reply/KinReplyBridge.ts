@@ -54,7 +54,6 @@ import {
   rescueMessageId,
   type AgentIdentity,
 } from "../chat/KinIdentity.ts";
-import { askedForSuffix } from "../github/askedFor.ts";
 import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
@@ -220,7 +219,12 @@ const withheldWhy = (error: { readonly reason: string }): string | null =>
           ? null
           : WITHHELD_ANY;
 /** The one message a turn's reply to one request lives in; later segments grow it. */
-type Slot = { readonly messageId: KinMessageId; body: string };
+type Slot = {
+  readonly messageId: KinMessageId;
+  body: string;
+  /** An earlier turn's message of the same ask (`askMessage`): joined only while still last. */
+  readonly earlier?: true;
+};
 type Segment = {
   readonly id: TurnItemId;
   ordinal: number;
@@ -598,7 +602,12 @@ const make = Effect.gen(function* () {
     return yield* gate
       .extend(
         author,
-        { chatId: wake.lane.chatId, messageId: slot.messageId, ...input },
+        {
+          chatId: wake.lane.chatId,
+          messageId: slot.messageId,
+          ...input,
+          ...(slot.earlier === true ? { onlyIfLast: true as const } : {}),
+        },
         repliedBy(wake, ordinal),
       )
       .pipe(
@@ -788,6 +797,23 @@ const make = Effect.gen(function* () {
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin morning page not settled", { cause })),
   );
+  // The reviews one ask queued answer in one message, while nothing but Kin's lines came after it.
+  const askMessage = Effect.fn("KinReplyBridge.askMessage")(function* (wake: Wake) {
+    const [row] = yield* sql<Slot>`SELECT m.message_id AS "messageId", m.body FROM kin_events e
+      JOIN kin_events o ON o.org_id = e.org_id AND o.agent_id = e.agent_id AND o.tag = 'github'
+        AND o.wakeup_id <> e.wakeup_id
+        AND json_extract(o.json, '$.askedIn[0]') = json_extract(e.json, '$.askedIn[0]')
+      JOIN kin_messages m ON m.org_id = o.org_id AND m.source_wakeup_id = o.wakeup_id
+        AND m.chat_id = ${wake.lane.chatId} AND m.author_kind = 'agent'
+        AND m.author_agent_id = ${wake.agentId} AND m.author_thread_id = ${wake.threadId}
+        AND m.status = 'posted' AND m.kind = 'text'
+      WHERE e.org_id = ${wake.orgId} AND e.wakeup_id = ${wake.wakeupId} AND e.tag = 'github'
+        AND json_extract(e.json, '$.chatId') = ${wake.lane.chatId}
+        AND NOT EXISTS (SELECT 1 FROM kin_messages n WHERE n.org_id = m.org_id
+          AND n.chat_id = m.chat_id AND n.seq > m.seq AND n.author_kind <> 'system')
+      ORDER BY m.seq DESC LIMIT 1`;
+    return row;
+  });
   const post = Effect.fn("KinReplyBridge.post")(function* (wake: Wake, segment: Segment) {
     const end = (messageId: KinMessageId | null) =>
       segment.drafting
@@ -799,11 +825,19 @@ const make = Effect.gen(function* () {
       return yield* end(null);
     }
     const key = slotKey(wake, segment.ordinal);
-    const slot = wake.slots.get(key);
     const text = withoutAsked(
       stripTrailingSilenceMarker(segment.text.trim()),
       yield* asked(wake).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])),
     );
+    if (!wake.slots.has(key) && wake.posted === 0) {
+      const joined = yield* askMessage(wake).pipe(Effect.orElseSucceed(() => undefined));
+      if (
+        joined !== undefined &&
+        joined.body.length + 2 + text.length <= KIN_MESSAGE_BODY_MAX_LENGTH
+      )
+        wake.slots.set(key, { ...joined, earlier: true });
+    }
+    const slot = wake.slots.get(key);
     // Nothing left once the card's question is dropped: the card speaks, this answers nothing.
     // The same answer again, after a tool call, would read twice in the one message.
     if (text === "" || (slot !== undefined && repeats(text, slot.body))) {
@@ -855,23 +889,26 @@ const make = Effect.gen(function* () {
       lead === undefined
         ? null
         : yield* chat.replyCard(lead, wake.lane.chatId).pipe(Effect.orElseSucceed(() => null));
-    // A review someone asked for in Kin: the owner's line says who asked (`reviewAsk.ts`).
-    const askedFor =
-      slot === undefined && wake.posted === 0
-        ? yield* askedForSuffix(wake.orgId, wake.wakeupId).pipe(
-            Effect.provideService(SqlClient.SqlClient, sql),
-            Effect.orElseSucceed(() => undefined),
-          )
-        : undefined;
     const opening =
       slot === undefined
-        ? yield* underMorningHeading(
-            wake,
-            askedFor === undefined ? text : `${text} ${askedFor}`,
-          ).pipe(Effect.orElseSucceed(() => text))
+        ? yield* underMorningHeading(wake, text).pipe(Effect.orElseSucceed(() => text))
         : text;
-    const result = yield* slot !== undefined
-      ? extend(wake, slot, text, segment.ordinal)
+    // An earlier turn's message that something now follows, or that changed, gets a new one.
+    const joinedEarlier =
+      slot?.earlier === true ? yield* extend(wake, slot, text, segment.ordinal) : undefined;
+    const kept =
+      joinedEarlier === undefined ||
+      !(
+        joinedEarlier._tag === "full" ||
+        (joinedEarlier._tag === "withheld" && joinedEarlier.reason === "not_found")
+      )
+        ? slot
+        : undefined;
+    if (kept === undefined && slot !== undefined) wake.slots.delete(key);
+    const result = yield* kept !== undefined
+      ? joinedEarlier !== undefined
+        ? Effect.succeed(joinedEarlier)
+        : extend(wake, kept, text, segment.ordinal)
       : cardId === null
         ? deliver(wake, `reply:${segment.id}`, opening, segment.ordinal)
         : Effect.gen(function* () {
@@ -889,10 +926,10 @@ const make = Effect.gen(function* () {
       case "full":
         segment.outcome = "dropped";
         yield* journal(wake, [`Past the reply's length: ${cutLabel(text)}`]);
-        return yield* end(slot?.messageId ?? null);
+        return yield* end(kept?.messageId ?? null);
       case "posted":
         segment.outcome = "posted";
-        if (slot === undefined) {
+        if (kept === undefined) {
           wake.posted++;
           // As stored: Kin may have named an entry key, and the next part extends this text.
           wake.slots.set(key, { messageId: result.messageId, body: result.body });

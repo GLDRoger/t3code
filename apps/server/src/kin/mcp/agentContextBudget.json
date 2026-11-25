@@ -149,6 +149,10 @@
       "desc": 1667,
       "schema": 1749
     },
+    "kin_github_diff": {
+      "desc": 147,
+      "schema": 158
+    },
     "kin_github_link": {
       "desc": 172,
       "schema": 143

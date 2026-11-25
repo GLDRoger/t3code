@@ -284,6 +284,13 @@ export const KinLeadToolkit = Toolkit.make(
     parameters: GitHubLink.ReviewInput,
     success: GitHubLink.ReviewResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_github_diff", {
+    ...prCare,
+    description:
+      "Read on in the diff of the pull request this review turn is for, where the diff in your events stops; from is where to start. Reads that head only.",
+    parameters: ReviewAsk.DiffInput,
+    success: ReviewAsk.DiffResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_github_review_ask", {
     ...prCare,
     dependencies: [...prCare.dependencies, KinServer],

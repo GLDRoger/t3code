@@ -110,6 +110,8 @@ import {
   ONE_ENTRY,
 } from "../../apps/server/src/kin/lead/approvedDraft.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
+import { diffGoesOn, postedResult } from "../../apps/server/src/kin/github/GitHubWatch.ts";
+import { DIFF_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
@@ -549,12 +551,23 @@ const fillGitHubTrigger = (prompt: string, world: McpToolUseCase["setup"]["world
         readonly event: string;
         readonly repo: string;
         readonly trigger: Contracts.KinGithubTrigger;
+        /** A review someone asked for in Kin: their name, as `LeadPrompt` passes it. */
+        readonly askedBy?: string;
       }
     | undefined;
   if (given === undefined) throw new Error("{{GITHUB_TRIGGER}} needs setup.world.githubTrigger.");
+  // `{{DIFF_GOES_ON:<rest>:<from>}}` in a diff is where Kin's read of it stops (`readDiff`).
+  const diff = given.trigger.pull?.diff?.replace(
+    /\{\{DIFF_GOES_ON:(\d+):(\d+)\}\}/g,
+    (_, rest: string, from: string) => diffGoesOn(Number(rest), Number(from)),
+  );
+  const trigger =
+    given.trigger.pull === undefined || diff === undefined
+      ? given.trigger
+      : { ...given.trigger, pull: { ...given.trigger.pull, diff } };
   return prompt.replaceAll(
     "{{GITHUB_TRIGGER}}",
-    githubTriggerEvent(given.event, given.repo, given.trigger),
+    githubTriggerEvent(given.event, given.repo, trigger, given.askedBy),
   );
 };
 
@@ -804,6 +817,17 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       message: `${input.key} names ${input.partner} but doesn't add up exactly to their oldest owed expenses, so Kin marks nothing and offers no card for it. Nothing was asked; tell the owner what you see instead.`,
     },
   }),
+  // kin_github_diff's refusal when GitHub doesn't give the diff (`reviewAsk.ts`).
+  diffUnread: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: DIFF_REFUSAL.unread },
+  }),
+  // kin_github_review's answer for a review GitHub took (`GitHubWatch.ts` postedResult).
+  reviewPosted: (input: {
+    url: string;
+    review?: "asked" | "kins" | "outside";
+    asOwner?: boolean;
+  }) =>
+    postedResult({ _tag: "posted", url: input.url, asOwner: input.asOwner ?? false }, input.review),
   // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
   billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
   billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>
