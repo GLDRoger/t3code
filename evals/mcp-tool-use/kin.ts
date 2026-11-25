@@ -42,7 +42,8 @@ import {
   UNISSUED_INVOICE,
 } from "../../apps/server/src/kin/work/recordRows.ts";
 import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
-import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
+import { choiceResumeText, NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
+import { noticeQuestion, stallQuestion } from "../../apps/server/src/kin/pulse/factCards.ts";
 import { tooLongForCard } from "../../apps/server/src/kin/questions/askPerson.ts";
 import {
   ASKED,
@@ -119,6 +120,7 @@ import {
 } from "../../apps/server/src/kin/work/workPrompt.ts";
 import {
   githubTriggerEvent,
+  humanMessageLabel,
   ASSIGNED_NOT_IN_PERSON,
   HANDED_BACK_WORK,
   UNREAD_RULE,
@@ -127,6 +129,7 @@ import {
   SHARED_TURN_LINE,
   joinedWork,
   ownMailboxLine,
+  QUOTE_LABELS,
   workForText,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import {
@@ -145,8 +148,10 @@ import {
   DRAFT_FROM_MAILBOX,
   DRAFT_MEETING_OUTCOME,
   DRAFT_MEETING_PREP,
+  NOTICE_GIVEN,
   PROPOSE_PLAN,
   PROPOSE_STEP,
+  STALL_STUCK,
 } from "../../apps/server/src/kin/pulse/draftWake.ts";
 import { KIN_OWN_REFUSAL } from "../../apps/server/src/kin/people/KinAccess.ts";
 import { HEAD_START_ONE_DOC } from "../../apps/server/src/kin/work/teamView.ts";
@@ -546,8 +551,52 @@ const fillGitHubTrigger = (prompt: string, world: McpToolUseCase["setup"]["world
   );
 };
 
+/** The questions on Kin's own cards about a fact, worded by the pulse (`pulse/factCards.ts`). */
+const CARD_QUESTIONS: Record<string, (input: never) => string> = {
+  notice: noticeQuestion,
+  stall: stallQuestion,
+};
+/** The line Kin adds after a tap on a card's plain answer (`draftWake.ts` `cardTapText`). */
+const CARD_WAKES: Record<string, (input: never) => string> = {
+  notice: NOTICE_GIVEN,
+  stall: STALL_STUCK,
+};
+/**
+ * `{{CARD_TAP:<json>}}`, on its own line, is a person's tap on Kin's card about a fact as the
+ * turn's event quotes it in their direct chat: `Chose "<label>" on "<question>"`, the question
+ * from `CARD_QUESTIONS[card](ask)`, then Kin's line from `CARD_WAKES[card](wake)` when `wake` is
+ * set. `role` "owner" quotes it as the owner's own message, which names no sender.
+ */
+const fillCardTaps = (prompt: string) =>
+  prompt.replace(/^\{\{CARD_TAP:(.+)\}\}$/gm, (_, json: string) => {
+    const tap = JSON.parse(json) as {
+      card: string;
+      ask: never;
+      label: string;
+      from: string;
+      role?: string;
+      wake?: never;
+    };
+    const question = CARD_QUESTIONS[tap.card];
+    const wake = CARD_WAKES[tap.card];
+    if (question === undefined || wake === undefined)
+      throw new Error(`No card question ${tap.card} for {{CARD_TAP}}.`);
+    const owner = tap.role === "owner";
+    const event = quote(
+      owner ? QUOTE_LABELS.ownerMessage : humanMessageLabel(tap.role ?? "member"),
+      {
+        event: "event-1",
+        message: "msg-event-1",
+        ...(owner ? {} : { from: tap.from }),
+        body: choiceResumeText(tap.label, question(tap.ask)),
+      },
+      true,
+    );
+    return tap.wake === undefined ? event : `${event}\n\n${wake(tap.wake)}`;
+  });
+
 export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) =>
-  fillCharacters(fillGitHubTrigger(prompt, world))
+  fillCharacters(fillCardTaps(fillGitHubTrigger(prompt, world)))
     .replaceAll("{{UNDO_RULE}}", UNDO_RULE)
     .replaceAll("{{WORK_RULE}}", WORK_RULE)
     .replaceAll("{{MONEY_RULE}}", MONEY_RULE)

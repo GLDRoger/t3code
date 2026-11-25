@@ -170,7 +170,8 @@ export const choiceExpired = (widget: Pick<KinWidget, "updatedAt" | "state">, no
   now - Date.parse(widget.updatedAt) >= KIN_CHOICE_CARD_TTL_MS;
 
 /** The owner's tap as the lead reads it: their reply, in words. */
-const choiceResumeText = (label: string, question: string) => `Chose "${label}" on "${question}"`;
+export const choiceResumeText = (label: string, question: string) =>
+  `Chose "${label}" on "${question}"`;
 
 /** The option a tap names, and its text. Fixed by the card, so a replayed tap reads the same. */
 export const readChoice = Effect.fn("KinChoiceCard.read")(function* (
