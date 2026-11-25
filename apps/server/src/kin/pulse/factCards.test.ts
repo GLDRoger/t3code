@@ -652,3 +652,30 @@ it.effect(
       }),
     ),
 );
+
+it.effect(
+  "a milestone card never names a task its teammate reader can't see: it says only when its open tasks are due",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        for (const key of ["W-1", "W-2"])
+          yield* ctx.records.update(ctx.orgId, ctx.byOwner, key, { state: "done" });
+        const hers = yield* plan(ctx, "Pilot live", { _tag: "person", personId: zoyaId }, NOV_27, [
+          { title: "Load test", dueAt: NOV_26 },
+          { title: "Salary review prep", dueAt: NOV_30 },
+        ]);
+        yield* ctx.records.update(ctx.orgId, ctx.byOwner, hers.tasks[1]!, {
+          owner: { _tag: "person", personId: ctx.owner.personId },
+          sensitive: true,
+        });
+        yield* tickAt(ctx, NOW);
+        const [card] = yield* cards(ctx);
+        assert.strictEqual(card!.who, zoyaId);
+        assert.strictEqual(
+          card!.question,
+          `${hers.milestone} Pilot live is due Fri 27 Nov, but its open tasks are due by Mon 30 Nov. Move ${hers.milestone} to Mon 30 Nov?`,
+        );
+      }),
+    ),
+);

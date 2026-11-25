@@ -34,7 +34,7 @@ import {
 } from "../widgets/cardPlans.ts";
 import { dayIn } from "../work/money.ts";
 import { daysOverdue, startOfDay } from "../work/recordRows.ts";
-import { teamGuard } from "../work/teamView.ts";
+import { teamGuard, viewSees } from "../work/teamView.ts";
 import { daysText, type SenseContext } from "./senses/shared.ts";
 import { markTold } from "./told.ts";
 import { DAY_MS, thresholds, toMs } from "./thresholds.ts";
@@ -534,8 +534,12 @@ export const milestoneProposal = Effect.fn("KinFactCards.milestoneProposal")(fun
   at: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const tasks = yield* sql<{ key: string; title: string; dueAt: number | null }>`SELECT key,
-      title, due_at AS "dueAt" FROM kin_records
+  const tasks = yield* sql<{
+    recordId: string;
+    key: string;
+    title: string;
+    dueAt: number | null;
+  }>`SELECT record_id AS "recordId", key, title, due_at AS "dueAt" FROM kin_records
     WHERE org_id = ${orgId} AND register_id = 'work'
       AND json_extract(fields_json, '$.milestone') = ${milestone.key}
       AND state IN ('open', 'doing', 'waiting')
@@ -627,10 +631,18 @@ const milestoneCards = Effect.fn("KinFactCards.milestones")(function* (input: {
     const plans = (["move_due", "keep_due"] as const).map(
       (kind) => ({ kind, ...base }) satisfies DuePlan,
     );
+    // A teammate reads the task it names only when they may open it.
+    const named =
+      input.level.has(personId) ||
+      (yield* sql`SELECT 1 FROM kin_records r WHERE r.org_id = ${orgId}
+          AND r.record_id = ${proposal.recordId} AND ${viewSees(sql, [personId])}`).length > 0;
+    const move = `Move ${row.key} to ${base.toDay}?`;
     const question =
       fact.sense === "milestone_late"
-        ? `${row.key} ${row.title} was due ${base.fromDay}, ${daysText(Math.max(1, daysOverdue(row.dueAt, at, zone)))} ago; its open tasks are due by ${base.toDay}. Move ${row.key} to ${base.toDay}?`
-        : `${row.key} ${row.title} is due ${base.fromDay}, but its last open task, ${proposal.key} ${proposal.title}, is due ${base.toDay}. Move ${row.key} to ${base.toDay}?`;
+        ? `${row.key} ${row.title} was due ${base.fromDay}, ${daysText(Math.max(1, daysOverdue(row.dueAt, at, zone)))} ago; its open tasks are due by ${base.toDay}. ${move}`
+        : named
+          ? `${row.key} ${row.title} is due ${base.fromDay}, but its last open task, ${proposal.key} ${proposal.title}, is due ${base.toDay}. ${move}`
+          : `${row.key} ${row.title} is due ${base.fromDay}, but its open tasks are due by ${base.toDay}. ${move}`;
     const card = yield* postFactCard({
       ctx,
       personId,
