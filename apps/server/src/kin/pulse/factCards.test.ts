@@ -807,3 +807,20 @@ it.effect("a card that did nothing doesn't count as asked: the next pass asks ag
     }),
   ),
 );
+
+it.effect("a teammate who can no longer see the task changes nothing with Done", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      const [card] = yield* cards(ctx);
+      yield* ctx.records.update(ctx.orgId, ctx.byOwner, "W-1", { sensitive: true });
+      yield* tap(ctx, arjunId, card!, "Done");
+      assert.strictEqual((yield* ctx.records.get(ctx.orgId, "W-1"))?.state, "waiting");
+      assert.deepStrictEqual((yield* cards(ctx))[0]!.outcome, {
+        title: "Nothing was done",
+        text: "You can no longer see W-1, so nothing was done.",
+      });
+    }),
+  ),
+);

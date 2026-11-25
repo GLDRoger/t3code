@@ -14,6 +14,7 @@ import { ownerLevel } from "../people/KinAccess.ts";
 import type { DuePlan, FactCardPlan, StallPlan, WaitedPlan } from "../widgets/cardPlans.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { insertComment, requestHashOf } from "../work/recordComments.ts";
+import { viewSees } from "../work/teamView.ts";
 import { DID_NOTHING, milestoneProposal } from "./factCards.ts";
 import { noticeHolder } from "./holderNotice.ts";
 import * as KinPulse from "./KinPulse.ts";
@@ -322,6 +323,13 @@ export const runFactCard = Effect.fn("KinFactCards.run")(function* (
       reason: "not_allowed",
       message: "Only the person this card asks can answer it.",
     });
+  // A teammate answers only what they still see, read again here, before anything is written.
+  if (!(yield* ownerLevel(tap.orgId, tap.personId))) {
+    const sql = yield* SqlClient.SqlClient;
+    const seen = yield* sql`SELECT 1 FROM kin_records r WHERE r.org_id = ${tap.orgId}
+      AND r.record_id = ${plan.recordId} AND ${viewSees(sql, [tap.personId])}`;
+    if (seen.length === 0) return nothingDone(`you can no longer see ${plan.key}`);
+  }
   switch (plan.kind) {
     case "waited_answer":
       return yield* runWaited(tap, plan, records);
