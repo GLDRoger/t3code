@@ -246,7 +246,7 @@ export const checkDreamNotice = Effect.fn("KinHostBackup.checkDreamNotice")(func
       ? {
           id: first.ownerDate,
           outsideQuietHours: true,
-          body: `Kin's nightly memory update has failed three nights in a row\n\nNothing Kin already remembered was lost, and it will try again tonight.${reason === "" ? "" : ` What stopped it: ${reason}${/[.!?]$/.test(reason) ? "" : "."}`}`,
+          body: `Kin's nightly memory update has failed three nights in a row\n\nEach night Kin reads the day and writes down what is worth remembering. That has not finished for three nights, so nothing new was remembered from them. Nothing Kin already remembered was lost, and tonight it will read those days again.${reason === "" ? "" : `\n\nFor whoever looks after Kin, the last night stopped on: ${reason}${/[.!?]$/.test(reason) ? "" : "."}`}`,
         }
       : undefined,
   );

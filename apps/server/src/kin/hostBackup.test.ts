@@ -304,7 +304,7 @@ it.effect(
       yield* HostBackupCheck.check();
       yield* HostBackupCheck.check();
       const body =
-        "Kin's nightly memory update has failed three nights in a row\n\nNothing Kin already remembered was lost, and it will try again tonight. What stopped it: A memory note claims agent from kin-dream; the source was owner from rhea.";
+        "Kin's nightly memory update has failed three nights in a row\n\nEach night Kin reads the day and writes down what is worth remembering. That has not finished for three nights, so nothing new was remembered from them. Nothing Kin already remembered was lost, and tonight it will read those days again.\n\nFor whoever looks after Kin, the last night stopped on: A memory note claims agent from kin-dream; the source was owner from rhea.";
       assert.deepStrictEqual(yield* told, [{ body, resolvedAt: null }]);
       yield* night(14, "failed", "The dream session failed");
       yield* HostBackupCheck.check();
