@@ -26,7 +26,7 @@ const TYPE_OF_EXTENSION: Readonly<Record<string, string>> = {
   xlsx: SPREADSHEET,
 };
 
-// Mirrored in app.config.ts, with PDFs and images, as the types the app declares it opens.
+// Mirrored in plugins/withKinOpensFiles.cjs, with PDFs and images, as the types the app opens.
 const IMPORT_TYPES = new Set([
   "text/csv",
   "text/comma-separated-values",
