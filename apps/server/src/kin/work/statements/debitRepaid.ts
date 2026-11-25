@@ -20,7 +20,8 @@ export const MARKED_REPAID = "Marked repaid";
 /**
  * One unexplained debit naming exactly one partner Kin owes in its currency (whole name or import
  * address). `repays`: the run of their oldest owed expenses adding up to it exactly, else undefined.
- * `marked`: the day the same money was marked repaid by hand within ten days (`markedByHand`).
+ * `marked`: the day the same money was marked repaid within ten days (`markedByHand`), excluding
+ * amounts tied to another Bank transactions entry.
  */
 export type RepaidMatch = {
   readonly debit: OpenDebit;
@@ -89,9 +90,17 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
     const [id, name] = only;
     const partner = partners.find((one) => one.id === id && one.currency === debit.currency);
     if (partner === undefined || partner.owed.length === 0) return [];
-    const marked = payees
-      .find((one) => one.id === id)
-      ?.repaid.find((one) => markedByHand(debit.row, debit.currency, one))?.day;
+    const payee = payees.find((one) => one.id === id);
+    const tiedElsewhere = new Map<string, number>();
+    for (const tied of payee?.tied ?? []) {
+      if (tied.bankRecordId === debit.recordId || tied.currency !== debit.currency) continue;
+      tiedElsewhere.set(tied.day, (tiedElsewhere.get(tied.day) ?? 0) + tied.amountMinor);
+    }
+    const marked = payee?.repaid.find((one) => {
+      if (one.currency !== debit.currency) return false;
+      const amountMinor = one.amountMinor - (tiedElsewhere.get(one.day) ?? 0);
+      return amountMinor !== 0 && markedByHand(debit.row, debit.currency, { ...one, amountMinor });
+    })?.day;
     const found = repayment(debit.row, partner, 0, true)?.candidate.repays;
     const repays = found?.flatMap((one) =>
       one.day === undefined || one.rev === undefined

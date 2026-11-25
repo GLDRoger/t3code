@@ -18,6 +18,7 @@ import {
   REIMBURSEMENT,
   unsaidImport,
 } from "./reimbursement.ts";
+import { findBankList } from "./statements/bankList.ts";
 
 /** One Paid expense a partner funded and the company hasn't paid back yet. */
 export type OwedEntry = {
@@ -105,19 +106,22 @@ export const partnersOwed = Effect.fn("KinPartnersOwed.read")(function* (
 export type PartnersOwed = Effect.Success<ReturnType<typeof partnersOwed>>;
 
 /**
- * Everyone who has funded a Paid expense, owed or not, with what was marked repaid by hand (no bank
- * row) as one total per currency and day: a statement line naming one is never a new expense. A
- * mark with no Repaid on day counts on the day it was written, in the owner's zone.
+ * Everyone who has funded a Paid expense, owed or not, with repaid amounts lacking a statement
+ * row as totals per currency and day, and the share tied to each Bank transactions entry. A
+ * statement line naming one is never a new expense. A mark with no Repaid on day counts on the
+ * day it was written, in the owner's zone.
  */
 export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
+  const bank = yield* findBankList(orgId);
   const rows = yield* sql<{
     minor: number;
     currency: string;
     fieldsJson: string;
     linked: number;
     markedAt: number;
+    bankRecordId: string | null;
   }>`
     SELECT r.amount_minor AS minor, r.currency, r.fields_json AS "fieldsJson",
       EXISTS (SELECT 1 FROM kin_bank_statement_entries e WHERE e.org_id = r.org_id
@@ -125,7 +129,12 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
       COALESCE((SELECT c.at FROM kin_record_changes c, json_each(c.fields_json) f
         WHERE c.org_id = r.org_id AND c.record_id = r.record_id
           AND json_extract(f.value, '$.field') = ${REIMBURSEMENT}
-        ORDER BY c.seq DESC LIMIT 1), r.created_at) AS "markedAt"
+        ORDER BY c.seq DESC LIMIT 1), r.created_at) AS "markedAt",
+      (SELECT l.target FROM kin_record_links l
+        JOIN kin_records b ON b.org_id = l.org_id AND b.record_id = l.target
+        WHERE l.org_id = r.org_id AND l.record_id = r.record_id
+          AND l.kind = 'record' AND l.relation = 'evidence' AND b.register_id = ${bank?.id ?? null}
+        ORDER BY l.created_at DESC, l.target DESC LIMIT 1) AS "bankRecordId"
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
       AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${partnerFunded(sql)}
@@ -136,7 +145,13 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
   );
   const payees = new Map<
     string,
-    { name: string; id: string; ids: Array<string>; repaid: Map<string, bigint> }
+    {
+      name: string;
+      id: string;
+      ids: Array<string>;
+      repaid: Map<string, bigint>;
+      tied: Map<string, Map<string, bigint>>;
+    }
   >();
   for (const row of rows) {
     const funding = fundingOf(parseFields(row.fieldsJson));
@@ -150,23 +165,34 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
           : (names.get(funding.personId) ?? "a former teammate"),
       id,
       ids: funding.personId === null ? [funding.unmatched!] : [],
-      repaid: new Map(),
+      repaid: new Map<string, bigint>(),
+      tied: new Map<string, Map<string, bigint>>(),
     };
     if (funding.state === "repaid" && row.linked === 0) {
       const at = `${row.currency} ${funding.repaidOn ?? dayIn(row.markedAt, zone)}`;
-      payee.repaid.set(at, (payee.repaid.get(at) ?? 0n) + BigInt(row.minor));
+      const minor = BigInt(row.minor);
+      payee.repaid.set(at, (payee.repaid.get(at) ?? 0n) + minor);
+      if (row.bankRecordId !== null) {
+        const tied = payee.tied.get(row.bankRecordId) ?? new Map<string, bigint>();
+        tied.set(at, (tied.get(at) ?? 0n) + minor);
+        payee.tied.set(row.bankRecordId, tied);
+      }
     }
     payees.set(id, payee);
   }
+  const total = ([at, minor]: [string, bigint]) => ({
+    currency: at.slice(0, at.indexOf(" ")),
+    day: at.slice(at.indexOf(" ") + 1),
+    amountMinor: Number(minor),
+  });
   return [...payees.values()].map((payee) => ({
     name: payee.name,
     id: payee.id,
     ids: payee.ids,
-    repaid: [...payee.repaid].map(([at, minor]) => ({
-      currency: at.slice(0, at.indexOf(" ")),
-      day: at.slice(at.indexOf(" ") + 1),
-      amountMinor: Number(minor),
-    })),
+    repaid: [...payee.repaid].map(total),
+    tied: [...payee.tied].flatMap(([bankRecordId, totals]) =>
+      [...totals].map((entry) => ({ bankRecordId, ...total(entry) })),
+    ),
   }));
 });
 
