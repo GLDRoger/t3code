@@ -1597,7 +1597,7 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
         _tag: "refused",
         reason: "not_allowed",
         message:
-          "That repo isn't the company's. Ask the owner in chat before posting there, then post with gh in a turn he started.",
+          "That repo isn't the company's. Ask the owner in chat before posting there, then post with gh in a turn the owner started.",
       } satisfies Sent as Sent;
     const pullAnswer = yield* get(`repos/${ours.repo}/issues/${input.number}`);
     const issue = pullAnswer.status === 200 ? decodeIssue(pullAnswer.body) : Option.none();
@@ -1774,7 +1774,7 @@ export const postedResult = (
           : review === "outside"
             ? "Posted on the PR as a comment. Kin tells the owner itself if it blocks; write nothing more."
             : sent.asOwner
-              ? "Posted on the PR as the owner: Kin's GitHub App can't write there. Tell the owner in one line with the link, and that it went out as him."
+              ? "Posted on the PR as the owner: Kin's GitHub App can't write there. Tell the owner in one line with the link, and that it went out as them."
               : "Posted on the PR. Tell the owner in one line with the link.",
   };
 };

@@ -658,6 +658,8 @@ const Tell = Schema.optional(Schema.Literal(false));
 export const CreateResult = Schema.Struct({
   told: Told,
   toldLater: ToldLater,
+  /** How many rows it made in each list, when it made rows in more than one. */
+  made: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
   records: Schema.Array(
     Schema.Struct({
       key: Schema.String,
@@ -1637,7 +1639,7 @@ export const refRecord = Effect.fn("KinWorkTools.refRecord")(function* (
     message:
       team === undefined
         ? `No ${LISTS[list].noun} called ${text.slice(0, 60)}.${nearest} Find it with records_query list ${list}, or create it if it's new.`
-        : `No ${LISTS[list].noun} called ${text.slice(0, 60)} that everyone in this chat may see.${nearest} Leave it off here, or ask the owner in his own chat; don't add it again.`,
+        : `No ${LISTS[list].noun} called ${text.slice(0, 60)} that everyone in this chat may see.${nearest} Leave it off here, or ask the owner in their own chat; don't add it again.`,
   });
 });
 const resolveRef = (lead: Lead, text: string, list: "clients" | "projects") =>
@@ -2766,8 +2768,25 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     (row, index) => `Row ${index + 1} ("${row.title.slice(0, 60)}")`,
     (row) => createRow(lead, input.sourceEventId, writer, team, source, lists, row, notices),
   );
-  return { ...(yield* tell(lead, notices)), records: results };
+  return {
+    ...(yield* tell(lead, notices)),
+    ...madeIn(input.records, results),
+    records: results,
+  };
 });
+
+/** A call's rows made, counted by the list each was asked for: `{ work: 7, milestones: 2 }`. */
+export const madeIn = (
+  asked: ReadonlyArray<{ readonly list?: string | undefined }>,
+  results: ReadonlyArray<{ readonly created: boolean }>,
+) => {
+  const made: Record<string, number> = {};
+  results.forEach((one, index) => {
+    const list = asked[index]?.list ?? "work";
+    if (one.created) made[list] = (made[list] ?? 0) + 1;
+  });
+  return Object.keys(made).length > 1 ? { made } : {};
+};
 
 const createRow = Effect.fnUntraced(function* (
   lead: Lead,

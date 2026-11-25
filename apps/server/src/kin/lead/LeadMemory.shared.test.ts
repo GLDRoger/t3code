@@ -902,7 +902,7 @@ it.effect(
       ] as const)
         assert.strictEqual(
           (yield* Effect.flip(rewrite("def-drop", change, op))).message,
-          "Another agent's reminder: use kin_cancel, which works on the owner's word in his own chat with you.",
+          "Another agent's reminder: use kin_cancel, which works on the owner's word in their own chat with you.",
         );
       // Nor a routine in its place without his own typed word.
       assert.strictEqual((yield* Effect.flip(routine("copied-said"))).message, notMine);

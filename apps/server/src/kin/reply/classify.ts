@@ -57,8 +57,12 @@ export function setupFailureIn(
 export const NOTE_MAX_CHARS = 160;
 /** Presence labels are cut to this length. */
 const LABEL_MAX_CHARS = 60;
-/** The whole text of a notice wake-up that has nothing worth saying. */
+/** A notice wake-up's word for "nothing worth saying"; a segment containing it anywhere never posts. */
 export const SILENT_REPLY = "NO_REPLY";
+/** Models append the marker to a sentence about having nothing to say, so its presence anywhere wins. */
+const hasSilentReply = (text: string) => text.includes(SILENT_REPLY);
+/** A draft's trailing start of the marker ("…\nNO_RE") is held back until it is known. */
+const silentReplyTail = new RegExp(`(?:^|\\s|[*\`_])N(?:O(?:_(?:R(?:E(?:P(?:L)?)?)?)?)?)?\\s*$`);
 /** Parenthetical asides a lead appends when it means to say nothing; they never reach a chat. */
 export const SILENCE_MARKERS = [
   "no reply needed",
@@ -98,7 +102,8 @@ const isMarkerPrefix = (fragment: string) => {
  * that could still become one (`(no reply nee`, or the whole text so far) is held back.
  */
 export function draftReplyText(text: string): string {
-  const stripped = stripTrailingSilenceMarker(text);
+  if (hasSilentReply(text)) return "";
+  const stripped = stripTrailingSilenceMarker(text.replace(silentReplyTail, ""));
   if (isSilenceOnly(stripped)) return "";
   const whole = normalizePhrase(stripped);
   if (whole !== "" && isMarkerPrefix(whole)) return "";
@@ -194,7 +199,7 @@ const isStructured = (text: string) =>
 export function classifySegment(text: string, next: SegmentNext | null): SegmentClass | null {
   const trimmed = text.trim();
   if (trimmed === "") return "empty";
-  if (trimmed === SILENT_REPLY || isSilenceOnly(trimmed)) return "silent";
+  if (hasSilentReply(trimmed) || isSilenceOnly(trimmed)) return "silent";
   if (isStructured(trimmed)) return "post";
   // Unknown yet: a short segment waits for the next item or the run's end.
   if (next === null) return null;

@@ -952,7 +952,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       cardId: made.cardId,
       group: group.label,
       posts: made.card.posts.length,
-      said: "The card is in your chat with the owner. Nothing is scheduled until he taps Confirm.",
+      said: "The card is in your chat with the owner. Nothing is scheduled until they tap Confirm.",
     };
   });
 

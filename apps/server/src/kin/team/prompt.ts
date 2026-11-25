@@ -18,7 +18,7 @@ const ASKED: Record<TurnKind, string> = {
   object:
     "A decision was made. If it's wrong for your lane, object once with team_say (intent objection) and say why; otherwise pass.",
   closing:
-    "Closing turn at the limit: decide (end decide), park it (end park: where it stands, the default and when), or bring it to the owner if it's his to decide (end bring). You must end it.",
+    "Closing turn at the limit: decide (end decide), park it (end park: where it stands, the default and when), or bring it to the owner if it's theirs to decide (end bring). You must end it.",
 };
 const TRANSCRIPT_BODY = 600;
 const decodeTurn = Schema.decodeUnknownOption(
