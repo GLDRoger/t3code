@@ -635,11 +635,13 @@ export function KinClientDialog(
       ) : (
         <PrivateSwitch
           label={KIN_CLIENTS.privateLabel}
-          note={kinClientPrivateNote({
-            private: draft.private,
-            wasPrivate: editing?.sensitive ?? false,
-            hides: props.privateHides,
-          })}
+          note={named(
+            kinClientPrivateNote({
+              private: draft.private,
+              wasPrivate: editing?.sensitive ?? false,
+              hides: props.privateHides,
+            }),
+          )}
           checked={draft.private}
           disabled={state.saving}
           onChange={(checked) => form.edit({ private: checked })}

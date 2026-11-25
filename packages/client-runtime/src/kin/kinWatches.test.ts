@@ -20,8 +20,7 @@ import {
   kinWatchLine,
   kinWatchLogDay,
   kinWatchLogRows,
-  kinWatchNoneText,
-  kinWatchNothingToday,
+  kinWatchEmptyLine,
 } from "./kinWatches.ts";
 
 // Every time below is read in Kolkata (UTC+05:30), whatever zone the test runs in.
@@ -253,15 +252,23 @@ describe("the log", () => {
       kinWatchLimitFrom([waited("19:05"), { _tag: "look", look: look("18:50") }, waited("18:20")]),
     ).toBe(Date.parse(at("18:20")));
     expect(kinWatchLimitFrom([{ _tag: "look", look: look("18:50") }])).toBeNull();
-    expect(kinWatchNoneText(true)).toBe(
+    const empty = { rows: [], earlier: null, nextLookAt: null, watching: 0 };
+    expect(kinWatchEmptyLine(empty, { ownerLevel: true, followUps: 0 })).toBe(
       "Kin isn't checking anything yet. Follow-ups an agent promises show here too.",
     );
-    expect(kinWatchNoneText(false)).toBe(
+    expect(kinWatchEmptyLine(empty, { ownerLevel: false, followUps: 0 })).toBe(
       "Kin isn't checking anything of yours yet. Follow-ups an agent promises show here too.",
     );
-    expect(kinWatchNothingToday(at("14:55"), words)).toBe(
-      "No checks yet today. The next round is about 14:55.",
+    expect(kinWatchEmptyLine(empty, { ownerLevel: false, followUps: 1 })).toBe(
+      "No checks yet today.",
     );
+    expect(
+      kinWatchEmptyLine(
+        { ...empty, watching: 2, nextLookAt: at("14:55") },
+        { ownerLevel: true, followUps: 0 },
+        words,
+      ),
+    ).toBe("No checks yet today. The next round is about 14:55.");
   });
 });
 

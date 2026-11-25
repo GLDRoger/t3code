@@ -67,7 +67,7 @@ import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinDealPage, useKinDealSend } from "./state/useKinDeals";
-import { useKinShell } from "./state/useKinShell";
+import { useKinSectionNamed, useKinShell } from "./state/useKinShell";
 import { useKinInvoiceFromQuote } from "./state/useKinMoneyAnswers";
 import { useKinWorkDirectory, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinWatchLine } from "./KinWatchLine";
@@ -143,6 +143,7 @@ function KinDealBody(
   const now = new Date(useNowMinuteMs());
   const send = useKinDealSend(target);
   const ownerLevel = useKinIsOwnerLevel(environmentId);
+  const named = useKinSectionNamed(environmentId);
   // Deals switched off: the deal still opens by its link, and says so.
   const offLine = kinSectionOffLine(useKinShell(environmentId), "deals", ownerLevel);
   const canProject = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));
@@ -515,7 +516,7 @@ function KinDealBody(
 
       <ListSection title={KIN_DEALS.details}>
         <ListRow
-          label={KIN_DEALS.clientField}
+          label={named(KIN_DEALS.clientField)}
           detail={deal.party.title}
           onPress={() => openRecord("KinClient", { environmentId, orgId, party: deal.party.key })}
         />

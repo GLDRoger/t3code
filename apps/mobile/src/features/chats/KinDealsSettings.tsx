@@ -24,6 +24,7 @@ import { KinSectionSwitch } from "./components/KinSectionSwitch";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { useKinDealQuietDaysSet, useKinDealStages, useKinDealStagesSet } from "./state/useKinDeals";
+import { useKinSectionNamed } from "./state/useKinShell";
 import type { KinWorkTarget } from "./state/useKinWork";
 
 export type KinDealStagesParams = {
@@ -105,7 +106,7 @@ function StagesEditor(
             <ListRowLayout key={stage.id} label={stage.name} />
           ))}
         </ListSection>
-        <Ends />
+        <Ends environmentId={props.environmentId} />
         <QuietDays {...props} held={held} />
       </KinWorkFrame>
     );
@@ -253,7 +254,7 @@ function StagesEditor(
           <ListActionRow icon="plus" label={KIN_DEAL_STAGES.add} disabled={busy} onPress={add} />
         )}
       </ListSection>
-      <Ends />
+      <Ends environmentId={props.environmentId} />
       <QuietDays {...props} held={held} />
     </KinWorkFrame>
   );
@@ -309,10 +310,11 @@ function QuietDays(props: KinWorkTarget & { readonly held: KinDealStagesResult }
   );
 }
 
-function Ends() {
+function Ends(props: { readonly environmentId: KinWorkTarget["environmentId"] }) {
+  const named = useKinSectionNamed(props.environmentId);
   return (
     <ListSection title={KIN_DEAL_STAGES.ends}>
-      <ListRowLayout icon="star" label="Won" detail={KIN_DEAL_STAGES.wonHint} />
+      <ListRowLayout icon="star" label="Won" detail={named(KIN_DEAL_STAGES.wonHint)} />
       <ListRowLayout icon="xmark" label="Lost" detail={KIN_DEAL_STAGES.lostHint} />
     </ListSection>
   );
