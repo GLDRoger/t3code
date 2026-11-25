@@ -111,7 +111,8 @@ export const changedParts = (before: string, after: string) => {
       if (j < b.length && (i === a.length || lcs[i * width + j + 1]! >= lcs[(i + 1) * width + j]!))
         j++;
       else i++;
-    if (j > fromJ && !moved(fromJ, j)) parts.push({ was: span(before, a, fromI, i), now: span(after, b, fromJ, j) });
+    if (j > fromJ && !moved(fromJ, j))
+      parts.push({ was: span(before, a, fromI, i), now: span(after, b, fromJ, j) });
   }
   return parts;
 };

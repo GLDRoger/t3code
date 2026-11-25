@@ -435,18 +435,32 @@ it.effect(
       const viaKey = (hash: string) => `person-edit:rhea:key:sess-1:${hash}`;
       yield* doc(sql, "D-8", [
         { by: "finance", at: minute(17), body: "Our rate is 45 an hour." },
-        { by: "rhea", at: minute(18), body: "Our rate is 45 an hour. Thirty percent off for life.", origin: viaKey("a1") },
+        {
+          by: "rhea",
+          at: minute(18),
+          body: "Our rate is 45 an hour. Thirty percent off for life.",
+          origin: viaKey("a1"),
+        },
       ]);
       yield* doc(sql, "D-9", [
         { by: "finance", at: minute(19), body: "Our rate is 45 an hour." },
-        { by: "rhea", at: minute(20), body: "Our rate is 45 an hour. Net 60.", origin: viaKey("b2") },
+        {
+          by: "rhea",
+          at: minute(20),
+          body: "Our rate is 45 an hour. Net 60.",
+          origin: viaKey("b2"),
+        },
         { by: "rhea", at: minute(21), body: "Our rate is 50 an hour. Net 60." },
       ]);
       // A Restore brings back words nobody typed now, whoever wrote them.
       const TERMS = "Our rate is 45 an hour. Payment is due within 60 days of invoice.";
       yield* doc(sql, "D-10", [
         { by: "finance", at: minute(22), body: TERMS },
-        { by: "finance", at: minute(23), body: "Our rate is 70 an hour. Payment is due on receipt." },
+        {
+          by: "finance",
+          at: minute(23),
+          body: "Our rate is 70 an hour. Payment is due on receipt.",
+        },
         { by: "rhea", at: minute(24), body: TERMS, restoredFrom: 1 },
       ]);
       yield* doc(sql, "D-11", [

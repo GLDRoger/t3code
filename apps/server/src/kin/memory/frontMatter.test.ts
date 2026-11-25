@@ -144,7 +144,10 @@ it.effect.each([
 ])("a quote written bare as $written reads as the text $quote", ({ written, quote }) =>
   Effect.gen(function* () {
     const orgId = KinOrgId.make("fixture-org");
-    const text = fixtureItem({ quote: "placeholder" }).replace('quote: "placeholder"', `quote: ${written}`);
+    const text = fixtureItem({ quote: "placeholder" }).replace(
+      'quote: "placeholder"',
+      `quote: ${written}`,
+    );
     for (const lenient of [false, true])
       expect(
         (yield* parseFrontMatter(orgId, "deferrals/x.md", text, false, lenient)).frontMatter.quote,
