@@ -30,8 +30,10 @@ import * as Kin from "../layer.ts";
 import * as Reach from "../lead/Reach.ts";
 import type { Services } from "../KinServer.ts";
 import { KinRecords } from "../work/KinRecords.ts";
+import { cardTapText } from "./draftWake.ts";
 import { factCards } from "./factCards.ts";
 import * as KinPulse from "./KinPulse.ts";
+import { untold } from "./told.ts";
 
 // Invented: Rhea's Ambermill. Zoya's W-1 waits on Arjun, W-2 on Rhea; Meera is a co-owner.
 const stamp = "1970-01-01T00:00:00.000Z";
@@ -429,7 +431,14 @@ it.effect(
         yield* freshDay(ctx);
         yield* tickAt(ctx, NOW + 3 * DAY + 2 * HOUR);
         const stuck = (yield* cards(ctx)).find((one) => !one.closed)!;
-        assert.isTrue(wakesAgent(yield* tap(ctx, zoyaId, stuck, "Stuck")));
+        const stuckTap = yield* tap(ctx, zoyaId, stuck, "Stuck");
+        assert.isTrue(wakesAgent(stuckTap));
+        assert.strictEqual(
+          yield* cardTapText(ctx.orgId, stuckTap),
+          `Kin's own card asked Zoya where ${site} is, and Zoya chose Stuck. Ask Zoya what is in the way in one short question in your reply, and nothing else: no card, no list of guesses, nothing retold, and no tool that changes ${site}.`,
+        );
+        // Any other tap reads as itself.
+        assert.isUndefined(yield* cardTapText(ctx.orgId, { ...stuckTap, kind: "text" }));
         assert.strictEqual((yield* ctx.records.get(ctx.orgId, site))?.state, "doing");
 
         // A change on the task before anyone answers closes its card.
@@ -698,6 +707,8 @@ it.effect(
         yield* freshDay(ctx);
         yield* tickAt(ctx, NOW + 3 * DAY + HOUR);
         const second = (yield* cards(ctx)).find((one) => !one.closed)!;
+        // Tapped when Kin asks again, after the first hold ended.
+        yield* TestClock.setTime(NOW + 3 * DAY + HOUR);
         yield* tap(ctx, zoyaId, second, "Still on it");
         assert.isFalse(
           yield* personSees(ctx, zoyaId, "task_stalled", guide, NOW + 3 * DAY + 2 * HOUR),
@@ -904,6 +915,522 @@ it.effect(
         });
         assert.strictEqual(reads, 0);
         assert.deepStrictEqual(yield* cards(ctx), []);
+      }),
+    ),
+);
+
+const sales = KinAgentId.make("sales");
+/** The open notice-day cards, oldest first. */
+const noticeCards = (ctx: Ctx) =>
+  Effect.map(cards(ctx), (all) => all.filter((card) => card.labels.includes("Give notice")));
+/**
+ * Tidewater Freight's P-n retainer renews Mon 25 Jan 2027 with 60 days' notice: due by Thu 26
+ * Nov, so told from 12 Nov. `looksAfter` holds the client and `lead` the project; Sales sells; Sam
+ * is the client's contact.
+ */
+const contract = (
+  ctx: Ctx,
+  looksAfter: KinWorkPrincipal,
+  renewsOn = "2027-01-25",
+  lead: KinWorkPrincipal = looksAfter,
+  names = { client: "Tidewater Freight", contact: "Sam", project: "Dashboard retainer" },
+) =>
+  Effect.gen(function* () {
+    const { orgId, sql } = ctx;
+    const [hired] =
+      yield* sql`SELECT 1 FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${sales}`;
+    if (hired === undefined) yield* salesLead(ctx);
+    const client = yield* ctx.records.create(orgId, ctx.byOwner, {
+      list: "clients",
+      title: names.client,
+      owner: looksAfter,
+      originKey: names.client,
+    });
+    const sam = yield* ctx.records.create(orgId, ctx.byOwner, {
+      list: "contacts",
+      title: names.contact,
+      owner: ctx.byOwner.actor,
+      partyId: client.row.recordId,
+      originKey: names.contact,
+    });
+    const project = yield* ctx.records.create(orgId, ctx.byOwner, {
+      list: "projects",
+      title: names.project,
+      owner: lead,
+      partyId: client.row.recordId,
+      originKey: names.project,
+    });
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.email',
+        'sam@tidewater.example') WHERE org_id = ${orgId} AND record_id = ${sam.row.recordId}`;
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.renewsOn',
+        ${renewsOn}, '$.noticeDays', '60')
+      WHERE org_id = ${orgId} AND record_id = ${project.row.recordId}`;
+    return { client: client.row.key, contact: sam.row.key, project: project.row.key };
+  });
+/** Sales, a selling lead Zoya and Arjun may message; W-1 and W-2 done, so only notice days stand. */
+const salesLead = (ctx: Ctx) =>
+  Effect.gen(function* () {
+    const { orgId, sql } = ctx;
+    const identity = Context.get(ctx.services, KinIdentity);
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+      VALUES (${sales}, ${orgId}, 'Sales', 'lead', ${ctx.owner.personId}, ${stamp})`;
+    const ownerChat = yield* ctx.chats.createDirect(ctx.owner, { orgId, agentId: sales });
+    const threadId = ThreadId.make("sales-thread");
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, thread_id, models_json, worker_projects_json, owner_chat_id, domain, charter)
+      VALUES (${sales}, ${orgId}, 'Sales', 'L0', 0, ${threadId}, ${models}, '[]',
+        ${ownerChat.chatId}, 'sales', 'Sells.')`;
+    yield* identity.registerAgentThread({ orgId, agentId: sales, threadId });
+    for (const person of [zoyaId, arjunId])
+      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+        VALUES (${orgId}, ${sales}, ${person}, ${ctx.owner.personId}, 0)`;
+    for (const key of ["W-1", "W-2"])
+      yield* ctx.records.update(orgId, ctx.byOwner, key, { state: "done" });
+  });
+/** Whether `viewer` reads an open notice-day fact about the project now. */
+const noticeOpen = (ctx: Ctx, viewer: KinPulse.Viewer, at: number) =>
+  KinPulse.read({ orgId: ctx.orgId, at, viewer, limit: 200 }).pipe(
+    Effect.map((read) =>
+      read.facts.some((fact) => fact.sense === "notice_due" && fact.handled === null),
+    ),
+  );
+const zoyaView: KinPulse.Viewer = { _tag: "people", people: [zoyaId] };
+
+it.effect(
+  "a notice day for the client a teammate looks after gets one card in the chat with Sales: Let it renew quiets it for that teammate alone; a second pass posts nothing",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const { project } = yield* contract(ctx, { _tag: "person", personId: zoyaId });
+        // 03:00 is inside Zoya's quiet hours: nothing yet; the next pass in Zoya's hours posts it.
+        yield* tickAt(ctx, NOW - 7 * HOUR);
+        assert.deepStrictEqual(yield* noticeCards(ctx), []);
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        yield* tickAt(ctx, NOW + HOUR);
+        const [card, ...more] = yield* noticeCards(ctx);
+        assert.deepStrictEqual(more, []);
+        assert.strictEqual(card!.who, zoyaId);
+        assert.strictEqual(
+          card!.question,
+          `Tidewater Freight's contract ${project} renews Mon 25 Jan, and notice is due by Thu 26 Nov. Let it renew, or give notice?`,
+        );
+        assert.deepStrictEqual(card!.labels, ["Let it renew", "Give notice"]);
+        assert.deepStrictEqual(card!.lines, [
+          "Nothing is sent; Kin doesn't ask you about this notice day again",
+          undefined,
+        ]);
+        const [shown] = yield* ctx.sql<{ chat: string; detail: string; whileOpen: string }>`SELECT
+            c.direct_key AS chat, json_extract(w.state_json, '$.detail') AS detail,
+            json_extract(w.state_json, '$.whileOpen') AS "whileOpen"
+          FROM kin_widgets w JOIN kin_chats c ON c.org_id = w.org_id AND c.chat_id = w.chat_id
+          WHERE w.org_id = ${ctx.orgId} AND w.widget_id = ${card!.widgetId}`;
+        const until =
+          "Until you choose, nothing is sent and it renews as agreed. Give notice and Sales drafts the notice mail to Sam for your Confirm.";
+        assert.deepStrictEqual([shown!.chat, shown!.whileOpen], [`${zoyaId}:${sales}`, until]);
+        assert.isTrue(shown!.detail.startsWith(until));
+        // It is Zoya's nudge of the day.
+        const [nudged] = yield* ctx.sql<{ factKey: string }>`SELECT fact_key AS "factKey"
+          FROM kin_pulse_nudges WHERE org_id = ${ctx.orgId} AND person_id = ${zoyaId}`;
+        assert.strictEqual(nudged!.factKey, `notice_due:${project}:on=2026-11-26`);
+
+        // Only Zoya answers it; Let it renew is Zoya's alone: the owner's check-in still tells it.
+        const refused = yield* tap(ctx, arjunId, card!, "Let it renew").pipe(
+          Effect.flip,
+          Effect.map((error) => (isChatError(error) ? error.reason : "not a refusal")),
+        );
+        assert.notStrictEqual(refused, "not a refusal");
+        assert.isTrue(yield* noticeOpen(ctx, zoyaView, NOW + HOUR));
+        assert.isFalse(wakesAgent(yield* tap(ctx, zoyaId, card!, "Let it renew")));
+        assert.deepStrictEqual((yield* noticeCards(ctx))[0]!.outcome, {
+          title: "Left to renew",
+          text: `${project} renews Mon 25 Jan as agreed. Nothing was sent.`,
+        });
+        assert.isFalse(yield* noticeOpen(ctx, zoyaView, NOW + HOUR));
+        assert.isTrue(yield* noticeOpen(ctx, { _tag: "owner" }, NOW + HOUR));
+        const [held] = yield* ctx.sql<{ by: string; note: string }>`SELECT
+            handled_by_id AS by, handled_note AS note FROM kin_pulse_facts
+          WHERE org_id = ${ctx.orgId} AND sense = 'notice_due'`;
+        assert.deepStrictEqual(held, { by: zoyaId, note: "Zoya: let it renew" });
+        // Asked once per project and notice day, whatever happens to the fact.
+        yield* freshDay(ctx);
+        yield* tickAt(ctx, NOW + 2 * HOUR);
+        assert.lengthOf(yield* noticeCards(ctx), 1);
+      }),
+    ),
+);
+
+/** `personId`'s own connected mailbox. */
+const mailbox = (ctx: Ctx, personId: KinPersonId, address: string) =>
+  ctx.sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+      url_host, auth, reach, state, account_label, created_at, updated_at, person_id)
+    VALUES (${ctx.orgId}, ${`conn_${personId}`}, 'google', ${address}, 'builtin', NULL,
+      'gmail.googleapis.com', 'oauth', 'closed', 'active', ${address}, 0, 0, ${personId})`;
+
+it.effect(
+  "a teammate's Give notice wakes the card's agent to draft the mail from their own mailbox and tell the owner, with nothing in hand",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const { project } = yield* contract(ctx, { _tag: "person", personId: zoyaId });
+        yield* mailbox(ctx, zoyaId, "zoya@ambermill.example");
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        const [card] = yield* noticeCards(ctx);
+        const tapped = yield* tap(ctx, zoyaId, card!, "Give notice");
+        assert.isTrue(wakesAgent(tapped));
+        assert.strictEqual(
+          yield* cardTapText(ctx.orgId, tapped),
+          `Kin's own card asked Zoya about Tidewater Freight's contract ${project} (renews Mon 25 Jan, notice due by Thu 26 Nov), and Zoya chose Give notice. That is Zoya's answer to Kin's question: ask nobody first. Draft the notice mail now to Sam (sam@tidewater.example) from Zoya's own mailbox (zoya@ambermill.example) with kin_connection_call mail_send: ${project} will not renew after its current term. Promise nothing else. It waits on Zoya's Confirm card and nothing is sent before it: never say it was sent. Record nothing on the project and file no task. Tell Rhea in one line with kin_relay that Zoya chose to give notice on Tidewater Freight's contract ${project} and the mail waits on Zoya's Confirm; ask Rhea nothing. Then tell Zoya in one short line that the notice mail waits on the Confirm. The card shows the whole mail, so say nothing more about it.`,
+        );
+        assert.isTrue(yield* noticeOpen(ctx, zoyaView, NOW + HOUR));
+        assert.isTrue(yield* noticeOpen(ctx, { _tag: "owner" }, NOW + HOUR));
+      }),
+    ),
+);
+
+it.effect(
+  "nobody looks after the client: the owner gets the card; Let it renew is the company's, in the owner's Handled list, and Undo brings it back",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        yield* contract(ctx, { _tag: "agent", agentId: sales });
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        const [card, ...more] = yield* noticeCards(ctx);
+        assert.deepStrictEqual(more, []);
+        assert.strictEqual(card!.who, ctx.owner.personId);
+        yield* tap(ctx, ctx.owner.personId, card!, "Let it renew");
+        assert.isFalse(yield* noticeOpen(ctx, { _tag: "owner" }, NOW + HOUR));
+        const handled = yield* KinPulse.read({
+          orgId: ctx.orgId,
+          at: NOW + HOUR,
+          viewer: { _tag: "owner" },
+          includeHandled: true,
+          limit: 200,
+        });
+        const fact = handled.facts.find((one) => one.sense === "notice_due")!;
+        assert.strictEqual(fact.handled?.note, "Rhea: let it renew");
+        yield* KinPulse.handle({
+          orgId: ctx.orgId,
+          at: NOW + HOUR,
+          viewer: { _tag: "owner" },
+          by: ctx.byOwner.actor,
+          factKey: fact.key,
+          action: "undo",
+        });
+        assert.isTrue(yield* noticeOpen(ctx, { _tag: "owner" }, NOW + HOUR));
+      }),
+    ),
+);
+
+it.effect(
+  "a project the teammate who looks after the client isn't on goes to the owner, whose Give notice tells nobody else and, with no mailbox, says what is missing",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const { project } = yield* contract(
+          ctx,
+          { _tag: "person", personId: zoyaId },
+          undefined,
+          ctx.byOwner.actor,
+        );
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        const shown = yield* noticeCards(ctx);
+        assert.deepStrictEqual(
+          shown.map((card) => card.who),
+          [ctx.owner.personId],
+        );
+        const tapped = yield* tap(ctx, ctx.owner.personId, shown[0]!, "Give notice");
+        assert.strictEqual(
+          yield* cardTapText(ctx.orgId, tapped),
+          `Kin's own card asked Rhea about Tidewater Freight's contract ${project} (renews Mon 25 Jan, notice due by Thu 26 Nov), and Rhea chose Give notice. That is Rhea's answer to Kin's question: ask nobody first. No mailbox of Rhea's is connected, so draft no mail. Record nothing on the project and file no task. Then tell Rhea in one short line what is missing.`,
+        );
+      }),
+    ),
+);
+
+it.effect("a teammate who can no longer see the project changes nothing with Let it renew", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { project } = yield* contract(ctx, { _tag: "person", personId: zoyaId });
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      const [card] = yield* noticeCards(ctx);
+      assert.strictEqual(card!.who, zoyaId);
+      yield* ctx.records.update(ctx.orgId, ctx.byOwner, project, { sensitive: true });
+      yield* tap(ctx, zoyaId, card!, "Let it renew");
+      assert.deepStrictEqual((yield* noticeCards(ctx))[0]!.outcome, {
+        title: "Nothing was done",
+        text: `You can no longer see ${project}, so nothing was done.`,
+      });
+      const [fact] = yield* ctx.sql<{ by: string | null }>`SELECT handled_by_id AS by
+        FROM kin_pulse_facts WHERE org_id = ${ctx.orgId} AND sense = 'notice_due'`;
+      assert.isNull(fact?.by ?? null);
+    }),
+  ),
+);
+
+it.effect(
+  "a notice day already passed asks to give notice anyway; its renewal moving closes the card, and a tap after it does nothing",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        // Renews Sun 17 Jan: notice was due by Wed 18 Nov, a week ago.
+        const { project } = yield* contract(
+          ctx,
+          { _tag: "person", personId: zoyaId },
+          "2027-01-17",
+        );
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        const [card] = yield* noticeCards(ctx);
+        assert.strictEqual(
+          card!.question,
+          `Tidewater Freight's contract ${project} renews Sun 17 Jan; notice was due by Wed 18 Nov, 7 days ago. Let it renew, or give notice anyway?`,
+        );
+        // The notice days change before anyone answers: a tap does nothing, and the pass closes it.
+        yield* ctx.sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.noticeDays', '30')
+          WHERE org_id = ${ctx.orgId} AND key = ${project}`;
+        yield* tap(ctx, zoyaId, card!, "Let it renew");
+        assert.deepStrictEqual((yield* noticeCards(ctx))[0]!.outcome, {
+          title: "Nothing was done",
+          text: `${project}'s notice day is no longer yours to answer, so nothing was done.`,
+        });
+        // Set back: a card that did nothing asked nothing, so the next pass asks again.
+        yield* ctx.sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.noticeDays', '60')
+          WHERE org_id = ${ctx.orgId} AND key = ${project}`;
+        yield* freshDay(ctx);
+        yield* tickAt(ctx, NOW + HOUR);
+        const open = (yield* noticeCards(ctx)).find((one) => !one.closed)!;
+        yield* ctx.sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.renewsOn', '2028-01-17')
+          WHERE org_id = ${ctx.orgId} AND key = ${project}`;
+        yield* tickAt(ctx, NOW + 2 * HOUR);
+        assert.deepStrictEqual(
+          (yield* noticeCards(ctx)).find((one) => one.widgetId === open.widgetId)?.outcome,
+          {
+            title: "No longer needed",
+            text: `${project}'s notice day no longer stands, so this was closed.`,
+          },
+        );
+      }),
+    ),
+);
+
+/** A card's detail as stored (older clients' lines follow it). */
+const detailOf = (ctx: Ctx, card: Card) =>
+  ctx.sql<{ detail: string }>`SELECT json_extract(state_json, '$.detail') AS detail
+    FROM kin_widgets WHERE org_id = ${ctx.orgId} AND widget_id = ${card.widgetId}`.pipe(
+    Effect.map((rows) => rows[0]?.detail ?? ""),
+  );
+
+it.effect("a notice card never names a contact its teammate reader can't see", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { contact } = yield* contract(ctx, { _tag: "person", personId: zoyaId });
+      yield* ctx.records.update(ctx.orgId, ctx.byOwner, contact, { sensitive: true });
+      // Nobody looks after Harbour Mills: the owner's card names its contact, Priya.
+      yield* contract(ctx, { _tag: "agent", agentId: sales }, "2027-01-26", undefined, {
+        client: "Harbour Mills",
+        contact: "Priya",
+        project: "Freight portal",
+      });
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      const all = yield* noticeCards(ctx);
+      const zoyas = all.find((card) => card.who === zoyaId)!;
+      const rheas = all.find((card) => card.who === ctx.owner.personId)!;
+      assert.match(
+        yield* detailOf(ctx, zoyas),
+        /^Until you choose, nothing is sent and it renews as agreed\. Give notice and Sales drafts the notice mail to the client for your Confirm\./,
+      );
+      assert.match(
+        yield* detailOf(ctx, rheas),
+        /drafts the notice mail to Priya for your Confirm\./,
+      );
+    }),
+  ),
+);
+
+/** Rhea has the notice day in hand in Needs attention, as the owner. */
+const rheaHandles = (ctx: Ctx, at: number) =>
+  Effect.gen(function* () {
+    const read = yield* KinPulse.read({
+      orgId: ctx.orgId,
+      at,
+      viewer: { _tag: "owner" },
+      limit: 200,
+    });
+    const fact = read.facts.find((one) => one.sense === "notice_due")!;
+    yield* KinPulse.handle({
+      orgId: ctx.orgId,
+      at,
+      viewer: { _tag: "owner" },
+      by: ctx.byOwner.actor,
+      factKey: fact.key,
+      action: "not_a_problem",
+      note: "Rhea: keep them",
+    });
+  });
+const handledRow = (ctx: Ctx) =>
+  ctx.sql<{ by: string | null; note: string | null }>`SELECT handled_by_id AS by,
+      handled_note AS note FROM kin_pulse_facts
+    WHERE org_id = ${ctx.orgId} AND sense = 'notice_due'`.pipe(Effect.map((rows) => rows[0]));
+
+it.effect("the owner's own answer stands: a teammate's Let it renew after it writes nothing", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { project } = yield* contract(ctx, { _tag: "person", personId: zoyaId });
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      const [card] = yield* noticeCards(ctx);
+      assert.strictEqual(card!.who, zoyaId);
+      yield* rheaHandles(ctx, NOW + HOUR);
+      yield* tap(ctx, zoyaId, card!, "Let it renew");
+      assert.deepStrictEqual(yield* handledRow(ctx), {
+        by: ctx.owner.personId,
+        note: "Rhea: keep them",
+      });
+      assert.deepStrictEqual((yield* noticeCards(ctx))[0]!.outcome, {
+        title: "Nothing was done",
+        text: `${project}'s notice day is already in hand, so nothing was done.`,
+      });
+    }),
+  ),
+);
+
+it.effect("a teammate's open notice card closes once the owner has the notice day in hand", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { project } = yield* contract(ctx, { _tag: "person", personId: zoyaId });
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      yield* rheaHandles(ctx, NOW + HOUR);
+      yield* tickAt(ctx, NOW + 2 * HOUR);
+      const [card] = yield* noticeCards(ctx);
+      assert.isTrue(card!.closed);
+      assert.deepStrictEqual(card!.outcome, {
+        title: "No longer needed",
+        text: `${project}'s notice day is already in hand, so this was closed.`,
+      });
+      // Closed, so Give notice can no longer wake anyone.
+      const refused = yield* tap(ctx, zoyaId, card!, "Give notice").pipe(
+        Effect.flip,
+        Effect.map((error) => (isChatError(error) ? error.reason : "not a refusal")),
+      );
+      assert.notStrictEqual(refused, "not a refusal");
+    }),
+  ),
+);
+
+/** Zoya's nudge of `day` already spent, by the Chief of staff in Zoya's chat with it. */
+const spendZoyasNudge = (ctx: Ctx, day: string, at: number) =>
+  Effect.gen(function* () {
+    const chat = yield* ctx.chats.createDirect(ctx.person(zoyaId), {
+      orgId: ctx.orgId,
+      agentId: chief,
+    });
+    yield* ctx.sql`INSERT INTO kin_pulse_nudges (org_id, person_id, day, agent_id, chat_id,
+        fact_key, sent_at)
+      VALUES (${ctx.orgId}, ${zoyaId}, ${day}, ${chief}, ${chat.chatId}, 'task_late:W-9', ${at})
+      ON CONFLICT (org_id, person_id, day) DO NOTHING`;
+  });
+
+it.effect(
+  "a teammate whose nudge is spent doesn't hold a notice day past its day: on the day the owner gets the card, and the teammate none later",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        // Renews Tue 26 Jan: notice is due by Fri 27 Nov, two days after NOW.
+        yield* contract(ctx, { _tag: "person", personId: zoyaId }, "2027-01-26");
+        yield* TestClock.setTime(NOW);
+        yield* spendZoyasNudge(ctx, "2026-11-25", NOW);
+        yield* tickAt(ctx, NOW);
+        assert.deepStrictEqual(yield* noticeCards(ctx), []);
+        yield* TestClock.setTime(NOW + 2 * DAY);
+        yield* spendZoyasNudge(ctx, "2026-11-27", NOW + 2 * DAY);
+        yield* tickAt(ctx, NOW + 2 * DAY);
+        assert.deepStrictEqual(
+          (yield* noticeCards(ctx)).map((card) => card.who),
+          [ctx.owner.personId],
+        );
+        yield* freshDay(ctx);
+        yield* TestClock.setTime(NOW + 3 * DAY);
+        yield* tickAt(ctx, NOW + 3 * DAY);
+        assert.deepStrictEqual(
+          (yield* noticeCards(ctx)).map((card) => card.who),
+          [ctx.owner.personId],
+        );
+      }),
+    ),
+);
+
+it.effect("at most three notice cards to one person a pass: the rest come on the next", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      for (const [n, day] of ["25", "26", "27", "28", "29"].entries())
+        yield* contract(ctx, { _tag: "agent", agentId: sales }, `2027-01-${day}`, undefined, {
+          client: `Client ${n + 1}`,
+          contact: `Contact ${n + 1}`,
+          project: `Retainer ${n + 1}`,
+        });
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      assert.lengthOf(yield* noticeCards(ctx), 3);
+      yield* tickAt(ctx, NOW + HOUR);
+      const all = yield* noticeCards(ctx);
+      assert.lengthOf(all, 5);
+      assert.isTrue(all.every((card) => card.who === ctx.owner.personId));
+    }),
+  ),
+);
+
+it.effect(
+  "the owner's check-in still tells a notice day once beside the owner's card; a teammate's page doesn't repeat one the teammate's card told",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const mine = yield* contract(ctx, { _tag: "agent", agentId: sales });
+        const zoyas = yield* contract(
+          ctx,
+          { _tag: "person", personId: zoyaId },
+          "2027-01-26",
+          undefined,
+          { client: "Harbour Mills", contact: "Priya", project: "Freight portal" },
+        );
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        assert.sameMembers(
+          (yield* noticeCards(ctx)).map((card) => card.who),
+          [ctx.owner.personId, zoyaId],
+        );
+        const read = yield* KinPulse.read({
+          orgId: ctx.orgId,
+          at: NOW + HOUR,
+          viewer: { _tag: "owner" },
+          limit: 200,
+        });
+        const notice = (project: string) =>
+          read.facts.filter((fact) => fact.key.startsWith(`notice_due:${project}:`));
+        // As the check-in reads what is untold (`checkIn.ts`): the card's row doesn't count there.
+        const forCheckIn = yield* untold({
+          orgId: ctx.orgId,
+          personId: ctx.owner.personId,
+          facts: notice(mine.project),
+          at: NOW + HOUR,
+          zone: "UTC",
+        });
+        assert.lengthOf(forCheckIn, 1);
+        // As a teammate's page reads it (`personMorning.ts`): the card told it.
+        const forPage = yield* untold({
+          orgId: ctx.orgId,
+          personId: zoyaId,
+          facts: notice(zoyas.project),
+          at: NOW + HOUR,
+          zone: "UTC",
+          anyState: true,
+        });
+        assert.lengthOf(forPage, 0);
       }),
     ),
 );

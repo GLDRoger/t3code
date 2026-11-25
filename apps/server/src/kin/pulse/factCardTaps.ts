@@ -11,7 +11,13 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevel } from "../people/KinAccess.ts";
-import type { DuePlan, FactCardPlan, StallPlan, WaitedPlan } from "../widgets/cardPlans.ts";
+import type {
+  DuePlan,
+  FactCardPlan,
+  NoticePlan,
+  StallPlan,
+  WaitedPlan,
+} from "../widgets/cardPlans.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { insertComment, requestHashOf } from "../work/recordComments.ts";
 import { viewSees } from "../work/teamView.ts";
@@ -36,10 +42,9 @@ const nothingDone = (why: string): KinChoiceOutcome => ({
 });
 
 /**
- * Has the fact in hand on the tapper's word, for the view the caller names. `theirs` is the
- * tapper's own handling: it hides the fact from them alone. `company` also quiets the owner's
- * check-ins, through the card's agent, and is for an answer that has a day it ends. An
- * owner-level tapper's own handling is the company's already. False when the fact no longer stands.
+ * Has the fact in hand on the tapper's word: `theirs` hides it from them alone, `company` also
+ * quiets the owner (through the card's agent). `gone`: the fact no longer stands; `in_hand`: a
+ * teammate's own answer would replace one the owner's read counts, so nothing is written.
  */
 const holdFact = Effect.fn("KinFactCards.holdFact")(function* (
   tap: FactTap,
@@ -54,6 +59,17 @@ const holdFact = Effect.fn("KinFactCards.holdFact")(function* (
 ) {
   const own = yield* ownerLevel(tap.orgId, tap.personId);
   const forCompany = !own && input.view === "company";
+  if (!own && input.view === "theirs") {
+    const read = yield* KinPulse.read({
+      orgId: tap.orgId,
+      at: tap.now,
+      viewer: { _tag: "owner" },
+      includeHandled: true,
+      factKeys: new Set([input.factKey]),
+    });
+    if (read.facts.some((fact) => fact.key === input.factKey && fact.handled !== null))
+      return "in_hand" as const;
+  }
   return yield* KinPulse.handle({
     orgId: tap.orgId,
     at: tap.now,
@@ -66,10 +82,10 @@ const holdFact = Effect.fn("KinFactCards.holdFact")(function* (
     ...(input.until === undefined ? {} : { until: input.until }),
     note: input.note,
   }).pipe(
-    Effect.as(true),
+    Effect.as("held" as const),
     Effect.catchIf(
       (error) => error._tag === "KinChatError" && error.reason === "not_found",
-      () => Effect.succeed(false),
+      () => Effect.succeed("gone" as const),
     ),
   );
 });
@@ -105,6 +121,7 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
       waiting_on_kind AS "waitingKind", waiting_on_id AS "waitingId"
     FROM kin_records WHERE org_id = ${tap.orgId} AND record_id = ${plan.recordId}`;
   const notWaiting = nothingDone(`${plan.key} no longer waits on you`);
+  const inHand = nothingDone(`${plan.key} is already in hand`);
   if (
     row === undefined ||
     row.state !== "waiting" ||
@@ -166,7 +183,9 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
           view,
         });
       // Theirs first, so a fact gone tells nobody; the owner is quiet only once the holder knows.
-      if (!(yield* hold("theirs"))) return notWaiting;
+      const theirs = yield* hold("theirs");
+      if (theirs === "gone") return notWaiting;
+      if (theirs === "in_hand") return inHand;
       const reached = yield* tellHolder(
         tap,
         plan,
@@ -184,7 +203,8 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
         note: `${plan.personName}: not mine`,
         view: "theirs",
       });
-      if (!held) return notWaiting;
+      if (held === "gone") return notWaiting;
+      if (held === "in_hand") return inHand;
       // The answer outlasts the hold: the owner reading the task sees who said it isn't theirs.
       const body = `${plan.personName} answered Kin's card: ${plan.key} doesn't wait on ${plan.personName}.`;
       yield* insertComment({
@@ -237,7 +257,8 @@ const runStall = Effect.fn("KinFactCards.runStall")(function* (
       // Only the first quiets the owner, until Kin asks again; after it the stall is told.
       view: plan.round === 0 ? "company" : "theirs",
     });
-    if (!held) return nothingDone(`${plan.key} moved on`);
+    if (held === "gone") return nothingDone(`${plan.key} moved on`);
+    if (held === "in_hand") return nothingDone(`${plan.key} is already in hand`);
     return { title: "Noted", text: `Kin asks again on ${plan.day} if ${plan.key} hasn't moved.` };
   }
   // As the holder marks it done on their own task, under the same rule as their screens.
@@ -274,16 +295,17 @@ const runDue = Effect.fn("KinFactCards.runDue")(function* (
       `milestone_late:${plan.key}:due=${plan.from}`,
       `milestone_at_risk:${plan.key}:due=${plan.from}`,
     ];
-    for (const factKey of facts)
-      if (
-        yield* holdFact(tap, plan, {
-          factKey,
-          action: "not_a_problem",
-          note: `${plan.personName}: leave it`,
-          view: "theirs",
-        })
-      )
+    for (const factKey of facts) {
+      const held = yield* holdFact(tap, plan, {
+        factKey,
+        action: "not_a_problem",
+        note: `${plan.personName}: leave it`,
+        view: "theirs",
+      });
+      if (held === "held")
         return { title: "Left as it is", text: `${plan.key} stays due ${plan.fromDay}.` };
+      if (held === "in_hand") return nothingDone(`${plan.key} is already in hand`);
+    }
     return nothingDone(`${plan.key} no longer needs a new date`);
   }
   const proposal = yield* milestoneProposal(
@@ -307,6 +329,25 @@ const runDue = Effect.fn("KinFactCards.runDue")(function* (
     plan.rev,
   );
   return { title: "Milestone moved", text: `${plan.key} ${plan.title} is due ${plan.toDay}.` };
+});
+
+/**
+ * Let it renew: the owner level's answer is the company's, so their check-ins stop telling it; a
+ * teammate's quiets it for them alone.
+ */
+const runNotice = Effect.fn("KinFactCards.runNotice")(function* (tap: FactTap, plan: NoticePlan) {
+  const held = yield* holdFact(tap, plan, {
+    factKey: plan.factKey,
+    action: "not_a_problem",
+    note: `${plan.personName}: let it renew`,
+    view: "theirs",
+  });
+  if (held === "gone") return nothingDone(`${plan.key}'s notice day is no longer yours to answer`);
+  if (held === "in_hand") return nothingDone(`${plan.key}'s notice day is already in hand`);
+  return {
+    title: "Left to renew",
+    text: `${plan.key} renews ${plan.renewsOn} as agreed. Nothing was sent.`,
+  };
 });
 
 /**
@@ -338,5 +379,7 @@ export const runFactCard = Effect.fn("KinFactCards.run")(function* (
     case "move_due":
     case "keep_due":
       return yield* runDue(tap, plan, records);
+    case "notice_renew":
+      return yield* runNotice(tap, plan);
   }
 });

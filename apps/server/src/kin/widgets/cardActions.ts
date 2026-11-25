@@ -128,6 +128,7 @@ const labelOf = (plan: CardPlan): string => {
     case "stall_answer":
     case "move_due":
     case "keep_due":
+    case "notice_renew":
       return factCardShown(plan).label;
     case "undo_default":
       return "Undo";
@@ -168,6 +169,7 @@ const lineOf = (plan: CardPlan): string => {
     case "stall_answer":
     case "move_due":
     case "keep_due":
+    case "notice_renew":
       return factCardShown(plan).line;
     case "undo_default":
       return undoLine(plan);
