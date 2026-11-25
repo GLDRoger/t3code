@@ -102,6 +102,7 @@ import {
   connectionView,
   liveConnections,
   MAIL_QUIET_MS,
+  quietFrom,
   pausedRefusal as paused,
   peopleMailboxes,
   personConnections,
@@ -1934,14 +1935,16 @@ const make = Effect.gen(function* () {
                 sign_in_gen, note, send_as_json, issuer, resource, protocol_version,
                 instructions_text, instructions_digest, instructions_accepted_text,
                 instructions_accepted_digest, created_at, updated_at, listed_at, last_ok_at,
-                last_error, paused_at, removed_at, person_id, account_key)
+                last_error, paused_at, removed_at, person_id, account_key, watched_at)
               SELECT o.org_id, ${connectionId}, o.preset, o.label, o.kind, o.url, o.url_host,
                 o.auth, o.auth_header, o.reach, o.state, o.account_label, o.sign_in_gen, o.note,
                 o.send_as_json, o.issuer, o.resource, o.protocol_version, o.instructions_text,
                 o.instructions_digest, o.instructions_accepted_text, o.instructions_accepted_digest,
                 o.created_at, ${now}, o.listed_at, o.last_ok_at, o.last_error, o.paused_at, NULL,
                 ${to},
-                ${keyOf("o")}
+                ${keyOf("o")},
+                -- Given to the company, Kin watches it from now: a day's grace before it warns.
+                ${to === null ? now : null}
               FROM kin_connections o
               WHERE o.org_id = ${orgId} AND o.connection_id = ${row.connectionId}
                 -- An older row may be unkeyed: the new one is keyed, and its address live once.
@@ -2481,8 +2484,7 @@ const make = Effect.gen(function* () {
       yield* sql`UPDATE kin_connections SET read_ok_at = ${until}, read_failed_at = NULL,
           read_error = NULL
         WHERE org_id = ${orgId} AND connection_id = ${row.connectionId}`;
-      if (row.readError !== null || until - (row.readOkAt ?? row.createdAt) > MAIL_QUIET_MS)
-        yield* touched(orgId);
+      if (row.readError !== null || until - quietFrom(row) > MAIL_QUIET_MS) yield* touched(orgId);
       // A read that stopped at its bound moves the cursor only as far as it read.
       const cut = "until" in found ? found.until : undefined;
       const readUntil = cut === undefined ? until : Math.max(since + 1, Math.min(until, cut));

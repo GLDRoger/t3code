@@ -744,6 +744,22 @@ const pulseEvents = Effect.gen(function* () {
     WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY queued_at, event_id`;
 });
 
+const mailStopped = Effect.gen(function* () {
+  const pulse = yield* KinPulse.read({
+    orgId,
+    at: yield* Clock.currentTimeMillis,
+    viewer: { _tag: "owner" },
+    includeHandled: true,
+    limit: 200,
+  });
+  return pulse.facts.filter((fact) => fact.sense === "mail_not_syncing");
+});
+const mailSyncOf = (connectionId: string) =>
+  Effect.gen(function* () {
+    const view = yield* (yield* KinConnections).list(people(owner), { orgId });
+    return view.connections.find((one) => one.connectionId === connectionId)?.mailSync;
+  });
+
 describe("Kin mail end to end, on a fake mailbox", () => {
   it.effect("wakes on client mail once, replies in its own account and thread, once", () =>
     setUp((fake, cards) =>
@@ -3886,42 +3902,76 @@ describe("Kin mail end to end, on a fake mailbox", () => {
       ),
   );
 
-  it.effect("an account Kin read before the upgrade warns only after a day of real quiet", () =>
+  it.effect(
+    "an account Kin read before the upgrade has no read time until one works, and a day's grace",
+    () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const connections = yield* KinConnections;
+          const hello = yield* connect(fake, "microsoft", HELLO);
+          const stopped = mailStopped;
+          const sync = mailSyncOf(hello);
+          // Read for weeks by a build that kept no record of reads, then upgraded.
+          yield* TestClock.adjust("30 days");
+          for (const { name } of yield* sql<{ name: string }>`SELECT name
+              FROM pragma_table_info('kin_connections')
+              WHERE name IN ('read_ok_at', 'read_failed_at', 'read_error', 'watched_at')
+              ORDER BY name`)
+            yield* sql.unsafe(`ALTER TABLE kin_connections DROP COLUMN ${name}`);
+          yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 220`;
+          yield* runKinMigrations();
+          // The upgrade isn't a read: Connections doesn't say mail was read, and nothing warns.
+          assert.lengthOf(yield* stopped, 0);
+          assert.deepStrictEqual(yield* sync, { readAt: null, error: null, stopped: false });
+          yield* TestClock.adjust("23 hours");
+          assert.lengthOf(yield* stopped, 0);
+          assert.deepStrictEqual(yield* sync, { readAt: null, error: null, stopped: false });
+          // A whole day from the upgrade with no read that worked is real quiet.
+          yield* TestClock.adjust("2 hours");
+          const [quiet, ...more] = yield* stopped;
+          assert.lengthOf(more, 0);
+          assert.strictEqual(quiet!.consequence, "No mail read yet: try signing in again.");
+          assert.deepStrictEqual(yield* sync, { readAt: null, error: null, stopped: true });
+          // The first read that works is the read time shown.
+          const readAt = yield* Clock.currentTimeMillis;
+          yield* poll(orgId, readAt, fromConnections(connections, sql));
+          assert.lengthOf(yield* stopped, 0);
+          assert.deepStrictEqual(yield* sync, { readAt, error: null, stopped: false });
+        }),
+      ),
+  );
+
+  it.effect("a mailbox given back to the company is watched from the move, unread until read", () =>
     setUp((fake) =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
+        const connections = yield* KinConnections;
         const hello = yield* connect(fake, "microsoft", HELLO);
-        const stopped = Effect.gen(function* () {
-          const pulse = yield* KinPulse.read({
-            orgId,
-            at: yield* Clock.currentTimeMillis,
-            viewer: { _tag: "owner" },
-            includeHandled: true,
-            limit: 200,
-          });
-          return pulse.facts.filter((fact) => fact.sense === "mail_not_syncing");
+        const read = Effect.gen(function* () {
+          yield* poll(orgId, yield* Clock.currentTimeMillis, fromConnections(connections, sql));
         });
-        const sync = (yield* KinConnections)
-          .list(people(owner), { orgId })
-          .pipe(
-            Effect.map(
-              (view) => view.connections.find((one) => one.connectionId === hello)?.mailSync,
-            ),
-          );
-        // Read for weeks by a build that kept no record of reads, then upgraded.
-        yield* TestClock.adjust("30 days");
-        for (const column of ["read_ok_at", "read_failed_at", "read_error"])
-          yield* sql.unsafe(`ALTER TABLE kin_connections DROP COLUMN ${column}`);
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 220`;
-        yield* runKinMigrations();
-        const upgraded = yield* Clock.currentTimeMillis;
-        assert.lengthOf(yield* stopped, 0);
-        assert.deepStrictEqual(yield* sync, { readAt: upgraded, error: null, stopped: false });
-        yield* TestClock.adjust("23 hours");
-        assert.lengthOf(yield* stopped, 0);
-        // A whole day with no read that worked is real quiet.
-        yield* TestClock.adjust("2 hours");
-        assert.lengthOf(yield* stopped, 1);
+        yield* read;
+        const own = (yield* connections.moveMailbox(people(owner), {
+          orgId,
+          connectionId: hello,
+          to: "mine",
+        })).mailboxes!.find((one) => one.account === HELLO)!.connectionId;
+        // Kin never watches someone's own mailbox, so a week of it says nothing.
+        yield* TestClock.adjust("7 days");
+        assert.lengthOf(yield* mailStopped, 0);
+        yield* connections.moveMailbox(people(owner), { orgId, connectionId: own, to: "company" });
+        const company = (yield* connections.list(people(owner), { orgId })).connections[0]!;
+        assert.lengthOf(yield* mailStopped, 0);
+        assert.deepStrictEqual(yield* mailSyncOf(company.connectionId), {
+          readAt: null,
+          error: null,
+          stopped: false,
+        });
+        yield* TestClock.adjust("25 hours");
+        assert.lengthOf(yield* mailStopped, 1);
+        yield* read;
+        assert.lengthOf(yield* mailStopped, 0);
       }),
     ),
   );

@@ -47,6 +47,8 @@ export type ConnectionRow = {
   readonly readOkAt: number | null;
   readonly readFailedAt: number | null;
   readonly readError: string | null;
+  /** When Kin began watching it for the company, if later than its connection: an upgrade or a move. */
+  readonly watchedAt?: number | null;
   readonly pausedAt: number | null;
   readonly removedAt: number | null;
   /** Whose own mailbox this is; null is the company's. */
@@ -88,7 +90,7 @@ const connectionColumns = (sql: SqlClient.SqlClient) => sql`connection_id AS "co
   instructions_accepted_digest AS "instructionsAcceptedDigest", created_at AS "createdAt",
   updated_at AS "updatedAt", listed_at AS "listedAt", last_ok_at AS "lastOkAt",
   last_error AS "lastError", read_ok_at AS "readOkAt", read_failed_at AS "readFailedAt",
-  read_error AS "readError", paused_at AS "pausedAt", removed_at AS "removedAt",
+  read_error AS "readError", watched_at AS "watchedAt", paused_at AS "pausedAt", removed_at AS "removedAt",
   person_id AS "personId"`;
 
 const toolColumns = (sql: SqlClient.SqlClient) => sql`connection_id AS "connectionId",
@@ -267,8 +269,12 @@ export const mailStopOf = (
   if (row.state === "error") return "unreachable";
   if (row.state === "needs_review") return "review";
   if (row.readError !== null) return "failing";
-  return now - (row.readOkAt ?? row.createdAt) > MAIL_QUIET_MS ? "quiet" : null;
+  return now - quietFrom(row) > MAIL_QUIET_MS ? "quiet" : null;
 };
+
+/** Since when a mail account has gone unread: its last read that worked, or since Kin watched it. */
+export const quietFrom = (row: ConnectionRow) =>
+  Math.max(row.readOkAt ?? 0, row.watchedAt ?? 0, row.createdAt);
 
 export const connectionView = (
   row: ConnectionRow,

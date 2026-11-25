@@ -9,6 +9,7 @@ import {
   MAIL_QUIET_MS,
   mailStopOf,
   type MailStop,
+  quietFrom,
   toolsOf,
 } from "../../connections/ConnectionRows.ts";
 import { heldWork } from "../../lead/KinBudget.ts";
@@ -104,7 +105,7 @@ const mailSenses = Effect.fn("KinPulse.mailSenses")(function* (ctx: SenseContext
   for (const row of yield* liveConnections(ctx.orgId)) {
     const stop = mailStopOf(row, yield* toolsOf(ctx.orgId, row.connectionId), ctx.at);
     if (stop === null || stop === undefined) continue;
-    const readAt = row.readOkAt ?? row.createdAt;
+    const from = quietFrom(row);
     facts.push({
       sense: "mail_not_syncing",
       family: "system",
@@ -115,8 +116,8 @@ const mailSenses = Effect.fn("KinPulse.mailSenses")(function* (ctx: SenseContext
         title: (row.accountLabel ?? row.label).slice(0, 280),
       },
       scope: {},
-      since: iso(stop === "quiet" ? readAt + MAIL_QUIET_MS : (row.readFailedAt ?? readAt)),
-      consequence: mailConsequence(stop, whenOf(ctx, readAt)),
+      since: iso(stop === "quiet" ? from + MAIL_QUIET_MS : (row.readFailedAt ?? from)),
+      consequence: mailConsequence(stop, row.readOkAt === null ? null : whenOf(ctx, row.readOkAt)),
       actor: { _tag: "owner" },
       sensitive: true,
       wake: "sweep",
@@ -126,7 +127,7 @@ const mailSenses = Effect.fn("KinPulse.mailSenses")(function* (ctx: SenseContext
 });
 
 /** One line a row shows whole: the fix first. Connections says why, and since when. */
-const mailConsequence = (stop: MailStop, readAt: string) => {
+const mailConsequence = (stop: MailStop, readAt: string | null) => {
   switch (stop) {
     case "signed_out":
       return "Mail isn't syncing: sign in again.";
@@ -137,6 +138,8 @@ const mailConsequence = (stop: MailStop, readAt: string) => {
     case "failing":
       return "Mail isn't syncing: try signing in again.";
     case "quiet":
-      return `No mail read since ${readAt}: try signing in again.`;
+      return readAt === null
+        ? "No mail read yet: try signing in again."
+        : `No mail read since ${readAt}: try signing in again.`;
   }
 };
