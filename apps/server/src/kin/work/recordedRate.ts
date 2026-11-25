@@ -25,7 +25,7 @@ export const aboutInHome = Effect.fn("KinRecordedRate.about")(function* (
   totals: ReadonlyArray<KinMoney>,
   home: string,
   asOf: number,
-  read = recordedRate,
+  read: typeof recordedRate = recordedRate,
 ) {
   const currencies = new Set(totals.map((money) => money.currency));
   if (currencies.size < 2) return undefined;
