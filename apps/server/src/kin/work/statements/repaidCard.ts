@@ -9,7 +9,8 @@ import { REIMBURSEMENT, REPAID_ON } from "../reimbursement.ts";
 import { bankStates, findBankList } from "./bankList.ts";
 import { shortDay } from "./bankKnown.ts";
 import { keyRow } from "./creditPayment.ts";
-import { type RepaidMatch, repaidMatch } from "./debitRepaid.ts";
+import { MARKED_REPAID, type RepaidMatch, repaidMatch } from "./debitRepaid.ts";
+import { stateLabel } from "../registers.ts";
 import { agentWrote } from "./invoiceCredits.ts";
 
 /**
@@ -49,6 +50,10 @@ export const drawRepaid = Effect.fn("KinRepaidCard.draw")(function* (
     return yield* refuse(
       `${bank.key} isn't an unexplained debit that names one partner the company owes, so Kin offers no card for it. ${NOTHING_ASKED}`,
     );
+  if (match.setBack)
+    return yield* refuse(
+      `A person set ${bank.key} back to ${stateLabel(def, bankStates(def).open)} after a card marked it repaid, so Kin offers no card for it.`,
+    );
   if (match.marked !== undefined)
     return yield* refuse(
       `${bank.key} may be the repayment already marked by hand for ${match.partner.name} on ${match.marked}, so Kin offers no card for it. ${NOTHING_ASKED}`,
@@ -78,7 +83,8 @@ const planOf = (match: RepaidMatch, repays: NonNullable<RepaidMatch["repays"]>, 
 
 /** The same debit, partner, expenses and what stays owed as drawn: anything else marks nothing. */
 const asDrawn = (match: RepaidMatch | undefined, plan: RepaidPlan) => {
-  if (match === undefined || match.marked !== undefined || match.repays === undefined) return false;
+  if (match === undefined || match.setBack || match.marked !== undefined) return false;
+  if (match.repays === undefined) return false;
   const now = planOf(match, match.repays, plan.draw);
   return (
     now.recordId === plan.recordId &&
@@ -210,7 +216,7 @@ export const markRepaid = Effect.fn("KinRepaidCard.mark")(function* (
   }
   const rest = owedAfter(plan);
   return {
-    title: "Marked repaid",
+    title: MARKED_REPAID,
     text: fitted(
       plan,
       (keys) =>

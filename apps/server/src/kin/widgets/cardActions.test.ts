@@ -3348,6 +3348,19 @@ it.effect(
         assert.isNotNull((yield* kin.widget(later)).closedAt);
         const late = yield* kin.tap(owner, later, "option-1", "repaid-2").pipe(Effect.flip);
         assert.include(late, { reason: "widget_changed" });
+
+        // Rhea takes it back by hand: the expenses owed again and the debit Unexplained. That is
+        // the owner's no, so the debit is not offered again.
+        for (const one of [first, second, third])
+          yield* records.update(orgId, ownerWrites, one.key, {
+            fields: { reimbursement: "owed", repaidOn: null },
+          });
+        yield* records.update(orgId, ownerWrites, bank.key, { state: "open", category: null });
+        assert.notInclude(yield* told, factKey);
+        assert.strictEqual(
+          yield* refusal(bank.key),
+          `A person set ${bank.key} back to Unexplained after a card marked it repaid, so Kin offers no card for it.`,
+        );
       }).pipe(Effect.provide(layer)),
     ),
 );
