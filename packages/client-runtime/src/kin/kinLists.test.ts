@@ -439,7 +439,8 @@ describe("a list by its definition", () => {
     // An older host sends neither: nothing is watched as far as this screen can say.
     expect(kinListWatches({ fields })).toEqual([]);
 
-    // The owner level's Remind on: not set, the due day, its own date, then each live date field.
+    // The owner level's Remind on: the due day (always watched, so it is what nothing stored
+    // means), its own date, then each live date field.
     const retired = {
       ...fields[2]!,
       key: "oldDay",
@@ -453,21 +454,15 @@ describe("a list by its definition", () => {
       dateLabel: "Booking date" as never,
     });
     expect(remind.choices.map((one) => [one.label, one.remindOn])).toEqual([
-      ["Not set", null],
       ["Check-out", null],
       ["Booking date", "date"],
       ["Booked for", "bookedFor"],
     ]);
     expect(remind.choices.find((one) => one.id === remind.current)?.label).toBe("Booked for");
     const unset = kinListRemindChoices({ fields });
-    expect(unset.choices.map((one) => one.label)).toEqual([
-      "Not set",
-      "Due date",
-      "Its date",
-      "Booked for",
-    ]);
-    expect(unset.choices.find((one) => one.id === unset.current)?.label).toBe("Not set");
-    expect(kinListRemindChoices({ fields, remindOn: "date" }).current).toBe(unset.choices[2]!.id);
+    expect(unset.choices.map((one) => one.label)).toEqual(["Due date", "Its date", "Booked for"]);
+    expect(unset.choices.find((one) => one.id === unset.current)?.label).toBe("Due date");
+    expect(kinListRemindChoices({ fields, remindOn: "date" }).current).toBe(unset.choices[1]!.id);
 
     // Warn when: the rule in words, a draft of it, and what a draft sends.
     expect(kinListCheckWords({ fields, check: { field: "onHand", below: "reorder" } })).toBe(

@@ -552,7 +552,7 @@ const liveFields = (def: Pick<KinListDefinition, "fields">, type: KinListField["
 
 /**
  * The days a section list can remind on, as the owner level picks them, and which one it is now.
- * Not set and the due day both send null: the due day is watched without being stored.
+ * The due day sends null: the host always watches it, so it is what nothing stored means.
  */
 export function kinListRemindChoices(
   def: Pick<KinListDefinition, "fields" | "remindOn" | "dueLabel" | "dateLabel">,
@@ -562,7 +562,6 @@ export function kinListRemindChoices(
     readonly label: string;
     readonly remindOn: string | null;
   }> = [
-    { id: "none", label: KIN_LIST_WATCH.notSet, remindOn: null },
     { id: "due", label: def.dueLabel ?? KIN_LIST_WATCH.due, remindOn: null },
     { id: "own", label: def.dateLabel ?? KIN_LIST_WATCH.ownDate, remindOn: "date" },
     ...liveFields(def, "date").map((field) => ({
@@ -573,9 +572,9 @@ export function kinListRemindChoices(
   ];
   const current =
     def.remindOn === undefined
-      ? "none"
+      ? "due"
       : (choices.find((one) => one.id !== "own" && one.remindOn === def.remindOn)?.id ??
-        (def.remindOn === "date" ? "own" : "none"));
+        (def.remindOn === "date" ? "own" : "due"));
   return { choices, current };
 }
 
