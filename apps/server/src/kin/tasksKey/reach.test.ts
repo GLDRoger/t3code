@@ -666,6 +666,7 @@ const reach: Readonly<Record<string, ReadonlyArray<string> | string>> = {
   "kin.bills.readAgain": "not reached yet: reading bills again; not exposed",
   "kin.push.registerDevice": "not a person action (screens only: this device's notifications)",
   "kin.push.unregisterDevice": "not a person action (screens only: this device's notifications)",
+  "kin.push.desktopNotices": "not a person action (screens only: notification stream)",
   "kin.push.watch": "not a person action (screens only: notification stream)",
   "kin.people.listInvites": "stays in the app: 3 (people, roles, switches, invitations, removing)",
   "kin.people.revokeInvite": "stays in the app: 3 (people, roles, switches, invitations, removing)",

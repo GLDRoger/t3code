@@ -23,6 +23,7 @@ import type { MemoryRecoveryHooks } from "./memory/Memory.ts";
 import type { KinMemoryChanges } from "./memory/MemoryChanges.ts";
 import type { KinOwnerTimeZone } from "./triggers/ownerTimeZone.ts";
 import type { KinPushDevices } from "./push/KinPushDevices.ts";
+import type { KinDesktopNotices } from "./push/KinDesktopNotices.ts";
 import type { KinPushPresence } from "./push/KinPushPresence.ts";
 import type { KinPushSender } from "./push/KinPushSender.ts";
 import type { KinPresence } from "./reply/KinPresence.ts";
@@ -72,6 +73,7 @@ export type Services =
   | GrantVerifier
   | KinRetiredActions
   | KinPushDevices
+  | KinDesktopNotices
   | KinPushPresence
   | KinPushSender
   | KinPresence

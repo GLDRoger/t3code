@@ -2,11 +2,20 @@ import type { DesktopBridge } from "@t3tools/contracts";
 
 import { isElectron } from "../env";
 
-// Kin's desktop app shows the team's host without the desktop bridge; its preload marks the
-// window so the page leaves room for the window buttons and drags like the full desktop app.
-export const inKinDesktopWindow =
-  typeof window !== "undefined" &&
-  (window as { readonly kinDesktopWindow?: unknown }).kinDesktopWindow === true;
+type KinDesktopWindow = { readonly kinWindowReveal: () => Promise<void> };
+
+const kinWindow =
+  typeof window === "undefined"
+    ? undefined
+    : (window as { readonly kinDesktopWindow?: true | KinDesktopWindow }).kinDesktopWindow;
+
+export const inKinDesktopWindow = kinWindow !== undefined;
+
+export const revealKinDesktopWindow = () => {
+  if (typeof kinWindow === "object") return kinWindow.kinWindowReveal();
+  if (window.desktopBridge !== undefined) return window.desktopBridge.revealWindow();
+  window.focus();
+};
 
 export const hasDesktopWindowChrome = isElectron || inKinDesktopWindow;
 

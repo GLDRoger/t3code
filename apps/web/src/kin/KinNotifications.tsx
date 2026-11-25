@@ -34,6 +34,7 @@ import {
   playNotificationSound,
   unlockNotificationAudio,
 } from "../threadNotifications";
+import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { KIN_PLACE_PATH, kinRecordPlace } from "./kinPlaces";
 import { KinSettingsChoice } from "./settings/KinSettingsControls";
 import { KinSettingsPage, KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
@@ -102,7 +103,7 @@ function MessageAlerts() {
   );
 }
 
-const looking = () => document.visibilityState === "visible" && document.hasFocus();
+export const lookingAtKin = () => document.visibilityState === "visible" && document.hasFocus();
 
 /** Where a notice opens, as the phone's tap on the same push does: the entry, the card, the chat. */
 export function openDestination(
@@ -143,7 +144,10 @@ export function KinMessageAlerts() {
     const arrivals = kinNewArrivals(seen.current, rows);
     seen.current = kinUnreadSeen(rows);
     if (arrivals.length === 0 || mode === "off") return;
-    const { system, inApp } = kinArrivalNotices(arrivals, { looking: looking(), onScreenChatId });
+    const { system, inApp } = kinArrivalNotices(arrivals, {
+      looking: lookingAtKin(),
+      onScreenChatId,
+    });
     const open = (row: (typeof arrivals)[number]) =>
       void openDestination(
         navigate,
@@ -166,8 +170,8 @@ export function KinMessageAlerts() {
         },
       });
     }
-    if (system.length === 0) return;
-    if (hasNotificationSound(mode)) void playNotificationSound("input", () => !looking());
+    if (hasDesktopWindowChrome || system.length === 0) return;
+    if (hasNotificationSound(mode)) void playNotificationSound("input", () => !lookingAtKin());
     if (!hasDesktopNotifications(mode) || typeof Notification === "undefined") return;
     if (Notification.permission !== "granted") return;
     for (const row of system) {

@@ -55,6 +55,13 @@ const isKinPushError = Schema.is(KinPushError);
 const fail = (reason: KinPushError["reason"], message: string) =>
   Effect.fail(new KinPushError({ reason, message }));
 
+export const personIn = (caller: KinPushCaller, orgId: KinOrgId) => {
+  const person = caller.people.find((candidate) => candidate.orgId === orgId);
+  return person === undefined
+    ? fail("not_member", "Only a person in this org can get its notifications.")
+    : Effect.succeed(person);
+};
+
 export class KinPushDevices extends Context.Service<
   KinPushDevices,
   {
@@ -99,13 +106,6 @@ const make = Effect.gen(function* () {
             ),
           ),
         );
-
-  const personIn = (caller: KinPushCaller, orgId: KinOrgId) => {
-    const person = caller.people.find((candidate) => candidate.orgId === orgId);
-    return person === undefined
-      ? fail("not_member", "Only a person in this org can get its notifications.")
-      : Effect.succeed(person);
-  };
 
   // T3 revokes sessions in SessionStore; reading its table keeps auth free of Kin hooks,
   // as ApproverKeys does. Runs before every send. Expired sessions stay: a live socket outlives

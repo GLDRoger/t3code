@@ -94,6 +94,7 @@ const MEMBER = [
   "kin.pulse.read",
   "kin.pulse.subscribe",
   // Only their own topics: `KinPushTopics.settledOf` reads the caller's rows and no one else's.
+  "kin.push.desktopNotices",
   "kin.push.reconcile",
   "kin.push.registerDevice",
   "kin.push.unregisterDevice",

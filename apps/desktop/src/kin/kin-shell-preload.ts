@@ -3,8 +3,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import { isAppPageUrl } from "./appPage.ts";
 import * as Channels from "./kinShellChannels.ts";
 
-// The team's host gets one constant, so its layout leaves room for the window buttons; only the
-// app's own pages get the shell's controls, and the main process checks every call's origin again.
+// Only the app's own pages get the join controls; the main process checks each call's origin.
 if (isAppPageUrl(location.href)) {
   contextBridge.exposeInMainWorld("kinShell", {
     state: () => ipcRenderer.invoke(Channels.KIN_SHELL_STATE_CHANNEL),
@@ -14,7 +13,9 @@ if (isAppPageUrl(location.href)) {
     back: () => ipcRenderer.invoke(Channels.KIN_SHELL_BACK_CHANNEL),
   });
 } else {
-  contextBridge.exposeInMainWorld("kinDesktopWindow", true);
+  contextBridge.exposeInMainWorld("kinDesktopWindow", {
+    kinWindowReveal: () => ipcRenderer.invoke(Channels.KIN_SHELL_REVEAL_CHANNEL),
+  });
   // Pushed by the main process, so the page can drop the buttons' space as T3 Code's window does.
   let fullscreen = false;
   ipcRenderer.on(Channels.KIN_SHELL_FULLSCREEN_CHANNEL, (_event, value: unknown) => {
