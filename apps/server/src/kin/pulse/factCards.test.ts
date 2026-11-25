@@ -232,7 +232,7 @@ it.effect(
         );
         assert.deepStrictEqual(card!.labels, ["Done", "By Thu 26 Nov", "By Wed 2 Dec", "Not mine"]);
         assert.deepStrictEqual(card!.lines, [
-          "W-1 goes back to Zoya, who is told you said it's done",
+          "Zoya is told it's done and gets W-1 back",
           "Zoya is told; it comes back after Thu 26 Nov if it still waits on you",
           "Zoya is told; it comes back after Wed 2 Dec if it still waits on you",
           "Zoya is told it doesn't wait on you, to change who it does",
@@ -703,4 +703,18 @@ it.effect(
         assert.isTrue(yield* ownerSees(ctx, "task_stalled", guide, NOW + 3 * DAY + 2 * HOUR));
       }),
     ),
+);
+
+it.effect("the holder's notice of Not mine names the person, not a pronoun", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      const [card] = yield* cards(ctx);
+      yield* tap(ctx, arjunId, card!, "Not mine");
+      assert.deepStrictEqual(yield* noticesTo(ctx, zoyaId), [
+        "Arjun says W-1 Revised pilot quote doesn't wait on Arjun. Change who it waits on, or pick it up.",
+      ]);
+    }),
+  ),
 );

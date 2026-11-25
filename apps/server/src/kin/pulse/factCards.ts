@@ -81,7 +81,7 @@ const waitedShown = (plan: WaitedPlan) => {
     case "done":
       return {
         label: "Done",
-        line: `${plan.key} goes back to ${plan.holder.name}, who is told you said it's done`,
+        line: `${plan.holder.name} is told it's done and gets ${plan.key} back`,
       };
     case "by":
       return {

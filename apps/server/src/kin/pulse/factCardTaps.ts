@@ -165,7 +165,7 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
       yield* tellHolder(
         tap,
         plan,
-        `${plan.personName} says ${named} doesn't wait on them. Change who it waits on, or pick it up.`,
+        `${plan.personName} says ${named} doesn't wait on ${plan.personName}. Change who it waits on, or pick it up.`,
       );
       return { title: told, text: `${holder} will change who ${plan.key} waits on.` };
     }
