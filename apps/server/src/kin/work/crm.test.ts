@@ -980,7 +980,7 @@ it.effect(
       assert.include(yield* Effect.flip(make("again-event", [report])), {
         reason: "conflict",
         message:
-          'W-1 "Invented monthly report" is open with the same title, client and due day. Use W-1, or pass besides: ["W-1"] to add another.',
+          'W-1 "Invented monthly report" is open with the same title, client and due day: it is tracked already, held by Lead lead (you), due Mon 5 Jan. Tell them so in one line, and nothing about when or how to do it; Kin tells its holder on its day. Pass besides: ["W-1"] only if this is another one.',
       });
       // Named as known, a second is made.
       assert.deepStrictEqual(shown(yield* make("again-event", [{ ...report, besides: ["W-1"] }])), [

@@ -185,7 +185,7 @@ import {
   unconfirmedLines,
 } from "./unconfirmedFacts.ts";
 import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
-import { leadNamer, shownName, type ToolNamer } from "./toolNames.ts";
+import { leadNamer, shownName, toolNameOfText, type ToolNamer } from "./toolNames.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { invoiceCredits } from "./statements/invoiceCredits.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
@@ -3440,6 +3440,28 @@ const REPEAT_CANDIDATES = 2000;
 const REPEATS_SHOWN = 5;
 
 /**
+ * What `record_create` answers when a task or promise is already open: it is tracked, so the agent
+ * confirms it in one line rather than advising on it.
+ */
+export const repeatedPromise = (input: {
+  readonly key: string;
+  readonly title: string;
+  readonly client: boolean;
+  readonly also: string;
+  readonly holder: string;
+  readonly dueAt: number | null;
+  readonly zone: string;
+  readonly besides: string;
+}) =>
+  `${input.key} "${input.title.slice(0, 80)}" is open with the same title${input.client ? ", client" : ""} and due day${input.also}: it is tracked already, held by ${input.holder}, ${
+    input.dueAt === null
+      ? "with no due day"
+      : `due ${formatKinWhen(input.dueAt, "day", { zone: input.zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "")}`
+  }. Tell them so in one line, and nothing about when or how to do it${
+    input.dueAt === null ? "" : "; Kin tells its holder on its day"
+  }. Pass ${input.besides} only if this is another one.`;
+
+/**
  * Open entries a new row repeats, among those this turn may see. The same title, client and due
  * day, or the same party, amount and day, is refused unless `besides` names it; ones near it (the
  * same title in other words or on another day, the same amount within days) are returned, and
@@ -3487,8 +3509,10 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     originKey: string | null;
     vendor: unknown;
     sensitive: number;
+    holder: string;
   }>`SELECT r.key, r.title, r.due_at AS "dueAt", r.date_at AS "dateAt",
       r.origin_key AS "originKey", json_extract(r.fields_json, '$.vendor') AS vendor,
+      r.owner_kind || ':' || r.owner_id AS holder,
       ${sensitiveNow(sql)} AS sensitive
     FROM kin_records r
     WHERE r.org_id = ${lead.orgId} AND r.register_id = ${row.list} AND r.party_id IS ${row.partyId}
@@ -3535,6 +3559,8 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
         differs: differs.join(", "),
         vendor: one.vendor,
         sensitive: one.sensitive === 1,
+        holder: one.holder,
+        dueAt: one.dueAt,
       },
     ];
   });
@@ -3547,13 +3573,26 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
         ? `records the same amount ${row.partyId !== null ? "for the same party" : sameVendor(first) ? "for the same vendor" : "and title"} on the same day`
         : `is open with the same title${row.partyId === null ? "" : ", client"} and due day`;
     const Refused = repeats.some((one) => one.sensitive) ? SensitiveRefusal : KinChatError;
+    const also =
+      keys.length > 1
+        ? ` (so ${keys.length === 2 ? "does" : "do"} ${keys.slice(1).join(", ")})`
+        : "";
+    const besides = `besides: [${keys.map((key) => `"${key}"`).join(", ")}]`;
     return yield* new Refused({
       reason: "conflict",
-      message: `${first.key} "${first.title.slice(0, 80)}" ${same}${
-        keys.length > 1
-          ? ` (so ${keys.length === 2 ? "does" : "do"} ${keys.slice(1).join(", ")})`
-          : ""
-      }. Use ${first.key}, or pass besides: [${keys.map((key) => `"${key}"`).join(", ")}] to add another.`,
+      message:
+        row.list === "work"
+          ? repeatedPromise({
+              key: first.key,
+              title: first.title,
+              client: row.partyId !== null,
+              also,
+              holder: toolNameOfText(first.holder, yield* namer(lead)),
+              dueAt: first.dueAt,
+              zone,
+              besides,
+            })
+          : `${first.key} "${first.title.slice(0, 80)}" ${same}${also}. Use ${first.key}, or pass ${besides} to add another.`,
     });
   }
   return {
