@@ -76,6 +76,23 @@ export const onHostClock = (
   };
 };
 
+/**
+ * A native schedule in the owner's own time: the time he said (`owner_time_json`) while the task
+ * still runs where Kin put it, else its host time turned to his zone as of `now`.
+ */
+export const inOwnerTime = (
+  host: { readonly at: string; readonly days: ReadonlyArray<number> },
+  kept: string | null,
+  ownerZoneId: string,
+  now: number,
+  hostZone = KinSchedules.hostTimeZone(),
+) => {
+  const own = kept === null ? undefined : Option.getOrUndefined(KinSchedules.decodeOwnerTime(kept));
+  return own !== undefined && own.host.at === host.at && own.host.days.join() === host.days.join()
+    ? { at: own.at, days: own.days }
+    : onHostClock(host.at, host.days, hostZone, ownerZoneId, now);
+};
+
 const seedSource = (orgId: KinOrgId) => `kin-seed:check-ins:${orgId}`;
 /** Days an earlier build seeded a default on: a row still on them was never given its own. */
 const EARLIER_DAYS: Partial<Record<string, ReadonlyArray<number>>> = { morning: WEEKDAYS };
