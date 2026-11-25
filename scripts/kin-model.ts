@@ -45,6 +45,7 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/lead/ChatSharing.ts",
     "apps/server/src/kin/lead/Audience.ts",
     "apps/server/src/kin/chat/KinGroups.ts",
+    "apps/server/src/kin/people/KinPeople.ts",
   ],
   checkin: [
     "apps/server/src/scheduledTasks/Schedule.ts",
