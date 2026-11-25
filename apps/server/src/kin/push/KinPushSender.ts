@@ -265,6 +265,21 @@ const kinBannerTitle = (
       ? chat.name
       : `${chat.name} · ${author}`;
 
+/**
+ * The check-in of the turn that wrote message `m`, by its own wake-up or the author's turn it was
+ * written in, so a banner sent after that turn ended still names it.
+ */
+const CHECK_IN_OF_MESSAGE = `(SELECT json_extract(e.json, '$.checkIn.scheduleId') FROM kin_events e
+  WHERE e.org_id = m.org_id AND e.tag = 'pulse'
+    AND json_extract(e.json, '$.checkIn.scheduleId') IS NOT NULL
+    AND e.wakeup_id = COALESCE(m.source_wakeup_id, (SELECT k.wakeup_id FROM kin_wakeups k
+      WHERE k.org_id = m.org_id AND k.agent_id = m.author_agent_id
+        AND strftime('%Y-%m-%dT%H:%M:%fZ', k.started_at / 1000.0, 'unixepoch') <= m.created_at
+        AND (k.ended_at IS NULL
+          OR strftime('%Y-%m-%dT%H:%M:%fZ', k.ended_at / 1000.0, 'unixepoch') >= m.created_at)
+      ORDER BY k.started_at DESC, k.wakeup_id LIMIT 1))
+  ORDER BY e.event_id LIMIT 1)`;
+
 /** What a brief is called on its banner: its check-in's name, else its hour's. */
 const kinBriefKind = (checkIn: string | null, greeting: string) =>
   checkIn === "checkin-weekly"
@@ -678,12 +693,7 @@ const make = Effect.gen(function* () {
             WHERE d.org_id = m.org_id AND d.chat_id = m.chat_id
               AND d.agent_id = m.author_agent_id AND d.kind IN ('reminder', 'scheduled_task')
               AND k.status = 'running' ORDER BY d.event_id LIMIT 1)) AS timed,
-        -- The check-in the author's running wake-up writes, which names a brief's banner.
-        (SELECT json_extract(e.json, '$.checkIn.scheduleId') FROM kin_wakeups k
-          JOIN kin_events e ON e.org_id = k.org_id AND e.wakeup_id = k.wakeup_id
-            AND e.tag = 'pulse' AND json_extract(e.json, '$.checkIn.scheduleId') IS NOT NULL
-          WHERE k.org_id = m.org_id AND k.agent_id = m.author_agent_id AND k.status = 'running'
-          ORDER BY e.event_id LIMIT 1) AS check_in,
+        ${sql.literal(CHECK_IN_OF_MESSAGE)} AS check_in,
         -- Open cards the same running wake-up posted in this chat, oldest first.
         (SELECT COALESCE(json_group_array(json_object('messageId', t.message_id,
             'awaiting', json(t.awaiting_json))), '[]') FROM (
@@ -882,9 +892,10 @@ const make = Effect.gen(function* () {
       author_name: string | null;
       asked: number;
       turn_id: string | null;
+      check_in: string | null;
     }>`SELECT w.chat_id, w.type, w.revision, json_extract(w.state_json, '$.phase') AS phase,
         w.state_json, w.awaiting_json, m.seq, m.message_id, m.body, m.form, m.client_message_id,
-        m.silent,
+        m.silent, ${sql.literal(CHECK_IN_OF_MESSAGE)} AS check_in,
         COALESCE(m.source_wakeup_id, (SELECT k.wakeup_id FROM kin_wakeups k
           WHERE k.org_id = m.org_id AND k.agent_id = m.author_agent_id AND k.status = 'running'
           ORDER BY k.started_at DESC, k.wakeup_id LIMIT 1)) AS turn_id,
@@ -985,7 +996,7 @@ const make = Effect.gen(function* () {
       );
     }
     const cardKind =
-      greeting !== undefined ? kinBriefKind(null, greeting) : kinCardKind(row, state);
+      greeting !== undefined ? kinBriefKind(row.check_in, greeting) : kinCardKind(row, state);
     // A question asked again on a new card replaces the old card's notification.
     const [question] = yield* sql<{ questionId: string }>`SELECT question_id AS "questionId"
       FROM kin_questions WHERE org_id = ${orgId} AND state = 'open'

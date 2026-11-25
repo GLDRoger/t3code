@@ -774,6 +774,79 @@ describe("KinPushSender", () => {
     }).pipe(Effect.provide(build(apns)));
   });
 
+  it.effect("a check-in's banner names that check-in after its turn has ended", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seed;
+      const dm = { agentMemberId: "m_fin_dm" } as const;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+          worker_projects_json, owner_chat_id)
+        VALUES ('lead_fin', 'org_01', 'Finance', 0, '[]', '[]', 'chat_dm')`;
+      const iso = (at: number) => DateTime.formatIso(DateTime.makeUnsafe(at));
+      /** A turn that ran at `at` and ended a minute later, and the message it wrote. */
+      const turn = (id: string, at: number, scheduleId: string | null, form: "brief" | null) =>
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at,
+              ended_at, status, event_ids)
+            VALUES (${id}, 'org_01', 'lead_fin', 'opus', ${at}, ${at + 60_000}, 'completed',
+              ${JSON.stringify([`ev_${id}`])})`;
+          yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+              received_at, queued_at, state, wakeup_id)
+            VALUES (${`ev_${id}`}, 'org_01', 'lead_fin', 'pulse', 'P2',
+              ${JSON.stringify(scheduleId === null ? { factKeys: [] } : { checkIn: { scheduleId, title: "Payroll check", what: "", slot: "" } })},
+              ${at}, ${at}, 'done', ${id})`;
+          const messageId = yield* postMessage(sql, dm, "posted", {
+            chatId: "chat_dm",
+            body: "## Needs you\n- The Orbit Dental renewal waits on you.",
+          });
+          yield* sql`UPDATE kin_messages SET form = ${form}, created_at = ${iso(at + 30_000)}
+            WHERE message_id = ${messageId}`;
+          return messageId;
+        });
+      const title = (messageId: KinMessageId) =>
+        Effect.gen(function* () {
+          apns.sent.length = 0;
+          yield* notify({ _tag: "message", orgId, messageId });
+          return alerts(apns.sent.slice(0, 1))[0]?.title;
+        });
+      // From 18:00 in New York, where an hour alone would call any brief the evening summary;
+      // each Run now 40 minutes after the last, past the half hour's one ring.
+      const evening = Date.parse("2026-11-09T23:00:00Z");
+      for (const [index, [scheduleId, named]] of [
+        ["checkin-weekly", "Finance · Weekly brief"],
+        ["checkin-morning", "Finance · Morning brief"],
+        ["checkin-afternoon", "Finance · Check-in"],
+        ["checkin-evening", "Finance · Evening summary"],
+        ["sched_payroll", "Finance · Check-in"],
+      ].entries()) {
+        const at = evening + index * 40 * 60_000;
+        const brief = yield* turn(`wk_${scheduleId}`, at, scheduleId ?? null, "brief");
+        yield* TestClock.setTime(at + 5 * 60_000);
+        assert.strictEqual(yield* title(brief), named, `Run now of ${scheduleId}`);
+      }
+      // Monday's weekly brief at its 09:00, sent once its turn is over.
+      const monday = Date.parse("2026-11-16T14:00:00Z");
+      const weekly = yield* turn("wk_monday", monday, "checkin-weekly", "brief");
+      yield* TestClock.setTime(monday + 10 * 60_000);
+      assert.strictEqual(yield* title(weekly), "Finance · Weekly brief");
+      // A brief that carries a card names its check-in too.
+      const card = yield* postWidget(sql, "choice", { question: "Renew?", options: [] }, [owner]);
+      yield* sql`UPDATE kin_widgets SET chat_id = 'chat_dm' WHERE widget_id = ${card}`;
+      yield* sql`UPDATE kin_messages SET chat_id = 'chat_dm', form = 'brief',
+          body = '## Needs you\n- Renew Orbit Dental on the same terms?', author_kind = 'agent',
+          author_agent_id = 'lead_fin', author_owner_person_id = ${owner},
+          author_thread_id = 'thread-fin', author_member_id = 'm_fin_dm', created_at = ${iso(monday + 30_000)}
+        WHERE message_id = (SELECT message_id FROM kin_widgets WHERE widget_id = ${card})`;
+      apns.sent.length = 0;
+      yield* notify({ _tag: "widget", orgId, widgetId: card });
+      assert.strictEqual(alerts(apns.sent.slice(0, 1))[0]?.title, "Finance · Weekly brief");
+      // A plain line from a turn that was no check-in keeps its own title.
+      const plain = yield* turn("wk_plain", monday + 3_600_000, null, null);
+      yield* TestClock.setTime(monday + 3_600_000 + 5 * 60_000);
+      assert.strictEqual(yield* title(plain), "Finance · Update");
+    }).pipe(Effect.provide(build(apns)));
+  });
+
   it.effect("says what each notice is, and rings for your own work and Kin's choices", () => {
     const apns = makeApns();
     return Effect.gen(function* () {
