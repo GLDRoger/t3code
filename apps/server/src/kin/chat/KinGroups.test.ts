@@ -913,11 +913,21 @@ it.effect.each([
           AND author_kind = 'system' ORDER BY seq`,
         lines.map((body) => ({ body })),
       );
-      if (running !== undefined)
-        yield* queue.finish({ orgId, wakeupId: running.wakeupId, status: "completed" });
+      // After the line, the stopped run failing or a restart neither answers nor tells it again.
+      if (running !== undefined && before === "a tool call")
+        assert.deepInclude(
+          yield* queue.finish({ orgId, wakeupId: running.wakeupId, status: "failed" }),
+          { stranded: 0, retried: 0 },
+        );
+      else if (running !== undefined)
+        assert.strictEqual(yield* queue.requeueUnfinished(orgId, running.wakeupId), 0);
       assert.deepStrictEqual(
         (yield* events).filter((row) => row.messageId === ask.messageId).map((row) => row.state),
         ["expired"],
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_messages WHERE chat_id = ${chatId} AND author_kind = 'system'`,
+        lines.length,
       );
     }).pipe(Effect.provide(layer)),
 );

@@ -354,6 +354,21 @@ export const requeueForAudience = Effect.fn("KinEventQueue.requeueForAudience")(
 });
 
 /**
+ * In the step that tells the chat a join lost this wake-up's reply: its unreplied asks there are
+ * over, so neither a failed run, its retry nor a restart answers or tells them again.
+ */
+export const endLostToJoin = Effect.fn("KinEventQueue.endLostToJoin")(function* (wake: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: KinWakeupId;
+  readonly chatId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_events SET state = 'done'
+    WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId} AND state = 'claimed'
+      AND replied_at IS NULL AND json_extract(json, '$.chatId') = ${wake.chatId}`;
+});
+
+/**
  * A failed start that showed nothing retries soon, so the owner's "trying again" is true, and
  * once more a quarter of an hour on, so a provider down for minutes doesn't lose the request.
  */

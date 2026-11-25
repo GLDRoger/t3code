@@ -59,7 +59,12 @@ import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
 import { stoppedByJoinNotice } from "../lead/ChatSharing.ts";
-import { didVisibleWork, LAST_RETRY_MS, requeueForAudience } from "../lead/KinEventQueue.ts";
+import {
+  didVisibleWork,
+  endLostToJoin,
+  LAST_RETRY_MS,
+  requeueForAudience,
+} from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { activityAt, waitWhileActive } from "../lead/runSilence.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -920,13 +925,20 @@ const make = Effect.gen(function* () {
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.orElseSucceed(() => false),
           );
-          yield* chat.notice({
-            messageId: KinMessageId.make(`kin-audience-moved:${wake.wakeupId}`),
-            orgId: wake.orgId,
-            chatId: wake.lane.chatId,
-            audience: "chat",
-            body: stoppedByJoinNotice(wake.lane.leadName, partway),
-          });
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* endLostToJoin({ ...wake, chatId: wake.lane.chatId }).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
+              yield* chat.notice({
+                messageId: KinMessageId.make(`kin-audience-moved:${wake.wakeupId}`),
+                orgId: wake.orgId,
+                chatId: wake.lane.chatId,
+                audience: "chat",
+                body: stoppedByJoinNotice(wake.lane.leadName, partway),
+              });
+            }),
+          );
         }
         if (result.reason === "limit")
           yield* show(

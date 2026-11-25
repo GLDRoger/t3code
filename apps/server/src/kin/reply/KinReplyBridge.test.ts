@@ -1477,12 +1477,35 @@ it.effect("a teammate joining mid-draft sees none of it, and the draft ends unse
 
 // G01: a co-owner's chat is owner-level, so a reply with money in it posts there. Someone else
 // joined: a turn that did nothing visible answers again by itself, once; one partway says so.
+// After that line its message gets nothing more: a failed run, its retry or a restart.
 it.effect.each([
-  { access: "co_owner", before: "none", expected: ["agent:Draft INV-2 is ready: ₹40,000 + GST."] },
-  { access: "member", before: "none", expected: [] },
+  {
+    access: "co_owner",
+    before: "none",
+    then: "completed",
+    expected: ["agent:Draft INV-2 is ready: ₹40,000 + GST."],
+  },
+  { access: "member", before: "none", then: "completed", expected: [] },
   {
     access: "member",
     before: "a tool call",
+    then: "completed",
+    expected: [
+      "system:Ada didn't finish its reply: someone joined while it was working. What it had already done stays; ask again for the answer.",
+    ],
+  },
+  {
+    access: "member",
+    before: "a tool call",
+    then: "failed",
+    expected: [
+      "system:Ada didn't finish its reply: someone joined while it was working. What it had already done stays; ask again for the answer.",
+    ],
+  },
+  {
+    access: "member",
+    before: "a tool call",
+    then: "restart",
     expected: [
       "system:Ada didn't finish its reply: someone joined while it was working. What it had already done stays; ask again for the answer.",
     ],
@@ -1490,17 +1513,25 @@ it.effect.each([
   {
     access: "member",
     before: "a join already",
+    then: "completed",
+    expected: ["system:Ada didn't reply: someone joined before it answered. Send it again."],
+  },
+  {
+    access: "member",
+    before: "a join already",
+    then: "failed",
     expected: ["system:Ada didn't reply: someone joined before it answered. Send it again."],
   },
   // The join through Add says it, and the turn it aborted says nothing more.
   {
     access: "member",
     before: "a join through Add",
+    then: "completed",
     expected: ["system:Ada didn't reply: someone joined before it answered. Send it again."],
   },
 ] as const)(
-  "an owner-only reply posts where everyone reading is owner-level, never silently held ($access, $before)",
-  ({ access, before, expected }) =>
+  "an owner-only reply posts where everyone reading is owner-level, never silently held ($access, $before, $then)",
+  ({ access, before, then, expected }) =>
     Effect.gen(function* () {
       const { fake, runId, complete, posted, sql, wakeupId, owner, services, chatId } =
         yield* setup({
@@ -1527,11 +1558,14 @@ it.effect.each([
         [...expected],
       );
       const requeued = access === "member" && before === "none";
-      yield* Context.get(services, KinEventQueue.KinEventQueue).finish({
-        orgId: owner.orgId,
-        wakeupId,
-        status: "completed",
-      });
+      const queue = Context.get(services, KinEventQueue.KinEventQueue);
+      if (then === "restart")
+        assert.strictEqual(yield* queue.requeueUnfinished(owner.orgId, wakeupId), 0);
+      else {
+        const finished = yield* queue.finish({ orgId: owner.orgId, wakeupId, status: then });
+        // Nothing stranded or retried: no "stopped partway", no fresh answer.
+        if (then === "failed") assert.deepInclude(finished, { stranded: 0, retried: 0 });
+      }
       assert.deepStrictEqual(
         yield* sql`SELECT state, attempts, wakeup_id AS "wakeupId", json_extract(json, '$._audienceMoved') AS moved
           FROM kin_events WHERE org_id = ${owner.orgId} ORDER BY event_id`,
