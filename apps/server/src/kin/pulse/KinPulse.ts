@@ -36,7 +36,7 @@ import * as KinShell from "../shell/KinShell.ts";
 import { sectionOfKey, sectionOfSense, type SectionId } from "../shell/sections.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { dayIn } from "../work/money.ts";
-import { ownerZone, promiseOnDeal, startOfDay } from "../work/recordRows.ts";
+import { ownerZone, promiseOnDeal, startOfDay, storedPrincipal } from "../work/recordRows.ts";
 import { matchName } from "../work/nameMatch.ts";
 import { crmVisible, viewSees } from "../work/teamView.ts";
 import { clientSenses } from "./senses/clients.ts";
@@ -53,7 +53,7 @@ import { alertsOnMail } from "../work/statements/alertMail.ts";
 import { DAY_MS } from "./thresholds.ts";
 import { KinPushSender } from "../push/KinPushSenderService.ts";
 import { handledOf, storedRows, type StoredRow } from "./factState.ts";
-import { tellHolder } from "./holderNotice.ts";
+import { tellHolder, tellPromised } from "./holderNotice.ts";
 import { morningPages, pageMinuteSince } from "./personMorning.ts";
 import {
   agentParty,
@@ -651,6 +651,10 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
     yield* markTold({ orgId, personId: to, eventId: noticeId, facts: heard, at, zone });
     for (const fact of heard) told.push({ agentId: entry.agentId, to, key: fact.key });
   }
+  const { chief } = ctx;
+  if (chief !== undefined)
+    for (const owed of yield* promisedTold(ctx, chief, due, present, holds, shell))
+      told.push({ agentId: chief, to: owed.to, key: owed.key });
   for (const [agentId, groups] of wakes) {
     // One event carries at most 50 facts: the rest stay untold for the next pass.
     let room = 50;
@@ -690,6 +694,96 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
       yield* markTold({ orgId, personId: group.to, eventId, facts: group.facts, at, zone });
       for (const fact of group.facts) told.push({ agentId, to: group.to, key: fact.key });
     }
+  }
+  return told;
+});
+
+/**
+ * A late task one teammate promised another (`fields.promisedTo`) reaches that person too, at the
+ * holder's bands under their own told rows: never the holder, someone gone, the owner level (their
+ * check-in tells it), or anyone who may not see it.
+ */
+const promisedTold = Effect.fn("KinPulse.promisedTold")(function* (
+  ctx: SenseContext,
+  chief: KinAgentId,
+  due: ReadonlyArray<KinPulseFact>,
+  present: ReadonlySet<string>,
+  holds: ReadonlyArray<Hold>,
+  shell: Shell,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { orgId, at, zone } = ctx;
+  const late = due.filter(
+    (fact) =>
+      fact.sense === "task_late" &&
+      fact.actor._tag === "person" &&
+      present.has(fact.actor.personId) &&
+      fact.subject.recordId !== undefined,
+  );
+  if (late.length === 0) return [];
+  const rows = yield* sql<{ recordId: string; promisedTo: string; dueAt: number }>`SELECT
+      r.record_id AS "recordId", json_extract(r.fields_json, '$.promisedTo') AS "promisedTo",
+      r.due_at AS "dueAt"
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.due_at IS NOT NULL
+      AND r.record_id IN ${sql.in(late.map((fact) => fact.subject.recordId!))}
+      AND json_type(r.fields_json, '$.promisedTo') = 'text'
+    ORDER BY r.record_id`;
+  if (rows.length === 0) return [];
+  const owedTo = new Map(
+    rows.flatMap((row) => {
+      const who = storedPrincipal(row.promisedTo);
+      return who?._tag === "person" ? [[row.recordId, { personId: who.personId, ...row }]] : [];
+    }),
+  );
+  const people = [...new Set([...owedTo.values()].map((one) => one.personId))];
+  const here = new Set(
+    people.length === 0
+      ? []
+      : (yield* sql<{ personId: string }>`SELECT person_id AS "personId" FROM kin_people
+          WHERE org_id = ${orgId} AND removed_at IS NULL AND person_id IN ${sql.in(people)}
+          ORDER BY person_id`).map((row) => row.personId),
+  );
+  const level = yield* ownerLevelPeople(orgId);
+  const holders = [
+    ...new Set(late.flatMap((fact) => (fact.actor._tag === "person" ? [fact.actor.personId] : []))),
+  ];
+  const name = new Map(
+    (yield* sql<{ personId: string; name: string }>`SELECT person_id AS "personId",
+        display_name AS name FROM kin_people
+      WHERE org_id = ${orgId} AND person_id IN ${sql.in(holders)} ORDER BY person_id`).map(
+      (row) => [row.personId, row.name],
+    ),
+  );
+  const told: Array<{ readonly to: string; readonly key: string }> = [];
+  for (const fact of late) {
+    const owed = owedTo.get(fact.subject.recordId!);
+    if (owed === undefined || fact.actor._tag !== "person") continue;
+    const personId = KinPersonId.make(owed.personId);
+    const holder = name.get(fact.actor.personId);
+    if (
+      holder === undefined ||
+      personId === fact.actor.personId ||
+      !here.has(personId) ||
+      level.has(personId) ||
+      asideOf(fact, holds, { _tag: "people", people: [personId] }) !== undefined
+    )
+      continue;
+    const [tell] = yield* untold({ orgId, personId, facts: [fact], at, zone, anyState: true });
+    if (tell === undefined) continue;
+    const seen = yield* visibleTo(orgId, { _tag: "people", people: [personId] }, [tell], shell);
+    if (seen.length === 0) continue;
+    const noticeId = yield* tellPromised({
+      ctx,
+      personId,
+      agentId: chief,
+      fact: tell,
+      holder,
+      dueAt: owed.dueAt,
+    });
+    if (noticeId === undefined) continue;
+    yield* markTold({ orgId, personId, eventId: noticeId, facts: [tell], at, zone });
+    told.push({ to: personId, key: fact.key });
   }
   return told;
 });

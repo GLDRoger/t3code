@@ -1,6 +1,8 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous retry-key hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 import {
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
   KinChatId,
   KinMessageId,
   type KinAgentId,
@@ -173,6 +175,50 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
       noticeId,
       keys.map((key) => `fact:${key}`),
     );
+  return noticeId;
+});
+
+/** What the person a late promise was made to reads; its holder is told by their own notice. */
+export const promisedLine = (input: {
+  readonly key: string;
+  readonly title: string;
+  readonly holder: string;
+  readonly day: string;
+}) =>
+  `${input.key} ${input.title}, which ${input.holder} promised you by ${input.day}, is late. Kin has told ${input.holder}.`;
+
+/**
+ * Posts Kin's notice of one late `fact` to the person it was promised to, as `tellHolder` posts a
+ * holder's. Returns the id the told row carries, or undefined when no chat may hold it.
+ */
+export const tellPromised = Effect.fn("KinPulse.tellPromised")(function* (input: {
+  readonly ctx: SenseContext;
+  readonly personId: KinPersonId;
+  readonly agentId: KinAgentId;
+  readonly fact: KinPulseFact;
+  readonly holder: string;
+  readonly dueAt: number;
+}) {
+  const { ctx, personId, fact } = input;
+  const noticeId = yield* noticeHolder({
+    orgId: ctx.orgId,
+    personId,
+    agentId: input.agentId,
+    body: promisedLine({
+      key: fact.subject.key,
+      title: fact.subject.title,
+      holder: input.holder,
+      day: formatKinWhen(input.dueAt, "day", { zone: ctx.zone, locale: KIN_TEXT_LOCALE }).replace(
+        /,/g,
+        "",
+      ),
+    }),
+    key: NodeCrypto.createHash("sha256")
+      .update(`promised\0${ctx.orgId}\0${personId}\0${ctx.at}\0${fact.key}`)
+      .digest("hex")
+      .slice(0, 32),
+  });
+  if (noticeId !== undefined) yield* noteAbout(ctx.orgId, noticeId, [`fact:${fact.key}`]);
   return noticeId;
 });
 
