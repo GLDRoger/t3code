@@ -122,7 +122,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
-import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
+import { useKinSectionNamed, useKinSectionOn, useKinShell } from "./state/useKinShell";
 import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 /** Task lists kept while their screen is away, so coming back reads nothing the stream brought. */
@@ -229,6 +229,7 @@ export function KinTasksList(
     kinTasksOnCount(listState.records, names.me),
   );
   const clientsOn = useKinSectionOn(environmentId, "clients");
+  const shell = useKinShell(environmentId);
   const previousClientsOn = useRef(clientsOn);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- section saves do not change task sequence numbers
   useEffect(() => {
@@ -533,6 +534,7 @@ export function KinTasksList(
                     quietWhenNone
                     state={found}
                     scope={scope}
+                    shell={shell}
                     onRetry={search.retry}
                     onOpen={openHit}
                   />

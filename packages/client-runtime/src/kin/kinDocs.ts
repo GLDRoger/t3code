@@ -1345,7 +1345,8 @@ const snippetText = (snippet: string) =>
     .replace(/(?:· )+(?=·)/g, "")
     .trim();
 
-export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
+/** `shell` names a client in the company's own word for Clients. */
+export function kinSearchHit(hit: KinSearchHit, shell?: KinShell | null): KinSearchHitView {
   const text = snippetText(hit.snippet);
   const snippet = text === hit.title ? "" : text;
   const section =
@@ -1353,7 +1354,12 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
       ? null
       : { id: hit.section.id, title: hit.section.title };
   const closed = !hit.closed ? null : hit.kind === "docs" ? KIN_DOCS.archived : "Closed";
-  const kindLabel = hit.kind === "work" && kinIsDealKey(hit.key) ? "Deal" : KIND_LABEL[hit.kind];
+  const kindLabel =
+    hit.kind === "work" && kinIsDealKey(hit.key)
+      ? "Deal"
+      : hit.kind === "clients"
+        ? kinSectionNamed(shell, KIND_LABEL.clients)
+        : KIND_LABEL[hit.kind];
   return {
     id: `${hit.recordId}:${hit.section?.id ?? ""}`,
     key: hit.key,

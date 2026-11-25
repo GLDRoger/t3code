@@ -9,6 +9,7 @@ import {
   type KinWatchesFollowUpsInput,
   type KinWatchesListInput,
   type KinWatchesLogInput,
+  type KinWatchesLogResult,
   type KinWatchLine,
   type KinWatchLogRow,
   type KinWatchWhy,
@@ -213,9 +214,16 @@ export function kinWatchLimitLine(at: number, words: KinWatchWords = {}): string
   return `From ${time} Kin only did the checks that need no model: today's daily limit was reached.`;
 }
 
-/** The log with no watches at all. */
-export function kinWatchNoneText(ownerLevel: boolean): string {
-  return ownerLevel
+/** Today's line before any look; "nothing" only when no watch and no follow-up is shown either. */
+export function kinWatchEmptyLine(
+  log: Pick<KinWatchesLogResult, "rows" | "watching" | "earlier" | "nextLookAt">,
+  viewer: { readonly ownerLevel: boolean; readonly followUps: number },
+  words: KinWatchWords = {},
+): string {
+  const none =
+    log.rows.length === 0 && log.watching === 0 && log.earlier === null && viewer.followUps === 0;
+  if (!none) return kinWatchNothingToday(log.nextLookAt, words);
+  return viewer.ownerLevel
     ? "Kin isn't checking anything yet. Follow-ups an agent promises show here too."
     : "Kin isn't checking anything of yours yet. Follow-ups an agent promises show here too.";
 }
@@ -288,8 +296,7 @@ export function kinHeldFollowUpsLine(count: number | undefined): string | null {
     : `${count} follow-ups are waiting for this to be switched back on.`;
 }
 
-/** Today's page of the log before any look. */
-export function kinWatchNothingToday(nextLookAt: string | null, words: KinWatchWords = {}): string {
+function kinWatchNothingToday(nextLookAt: string | null, words: KinWatchWords = {}): string {
   if (nextLookAt === null) return "No checks yet today.";
   const time = formatKinWhen(ms(nextLookAt), "time", { zone: zoneOf(words), locale: words.locale });
   return `No checks yet today. The next round is about ${time}.`;
