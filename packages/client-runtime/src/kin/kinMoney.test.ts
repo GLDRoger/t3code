@@ -17,6 +17,9 @@ import {
   kinCompanyGlance,
   kinCompanyInput,
   kinCompanyRead,
+  kinCountries,
+  kinCountryChoices,
+  kinCountryCodeOf,
   kinCountryName,
 } from "./kinCompanyProfile.ts";
 import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
@@ -140,6 +143,22 @@ describe("the Money summary", () => {
     expect(
       kinMoneyView({ ...summary, owed: { ...summary.owed, byClientMore: 12 } }, []).clientsMore,
     ).toBe("12 more clients");
+    // A company that renamed Clients reads its own word in Kin's rows, never in a client's name.
+    const patients = {
+      rev: 1,
+      sections: [{ id: "clients" as const, on: true, name: "Patients", noun: "patient" }],
+    };
+    const typed = {
+      ...summary.owed,
+      byClient: [{ ...summary.owed.byClient[0]!, party: null }],
+      byClientMore: 1,
+    };
+    const renamed = kinMoneyView({ ...summary, owed: typed }, [], patients);
+    expect([renamed.clients[0]!.name, renamed.clientsMore]).toEqual([
+      "No patient",
+      "1 more patient",
+    ]);
+    expect(kinMoneyView(summary, [], patients).clients[0]!.name).toBe("Acme Foods");
     // TDS stands on its own, never inside Received.
     expect([view.tdsDeducted, view.yearTdsDeducted]).toEqual([null, null]);
     const withTds = kinMoneyView(
@@ -150,7 +169,7 @@ describe("the Money summary", () => {
       },
       [list("invoices")],
     );
-    expect(withTds.tdsDeducted).toMatchObject({ label: "TDS deducted", lines: ["₹10,000"] });
+    expect(withTds.tdsDeducted).toMatchObject({ label: "Tax withheld", lines: ["₹10,000"] });
     expect(withTds.received.lines).toEqual(view.received.lines);
     expect(kinMoneyHeadline(summary)[0]).toBe("₹2,10,000 and $2,500 owed to us");
     // Past the newest suggestions shown, each list's rest opens on its suggestions only.
@@ -441,12 +460,44 @@ describe("company details", () => {
     });
     // A company that never saved its details is offered this device's country, and only it.
     const unsaved = { ...(uk as object), rev: 0 } as never;
-    expect(kinCompanyDraftOf(unsaved, "US").country).toBe("US");
-    expect(kinCompanyDraftOf(uk, "US").country).toBe("GB");
+    expect(kinCompanyDraftOf(unsaved, "US").country).toBe("United States");
+    expect(kinCompanyDraftOf(uk, "US").country).toBe("United Kingdom");
     expect(kinCompanyInput("org" as never, unsaved, kinCompanyDraftOf(unsaved, "US"))).toEqual({
       ok: true,
       input: { orgId: "org", rev: 0, country: "US" },
     });
+    // Any real country works by name (ignoring case and accents) or code; non-countries are refused.
+    expect(
+      kinCompanyInput("org" as never, profile, {
+        ...kinCompanyDraftOf(profile),
+        country: "United Kingdom",
+      }),
+    ).toEqual({ ok: true, input: { orgId: "org", rev: 4, country: "GB" } });
+    expect(kinCompanyInput("org" as never, uk, { ...ukDraft, country: "Japan" })).toEqual({
+      ok: true,
+      input: { orgId: "org", rev: 4, country: "JP" },
+    });
+    expect(kinCompanyInput("org" as never, uk, { ...ukDraft, country: "reunion" })).toEqual({
+      ok: true,
+      input: { orgId: "org", rev: 4, country: "RE" },
+    });
+    expect(kinCompanyInput("org" as never, uk, { ...ukDraft, country: "cote d'ivoire" })).toEqual({
+      ok: true,
+      input: { orgId: "org", rev: 4, country: "CI" },
+    });
+    expect(fields(kinCompanyEditSections(uk, { ...ukDraft, country: "India" }))).toContain("gstin");
+    for (const bad of ["ZZ", "EU", "UN", "XA", "XB", "Atlantis"])
+      expect(kinCompanyInput("org" as never, uk, { ...ukDraft, country: bad })).toEqual({
+        ok: false,
+        problems: { country: "Pick a country from the list, or type its name or code." },
+      });
+    const codes = new Set(kinCountries().map((one) => one.code));
+    expect(["IN", "GB", "US", "JP", "RE"].every((code) => codes.has(code))).toBe(true);
+    expect(["ZZ", "EU", "EZ", "UN", "XA", "XB", "QO"].some((code) => codes.has(code))).toBe(false);
+    expect(kinCountryChoices("gb")[0]?.code).toBe("GB");
+    expect(kinCountryChoices("United Kingdom").map((one) => one.code)).toEqual(["GB"]);
+    expect(kinCountryChoices("reunion")[0]?.code).toBe("RE");
+    expect(kinCountryCodeOf("UK")).toBe("GB");
     // A new company still waiting on its country only takes the device's with a tap: saving just
     // an address saves the address and leaves it waiting.
     const waiting = { ...(profile as object), country: null, rev: 0 } as never;

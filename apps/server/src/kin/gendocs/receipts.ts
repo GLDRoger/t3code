@@ -240,7 +240,7 @@ const forPayment = Effect.fn("KinReceipts.forPayment")(function* (
     );
   if (payment.withheld === 1)
     return yield* invalid(
-      "That line is TDS the client deducted, not money received, so it gets no receipt. Make the receipt for the payment that came in. Nothing was made.",
+      "That line is tax the client withheld, not money received, so it gets no receipt. Make the receipt for the payment that came in. Nothing was made.",
     );
   yield* receiptsList(orgId);
   const made = yield* receiptOfPayment(orgId, paymentId);

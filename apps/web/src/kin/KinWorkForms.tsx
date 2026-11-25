@@ -870,6 +870,7 @@ export function KinProjectDialog(
   },
 ) {
   const { environmentId, orgId, editing } = props;
+  const named = useKinSectionNamed(environmentId);
   const [members, setMembers] = useState<ReadonlyArray<KinWorkPrincipal>>([]);
   // The form keeps the `send` it was made with, so it reads who is picked at save time.
   const picked = useRef<ReadonlyArray<KinWorkPrincipal>>([]);
@@ -1089,7 +1090,7 @@ export function KinProjectDialog(
       ) : null}
       <PrivateSwitch
         label={KIN_MARKETING.campaign}
-        note={KIN_MARKETING.campaignHint}
+        note={named(KIN_MARKETING.campaignHint)}
         checked={draft.campaign}
         disabled={state.saving}
         onChange={(campaign) => form.edit({ campaign })}

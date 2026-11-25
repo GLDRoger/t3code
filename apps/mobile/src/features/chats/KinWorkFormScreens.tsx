@@ -1125,6 +1125,7 @@ function ProjectForm(
 ) {
   const navigation = useNavigation();
   const { environmentId, orgId, editing } = props;
+  const named = useKinSectionNamed(environmentId);
   const choices = useKinWorkChoices(props, true);
   const directory = useKinWorkDirectory(props, editing === null);
   const { zone } = useKinWorkZone(props);
@@ -1308,7 +1309,7 @@ function ProjectForm(
         <KinWorkToggleRow
           icon="tag"
           label={KIN_MARKETING.campaign}
-          description={KIN_MARKETING.campaignHint}
+          description={named(KIN_MARKETING.campaignHint)}
           value={draft.campaign}
           disabled={state.saving}
           onValueChange={(campaign) => form.edit({ campaign })}

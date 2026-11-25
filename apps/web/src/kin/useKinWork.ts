@@ -31,6 +31,7 @@ export const {
   useKinPickerSearch,
   useKinWorkForm,
   useKinWorkChanges,
+  useKinWorkZone,
 } = makeKinWorkHooks(kinHookApp, {
   useKinHostAt,
   catalogValueAtom: environmentCatalog.catalogValueAtom,
