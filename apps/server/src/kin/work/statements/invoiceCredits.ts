@@ -2,6 +2,7 @@ import type { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { DAY_MS } from "../../durations.ts";
 import { companyMoney } from "../companyProfile.ts";
 import { parseFields } from "../lists.ts";
 import { dayIn, formatMinor } from "../money.ts";
@@ -19,9 +20,8 @@ import { invoiceCandidates, recordedPayments } from "./statementReview.ts";
 import type { StatementRow } from "./statementTable.ts";
 
 const SHOWN = 5;
-// The newest this many unexplained credits are enough to find five.
+// The newest this many unexplained entries are enough to find five.
 const LOOKED_AT = 200;
-const DAY_MS = 86_400_000;
 
 /**
  * A Bank transactions entry Kin's own code or a person wrote, and no agent changed since: only
@@ -43,12 +43,13 @@ export const agentWrote = Effect.fn("KinStatements.agentWrote")(function* (
 });
 
 /**
- * Unexplained credits in Bank transactions no agent wrote or changed, newest first, each as the
- * statement row the matcher reads: of one currency up to an amount, or one entry by id.
+ * Unexplained entries one way in Bank transactions no agent wrote or changed, newest first, each
+ * as the statement row the matcher reads: of one currency up to an amount, or one entry by id.
  */
-const openCredits = Effect.fn("KinStatements.openCredits")(function* (
+export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
   orgId: KinOrgId,
   def: ListDef,
+  direction: "credit" | "debit",
   only:
     | { readonly currency: string; readonly maxMinor: number }
     | { readonly recordId: string }
@@ -82,7 +83,7 @@ const openCredits = Effect.fn("KinStatements.openCredits")(function* (
     LIMIT ${LOOKED_AT}`;
   return rows.flatMap(({ fieldsJson, ...row }) => {
     const fields = parseFields(fieldsJson);
-    if (directionOf(fields) !== "credit") return [];
+    if (directionOf(fields) !== direction) return [];
     const date = dayIn(row.dateAt, zone);
     const read: StatementRow = {
       index: 0,
@@ -90,14 +91,14 @@ const openCredits = Effect.fn("KinStatements.openCredits")(function* (
       description: row.title,
       reference: typeof fields.reference === "string" ? fields.reference : null,
       amountMinor: row.amountMinor,
-      direction: "credit",
+      direction,
       balanceMinor: null,
       foreign: null,
     };
     return [{ ...row, date, row: read }];
   });
 });
-type OpenCredit = Effect.Success<ReturnType<typeof openCredits>>[number];
+type OpenCredit = Effect.Success<ReturnType<typeof openEntries>>[number];
 
 const withholding = (orgId: KinOrgId) =>
   Effect.map(companyMoney(orgId), (money) => regionOf(money.country)?.withholdsAtSource === true);
@@ -115,7 +116,7 @@ export const invoiceCredits = Effect.fn("KinStatements.invoiceCredits")(function
   const def = yield* findBankList(orgId);
   if (invoice === undefined || owed <= 0 || def === undefined) return [];
   const withholds = yield* withholding(orgId);
-  const credits = yield* openCredits(orgId, def, {
+  const credits = yield* openEntries(orgId, def, "credit", {
     currency: invoice.currency,
     maxMinor: owed,
   });
@@ -219,7 +220,7 @@ const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
 export const creditMatches = Effect.fn("KinStatements.creditMatches")(function* (orgId: KinOrgId) {
   const def = yield* findBankList(orgId);
   if (def === undefined) return [];
-  return yield* rankAll(orgId, yield* openCredits(orgId, def, undefined));
+  return yield* rankAll(orgId, yield* openEntries(orgId, def, "credit", undefined));
 });
 
 /** One credit as the matcher ranks it now; undefined when it is no unexplained credit it can use. */
@@ -229,7 +230,10 @@ export const creditMatch = Effect.fn("KinStatements.creditMatch")(function* (
 ) {
   const def = yield* findBankList(orgId);
   if (def === undefined) return undefined;
-  const [match] = yield* rankAll(orgId, yield* openCredits(orgId, def, { recordId: bankRecordId }));
+  const [match] = yield* rankAll(
+    orgId,
+    yield* openEntries(orgId, def, "credit", { recordId: bankRecordId }),
+  );
   return match;
 });
 

@@ -101,6 +101,16 @@ it("the same intent about a shared record repeats; anything Kin can't tell is le
   };
   assert.strictEqual(finance.intent, "draft payment reminder");
   assert.deepStrictEqual(finance.about, ["INV-8", "INV-9"]);
+  // A pull request by its URL, in one spelling; an issue's or a bare page's is not one.
+  assert.deepStrictEqual(
+    normaliseAbout([
+      " https://github.com/Invented-Co/App/pull/12/ ",
+      "https://github.com/invented-co/app/pull/12",
+      "https://github.com/invented-co/app/issues/3",
+      "https://example.com/pull/4",
+    ]),
+    ["https://github.com/invented-co/app/pull/12"],
+  );
   const chief = { intent: normaliseIntent("should I draft a payment reminder"), about: ["INV-8"] };
   assert.isTrue(repeats(chief, finance));
   // Another intent, no shared record, or nothing to compare: allowed.

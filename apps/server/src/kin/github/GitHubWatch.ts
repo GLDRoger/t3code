@@ -20,6 +20,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { ServerConfig } from "../../config.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { pullRequestAbout } from "../questions/rules.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { KinServer } from "../KinServer.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -717,6 +718,12 @@ export const make = Effect.gen(function* () {
   const api = yield* KinGitHubApi;
   const queue = yield* KinEventQueue.KinEventQueue;
   const records = yield* Effect.serviceOption(KinRecords);
+  // Loaded at build: static imports of these close an import cycle through Kin's leads.
+  const { KinChatService } = yield* Effect.promise(() => import("../chat/KinChatService.ts"));
+  const { closeQuestionsAbout } = yield* Effect.promise(
+    () => import("../questions/openQuestions.ts"),
+  );
+  const chat = yield* Effect.serviceOption(KinChatService);
   const refresh = yield* KinRefreshObserver;
   const app = yield* gitHubApp;
   const config = yield* Effect.serviceOption(ServerConfig);
@@ -1106,6 +1113,27 @@ export const make = Effect.gen(function* () {
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.catchCause((cause) =>
           Effect.logWarning("Kin couldn't close Work entries for a merge", { cause }),
+        ),
+      );
+    // A question about it stops waiting; its asker learns as of any closed question, unwoken.
+    if (current.item === "pull" && !current.open && Option.isSome(chat))
+      yield* closeQuestionsAbout(
+        {
+          orgId,
+          key: pullRequestAbout(current.repo, current.number),
+          cards: [],
+          sparing: [],
+          text: read.merged
+            ? "Closed: the pull request was merged."
+            : "Closed: the pull request was closed.",
+          closedAt: now,
+        },
+        chat.value,
+      ).pipe(
+        sql.withTransaction,
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't close questions about a pull request", { cause }),
         ),
       );
     const by = (login: string | undefined) =>

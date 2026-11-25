@@ -1320,7 +1320,7 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
           listName: def.name,
           stateLabel:
             isSuggestion(row) && row.state !== "dropped"
-              ? suggestedStateLabel(row.registerId, row.state, stateLabel(def, row.state))
+              ? suggestedStateLabel(row.registerId, row.state)
               : stateLabel(def, row.state),
         }
       : {}),
@@ -3095,11 +3095,7 @@ const createRow = Effect.fnUntraced(function* (
     ...(isSuggestion(stored) && stored.state !== "dropped"
       ? {
           state: stored.state,
-          stateLabel: suggestedStateLabel(
-            stored.registerId,
-            stored.state,
-            stateLabel(def, stored.state),
-          ),
+          stateLabel: suggestedStateLabel(stored.registerId, stored.state),
           suggested: true as const,
         }
       : isInvoiceDraft(stored.registerId, stored.state)

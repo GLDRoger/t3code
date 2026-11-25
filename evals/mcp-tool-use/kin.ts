@@ -36,7 +36,11 @@ import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { alreadyOnIt, leftNote } from "../../apps/server/src/kin/lead/Handoff.ts";
 import { dueShows, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
-import { endOfDay, UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
+import {
+  endOfDay,
+  suggestedStateLabel,
+  UNISSUED_INVOICE,
+} from "../../apps/server/src/kin/work/recordRows.ts";
 import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
 import { tooLongForCard } from "../../apps/server/src/kin/questions/askPerson.ts";
@@ -117,6 +121,7 @@ import {
   ASSIGNED_NOT_IN_PERSON,
   HANDED_BACK_WORK,
   UNREAD_RULE,
+  REMINDER_DUE,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
   joinedWork,
@@ -131,7 +136,12 @@ import {
   PULSE_RULE,
 } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { HEAD_START_WAKE } from "../../apps/server/src/kin/pulse/prepareWake.ts";
-import { DRAFT_DOCUMENT } from "../../apps/server/src/kin/pulse/draftWake.ts";
+import {
+  DRAFT_CHASE,
+  DRAFT_DEAL,
+  DRAFT_DOCUMENT,
+  DRAFT_MEETING_PREP,
+} from "../../apps/server/src/kin/pulse/draftWake.ts";
 import { KIN_OWN_REFUSAL } from "../../apps/server/src/kin/people/KinAccess.ts";
 import { HEAD_START_ONE_DOC } from "../../apps/server/src/kin/work/teamView.ts";
 import {
@@ -553,6 +563,15 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
       ),
     )
     .replace(/\{\{DRAFT_DOCUMENT:([^}]+)\}\}/g, (_, name: string) => DRAFT_DOCUMENT(name))
+    .replace(/\{\{DRAFT_MEETING_PREP:([^}]+)\}\}/g, (_, name: string) => DRAFT_MEETING_PREP(name))
+    // A draft wake's own line, for a person and their mailboxes (`draftWake.ts`).
+    .replace(/\{\{DRAFT_CHASE:([^:}]+):([^}]+)\}\}/g, (_, name: string, from: string) =>
+      DRAFT_CHASE(name, from.split(",")),
+    )
+    .replace(
+      /\{\{DRAFT_DEAL:([^|}]+)\|([^|}]+)\|([^}]+)\}\}/g,
+      (_, name: string, from: string, reason: string) => DRAFT_DEAL(name, from.split(","), reason),
+    )
     .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
     .replaceAll("{{TEAM_RULES}}", kinTeamRules)
@@ -576,6 +595,7 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
     .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
+    .replaceAll("{{REMINDER_DUE}}", REMINDER_DUE)
     // The wake's line once a new company's country is chosen (`{{COUNTRY_CHOSEN:GB|GBP}}`).
     .replace(
       /\{\{COUNTRY_CHOSEN:([A-Z]{2})\|([A-Z]{3})\}\}/g,
@@ -745,6 +765,9 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
           },
         };
   },
+  // A suggestion's stateLabel, as record_get, records_query and record_create show it.
+  suggestedState: (input: { list: string; state: string }) =>
+    suggestedStateLabel(input.list, input.state),
   // record_create's refusal of a task or promise already open (`leadWork.ts` repeatsOf).
   repeatRefusal: (input: {
     key: string;

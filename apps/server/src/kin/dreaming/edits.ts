@@ -5,7 +5,9 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { isKeyRequest } from "../chat/keySent.ts";
 import { confirmedOf, PreparedJson } from "../connections/Sending.ts";
+import { QUOTE_MAX } from "../memory/keeping.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { cutAt } from "../work/draftOpening.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
@@ -35,6 +37,86 @@ export const editSide = (text: string) =>
     ? { text }
     : { text: text.slice(0, cutAt(text, EDIT_SIDE_MAX)), length: text.length };
 
+/** The most runs one edit lists; each side of a run is cut at `QUOTE_MAX`. */
+const CHANGED_PER_EDIT = 12;
+/** A longer middle is not compared, so no part of it counts as typed. */
+const COMPARED_MAX = 4_000_000;
+// Pinned, so which words an edit lists does not depend on the server's locale.
+const words = new Intl.Segmenter("en", { granularity: "word" });
+const wordsOf = (text: string) =>
+  [...words.segment(text)].flatMap(({ segment, index, isWordLike }) =>
+    segment.trim() === ""
+      ? []
+      : [{ word: segment, start: index, end: index + segment.length, wordLike: isWordLike }],
+  );
+/** A run this long that the draft already holds word for word was moved or copied, not typed. */
+const MOVED_MIN_WORDS = 3;
+const SEP = "\u0000";
+const capped = (text: string) => text.slice(0, cutAt(text, QUOTE_MAX));
+
+/**
+ * The runs of words in `after` that are not in `before`, in order, each with the words it
+ * replaced (`was` empty for an insert). Word by word, punctuation its own word, spacing ignored;
+ * a cut alone leaves no run, nor does a run of three or more words found as it is in `before`.
+ */
+export const changedParts = (before: string, after: string) => {
+  const was = wordsOf(before);
+  const now = wordsOf(after);
+  let head = 0;
+  while (head < was.length && head < now.length && was[head]!.word === now[head]!.word) head++;
+  let tail = 0;
+  while (
+    tail < was.length - head &&
+    tail < now.length - head &&
+    was[was.length - 1 - tail]!.word === now[now.length - 1 - tail]!.word
+  )
+    tail++;
+  const a = was.slice(head, was.length - tail);
+  const b = now.slice(head, now.length - tail);
+  if (b.length === 0 || a.length * b.length > COMPARED_MAX) return [];
+  // The longest common run of words from (i, j) to the end, as `lcs[i * width + j]`.
+  const width = b.length + 1;
+  const lcs = new Uint16Array((a.length + 1) * width);
+  for (let i = a.length - 1; i >= 0; i--)
+    for (let j = b.length - 1; j >= 0; j--)
+      lcs[i * width + j] =
+        a[i]!.word === b[j]!.word
+          ? lcs[(i + 1) * width + j + 1]! + 1
+          : Math.max(lcs[(i + 1) * width + j]!, lcs[i * width + j + 1]!);
+  const drafted = `${SEP}${was.map((one) => one.word).join(SEP)}${SEP}`;
+  const moved = (from: number, to: number) => {
+    const run = b.slice(from, to);
+    return (
+      run.filter((one) => one.wordLike === true).length >= MOVED_MIN_WORDS &&
+      drafted.includes(`${SEP}${run.map((one) => one.word).join(SEP)}${SEP}`)
+    );
+  };
+  const span = (text: string, list: typeof a, from: number, to: number) =>
+    from < to ? capped(text.slice(list[from]!.start, list[to - 1]!.end)) : "";
+  const parts: Array<{ readonly was: string; readonly now: string }> = [];
+  let i = 0;
+  let j = 0;
+  while (j < b.length && parts.length < CHANGED_PER_EDIT) {
+    if (i < a.length && a[i]!.word === b[j]!.word) {
+      i++;
+      j++;
+      continue;
+    }
+    const fromI = i;
+    const fromJ = j;
+    while (
+      (i < a.length || j < b.length) &&
+      !(i < a.length && j < b.length && a[i]!.word === b[j]!.word)
+    )
+      if (j < b.length && (i === a.length || lcs[i * width + j + 1]! >= lcs[(i + 1) * width + j]!))
+        j++;
+      else i++;
+    if (j > fromJ && !moved(fromJ, j))
+      parts.push({ was: span(before, a, fromI, i), now: span(after, b, fromJ, j) });
+  }
+  return parts;
+};
+
 /**
  * What an owner-level person changed in an agent's draft, with its last change in `(from, until]`:
  * a doc version by them right after an agent's (their later versions with nobody's between count
@@ -59,8 +141,11 @@ export const draftEdits = Effect.fn("DreamMaterial.draftEdits")(function* (
     handle: string | null;
     level: number;
     private: number;
+    originKey: string;
+    restoredFrom: number | null;
   }>`SELECT v.record_id AS "recordId", r.key, r.title, v.version, v.actor_kind AS "actorKind",
       v.actor_id AS "actorId", v.body_kind AS "bodyKind", v.created_at AS "createdAt", p.handle,
+      v.origin_key AS "originKey", v.restored_from AS "restoredFrom",
       ${sql.literal(ownerLevelSql("v.org_id", "v.actor_id"))} AS level,
       ${sensitiveNow(sql)} AS private
     FROM kin_doc_versions v
@@ -87,6 +172,13 @@ export const draftEdits = Effect.fn("DreamMaterial.draftEdits")(function* (
   for (const [index, row] of versions.entries()) {
     if (index > 0 && versions[index - 1]!.recordId !== row.recordId) close();
     const person = row.actorKind === "person" && row.bodyKind === "markdown";
+    // Words a coding agent wrote through the person's key, or a Restore brought back, are not
+    // theirs, nor is anything compared against them: the run ends with no edit, and only an
+    // agent's next draft starts one.
+    if (person && row.level === 1 && (row.restoredFrom !== null || isKeyRequest(row.originKey))) {
+      draft = last = undefined;
+      continue;
+    }
     if (person && last !== undefined && last.actorId === row.actorId) last = row;
     else if (person && last === undefined && draft !== undefined && row.level === 1) last = row;
     else {

@@ -453,7 +453,7 @@ const expenseCandidate = (
 };
 
 /** The narration carries a partner's whole name, or something stored that only they are. */
-const identifies = (partner: Pick<PartnerCandidate, "name" | "ids">, narration: string) =>
+export const identifies = (partner: Pick<PartnerCandidate, "name" | "ids">, narration: string) =>
   personIn(partner.name, narration) === 1 ||
   (partner.ids ?? []).some(
     (id) => squashed(id).length >= 6 && squashed(narration).includes(squashed(id)),
@@ -468,7 +468,12 @@ const REPAYS_AT_MOST = 50;
  * pays them back; a credit is theirs paying back a run that nets below zero. An amount alone may
  * be anyone's.
  */
-const repayment = (row: StatementRow, partner: PartnerCandidate, from: number, sure: boolean) => {
+export const repayment = (
+  row: StatementRow,
+  partner: PartnerCandidate,
+  from: number,
+  sure: boolean,
+) => {
   const named = identifies(partner, row.description) ? 1 : personIn(partner.name, row.description);
   if (named < 0.5) return undefined;
   // Minor units past 2^53 add up wrong as numbers; exact sums decide what a line settles.
@@ -768,6 +773,20 @@ const openInvoices = (
     .slice(0, 5);
 };
 
+/**
+ * A repayment marked by hand with no bank row that this line is likely to be: the same money in
+ * the same currency, marked within ten days either side of the line's day.
+ */
+export const markedByHand = (
+  row: StatementRow,
+  currency: string,
+  marked: { readonly currency: string; readonly day: string; readonly amountMinor: number },
+) =>
+  marked.currency === currency &&
+  BigInt(marked.amountMinor) ===
+    BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor) &&
+  Math.abs(daysBetween(marked.day, row.date)) <= 10;
+
 /** Each row's candidates, best first, and whether one is clear enough to propose on its own. */
 export const matchRows = (
   rows: ReadonlyArray<StatementRow>,
@@ -813,14 +832,8 @@ export const matchRows = (
     identifies(one, row.description) || personIn(one.name, row.description) >= 0.5;
   /** A repayment to someone this line names, marked by hand with no bank row: likely this one. */
   const markedFor = (row: StatementRow) => {
-    const signed = BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor);
     for (const payee of (input.payees ?? []).filter(named(row))) {
-      const marked = payee.repaid.find(
-        (one) =>
-          one.currency === input.currency &&
-          BigInt(one.amountMinor) === signed &&
-          Math.abs(daysBetween(one.day, row.date)) <= 10,
-      );
+      const marked = payee.repaid.find((one) => markedByHand(row, input.currency, one));
       if (marked !== undefined) return { name: payee.name, day: marked.day };
     }
     return undefined;

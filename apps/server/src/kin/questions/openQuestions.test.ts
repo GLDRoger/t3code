@@ -2676,7 +2676,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       );
       assert.strictEqual(
         posts[0]!.note,
-        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it or name ${posts[0]!.key}; say in one line what it is; Rhea Rao hasn't seen it, and it reaches Rhea Rao only when the person in this chat presses Send to Rhea Rao: that tap is the whole way up, so don't also put it to Rhea Rao with kin_ask_person or kin_ask, and don't mention the card's length. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
+        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it or name ${posts[0]!.key}; say in one line what it is; Rhea Rao hasn't seen it, and it reaches Rhea Rao only when the person in this chat presses Send to Rhea Rao: that tap is the whole way up, so don't also put it to Rhea Rao with kin_ask_person or kin_ask, and don't mention the card's length. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say both: it can't be posted yet, and Rhea Rao can connect one.`,
       );
       // A blank draft, or one whose Approve card would be too long to carry, files nothing.
       const docCount = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
@@ -2941,7 +2941,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       }).pipe(Effect.provideService(KinIdentity, identity));
       assert.strictEqual(
         mine.note,
-        `This draft is its own card in the chat, with Copy text: don't repeat it or name ${mine.key}; say in one line what it is; nothing on the card sends it to anyone, so don't say anyone will send or approve it. No LinkedIn account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
+        `This draft is its own card in the chat, with Copy text: don't repeat it or name ${mine.key}; say in one line what it is; nothing on the card sends it to anyone, so don't say anyone will send or approve it. No LinkedIn account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say both: it can't be posted yet, and Rhea Rao can connect one.`,
       );
       const [ownCard] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
         WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;
