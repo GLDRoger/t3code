@@ -2379,7 +2379,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   ServerSettings.layerTest(),
                   providerRegistryLayer(providers),
                   adapterRegistryLayer([codexInstanceId, ...disabledIds]),
-                  Layer.mock(ProjectService.ProjectService)({}),
+                  Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
                   Layer.mock(SecretRequests.SecretRequests)({}),
                   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -2783,7 +2783,9 @@ describe("OrchestratorMcpService provider resolution", () => {
               } as never;
             }),
         }),
-        ServerSettings.layerTest(),
+        ServerSettings.layerTest({
+          providerInstances: { [opencodeInstanceId]: { driver: "opencode", enabled: true } },
+        }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed([opencode]),
           refreshInstance: () => Effect.succeed([opencode]),
