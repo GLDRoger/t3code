@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 
 import { isAutomatedNotice } from "../arrivals/classify.ts";
-import { KinGatewayError } from "./McpGateway.ts";
+import { KinGatewayError, tryAgain } from "./McpGateway.ts";
 import {
   firstLines,
   MAIL_TOOL,
@@ -42,7 +42,10 @@ export const vendorAnswer = Effect.fn("KinMail.answer")(function* (
   if (response.status === 404)
     return yield* failure("protocol", `${name} has nothing with that id (404).`);
   if (response.status === 429)
-    return yield* failure("unreachable", `${name} says Kin is asking too often (429).`);
+    return yield* failure(
+      "unreachable",
+      `${name} says Kin is asking too often (429); ${tryAgain(response.headers["retry-after"])}.`,
+    );
   if (response.status === 202 || response.status === 204) return undefined;
   if (response.status !== 200 && response.status !== 201)
     return yield* failure(

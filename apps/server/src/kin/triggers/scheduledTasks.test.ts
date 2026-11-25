@@ -1150,9 +1150,14 @@ it.effect(
         ),
         morning,
       );
+      // In the owner's own time, whatever the host's clock says.
+      const index = () =>
+        checkInIndex(orgId, KinAgentId.make("lead-a")).pipe(
+          Effect.map((lines) => lines.join("\n")),
+        );
       assert.include(
-        (yield* checkInIndex(orgId, KinAgentId.make("lead-a"))).join("\n"),
-        `checkin-morning Morning check-in: around ${morning.at}`,
+        yield* index(),
+        "checkin-morning Morning check-in: around 08:00 Sun, Mon, Tue, Wed, Thu, Fri",
       );
 
       // A form opened before its days changed elsewhere saves its new time onto those days.
@@ -1174,6 +1179,11 @@ it.effect(
         checkIn: true,
         now: yield* Clock.currentTimeMillis,
       });
+      // A row with no owner's time of its own is listed from its host time, turned back.
+      assert.include(
+        yield* index(),
+        "checkin-morning Morning check-in: around 08:00 Mon, Tue, Wed",
+      );
       assert.include((yield* save({ ...opened, at: "08:15", changed: ["at"] })).briefs[0], {
         at: "08:15",
       });

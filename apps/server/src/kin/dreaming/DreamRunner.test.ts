@@ -876,7 +876,7 @@ it.live(
         expect(notices).toEqual([]);
         expect((yield* night(10))._tag).toBe("failed");
         expect(notices).toHaveLength(1);
-        // Operator log only: nothing is lost, so the owner's chat gets no line.
+        // The operator's log line; the owner hears from the hourly `checkDreamNotice`.
         expect(notices[0]).toBe("Dream failed three nights in a row");
         // A failed night's material stays new, so each retry still runs.
         expect(turns).toHaveLength(3);

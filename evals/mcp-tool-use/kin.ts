@@ -47,6 +47,7 @@ import {
 } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
 import { readCallArguments } from "../../apps/server/src/kin/connections/callArguments.ts";
 import { microsoftMail } from "../../apps/server/src/kin/connections/Microsoft.ts";
+import { readLine } from "../../apps/server/src/kin/connections/ConnectionRows.ts";
 import { resultText } from "../../apps/server/src/kin/connections/ResultText.ts";
 import { outlineOf, sectionsOf, WHOLE_DOC } from "../../apps/server/src/kin/work/docBody.ts";
 import { privateNowLine } from "../../apps/server/src/kin/work/docs.ts";
@@ -69,7 +70,12 @@ import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyA
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
 import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
-import { formatKinPicturesDay, KIN_TEXT_LOCALE, KinMoneySummary } from "@t3tools/contracts";
+import {
+  formatKinPicturesDay,
+  KIN_TEXT_LOCALE,
+  KinDocCardDraft,
+  KinMoneySummary,
+} from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
@@ -86,7 +92,7 @@ import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
 import { KinPictureToolkit } from "../../apps/server/src/kin/pictures/mcp.ts";
 import { GENERATE_SENTENCES } from "../../apps/server/src/kin/pictures/KinPictures.ts";
-import { pictureNote } from "../../apps/server/src/kin/work/leadDocs.ts";
+import { draftNote, pictureNote } from "../../apps/server/src/kin/work/leadDocs.ts";
 import { APPROVED_TURN_TEXT } from "../../apps/server/src/kin/questions/sentUpDraft.ts";
 import {
   APPROVED_REFUSAL,
@@ -605,6 +611,12 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     });
 
 const decodeMoneySummary = Schema.decodeUnknownSync(KinMoneySummary);
+const decodeDraftTo = Schema.decodeUnknownSync(
+  Schema.Struct({
+    sendTo: KinDocCardDraft.fields.sendTo,
+    noAccount: KinDocCardDraft.fields.noAccount,
+  }),
+);
 /**
  * Kin's pure answer builders a mock answer calls as `{{RENDER:<name>:<json input>}}`, the whole
  * string, so its words and figures are the checkout's. The inputs are what each builder reads.
@@ -692,6 +704,9 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     GENERATE_SENTENCES.limit(input.limit, formatKinPicturesDay(input.resetsOn)),
   // doc_read's note on a picture's doc: changed from its page when drawn, else its prompt.
   pictureNote: (input: { key: string; drawn: boolean }) => pictureNote(input.key, input.drawn),
+  // doc_create's note on a draft it filed: who Send to puts it to, and a post with no account.
+  draftNote: (input: { key: string; placed?: boolean; sendTo?: unknown; noAccount?: unknown }) =>
+    draftNote(decodeDraftTo(input), input.key, input.placed ?? true),
   // The taxNote line for a company its owner said is not registered for its country's tax.
   notRegisteredFact: (input: { country: string }) =>
     notRegisteredFact({ taxRegistered: false, country: input.country, tax: null }),
@@ -998,6 +1013,25 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       tool: { name: input.tool, inputSchema: { type: "object" } },
       result: { content: [{ type: "text", text: input.text }] },
     } as never).quoted,
+  // A read across mail accounts: what it read and did not (`readLine`), then each account's answer.
+  acrossAccounts: (input: {
+    read: ReadonlyArray<{ account: string; service: string }>;
+    left: ReadonlyArray<{ account: string; service: string }>;
+    results: ReadonlyArray<{ label: string; tool: string; text: string }>;
+  }) =>
+    [
+      readLine(input.read, input.left),
+      ...input.results.map(
+        (one) =>
+          resultText({
+            label: one.label,
+            tool: { name: one.tool, inputSchema: { type: "object" } },
+            result: { content: [{ type: "text", text: one.text }] },
+          } as never).quoted,
+      ),
+    ]
+      .filter((part) => part !== "")
+      .join("\n\n"),
   cash: (input: {
     today: string;
     timeZone: string;

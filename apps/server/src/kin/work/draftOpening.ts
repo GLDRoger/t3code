@@ -19,7 +19,7 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
  * The last place at or before `at` where `text` may be cut without splitting a character; inside a
  * first character longer than that, the last place that splits no code point.
  */
-const cutAt = (text: string, at: number) => {
+export const cutAt = (text: string, at: number) => {
   if (at >= text.length) return text.length;
   let last = 0;
   // Segmented whole, lazily: a slice would end a cluster where the text does not.

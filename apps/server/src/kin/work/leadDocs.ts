@@ -601,10 +601,14 @@ const draftUp = Effect.fn("KinDocTools.draftUp")(function* (lead: Lead, refused:
  * What the agent is told of a draft it filed: its own card, when one was placed, and where it is,
  * which a client without draft cards shows only as a doc; and what Kin can't do with it.
  */
-const draftNote = (draft: KinDocCardDraft, key: string, placed: boolean) =>
+export const draftNote = (
+  draft: Pick<KinDocCardDraft, "sendTo" | "noAccount">,
+  key: string,
+  placed: boolean,
+) =>
   [
     placed
-      ? `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it or name ${key}; say in one line what it is${draft.sendTo === undefined ? "" : `; ${draft.sendTo.name} hasn't seen it, and it reaches ${draft.sendTo.name} only when the person in this chat presses Send to ${draft.sendTo.name}`}.`
+      ? `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it or name ${key}; say in one line what it is${draft.sendTo === undefined ? "" : `; ${draft.sendTo.name} hasn't seen it, and it reaches ${draft.sendTo.name} only when the person in this chat presses Send to ${draft.sendTo.name}: that tap is the whole way up, so don't also put it to ${draft.sendTo.name} with kin_ask_person or kin_ask, and don't mention the card's length`}.`
       : `Filed as ${key}, but its card couldn't be shown here: give the draft in your reply.`,
     ...(draft.noAccount === undefined
       ? []
