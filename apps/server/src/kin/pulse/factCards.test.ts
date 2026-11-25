@@ -922,7 +922,42 @@ const contract = (
   looksAfter: KinWorkPrincipal,
   renewsOn = "2027-01-25",
   lead: KinWorkPrincipal = looksAfter,
+  names = { client: "Tidewater Freight", contact: "Sam", project: "Dashboard retainer" },
 ) =>
+  Effect.gen(function* () {
+    const { orgId, sql } = ctx;
+    const [hired] =
+      yield* sql`SELECT 1 FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${sales}`;
+    if (hired === undefined) yield* salesLead(ctx);
+    const client = yield* ctx.records.create(orgId, ctx.byOwner, {
+      list: "clients",
+      title: names.client,
+      owner: looksAfter,
+      originKey: names.client,
+    });
+    const sam = yield* ctx.records.create(orgId, ctx.byOwner, {
+      list: "contacts",
+      title: names.contact,
+      owner: ctx.byOwner.actor,
+      partyId: client.row.recordId,
+      originKey: names.contact,
+    });
+    const project = yield* ctx.records.create(orgId, ctx.byOwner, {
+      list: "projects",
+      title: names.project,
+      owner: lead,
+      partyId: client.row.recordId,
+      originKey: names.project,
+    });
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.email',
+        'sam@tidewater.example') WHERE org_id = ${orgId} AND record_id = ${sam.row.recordId}`;
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.renewsOn',
+        ${renewsOn}, '$.noticeDays', '60')
+      WHERE org_id = ${orgId} AND record_id = ${project.row.recordId}`;
+    return { client: client.row.key, contact: sam.row.key, project: project.row.key };
+  });
+/** Sales, a selling lead Zoya and Arjun may message; W-1 and W-2 done, so only notice days stand. */
+const salesLead = (ctx: Ctx) =>
   Effect.gen(function* () {
     const { orgId, sql } = ctx;
     const identity = Context.get(ctx.services, KinIdentity);
@@ -939,32 +974,6 @@ const contract = (
         VALUES (${orgId}, ${sales}, ${person}, ${ctx.owner.personId}, 0)`;
     for (const key of ["W-1", "W-2"])
       yield* ctx.records.update(orgId, ctx.byOwner, key, { state: "done" });
-    const client = yield* ctx.records.create(orgId, ctx.byOwner, {
-      list: "clients",
-      title: "Tidewater Freight",
-      owner: looksAfter,
-      originKey: "Tidewater Freight",
-    });
-    const sam = yield* ctx.records.create(orgId, ctx.byOwner, {
-      list: "contacts",
-      title: "Sam",
-      owner: ctx.byOwner.actor,
-      partyId: client.row.recordId,
-      originKey: "Sam",
-    });
-    const project = yield* ctx.records.create(orgId, ctx.byOwner, {
-      list: "projects",
-      title: "Dashboard retainer",
-      owner: lead,
-      partyId: client.row.recordId,
-      originKey: "Dashboard retainer",
-    });
-    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.email',
-        'sam@tidewater.example') WHERE org_id = ${orgId} AND record_id = ${sam.row.recordId}`;
-    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.renewsOn',
-        ${renewsOn}, '$.noticeDays', '60')
-      WHERE org_id = ${orgId} AND record_id = ${project.row.recordId}`;
-    return { client: client.row.key, project: project.row.key };
   });
 /** Whether `viewer` reads an open notice-day fact about the project now. */
 const noticeOpen = (ctx: Ctx, viewer: KinPulse.Viewer, at: number) =>
@@ -1167,4 +1176,39 @@ it.effect(
         );
       }),
     ),
+);
+
+/** A card's detail as stored (older clients' lines follow it). */
+const detailOf = (ctx: Ctx, card: Card) =>
+  ctx.sql<{ detail: string }>`SELECT json_extract(state_json, '$.detail') AS detail
+    FROM kin_widgets WHERE org_id = ${ctx.orgId} AND widget_id = ${card.widgetId}`.pipe(
+    Effect.map((rows) => rows[0]?.detail ?? ""),
+  );
+
+it.effect("a notice card never names a contact its teammate reader can't see", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { contact } = yield* contract(ctx, { _tag: "person", personId: zoyaId });
+      yield* ctx.records.update(ctx.orgId, ctx.byOwner, contact, { sensitive: true });
+      // Nobody looks after Harbour Mills: the owner's card names its contact, Priya.
+      yield* contract(ctx, { _tag: "agent", agentId: sales }, "2027-01-26", undefined, {
+        client: "Harbour Mills",
+        contact: "Priya",
+        project: "Freight portal",
+      });
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      const all = yield* noticeCards(ctx);
+      const zoyas = all.find((card) => card.who === zoyaId)!;
+      const rheas = all.find((card) => card.who === ctx.owner.personId)!;
+      assert.match(
+        yield* detailOf(ctx, zoyas),
+        /^Until you choose, nothing is sent and it renews as agreed\. Give notice and Sales drafts the notice mail to the client for your Confirm\./,
+      );
+      assert.match(
+        yield* detailOf(ctx, rheas),
+        /drafts the notice mail to Priya for your Confirm\./,
+      );
+    }),
+  ),
 );

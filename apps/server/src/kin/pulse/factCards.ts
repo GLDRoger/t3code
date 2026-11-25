@@ -36,7 +36,7 @@ import {
 import { dayIn } from "../work/money.ts";
 import { noticeDay } from "../work/crm.ts";
 import { daysOverdue, endOfDay, startOfDay } from "../work/recordRows.ts";
-import { teamGuard, viewSees } from "../work/teamView.ts";
+import { crmSees, teamGuard, viewSees } from "../work/teamView.ts";
 import { draftersFor } from "./draftWake.ts";
 import { daysAgoText, daysText, type SenseContext } from "./senses/shared.ts";
 import { markTold } from "./told.ts";
@@ -857,11 +857,12 @@ const noticeCards = Effect.fn("KinFactCards.notices")(function* (input: {
     const [contact] =
       client?.recordId === undefined
         ? []
-        : yield* sql<{ name: string }>`SELECT title AS name FROM kin_records
-            WHERE org_id = ${orgId} AND register_id = 'contacts' AND state = 'open'
-              AND party_id = ${client.recordId}
-              AND trim(COALESCE(json_extract(fields_json, '$.email'), '')) <> ''
-            ORDER BY lower(title), key LIMIT 1`;
+        : yield* sql<{ name: string }>`SELECT r.title AS name FROM kin_records r
+            WHERE r.org_id = ${orgId} AND r.register_id = 'contacts' AND r.state = 'open'
+              AND r.party_id = ${client.recordId}
+              AND trim(COALESCE(json_extract(r.fields_json, '$.email'), '')) <> ''
+              ${input.level.has(personId) ? sql`` : sql`AND ${crmSees(sql, personId)}`}
+            ORDER BY lower(r.title), r.key LIMIT 1`;
     const by = endOfDay(day, zone);
     const plan = {
       kind: "notice_renew",
