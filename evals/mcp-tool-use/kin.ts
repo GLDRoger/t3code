@@ -34,6 +34,7 @@ import {
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { alreadyOnIt, leftNote, passedFactBody } from "../../apps/server/src/kin/lead/Handoff.ts";
+import { ASK_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
 import { dueShows, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import {
@@ -719,6 +720,9 @@ const docReadAnswer = (input: {
 };
 
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  // kin_github_review_ask's refusal for a repo Kin doesn't watch, as Kin words it (`reviewAsk.ts`).
+  reviewAskUnwatched: (input: { repo: string; ownerLevel: boolean }) =>
+    ASK_REFUSAL.unwatched(input.repo, input.ownerLevel),
   // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
   billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
   billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>

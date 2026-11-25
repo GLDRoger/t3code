@@ -75,7 +75,7 @@ export const ASK_REFUSAL = {
   unreachable: `Kin couldn't reach GitHub just now. ${NOTHING}`,
   memory: (repo: string) => `${repo} is Kin's memory repo, which Kin never reviews. ${NOTHING}`,
   unwatched: (repo: string, ownerLevel: boolean) =>
-    `${repo} isn't a repo Kin watches, so nothing was started. ${ownerLevel ? "They add it in Settings, Connections." : "Only the owner can add it, in Settings, Connections: pass them that one step now with kin_relay, naming the repo and who asked. Nothing brings it back to you: tell the asker it is with them and to ask again once it is added."}`,
+    `${repo} isn't a repo Kin watches, so nothing was started. ${ownerLevel ? "They add it in Settings, Connections." : "Only the owner can add it, in Settings, Connections: pass them that one step now with kin_relay, the step and the repo first, then who asked. Nothing brings it back to you: tell the asker it is with them and to ask again once it is added."}`,
   noLogin: (name: string) =>
     `Kin has no GitHub username on file for ${name}, so it reviews only public repos for them, named by repo; they can add theirs under You → GitHub username, or an owner on their page. ${NOTHING}`,
 } as const;
