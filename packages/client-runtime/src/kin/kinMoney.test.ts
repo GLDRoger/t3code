@@ -20,6 +20,7 @@ import {
   kinCountries,
   kinCountryChoices,
   kinCountryCodeOf,
+  kinCountryAskLine,
   kinCountryName,
 } from "./kinCompanyProfile.ts";
 import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
@@ -581,6 +582,17 @@ describe("company details", () => {
     expect(offer?.label).toBe("Use India?");
     // Settings reads the country by its name, and keeps a code no device can name.
     expect([kinCountryName("GB"), kinCountryName("QQ")]).toEqual(["United Kingdom", "QQ"]);
+    // A country card closes with one line per answer, the country named as Settings names it.
+    for (const [answered, line] of [
+      [{ _tag: "chose", by: "Meera", country: "US" }, "Meera chose United States."],
+      [{ _tag: "not_now", by: "Rhea", round: 1 }, "Not now. Kin asks again in 30 days."],
+      [
+        { _tag: "not_now", by: "Meera", round: 2 },
+        "Not now. Kin won't ask again; Settings, Company details has it.",
+      ],
+      [{ _tag: "set", country: "GB" }, "Set to United Kingdom in Settings."],
+    ] as const)
+      expect(kinCountryAskLine(answered)).toBe(line);
     expect(kinCompanyInput("org" as never, waiting, offer!.accept())).toEqual({
       ok: true,
       input: { orgId: "org", rev: 0, country: "IN" },

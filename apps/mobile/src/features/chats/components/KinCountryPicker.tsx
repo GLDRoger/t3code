@@ -25,9 +25,11 @@ export function KinCountryPicker(props: {
   readonly label: string;
   readonly value: string | null;
   readonly disabled: boolean;
+  /** Opens on its search and matches, as in a sheet that holds nothing else. */
+  readonly startOpen?: boolean;
   readonly onPick: (code: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(props.startOpen === true);
   const [query, setQuery] = useState("");
   const inputRef = useRef<TextInputInstance>(null);
   const found = useRef<ComponentRef<typeof View>>(null);

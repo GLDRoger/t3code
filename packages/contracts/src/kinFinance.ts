@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChatError, KinLabelText, KinOrgId, KinTrimmedText } from "./kinChat.ts";
+import { KinChatError, KinLabelText, KinOrgId, KinTrimmedText, KinWidgetId } from "./kinChat.ts";
 import { KIN_DEFAULT_HOME_CURRENCY } from "./kinCurrency.ts";
 import {
   KinCurrency,
@@ -680,6 +680,34 @@ export const KinDraftCreditNoteInput = Schema.Struct({
 export type KinDraftCreditNoteInput = typeof KinDraftCreditNoteInput.Type;
 const CreditKey = Schema.Struct({ key: KinRecordKey });
 
+export const KinCountryCardState = Schema.Struct({
+  company: Schema.String,
+  round: Schema.Literals([1, 2]),
+  /** Needs you reads a card's question from its state. */
+  question: Schema.optional(Schema.String),
+  answered: Schema.optional(
+    Schema.Union([
+      Schema.TaggedStruct("chose", { by: Schema.String, country: Schema.String }),
+      Schema.TaggedStruct("not_now", {
+        by: Schema.String,
+        round: Schema.Literals([1, 2]),
+      }),
+      Schema.TaggedStruct("set", { country: Schema.String }),
+    ]),
+  ),
+});
+export type KinCountryCardState = typeof KinCountryCardState.Type;
+
+export const KinAnswerCountryCardInput = Schema.Struct({
+  orgId: KinOrgId,
+  widgetId: KinWidgetId,
+  answer: Schema.Union([
+    Schema.TaggedStruct("country", { country: KinCountryCode }),
+    Schema.TaggedStruct("not_now", {}),
+  ]),
+});
+export type KinAnswerCountryCardInput = typeof KinAnswerCountryCardInput.Type;
+
 const KIN_FINANCE_WS_METHODS = {
   undoCreditPayment: "kin.work.undoCreditPayment",
   unapplyCredit: "kin.work.unapplyCredit",
@@ -693,6 +721,7 @@ const KIN_FINANCE_WS_METHODS = {
   files: "kin.work.files",
   companyProfile: "kin.work.companyProfile",
   setCompanyProfile: "kin.work.setCompanyProfile",
+  answerCountryCard: "kin.work.answerCountryCard",
   issue: "kin.work.issue",
   nextNumber: "kin.work.nextNumber",
   void: "kin.work.void",
@@ -770,6 +799,11 @@ export const KinFinanceRpcs = [
     success: KinCompanyProfile,
     error,
   }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.answerCountryCard, {
+    payload: KinAnswerCountryCardInput,
+    success: KinCompanyProfile,
+    error,
+  }),
   Rpc.make(KIN_FINANCE_WS_METHODS.issue, {
     payload: KinIssueInput,
     success: KinIssueResult,
@@ -813,6 +847,7 @@ export const KIN_FINANCE_RPC_SCOPES = {
   // Bank details: read and written only where owner settings are.
   [KIN_FINANCE_WS_METHODS.companyProfile]: AuthKinChatScope,
   [KIN_FINANCE_WS_METHODS.setCompanyProfile]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.answerCountryCard]: AuthKinChatScope,
   // A number is an entry change, like a payment; nothing leaves the host.
   [KIN_FINANCE_WS_METHODS.issue]: AuthKinChatScope,
   [KIN_FINANCE_WS_METHODS.nextNumber]: AuthKinChatScope,

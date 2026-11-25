@@ -33,6 +33,7 @@ import * as Pulse from "../pulse/people.ts";
 import * as Open from "../open/people.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { withWatch } from "../watches/readRpcs.ts";
+import * as CountryAsk from "./countryAsk.ts";
 import * as Goals from "./goals.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Deals from "./deals.ts";
@@ -369,6 +370,8 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.setCompanyProfile": Effect.fn("KinWork.rpc.setCompanyProfile")(function* (input) {
         return yield* call((people) => Money.setCompanyProfile(people, input));
       }),
+      "kin.work.answerCountryCard": (input) =>
+        call((people) => CountryAsk.answerCountryCard(people, input)),
       "kin.work.issue": Effect.fn("KinWork.rpc.issue")(function* (input) {
         return yield* call((people) => Money.issue(people, input));
       }),

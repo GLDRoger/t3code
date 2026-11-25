@@ -229,6 +229,8 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           bills.filter((method) => !table.coOwner.includes(method) || MEMBER.includes(method)),
           [],
         );
+        assert.include(table.coOwner, "kin.work.answerCountryCard");
+        assert.notInclude(table.member, "kin.work.answerCountryCard");
         // Every method is in the table, so a new one can't slip past the gate unlisted.
         assert.deepStrictEqual(
           methods.filter((method) => kinRpcAccess(method) === undefined),

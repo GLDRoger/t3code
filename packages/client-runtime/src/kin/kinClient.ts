@@ -2220,6 +2220,11 @@ export function makeKinClient<R, ER>(
       tag: "kin.work.setCompanyProfile",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
     }),
+    answerCountryCard: createKinRpcCommand(runtime, {
+      label: "kin:company:country-card",
+      tag: "kin.work.answerCountryCard",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
+    }),
     workIssue: createKinRpcCommand(runtime, {
       label: "kin:work:issue",
       tag: "kin.work.issue",
