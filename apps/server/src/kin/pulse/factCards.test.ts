@@ -824,3 +824,21 @@ it.effect("a teammate who can no longer see the task changes nothing with Done",
     }),
   ),
 );
+
+it.effect("a waited-on card closes once its task waits on someone else", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      const [card] = yield* cards(ctx);
+      yield* ctx.records.update(ctx.orgId, ctx.byOwner, "W-1", {
+        waitingOn: { _tag: "person", personId: meeraId },
+      });
+      yield* tickAt(ctx, NOW + HOUR);
+      assert.deepStrictEqual(
+        (yield* cards(ctx)).find((one) => one.widgetId === card!.widgetId)?.outcome,
+        { title: "No longer needed", text: "W-1 no longer waits on you." },
+      );
+    }),
+  ),
+);

@@ -312,19 +312,26 @@ const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
 
 /**
  * Every open fact card whose fact stopped being true closes, saying so: its way out when the
- * thing it asked about moved on without a tap.
+ * thing it asked about moved on without a tap. A waited-on card also closes once its fact is
+ * someone else's: the task waits on another person under the same key.
  */
 const settleFactCards = Effect.fn("KinFactCards.settle")(function* (
   orgId: KinOrgId,
   posted: ReadonlyArray<CardRow>,
   standing: ReadonlySet<string>,
+  actors: ReadonlyMap<string, string | undefined>,
 ) {
   const chats = yield* Effect.serviceOption(KinChatService);
   if (Option.isNone(chats)) return;
   const gone = [
     ...new Set(
       posted
-        .filter((row) => row.open === 1 && !standing.has(row.factKey))
+        .filter(
+          (row) =>
+            row.open === 1 &&
+            (!standing.has(row.factKey) ||
+              (row.kind === "waited_answer" && actors.get(row.factKey) !== row.personId)),
+        )
         .map((row) => row.widgetId),
     ),
   ];
@@ -703,7 +710,7 @@ const mayChange = (
 export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
   readonly ctx: SenseContext;
   /** Every fact sensed now, handled or not: what a card stands on. */
-  readonly sensed: ReadonlyArray<Parameters<typeof standKeys>[0]>;
+  readonly sensed: ReadonlyArray<Parameters<typeof standKeys>[0] & Pick<KinPulseFact, "actor">>;
   /** Those open: not handled, not set aside, not quiet. */
   readonly open: ReadonlyArray<KinPulseFact>;
   readonly sees: (
@@ -713,7 +720,17 @@ export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
 }) {
   const { orgId } = input.ctx;
   const posted = yield* factCardRows(orgId);
-  yield* settleFactCards(orgId, posted, new Set(input.sensed.flatMap(standKeys)));
+  yield* settleFactCards(
+    orgId,
+    posted,
+    new Set(input.sensed.flatMap(standKeys)),
+    new Map(
+      input.sensed.map((fact) => [
+        fact.key,
+        fact.actor._tag === "person" ? fact.actor.personId : undefined,
+      ]),
+    ),
+  );
   const level = yield* ownerLevelPeople(orgId);
   yield* waitedCards({ ...input, level, posted });
   yield* stallCards({ ...input, level, posted });
