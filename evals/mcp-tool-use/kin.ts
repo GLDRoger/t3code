@@ -131,7 +131,12 @@ import {
   PULSE_RULE,
 } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { HEAD_START_WAKE } from "../../apps/server/src/kin/pulse/prepareWake.ts";
-import { DRAFT_DOCUMENT } from "../../apps/server/src/kin/pulse/draftWake.ts";
+import {
+  DRAFT_CHASE,
+  DRAFT_DEAL,
+  DRAFT_DOCUMENT,
+  DRAFT_MEETING_PREP,
+} from "../../apps/server/src/kin/pulse/draftWake.ts";
 import { KIN_OWN_REFUSAL } from "../../apps/server/src/kin/people/KinAccess.ts";
 import { HEAD_START_ONE_DOC } from "../../apps/server/src/kin/work/teamView.ts";
 import {
@@ -553,6 +558,15 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
       ),
     )
     .replace(/\{\{DRAFT_DOCUMENT:([^}]+)\}\}/g, (_, name: string) => DRAFT_DOCUMENT(name))
+    .replace(/\{\{DRAFT_MEETING_PREP:([^}]+)\}\}/g, (_, name: string) => DRAFT_MEETING_PREP(name))
+    // A draft wake's own line, for a person and their mailboxes (`draftWake.ts`).
+    .replace(/\{\{DRAFT_CHASE:([^:}]+):([^}]+)\}\}/g, (_, name: string, from: string) =>
+      DRAFT_CHASE(name, from.split(",")),
+    )
+    .replace(
+      /\{\{DRAFT_DEAL:([^|}]+)\|([^|}]+)\|([^}]+)\}\}/g,
+      (_, name: string, from: string, reason: string) => DRAFT_DEAL(name, from.split(","), reason),
+    )
     .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
     .replaceAll("{{TEAM_RULES}}", kinTeamRules)
