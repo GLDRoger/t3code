@@ -1172,23 +1172,22 @@ const make = Effect.gen(function* () {
         AND r.chat_id = w.chat_id AND r.status = 'posted' AND r.author_agent_id = ${agentId}
         AND json_extract(r.relay_json, '$.kind') = 'sent_by'
         AND json_extract(r.relay_json, '$.personId') = recipient.person_id
+      JOIN kin_events e ON e.org_id = w.org_id AND e.agent_id = ${agentId}
+        AND e.wakeup_id = ${wakeupId} AND json_extract(e.json, '$.origin') IS NULL
+      JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+        AND m.chat_id = w.chat_id AND m.seq > r.seq
+        AND m.status = 'posted' AND m.author_kind = 'human' AND m.author_person_id = w.person_id
+        AND m.origin_json IS NULL
+        AND ((e.tag = 'chat.message' AND m.kind = 'text' AND trim(m.body) <> '')
+          OR (e.tag = 'widget.action' AND m.kind = 'widget_action'
+            AND json_extract(e.json, '$.chatId') = m.chat_id
+            AND EXISTS (SELECT 1 FROM kin_widgets card WHERE card.org_id = m.org_id
+              AND card.widget_id = m.widget_id AND card.chat_id = w.chat_id)))
       WHERE c.org_id = ${orgId} AND c.chat_id = ${chatId} AND c.kind = 'direct'
         AND w.chat_id <> c.chat_id AND ${sql.literal(ownerLevelSql("w.org_id", "w.person_id"))}
-        AND EXISTS (SELECT 1 FROM kin_events e JOIN kin_messages m ON m.org_id = e.org_id
-          AND m.message_id = json_extract(e.json, '$.messageId')
-          WHERE e.org_id = w.org_id AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
-            AND json_extract(e.json, '$.origin') IS NULL
-            AND m.chat_id = w.chat_id AND m.seq > r.seq
-            AND m.status = 'posted' AND m.author_kind = 'human' AND m.author_person_id = w.person_id
-            AND m.origin_json IS NULL
-            AND ((e.tag = 'chat.message' AND m.kind = 'text' AND trim(m.body) <> '')
-              OR (e.tag = 'widget.action' AND m.kind = 'widget_action'
-                AND json_extract(e.json, '$.chatId') = m.chat_id
-                AND EXISTS (SELECT 1 FROM kin_widgets card WHERE card.org_id = m.org_id
-                  AND card.widget_id = m.widget_id AND card.chat_id = w.chat_id)))
-            AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
-            AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = m.org_id
-              AND m.client_message_id = ${Repository.storedClientId("send", "")} || h.message_id))
+        AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
+        AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = m.org_id
+          AND m.client_message_id = ${Repository.storedClientId("send", "")} || h.message_id)
         AND NOT EXISTS (SELECT 1 FROM kin_messages sent WHERE sent.org_id = c.org_id
           AND sent.chat_id = c.chat_id AND sent.author_agent_id = ${agentId}
           AND sent.seq < ${message.seq}
@@ -1196,7 +1195,8 @@ const make = Effect.gen(function* () {
             OR sent.message_id IN (SELECT ${HELD_ID} || h.hold_id FROM kin_held_posts h
               WHERE h.org_id = c.org_id AND h.chat_id = c.chat_id AND h.kind = ${relayKey}
                 AND h.agent_id = ${agentId})))
-      ORDER BY r.seq, w.waiting_id LIMIT 1`.pipe(
+      ORDER BY CASE WHEN e.tag = 'chat.message' AND m.reply_to = r.message_id THEN 0 ELSE 1 END,
+        r.seq, w.waiting_id LIMIT 1`.pipe(
       Effect.mapError(toPersistenceSqlError("KinChatService.resolveRelayedRequest")),
     );
     if (request !== undefined)

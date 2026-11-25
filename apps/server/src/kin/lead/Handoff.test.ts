@@ -2277,7 +2277,7 @@ it.effect("a request passed on to a teammate is answered by that teammate's repl
   ),
 );
 
-const passedOnRequest = (mode: "words" | "held" | "tap") =>
+const passedOnRequest = (mode: "words" | "held" | "tap" | "reply") =>
   run(({ ctx, handoff }) =>
     Effect.gen(function* () {
       const { sql, orgId, owner, chats, techChat, services } = ctx;
@@ -2366,7 +2366,7 @@ const passedOnRequest = (mode: "words" | "held" | "tap") =>
       });
       yield* assertRequestOpen;
 
-      yield* chats.notice({
+      const newer = yield* chats.notice({
         orgId,
         chatId: techChat,
         audience: "chat",
@@ -2386,8 +2386,12 @@ const passedOnRequest = (mode: "words" | "held" | "tap") =>
           ? yield* tap(ctx, anotherCard.widgetId, "option-1")
           : yield* chats.send(owner, {
               chatId: techChat,
-              body: "Tell Zoya the rollout can move to Friday.",
+              body:
+                mode === "reply"
+                  ? "Tell Zoya the demo can move to Monday."
+                  : "Tell Zoya the rollout can move to Friday.",
               clientMessageId: "rollout-decision",
+              ...(mode === "reply" ? { replyTo: newer.message.messageId } : {}),
             });
       assert.deepStrictEqual(yield* requestWaiting, [{ resolution: null }, { resolution: null }]);
       yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = NULL
@@ -2401,7 +2405,12 @@ const passedOnRequest = (mode: "words" | "held" | "tap") =>
       yield* ctx.claim(event.eventId, tech, { ...event, receivedAt: at });
       const sendAnswer = handoff.relay(
         scopeFor(tech),
-        { to: "Zoya", text: "The rollout can move to Friday.", sourceEventId: event.eventId },
+        {
+          to: "Zoya",
+          text:
+            mode === "reply" ? "The demo can move to Monday." : "The rollout can move to Friday.",
+          sourceEventId: event.eventId,
+        },
         postTo,
       );
       yield* sendAnswer;
@@ -2410,10 +2419,13 @@ const passedOnRequest = (mode: "words" | "held" | "tap") =>
         yield* TestClock.adjust("1 minute");
         yield* deliverHeld(orgId, chats);
       }
-      const firstAnswered = [{ resolution: "answered" }, { resolution: null }];
-      assert.deepStrictEqual(yield* requestWaiting, firstAnswered);
+      const resolved =
+        mode === "reply"
+          ? [{ resolution: null }, { resolution: "answered" }]
+          : [{ resolution: "answered" }, { resolution: null }];
+      assert.deepStrictEqual(yield* requestWaiting, resolved);
       yield* sendAnswer;
-      assert.deepStrictEqual(yield* requestWaiting, firstAnswered);
+      assert.deepStrictEqual(yield* requestWaiting, resolved);
     }),
   );
 
@@ -2429,6 +2441,8 @@ it.effect("a held answer closes a passed-on request only when the answer posts",
 it.effect("word back after the owner's tap on a card closes the request", () =>
   passedOnRequest("tap"),
 );
+
+it.effect("an answer about the newer request closes the newer one", () => passedOnRequest("reply"));
 
 it.effect(
   "a routed relay quotes her words only to someone who may see them, and the owner reads both speakers",
