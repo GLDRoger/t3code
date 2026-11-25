@@ -40,7 +40,7 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
-import { liveHolds } from "../pulse/holds.ts";
+import { holdCoversRecord, liveHolds, recordHoldScopes } from "../pulse/holds.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { pauseTriggers } from "./KinTriggerStore.ts";
 import { readGithubLinks } from "./deferralGithub.ts";
@@ -544,14 +544,14 @@ const make = Effect.gen(function* () {
       if (record != null) records.set(record.recordId, record.key);
     }
     if (records.size === 0) return undefined;
-    const holds = yield* liveHolds(orgId, now);
-    const direct = holds.find(
-      (hold) =>
-        records.has(hold.recordId) &&
-        hold.forPersonId === null &&
-        (hold.byKind === "person" || hold.onWordOf !== null),
+    const holds = (yield* liveHolds(orgId, now)).filter(
+      (hold) => hold.forPersonId === null && (hold.byKind === "person" || hold.onWordOf !== null),
     );
-    if (direct !== undefined) return direct.recordKey;
+    if (holds.length > 0) {
+      const scopes = yield* recordHoldScopes(orgId, [...records.values()]);
+      const held = scopes.find((row) => holds.some((hold) => holdCoversRecord(hold, row)));
+      if (held !== undefined) return records.get(held.recordId);
+    }
 
     const { facts } = yield* KinPulse.read({
       orgId,

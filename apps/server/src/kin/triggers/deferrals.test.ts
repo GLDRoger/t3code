@@ -1383,6 +1383,45 @@ it.effect(
   },
 );
 
+it.effect("a follow-up about an invoice is skipped while its client is set aside", () => {
+  const followUp = makeDeferral("def-client-hold", {
+    title: "Follow up on INV-12",
+    on_due: "remind",
+    trust: "agent",
+  });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* seedInvoice(dueAt);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+      VALUES (${orgId}, 'clients', 'Clients', 'C', 1, 0)`;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at, fields_json)
+      VALUES (${orgId}, 'tidewater', 'clients', 'C-7', 'Tidewater Freight', 'person',
+        'owner-a', 'person', 'owner-a', 'tidewater', 0, 0, '{}')`;
+    yield* sql`UPDATE kin_records SET party_id = 'tidewater'
+      WHERE org_id = ${orgId} AND record_id = 'invoice'`;
+    const viewer = { _tag: "owner" } as const;
+    yield* KinPulse.aside({
+      orgId,
+      at: yield* Clock.currentTimeMillis,
+      viewer,
+      by: { _tag: "person", personId: KinPersonId.make("owner-a") },
+      recordKey: "C-7",
+      action: "set",
+      until: null,
+      note: null,
+      holding: { _tag: "may", forPersonId: null, onWordOf: null },
+    });
+    const { facts } = yield* KinPulse.read({ orgId, at: dueAt, viewer, includeHandled: true });
+    assert.isFalse(facts.some((fact) => fact.subject.key === "INV-12"));
+    yield* (yield* TriggerService.KinTriggerService).syncItem(followUp);
+    yield* tick(dueAt);
+    assert.equal((yield* runOf(followUp.id))?.state, "undone");
+    assert.isEmpty(yield* handedReminders());
+  }).pipe(Effect.provide(layerFor([followUp])));
+});
+
 it.effect("remind, ask and chase act at due, noting lateness", () => {
   const remind = makeDeferral("def-r", { on_due: "remind" });
   const ask = makeDeferral("def-a", { on_due: "ask" });
