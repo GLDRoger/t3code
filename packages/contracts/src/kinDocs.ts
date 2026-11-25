@@ -232,6 +232,11 @@ export const KinDocDetail = Schema.Struct({
       ),
     }),
   ),
+  /**
+   * To owner-level readers: the teammate it was drafted for, who reads it again once it is not
+   * private and loses it once an owner labels it, unless the label is their own. Absent from older hosts.
+   */
+  draftOf: Schema.optional(Schema.Struct({ name: Schema.String })),
 });
 export type KinDocDetail = typeof KinDocDetail.Type;
 

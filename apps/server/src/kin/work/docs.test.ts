@@ -2566,6 +2566,11 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     assert.deepStrictEqual((yield* OwnerDocs.get([mate], { orgId, key: first.key })).kindLabel, {
       reader: { name: "Mate", you: true },
     });
+    // Whose draft it is reaches the owner's menu only.
+    assert.deepStrictEqual((yield* OwnerDocs.get([owner], { orgId, key: first.key })).draftOf, {
+      name: "Mate",
+    });
+    assert.notProperty(yield* OwnerDocs.get([mate], { orgId, key: first.key }), "draftOf");
     // The same call again in the same wake-up finds the doc it made, and says nothing is unwritten.
     const again = yield* draft("Acme refit");
     assert.strictEqual(again.key, first.key);
@@ -2644,6 +2649,13 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
     const marked = yield* draft("Acme marked");
     const labelled = yield* OwnerDocs.label([owner], { orgId, key: marked.key, sensitive: true });
     assert.notProperty(labelled, "kindLabel");
+    assert.isFalse(yield* reads(mate, marked.key));
+    // Kept to owners, then given back, the owner's page still names whose draft it is.
+    assert.deepStrictEqual(labelled.draftOf, { name: "Mate" });
+    const given = yield* OwnerDocs.label([owner], { orgId, key: marked.key, sensitive: false });
+    assert.deepInclude(given, { sensitive: false, draftOf: { name: "Mate" } });
+    assert.isTrue(yield* reads(mate, marked.key));
+    yield* OwnerDocs.label([owner], { orgId, key: marked.key, sensitive: true });
     assert.isFalse(yield* reads(mate, marked.key));
     // The draft's person knew it existed, so they alone hear it went private, and by whom; through
     // a key, to another teammate, or for a doc the owner only edited, it is no doc at all.
