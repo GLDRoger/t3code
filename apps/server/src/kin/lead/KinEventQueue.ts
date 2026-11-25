@@ -991,13 +991,19 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
           const none = { failedEventIds: [], stranded: 0, replied: 0, retried: 0, retryInMs: 0 };
-          // Aborted for its audience (`abortChatTurns`): whatever it ran to, a fresh
-          // wake-up answers its events, without spending an attempt or telling anyone.
+          // Aborted for its audience (`abortChatTurns`): a replied message is done.
+          // A fresh wake-up answers the rest without spending an attempt or telling anyone.
           const requeued = yield* sql`UPDATE kin_wakeups SET status = 'released', ended_at = ${now}
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND status = 'running'
               AND aborted_at IS NOT NULL
             RETURNING wakeup_id`;
           if (requeued.length > 0) {
+            yield* settled(
+              input.orgId,
+              (yield* sql<{ event_id: string }>`UPDATE kin_events SET state = 'done'
+                WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
+                  AND replied_at IS NOT NULL RETURNING event_id`).map((row) => row.event_id),
+            );
             yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL, not_before = ${now}
               WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'`;
             return none;

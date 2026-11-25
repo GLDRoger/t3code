@@ -1529,6 +1529,12 @@ it.effect.each([
     then: "completed",
     expected: ["system:Ada didn't reply: someone joined before it answered. Send it again."],
   },
+  {
+    access: "member",
+    before: "a join through Add",
+    then: "timed_out",
+    expected: ["system:Ada didn't reply: someone joined before it answered. Send it again."],
+  },
 ] as const)(
   "an owner-only reply posts where everyone reading is owner-level, never silently held ($access, $before, $then)",
   ({ access, before, then, expected }) =>
@@ -1562,7 +1568,19 @@ it.effect.each([
       if (then === "restart")
         assert.strictEqual(yield* queue.requeueUnfinished(owner.orgId, wakeupId), 0);
       else {
-        const finished = yield* queue.finish({ orgId: owner.orgId, wakeupId, status: then });
+        const finished = yield* queue.finish({
+          orgId: owner.orgId,
+          wakeupId,
+          status: then,
+          ...(then === "timed_out" ? { final: true } : {}),
+        });
+        if (then === "timed_out") {
+          assert.deepInclude(finished, { stranded: 0, failedEventIds: [] });
+          assert.deepStrictEqual(
+            (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
+            [...expected],
+          );
+        }
         // Nothing stranded or retried: no "stopped partway", no fresh answer.
         if (then === "failed") assert.deepInclude(finished, { stranded: 0, retried: 0 });
       }
