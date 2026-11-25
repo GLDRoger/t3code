@@ -528,10 +528,11 @@ describe("KinPushSender", () => {
       assert.isUndefined(apns.sent[0]?.collapseId, choice);
       // Three answers, Kin's own Confirm (no open question), an answer that acts or sends, a
       // sent-up draft (approved where it is read, R12): a plain notice whose tap opens the card.
-      for (const [state, open, draft] of [
-        [question(["Signed", "Not yet", "Lost it"]), true],
-        [question(["Confirm", "Cancel"]), false],
+      for (const [expectedBody, state, open, draft] of [
+        ["Is the Harbourline NDA signed?", question(["Signed", "Not yet", "Lost it"]), true],
+        ["Quick one on W-8.", question(["Confirm", "Cancel"]), false],
         [
+          "Is the Harbourline NDA signed?",
           question(["Start W-8", "Not yet"], {
             options: [
               { optionId: "option-1", label: "Start W-8", action: { line: "Starts W-8." } },
@@ -541,6 +542,7 @@ describe("KinPushSender", () => {
           true,
         ],
         [
+          "Quick one on W-8.",
           question(["Confirm", "Cancel"], {
             send: {
               service: "Gmail",
@@ -557,6 +559,7 @@ describe("KinPushSender", () => {
           true,
         ],
         [
+          "Quick one on W-8.",
           question(["Approve", "Changes first"], {
             draft: "## Harbourline retainer\n\nMonthly fee: ₹2,50,000",
           }),
@@ -567,9 +570,7 @@ describe("KinPushSender", () => {
         assert.isTrue(isChoiceCard(state));
         yield* ask(state, open, draft);
         assert.deepStrictEqual(categories(apns.sent), ["kin.message"], JSON.stringify(state));
-        assert.deepStrictEqual(alerts(apns.sent), [
-          { title: "Payments team", body: "Quick one on W-8." },
-        ]);
+        assert.deepStrictEqual(alerts(apns.sent), [{ title: "Payments team", body: expectedBody }]);
       }
 
       // Kin's own unprompted card (a recommendation) waits on them without ringing: a badge only.
@@ -773,6 +774,90 @@ describe("KinPushSender", () => {
       assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: anchor })).sent, 0);
     }).pipe(Effect.provide(build(apns)));
   });
+
+  it.effect(
+    "an open question's notification is the question, not the message it hangs under",
+    () => {
+      const apns = makeApns();
+      return Effect.gen(function* () {
+        const { notify, sql } = yield* seed;
+        yield* TestClock.setTime(Date.parse("2026-11-08T14:00:00Z"));
+        const chatId = KinChatId.make("chat_dm");
+        const question =
+          "Arjun got 10,000 on 4 Jul and 5,000 on 10 Jul. What were these two transfers?";
+        const reply =
+          "Your 36,000 to yourself on 21 Oct is already accounted for: Kin applied it across your older expenses.";
+        const options = [
+          { optionId: "reimbursement", label: "Reimbursements" },
+          { optionId: "advance", label: "Advances" },
+          { optionId: "other", label: "Something else" },
+        ];
+        const card = (
+          body: string,
+          choices: typeof options,
+          { brief = false, asked = true, prompt = question } = {},
+        ) =>
+          Effect.gen(function* () {
+            const messageId = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+              chatId,
+              body,
+            });
+            const widgetId = KinWidgetId.make(`w_${messageId}`);
+            const state = { question: prompt, detail: null, options: choices, answer: null };
+            yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+              type, revision, state_json, awaiting_json, updated_at)
+            VALUES (${widgetId}, ${orgId}, ${chatId}, ${messageId}, 'native', 'choice', 1,
+              ${JSON.stringify(state)}, ${JSON.stringify([owner])}, ${T})`;
+            if (brief)
+              yield* sql`UPDATE kin_messages SET form = 'brief' WHERE message_id = ${messageId}`;
+            if (asked)
+              yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id,
+                chat_id, kind, widget_id, question, safe, asked_at, due_at, act_at, state)
+              VALUES (${`q_${widgetId}`}, ${orgId}, 'lead_fin', ${owner}, ${chatId}, 'card',
+                ${widgetId}, ${prompt}, 0, ${NOW}, ${NOW}, ${NOW}, 'open')`;
+            apns.sent.length = 0;
+            yield* notify({ _tag: "widget", orgId, widgetId });
+            const [push] = apns.sent;
+            assert.isDefined(push);
+            return {
+              alert: alerts([push])[0],
+              category: (push.payload as { aps: { category?: string } }).aps.category,
+            };
+          });
+
+        assert.deepStrictEqual(yield* card(reply, options), {
+          alert: { title: "Finance · Question", body: question },
+          category: "kin.message",
+        });
+        assert.deepStrictEqual(
+          yield* card("## Needs you\n- The Orbit Dental renewal is due.", options, { brief: true }),
+          {
+            alert: { title: "Finance · Morning brief", body: `Good morning · ${question}` },
+            category: "kin.message",
+          },
+        );
+        assert.deepStrictEqual(yield* card(reply, options.slice(0, 2)), {
+          alert: {
+            title: "Finance · Question",
+            body: `${question}\n1 · Reimbursements\n2 · Advances`,
+          },
+          category: "kin.choice",
+        });
+        const confirm = "Confirm the expense record for Orbit Dental.";
+        assert.deepStrictEqual(
+          yield* card(
+            confirm,
+            [
+              { optionId: "confirm", label: "Confirm" },
+              { optionId: "cancel", label: "Cancel" },
+            ],
+            { asked: false, prompt: "Record the Orbit Dental expense?" },
+          ),
+          { alert: { title: "Finance · Question", body: confirm }, category: "kin.message" },
+        );
+      }).pipe(Effect.provide(build(apns)));
+    },
+  );
 
   it.effect("a check-in's banner names that check-in after its turn has ended", () => {
     const apns = makeApns();
