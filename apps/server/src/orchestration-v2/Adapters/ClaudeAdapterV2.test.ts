@@ -10804,6 +10804,27 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           { usedTokens: 12_640, inputTokens: 12_600, outputTokens: 40, cachedInputTokens: 0 },
         ],
       );
+      // Each running update also carries the turn so far, every request counted once.
+      assert.deepEqual(
+        harness.events.flatMap((event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "running"
+            ? [event.providerTurn.turnTokenUsage]
+            : [],
+        ),
+        [undefined, 12_345, 24_845, 24_845, 37_445].map((inputTokens, index) =>
+          inputTokens === undefined
+            ? undefined
+            : {
+                usageStatus: "partial" as const,
+                usageScope: "main_agent" as const,
+                hasSubagents: false,
+                inputTokens,
+                cachedInputTokens: 0,
+                cacheCreationTokens: 0,
+                outputTokens: [0, 0, 0, 80, 120][index]!,
+              },
+        ),
+      );
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -11034,6 +11055,30 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const terminal = yield* Queue.take(harness.terminalReceipts);
       assert.equal(terminal.status, "completed");
       assert.deepEqual(reportedContextTokens(harness.events), [1_211, 1_230, 1_075, 400]);
+      // Compaction reports a context size, not a request; the turn so far stays on the update,
+      // since the stored turn keeps only the latest one and a cancel copies it.
+      assert.deepEqual(
+        harness.events.flatMap((event) =>
+          event.type === "provider_turn.updated" &&
+          event.providerTurn.status === "running" &&
+          event.providerTurn.tokenUsage
+            ? [
+                [
+                  event.providerTurn.tokenUsage.usedTokens,
+                  event.providerTurn.turnTokenUsage?.inputTokens,
+                  event.providerTurn.turnTokenUsage?.cachedInputTokens,
+                  event.providerTurn.turnTokenUsage?.outputTokens,
+                ],
+              ]
+            : [],
+        ),
+        [
+          [1_211, 1_210, 1_000, 1],
+          [1_230, 1_210, 1_000, 20],
+          [1_075, 1_025, 1_000, 50],
+          [400, 1_025, 1_000, 50],
+        ],
+      );
       assert.deepEqual(
         harness.events.flatMap((event) =>
           event.type === "provider_turn.updated" && event.providerTurn.tokenUsage
