@@ -7,6 +7,7 @@ import * as ScheduledTasks from "../triggers/scheduledTasks.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import * as Watchdogs from "../triggers/watchdogs.ts";
 import * as HostBackupCheck from "../host/backupCheck.ts";
+import * as RunningSpend from "../host/runningSpend.ts";
 import * as OfflineCatchUp from "../host/offlineCatchUp.ts";
 import * as GithubReaders from "../triggers/githubReaders.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
@@ -118,6 +119,7 @@ const routineRuntime = Layer.mergeAll(
   GitHubWatch.liveLayer,
   Watchdogs.layer,
   HostBackupCheck.layer,
+  RunningSpend.layer,
   KinPulse.layer,
   ArrivalFeed.liveLayer,
   KinWatchRounds.layer,

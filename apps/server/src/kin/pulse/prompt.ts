@@ -1,5 +1,6 @@
 import {
   KinAgentId,
+  type KinEvent,
   type KinOrgId,
   KinPersonId,
   type KinPulseActor,
@@ -30,6 +31,24 @@ export const PULSE_RULE =
   "What needs attention, as Kin computed it from its own records just now. Nobody asked for these facts, so each one you raise arrives one tap from done: do what you may do alone and say it in a line; draft what leaves the company (a mail_send to its writeTo by kin_connection_call, its document attached, from an account in mailFrom) so its card waits on him; or put one kin_ask with the real options and a default. When the head start can't be made, ask whoever has what is missing yourself with kin_ask_person, such as the teammate who looks after the client; only when no one does, say once what is missing. Never ask whether to start. Leave a fact that needs nothing or is already in hand. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
 export const CHECK_IN_PULSE_RULE =
   "Tell him each fact below once. When a fact's setAsideEnded says it had been set aside, first say so in a few words, with whose word it was, then what is open about it. What he was told and hasn't changed is left out: don't recall it.";
+/** After a pulse event's quote whose outside lines hold mail (`outsideText`). */
+export const OUTSIDE_THREAD_LINE =
+  "A mail line's thread opens it whole: kin_connection_call mail_read_thread, threadId set to it, on the line's account; read it before you answer or draft from it.";
+/** After a check-in's quote when its cap left lines out (`outsideText`). */
+export const OUTSIDE_NOT_LISTED_LINE =
+  "outsideNotListed is how many more new mails and calendar changes came in than outside lists: say so with the number, and list them with kin_connection_call mail_list_threads when one may need someone.";
+/** What follows a pulse event's quote about its outside lines; empty for any other event. */
+export const outsideText = (event: KinEvent) =>
+  event._tag !== "pulse"
+    ? ""
+    : [
+        ...((event.outside ?? []).some((line) => line.thread !== undefined)
+          ? [OUTSIDE_THREAD_LINE]
+          : []),
+        ...(event.outsideNotListed === undefined ? [] : [OUTSIDE_NOT_LISTED_LINE]),
+      ]
+        .map((line) => `\n\n${line}`)
+        .join("");
 /** Under `PROMPT_HEADINGS.left`: lines someone left with an agent for this check-in (`kin_relay`). */
 export const LEFT_RULE =
   "Someone left these for him in another chat, to hear at this check-in rather than at once. Tell him each one once, among the rest: who it is from and what it says.";

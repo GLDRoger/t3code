@@ -123,7 +123,7 @@ const leadsAwake = Effect.fn("KinHostBackup.leadsAwake")(function* (
  * One notice in the owner's private chat per episode under `prefix`: posted while `episode` is
  * set and none is open, closed once it is undefined. Plain reads and writes: no turn, no model.
  */
-const episodeNotice = Effect.fn("KinHostBackup.episodeNotice")(function* (
+export const episodeNotice = Effect.fn("KinHostBackup.episodeNotice")(function* (
   orgId: KinOrgId,
   prefix: string,
   episode:

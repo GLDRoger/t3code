@@ -2941,7 +2941,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       }).pipe(Effect.provideService(KinIdentity, identity));
       assert.strictEqual(
         mine.note,
-        `This draft is its own card in the chat, with Copy text: don't repeat it or name ${mine.key}; say in one line what it is. No LinkedIn account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
+        `This draft is its own card in the chat, with Copy text: don't repeat it or name ${mine.key}; say in one line what it is; nothing on the card sends it to anyone, so don't say anyone will send or approve it. No LinkedIn account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
       );
       const [ownCard] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
         WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;

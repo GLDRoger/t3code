@@ -1,7 +1,16 @@
-import type { KinChatId, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import {
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
+  type KinChatId,
+  type KinOrgId,
+  type KinPersonId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { MAIL_TOOL } from "../connections/MailProvider.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { formatMoneyPlain } from "../work/money.ts";
 import { billedParty } from "../work/billTo.ts";
@@ -62,6 +71,87 @@ const total = (amounts: ReadonlyArray<{ readonly minor: number; readonly currenc
   return [...sums].map(([currency, minor]) => formatMoneyPlain({ minor, currency })).join(" + ");
 };
 
+const decodeAddresses = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
+/** Names joined as a person says them: "Sam", "Sam and Lee", "Sam, Lee and Ana". */
+const listed = (names: ReadonlyArray<string>) =>
+  names.length <= 1
+    ? (names[0] ?? "")
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+/**
+ * Where each entry's reminder stands, from company mailboxes only (a person's own mail stays
+ * theirs): its newest card waiting on a Confirm, else the day its last one went. Only mail after
+ * `since` counts, so an invoice's own mail before its due day is no reminder. Kin knows only mail
+ * sent through it, so "none" says so.
+ */
+const reminderClauses = Effect.fn("KinMorningMoney.reminders")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly entries: ReadonlyArray<{ readonly recordId: string; readonly since: number }>;
+  readonly cards: boolean;
+  readonly noun: "reminder" | "follow-up";
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const since = new Map(input.entries.map((one) => [one.recordId, one.since]));
+  if (since.size === 0) return new Map<string, string>();
+  const rows = (yield* sql<{
+    recordId: string;
+    state: string;
+    at: number;
+    agent: string | null;
+    to: string | null;
+  }>`SELECT k.entry_record_id AS "recordId", k.state, COALESCE(k.done_at, k.proposed_at) AS at,
+      a.display_name AS agent, json_extract(k.payload_json, '$.to') AS "to"
+    FROM kin_connection_asks k
+    JOIN kin_connections c ON c.org_id = k.org_id AND c.connection_id = k.connection_id
+    LEFT JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
+    WHERE k.org_id = ${input.orgId} AND k.entry_record_id IN ${sql.in([...since.keys()])}
+      AND c.person_id IS NULL AND k.tool_name IN ${sql.in([MAIL_TOOL.send, MAIL_TOOL.reply])}
+      AND (k.state = 'sent' AND k.done_at IS NOT NULL ${input.cards ? sql`OR k.state = 'open'` : sql``})
+    ORDER BY at DESC, k.rowid DESC`).filter((row) => row.at > since.get(row.recordId)!);
+  const card = new Map<string, (typeof rows)[number]>();
+  const sent = new Map<string, number>();
+  for (const row of rows)
+    if (row.state === "open") {
+      if (!card.has(row.recordId)) card.set(row.recordId, row);
+    } else if (!sent.has(row.recordId)) sent.set(row.recordId, row.at);
+  const addressesOf = (to: string | null) =>
+    Option.getOrElse(decodeAddresses(to ?? "[]"), () => []).map((one) => one.trim());
+  const addresses = [
+    ...new Set(
+      [...card.values()].flatMap((row) => addressesOf(row.to).map((one) => one.toLowerCase())),
+    ),
+  ];
+  const contacts = new Map<string, string>();
+  if (addresses.length > 0)
+    for (const row of yield* sql<{ email: string; name: string }>`
+      SELECT lower(trim(json_extract(fields_json, '$.email'))) AS email, title AS name
+      FROM kin_records
+      WHERE org_id = ${input.orgId} AND register_id = 'contacts' AND state = 'open'
+        AND lower(trim(json_extract(fields_json, '$.email'))) IN ${sql.in(addresses)}
+      ORDER BY lower(title), key`)
+      if (!contacts.has(row.email)) contacts.set(row.email, row.name);
+  const zone = sent.size === 0 ? "UTC" : yield* ownerZone(input.orgId);
+  const clauses = new Map<string, string>();
+  for (const recordId of since.keys()) {
+    const open = card.get(recordId);
+    const went = sent.get(recordId);
+    const to = listed(
+      addressesOf(open?.to ?? null).map((one) => contacts.get(one.toLowerCase()) ?? one),
+    );
+    clauses.set(
+      recordId,
+      open !== undefined
+        ? `a ${input.noun}${to === "" ? "" : ` to ${to}`} waits on your Confirm${open.agent === null ? "" : ` in ${open.agent}'s chat`}`
+        : went !== undefined
+          ? `${input.noun} sent ${formatKinWhen(went, "day", { zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "")}`
+          : `no ${input.noun} sent through Kin yet`,
+    );
+  }
+  return clauses;
+});
+
 /**
  * The morning page's own Money lines, every morning until settled: each invoice past its due date
  * and each sent quote with no answer for its follow-up days (5 unless a playbook says otherwise),
@@ -108,29 +198,37 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
         ];
   const overdue = (yield* owedInvoices({ orgId, now, seen })).filter((one) => one.overdue);
   const asides = yield* invoiceAsides({ orgId, at: now, viewer: input.viewer, invoices: overdue });
+  // Only the owner level can open the chat a card waits in.
+  const cards = input.viewer._tag === "ownerLevel";
+  const told = overdue.filter(
+    (one) =>
+      !asides.has(one.recordId) &&
+      !saysName(one.number, one.title) &&
+      !names(said, one.partyTitle ?? one.billTo ?? null),
+  );
+  const invoiceReminders = yield* reminderClauses({
+    orgId,
+    cards,
+    noun: "reminder",
+    entries: told.map((one) => ({ recordId: one.recordId, since: one.dueAt ?? now })),
+  });
   // Longest overdue first: what the pulse chases soonest is never the part cut.
   const invoices = shown(
-    overdue
-      .filter(
-        (one) =>
-          !asides.has(one.recordId) &&
-          !saysName(one.number, one.title) &&
-          !names(said, one.partyTitle ?? one.billTo ?? null),
-      )
-      .toSorted((a, b) => b.daysOverdue - a.daysOverdue),
+    told.toSorted((a, b) => b.daysOverdue - a.daysOverdue),
     (one) => {
       const name = one.partyTitle ?? one.billTo;
       const amount = formatMoneyPlain(one.balance);
       const entry = entryName(one.number, one.title);
       const owed =
         name === undefined ? `${entry} is owed ${amount}` : `${name} owes ${amount} on ${entry}`;
-      return `${owed}, ${overdueText(one.daysOverdue)}.`;
+      return `${owed}, ${overdueText(one.daysOverdue)}; ${invoiceReminders.get(one.recordId)}.`;
     },
     (count, cut) =>
       `and ${count} more overdue invoice${count === 1 ? "" : "s"}, ${total(cut.map((one) => one.balance))} in all.`,
   );
   const limits = yield* thresholds(orgId);
   const quotes = yield* sql<{
+    recordId: string;
     key: string;
     title: string;
     clientId: string | null;
@@ -140,7 +238,7 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
     currency: string | null;
     number: unknown;
     lastAt: number;
-  }>`SELECT r.key, r.title, r.party_id AS "clientId", c.title AS client, r.amount_minor AS minor, r.fields_json AS "fieldsJson",
+  }>`SELECT r.record_id AS "recordId", r.key, r.title, r.party_id AS "clientId", c.title AS client, r.amount_minor AS minor, r.fields_json AS "fieldsJson",
       r.currency, json_extract(r.fields_json, '$.number') AS number,
       COALESCE((SELECT MAX(ch.at) FROM kin_record_changes ch
         WHERE ch.org_id = r.org_id AND ch.record_id = r.record_id), r.updated_at) AS "lastAt"
@@ -149,12 +247,20 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
     WHERE r.org_id = ${orgId} AND r.register_id = 'quotes' AND r.state = 'waiting'
       AND ${countedEntry(sql)} AND ${seen}
     ORDER BY "lastAt", r.key`;
+  const waiting = quotes.filter(
+    (one) =>
+      one.lastAt <= now - toMs(limits("quote_follow_up_days", one.clientId ?? undefined)) &&
+      !saysName(one.number, one.title),
+  );
+  // The quote's own mail moves it to waiting, a change at or after its send: only later mail follows up.
+  const followUps = yield* reminderClauses({
+    orgId,
+    cards,
+    noun: "follow-up",
+    entries: waiting.map((one) => ({ recordId: one.recordId, since: one.lastAt })),
+  });
   const unanswered = shown(
-    quotes.filter(
-      (one) =>
-        one.lastAt <= now - toMs(limits("quote_follow_up_days", one.clientId ?? undefined)) &&
-        !saysName(one.number, one.title),
-    ),
+    waiting,
     (one) => {
       const amount =
         one.minor === null || one.currency === null
@@ -165,9 +271,10 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
       const name =
         one.client ??
         billedParty({ registerId: "quotes", fieldsJson: one.fieldsJson }, undefined)?.name;
+      const stands = followUps.get(one.recordId);
       return name === undefined
-        ? `No answer to ${quote} in ${days}.`
-        : `${name} hasn't answered ${quote} in ${days}.`;
+        ? `No answer to ${quote} in ${days}; ${stands}.`
+        : `${name} hasn't answered ${quote} in ${days}; ${stands}.`;
     },
     (count, cut) => {
       const sum = total(

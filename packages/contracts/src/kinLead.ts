@@ -734,6 +734,8 @@ export const KinPulseOutsideLine = Schema.Struct({
   to: Schema.optional(Schema.String.check(Schema.isMaxLength(320))),
   /** The service's id: a mail thread, a calendar event, a webhook delivery. */
   id: Schema.String.check(Schema.isMaxLength(200)),
+  /** A mail's thread id, as `mail_read_thread` takes it; mail lines only. */
+  thread: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
   at: OutsideText(60),
   who: OutsideText(300),
   subject: OutsideText(300),
@@ -940,6 +942,8 @@ export const KinEvent = Schema.Union([
     ),
     // Metadata the server read from connections the owner marked Read: still outside text.
     outside: Schema.optional(Schema.Array(KinPulseOutsideLine).check(Schema.isMaxLength(200))),
+    // How many more outside items a check-in read than `outside` lists: the cap cut them.
+    outsideNotListed: Schema.optional(PositiveInt),
     // The one mail that woke it, as `kin_arrivals` keeps it (`arrivals/ArrivalStore.ts`).
     arrivalId: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
     // A wake for one person's own follow-up (`pulse/draftWake.ts`): it answers in their direct
