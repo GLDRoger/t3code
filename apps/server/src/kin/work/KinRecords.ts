@@ -1563,6 +1563,23 @@ const make = Effect.gen(function* () {
     return list;
   });
 
+  /** The person a task was promised to (`fields.promisedTo`): one person here, never its holder. */
+  const promisedToFor = Effect.fn("KinRecords.promisedToFor")(function* (
+    orgId: KinOrgId,
+    asked: FieldValue | null | undefined,
+    holder: KinWorkPrincipal,
+  ) {
+    if (asked === undefined || asked === null) return;
+    const who = typeof asked === "string" ? storedPrincipal(asked) : undefined;
+    if (who === undefined || who === null || who._tag !== "person")
+      return yield* invalid("Who a task was promised to is one person:<id>.");
+    if (asked === shownPrincipal(holder))
+      return yield* invalid(
+        "A task isn't promised to whoever holds it: leave promisedTo off, or name the person it was promised to.",
+      );
+    yield* ownerExists(orgId, who, "to be promised it", { joiningTask: true });
+  });
+
   const insertLink = Effect.fn("KinRecords.insertLink")(function* (
     orgId: KinOrgId,
     recordId: string,
@@ -1862,6 +1879,8 @@ const make = Effect.gen(function* () {
       const alsoOn = yield* alsoOnFor(orgId, writer, fields.alsoOn, copied, input.owner);
       if (alsoOn.length === 0) delete fields.alsoOn;
       else fields.alsoOn = alsoOn;
+      yield* promisedToFor(orgId, fields.promisedTo, input.owner);
+      if (fields.promisedTo === null) delete fields.promisedTo;
     }
     const repeat =
       options.repeat ??
@@ -2500,6 +2519,14 @@ const make = Effect.gen(function* () {
             : undefined;
         if (alsoOn !== undefined)
           yield* helperGuard(orgId, writer, row, before.owner, patch, alsoOn);
+        // Given to the person it was promised to, it is theirs now and owed to no one.
+        const promisedOff =
+          list === "work" &&
+          patch.fields?.promisedTo === undefined &&
+          patch.owner !== undefined &&
+          stored.promisedTo === shownPrincipal(patch.owner);
+        if (list === "work" && !promisedOff)
+          yield* promisedToFor(orgId, patch.fields?.promisedTo, patch.owner ?? before.owner);
         const billToPatch =
           hasBillTo(list) &&
           (partyChanged ||
@@ -2530,6 +2557,7 @@ const make = Effect.gen(function* () {
           ...patch.fields,
           ...(clearBilling ? clearedBillTo : {}),
           ...(alsoOn === undefined ? {} : { alsoOn: alsoOn.length === 0 ? null : alsoOn }),
+          ...(promisedOff ? { promisedTo: null } : {}),
         })) {
           const from = shownField(stored[field]);
           const to = shownField(value);

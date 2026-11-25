@@ -1809,7 +1809,8 @@ describe("invoices", () => {
         // The agent reads it as a suggestion, and it waits on a person with the right.
         assert.include(yield* LeadWork.get(scope, { key: "INV-2" }), {
           suggested: true,
-          stateLabel: "Draft, suggested: waits for the owner or a co-owner to keep it",
+          stateLabel:
+            "Suggested invoice, not kept: nobody has kept it yet, so it can't be issued, sent, paid or receipted. The owner or a co-owner keeps it with Keep on its page; call it a suggestion until then.",
         });
         const section = moneySection(yield* OwnerMoney.money(people, { orgId }), "Asia/Kolkata");
         assert.deepStrictEqual(
@@ -3445,7 +3446,7 @@ describe("the owner's taps", () => {
               "2026-11-12",
               "2026-11-20",
               undefined,
-              "Draft, suggested: waits for the owner or a co-owner to keep it",
+              "Suggested invoice, not kept: nobody has kept it yet, so it can't be issued, sent, paid or receipted. The owner or a co-owner keeps it with Keep on its page; call it a suggestion until then.",
             ],
           ],
         );
@@ -3945,7 +3946,8 @@ describe("who keeps a suggestion", () => {
       });
       assert.deepInclude(made.records[0], {
         state: "open",
-        stateLabel: "Draft, suggested: waits for the owner or a co-owner to keep it",
+        stateLabel:
+          "Suggested invoice, not kept: nobody has kept it yet, so it can't be issued, sent, paid or receipted. The owner or a co-owner keeps it with Keep on its page; call it a suggestion until then.",
         suggested: true,
       });
       const started = [];

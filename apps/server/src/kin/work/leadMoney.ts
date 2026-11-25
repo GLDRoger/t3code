@@ -819,7 +819,7 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
         state:
           record.confirmed || record.state === "dropped"
             ? row.stateLabel
-            : suggestedStateLabel(record.list ?? "work", record.state, row.stateLabel),
+            : suggestedStateLabel(record.list ?? "work", record.state),
         ...(isInvoice(entry)
           ? invoiceDays(entry, day)
           : {
