@@ -602,6 +602,54 @@ it.effect("a tap on an action option runs it once, as the server wrote it", () =
   ),
 );
 
+// A meeting that has passed: its done and drop buttons say what happened; the line under each
+// still names it. A meeting still to come keeps the verbs.
+it.effect("a held meeting's buttons say what happened, in plain words", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const held = yield* kin.task("Pilot review with Tidewater Freight");
+      const coming = yield* kin.task("Kick-off with Harbor Foundry");
+      for (const [row, at] of [
+        [held, MON - 60 * 60_000],
+        [coming, MON + 60 * 60_000],
+      ] as const)
+        yield* kin.sql`UPDATE kin_records SET category = 'meeting', date_at = ${at}
+          WHERE org_id = ${kin.orgId} AND record_id = ${row.recordId}`;
+      yield* kin.turn("finance", kin.chatOf("finance"), "How did the meetings go?");
+      const labels = Effect.fn("test.labels")(function* (key: string) {
+        const asked = yield* callAs("finance", "kin_ask", {
+          question: `How did ${key} go?`,
+          options: [
+            { label: "It didn't happen", action: { kind: "drop", target: key } },
+            { label: "Nothing to follow up", action: { kind: "done", target: key } },
+          ],
+          default: "none",
+        });
+        assert.isTrue(asked.ok, JSON.stringify(asked.value));
+        return card(yield* kin.widget(asked.value.widgetId)).options;
+      });
+      assert.deepStrictEqual(yield* labels(held.key), [
+        {
+          optionId: "option-1",
+          label: "It didn't happen",
+          action: { line: `Drop ${held.key} “Pilot review with Tidewater Freight”` },
+        },
+        {
+          optionId: "option-2",
+          label: "Nothing to follow up",
+          action: { line: `Mark ${held.key} “Pilot review with Tidewater Freight” done` },
+        },
+      ]);
+      assert.deepStrictEqual(
+        (yield* labels(coming.key)).map((one) => one.label),
+        [`Drop ${coming.key}`, `Mark ${coming.key} done`],
+      );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 // The plan binds the entry's revision: a change in the same clock tick, a retired drawer or a
 // reaction runs nothing; the timer never takes an action as a default; another org's key is unknown.
 it.effect("a tap closes or cancels a list section's entry, and its late fact clears", () =>
