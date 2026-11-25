@@ -59,6 +59,7 @@ import {
   paymentLine,
   recordPayment,
 } from "../work/statements/creditPayment.ts";
+import { drawRepaid, markRepaid, repaidLabel, repaidLine } from "../work/statements/repaidCard.ts";
 import {
   type CardActionInput,
   type CardDraw,
@@ -107,6 +108,8 @@ const labelOf = (plan: CardPlan): string => {
       return "Create the list";
     case "record_payment":
       return paymentLabel(plan);
+    case "mark_repaid":
+      return repaidLabel(plan);
     case "take_default": {
       const label = `Take the default: ${plan.label}`;
       return label.length <= LABEL_MAX ? label : `${label.slice(0, LABEL_MAX - 1)}…`;
@@ -140,6 +143,8 @@ const lineOf = (plan: CardPlan): string => {
       return `Create the list ${quoted(plan.name, 60)}`;
     case "record_payment":
       return paymentLine(plan);
+    case "mark_repaid":
+      return repaidLine(plan);
     case "take_default": {
       const went = `Go with ${quoted(plan.label, 40)} on ${quoted(plan.question, 60)}`;
       return plan.final === null ? went : `${went}: ${lineOf(plan.final)}`;
@@ -354,6 +359,10 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
       case "record_payment": {
         yield* ownerTier("payment_record");
         return yield* drawPayment(orgId, input.target, drawn);
+      }
+      case "mark_repaid": {
+        yield* ownerTier("record_update");
+        return yield* drawRepaid(orgId, input.target, drawn);
       }
     }
   });
@@ -887,6 +896,31 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
         records,
       );
       return done ?? nothingDone(`${plan.bankKey} or ${plan.key} changed since this was offered`);
+    }
+    case "mark_repaid": {
+      if (!owner)
+        return yield* notAllowed(
+          "Only the owner or a co-owner marks what a partner is owed as repaid.",
+        );
+      yield* refuseOff("expenses");
+      yield* refuseOff("bank_transactions");
+      const why = yield* drawsHold(orgId, draws);
+      if (why !== undefined) return nothingDone(why);
+      const done = yield* markRepaid(
+        orgId,
+        plan,
+        {
+          actor: { _tag: "person", personId },
+          via: "owner",
+          askedBy: personId,
+          chatId: tap.widget.chatId,
+          answering: [tap.widget.widgetId, ...alsoAnswering],
+        },
+        records,
+      );
+      return (
+        done ?? nothingDone(`${plan.key} or an expense it repays changed since this was offered`)
+      );
     }
   }
 });

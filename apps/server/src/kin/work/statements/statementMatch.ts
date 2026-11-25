@@ -453,7 +453,7 @@ const expenseCandidate = (
 };
 
 /** The narration carries a partner's whole name, or something stored that only they are. */
-const identifies = (partner: Pick<PartnerCandidate, "name" | "ids">, narration: string) =>
+export const identifies = (partner: Pick<PartnerCandidate, "name" | "ids">, narration: string) =>
   personIn(partner.name, narration) === 1 ||
   (partner.ids ?? []).some(
     (id) => squashed(id).length >= 6 && squashed(narration).includes(squashed(id)),
@@ -468,7 +468,12 @@ const REPAYS_AT_MOST = 50;
  * pays them back; a credit is theirs paying back a run that nets below zero. An amount alone may
  * be anyone's.
  */
-const repayment = (row: StatementRow, partner: PartnerCandidate, from: number, sure: boolean) => {
+export const repayment = (
+  row: StatementRow,
+  partner: PartnerCandidate,
+  from: number,
+  sure: boolean,
+) => {
   const named = identifies(partner, row.description) ? 1 : personIn(partner.name, row.description);
   if (named < 0.5) return undefined;
   // Minor units past 2^53 add up wrong as numbers; exact sums decide what a line settles.
