@@ -125,11 +125,17 @@ describe("kinCurrency", () => {
       recordedAt: "2026-11-04T00:00:00.000Z",
       voidedAt: null,
     };
-    const fromPayment = kinSettledPayment({ amount: usd(1000), payments: [livePaid] }, rates);
-    expect(fromPayment?.received).toBe("₹83,500");
-    expect(fromPayment?.impliedRate).toEqual({ currency: "USD", rate: "83.5", asOf: "2026-11-04" });
-    expect(fromPayment?.implied).toMatch(/^₹83.5 per \$1, as of /);
-    expect(fromPayment?.difference).toBe("₹750 less than the estimate at your rate (₹84,250).");
+    for (const invoiceAmount of [usd(1000), usd(1250)]) {
+      const fromPayment = kinSettledPayment({ amount: invoiceAmount, payments: [livePaid] }, rates);
+      expect(fromPayment?.received).toBe("₹83,500");
+      expect(fromPayment?.impliedRate).toEqual({
+        currency: "USD",
+        rate: "83.5",
+        asOf: "2026-11-04",
+      });
+      expect(fromPayment?.implied).toMatch(/^₹83.5 per \$1, as of /);
+      expect(fromPayment?.difference).toBe("₹750 less than the estimate at your rate (₹84,250).");
+    }
     expect(
       kinSettledPayment(
         {
